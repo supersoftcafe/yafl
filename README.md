@@ -17,6 +17,8 @@ No standard library. The simplest hello world program should be tiny. This is on
 Each of these languages solves this in a different way, and Kotlin even solves it in different ways depending on the underlying platform being targeted. Unfortunately garbage collection whilst amazing is a heavy weight solution that breaks the "low overhead" goal many times over. Python solves this with reference counting, but brings in other performance killers like the global interpreter lock. Objective-C and Swift are the gold standard of ARC (automatic reference counting) for memory management. I hope to follow in those footsteps, but take advantage of a functional focus to reduce the overheads further.
 ### Functional does not exactly have to mean immutable
 It's a thorny topic, but if you get down to basics functional programming is about having a black box. For a given set of inputs the outputs will always be the same, and what happens in the box doesn't matter. Of course that box is a function, and the idea is that nothing outside of the function should be able to influence the result. Some of the immutability of functional languages is how that promise is kept, but one area does not contribute, and that is the immutability of locally defined values within the function, the *val* vs *var* debate. I think that we need to allow some amount of mutability so long as we maintain the black box promise. This is a complex subject that has serious impact on the goals of implicit parallelism and implicit memory management. It needs some serious thought.
+### It's functions all the way down
+Well, not quite. But in a sense every named thing is a function and every operator is too. You might think that the number '27' is a literal constant, but really it's a function of type integer that always provides a single well defined result due to having no parameters. Of course this is not literally true at the end of the day, but it provides a useful set of semantics for the language itself and for the programmer thinking about what their code actually means.
 
 ## Examples
 
@@ -46,7 +48,11 @@ It's largely following a functional style but with the gramatical trappings of a
         fun at(index) = lookup(index, 0 -> el0, 1 -> el1)
         fun count = 2
 
-    # Use of 'return' keyword instead of assignment. It feels more tidy here.
+    # Use of 'return' keyword instead of assignment. It feels more tidy here. Also the nested
+    # function that helps to reduce clutter and large nested expressions. Interesting use of
+    # lookup, instead of finding the index we look for zeros. Lastly careful application of
+    # lazy evaluation means that the createVector method will only be used if the last option
+    # in the list is actually matched, taking much from the Haskell approach.
     fun concat<Element>(vec0: Vec<Element>, vec1: Vec<Element>)
         fun createVector = Vec<Element>
             fun count = vec0.count + vec1.count
@@ -58,4 +64,10 @@ approach and that of functional languages in that I will not require them to be 
 a keyword that indicates that the programmer wants them to be exhaustive, but that's all. If absent, and
 a match is not found an exception will automatically be thrown. I see this as being very similar to divide by
 zero. We don't demand checks for zero before division operators, we runtime error because the inputs were invalid.
+
+Lazy evaluation is a cornerstone of Haskell. I don't propose as much here, but careful application of it
+should give good efficiency and make the use of functions instead of language constructs much more viable.
+Kotlin achieves this by using specific inline functions that take inline lambda parameters. It's very
+declarative, and that's sonmething I'd like to avoid. This'll be yet another fine line to walk, having
+implicit lazy evaluation without the cost of doing it everywhere.
 
