@@ -10,7 +10,7 @@ Kotlin has a very clear syntax. It's compact and yet easy to visually parse at t
 ### Names and concepts that are familiar to imperative programmers
 Obviously Haskell will fail this one. Kotlin again wins out with its policy of using clear English words for actions instead of symbols, and the terms used are more familar to the imperative programmer. However it at the same times borrows heavily from some base functional principles to achieve many of the same results.
 ### Implicit parallelism
-Ah...   This is of course absolute idealism, and none of the languages do this. Kotlin has coroutines, which are absolutely amazing, but you still have to use them, you still have to plan and think about parallelism. My goal is to make absolutely invisible to the programmer. You run your software on a computer, that's all. If it has more cores, it uses them, end of.
+Ah...   This is of course absolute idealism, and none of the languages do this. Kotlin has coroutines, which are absolutely amazing, but you still have to use them, you still have to plan and think about parallelism. My goal is to make it absolutely invisible to the programmer. You run your software on a computer, that's all. If it has more cores, it uses them, end of.
 ### Low overhead
 No standard library. The simplest hello world program should be tiny. This is one of the stated goals of Rust, and I fully buy into it having come from a Java background and living with the multiple tonnes of runtime dependencies every Java program has. The goal here is to compile for a target physical architecture, and get a small binary at the end.
 ### Implicit memory management
