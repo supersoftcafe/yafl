@@ -3,7 +3,12 @@ package imf
 sealed class Operation {
     abstract val type: Type?
 
-    data class LoadLocalValue(
+    data class Invoke(
+        val function: Operation,
+        override val type: Type? = null
+    ) : Operation()
+
+    data class LoadNamedValue(
         val name: String,
         override val type: Type? = null
     ) : Operation()

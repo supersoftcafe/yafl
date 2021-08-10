@@ -1,7 +1,6 @@
 compiler/build/**
 compiler/gen/**
 compiler/.gradle/**
-compiler/.idea/**
 
 # Compiled class file
 *.class
