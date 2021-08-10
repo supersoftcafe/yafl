@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/my/yaflc/src/yafl.g4 by ANTLR 4.9.1
+// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.1
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ErrorNode;
@@ -207,6 +207,18 @@ public class yaflBaseListener implements yaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
+	@Override public void enterNamedValueExpression(yaflParser.NamedValueExpressionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitNamedValueExpression(yaflParser.NamedValueExpressionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
 	@Override public void enterAddExpression(yaflParser.AddExpressionContext ctx) { }
 	/**
 	 * {@inheritDoc}
@@ -214,18 +226,6 @@ public class yaflBaseListener implements yaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitAddExpression(yaflParser.AddExpressionContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterNamedValue(yaflParser.NamedValueContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitNamedValue(yaflParser.NamedValueContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *

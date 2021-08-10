@@ -1,4 +1,4 @@
-package graph
+package util
 
 
 class Graph<TNode> private constructor(private val nodes: List<TNode?>, private val edges: List<Edge>) {
@@ -50,10 +50,6 @@ class Graph<TNode> private constructor(private val nodes: List<TNode?>, private 
     fun findInnerEdges(node: TNode): List<TNode> {
         val nodeIndex = nodeToIndex(node)
         return edges.mapNotNull { if (it.node2 == nodeIndex) nodes[it.node1] else null }
-    }
-
-    fun dependencySort(node: TNode): List<TNode> {
-
     }
 }
 

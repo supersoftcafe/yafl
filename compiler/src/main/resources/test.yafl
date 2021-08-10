@@ -1,9 +1,11 @@
 
 
-data Pair(first: Int, second: Int)
-
-fun GetSomething(value: Int) = Pair(value, value + 1)
+# data Pair(first: Int, second: Int)
+# fun GetSomething(value: Int) = Pair(value, value + 1)
+# fun main
+#     let p = GetSomething(10)
+#     return p.first + p.second
 
 fun main
-    let p = GetSomething(10)
-    return p.first + p.second
+    let b = 3
+    return 1 + 2 + b

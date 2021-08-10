@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/my/yaflc/src/yafl.g4 by ANTLR 4.9.1
+// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.1
 import org.antlr.v4.runtime.atn.*;
 import org.antlr.v4.runtime.dfa.DFA;
 import org.antlr.v4.runtime.*;
@@ -1059,6 +1059,23 @@ public class yaflParser extends Parser {
 			else return visitor.visitChildren(this);
 		}
 	}
+	public static class NamedValueExpressionContext extends ExpressionContext {
+		public TerminalNode NAME() { return getToken(yaflParser.NAME, 0); }
+		public NamedValueExpressionContext(ExpressionContext ctx) { copyFrom(ctx); }
+		@Override
+		public void enterRule(ParseTreeListener listener) {
+			if ( listener instanceof yaflListener ) ((yaflListener)listener).enterNamedValueExpression(this);
+		}
+		@Override
+		public void exitRule(ParseTreeListener listener) {
+			if ( listener instanceof yaflListener ) ((yaflListener)listener).exitNamedValueExpression(this);
+		}
+		@Override
+		public <T> T accept(ParseTreeVisitor<? extends T> visitor) {
+			if ( visitor instanceof yaflVisitor ) return ((yaflVisitor<? extends T>)visitor).visitNamedValueExpression(this);
+			else return visitor.visitChildren(this);
+		}
+	}
 	public static class AddExpressionContext extends ExpressionContext {
 		public List<ExpressionContext> expression() {
 			return getRuleContexts(ExpressionContext.class);
@@ -1079,23 +1096,6 @@ public class yaflParser extends Parser {
 		@Override
 		public <T> T accept(ParseTreeVisitor<? extends T> visitor) {
 			if ( visitor instanceof yaflVisitor ) return ((yaflVisitor<? extends T>)visitor).visitAddExpression(this);
-			else return visitor.visitChildren(this);
-		}
-	}
-	public static class NamedValueContext extends ExpressionContext {
-		public TerminalNode NAME() { return getToken(yaflParser.NAME, 0); }
-		public NamedValueContext(ExpressionContext ctx) { copyFrom(ctx); }
-		@Override
-		public void enterRule(ParseTreeListener listener) {
-			if ( listener instanceof yaflListener ) ((yaflListener)listener).enterNamedValue(this);
-		}
-		@Override
-		public void exitRule(ParseTreeListener listener) {
-			if ( listener instanceof yaflListener ) ((yaflListener)listener).exitNamedValue(this);
-		}
-		@Override
-		public <T> T accept(ParseTreeVisitor<? extends T> visitor) {
-			if ( visitor instanceof yaflVisitor ) return ((yaflVisitor<? extends T>)visitor).visitNamedValue(this);
 			else return visitor.visitChildren(this);
 		}
 	}
@@ -1272,7 +1272,7 @@ public class yaflParser extends Parser {
 				break;
 			case NAME:
 				{
-				_localctx = new NamedValueContext(_localctx);
+				_localctx = new NamedValueExpressionContext(_localctx);
 				_ctx = _localctx;
 				_prevctx = _localctx;
 				setState(138);

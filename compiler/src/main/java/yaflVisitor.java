@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/my/yaflc/src/yafl.g4 by ANTLR 4.9.1
+// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.1
 import org.antlr.v4.runtime.tree.ParseTreeVisitor;
 
 /**
@@ -107,19 +107,19 @@ public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitDotExpression(yaflParser.DotExpressionContext ctx);
 	/**
+	 * Visit a parse tree produced by the {@code namedValueExpression}
+	 * labeled alternative in {@link yaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitNamedValueExpression(yaflParser.NamedValueExpressionContext ctx);
+	/**
 	 * Visit a parse tree produced by the {@code addExpression}
 	 * labeled alternative in {@link yaflParser#expression}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	T visitAddExpression(yaflParser.AddExpressionContext ctx);
-	/**
-	 * Visit a parse tree produced by the {@code namedValue}
-	 * labeled alternative in {@link yaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitNamedValue(yaflParser.NamedValueContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code ifExpression}
 	 * labeled alternative in {@link yaflParser#expression}.

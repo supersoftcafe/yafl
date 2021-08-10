@@ -1,9 +1,9 @@
 
+import util.*
 import model.*
 import org.antlr.v4.runtime.CharStreams
 import org.antlr.v4.runtime.CommonTokenStream
 import yaflParser.*
-import java.math.BigInteger
 
 
 fun main(args: Array<String>) {
@@ -26,66 +26,16 @@ fun main(args: Array<String>) {
 
 
 
-fun imf.Imf.deriveOperationType(function: imf.Function, operation: imf.Operation): List<imf.Operation> {
-    return if (operation.type != null) listOf(operation) else when (operation) {
-        is imf.Operation.LoadIntegerConstant -> {
-            if (operation.value != BigInteger.valueOf(operation.value.toLong())) {
-                throw IllegalArgumentException("Integer too big to be a long")
-            } else {
-                listOf(operation.copy(type = if (operation.value != BigInteger.valueOf(operation.value.toInt().toLong())) {
-                    imf.Primitive.LONG
-                } else {
-                    imf.Primitive.INTEGER
-                }))
-            }
-        }
-
-        // Replace with "Invoke", where Add is a function with a generic constraint.
-        is imf.Operation.Add -> {
-            val leftOp  = function.operations.last { it.cname == operation.left }
-            val rightOp = function.operations.last { it.cname == operation.right }
-
-            if (leftOp.type?.cname == rightOp.type?.cname) {
-                listOf(operation.copy(type = leftOp.type))
-            } else if (leftOp.type == imf.Primitive.INTEGER && rightOp.type == imf.Primitive.LONG) {
-                val newReg = operation.cname + "_cast_input"
-                listOf(
-                    imf.Operation.PromoteType(newReg, leftOp.cname, rightOp.type),
-                    operation.copy(type = rightOp.type, left = newReg)
-                )
-            } else if (leftOp.type == imf.Primitive.LONG && rightOp.type == imf.Primitive.INTEGER) {
-                val newReg = operation.cname + "_cast_input"
-                listOf(
-                    imf.Operation.PromoteType(newReg, rightOp.cname, leftOp.type),
-                    operation.copy(type = leftOp.type, right = newReg)
-                )
-            } else {
-                throw IllegalArgumentException("Adding different types")
-            }
-        }
-
-        is imf.Operation.PromoteType -> {
-            listOf(operation)
-        }
-
-        else -> TODO()
-    }
-}
-
 fun imf.Imf.deriveTypes(function: imf.Function): imf.Function {
     function.parameters.forEach {
         if (it.parameters.isNotEmpty()) TODO("Function passing is not supported yet")
         if (it.type?.cname == null) TODO("Function parameter type resolving is not supported yet")
     }
 
-    val returnType = function.type
-    val opIndex = function.operations.lastIndex
-    val operations = function.operations.flatMap { deriveOperationType(function, it) }
-    val exprType = operations.last().type
-    val cname = function.cname ?: "fun_${function.name}"
-    val result = function.copy(cname = cname, type = returnType ?: exprType, operations = operations)
-
-    return result
+    return function.copy(
+        cname = function.cname ?: "fun_${function.name}",
+        type = function.type ?: function.expression?.type,
+        expression = imf.Transformers.transform(function.expression, function.type))
 }
 
 fun imf.Imf.deriveTypes(structure: imf.Structure): imf.Structure {
@@ -107,94 +57,87 @@ tailrec fun imf.Imf.deriveTypes(): imf.Imf {
 
 
 
-fun imf.Function.withOp(operation: imf.Operation): imf.Function {
-    return copy(operations = operations + operation)
-}
-
-fun imf.Function.nextRegisterName(hint: String? = null): String {
-    return "reg_${operations.count()}_${hint?:""}"
-}
-
-fun imf.Function.addOperations(expr: ExpressionContext): imf.Function {
-    return when (expr) {
-        is AddExpressionContext -> {
-            val leftFunc = this.addOperations(expr.expression(0))
-            val leftOp = leftFunc.operations.last()
-            val rightFunc = leftFunc.addOperations(expr.expression(1))
-            val rightOp = rightFunc.operations.last()
-            rightFunc.withOp(imf.Operation.Add(
-                rightFunc.nextRegisterName(),
-                leftOp.cname,
-                rightOp.cname
-            ))
-        }
-        is IntegerExpressionContext -> {
-            withOp(imf.Operation.LoadIntegerConstant(
-                nextRegisterName(),
-                BigInteger(expr.text)
-            ))
-        }
-        else -> TODO()
-    }
-}
-
-fun imf.Function.addOperations(stat: StatementsContext?): imf.Function {
-    return if (stat == null) return this
-    else stat.let()?.let { addOperations(it) } ?: stat.`fun`().let { addOperations(it) }
-}
-
-fun imf.Function.addOperations(stat: LetContext): imf.Function {
-    TODO()
-}
-
-fun imf.Function.addOperations(stat: FunContext): imf.Function {
-    TODO()
-}
 
 fun RootContext.toParameter(parameterContext: ParameterContext): imf.Function {
     TODO()
 }
 
-fun RootContext.toType(typeContext: TypeContext): imf.Type {
-    val named = typeContext.named() ?: TODO()
+fun TypeContext.toImfType(): imf.Type {
+    val named = named() ?: TODO()
     return when (named.NAME().text) {
-        "int" -> imf.Primitive.INTEGER
-        "long" -> imf.Primitive.LONG
-        "float" -> imf.Primitive.FLOAT
-        "double" -> imf.Primitive.DOUBLE
+        "int" -> imf.Primitive.INT32
+        "long" -> imf.Primitive.INT64
+        "float" -> imf.Primitive.FLOAT32
+        "double" -> imf.Primitive.FLOAT64
         else -> TODO()
     }
 }
 
-fun RootContext.toImfFunction(funContext: FunContext): imf.Function {
-    val funDecl = funContext.funDecl()
-    val name = funDecl.NAME().text
-    val parameters = funDecl.tuple()
-        ?. parameters()
-        ?. flatten { it.parameters() }
-        ?. map { toParameter(it.parameter()) }
-        ?: emptyList()
-    val type = funDecl.type()?.let { toType(it) }
-
-    return imf.Function(name, parameters, type)
-        .addOperations(funContext.funBody().statements())
-        .addOperations(funContext.funBody().expression())
-}
-
-fun <T> T?.flatten(next: (T) -> T?): List<T> {
-    return if (this == null) {
-        emptyList()
-    } else {
-        listOf(this) + next(this).flatten(next)
+fun ExpressionContext.toExpression(): imf.Operation {
+    return when (this) {
+        is IntegerExpressionContext -> {
+            val value = java.lang.Long.decode(INTEGER().text)
+            if (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE)
+                imf.Operation.ConstInt32(value.toInt())
+            else
+                imf.Operation.ConstInt64(value)
+        }
+        is AddExpressionContext -> {
+            val op = when (ADDSUB().text) {
+                "+" -> imf.BinaryOpType.ADD
+                else -> imf.BinaryOpType.SUB
+            }
+            imf.Operation.Binary(op, expression(0).toExpression(), expression(1).toExpression())
+        }
+        is MulExpressionContext -> {
+            val op = when (MULTDIV().text) {
+                "*" -> imf.BinaryOpType.MUL
+                "%" -> imf.BinaryOpType.REM
+                else -> imf.BinaryOpType.DIV
+            }
+            imf.Operation.Binary(op, expression(0).toExpression(), expression(1).toExpression())
+        }
+        is NamedValueExpressionContext -> {
+            imf.Operation.LoadLocalValue(NAME().text)
+        }
+        else -> throw UnsupportedOperationException()
     }
 }
 
+fun RootContext.toImfFunction(funContext: FunContext): imf.Function {
+    val funDecl = funContext.funDecl()!!
+    val funBody = funContext.funBody()!!
+    val funStatements = funBody.statements().toList { it.statements() }
+    val funParameters = funDecl.tuple()?.parameters().toList { it.parameters() }
+
+    val name = funDecl.NAME().text
+    val parameters = funParameters.map { toParameter(it.parameter()) }
+    val type = funDecl.type()?.toImfType()
+
+    val funcs = funStatements
+        .mapNotNull { it.let() }
+        .map { imf.Function(it.NAME().text, emptyList(), expression = it.expression().toExpression()) } +
+        funStatements
+        .mapNotNull { it.`fun`() }
+        .map { toImfFunction(it) }
+
+    if (funcs.any { it.parameters.isNotEmpty() })
+        throw IllegalArgumentException("Nested function with parameters not supported yet")
+    if (funcs.map { it.name }.toSet().count() != funcs.count())
+        throw IllegalArgumentException("Duplicate locals defined")
+
+    val expression = funBody.expression().toExpression()
+
+    return imf.Function(name, parameters, type, locals = funcs, expression = expression)
+}
+
+
 fun RootContext.toImf(): imf.Imf {
+    val declarations = declarations()
+        .toList { it.declarations() }
     return imf.Imf(
-        declarations()
-            .flatten { it.declarations() }
-            .map { it.`fun`() }
-            .filterNotNull()
+        functions = declarations
+            .mapNotNull { it.`fun`() }
             .map { toImfFunction(it) }
     )
 }
@@ -203,7 +146,7 @@ fun RootContext.toImf(): imf.Imf {
 
 
 
-fun imf.Structure.createStruct(): String {
+fun imf.Structure.createCStruct(): String {
     TODO("Not done yet")
 }
 
@@ -211,45 +154,60 @@ fun imf.Function.toParameter(): String {
     TODO()
 }
 
-fun imf.Operation.generateCode(): String {
-    val type = type ?: throw IllegalArgumentException()
+fun imf.Operation.toCExpression(): String {
     return when (this) {
-        is imf.Operation.LoadIntegerConstant ->
-            "    ${type.cname} $cname = $value;\n"
-        is imf.Operation.Add ->
-            "    ${type.cname} $cname = $left + $right;\n"
-        is imf.Operation.PromoteType ->
-            "    ${type.cname} $cname = (${type.cname})$input;\n"
-        else -> TODO()
+        is imf.Operation.ConstInt32 -> "((int32_t)$value)";
+        is imf.Operation.ConstInt64 -> "((int64_t)${value}L)";
+        is imf.Operation.ConstFloat32 -> "((float)${value}F)";
+        is imf.Operation.ConstFloat64 -> "((double)$value)";
+        is imf.Operation.Binary -> {
+            val infixOperator = when (op) {
+                imf.BinaryOpType.ADD -> "+"
+                imf.BinaryOpType.SUB -> "-"
+                imf.BinaryOpType.MUL -> "*"
+                imf.BinaryOpType.DIV -> "/"
+                imf.BinaryOpType.REM -> "%"
+            }
+            "(${left.toCExpression()}$infixOperator${right.toCExpression()})"
+        }
+        is imf.Operation.CastPrimitive -> {
+            when (type) {
+                imf.Primitive.INT32 -> "((int32_t)${input.toCExpression()})"
+                imf.Primitive.INT64 -> "((int64_t)${input.toCExpression()})"
+                imf.Primitive.FLOAT32 -> "((float)${input.toCExpression()})"
+                imf.Primitive.FLOAT64 -> "((double)${input.toCExpression()})"
+            }
+        }
+        is imf.Operation.LoadLocalValue -> name
     }
 }
 
-fun imf.Function.createFunction(): String {
+fun imf.Function.createCFunction(): String {
     val functionName = cname ?: throw IllegalArgumentException("Function has no cname")
     val returnType = type?.cname ?: throw IllegalArgumentException("Return type unknown")
-    if (returnType != operations.last().type?.cname) throw IllegalArgumentException("Return type mismatch")
+    if (returnType != expression?.type?.cname) throw IllegalArgumentException("Return type mismatch")
 
     val parameters = parameters.joinToString(", ") { it.toParameter() }
-    val resultReg = operations.last().cname
-    val operations = operations.joinToString("") { it.generateCode() }
+    val locals = locals.joinToString("") { "    ${it.type?.cname} ${it.cname} = ${it.expression?.toCExpression()};" }
 
     return "static $returnType $functionName($parameters)\n" +
-            "{\n" + operations +
-            "    return ${resultReg};\n" +
+            "{\n" + locals +
+            "    return ${expression.toCExpression()};\n" +
             "}\n"
 }
 
 fun readResource(name: String): String {
-    return Type::class.java.getResource("/${name}").readText()
+    // return Type::class.java.getResource("/${name}").readText()
+    return ""
 }
 
 fun imf.Imf.generateCode(): String {
     val head = readResource("head.c")
     val tail = readResource("tail.c")
 
-    val structs = structures.map { it.createStruct() }
+    val structs = structures.map { it.createCStruct() }
     val forwardStructs = structs.map { it.split('\n')[0] + ';' }
-    val funcs = functions.map { it.createFunction() }
+    val funcs = functions.map { it.createCFunction() }
     val forwardFuncs = funcs.map { it.split('\n')[0] + ';' }
 
     val contents = (listOf(head) + forwardStructs + structs + forwardFuncs + funcs + tail).joinToString("\n")

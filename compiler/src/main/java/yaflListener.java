@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/my/yaflc/src/yafl.g4 by ANTLR 4.9.1
+// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.1
 import org.antlr.v4.runtime.tree.ParseTreeListener;
 
 /**
@@ -169,6 +169,18 @@ public interface yaflListener extends ParseTreeListener {
 	 */
 	void exitDotExpression(yaflParser.DotExpressionContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code namedValueExpression}
+	 * labeled alternative in {@link yaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterNamedValueExpression(yaflParser.NamedValueExpressionContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code namedValueExpression}
+	 * labeled alternative in {@link yaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitNamedValueExpression(yaflParser.NamedValueExpressionContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code addExpression}
 	 * labeled alternative in {@link yaflParser#expression}.
 	 * @param ctx the parse tree
@@ -180,18 +192,6 @@ public interface yaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitAddExpression(yaflParser.AddExpressionContext ctx);
-	/**
-	 * Enter a parse tree produced by the {@code namedValue}
-	 * labeled alternative in {@link yaflParser#expression}.
-	 * @param ctx the parse tree
-	 */
-	void enterNamedValue(yaflParser.NamedValueContext ctx);
-	/**
-	 * Exit a parse tree produced by the {@code namedValue}
-	 * labeled alternative in {@link yaflParser#expression}.
-	 * @param ctx the parse tree
-	 */
-	void exitNamedValue(yaflParser.NamedValueContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code ifExpression}
 	 * labeled alternative in {@link yaflParser#expression}.

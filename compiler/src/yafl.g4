@@ -21,10 +21,9 @@ DOT         : '.' ;
 
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z_0-9]*) ;
 WS          : [ \t\r\n] -> skip ;
-COMMENT     : '#' .* '\n' -> skip ;
+COMMENT     : '#' .*? '\n' -> skip ;
 
 INTEGER     : [+-]?([1-9][0-9]*)|('0'([bB][0-1]+)|([xX][0-9]+)|([0-7]+)) ;
-
 
 
 parameter   : NAME ( COLON type )? ( EQUALS expression )? ;
@@ -53,7 +52,7 @@ expression  : expression DOT NAME                   # dotExpression
             | OBRACKET codeBlock CBRACKET           # parenthesisedExpression
             | expression ( OBRACKET namedParams CBRACKET ) # invokeExpression
             | INTEGER                               # integerExpression
-            | NAME                                  # namedValue
+            | NAME                                  # namedValueExpression
             ;
 
 codeBlock   : statements? expression ;
