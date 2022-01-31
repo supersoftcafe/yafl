@@ -1,0 +1,58 @@
+# Concepts
+#    Tuples
+#    Parameters/results are tuples
+#    Concatenating tuples
+#    Piping results
+
+
+# This is a tuple of two integers
+val t = (6,7)
+
+# So is this. Notice the excess comma, that's just fine.
+val t = (6,7,)
+
+# This is an integer, but it is also a tuple if itself
+val t = 6
+
+# So is this, thus tuple syntax and brackets for expression precedence are compatible
+val t = (6)
+
+# Appending tuples
+val t = (t1, t2)
+
+# Tuple of tuples, if you really must do it
+val t = ((t1), (t2))
+
+# Empty tuple...
+val t = ()
+
+# You can pass a tuple as parameters
+val twoInts = (6, 7)
+addTwoInts twoInts
+
+# Therefore parameters are just tuples
+addTwoInts (6, 7)
+
+# And a single value being the tuple of itself, can also be a parameter
+negate 7
+
+# Dot means apply left values as first parameters. The parameters tuple is append to the left tuple.
+(6, 7).addTwoInts
+
+# Tuples can have named fields
+val t = (left: 6, right: 7)
+
+# Parameters can be passed by name
+addTwoInts (left: 6, right: 7)
+
+# The left tuple can also have named values
+(left: 6).addTwoInts (right: 7)
+
+# Name conflicts result in compiler error
+(left: 6, right: 7).addTwoInts (right: 8)
+ERROR
+
+
+
+
+

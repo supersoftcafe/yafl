@@ -1,0 +1,4 @@
+
+fun getNumber:System.Int32 = 2
+
+fun main:System.Int32 = getNumber

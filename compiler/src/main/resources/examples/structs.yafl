@@ -1,0 +1,4 @@
+
+# Struct, as a definition of a non-heap managed type, is explicit in yafl.
+# There is no inheritance with structs.
+

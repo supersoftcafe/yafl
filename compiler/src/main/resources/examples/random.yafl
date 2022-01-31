@@ -1,0 +1,12 @@
+
+
+
+# Random numbers don't exist. This is an immutable pseudo random number generator.
+struct Random(private val seed: Long = 0)
+    def next:Random = Random( (seed * 0x5DEECE66DL + 0xBL) & ((1L << 48) - 1) )
+
+    def nextInt = (next.seed.asInt >>> 1, next)
+    def nextLong = (asLong(next.seed << 31) | asLong(next.next.seed & 0x7fffffff), next.next)
+    def nextFloat = (asFloat(next.seed >>> 24) / asFloat(1 << 24), next)
+    def nextDouble = (asDouble(next.seed) / asDouble(1 << 48), next)
+

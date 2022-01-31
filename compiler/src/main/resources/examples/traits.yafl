@@ -1,0 +1,30 @@
+
+# A trait defines a set of capabilities for a given type and is used
+# to create constraints on generics. A trait is not a type and cannot
+# be instantiated.
+
+trait Ordered<X>
+    fun `<` (l:X, r:X): Bool
+
+trait Functor<A,F<A>>
+    fun map<B>(f:F<A>, x:(A)->B):F<B>
+
+trait Monad<A,M<A>> : Functor<M<A>>
+    fun pure(a:A):M<A>
+    fun flatMap<B>(m:M<A>, x:(A)->M<B>):M<B>
+
+trait Monoid<M>
+    fun unit():M
+    fun op(l:M,r:M):M
+
+
+
+implement Functor<Optional<*>>
+    fun map(f, x) = x.map(f)
+
+implement Functor<Optional<*>>
+    fun map(f, x) = x.map(f)
+
+fun myOddFunction<X, Y>(x: X, y: Y) where SomethingOdd<X, Y>, AndWhatever<X, Y>
+    return x.compose(y).toString()
+

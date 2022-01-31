@@ -1,0 +1,6 @@
+# We can find out useful things about types, which is
+# especially useful with generics.
+
+# Get all of the field names
+fun allFieldNames<Type>():Iterable<String>
+    return Type.fields.map(x => x.name)

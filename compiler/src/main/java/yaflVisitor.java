@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.1
+// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.2
 import org.antlr.v4.runtime.tree.ParseTreeVisitor;
 
 /**
@@ -10,41 +10,29 @@ import org.antlr.v4.runtime.tree.ParseTreeVisitor;
  */
 public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#parameter}.
+	 * Visit a parse tree produced by {@link yaflParser#simpleTypeName}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitParameter(yaflParser.ParameterContext ctx);
+	T visitSimpleTypeName(yaflParser.SimpleTypeNameContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#parameters}.
+	 * Visit a parse tree produced by {@link yaflParser#genericParams}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitParameters(yaflParser.ParametersContext ctx);
+	T visitGenericParams(yaflParser.GenericParamsContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#types}.
+	 * Visit a parse tree produced by {@link yaflParser#namedType}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitTypes(yaflParser.TypesContext ctx);
+	T visitNamedType(yaflParser.NamedTypeContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#named}.
+	 * Visit a parse tree produced by {@link yaflParser#tupleType}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitNamed(yaflParser.NamedContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link yaflParser#tuple}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitTuple(yaflParser.TupleContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link yaflParser#function}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitFunction(yaflParser.FunctionContext ctx);
+	T visitTupleType(yaflParser.TupleTypeContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link yaflParser#type}.
 	 * @param ctx the parse tree
@@ -52,23 +40,29 @@ public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitType(yaflParser.TypeContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#funDecl}.
+	 * Visit a parse tree produced by {@link yaflParser#parameter}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitFunDecl(yaflParser.FunDeclContext ctx);
+	T visitParameter(yaflParser.ParameterContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#funBody}.
+	 * Visit a parse tree produced by {@link yaflParser#whereExpr}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitFunBody(yaflParser.FunBodyContext ctx);
+	T visitWhereExpr(yaflParser.WhereExprContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#let}.
+	 * Visit a parse tree produced by {@link yaflParser#alias}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitLet(yaflParser.LetContext ctx);
+	T visitAlias(yaflParser.AliasContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link yaflParser#var}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitVar(yaflParser.VarContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link yaflParser#fun}.
 	 * @param ctx the parse tree
@@ -82,23 +76,18 @@ public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitData(yaflParser.DataContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link yaflParser#clazz}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitClazz(yaflParser.ClazzContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link yaflParser#clazzBody}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitClazzBody(yaflParser.ClazzBodyContext ctx);
-	/**
 	 * Visit a parse tree produced by {@link yaflParser#namedParams}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	T visitNamedParams(yaflParser.NamedParamsContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code compareExpression}
+	 * labeled alternative in {@link yaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitCompareExpression(yaflParser.CompareExpressionContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code dotExpression}
 	 * labeled alternative in {@link yaflParser#expression}.
@@ -106,6 +95,13 @@ public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitDotExpression(yaflParser.DotExpressionContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code stringExpression}
+	 * labeled alternative in {@link yaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitStringExpression(yaflParser.StringExpressionContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code namedValueExpression}
 	 * labeled alternative in {@link yaflParser#expression}.
@@ -173,6 +169,18 @@ public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitDeclarations(yaflParser.DeclarationsContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link yaflParser#module}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitModule(yaflParser.ModuleContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link yaflParser#imports}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitImports(yaflParser.ImportsContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link yaflParser#root}.
 	 * @param ctx the parse tree

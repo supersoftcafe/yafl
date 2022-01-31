@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.1
+// Generated from /Users/mbrown/Projects/my/yafl/compiler/src/yafl.g4 by ANTLR 4.9.2
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ErrorNode;
@@ -15,73 +15,49 @@ public class yaflBaseListener implements yaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterParameter(yaflParser.ParameterContext ctx) { }
+	@Override public void enterSimpleTypeName(yaflParser.SimpleTypeNameContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitParameter(yaflParser.ParameterContext ctx) { }
+	@Override public void exitSimpleTypeName(yaflParser.SimpleTypeNameContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterParameters(yaflParser.ParametersContext ctx) { }
+	@Override public void enterGenericParams(yaflParser.GenericParamsContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitParameters(yaflParser.ParametersContext ctx) { }
+	@Override public void exitGenericParams(yaflParser.GenericParamsContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterTypes(yaflParser.TypesContext ctx) { }
+	@Override public void enterNamedType(yaflParser.NamedTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitTypes(yaflParser.TypesContext ctx) { }
+	@Override public void exitNamedType(yaflParser.NamedTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterNamed(yaflParser.NamedContext ctx) { }
+	@Override public void enterTupleType(yaflParser.TupleTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitNamed(yaflParser.NamedContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterTuple(yaflParser.TupleContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitTuple(yaflParser.TupleContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterFunction(yaflParser.FunctionContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitFunction(yaflParser.FunctionContext ctx) { }
+	@Override public void exitTupleType(yaflParser.TupleTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -99,37 +75,49 @@ public class yaflBaseListener implements yaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterFunDecl(yaflParser.FunDeclContext ctx) { }
+	@Override public void enterParameter(yaflParser.ParameterContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitFunDecl(yaflParser.FunDeclContext ctx) { }
+	@Override public void exitParameter(yaflParser.ParameterContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterFunBody(yaflParser.FunBodyContext ctx) { }
+	@Override public void enterWhereExpr(yaflParser.WhereExprContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitFunBody(yaflParser.FunBodyContext ctx) { }
+	@Override public void exitWhereExpr(yaflParser.WhereExprContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterLet(yaflParser.LetContext ctx) { }
+	@Override public void enterAlias(yaflParser.AliasContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitLet(yaflParser.LetContext ctx) { }
+	@Override public void exitAlias(yaflParser.AliasContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterVar(yaflParser.VarContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitVar(yaflParser.VarContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -159,30 +147,6 @@ public class yaflBaseListener implements yaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterClazz(yaflParser.ClazzContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitClazz(yaflParser.ClazzContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterClazzBody(yaflParser.ClazzBodyContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitClazzBody(yaflParser.ClazzBodyContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
 	@Override public void enterNamedParams(yaflParser.NamedParamsContext ctx) { }
 	/**
 	 * {@inheritDoc}
@@ -195,6 +159,18 @@ public class yaflBaseListener implements yaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
+	@Override public void enterCompareExpression(yaflParser.CompareExpressionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitCompareExpression(yaflParser.CompareExpressionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
 	@Override public void enterDotExpression(yaflParser.DotExpressionContext ctx) { }
 	/**
 	 * {@inheritDoc}
@@ -202,6 +178,18 @@ public class yaflBaseListener implements yaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitDotExpression(yaflParser.DotExpressionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterStringExpression(yaflParser.StringExpressionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitStringExpression(yaflParser.StringExpressionContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -322,6 +310,30 @@ public class yaflBaseListener implements yaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitDeclarations(yaflParser.DeclarationsContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterModule(yaflParser.ModuleContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitModule(yaflParser.ModuleContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterImports(yaflParser.ImportsContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitImports(yaflParser.ImportsContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *

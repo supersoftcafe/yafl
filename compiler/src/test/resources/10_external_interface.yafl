@@ -1,0 +1,21 @@
+
+# A class can be bare
+class Fred
+    val number = 28
+    fun getNumber = number
+
+# A class can implement an interface
+class Fred implements List
+    val number = 28
+
+# An interface can be added later to a class
+implement List for Fred
+    fun getNumber = 28
+
+# Types cannot implement interfaces
+struct Complex
+    val x: Float
+    val y: Float
+
+fun `+` (a: Complex, b: Complex): Complex
+    return Complex(a.x + b.x, a.y + b.y)

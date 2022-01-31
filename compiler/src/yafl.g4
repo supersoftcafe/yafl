@@ -1,63 +1,75 @@
 grammar yafl;
 
-LET         : 'let';
-FUN         : 'fun';
+
+// Add ';' as optional separator, just for beauty on one liners.
+//    Between compount statements
+//    Between when cases      when x; 0 -> 'a'; _ -> 'b'
+// Add '{' '}' as optional block markers, where nesting causes ambiguity
+
+
+ALIAS       : 'alias';
+VAR         : 'var';
+FUN         : 'fun' | 'let';
 DATA        : 'data';
 CLASS       : 'class';
+
 IF          : 'if';
 ELSE        : 'else';
 RETURN      : 'return';
 OBJECT      : 'object';
+MODULE      : 'module';
+IMPORT      : 'import';
+WHERE       : 'where';
 
 MULTDIV     : '*' | '/' | '%';
 ADDSUB      : '+' | '-';
 
-OBRACKET    : '(' ;
-CBRACKET    : ')' ;
 COMMA       : ',' ;
 COLON       : ':' ;
-EQUALS      : '=' ;
 DOT         : '.' ;
+
 
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z_0-9]*) ;
 WS          : [ \t\r\n] -> skip ;
 COMMENT     : '#' .*? '\n' -> skip ;
 
-INTEGER     : [+-]?([1-9][0-9]*)|('0'([bB][0-1]+)|([xX][0-9]+)|([0-7]+)) ;
+INTEGER     : '-'?('0b'|'0o'|'0x')?[0-9a-fA-F_]([sSiIlL]|'i8'|'i16'|'i32'|'i64')? ;
+STRING      : '"' .*? '"' ;
 
+simpleTypeName : NAME ( DOT NAME )* ;
+genericParams : '<' namedType ( COMMA namedType )* '>' ;
+namedType   : simpleTypeName genericParams? ;
+tupleType   : '(' parameter ( COMMA parameter )* ')' ;
+type        : namedType | tupleType ;
 
-parameter   : NAME ( COLON type )? ( EQUALS expression )? ;
-parameters  : parameter ( COMMA parameters )? ;
-types       : type ( COMMA types )? ;
+parameter   : NAME ( COLON type )? ( '=' expression )? ;
+whereExpr   : WHERE expression ;
 
-named       : NAME ( DOT named )? ;
-tuple       : OBRACKET parameters CBRACKET ;
-function    : tuple COLON type ;
-type        : function | tuple | named ;
+alias       : ALIAS NAME namedType COLON type ;
+var         : VAR NAME ( COLON type ) | ( '=' expression ) ;
+fun         : FUN NAME tupleType? ( COLON type )? ( ( '=' expression whereExpr? ) | ( whereExpr? statements* RETURN expression ) ) ;
+data        : DATA NAME tupleType ;
 
-funDecl     : FUN NAME tuple? ( COLON type )? ;
-funBody     : ( ( EQUALS expression ) | ( statements? RETURN expression ) ) ;
-
-let         : LET NAME EQUALS expression ;
-fun         : funDecl funBody ;
-data        : DATA NAME OBRACKET parameters CBRACKET ;
-clazz       : CLASS NAME clazzBody ;
-clazzBody   : funDecl clazzBody? ;
-
-namedParams : ( NAME EQUALS )? expression ( COMMA namedParams )? ;
+namedParams : ( NAME '=' )? expression ( COMMA namedParams )? ;
 expression  : expression DOT NAME                   # dotExpression
+            | expression ( '(' namedParams ')' )    # invokeExpression
             | expression MULTDIV expression         # mulExpression
             | expression ADDSUB  expression         # addExpression
+            | expression ( '<' | '>' | '=' ) expression # compareExpression
             | IF expression codeBlock ELSE codeBlock# ifExpression
-            | OBRACKET codeBlock CBRACKET           # parenthesisedExpression
-            | expression ( OBRACKET namedParams CBRACKET ) # invokeExpression
+            | '(' codeBlock ')'                     # parenthesisedExpression
             | INTEGER                               # integerExpression
+            | STRING                                # stringExpression
             | NAME                                  # namedValueExpression
             ;
 
-codeBlock   : statements? expression ;
-statements  : (let | fun) statements? ;
-declarations: (let | fun | data | clazz ) declarations? ;
+codeBlock   : statements* expression ;
+statements  : var | fun ;
+declarations: var | fun | data | alias ;
 
-root        : declarations? EOF ;
+module      : MODULE simpleTypeName ;
+imports     : IMPORT simpleTypeName ;
+root        : module? imports* declarations* EOF ;
+
+
 
