@@ -50,9 +50,9 @@ var         : VAR NAME ( COLON type ) | ( '=' expression ) ;
 fun         : FUN NAME tupleType? ( COLON type )? ( ( '=' expression whereExpr? ) | ( whereExpr? statements* RETURN expression ) ) ;
 data        : DATA NAME tupleType ;
 
-namedParams : ( NAME '=' )? expression ( COMMA namedParams )? ;
+namedParams : COMMA? ( NAME '=' )? expression ;
 expression  : expression DOT NAME                   # dotExpression
-            | expression ( '(' namedParams ')' )    # invokeExpression
+            | expression ( '(' namedParams* ')' )   # invokeExpression
             | expression MULTDIV expression         # mulExpression
             | expression ADDSUB  expression         # addExpression
             | expression ( '<' | '>' | '=' ) expression # compareExpression
@@ -69,7 +69,9 @@ declarations: var | fun | data | alias ;
 
 module      : MODULE simpleTypeName ;
 imports     : IMPORT simpleTypeName ;
-root        : module? imports* declarations* EOF ;
+modules     : module imports* declarations* ;
+
+root        : modules* EOF ;
 
 
 

@@ -1,0 +1,7 @@
+
+module Main
+fun main:System.Int32 = Other.getNumber
+
+module Other
+fun getNumber:System.Int32 = 2
+

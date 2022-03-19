@@ -22,7 +22,19 @@ sealed class Op() {
     open val result: Field? = null
     open val inputs: List<String> = listOf()
 
+
+    // copy rtarget, rsource
+    // sload rtarget, rsource->dfsdf
+    // sstore rtarget->dstsjt, rsource
+    // aload rtarget, rsource->dfsdf[rsource2]
+    // astore rtarget->dfsdf[rtarget2], rsource
+
     data class LoadC(override val result: Field, val value: Any) : Op()
+
+    data class AddressOfFunction(override val result: Field, val name: String) : Op()
+
+    data class Call(override val result: Field, val funRef: String, val args: List<String>) : Op() {
+        override val inputs get() = args + funRef }
 
     data class BinRC(override val result: Field, val arg1: String, val binOp: BinOp, val arg2: Any) : Op() {
         override val inputs get() = listOf(arg1) }

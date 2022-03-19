@@ -205,5 +205,12 @@ public class yaflBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements y
 	 * <p>The default implementation returns the result of calling
 	 * {@link #visitChildren} on {@code ctx}.</p>
 	 */
+	@Override public T visitModules(yaflParser.ModulesContext ctx) { return visitChildren(ctx); }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation returns the result of calling
+	 * {@link #visitChildren} on {@code ctx}.</p>
+	 */
 	@Override public T visitRoot(yaflParser.RootContext ctx) { return visitChildren(ctx); }
 }

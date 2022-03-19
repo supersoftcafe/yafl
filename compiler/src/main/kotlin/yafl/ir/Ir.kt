@@ -21,6 +21,10 @@ fun astExpressionToIrCodeBlocks(expression: yafl.ast.Expression, target: String)
             Op.LoadC(Field(target, Type.Int32), expression.value),
             Op.Jump(target)
         )))
+        is yafl.ast.Expression.Memory.LoadGlobal -> listOf(CodeBlock(target + '0', listOf(
+            ,
+            Op.Jump(target)
+        )))
         else -> throw IllegalArgumentException()
     }
 }
@@ -30,7 +34,7 @@ fun astFunToIrFun(function: yafl.ast.Declaration.Fun): Function {
         throw IllegalArgumentException()
     val resultTarget = "rslt"
     return Function(
-        function.name,
+        function.module.replace('.', '_') + '_' + function.name,
         function.params.fields.map { Field(it.name, astTypeToIrType(it.type!!)) },
         astTypeToIrType(function.type!!),
         astExpressionToIrCodeBlocks(function.expression!!, resultTarget) + listOf(CodeBlock(resultTarget, listOf(
@@ -40,11 +44,8 @@ fun astFunToIrFun(function: yafl.ast.Declaration.Fun): Function {
 }
 
 fun astToIr(ast: yafl.ast.AstProject) = Program(
-    ast.files.flatMap { file ->
-        val module = file.module
-        val imports = file.imports
-
-        file.declarations.map { declaration ->
+    ast.modules.flatMap { module ->
+        module.value.map { declaration ->
             when (declaration) {
                 is yafl.ast.Declaration.Fun -> astFunToIrFun(declaration)
                 else -> throw IllegalArgumentException()

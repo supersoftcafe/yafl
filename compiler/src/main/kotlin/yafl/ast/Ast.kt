@@ -1,131 +1,88 @@
 package yafl.ast
 
-import java.math.BigDecimal
-import java.math.BigInteger
+data class AstProject(var modules: MutableMap<String, AstModule>)
+data class DeclareField(var name: String, var type: Type? = null)
+data class InvokeParameter(var name: String?, var value: Expression)
 
-data class AstProject(val files: List<File>)
-data class File(val module: String?, val imports: List<String>, val declarations: List<Declaration>)
-data class Field(val name: String, val type: Type?)
+data class AstModule(
+    var name: String,
+    var imports: MutableList<String> = mutableListOf(),
+    var declarations: MutableMap<String, Declaration> = mutableMapOf()
+)
 
 sealed class Declaration {
-    abstract val name: String
+    abstract var name: String
 
-    data class Var(override val name: String, val type: Type, val expression: Expression) : Declaration()
-
-    data class Fun(
-        override val name: String,
-        val params: Type.Tuple,
-        val type: Type?,
-        val declarations: List<Declaration>,
-        val expression: Expression?
+    data class Var(
+        override var name: String,
+        var expression: Expression,
+        var type: Type? = null
     ) : Declaration()
 
-    data class Object(override val name: String, val declarations: List<Declaration>) : Declaration()
-    data class Struct(override val name: String, val declarations: List<Declaration>) : Declaration()
+    data class Fun(
+        override var name: String,
+        var expression: Expression?,
+        var params: Type.Tuple,
+        var type: Type? = null
+    ) : Declaration()
 
-    data class Trait(override val name: String, val declarations: List<Declaration>) : Declaration()
-    data class Implement(override val name: String, val declarations: List<Declaration>) : Declaration()
+    data class Struct(
+        override var name: String,
+        var fields: MutableList<DeclareField>
+    ) : Declaration()
 }
 
 sealed class Type {
-    data class Tuple(val fields: List<Field>) : Type()
-    data class Named(val name: String, val genericParams: List<Type>) : Type()
+    // Tuple fields always have a name, either implicit 'Field1' etc or explicit in code
+    data class Tuple(var fields: List<DeclareField>) : Type()
+    data class Named(var name: String, var genericParams: List<Type>) : Type()
 }
+
+
 
 sealed class Expression {
-    sealed class Number : Expression() {
-        data class Int8(val value: Byte) : Number()
-        data class Int16(val value: Short) : Number()
-        data class Int32(val value: Int) : Number()
-        data class Int64(val value: Long) : Number()
-        data class Float32(val value: Float) : Number()
-        data class Float64(val value: Double) : Number()
+    var type: Type? = null
+    var line: Int? = null
+    var file: String? = null
+    var declarations: MutableMap<String, Declaration>? = mutableMapOf()
+
+    sealed class Literal : Expression() {
+        data class Int8(var value: Byte) : Literal()
+        data class Int16(var value: Short) : Literal()
+        data class Int32(var value: Int) : Literal()
+        data class Int64(var value: Long) : Literal()
+        data class Float32(var value: Float) : Literal()
+        data class Float64(var value: Double) : Literal()
+        data class LString(var value: String) : Literal()
     }
     sealed class Operator : Expression() {
-        data class Plus(val left: Expression, val right: Expression) : Operator()
-        data class Divide(val left: Expression, val right: Expression) : Operator()
-        data class Multiple(val left: Expression, val right: Expression) : Operator()
-        data class Remainder(val left: Expression, val right: Expression) : Operator()
-        data class Minus(val left: Expression, val right: Expression) : Operator()
-        data class UnaryMinus(val value: Expression) : Operator()
+        data class NamedThing(var name: String) : Operator()
+        data class Dot(var left: Expression, var right: String) : Operator()
+        data class Plus(var left: Expression, var right: Expression) : Operator()
+        data class Divide(var left: Expression, var right: Expression) : Operator()
+        data class Multiply(var left: Expression, var right: Expression) : Operator()
+        data class Remainder(var left: Expression, var right: Expression) : Operator()
+        data class Minus(var left: Expression, var right: Expression) : Operator()
+        data class UnaryMinus(var value: Expression) : Operator()
+    }
+    sealed class Memory : Expression() {
+        data class Invoke(var reference: Reference, var parameters: List<InvokeParameter>, var mustTail: Boolean = false) : Control()
+        data class Load(var reference: Reference) : Memory()
+        data class Store(var reference: Reference, var expr: Expression) : Memory()
+    }
+    sealed class Control : Expression() {
+        data class If(var condition: Expression, var left: Expression, var right: Expression) : Control()
     }
 }
 
-
-private fun tupleTypeToAstTuple(tuple: yaflParser.TupleTypeContext) = Type.Tuple(
-    tuple.parameter().map { Field(it.NAME().text, it.type()?.let { typeToAstType(it) }) }
-)
-
-private fun typeToAstType(type: yaflParser.TypeContext): Type {
-    val namedType = type.namedType()
-    val tupleType = type.tupleType()
-
-    return if (namedType != null) {
-        if (namedType.genericParams() != null)
-            throw IllegalArgumentException("Generics not implemented yet")
-        Type.Named(namedType.simpleTypeName().text, listOf())
-    } else if (tupleType != null) {
-        throw IllegalArgumentException("Tuple not supported yet")
-    } else {
-        throw IllegalArgumentException("Unknown type from antlr")
-    }
+sealed class Reference {
+    data class Unknown(var name: String) : Reference()
+    data class Local(var name: String) : Reference()
+    data class Global(var name: String) : Reference()
+    data class Field(var left: Expression, var right: String) : Reference()
+    data class Array(var left: Expression, var right: Expression) : Reference()
 }
 
-private fun expressionToAstExpression(expression: yaflParser.ExpressionContext): Expression {
-    return when (expression) {
-        is yaflParser.IntegerExpressionContext -> {
-            val fullString = expression.text.replace("_", "")
-            val withoutSign = fullString.removePrefix("-")
-            val indexOfI = withoutSign.lastIndexOfAny(charArrayOf('s', 'S', 'i', 'I', 'l', 'L'))
-            val withoutType = if (indexOfI >= 0) withoutSign.take(indexOfI) else withoutSign
-            val typeSuffix = if (indexOfI >= 0) withoutSign.drop(indexOfI) else "i"
-
-            val number = when (withoutType.take(2)) {
-                "0x" -> BigInteger(withoutType.drop(2), 16)
-                "0o" -> BigInteger(withoutType.drop(2), 8)
-                "0b" -> BigInteger(withoutType.drop(2), 2)
-                else -> BigInteger(withoutType        , 10)
-            }.let { if (fullString.first() == '-') it.inv() else it }
-
-            when (typeSuffix) {
-                "i8" -> Expression.Number.Int8(number.toByte())
-                "s", "S", "i16" -> Expression.Number.Int16(number.toShort())
-                "i", "I", "i32" -> Expression.Number.Int32(number.toInt())
-                "l", "L", "i64" -> Expression.Number.Int64(number.toLong())
-                else -> throw IllegalArgumentException()
-            }
-        }
-        else -> throw IllegalArgumentException()
-    }
-}
-
-private fun funToAstFun(function: yaflParser.FunContext) = Declaration.Fun(
-    function.NAME().text,
-    function.tupleType()?.let { tupleTypeToAstTuple(it) } ?: Type.Tuple(listOf()),
-    function.type()?.let { typeToAstType(it) },
-    function.statements().map { statementToAstDeclaration(it) },
-    expressionToAstExpression(function.expression())
-)
-
-private fun statementToAstDeclaration(statement: yaflParser.StatementsContext): Declaration {
-    return when {
-        statement.`fun`() != null -> funToAstFun(statement.`fun`())
-        else -> throw IllegalArgumentException()
-    }
-}
-
-private fun declarationToAstDeclaration(declaration: yaflParser.DeclarationsContext): Declaration {
-    return when {
-        declaration.`fun`() != null -> funToAstFun(declaration.`fun`())
-        else -> throw IllegalArgumentException()
-    }
-}
-
-fun parseTreeToAstFile(root: yaflParser.RootContext) = File(
-    root.module()?.simpleTypeName()?.text,
-    root.imports().map { it.simpleTypeName().text },
-    root.declarations().map { declarationToAstDeclaration(it) }
-)
 
 
 

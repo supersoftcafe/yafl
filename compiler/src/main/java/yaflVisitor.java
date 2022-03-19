@@ -182,6 +182,12 @@ public interface yaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitImports(yaflParser.ImportsContext ctx);
 	/**
+	 * Visit a parse tree produced by {@link yaflParser#modules}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitModules(yaflParser.ModulesContext ctx);
+	/**
 	 * Visit a parse tree produced by {@link yaflParser#root}.
 	 * @param ctx the parse tree
 	 * @return the visitor result

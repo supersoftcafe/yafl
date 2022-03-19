@@ -339,6 +339,18 @@ public class yaflBaseListener implements yaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
+	@Override public void enterModules(yaflParser.ModulesContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitModules(yaflParser.ModulesContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
 	@Override public void enterRoot(yaflParser.RootContext ctx) { }
 	/**
 	 * {@inheritDoc}

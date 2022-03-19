@@ -2,9 +2,6 @@
 import org.antlr.v4.runtime.CharStreams
 import org.antlr.v4.runtime.CommonTokenStream
 import org.junit.Test
-import yafl.ast.AstProject
-import yafl.ast.parseTreeToAstFile
-import yafl.ir.astToIr
 
 class ParserGeneratorTest {
 
@@ -16,12 +13,12 @@ class ParserGeneratorTest {
         val lexer = yaflLexer(CharStreams.fromString(text))
         val parser = yaflParser(CommonTokenStream(lexer))
         val root = parser.root()
-        val astFile = parseTreeToAstFile(root)
-        val project = AstProject(listOf(astFile))
-        val ir = astToIr(project)
+
+        val project = yafl.ast.parseTreesToAstProject(listOf(root))
+        val ir = yafl.ir.astToIr(project)
         val c = yafl.ir.irToC(ir)
 
-        println(astFile)
+        println(project)
         println(ir)
         println(c)
     }

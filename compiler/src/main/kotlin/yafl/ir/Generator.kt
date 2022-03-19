@@ -82,12 +82,14 @@ private fun BinOp.toC(): String {
     }
 }
 
-private fun Op.toC(phiTargets: List<Pair<String, List<String>>>): String {
+private fun Op.toC(variables: Map<String, Type>, phiTargets: List<Pair<String, List<String>>>): String {
     fun toTarget(name: String): String {
         val phiNames = phiTargets.filter { name in it.second }.joinToString("") { "${it.first} = " }
         return "$phiNames$name"
     }
     return when (this) {
+        is Op.AddressOfFunction -> "    ${toTarget(result.name)} = &$name;\n"
+        is Op.Call  -> "    ${toTarget(result.name)} = ((${result.type.toUniqueName()}(*)(${args.map { variables.getValue(it) }.joinToString { it.toUniqueName() }})$funRef)(${args.joinToString()});\n"
         is Op.LoadC -> "    ${toTarget(result.name)} = $value;\n"
         is Op.BinRC -> "    ${toTarget(result.name)} = $arg1 ${binOp.toC()} $arg2;\n"
         is Op.CmpRC -> "    ${toTarget(result.name)} = $arg1 ${cmpOp.toC()} $arg2;\n"
@@ -98,15 +100,16 @@ private fun Op.toC(phiTargets: List<Pair<String, List<String>>>): String {
     }
 }
 
-private fun CodeBlock.toC(phiTargets: List<Pair<String, List<String>>>): String {
-    return "$name:;\n${operations.joinToString("") { it.toC(phiTargets) }}"
+private fun CodeBlock.toC(variables: Map<String, Type>, phiTargets: List<Pair<String, List<String>>>): String {
+    return "$name:;\n${operations.joinToString("") { it.toC(variables, phiTargets) }}"
 }
 
 private fun Function.toDeclaration(): String {
     val methodSig = "${result.toUniqueName()} $name(${parameters.joinToString(", ") { "${it.type.toUniqueName()} ${it.name}" }})"
-    val forwardDecls = blocks.flatMap { it.operations.mapNotNull { it.result } }.joinToString("") { "    ${it.type.toUniqueName()} ${it.name};\n" }
+    val variables = blocks.flatMap { it.operations.mapNotNull { it.result } }.associateBy({it.name}, {it.type})
+    val forwardDecls = variables.entries.joinToString("") { "    ${it.value.toUniqueName()} ${it.key};\n" }
     val phiTargets = blocks.flatMap { it.operations.filterIsInstance<Op.Phi>().map { it.result.name to it.sources.map { it.arg }}}
-    val bodyOfCode = blocks.joinToString("") { it.toC(phiTargets) }
+    val bodyOfCode = blocks.joinToString("") { it.toC(variables, phiTargets) }
     return "$methodSig {\n$forwardDecls$bodyOfCode}\n"
 }
 
