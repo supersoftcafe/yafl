@@ -11,11 +11,17 @@
 #include <memory>
 
 class GrammarParser {
+private:
+    ast::Module* findOrCreateModule(std::vector<std::string> const & name);
+    ParseState<bool> parseModule(Tokens tk);
+
 public:
+    ast::Ast ast;
+
     explicit GrammarParser();
     ~GrammarParser();
 
-    ParseState<std::shared_ptr<ast::Ast>> parse(Tokens);
+    ParseState<bool> parseFile(Tokens);
 };
 
 

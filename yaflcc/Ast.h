@@ -7,6 +7,7 @@
 
 
 #include <memory>
+#include <utility>
 #include <variant>
 #include <string>
 #include <vector>
@@ -14,74 +15,72 @@
 
 
 namespace ast {
-    struct Type {
-        std::string name;
-    };
+    using namespace std;
 
-    struct TypeDeclaration {
-        std::vector<std::string> qualifiedName;
-    };
 
+    struct Module;
     struct Visitor;
+    struct Function;
+
+
+    struct TypeRef {
+        vector<string> names;
+    };
+
+    struct TypeDef {
+        bool internal;
+    };
+
     struct Expression {
         Expression() = default;
         virtual ~Expression();
 
         virtual void visit(Visitor&) = 0;
-        virtual std::shared_ptr<Expression> copy() = 0;
     };
 
-    struct Value : public Expression {
-        Value() = default;
-        ~Value() override;
+    struct LiteralValue : public Expression {
+        string value;
+        enum KIND { NUMBER, NAME, STRING } kind = NUMBER;
+
+        LiteralValue() = default;
+        ~LiteralValue() override;
 
         void visit(Visitor&) override;
-        std::shared_ptr<Expression> copy() override;
-        static std::shared_ptr<Value> create();
-
-        std::string value;
     };
 
     struct Declaration : public Expression {
+        unique_ptr<Function> definition;
+        unique_ptr<Expression>     next;
+
         Declaration() = default;
         ~Declaration() override;
 
         void visit(Visitor&) override;
-        std::shared_ptr<Expression> copy() override;
-        static std::shared_ptr<Declaration> create();
-
-        std::string name;
-        std::shared_ptr<Type> type;
-        std::shared_ptr<Expression> init, next;
     };
 
     struct Binary : public Expression {
+        enum KIND { ADD, SUB, MUL, DIV, REM } kind = ADD;
+        shared_ptr<Expression> left, right;
+
         Binary() = default;
         ~Binary() override;
 
         void visit(Visitor&) override;
-        std::shared_ptr<Expression> copy() override;
-        static std::shared_ptr<Binary> create();
-
-        enum KIND { ADD, SUB, MUL, DIV, REM } kind = ADD;
-        std::shared_ptr<Expression> left, right;
     };
 
     struct Bitwise : public Expression {
+        enum KIND { ROR, ROL, AND, XOR, OR } kind = ROR;
+        unique_ptr<Expression> left, right;
+
         Bitwise() = default;
         ~Bitwise() override;
 
         void visit(Visitor&) override;
-        std::shared_ptr<Expression> copy() override;
-        static std::shared_ptr<Bitwise> create();
-
-        enum KIND { ROR, ROL, AND, XOR, OR } kind = ROR;
-        std::shared_ptr<Expression> left, right;
     };
 
 
     struct Visitor {
-        virtual void onValue(Value*) = 0;
+        virtual void onValue(LiteralValue*) = 0;
         virtual void onDeclaration(Declaration*) = 0;
         virtual void onBinary(Binary*) = 0;
         virtual void onBitwise(Bitwise*) = 0;
@@ -89,17 +88,30 @@ namespace ast {
 
 
     struct Function {
-        std::string name;
-        std::shared_ptr<Type> result;
-        std::vector<std::pair<std::string, std::shared_ptr<Type>>> params;
-        std::shared_ptr<Expression> body;
+        string name;
+        TypeRef result;
+        unique_ptr<Expression> body;
+        vector<Function> params;
     };
 
 
+    // Imports and options that come after a module line in a given file
+    // that are used as scope for each of the declarations.
+    struct ScopeContext {
+        vector<Module*> imports;
+    };
+
+    struct Module {
+        string name;    // Root has empty string as name
+        map<string, unique_ptr<Module>>   modules;
+        map<string, unique_ptr<TypeDef>>  types;
+        map<string, unique_ptr<Function>> functions;
+
+        explicit Module(string name) : name(std::move(name)) { }
+    };
+
     struct Ast {
-        std::string name;
-        std::map<std::string, std::shared_ptr<Type>>     types;
-        std::map<std::string, std::shared_ptr<Function>> functions;
+        unique_ptr<Module> root;
     };
 };
 

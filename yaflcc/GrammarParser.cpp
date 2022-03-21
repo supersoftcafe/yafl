@@ -17,75 +17,112 @@ static ParseState<T> fail(Tokens tokens, char const * message) {
     return { };
 }
 
-static ParseState<string_view> parseModuleName(Tokens tk) {
-    auto r1 = getToken(tk, Token::MODULE); if (!r1) return { };
-    auto r2 = getToken(r1, Token::NAME  ); if (!r2) return { };
-    return { r2, r2.result()->text };
-}
-
-static ParseState<ast::TypeDeclaration> parseTypeDeclaration(Tokens tk) {
-    ast::TypeDeclaration td;
+static ParseState<vector<string>> parseDottyName(Tokens tk) {
+    std::vector<string> names;
 
     auto name = getToken(tk, Token::NAME); if (!name) return { };
-    td.qualifiedName.emplace_back(name.result()->text);
+    names.emplace_back(name.result()->text);
 
     for (;;) {
-        auto dot = getToken(name, Token::DOT); if (!dot) return { name, td };
+        auto dot = getToken(name, Token::DOT); if (!dot) return { name, std::move(names) };
         name = getToken(dot, Token::NAME); if (!name) return { };
-        td.qualifiedName.emplace_back(name.result()->text);
+        names.emplace_back(name.result()->text);
     }
 }
 
-static ParseState<shared_ptr<ast::Expression>> parseExpression(Tokens tk) {
-    auto number = getToken(tk, Token::NUMBER); if (!number) return { };
-
-    auto v = ast::Value::create();
-    v->value = number.result()->text;
-
-    return { number, v };
+static ParseState<vector<string>> parseModuleName(Tokens tk) {
+    auto r1 = getToken(tk, Token::MODULE); if (!r1) return { };
+    auto r2 = parseDottyName(r1); if (!r2) return { };
+    return { r2, std::move(r2.result()) };
 }
 
-static ParseState<shared_ptr<ast::Function>> parseFunction(Tokens tk) {
+static ParseState<ast::TypeRef> parseTypeRef(Tokens tk) {
+    auto names = parseDottyName(tk);
+    ast::TypeRef td { .names = std::move(names.result()) };
+    return { names, td };
+}
+
+static ParseState<unique_ptr<ast::Expression>> parseExpression(Tokens tk) {
+    auto token = getToken(tk);
+    if (!token) return { };
+
+    switch (token.result()->kind) {
+        case Token::NUMBER: {
+            auto v = make_unique<ast::LiteralValue>();
+            v->value = token.result()->text;
+            return { token, std::move(v) };
+        }
+        case Token::NAME: {
+            // TODO: Parse expression that names a variable
+        }
+        default: return { };
+    }
+}
+
+static ParseState<unique_ptr<ast::Function>> parseFunction(Tokens tk) {
     auto fun    = getToken(tk  , Token::FUN   ); if (!fun   ) return { };
     auto name   = getToken(fun , Token::NAME  ); if (!name  ) return { };
+    // TODO: Parse the optional parameters
     auto colon  = getToken(name, Token::COLON ); if (!colon ) return { };
-    auto type   = parseTypeDeclaration(colon  ); if (!type  ) return { };
+    // TODO: Return type should be converted to a type reference
+    auto type   = parseTypeRef(colon);           if (!type  ) return { };
     auto equals = getToken(type, Token::EQUALS); if (!equals) return { };
     auto expr   = parseExpression(equals      ); if (!expr  ) return { };
 
-    auto fn = make_shared<ast::Function>();
+    auto fn = make_unique<ast::Function>();
     fn->name = name.result()->text;
-    fn->body = expr.result();
+    // TODO: Set parameters
+    // fn->params = ....
+    fn->body = std::move(expr.result());
 
-    return { expr, fn };
+    return { expr, std::move(fn) };
 }
 
-static ParseState<map<string,shared_ptr<ast::Function>>> parseFunctions(Tokens tk) {
-    map<string,shared_ptr<ast::Function>> result;
+
+ast::Module* GrammarParser::findOrCreateModule(vector<string> const & path) {
+    if (ast.root == nullptr)
+        ast.root = make_unique<ast::Module>("");
+    ast::Module* module = ast.root.operator->();
+
+    for (auto const & name : path) {
+        auto found = module->modules.find(name);
+        if (found == module->modules.end())
+            found = module->modules.insert(std::make_pair(name, make_unique<ast::Module>(name))).first;
+        module = found->second.operator->();
+    }
+
+    return module;
+}
+
+ParseState<bool> GrammarParser::parseModule(Tokens tk) {
+    auto moduleName = parseModuleName(tk);
+    if (!moduleName) return fail<bool>(moduleName, "missing module declaration");
+    tk = moduleName;
+
+    auto module = findOrCreateModule(moduleName.result());
+
+//    auto imports = parseImports(tk);
+//    if (imports) {
+//        tk = imports;
+//
+//    }
 
     for (;;) {
         auto state = parseFunction(tk);
-        if (!state) return {tk, result };
+        if (!state) return { tk, true };
+        tk = state;
 
-        auto fn = state.result();
-        tk = state.tokens();
-
-        result.insert_or_assign(fn->name, fn);
+        auto name = state.result()->name;
+        module->functions.insert_or_assign(name, std::move(state.result()));
     }
 }
 
-ParseState<shared_ptr<ast::Ast>> GrammarParser::parse(Tokens tk) {
-    auto moduleName = parseModuleName(tk);
-    if (!moduleName)
-        return fail<shared_ptr<ast::Ast>>(moduleName, "missing module declaration");
+ParseState<bool> GrammarParser::parseFile(Tokens tk) {
+    while (!tk.empty()) {
+        auto result = parseModule(tk);
+        if (!result) fail<bool>(result, "no module :(");
+        tk = result;
+    }
 
-    auto functions = parseFunctions(moduleName);
-    if (!functions)
-        return fail<shared_ptr<ast::Ast>>(moduleName, "missing module declaration");
-
-    auto result = make_shared<ast::Ast>();
-    result->name = moduleName.result();
-    functions.xfer(result->functions); // Heavy weight map, so use a faster xfer
-
-    return { functions, result };
+    return { tk, true };
 }

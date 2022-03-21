@@ -73,6 +73,11 @@ public:
     void branch_if(std::string const & condition, std::string const & label_if_true, std::string const & label_if_false);
     void jump(std::string const & label);
 
+    void acquire(std::string const & countRef);
+    void release(std::string const & countRef, std::string const & zero_cond);
+    void malloc(std::string const & pointerVariable, ir::Type const & type, std::string const & arrayLength);
+    void free(std::string const & pointerVariable);
+
     void call(ir::Type const & resultType, std::string const & result,
               std::string const & method,
               std::vector<ir::Type> const & parameterTypes, std::vector<std::string> const & parameters);

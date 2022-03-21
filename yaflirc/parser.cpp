@@ -414,10 +414,10 @@ private:
 
                 builder.unary_op(op, target, input);
 
-            } else if (token == "compare") {
+            } else if (token == "cmp") {
                 token = in.pop();
                 methodbuilder::COMPARE_OPS op;
-                if (token == "eq") op = methodbuilder::EQ;
+                if (     token == "eq") op = methodbuilder::EQ;
                 else if (token == "ne") op = methodbuilder::NE;
                 else if (token == "gt") op = methodbuilder::GT;
                 else if (token == "ge") op = methodbuilder::GE;
@@ -466,7 +466,7 @@ private:
                 builder.switch_on(cond, label_for_default, labels);
 
             } else if (token == "call") {
-                auto [resultStr, paramStr] = split(in.pop(), '.');
+                auto[resultStr, paramStr] = split(in.pop(), '.');
                 auto resultType = parse_typestr(resultStr);
                 auto paramTypes = parse_typestr(paramStr);
                 auto result = in.pop();
@@ -480,6 +480,31 @@ private:
                     parameters.push_back(value);
 
                 builder.call(resultType, result, method, paramTypes.members, parameters);
+
+            } else if (token == "acquire") {
+                auto countRef = in.pop();
+                if (countRef.empty()) fatal("missing parameters");
+                builder.acquire(countRef);
+
+            } else if (token == "release") {
+                auto countRef = in.pop();
+                auto zeroCond = in.pop();
+                if (countRef.empty()) fatal("missing parameters");
+                if (zeroCond.empty()) fatal("missing parameters");
+                builder.release(countRef, zeroCond);
+
+            } else if (token == "free") {
+                auto pointerRef = in.pop();
+                if (pointerRef.empty()) fatal("missing parameters");
+                builder.free(pointerRef);
+
+            } else if (token == "malloc") {
+                auto pointerRef = in.pop();
+                auto type = parse_typestr(in.pop());
+                auto arrayLength = in.pop();
+
+                emit_type_decl(type);
+                builder.malloc(pointerRef, type, arrayLength);
 
             } else {
                 fatal("unknown instruction");
@@ -521,6 +546,9 @@ public:
                     "declare i16 @llvm.fshr.i16 (i16 %a, i16 %b, i16 %c)\n"
                     "declare i32 @llvm.fshr.i32 (i32 %a, i32 %b, i32 %c)\n"
                     "declare i64 @llvm.fshr.i64 (i64 %a, i64 %b, i64 %c)\n"
+                    "\n"
+                    "declare align 16 i8* @malloc(%size_t)\n"
+                    "declare void @free(i8*)\n"
                     "\n";
 
         typeOut << "%size_t = type " << ir::type_to_llvm_name(parse_typestr("is")) << std::endl;

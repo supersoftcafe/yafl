@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
     tokenParser.parse();
 
     GrammarParser grammarParser;
-    auto g = grammarParser.parse(tokenParser.tokens());
+    grammarParser.parseFile(tokenParser.tokens());
 
     return 0;
 }

@@ -39,8 +39,35 @@ end
 
 
 
+
 data @somethingGlobalButSimple:i4
   i4  101
+end
+
+
+method @useOfMalloc:p %p0:i4
+  %r0:p
+begin
+  malloc %r0 si4i4i4a0si8i8vv %p0
+  ret %r0
+end
+
+method @useOfFree:v %p0:p
+begin
+  free %p0
+  ret void
+end
+
+method @useOfAcquireAndRelease:p %p0:p.spci4i4i4v
+  %reached_zero:b
+begin
+  acquire %p0/1
+  release %p0/1 %reached_zero
+  br %reached_zero :if_true :if_false
+:if_true
+  ret null
+:if_false
+  ret %p0
 end
 
 

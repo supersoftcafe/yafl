@@ -266,6 +266,102 @@ void methodbuilder::jump(std::string const & label) {
     out << "  br label %" << label.substr(1) << std::endl;
 }
 
+void methodbuilder::acquire(std::string const & countRef) {
+    if (countRef.empty() || countRef.at(0) != '%')
+        fatal("acquire requires a pointer parameter");
+
+    auto oldValue = '%' + temp_register();
+
+    if (countRef.find('/') != std::string::npos) {
+        auto [reg, type] = getelementptr(countRef);
+        auto llvmName = ir::type_to_llvm_name(type);
+
+        out << "  " << oldValue << " = atomicrmw add " << llvmName << "* " << reg << ", " << llvmName << " 1 seq_cst" << std::endl;
+
+    } else {
+        auto type = get_variable_type(countRef);
+        if (type.kind != ir::Type::DataPointer)
+            fatal("acquire requires a pointer parameter");
+        if (type.members.empty())
+            fatal("acquire requires a typed pointer");
+
+        type = type.members.front();
+        auto llvmName = ir::type_to_llvm_name(type);
+        auto reg = load_variable(countRef);
+
+        out << "  " << oldValue << " = atomicrmw add " << llvmName << "* " << reg << ", " << llvmName << " 1 seq_cst" << std::endl;
+    }
+}
+
+void methodbuilder::release(std::string const & countRef, std::string const & zero_cond) {
+    if (countRef.empty() || countRef.at(0) != '%')
+        fatal("release requires a pointer parameter");
+
+    std::string llvmName;
+    auto oldValue = '%' + temp_register();
+
+    if (countRef.find('/') != std::string::npos) {
+        auto [reg, type] = getelementptr(countRef);
+        llvmName = ir::type_to_llvm_name(type);
+
+        out << "  " << oldValue << " = atomicrmw sub " << llvmName << "* " << reg << ", " << llvmName << " 1 seq_cst" << std::endl;
+
+    } else {
+        auto type = get_variable_type(countRef);
+        if (type.kind != ir::Type::DataPointer)
+            fatal("acquire requires a pointer parameter");
+        if (type.members.empty())
+            fatal("acquire requires a typed pointer");
+
+        type = type.members.front();
+        llvmName = ir::type_to_llvm_name(type);
+        auto reg = load_variable(countRef);
+
+        out << "  " << oldValue << " = atomicrmw sub " << llvmName << "* " << reg << ", " << llvmName << " 1 seq_cst" << std::endl;
+    }
+
+    auto result = '%' + temp_register();
+    out << "  " << result << " = icmp eq " << llvmName << ' ' << oldValue << ", 1" << std::endl;
+    store_variable(zero_cond, result);
+}
+
+void methodbuilder::malloc(std::string const & pointerVariable, ir::Type const & type, std::string const & arrayLength) {
+    auto tmp1 = '%' + temp_register();
+    auto tmp2 = '%' + temp_register();
+    auto llvmName = ir::type_to_llvm_name(type);
+
+    if (arrayLength.empty()) {
+        out << "  " << tmp1 << " = getelementptr " << llvmName << ", " << llvmName << "* null, %size_t 1" << std::endl;
+        out << "  " << tmp2 << " = ptrtoint " << llvmName << "* " << tmp1 << " to %size_t" << std::endl;
+
+    } else {
+        if (type.kind != ir::Type::Struct && type.members.back().kind != ir::Type::Array || type.members.back().size != 0)
+            fatal("array allocation must be against a structured type with a final element of array length 0");
+
+        std::string lengthLlvmName, lengthReg;
+        if (arrayLength.front() == '%' || arrayLength.front() == '@') {
+            lengthLlvmName = ir::type_to_llvm_name(get_variable_type(arrayLength));
+            lengthReg = load_variable(arrayLength);
+        } else {
+            lengthLlvmName = "i32";
+            lengthReg = arrayLength;
+        }
+
+        auto arrayLlvmName = ir::type_to_llvm_name(type.members.back().members.back());
+        out << "  " << tmp1 << " = getelementptr " << llvmName << ", " << llvmName << "* null, %size_t 0, i32 " << (type.members.size()-1) << ", " << lengthLlvmName << ' ' << lengthReg << std::endl;
+        out << "  " << tmp2 << " = ptrtoint " << arrayLlvmName << "* " << tmp1 << " to %size_t" << std::endl;
+    }
+
+    auto reg = '%' + temp_register();
+    out << "  " << reg << " = call i8* @malloc(%size_t " << tmp2 << ')' << std::endl;
+    store_variable(pointerVariable, reg);
+}
+
+void methodbuilder::free(std::string const & pointerVariable) {
+    auto reg = load_variable(pointerVariable);
+    out << "  call void @free(i8* " << reg << ')' << std::endl;
+}
+
 
 
 

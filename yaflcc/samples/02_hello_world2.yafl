@@ -1,0 +1,4 @@
+module Main
+
+fun main(value:System.Int32):System.Int32 = value
+

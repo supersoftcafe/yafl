@@ -17,6 +17,7 @@ public:
         MODULE, FUN, LET,
         NAME, NUMBER,
         COLON, EQUALS, DOT,
+        PLUS, MINUS, OBRACKET, CBRACKET,
     };
 
     Token(std::string_view text, int line, int character, KIND kind) : text(text), line(line), character(character), kind(kind) { }
@@ -31,7 +32,8 @@ using Tokens = std::span<Token>;
 
 template <class T>
 struct ParseState : public std::optional<std::pair<Tokens, T>> {
-    ParseState(Tokens tk, T val) : std::optional<std::pair<Tokens, T>>({tk, val }) { }
+    ParseState(Tokens tk, T&& val) : std::optional<std::pair<Tokens, T>>({tk, std::move(val) }) { }
+    ParseState(Tokens tk, T const & val) : std::optional<std::pair<Tokens, T>>({tk, val }) { }
     ParseState() = default;
 
     void xfer(T& result) {
