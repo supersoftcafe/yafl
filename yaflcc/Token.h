@@ -17,7 +17,8 @@ public:
         MODULE, FUN, LET,
         NAME, NUMBER,
         COLON, EQUALS, DOT,
-        PLUS, MINUS, OBRACKET, CBRACKET,
+        PLUS, MINUS,
+        OBRACKET, CBRACKET, COMMA,
     };
 
     Token(std::string_view text, int line, int character, KIND kind) : text(text), line(line), character(character), kind(kind) { }
@@ -30,6 +31,10 @@ public:
 
 using Tokens = std::span<Token>;
 
+
+// Needs to embody
+//   Success + Optional<result>
+//   Failure + Error info
 template <class T>
 struct ParseState : public std::optional<std::pair<Tokens, T>> {
     ParseState(Tokens tk, T&& val) : std::optional<std::pair<Tokens, T>>({tk, std::move(val) }) { }

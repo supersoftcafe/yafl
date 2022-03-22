@@ -4,8 +4,11 @@
 
 #include "GrammarParser.h"
 #include <iostream>
+#include <numeric>
+#include <algorithm>
 
 using namespace std;
+using namespace std::ranges;
 
 GrammarParser::GrammarParser() = default;
 GrammarParser::~GrammarParser() = default;
@@ -59,23 +62,48 @@ static ParseState<unique_ptr<ast::Expression>> parseExpression(Tokens tk) {
     }
 }
 
-static ParseState<unique_ptr<ast::Function>> parseFunction(Tokens tk) {
-    auto fun    = getToken(tk  , Token::FUN   ); if (!fun   ) return { };
-    auto name   = getToken(fun , Token::NAME  ); if (!name  ) return { };
-    // TODO: Parse the optional parameters
-    auto colon  = getToken(name, Token::COLON ); if (!colon ) return { };
-    // TODO: Return type should be converted to a type reference
-    auto type   = parseTypeRef(colon);           if (!type  ) return { };
-    auto equals = getToken(type, Token::EQUALS); if (!equals) return { };
-    auto expr   = parseExpression(equals      ); if (!expr  ) return { };
-
+static ParseState<unique_ptr<ast::Function>> parseFunctionPrototype(Tokens tk) {
+    auto name = getToken(tk, Token::NAME); if (!name) return { }; tk = name;
     auto fn = make_unique<ast::Function>();
     fn->name = name.result()->text;
-    // TODO: Set parameters
-    // fn->params = ....
-    fn->body = std::move(expr.result());
 
-    return { expr, std::move(fn) };
+    auto obracket = getToken(tk, Token::OBRACKET);
+    if (obracket) {
+        tk = obracket;
+
+        bool commaRequired = false;
+        for (;;) {
+            auto cbracket = getToken(tk, Token::CBRACKET);
+            if (cbracket) { tk = cbracket; break; }
+
+            if (commaRequired) {
+                auto comma = getToken(tk, Token::COMMA);
+                if (!comma) return { }; tk = comma;
+            } commaRequired = true;
+
+            auto param = parseFunctionPrototype(tk);
+            if (!param) return { }; tk = param;
+            fn->params.push_back(std::move(param.result()));
+        }
+    }
+
+    auto colon = getToken(tk, Token::COLON ); if (!colon) return { }; tk = colon;
+    auto type  = parseTypeRef(tk);            if (!type ) return { }; tk = type;
+
+    auto equals = getToken(tk, Token::EQUALS);
+    if (equals) {
+        tk = equals;
+        auto expr = parseExpression(tk); if (!expr) return { }; tk = expr;
+        fn->body = std::move(expr.result());
+    }
+
+    return { tk, std::move(fn) };
+}
+
+static ParseState<unique_ptr<ast::Function>> parseFunction(Tokens tk) {
+    auto fun = getToken(tk, Token::FUN);
+    if (!fun) return { };
+    return parseFunctionPrototype(fun);
 }
 
 
@@ -86,7 +114,7 @@ ast::Module* GrammarParser::findOrCreateModule(vector<string> const & path) {
 
     for (auto const & name : path) {
         auto found = module->modules.find(name);
-        if (found == module->modules.end())
+        if (found == std::end(module->modules))
             found = module->modules.insert(std::make_pair(name, make_unique<ast::Module>(name))).first;
         module = found->second.operator->();
     }

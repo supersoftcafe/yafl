@@ -91,7 +91,7 @@ namespace ast {
         string name;
         TypeRef result;
         unique_ptr<Expression> body;
-        vector<Function> params;
+        vector<unique_ptr<Function>> params;
     };
 
 
