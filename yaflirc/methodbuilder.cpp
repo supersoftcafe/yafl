@@ -166,12 +166,25 @@ void methodbuilder::bitwise_op(BITWISE_OPS op, std::string const & target, std::
     };
 
     auto emitLogic = [&](char const * opcode) {
-        out << "  " << tempRegName << " = " << opcode << llvmName << ' ' << in1 << ", " << in2 << std::endl;
+        out << "  " << tempRegName << " = " << opcode << ' ' << llvmName << ' ' << in1 << ", " << in2 << std::endl;
+    };
+
+    auto emitShift = [&](char const * opcode) {
+        // Mask shift amount to ensure consistent results on all platforms. LLVM should
+        // optimise this away on platforms that have the same behaviour. The shift value
+        // is modulo the bit width of the target value.
+        auto mask = (1 << (type.size * 8)) - 1;
+        auto maskedReg = '%' + temp_register();
+        out << "  " << maskedReg << " = and " << llvmName << ' ' << in2 << ", " << mask << std::endl;
+        out << "  " << tempRegName << " = " << opcode << ' ' << llvmName << ' ' << in1 << ", " << maskedReg << std::endl;
     };
 
     switch (op) {
-        case ROR: emitRotate("fshr"); break;
         case ROL: emitRotate("fshl"); break;
+        case ROR: emitRotate("fshr"); break;
+        case SHL: emitShift("shl"); break;
+        case LSHR: emitShift("lshr"); break;
+        case ASHR: emitShift("ashr"); break;
         case AND: emitLogic("and"); break;
         case  OR: emitLogic( "or"); break;
         case XOR: emitLogic("xor"); break;

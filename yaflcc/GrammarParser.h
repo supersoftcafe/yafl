@@ -12,16 +12,14 @@
 
 class GrammarParser {
 private:
-    ast::Module* findOrCreateModule(std::vector<std::string> const & name);
     ParseState<bool> parseModule(Tokens tk);
+    ast::Ast& ast;
 
 public:
-    ast::Ast ast;
+    std::vector<std::string> errors;
 
-    explicit GrammarParser();
+    GrammarParser(ast::Ast& ast, Tokens tokens);
     ~GrammarParser();
-
-    ParseState<bool> parseFile(Tokens);
 };
 
 

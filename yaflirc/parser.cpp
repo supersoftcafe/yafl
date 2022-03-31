@@ -305,6 +305,130 @@ private:
         method_bodies.emplace_back(body.str(), lineNumber);
     }
 
+    void instrRet(methodbuilder& builder) {
+        auto returnValue = in.pop();
+        if (!in.pop().empty()) warn("excess tokens");
+        builder.ret(returnValue);
+    }
+
+    void instrBinary(methodbuilder& builder, methodbuilder::BINARY_OPS op) {
+        auto target = in.pop(); if (target.empty()) fatal("missing target");
+        auto input1 = in.pop(); if (input1.empty()) fatal("missing input 1");
+        auto input2 = in.pop(); if (input2.empty()) fatal("missing input 2");
+        auto overflowCond = in.pop();
+        if (!in.pop().empty()) warn("excess tokens");
+
+        builder.binary_op(op, target, input1, input2, overflowCond);
+    }
+
+    void instrBitwise(methodbuilder& builder, methodbuilder::BITWISE_OPS op) {
+        auto target = in.pop(); if (target.empty()) fatal("missing target");
+        auto input1 = in.pop(); if (input1.empty()) fatal("missing input 1");
+        auto input2 = in.pop(); if (input2.empty()) fatal("missing input 2");
+        if (!in.pop().empty()) warn("excess tokens");
+
+        builder.bitwise_op(op, target, input1, input2);
+    }
+
+    void instrUnary(methodbuilder& builder, methodbuilder::UNARY_OPS op) {
+        auto target = in.pop(); if (target.empty()) fatal("missing target");
+        auto input  = in.pop(); if (input .empty()) fatal("missing input");
+        if (!in.pop().empty()) warn("excess tokens");
+
+        builder.unary_op(op, target, input);
+    }
+
+    void instrCompare(methodbuilder& builder, methodbuilder::COMPARE_OPS op) {
+        auto target = in.pop(); if (target.empty()) fatal("missing target");
+        auto input1 = in.pop(); if (input1.empty()) fatal("missing input 1");
+        auto input2 = in.pop(); if (input2.empty()) fatal("missing input 2");
+        if (!in.pop().empty()) warn("excess tokens");
+
+        builder.compare_op(op, target, input1, input2);
+    }
+
+    void instrBranch(methodbuilder& builder) {
+        auto cond = in.pop();
+        auto label_if_true = in.pop();
+        auto label_if_false = in.pop();
+        if (cond.empty())
+            fatal("missing condition variable");
+        if (label_if_true.empty() || label_if_false.empty())
+            fatal("missing label");
+        builder.branch_if(cond, label_if_true, label_if_false);
+    }
+
+    void instrJump(methodbuilder& builder) {
+        auto label = in.pop();
+        builder.jump(label);
+    }
+
+    void instrSwitch(methodbuilder& builder) {
+        auto cond = in.pop();
+        auto label_for_default = in.pop();
+        if (cond.empty())
+            fatal("missing condition variable");
+        if (label_for_default.empty())
+            fatal("missing label");
+
+        std::vector<std::pair<int32_t, std::string>> labels;
+        for (std::string token = in.pop(); !token.empty(); token = in.pop()) {
+            auto [valueStr, label] = split(token, ':');
+            auto chr = valueStr.empty() ? '\0' : valueStr.at(0);
+            if (chr < '0' || chr > '9')
+                fatal("invalid conditional value");
+            int32_t value = std::stoi(valueStr);
+            labels.emplace_back(value, ':' + label);
+        }
+        builder.switch_on(cond, label_for_default, labels);
+    }
+
+    void instrCall(methodbuilder& builder) {
+        auto[resultStr, paramStr] = split(in.pop(), '.');
+        auto resultType = parse_typestr(resultStr);
+        auto paramTypes = parse_typestr(paramStr);
+        auto result = in.pop();
+        auto method = in.pop();
+
+        if (method.empty()) fatal("missing parameters");
+        if (paramTypes.kind != ir::Type::Struct) fatal("param type must be struct");
+
+        std::vector<std::string> parameters;
+        for (std::string value = in.pop(); !value.empty(); value = in.pop())
+            parameters.push_back(value);
+
+        builder.call(resultType, result, method, paramTypes.members, parameters);
+    }
+
+    void instrAcquire(methodbuilder& builder) {
+        auto countRef = in.pop();
+        if (countRef.empty()) fatal("missing parameters");
+        builder.acquire(countRef);
+    }
+
+    void instrRelease(methodbuilder& builder) {
+        auto countRef = in.pop();
+        auto zeroCond = in.pop();
+        if (countRef.empty()) fatal("missing parameters");
+        if (zeroCond.empty()) fatal("missing parameters");
+        builder.release(countRef, zeroCond);
+    }
+
+    void instrMalloc(methodbuilder& builder) {
+        auto pointerRef = in.pop();
+        auto type = parse_typestr(in.pop());
+        auto arrayLength = in.pop();
+
+        emit_type_decl(type);
+        builder.malloc(pointerRef, type, arrayLength);
+    }
+
+    void instrFree(methodbuilder& builder) {
+        auto pointerRef = in.pop();
+        if (pointerRef.empty()) fatal("missing parameters");
+        builder.free(pointerRef);
+    }
+
     void parse_method() {
         methodbuilder builder { in, methodOut, global_types };
 
@@ -362,153 +486,39 @@ private:
                 if (!in.pop().empty()) warn("excess tokens");
                 builder.label(token);
 
-            } else if (token == "ret") {
-                auto returnValue = in.pop();
-                if (!in.pop().empty()) warn("excess tokens");
-                builder.ret(returnValue);
-
-            } else if (token == "binary") {
-                token = in.pop();
-                methodbuilder::BINARY_OPS op;
-                if      (token == "add") op = methodbuilder::ADD;
-                else if (token == "sub") op = methodbuilder::SUB;
-                else if (token == "mul") op = methodbuilder::MUL;
-                else if (token == "div") op = methodbuilder::DIV;
-                else if (token == "rem") op = methodbuilder::REM;
-                else fatal("unknown binary_op");
-
-                auto target = in.pop(); if (target.empty()) fatal("missing target");
-                auto input1 = in.pop(); if (input1.empty()) fatal("missing input 1");
-                auto input2 = in.pop(); if (input2.empty()) fatal("missing input 2");
-                auto overflowCond = in.pop();
-                if (!in.pop().empty()) warn("excess tokens");
-
-                builder.binary_op(op, target, input1, input2, overflowCond);
-
-            } else if (token == "bitwise") {
-                token = in.pop();
-                methodbuilder::BITWISE_OPS op;
-                if      (token == "ror") op = methodbuilder::ROR;
-                else if (token == "rol") op = methodbuilder::ROL;
-                else if (token == "and") op = methodbuilder::AND;
-                else if (token == "xor") op = methodbuilder::XOR;
-                else if (token ==  "or") op = methodbuilder::OR ;
-                else fatal("unknown bitwise_op");
-
-                auto target = in.pop(); if (target.empty()) fatal("missing target");
-                auto input1 = in.pop(); if (input1.empty()) fatal("missing input 1");
-                auto input2 = in.pop(); if (input2.empty()) fatal("missing input 2");
-                if (!in.pop().empty()) warn("excess tokens");
-
-                builder.bitwise_op(op, target, input1, input2);
-
-            } else if (token == "unary") {
-                token = in.pop();
-                methodbuilder::UNARY_OPS op;
-                if (token == "mov") op = methodbuilder::MOV;
-                else fatal("unknown unary_op");
-
-                auto target = in.pop(); if (target.empty()) fatal("missing target");
-                auto input  = in.pop(); if (input .empty()) fatal("missing input");
-                if (!in.pop().empty()) warn("excess tokens");
-
-                builder.unary_op(op, target, input);
-
-            } else if (token == "cmp") {
-                token = in.pop();
-                methodbuilder::COMPARE_OPS op;
-                if (     token == "eq") op = methodbuilder::EQ;
-                else if (token == "ne") op = methodbuilder::NE;
-                else if (token == "gt") op = methodbuilder::GT;
-                else if (token == "ge") op = methodbuilder::GE;
-                else if (token == "lt") op = methodbuilder::LT;
-                else if (token == "le") op = methodbuilder::LE;
-                else fatal("unknown compare_op");
-
-                auto target = in.pop(); if (target.empty()) fatal("missing target");
-                auto input1 = in.pop(); if (input1.empty()) fatal("missing input 1");
-                auto input2 = in.pop(); if (input2.empty()) fatal("missing input 2");
-                if (!in.pop().empty()) warn("excess tokens");
-
-                builder.compare_op(op, target, input1, input2);
-
-            } else if (token == "br") {
-                auto cond = in.pop();
-                auto label_if_true = in.pop();
-                auto label_if_false = in.pop();
-                if (cond.empty())
-                    fatal("missing condition variable");
-                if (label_if_true.empty() || label_if_false.empty())
-                    fatal("missing label");
-                builder.branch_if(cond, label_if_true, label_if_false);
-
-            } else if (token == "jmp") {
-                auto label = in.pop();
-                builder.jump(label);
-
-            } else if (token == "switch") {
-                auto cond = in.pop();
-                auto label_for_default = in.pop();
-                if (cond.empty())
-                    fatal("missing condition variable");
-                if (label_for_default.empty())
-                    fatal("missing label");
-
-                std::vector<std::pair<int32_t, std::string>> labels;
-                for (token = in.pop(); !token.empty(); token = in.pop()) {
-                    auto [valueStr, label] = split(token, ':');
-                    auto chr = valueStr.empty() ? '\0' : valueStr.at(0);
-                    if (chr < '0' || chr > '9')
-                        fatal("invalid conditional value");
-                    int32_t value = std::stoi(valueStr);
-                    labels.emplace_back(value, ':' + label);
-                }
-                builder.switch_on(cond, label_for_default, labels);
-
-            } else if (token == "call") {
-                auto[resultStr, paramStr] = split(in.pop(), '.');
-                auto resultType = parse_typestr(resultStr);
-                auto paramTypes = parse_typestr(paramStr);
-                auto result = in.pop();
-                auto method = in.pop();
-
-                if (method.empty()) fatal("missing parameters");
-                if (paramTypes.kind != ir::Type::Struct) fatal("param type must be struct");
-
-                std::vector<std::string> parameters;
-                for (std::string value = in.pop(); !value.empty(); value = in.pop())
-                    parameters.push_back(value);
-
-                builder.call(resultType, result, method, paramTypes.members, parameters);
-
-            } else if (token == "acquire") {
-                auto countRef = in.pop();
-                if (countRef.empty()) fatal("missing parameters");
-                builder.acquire(countRef);
-
-            } else if (token == "release") {
-                auto countRef = in.pop();
-                auto zeroCond = in.pop();
-                if (countRef.empty()) fatal("missing parameters");
-                if (zeroCond.empty()) fatal("missing parameters");
-                builder.release(countRef, zeroCond);
-
-            } else if (token == "free") {
-                auto pointerRef = in.pop();
-                if (pointerRef.empty()) fatal("missing parameters");
-                builder.free(pointerRef);
-
-            } else if (token == "malloc") {
-                auto pointerRef = in.pop();
-                auto type = parse_typestr(in.pop());
-                auto arrayLength = in.pop();
-
-                emit_type_decl(type);
-                builder.malloc(pointerRef, type, arrayLength);
-
-            } else {
-                fatal("unknown instruction");
             }
+
+            else if (token == "ret") instrRet(builder);
+            else if (token == "add") instrBinary(builder, methodbuilder::ADD);
+            else if (token == "sub") instrBinary(builder, methodbuilder::SUB);
+            else if (token == "mul") instrBinary(builder, methodbuilder::MUL);
+            else if (token == "div") instrBinary(builder, methodbuilder::DIV);
+            else if (token == "rem") instrBinary(builder, methodbuilder::REM);
+            else if (token == "rol") instrBitwise(builder, methodbuilder::ROL);
+            else if (token == "ror") instrBitwise(builder, methodbuilder::ROR);
+            else if (token == "shl") instrBitwise(builder, methodbuilder::SHL);
+            else if (token =="lshr") instrBitwise(builder, methodbuilder::LSHR);
+            else if (token =="ashr") instrBitwise(builder, methodbuilder::ASHR);
+            else if (token == "and") instrBitwise(builder, methodbuilder::AND);
+            else if (token == "xor") instrBitwise(builder, methodbuilder::XOR);
+            else if (token ==  "or") instrBitwise(builder, methodbuilder::OR );
+            else if (token == "mov") instrUnary(builder, methodbuilder::MOV);
+            else if (token == "eq") instrCompare(builder, methodbuilder::EQ);
+            else if (token == "ne") instrCompare(builder, methodbuilder::NE);
+            else if (token == "gt") instrCompare(builder, methodbuilder::GT);
+            else if (token == "ge") instrCompare(builder, methodbuilder::GE);
+            else if (token == "lt") instrCompare(builder, methodbuilder::LT);
+            else if (token == "le") instrCompare(builder, methodbuilder::LE);
+            else if (token == "br") instrBranch(builder);
+            else if (token == "jmp") instrJump(builder);
+            else if (token == "switch") instrSwitch(builder);
+            else if (token == "call") instrCall(builder);
+            else if (token == "acquire") instrAcquire(builder);
+            else if (token == "release") instrRelease(builder);
+            else if (token == "malloc") instrMalloc(builder);
+            else if (token == "free") instrFree(builder);
+
+            else fatal("unknown instruction");
         }
 
         builder.end();

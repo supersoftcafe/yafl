@@ -61,7 +61,7 @@ public:
     enum BINARY_OPS { ADD, SUB, MUL, DIV, REM };
     void binary_op(BINARY_OPS op, std::string const & target, std::string const & source1, std::string const & source2, std::string const & overflow_cond);
 
-    enum BITWISE_OPS { ROR, ROL, AND, OR, XOR };
+    enum BITWISE_OPS { ROL, ROR, SHL, LSHR, ASHR, AND, OR, XOR };
     void bitwise_op(BITWISE_OPS op, std::string const & target, std::string const & source1, std::string const & source2);
 
     enum UNARY_OPS { MOV };

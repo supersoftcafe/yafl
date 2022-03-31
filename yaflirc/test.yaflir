@@ -73,7 +73,7 @@ end
 
 method @setSomethingGlobalButSimple:v %p0:i4
 begin
-  unary mov @somethingGlobalButSimple %p0
+  mov @somethingGlobalButSimple %p0
   ret void
 end
 
@@ -105,7 +105,7 @@ end
 method @testSimpleStruct:i4 %p0:p
   %r0:p.si4i4v
 begin
-  unary mov %r0 %p0
+  mov %r0 %p0
   ret %r0/1
 end
 
@@ -113,7 +113,7 @@ method @freeCharArray:i4 %p0:i4
   %r0:i4
   %overflow:b
 begin
-  binary add %r0 %p0 20 %overflow
+  add %r0 %p0 20 %overflow
   br %overflow :if_true :if_false
 :if_true
   ret %r0
@@ -128,7 +128,7 @@ method @main:i4 %p0:i4 %p1:p.a0i8
   %overflow:b
 begin
   call i4.si4v %r0 @freeCharArray %p0
-  binary add %r1 %r0 10 %overflow
+  add %r1 %r0 10 %overflow
   br %overflow :if_true :if_false
 :if_true
   ret %r1

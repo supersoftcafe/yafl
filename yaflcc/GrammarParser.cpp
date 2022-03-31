@@ -8,34 +8,57 @@
 #include <algorithm>
 
 using namespace std;
-using namespace std::ranges;
 
-GrammarParser::GrammarParser() = default;
 GrammarParser::~GrammarParser() = default;
 
-template <class T>
-static ParseState<T> fail(Tokens tokens, char const * message) {
-    if (tokens.empty()) cerr << "end of file" << endl;
-    else cerr << tokens.front().line << ':' << tokens.front().character << ' ' << message << endl;
-    return { };
+
+static vector<string> fail(Tokens tokens, char const * message) {
+    if (tokens.empty()) return { "end of file" };
+    return { to_string(tokens.front().line) + ':' + to_string(tokens.front().character) + ' ' + message };
+}
+
+template <class T> static std::vector<std::string>&& fail(ParseState<T>&& state, Tokens tokens, char const * message) {
+    vector<string> errors { std::move(state.errors()) };
+    if (tokens.empty()) errors.emplace_back("end of file");
+    errors.emplace_back(to_string(tokens.front().line) + ':' + to_string(tokens.front().character) + ' ' + message);
+    return std::move(errors);
 }
 
 static ParseState<vector<string>> parseDottyName(Tokens tk) {
     std::vector<string> names;
 
-    auto name = getToken(tk, Token::NAME); if (!name) return { };
+    auto name = getToken(tk);
+    if (name.result()->kind != Token::NAME)
+        return fail(name, "Expected NAME token");
+    tk = name;
+
     names.emplace_back(name.result()->text);
 
     for (;;) {
-        auto dot = getToken(name, Token::DOT); if (!dot) return { name, std::move(names) };
-        name = getToken(dot, Token::NAME); if (!name) return { };
+        auto dot = getToken(tk);
+        if (dot.result()->kind != Token::DOT)
+            return { tk, std::move(names) };
+        tk = dot;
+
+        name = getToken(tk);
+        if (name.result()->kind != Token::NAME)
+            return fail(name, "Expected NAME token");
+        tk = name;
+
         names.emplace_back(name.result()->text);
     }
 }
 
 static ParseState<vector<string>> parseModuleName(Tokens tk) {
-    auto r1 = getToken(tk, Token::MODULE); if (!r1) return { };
-    auto r2 = parseDottyName(r1); if (!r2) return { };
+    auto r1 = getToken(tk);
+    if (r1.result()->kind != Token::MODULE)
+        return fail(r1, "Expected MODULE token");
+    tk = r1;
+
+    auto r2 = parseDottyName(r1);
+    tk = r2;
+    if (!r2.has_result())
+        return fail(std::move(r2), tk, "Expected a module name");
     return { r2, std::move(r2.result()) };
 }
 
@@ -45,55 +68,169 @@ static ParseState<ast::TypeRef> parseTypeRef(Tokens tk) {
     return { names, td };
 }
 
-static ParseState<unique_ptr<ast::Expression>> parseExpression(Tokens tk) {
-    auto token = getToken(tk);
-    if (!token) return { };
 
+
+
+static ParseState<unique_ptr<ast::Expression>> justValue(Tokens tk) {
+    auto token = getToken(tk);
+    tk = token;
+
+    ast::LiteralValue::KIND kind;
     switch (token.result()->kind) {
-        case Token::NUMBER: {
-            auto v = make_unique<ast::LiteralValue>();
-            v->value = token.result()->text;
-            return { token, std::move(v) };
+        case Token::NUMBER:
+            kind = ast::LiteralValue::NUMBER;
+            break;
+        case Token::NAME:
+            kind = ast::LiteralValue::NAME;
+            break;
+        default:
+            return fail(tk, "Expected name or number here");
+    }
+
+    auto v = make_unique<ast::LiteralValue>();
+    v->kind = kind;
+    v->value = token.result()->text;
+    return { tk, std::move(v) };
+}
+
+static ParseState<unique_ptr<ast::Expression>> timesDivideModulus(Tokens tk) {
+    auto lhs = justValue(tk);
+    if (!lhs.has_result())
+        return lhs;
+    tk = lhs;
+
+    for (;;) {
+        auto token = getToken(tk);
+        tk = token;
+
+        ast::Binary::KIND kind;
+        switch (token.result()->kind) {
+            case Token::MUL:
+                kind = ast::Binary::MUL;
+                break;
+
+            case Token::DIV:
+                kind = ast::Binary::DIV;
+                break;
+
+            default:
+                return std::move(lhs);
         }
-        case Token::NAME: {
-            // TODO: Parse expression that names a variable
-        }
-        default: return { };
+
+        auto rhs = justValue(tk);
+        if (!rhs.has_result())
+            return std::move(lhs);
+        tk = rhs;
+
+        auto expr = make_unique<ast::Binary>();
+        expr->kind = kind;
+        expr->left = std::move(lhs.result());
+        expr->right = std::move(rhs.result());
+        lhs.emplace(tk, std::move(expr));
     }
 }
 
+static ParseState<unique_ptr<ast::Expression>> plusMinus(Tokens tk) {
+    auto lhs = timesDivideModulus(tk);
+    if (!lhs.has_result())
+        return lhs;
+    tk = lhs;
+
+    for (;;) {
+        auto token = getToken(tk);
+        if (!token.has_result())
+            return std::move(lhs);
+        tk = token;
+
+        ast::Binary::KIND kind;
+        switch (token.result()->kind) {
+            case Token::ADD:
+                kind = ast::Binary::ADD;
+                break;
+
+            case Token::SUB:
+                kind = ast::Binary::SUB;
+                break;
+
+            default:
+                return std::move(lhs);
+        }
+
+        auto rhs = timesDivideModulus(tk);
+        if (!rhs.has_result())
+            return std::move(lhs);
+        tk = rhs;
+
+        auto expr = make_unique<ast::Binary>();
+        expr->kind = kind;
+        expr->left = std::move(lhs.result());
+        expr->right = std::move(rhs.result());
+        lhs.emplace(tk, std::move(expr));
+    }
+}
+
+static ParseState<unique_ptr<ast::Expression>> parseExpression(Tokens tk) {
+    return plusMinus(tk);
+}
+
+
 static ParseState<unique_ptr<ast::Function>> parseFunctionPrototype(Tokens tk) {
-    auto name = getToken(tk, Token::NAME); if (!name) return { }; tk = name;
+    auto name = getToken(tk);
+    if (name.result()->kind != Token::NAME)
+        return fail(name, "Expected NAME token");
+    tk = name;
+
+
     auto fn = make_unique<ast::Function>();
     fn->name = name.result()->text;
 
-    auto obracket = getToken(tk, Token::OBRACKET);
-    if (obracket) {
+    auto obracket = getToken(tk);
+    if (obracket.result()->kind == Token::OBRACKET) {
         tk = obracket;
 
         bool commaRequired = false;
         for (;;) {
-            auto cbracket = getToken(tk, Token::CBRACKET);
-            if (cbracket) { tk = cbracket; break; }
+            auto cbracket = getToken(tk);
+            if (cbracket.result()->kind == Token::CBRACKET) {
+                tk = cbracket;
+                break;
+            }
 
             if (commaRequired) {
-                auto comma = getToken(tk, Token::COMMA);
-                if (!comma) return { }; tk = comma;
+                auto comma = getToken(tk);
+                if (comma.result()->kind != Token::COMMA)
+                    return fail(comma, "Expected COMMA token");
+                tk = comma;
             } commaRequired = true;
 
             auto param = parseFunctionPrototype(tk);
-            if (!param) return { }; tk = param;
+            if (!param.has_result())
+                return std::move(param);
+            tk = param;
+
             fn->params.push_back(std::move(param.result()));
         }
     }
 
-    auto colon = getToken(tk, Token::COLON ); if (!colon) return { }; tk = colon;
-    auto type  = parseTypeRef(tk);            if (!type ) return { }; tk = type;
+    auto colon = getToken(tk);
+    if (colon.result()->kind != Token::COLON)
+        return fail(colon, "Expected COLON token");
+    tk = colon;
 
-    auto equals = getToken(tk, Token::EQUALS);
-    if (equals) {
+    auto type = parseTypeRef(tk);
+    if (!type.has_result())
+        return std::move(type.errors());
+    tk = type;
+    fn->result = std::move(type.result());
+
+    auto equals = getToken(tk);
+    if (equals.result()->kind == Token::EQ) {
         tk = equals;
-        auto expr = parseExpression(tk); if (!expr) return { }; tk = expr;
+        auto expr = parseExpression(tk);
+        if (!expr.has_result())
+            return std::move(expr.errors());
+        tk = expr;
+
         fn->body = std::move(expr.result());
     }
 
@@ -101,33 +238,19 @@ static ParseState<unique_ptr<ast::Function>> parseFunctionPrototype(Tokens tk) {
 }
 
 static ParseState<unique_ptr<ast::Function>> parseFunction(Tokens tk) {
-    auto fun = getToken(tk, Token::FUN);
-    if (!fun) return { };
+    auto fun = getToken(tk);
+    if (fun.result()->kind != Token::FUN)
+        return { }; // No error and no result
     return parseFunctionPrototype(fun);
-}
-
-
-ast::Module* GrammarParser::findOrCreateModule(vector<string> const & path) {
-    if (ast.root == nullptr)
-        ast.root = make_unique<ast::Module>("");
-    ast::Module* module = ast.root.operator->();
-
-    for (auto const & name : path) {
-        auto found = module->modules.find(name);
-        if (found == std::end(module->modules))
-            found = module->modules.insert(std::make_pair(name, make_unique<ast::Module>(name))).first;
-        module = found->second.operator->();
-    }
-
-    return module;
 }
 
 ParseState<bool> GrammarParser::parseModule(Tokens tk) {
     auto moduleName = parseModuleName(tk);
-    if (!moduleName) return fail<bool>(moduleName, "missing module declaration");
+    if (!moduleName.has_result())
+        return fail(std::move(moduleName), tk, "Module declaration is required");
     tk = moduleName;
 
-    auto module = findOrCreateModule(moduleName.result());
+    auto module = ast.findOrCreateModule(moduleName.result());
 
 //    auto imports = parseImports(tk);
 //    if (imports) {
@@ -137,7 +260,10 @@ ParseState<bool> GrammarParser::parseModule(Tokens tk) {
 
     for (;;) {
         auto state = parseFunction(tk);
-        if (!state) return { tk, true };
+        if (state.has_errors())
+            return std::move(state.errors());
+        if (!state.has_result()) // There are no more functions. End search.
+            return { tk, true };
         tk = state;
 
         auto name = state.result()->name;
@@ -145,12 +271,20 @@ ParseState<bool> GrammarParser::parseModule(Tokens tk) {
     }
 }
 
-ParseState<bool> GrammarParser::parseFile(Tokens tk) {
-    while (!tk.empty()) {
+GrammarParser::GrammarParser(ast::Ast& ast, Tokens tk) : ast(ast) {
+    while (peekToken(tk)->kind != Token::EOI) {
         auto result = parseModule(tk);
-        if (!result) fail<bool>(result, "no module :(");
+
+        if (result.has_errors()) {
+            errors = std::move(result.errors());
+            break;
+        }
+
+        if (!result.has_result()) {
+            errors.emplace_back("No module found but not at end of input");
+            break;
+        }
+
         tk = result;
     }
-
-    return { tk, true };
 }

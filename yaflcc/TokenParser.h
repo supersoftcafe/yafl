@@ -11,23 +11,13 @@
 
 class TokenParser {
 private:
-    std::string    characters_;
-    std::vector<Token> tokens_;
-    bool              success_;
+    std::string characters_;
 
 public:
+    std::vector<Token> tokens;
+
     explicit TokenParser(std::string characters);
     ~TokenParser();
-
-    bool parse();
-
-    bool success() const {
-        return success_;
-    }
-
-    std::vector<Token> & tokens() {
-        return tokens_;
-    }
 };
 
 

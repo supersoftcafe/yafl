@@ -1,4 +1,3 @@
 module Main
 
-fun main(value:System.Int32):System.Int32 = 2
-
+fun main(value:System.Int32):System.Int32 = 2 + value * 7
