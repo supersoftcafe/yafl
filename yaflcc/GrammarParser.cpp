@@ -55,11 +55,12 @@ static ParseState<vector<string>> parseModuleName(Tokens tk) {
         return fail(r1, "Expected MODULE token");
     tk = r1;
 
-    auto r2 = parseDottyName(r1);
+    auto r2 = parseDottyName(tk);
     tk = r2;
     if (!r2.has_result())
         return fail(std::move(r2), tk, "Expected a module name");
-    return { r2, std::move(r2.result()) };
+
+    return { tk, std::move(r2.result()) };
 }
 
 static ParseState<ast::TypeRef> parseTypeRef(Tokens tk) {
@@ -77,14 +78,9 @@ static ParseState<unique_ptr<ast::Expression>> justValue(Tokens tk) {
 
     ast::LiteralValue::KIND kind;
     switch (token.result()->kind) {
-        case Token::NUMBER:
-            kind = ast::LiteralValue::NUMBER;
-            break;
-        case Token::NAME:
-            kind = ast::LiteralValue::NAME;
-            break;
-        default:
-            return fail(tk, "Expected name or number here");
+        case Token::NUMBER: kind = ast::LiteralValue::NUMBER; break;
+        case Token::NAME:   kind = ast::LiteralValue::NAME  ; break;
+        default: return fail(tk, "Expected name or number here");
     }
 
     auto v = make_unique<ast::LiteralValue>();
@@ -103,18 +99,11 @@ static ParseState<unique_ptr<ast::Expression>> timesDivideModulus(Tokens tk) {
         auto token = getToken(tk);
         tk = token;
 
-        ast::Binary::KIND kind;
+        char const * fname;
         switch (token.result()->kind) {
-            case Token::MUL:
-                kind = ast::Binary::MUL;
-                break;
-
-            case Token::DIV:
-                kind = ast::Binary::DIV;
-                break;
-
-            default:
-                return std::move(lhs);
+            case Token::MUL: fname = "`*`"; break;
+            case Token::DIV: fname = "`/`"; break;
+            default: return std::move(lhs);
         }
 
         auto rhs = justValue(tk);
@@ -122,10 +111,9 @@ static ParseState<unique_ptr<ast::Expression>> timesDivideModulus(Tokens tk) {
             return std::move(lhs);
         tk = rhs;
 
-        auto expr = make_unique<ast::Binary>();
-        expr->kind = kind;
-        expr->left = std::move(lhs.result());
-        expr->right = std::move(rhs.result());
+        auto expr = make_unique<ast::Call>();
+        expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, fname);
+        expr->parameters = vector{std::move(lhs.result()), std::move(rhs.result())};
         lhs.emplace(tk, std::move(expr));
     }
 }
@@ -142,18 +130,11 @@ static ParseState<unique_ptr<ast::Expression>> plusMinus(Tokens tk) {
             return std::move(lhs);
         tk = token;
 
-        ast::Binary::KIND kind;
+        char const * fname;
         switch (token.result()->kind) {
-            case Token::ADD:
-                kind = ast::Binary::ADD;
-                break;
-
-            case Token::SUB:
-                kind = ast::Binary::SUB;
-                break;
-
-            default:
-                return std::move(lhs);
+            case Token::ADD: fname = "`+`"; break;
+            case Token::SUB: fname = "`-`"; break;
+            default: return std::move(lhs);
         }
 
         auto rhs = timesDivideModulus(tk);
@@ -161,10 +142,9 @@ static ParseState<unique_ptr<ast::Expression>> plusMinus(Tokens tk) {
             return std::move(lhs);
         tk = rhs;
 
-        auto expr = make_unique<ast::Binary>();
-        expr->kind = kind;
-        expr->left = std::move(lhs.result());
-        expr->right = std::move(rhs.result());
+        auto expr = make_unique<ast::Call>();
+        expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, fname);
+        expr->parameters = vector{std::move(lhs.result()), std::move(rhs.result())};
         lhs.emplace(tk, std::move(expr));
     }
 }
@@ -208,7 +188,7 @@ static ParseState<unique_ptr<ast::Function>> parseFunctionPrototype(Tokens tk) {
                 return std::move(param);
             tk = param;
 
-            fn->params.push_back(std::move(param.result()));
+            fn->parameters.push_back(std::move(param.result()));
         }
     }
 

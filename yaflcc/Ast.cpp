@@ -11,29 +11,66 @@ namespace ast {
     Expression::~Expression() = default;
     LiteralValue::~LiteralValue() = default;
     Declaration::~Declaration() = default;
-    Binary::~Binary() = default;
-    Unary::~Unary() = default;
-
+    DotOperator::~DotOperator() = default;
+    Call::~Call() = default;
+//    BinaryMath::~BinaryMath() = default;
+//    UnaryMath::~UnaryMath() = default;
+    Function::~Function() = default;
     TypeDef::~TypeDef() = default;
     BuiltinType::~BuiltinType() = default;
 
-    void LiteralValue::visit(Visitor &visitor) { visitor.onValue(this); }
-    void Declaration::visit(Visitor &visitor) { visitor.onDeclaration(this); }
-    void Binary::visit(Visitor &visitor) { visitor.onBinary(this); }
-    void Unary::visit(Visitor &visitor) { visitor.onUnary(this); }
+    void LiteralValue::accept(Visitor &visitor) { visitor.visit(this); }
+    void Declaration::accept(Visitor &visitor) { visitor.visit(this); }
+    void DotOperator::accept(Visitor &visitor) { visitor.visit(this); }
+    void Call::accept(Visitor &visitor) { visitor.visit(this); }
+//    void BinaryMath::accept(Visitor &visitor) { visitor.visit(this); }
+//    void UnaryMath::accept(Visitor &visitor) { visitor.visit(this); }
 
 
+    static void addUnaryOperator(Module* module, FunctionKind kind, string name, TypeDef* type) {
+        module->addFunction(make_unique<Function>(
+                kind, std::move(name), type,
+                vector{make_unique<Function>("value", type)}
+        ));
+    }
 
-    Ast::Ast() {
-        auto system = findOrCreateModule("System");
+    static void addBinaryOperator(Module* module, FunctionKind kind, string name, TypeDef* type) {
+        module->addFunction(make_unique<Function>(
+                kind, std::move(name), type,
+                vector{make_unique<Function>("left", type), make_unique<Function>("right", type)}
+        ));
+    }
 
-        system->types.emplace("Bool" , make_unique<BuiltinType>(BuiltinType::BOOL , "b"));
-        system->types.emplace("Int8" , make_unique<BuiltinType>(BuiltinType::INT8 , "i1"));
-        system->types.emplace("Int16", make_unique<BuiltinType>(BuiltinType::INT16, "i2"));
-        system->types.emplace("Int32", make_unique<BuiltinType>(BuiltinType::INT32, "i4"));
-        system->types.emplace("Int64", make_unique<BuiltinType>(BuiltinType::INT64, "i8"));
-        system->types.emplace("Float32", make_unique<BuiltinType>(BuiltinType::FLOAT32, "f4"));
-        system->types.emplace("Float64", make_unique<BuiltinType>(BuiltinType::FLOAT64, "f8"));
+    static void addBasicOperator(Module* module, FunctionKind kind, string name) {
+        auto typeInt32 = module->types["Int32"].get();
+        auto typeInt64 = module->types["Int64"].get();
+        auto typeFloat32 = module->types["Float32"].get();
+        auto typeFloat64 = module->types["Float64"].get();
+
+        addUnaryOperator(module, kind, name, typeInt32);
+        addUnaryOperator(module, kind, name, typeInt64);
+        addUnaryOperator(module, kind, name, typeFloat32);
+        addUnaryOperator(module, kind, name, typeFloat64);
+        addBinaryOperator(module, kind, name, typeInt32);
+        addBinaryOperator(module, kind, name, typeInt64);
+        addBinaryOperator(module, kind, name, typeFloat32);
+        addBinaryOperator(module, kind, name, typeFloat64);
+    }
+
+    Ast::Ast() : root{make_unique<Module>("")} {
+        root->types.emplace("Bool" , make_unique<BuiltinType>(BuiltinType::BOOL , "b"));
+        root->types.emplace("Int8" , make_unique<BuiltinType>(BuiltinType::INT8 , "i1"));
+        root->types.emplace("Int16", make_unique<BuiltinType>(BuiltinType::INT16, "i2"));
+        root->types.emplace("Int32", make_unique<BuiltinType>(BuiltinType::INT32, "i4"));
+        root->types.emplace("Int64", make_unique<BuiltinType>(BuiltinType::INT64, "i8"));
+        root->types.emplace("Float32", make_unique<BuiltinType>(BuiltinType::FLOAT32, "f4"));
+        root->types.emplace("Float64", make_unique<BuiltinType>(BuiltinType::FLOAT64, "f8"));
+
+        addBasicOperator(root.get(), FunctionKind::ADD, "`+`");
+        addBasicOperator(root.get(), FunctionKind::ADD, "`-`");
+        addBasicOperator(root.get(), FunctionKind::ADD, "`*`");
+        addBasicOperator(root.get(), FunctionKind::ADD, "`/`");
+        addBasicOperator(root.get(), FunctionKind::ADD, "`%`");
     }
 
     Ast::~Ast() = default;
@@ -60,5 +97,10 @@ namespace ast {
         }
 
         return module;
+    }
+
+
+    void Module::addFunction(unique_ptr<Function>&& function) {
+        functions[function->name].emplace_back(std::move(function));
     }
 }
