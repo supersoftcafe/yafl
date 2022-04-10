@@ -16,11 +16,11 @@ void Verifier::error(std::string msg) {
 
 void Verifier::verifyModule(ast::Module * module) {
     for (auto& typ : module->types)
-        verifyType(typ.second.get());
+        verifyType(typ.get());
     for (auto& fun : module->functions)
-        verifyFunction(fun.second.get());
+        verifyFunction(fun.get());
     for (auto& mod : module->modules)
-        verifyModule(mod.second.get());
+        verifyModule(mod.get());
 }
 
 void Verifier::verifyFunction(ast::Function * function) {
@@ -31,7 +31,7 @@ void Verifier::verifyFunction(ast::Function * function) {
     if (!function->type)
         error("Function " + function->name + " has no type");
 
-    for (auto& param : function->params)
+    for (auto& param : function->parameters)
         verifyFunction(param.get());
 }
 

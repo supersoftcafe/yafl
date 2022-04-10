@@ -16,7 +16,7 @@
 class Token {
 public:
     enum KIND {
-        IGNORE, UNKNOWN, EOI,
+        IGNORE = 0, UNKNOWN, EOI,
 
         MODULE, FUN, LET,
         NAME, NUMBER,

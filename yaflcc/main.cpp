@@ -11,7 +11,8 @@
 using namespace std;
 
 int main(int argc, char** argv) {
-    std::ifstream        in { argv[1] };
+    auto pwd = std::filesystem::current_path();
+    std::ifstream        in { "../yaflcc/samples/02_hello_world2.yafl" };
     TokenParser tokenParser { string(istreambuf_iterator<char>(in), istreambuf_iterator<char>()) };
     ast::Ast ast;
 

@@ -28,24 +28,28 @@ namespace ast {
 
 
     static void addUnaryOperator(Module* module, FunctionKind kind, string name, TypeDef* type) {
-        module->addFunction(make_unique<Function>(
-                kind, std::move(name), type,
-                vector{make_unique<Function>("value", type)}
-        ));
+        auto v = vector<unique_ptr<Function>>();
+        v.emplace_back(new Function("value", type));
+        module->functions.emplace_back(new Function(kind, std::move(name), type, std::move(v)));
     }
 
     static void addBinaryOperator(Module* module, FunctionKind kind, string name, TypeDef* type) {
-        module->addFunction(make_unique<Function>(
-                kind, std::move(name), type,
-                vector{make_unique<Function>("left", type), make_unique<Function>("right", type)}
-        ));
+        auto v = vector<unique_ptr<Function>>();
+        v.emplace_back(new Function("left", type));
+        v.emplace_back(new Function("right", type));
+        module->functions.emplace_back(new Function(kind, std::move(name), type, std::move(v)));
     }
 
+    static auto find(auto & collection, auto & name) {
+        return std::find_if(std::begin(collection), std::end(collection), [&name](auto& a){ return a->name == name; });
+    }
+
+
     static void addBasicOperator(Module* module, FunctionKind kind, string name) {
-        auto typeInt32 = module->types["Int32"].get();
-        auto typeInt64 = module->types["Int64"].get();
-        auto typeFloat32 = module->types["Float32"].get();
-        auto typeFloat64 = module->types["Float64"].get();
+        auto typeInt32 = find(module->types, "Int32")->get();
+        auto typeInt64 = find(module->types, "Int64")->get();
+        auto typeFloat32 = find(module->types, "Float32")->get();
+        auto typeFloat64 = find(module->types, "Float64")->get();
 
         addUnaryOperator(module, kind, name, typeInt32);
         addUnaryOperator(module, kind, name, typeInt64);
@@ -57,14 +61,14 @@ namespace ast {
         addBinaryOperator(module, kind, name, typeFloat64);
     }
 
-    Ast::Ast() : root{make_unique<Module>("")} {
-        root->types.emplace("Bool" , make_unique<BuiltinType>(BuiltinType::BOOL , "b"));
-        root->types.emplace("Int8" , make_unique<BuiltinType>(BuiltinType::INT8 , "i1"));
-        root->types.emplace("Int16", make_unique<BuiltinType>(BuiltinType::INT16, "i2"));
-        root->types.emplace("Int32", make_unique<BuiltinType>(BuiltinType::INT32, "i4"));
-        root->types.emplace("Int64", make_unique<BuiltinType>(BuiltinType::INT64, "i8"));
-        root->types.emplace("Float32", make_unique<BuiltinType>(BuiltinType::FLOAT32, "f4"));
-        root->types.emplace("Float64", make_unique<BuiltinType>(BuiltinType::FLOAT64, "f8"));
+    Ast::Ast() : root{new Module("")} {
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::BOOL , "Bool" , "b"));
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::INT8 , "Int8" , "i1"));
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::INT16, "Int16", "i2"));
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::INT32, "Int32", "i4"));
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::INT64, "Int64", "i8"));
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::FLOAT32, "Float32", "f4"));
+        root->types.emplace_back(make_unique<BuiltinType>(BuiltinType::FLOAT64, "Float64", "f8"));
 
         addBasicOperator(root.get(), FunctionKind::ADD, "`+`");
         addBasicOperator(root.get(), FunctionKind::ADD, "`-`");
@@ -85,22 +89,19 @@ namespace ast {
     }
 
     Module* Ast::findOrCreateModule(vector<string> const & path) {
-        if (root == nullptr)
-            root = make_unique<Module>("");
-        Module* module = root.operator->();
+        Module* module = root.get();
 
         for (auto const & name : path) {
-            auto found = module->modules.find(name);
-            if (found == std::end(module->modules))
-                found = module->modules.insert(std::make_pair(name, make_unique<Module>(name))).first;
-            module = found->second.operator->();
+            auto found = find(module->modules, name);
+            if (found != std::end(module->modules)) {
+                module = found->get();
+            } else {
+                auto m = new Module(name);
+                module->modules.emplace_back(m);
+                module = m;
+            }
         }
 
         return module;
-    }
-
-
-    void Module::addFunction(unique_ptr<Function>&& function) {
-        functions[function->name].emplace_back(std::move(function));
     }
 }

@@ -17,7 +17,7 @@ TokenParser::TokenParser(std::string characters) : characters_(characters) {
             Rx("\\.", DOT ),
             Rx("\\+", ADD ), Rx(  "-", SUB ), Rx("\\*", MUL ), Rx(  "/", DIV ), Rx(  "%", REM ),
             Rx( "<<", SHL ), Rx( ">>",ASHR ), Rx(">>>",LSHR ),
-            Rx(  "&", AND ), Rx(  "^", XOR ), Rx(  "|",  OR ),
+            Rx(  "&", AND ), Rx("\\^", XOR ), Rx("\\|",  OR ),
             Rx(  "=",  EQ ), Rx( "!=", NEQ ), Rx(  "<",  LT ), Rx( "<=", LTE ), Rx(  ">",  GT ), Rx( ">=", GTE ),
             Rx(  "!", NOT ),
 

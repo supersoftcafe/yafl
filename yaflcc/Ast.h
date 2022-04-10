@@ -35,8 +35,9 @@ namespace ast {
             BUILTIN, STRUCTURE, CLASS, FUNCTION
         } kind;
         string irType;
+        string name;
 
-        TypeDef(KIND kind, string&& irType) : kind(kind), irType(irType) { }
+        TypeDef(KIND kind, string&& name, string&& irType) : kind(kind), name(std::move(name)), irType(std::move(irType)) { }
         explicit TypeDef(KIND kind) : kind(kind) { }
         virtual ~TypeDef();
     };
@@ -46,7 +47,7 @@ namespace ast {
             BOOL, INT8, INT16, INT32, INT64, FLOAT32, FLOAT64
         } type;
 
-        BuiltinType(TYPE type, string&& irType) : TypeDef(BUILTIN, std::move(irType)), type(type) { }
+        BuiltinType(TYPE type, string&& name, string&& irType) : TypeDef(BUILTIN, std::move(name), std::move(irType)), type(type) { }
         ~BuiltinType() override;
     };
 
@@ -59,7 +60,7 @@ namespace ast {
         Function() = default;
         Function(string&& name, TypeDef* type) : name{name}, type{type} { }
         Function(FunctionKind kind, string&& name, TypeDef* type, vector<unique_ptr<Function>>&& parameters)
-            : kind{kind}, name{name}, parameters{parameters}, type{type} { }
+            : kind{kind}, name{std::move(name)}, parameters{std::move(parameters)}, type{type} { }
         ~Function();
 
         FunctionKind kind = FunctionKind::EXPRESSION;
@@ -178,9 +179,9 @@ namespace ast {
 
     struct Module {
         string name;    // Root has empty string as name
-        unordered_map<string, unique_ptr<Module>>   modules;
-        unordered_map<string, unique_ptr<TypeDef>>  types;
-        unordered_map<string, vector<unique_ptr<Function>>> functions;
+        vector<unique_ptr<Module>>   modules;
+        vector<unique_ptr<TypeDef>>  types;
+        vector<unique_ptr<Function>> functions;
 
         explicit Module(string name) : name(std::move(name)) { }
 

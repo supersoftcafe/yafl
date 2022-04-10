@@ -9,6 +9,7 @@
 
 using namespace std;
 
+
 GrammarParser::~GrammarParser() = default;
 
 
@@ -17,11 +18,11 @@ static vector<string> fail(Tokens tokens, char const * message) {
     return { to_string(tokens.front().line) + ':' + to_string(tokens.front().character) + ' ' + message };
 }
 
-template <class T> static std::vector<std::string>&& fail(ParseState<T>&& state, Tokens tokens, char const * message) {
-    vector<string> errors { std::move(state.errors()) };
+template <class T> static std::vector<std::string> fail(ParseState<T> state, Tokens tokens, char const * message) {
+    vector<string> errors = state.errors();
     if (tokens.empty()) errors.emplace_back("end of file");
     errors.emplace_back(to_string(tokens.front().line) + ':' + to_string(tokens.front().character) + ' ' + message);
-    return std::move(errors);
+    return errors;
 }
 
 static ParseState<vector<string>> parseDottyName(Tokens tk) {
@@ -89,37 +90,31 @@ static ParseState<unique_ptr<ast::Expression>> justValue(Tokens tk) {
     return { tk, std::move(v) };
 }
 
-static ParseState<unique_ptr<ast::Expression>> timesDivideModulus(Tokens tk) {
-    auto lhs = justValue(tk);
-    if (!lhs.has_result())
-        return lhs;
-    tk = lhs;
+typedef function<ParseState<unique_ptr<ast::Expression>>(Tokens)> ParseExprFunc;
+typedef vector<pair<Token::KIND, string>> OpsVector;
 
-    for (;;) {
-        auto token = getToken(tk);
-        tk = token;
+static ParseState<unique_ptr<ast::Expression>> parseUnaryExpr(Tokens tk, OpsVector const & opsVec, ParseExprFunc const & nextExpression) {
+    auto token = getToken(tk);
+    if (!token.has_result())
+        return nextExpression(tk);
 
-        char const * fname;
-        switch (token.result()->kind) {
-            case Token::MUL: fname = "`*`"; break;
-            case Token::DIV: fname = "`/`"; break;
-            default: return std::move(lhs);
-        }
+    auto found = find_if(begin(opsVec), end(opsVec), [&token](auto& op){return op.first == token.result()->kind;});
+    if (found == end(opsVec))
+        return nextExpression(tk);
 
-        auto rhs = justValue(tk);
-        if (!rhs.has_result())
-            return std::move(lhs);
-        tk = rhs;
+    auto rhs = nextExpression(token);
+    if (!rhs.has_result())
+        return nextExpression(tk);
+    tk = rhs;
 
-        auto expr = make_unique<ast::Call>();
-        expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, fname);
-        expr->parameters = vector{std::move(lhs.result()), std::move(rhs.result())};
-        lhs.emplace(tk, std::move(expr));
-    }
+    auto expr = make_unique<ast::Call>();
+    expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, found->second);
+    expr->parameters.emplace_back(std::move(rhs.result()));
+    return { tk, std::move(expr) };
 }
 
-static ParseState<unique_ptr<ast::Expression>> plusMinus(Tokens tk) {
-    auto lhs = timesDivideModulus(tk);
+static ParseState<unique_ptr<ast::Expression>> parseBinaryExpr(Tokens tk, OpsVector const & opsVec, ParseExprFunc const & nextExpression) {
+    auto lhs = nextExpression(tk);
     if (!lhs.has_result())
         return lhs;
     tk = lhs;
@@ -130,28 +125,36 @@ static ParseState<unique_ptr<ast::Expression>> plusMinus(Tokens tk) {
             return std::move(lhs);
         tk = token;
 
-        char const * fname;
-        switch (token.result()->kind) {
-            case Token::ADD: fname = "`+`"; break;
-            case Token::SUB: fname = "`-`"; break;
-            default: return std::move(lhs);
-        }
+        auto found = find_if(begin(opsVec), end(opsVec), [&token](auto& op){return op.first == token.result()->kind;});
+        if (found == end(opsVec))
+            return std::move(lhs);
 
-        auto rhs = timesDivideModulus(tk);
+        auto rhs = nextExpression(tk);
         if (!rhs.has_result())
             return std::move(lhs);
         tk = rhs;
 
         auto expr = make_unique<ast::Call>();
-        expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, fname);
-        expr->parameters = vector{std::move(lhs.result()), std::move(rhs.result())};
+        expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, found->second);
+        expr->parameters.emplace_back(std::move(lhs.result()));
+        expr->parameters.emplace_back(std::move(rhs.result()));
         lhs.emplace(tk, std::move(expr));
     }
 }
 
-static ParseState<unique_ptr<ast::Expression>> parseExpression(Tokens tk) {
-    return plusMinus(tk);
-}
+auto parseExpression =
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::OR , "`|`" } },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::XOR, "`^`" } },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::AND, "`&`" } },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::EQ , "`=`" }, {Token::NEQ , "`!=`"} },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::LT , "`<`" }, {Token::LTE , "`<=`"}, {Token::GTE , "`>=`" }, {Token::GT, "`>`" } },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::SHL, "`<<`"}, {Token::ASHR, "`>>`"}, {Token::LSHR, "`>>>`"} },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" } },
+        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::MUL, "`*`" }, {Token::DIV , "`/`" }, {Token::REM , "`%`"  } },
+        (ParseExprFunc)std::bind(parseUnaryExpr , placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" }, {Token::NOT , "`!`"  } },
+        (ParseExprFunc)justValue
+)))))))));
+
 
 
 static ParseState<unique_ptr<ast::Function>> parseFunctionPrototype(Tokens tk) {
@@ -246,8 +249,7 @@ ParseState<bool> GrammarParser::parseModule(Tokens tk) {
             return { tk, true };
         tk = state;
 
-        auto name = state.result()->name;
-        module->functions.insert_or_assign(name, std::move(state.result()));
+        module->functions.emplace_back(std::move(state.result()));
     }
 }
 

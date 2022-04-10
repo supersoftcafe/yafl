@@ -2,6 +2,10 @@ compiler/build/**
 compiler/gen/**
 compiler/.gradle/**
 
+build-*
+.DS_Store
+CMakeLists.txt.user
+
 cmake-build-debug
 
 # Compiled class file

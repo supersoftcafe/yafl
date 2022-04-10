@@ -1,27 +1,19 @@
 
 module System
 
-delegate <Z> Func(): Z
-delegate <A,Z> Func(a:A): Z
-delegate <A,B,Z> Func(a:A,b:B): Z
-delegate <A,B,C,Z> Func(a:A,b:B,c:C): Z
-delegate <A,B,C,D,Z> Func(a:A,b:B,c:C,d:D): Z
+delegate Func<TResult>(): TResult
+delegate Func<TResult,A>(a:A): TResult
+delegate Func<TResult,A,B>(a:A,b:B): TResult
+delegate Func<TResult,A,B,C>(a:A,b:B,c:C): TResult
+delegate Func<TResult,A,B,C,D>(a:A,b:B,c:C,d:D): TResult
 
-struct <A> Tuple(a:A)
-struct <A,B> Tuple(a:A,b:B)
-struct <A,B,C> Tuple(a:A,b:B,c:C)
-struct <A,B,C,D> Tuple(a:A,b:B,c:C,d:D)
+struct Tuple<A>(a:A)
+struct Tuple<A,B>(a:A,b:B)
+struct Tuple<A,B,C>(a:A,b:B,c:C)
+struct Tuple<A,B,C,D>(a:A,b:B,c:C,d:D)
 
-fun <V> `+`(a:V,b:V):V where V in [Byte, Short, Int, Long, Float, Double] = $ir.add
-fun <V> `-`(a:V,b:V):V where V in [Byte, Short, Int, Long, Float, Double] = $ir.sub
-fun <V> `*`(a:V,b:V):V where V in [Byte, Short, Int, Long, Float, Double] = $ir.mul
-fun <V> `/`(a:V,b:V):V where V in [Byte, Short, Int, Long, Float, Double] = $ir.div
-fun <V> `%`(a:V,b:V):V where V in [Byte, Short, Int, Long, Float, Double] = $ir.rem
-
-fun <V> signOf(a:V):int where V in [Byte, Short, Int, Long, Float, Double] = $ir.signOf
-
-// declare 'in' as infix function
-// also support prefix unary functions like '+'
-// declare precedence on infix and prefix functions
-// most operators are just functions with no special parser handling
-// might require two passes. one to find all functions, another to parse the expressions once we know the operators
+fun `+`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.add
+fun `-`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.sub
+fun `*`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.mul
+fun `/`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.div
+fun `%`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.rem
