@@ -12,8 +12,17 @@ struct Tuple<A,B>(a:A,b:B)
 struct Tuple<A,B,C>(a:A,b:B,c:C)
 struct Tuple<A,B,C,D>(a:A,b:B,c:C,d:D)
 
-fun `+`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.add
-fun `-`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.sub
-fun `*`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.mul
-fun `/`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.div
-fun `%`<V>(a:V,b:V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.rem
+
+fun `=`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.add
+
+fun `+`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.add
+fun `-`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.sub
+fun `*`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.mul
+fun `/`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.div
+fun `%`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.rem
+
+fun `?:`<V>(condition:Bool,a():V,b():V):V =
+    if condition
+        a
+    else
+        b

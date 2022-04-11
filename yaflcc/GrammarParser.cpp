@@ -142,18 +142,55 @@ static ParseState<unique_ptr<ast::Expression>> parseBinaryExpr(Tokens tk, OpsVec
     }
 }
 
+static ParseState<unique_ptr<ast::Expression>> parseTernaryExpr(Tokens tk, string const & opName, Token::KIND firstKind, Token::KIND secondKind, ParseExprFunc const & nextExpression) {
+    auto lhs = nextExpression(tk);
+    if (!lhs.has_result())
+        return lhs;
+    tk = lhs;
+
+    auto firstToken = getToken(tk);
+    if (!firstToken.has_result() || firstToken.result()->kind != firstKind)
+        return std::move(lhs);
+    tk = firstToken;
+
+    auto middle = parseTernaryExpr(tk, opName, firstKind, secondKind, nextExpression);
+    if (!middle.has_result())
+        return std::move(lhs);
+    tk = middle;
+
+    auto secondToken = getToken(tk);
+    if (!secondToken.has_result() || secondToken.result()->kind != secondKind)
+        return std::move(lhs);
+    tk = secondToken;
+
+    auto rhs = parseTernaryExpr(tk, opName, firstKind, secondKind, nextExpression);
+    if (!rhs.has_result())
+        return std::move(rhs);
+    tk = rhs;
+
+    auto expr = make_unique<ast::Call>();
+    expr->function = make_unique<ast::LiteralValue>(ast::LiteralValue::NAME, opName);
+    expr->parameters.emplace_back(std::move(lhs.result()));
+    expr->parameters.emplace_back(std::move(middle.result()));
+    expr->parameters.emplace_back(std::move(rhs.result()));
+    return { tk, std::move(expr) };
+}
+
 auto parseExpression =
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::OR , "`|`" } },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::XOR, "`^`" } },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::AND, "`&`" } },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::EQ , "`=`" }, {Token::NEQ , "`!=`"} },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::LT , "`<`" }, {Token::LTE , "`<=`"}, {Token::GTE , "`>=`" }, {Token::GT, "`>`" } },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::SHL, "`<<`"}, {Token::ASHR, "`>>`"}, {Token::LSHR, "`>>>`"} },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" } },
-        (ParseExprFunc)std::bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::MUL, "`*`" }, {Token::DIV , "`/`" }, {Token::REM , "`%`"  } },
-        (ParseExprFunc)std::bind(parseUnaryExpr , placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" }, {Token::NOT , "`!`"  } },
+        (ParseExprFunc)bind(parseTernaryExpr, placeholders::_1, "`?:`", Token::QUESTION, Token::COLON,
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::OR , "`|`" } },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::XOR, "`^`" } },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::AND, "`&`" } },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::EQ , "`=`" }, {Token::NEQ , "`!=`"} },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::LT , "`<`" }, {Token::LTE , "`<=`"}, {Token::GTE , "`>=`" }, {Token::GT, "`>`" } },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::SHL, "`<<`"}, {Token::ASHR, "`>>`"}, {Token::LSHR, "`>>>`"} },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" } },
+        (ParseExprFunc)bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::MUL, "`*`" }, {Token::DIV , "`/`" }, {Token::REM , "`%`"  } },
+        (ParseExprFunc)bind(parseUnaryExpr , placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" }, {Token::NOT , "`!`"  } },
         (ParseExprFunc)justValue
-)))))))));
+))))))))));
+
+
 
 
 

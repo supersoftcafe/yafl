@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <ostream>
 
 
 namespace ast {
@@ -65,6 +66,8 @@ namespace ast {
 
         FunctionKind kind = FunctionKind::EXPRESSION;
 
+        void print(ostream&);
+
         string name;
         TypeRef result;
         unique_ptr<Expression> body;
@@ -77,6 +80,7 @@ namespace ast {
         virtual ~Expression();
 
         virtual void accept(Visitor&) = 0;
+        virtual void print(ostream&) = 0;
 
         TypeDef* type { nullptr };
     };
@@ -89,6 +93,7 @@ namespace ast {
         ~Declaration() override;
 
         void accept(Visitor&) override;
+        void print(ostream&) override;
     };
 
     struct LiteralValue : public Expression {
@@ -104,6 +109,7 @@ namespace ast {
         ~LiteralValue() override;
 
         void accept(Visitor&) override;
+        void print(ostream&) override;
     };
 
     struct DotOperator : public Expression {
@@ -117,6 +123,7 @@ namespace ast {
         ~DotOperator() override;
 
         void accept(Visitor&) override;
+        void print(ostream&) override;
     };
 
     struct Call : public Expression {
@@ -128,35 +135,8 @@ namespace ast {
         unordered_map<string, unique_ptr<Expression>> namedParameters;
 
         void accept(Visitor&) override;
+        void print(ostream&) override;
     };
-//
-//    struct BinaryMath : public Expression {
-//        enum KIND {
-//            ADD = Token::ADD, SUB = Token::SUB, MUL = Token::MUL, DIV = Token::DIV, REM = Token::REM,
-//            SHL = Token::SHL,ASHR =Token::ASHR,LSHR = Token::LSHR,
-//            AND = Token::AND, XOR = Token::XOR, OR  = Token::OR,
-//            EQ  = Token::EQ , NEQ = Token::NEQ, LT  = Token::LT,  LTE = Token::LTE, GT  = Token::GT , GTE = Token::GTE,
-//        } kind = ADD;
-//        unique_ptr<Expression> left, right;
-//
-//        BinaryMath() = default;
-//        ~BinaryMath() override;
-//
-//        void accept(Visitor&) override;
-//    };
-//
-//    struct UnaryMath : public Expression {
-//        enum KIND {
-//            ADD = Token::ADD, SUB = Token::SUB, NOT = Token::NOT,
-//        } kind = ADD;
-//
-//        unique_ptr<Expression> expr;
-//
-//        UnaryMath() = default;
-//        ~UnaryMath() override;
-//
-//        void accept(Visitor&) override;
-//    };
 
 
     struct Visitor {
@@ -164,8 +144,6 @@ namespace ast {
         virtual void visit(Declaration*) = 0;
         virtual void visit(DotOperator*) = 0;
         virtual void visit(Call*) = 0;
-//        virtual void visit(BinaryMath*) = 0;
-//        virtual void visit(UnaryMath*) = 0;
     };
 
 
@@ -199,5 +177,15 @@ namespace ast {
         Module* findOrCreateModule(vector<string> const & path);
     };
 };
+
+inline std::ostream& operator << (std::ostream& out, std::unique_ptr<ast::Expression> const & expr) {
+    expr->print(out);
+    return out;
+}
+
+inline std::ostream& operator << (std::ostream& out, std::unique_ptr<ast::Function> const & function) {
+    function->print(out);
+    return out;
+}
 
 #endif //YAFLCC_AST_H

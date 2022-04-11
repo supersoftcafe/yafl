@@ -10,6 +10,15 @@
 
 using namespace std;
 
+void printFunctions(std::string prefix, ast::Module* module) {
+    for (auto& function : module->functions) {
+        std::cout << prefix << '.' << function << std::endl;
+    }
+    for (auto& module : module->modules) {
+        printFunctions(prefix + '.' + module->name, module.get());
+    }
+}
+
 int main(int argc, char** argv) {
     auto pwd = std::filesystem::current_path();
     std::ifstream        in { "../yaflcc/samples/02_hello_world2.yafl" };
@@ -23,6 +32,8 @@ int main(int argc, char** argv) {
             cerr << "  " << error << endl;
         return 1;
     }
+
+    printFunctions("", ast.root.get());
 
     TypeResolver typeResolver(ast);
     if (!std::empty(typeResolver.errors)) {

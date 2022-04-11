@@ -13,18 +13,56 @@ namespace ast {
     Declaration::~Declaration() = default;
     DotOperator::~DotOperator() = default;
     Call::~Call() = default;
-//    BinaryMath::~BinaryMath() = default;
-//    UnaryMath::~UnaryMath() = default;
     Function::~Function() = default;
     TypeDef::~TypeDef() = default;
     BuiltinType::~BuiltinType() = default;
 
     void LiteralValue::accept(Visitor &visitor) { visitor.visit(this); }
+    void LiteralValue::print(ostream& out) { out << value; }
+
     void Declaration::accept(Visitor &visitor) { visitor.visit(this); }
+    void Declaration::print(ostream& out) { out << expression; }
+
     void DotOperator::accept(Visitor &visitor) { visitor.visit(this); }
+    void DotOperator::print(ostream& out) { out << left << '.' << right; }
+
     void Call::accept(Visitor &visitor) { visitor.visit(this); }
-//    void BinaryMath::accept(Visitor &visitor) { visitor.visit(this); }
-//    void UnaryMath::accept(Visitor &visitor) { visitor.visit(this); }
+    void Call::print(ostream& out) {
+        out << function << '(';
+        bool needsComma = false;
+        for (auto& param : parameters) {
+            if (needsComma) out << ',';
+            needsComma = true;
+            out << param;
+        }
+        out << ')';
+    }
+
+    void Function::print(ostream& out) {
+        out << name << '(';
+        bool needsComma = false;
+        for (auto& param : parameters) {
+            if (needsComma) out << ',';
+            needsComma = true;
+            out << param;
+        }
+        out << ')';
+
+
+        if (!empty(result.names)) {
+            out << ':';
+            bool needsDot = false;
+            for (auto& name : result.names) {
+                if (needsDot) out << '.';
+                needsDot = true;
+                out << name;
+            }
+        }
+
+        if (body) {
+            out << " = " << body;
+        }
+    }
 
 
     static void addUnaryOperator(Module* module, FunctionKind kind, string name, TypeDef* type) {
