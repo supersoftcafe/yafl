@@ -6,34 +6,34 @@
 #include <iostream>
 #include <regex>
 
+using namespace std;
 
-TokenParser::TokenParser(std::string characters) : characters_(characters) {
-#define Rx(expr, tok)    { std::regex(expr), Token::tok }
-    std::pair<std::regex, Token::KIND> PATTERNS[] {
-            Rx("[ \r\n]+", IGNORE ),
+void parseTokens(string_view view, vector<Token>& tokens, vector<string>& errors) {
+#define Rx(expr, tok)    { regex(expr), Token::tok },
+    pair<regex, Token::KIND> PATTERNS[] {
+            Rx("([ \r\n]+)|(#[^\r\n]*\n)", IGNORE )
 
-            Rx("\\?", QUESTION), Rx(":", COLON ),
+            Rx("\\?", QUESTION) Rx(":", COLON )
 
-            Rx("\\.", DOT ),
-            Rx("\\+", ADD ), Rx(  "-", SUB ), Rx("\\*", MUL ), Rx(  "/", DIV ), Rx(  "%", REM ),
-            Rx( "<<", SHL ), Rx( ">>",ASHR ), Rx(">>>",LSHR ),
-            Rx(  "&", AND ), Rx("\\^", XOR ), Rx("\\|",  OR ),
-            Rx(  "=",  EQ ), Rx( "!=", NEQ ), Rx(  "<",  LT ), Rx( "<=", LTE ), Rx(  ">",  GT ), Rx( ">=", GTE ),
-            Rx(  "!", NOT ),
+            Rx("\\.", DOT ) Rx(  "@",  AT )
+            Rx("\\+", ADD ) Rx(  "-", SUB ) Rx("\\*", MUL ) Rx(  "/", DIV ) Rx(  "%", REM )
+            Rx(">>>",LSHR ) Rx( "<<", SHL ) Rx( ">>",ASHR )
+            Rx(  "=",  EQ ) Rx( "!=", NEQ ) Rx( "<=", LTE ) Rx( ">=", GTE ) Rx(  "<",  LT ) Rx(  ">",  GT )
+            Rx(  "&", AND ) Rx("\\^", XOR ) Rx("\\|",  OR )
+            Rx(  "!", NOT ) Rx(",", COMMA )
+            Rx("\\(", OBRACKET ) Rx("\\[", SQUARE_OPEN)
+            Rx("\\)", CBRACKET ) Rx("\\]", SQUARE_CLOSE)
 
+            Rx("use", USE )
+            Rx("module", MODULE )
+            Rx("(fun)|(let)", FUN )
+            Rx("(`[^`]+`)|([a-zA-Z_][a-zA-Z_0-9]*)", NAME )
 
-            Rx("\\(", OBRACKET ),
-            Rx("\\)", CBRACKET ),
-            Rx(",", COMMA ),
-
-            Rx("module", MODULE ),
-            Rx("(fun)|(let)", FUN ),
-
-            Rx("(`[^`]+`)|([a-zA-Z_][a-zA-Z_0-9]*)", NAME ),
-            Rx("[0-9]+", NUMBER ),
+            Rx("[+-]?([0-9]*)\\.[0-9]+", FLOAT )
+            Rx("[+-]?((0b[_0-1]+)|(0o[_0-7]+)|(0x[_0-9a-f]+)|([0-9]+))", INTEGER )
+            Rx("\"([^\"]|\\\\\")*\"", STRING )
     };
 
-    std::string_view view = characters_;
     uint32_t line = 1, character = 1, indent = 0;
     bool startOfLine = true;
 
@@ -42,18 +42,23 @@ TokenParser::TokenParser(std::string characters) : characters_(characters) {
         Token::KIND matchedKind = Token::UNKNOWN;
 
         for (auto&[regex, kind]: PATTERNS) {
-            std::match_results<std::string_view::const_iterator> match;
-            if (std::regex_search(view.cbegin(), view.cend(), match, regex, std::regex_constants::match_continuous)) {
+            match_results<string_view::const_iterator> match;
+            if (regex_search(view.cbegin(), view.cend(), match, regex, regex_constants::match_continuous)) {
                 matchedSize = match.length();
                 matchedKind = kind;
                 break;
             }
         }
 
+        if (matchedSize == 0) {
+            errors.emplace_back(to_string(line) + ':' + to_string(indent) + " unknown character");
+            return;
+        }
+
         auto text = view.substr(0, matchedSize);
 
         if (matchedKind != Token::IGNORE)
-            tokens.emplace_back(text, line, character, indent, matchedKind);
+            tokens.emplace_back(string(text), line, character, indent, matchedKind);
         view = view.substr(matchedSize);
 
         for (auto chr : text) {
@@ -73,5 +78,3 @@ TokenParser::TokenParser(std::string characters) : characters_(characters) {
     tokens.emplace_back("", line, character, indent, Token::EOI);
 }
 
-TokenParser::~TokenParser() {
-}

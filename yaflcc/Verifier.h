@@ -7,31 +7,8 @@
 
 #include "Ast.h"
 
-class Verifier : private ast::Visitor {
-private:
-    ast::Ast& ast;
 
-    void error(std::string);
-    void verifyType(ast::TypeDef*);
-    void verifyModule(ast::Module*);
-    void verifyFunction(ast::Function*);
-    void verifyExpression(ast::Expression*);
-
-    void visit(ast::LiteralValue*) override;
-    void visit(ast::Declaration*) override;
-    void visit(ast::DotOperator*) override;
-    void visit(ast::Call*) override;
-//    void visit(ast::BinaryMath*) override;
-//    void visit(ast::UnaryMath*) override;
-
-public:
-    std::vector<std::string> errors;
-
-    explicit Verifier(ast::Ast&);
-    ~Verifier() = default;
-
-
-};
+void verifyAllTheThings(ast::Ast& ast);
 
 
 #endif //YAFLCC_VERIFIER_H

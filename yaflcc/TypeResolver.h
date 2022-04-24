@@ -7,17 +7,9 @@
 
 #include "Ast.h"
 #include <vector>
+#include <string>
 
-class TypeResolver {
-private:
-    ast::Ast& ast;
-
-public:
-    std::vector<std::string> errors;
-
-    TypeResolver(ast::Ast&);
-    ~TypeResolver();
-};
+void findAllTheThings(ast::Ast& ast);
 
 
 #endif //YAFLCC_TYPERESOLVER_H

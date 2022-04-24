@@ -10,17 +10,6 @@
 #include <vector>
 #include <memory>
 
-class GrammarParser {
-private:
-    ParseState<bool> parseModule(Tokens tk);
-    ast::Ast& ast;
-
-public:
-    std::vector<std::string> errors;
-
-    GrammarParser(ast::Ast& ast, Tokens tokens);
-    ~GrammarParser();
-};
-
+void parseGrammar(Tokens tokens, ast::Ast& ast);
 
 #endif //YAFLCC_GRAMMARPARSER_H

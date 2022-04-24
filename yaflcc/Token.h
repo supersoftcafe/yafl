@@ -18,24 +18,25 @@ public:
     enum KIND {
         IGNORE = 0, UNKNOWN, EOI,
 
-        MODULE, FUN, LET,
-        NAME, NUMBER,
+        MODULE, FUN, LET, USE, WHERE,
+        NAME, INTEGER, FLOAT, STRING,
         COLON, QUESTION,
 
-        DOT,
+        DOT, AT,
         ADD, SUB, MUL, DIV, REM,
         SHL, ASHR, LSHR,
         AND, OR, XOR, NOT,
         EQ, NEQ, LT, LTE, GT, GTE,
 
         OBRACKET, CBRACKET, COMMA,
+        SQUARE_OPEN, SQUARE_CLOSE,
     };
 
-    Token(std::string_view text, uint32_t line, uint32_t character, uint32_t indent, KIND kind)
-        : text(text), line(line), indent(indent), character(character), kind(kind) { }
+    Token(std::string text, uint32_t line, uint32_t character, uint32_t indent, KIND kind)
+        : text(move(text)), line(line), indent(indent), character(character), kind(kind) { }
     Token() : text(), line(0), character(0), indent(0), kind(IGNORE) { }
 
-    std::string_view text;
+    std::string text;
     uint32_t line, character, indent;
     KIND kind;
 };

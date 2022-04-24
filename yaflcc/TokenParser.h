@@ -9,16 +9,8 @@
 #include <vector>
 #include <string>
 
-class TokenParser {
-private:
-    std::string characters_;
 
-public:
-    std::vector<Token> tokens;
-
-    explicit TokenParser(std::string characters);
-    ~TokenParser();
-};
+void parseTokens(std::string_view characters, std::vector<Token>& tokens, std::vector<std::string>& errors);
 
 
 #endif //YAFLCC_TOKENPARSER_H

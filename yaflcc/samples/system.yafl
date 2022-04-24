@@ -1,28 +1,22 @@
 
 module System
 
-delegate Func<TResult>(): TResult
-delegate Func<TResult,A>(a:A): TResult
-delegate Func<TResult,A,B>(a:A,b:B): TResult
-delegate Func<TResult,A,B,C>(a:A,b:B,c:C): TResult
-delegate Func<TResult,A,B,C,D>(a:A,b:B,c:C,d:D): TResult
+# delegate Func<TResult>(): TResult
+# delegate Func<TResult,A>(a:A): TResult
+# delegate Func<TResult,A,B>(a:A,b:B): TResult
+# delegate Func<TResult,A,B,C>(a:A,b:B,c:C): TResult
+# delegate Func<TResult,A,B,C,D>(a:A,b:B,c:C,d:D): TResult
 
-struct Tuple<A>(a:A)
-struct Tuple<A,B>(a:A,b:B)
-struct Tuple<A,B,C>(a:A,b:B,c:C)
-struct Tuple<A,B,C,D>(a:A,b:B,c:C,d:D)
+# struct Tuple<A>(a:A)
+# struct Tuple<A,B>(a:A,b:B)
+# struct Tuple<A,B,C>(a:A,b:B,c:C)
+# struct Tuple<A,B,C,D>(a:A,b:B,c:C,d:D)
 
 
-fun `=`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.add
+fun @Intrinsic `+`(a:Int8 , b:Int8 ):Int8  = a + b
+fun @Intrinsic `+`(a:Int16, b:Int16):Int16 = a + b
+fun @Intrinsic `+`(a:Int32, b:Int32):Int32 = a + b
+fun @Intrinsic `+`(a:Int64, b:Int64):Int64 = a + b
 
-fun `+`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.add
-fun `-`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.sub
-fun `*`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.mul
-fun `/`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.div
-fun `%`<V>(a():V,b():V):V where V in [Int8, Int16, Int32, Int64, Float32, Float64] = $ir.rem
-
-fun `?:`<V>(condition:Bool,a():V,b():V):V =
-    if condition
-        a
-    else
-        b
+fun @Intrinsic `+`(a:Float32, b:Float32):Float32 = a + b
+fun @Intrinsic `+`(a:Float64, b:Float64):Float64 = a + b
