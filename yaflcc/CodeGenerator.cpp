@@ -3,3 +3,14 @@
 //
 
 #include "CodeGenerator.h"
+
+using namespace ast;
+using namespace std;
+
+
+
+
+
+void generateTheCode(Ast& ast, ostream& out) {
+
+}

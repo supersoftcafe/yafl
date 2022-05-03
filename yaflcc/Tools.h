@@ -7,6 +7,9 @@
 
 #include <vector>
 
+template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
+
 template <class T>
 std::vector<T> operator + (std::vector<T> const & a, std::vector<T> const & b) {
     std::vector<T> result;

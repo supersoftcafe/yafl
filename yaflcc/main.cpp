@@ -3,7 +3,9 @@
 #include "TokenParser.h"
 #include "GrammarParser.h"
 #include "TypeResolver.h"
-#include "Verifier.h"
+#include "CodeGenerator.h"
+#include "Printer.h"
+#include "Tools.h"
 
 #include <iostream>
 #include <fstream>
@@ -12,15 +14,6 @@
 
 using namespace ast;
 using namespace std;
-
-void printFunctions(Ast& ast) {
-    for (auto& module : ast.modules) {
-        cout << endl << "module " << module->name << endl << endl;
-        for (auto& function : module->functions) {
-            cout << "fun " << function << endl;
-        }
-    }
-}
 
 
 char const * inputFiles[] = {
@@ -46,20 +39,19 @@ int main(int argc, char** argv) {
 
         cerr << "Parsing " << filename << endl;
 
-        parseTokens(characters, tokens, ast.errors);
+        parseTokens(filename, characters, tokens, ast.errors);
         if (!empty(ast.errors)) return exitWithErrors();
 
         parseGrammar(tokens, ast);
         if (!empty(ast.errors)) return exitWithErrors();
     }
 
-    printFunctions(ast);
-
     findAllTheThings(ast);
     if (!empty(ast.errors)) return exitWithErrors();
 
-    verifyAllTheThings(ast);
-    if (!empty(ast.errors)) return exitWithErrors();
+    cout << ast << endl;
+
+    generateTheCode(ast, std::cout);
 
     return 0;
 }

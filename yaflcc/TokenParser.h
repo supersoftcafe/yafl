@@ -10,7 +10,7 @@
 #include <string>
 
 
-void parseTokens(std::string_view characters, std::vector<Token>& tokens, std::vector<std::string>& errors);
+void parseTokens(std::string file, std::string_view characters, std::vector<Token>& tokens, std::vector<std::string>& errors);
 
 
 #endif //YAFLCC_TOKENPARSER_H

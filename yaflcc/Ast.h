@@ -12,104 +12,117 @@
 #include <utility>
 #include <variant>
 #include <string>
+#include <forward_list>
 #include <vector>
 #include <unordered_set>
 #include <span>
 #include <ostream>
 
+#include "Type.h"
 
 namespace ast {
     using namespace std;
 
 
     struct Module;
-    struct Visitor;
-    struct Function;
-    struct TypeDef;
+    struct Declaration;
+    struct Variable;
     struct Expression;
-
-
-
 
     // Imports and options that come after a module line in a given file
     // that are used as scope for each of the declarations.
     struct ScopeContext {
-        string moduleName ;
-        Module*    module = nullptr;
+        Module* owner;
+        forward_list<Module*> modules;
     };
 
-    struct TypeRef {
-        string moduleName;
-        string typeName;
-        vector<TypeRef> parameters;
-    };
-
-    struct TypeDef {
-        enum KIND {
-            BUILTIN, STRUCTURE, CLASS, FUNCTION
-        } kind = BUILTIN;
-        string name;
+    struct Primitive {
+        enum Kind { BOOL, INT8, INT16, INT32, INT64, FLOAT32, FLOAT64 } kind;
         string irType;
-        span<ScopeContext> scope;
+    };
+    struct Field { string name; Type type; };
+    struct Structure { vector<Field> fields;};
+    struct Declaration {
+        ScopeContext* scope;
+        string name;
+        variant<Primitive, Structure> type;
     };
 
-    struct GenericParam {
-        string name;
+
+    struct LoadField {
+        string fieldName;
+        forward_list<Expression> base; // Must have exactly one element
     };
 
-    struct Function {
-        string name;
-        TypeRef result;
-        unordered_set<string> annotations;
-        unique_ptr<Expression> body;
-        vector<unique_ptr<Function>> parameters;
-        vector<GenericParam> genericParameters;
-        TypeDef* type { nullptr };
-        span<ScopeContext> scope;
+    struct LoadVariable {
+        string fieldName;
+        Variable* variable;
+    };
 
-        ~Function();
-        void print(ostream&);
+    struct StoreField {
+        string fieldName;
+        forward_list<Expression> base; // Must have exactly one element
+        forward_list<Expression> value; // Must have exactly one element
+    };
+
+    struct StoreVariable {
+        string fieldName;
+        Module* module; // If nullptr, module is either not known, or field is local
+        forward_list<Expression> value; // Must have exactly one element
+    };
+
+    struct Call {
+        forward_list<Expression> base; // Must have exactly one element
+        forward_list<Expression> parameters;
+    };
+
+    struct Lambda {
+        forward_list<Variable> parameters;
+        forward_list<Expression> body; // Must have exactly one element
+    };
+
+    struct Intrinsic {
     };
 
     struct Expression {
-        vector<unique_ptr<Function>> declarations;
-        vector<unique_ptr<Expression>> parameters; // For CALL 1st entry is the function, the rest are the params
-        TypeDef* type { nullptr };
-        string value;
-        enum KIND {
-            INTEGER, FLOAT, STRING,
-
-            UNQUALIFIED_NAME,
-            QUALIFIED_NAME,     // Left hand side could resolve to instance or type
-            CALL
-        } kind;
-
-        Expression(KIND k, vector<unique_ptr<Expression>> p) : parameters(move(p)), kind(k) { }
-        Expression(KIND k, string v) : value(move(v)), kind(k) { }
-        ~Expression() = default;
-
-        void print(ostream&);
+        Source source;
+        Type type;
+        forward_list<Variable> variables;
+        variant<monostate, int64_t, double, string, LoadField, LoadVariable, StoreField, StoreVariable, Call, Lambda, Intrinsic> op;
     };
+
+    struct Variable {
+        Source source;
+        ScopeContext* scope;
+        string name;
+        Type type;
+        Expression value;
+    };
+
+
+
+
+
 
     struct Module {
         string name;
-
-        vector<vector<ScopeContext>> scopes;
-        vector<unique_ptr<TypeDef>>  types;
-        vector<unique_ptr<Function>> functions;
+        ScopeContext* selfScope;
+        forward_list<ScopeContext>      scopes;
+        forward_list<Declaration> declarations;
+        forward_list<Variable>       variables;
     };
 
     struct Ast {
         vector<string> errors;
-        vector<unique_ptr<Module>> modules;
+        forward_list<Module> modules;
 
-        TypeDef* typeBool  = nullptr;
-        TypeDef* typeInt8  = nullptr;
-        TypeDef* typeInt16 = nullptr;
-        TypeDef* typeInt32 = nullptr;
-        TypeDef* typeInt64 = nullptr;
-        TypeDef* typeFloat32 = nullptr;
-        TypeDef* typeFloat64 = nullptr;
+        Type typeBool;
+        Type typeInt8;
+        Type typeInt16;
+        Type typeInt32;
+        Type typeInt64;
+        Type typeFloat32;
+        Type typeFloat64;
 
         Ast();
         ~Ast();
@@ -118,14 +131,5 @@ namespace ast {
     };
 };
 
-inline std::ostream& operator << (std::ostream& out, std::unique_ptr<ast::Expression> const & expr) {
-    expr->print(out);
-    return out;
-}
-
-inline std::ostream& operator << (std::ostream& out, std::unique_ptr<ast::Function> const & function) {
-    function->print(out);
-    return out;
-}
 
 #endif //YAFLCC_AST_H

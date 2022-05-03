@@ -8,7 +8,7 @@
 
 using namespace std;
 
-void parseTokens(string_view view, vector<Token>& tokens, vector<string>& errors) {
+void parseTokens(string file, string_view view, vector<Token>& tokens, vector<string>& errors) {
 #define Rx(expr, tok)    { regex(expr), Token::tok },
     pair<regex, Token::KIND> PATTERNS[] {
             Rx("([ \r\n]+)|(#[^\r\n]*\n)", IGNORE )
@@ -24,17 +24,19 @@ void parseTokens(string_view view, vector<Token>& tokens, vector<string>& errors
             Rx("\\(", OBRACKET ) Rx("\\[", SQUARE_OPEN)
             Rx("\\)", CBRACKET ) Rx("\\]", SQUARE_CLOSE)
 
+            Rx("__intrinsic__", INTRINSIC)
             Rx("use", USE )
             Rx("module", MODULE )
             Rx("(fun)|(let)", FUN )
             Rx("(`[^`]+`)|([a-zA-Z_][a-zA-Z_0-9]*)", NAME )
 
-            Rx("[+-]?([0-9]*)\\.[0-9]+", FLOAT )
-            Rx("[+-]?((0b[_0-1]+)|(0o[_0-7]+)|(0x[_0-9a-f]+)|([0-9]+))", INTEGER )
+            Rx("[+-]?([0-9]*)\\.[0-9]+(f[48])?", FLOAT )
+            Rx("[+-]?((0b[_0-1]+)|(0o[_0-7]+)|(0x[_0-9a-f]+)|([0-9]+))(i[1248])?", INTEGER )
             Rx("\"([^\"]|\\\\\")*\"", STRING )
     };
 
-    uint32_t line = 1, character = 1, indent = 0;
+    Source source(file, 1, 1);
+    uint32_t indent = 0;
     bool startOfLine = true;
 
     while (!view.empty()) {
@@ -51,30 +53,30 @@ void parseTokens(string_view view, vector<Token>& tokens, vector<string>& errors
         }
 
         if (matchedSize == 0) {
-            errors.emplace_back(to_string(line) + ':' + to_string(indent) + " unknown character");
+            errors.emplace_back(to_string(source.line) + ':' + to_string(indent) + " unknown character");
             return;
         }
 
         auto text = view.substr(0, matchedSize);
 
         if (matchedKind != Token::IGNORE)
-            tokens.emplace_back(string(text), line, character, indent, matchedKind);
+            tokens.emplace_back(string(text), source, indent, matchedKind);
         view = view.substr(matchedSize);
 
         for (auto chr : text) {
             if (chr == '\n') {
-                line += 1;
-                character = 0;
+                source.line += 1;
+                source.character = 0;
                 startOfLine = true;
                 indent = 0;
             } else if (startOfLine) {
                 if (chr == ' ') indent ++;
                 else startOfLine = false;
             }
-            character += 1;
+            source.character += 1;
         }
     }
 
-    tokens.emplace_back("", line, character, indent, Token::EOI);
+    tokens.emplace_back("", source, indent, Token::EOI);
 }
 

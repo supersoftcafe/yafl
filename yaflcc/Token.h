@@ -13,11 +13,21 @@
 #include <tuple>
 #include <span>
 
-class Token {
-public:
+
+struct Source {
+    std::string file;
+    uint32_t line;
+    uint32_t character;
+
+    Source(std::string const & file, uint32_t line, uint32_t character) : file(file), line(line), character(character) { }
+    Source() : file{}, line{}, character{} { }
+};
+
+struct Token {
     enum KIND {
         IGNORE = 0, UNKNOWN, EOI,
 
+        INTRINSIC,
         MODULE, FUN, LET, USE, WHERE,
         NAME, INTEGER, FLOAT, STRING,
         COLON, QUESTION,
@@ -32,16 +42,18 @@ public:
         SQUARE_OPEN, SQUARE_CLOSE,
     };
 
-    Token(std::string text, uint32_t line, uint32_t character, uint32_t indent, KIND kind)
-        : text(move(text)), line(line), indent(indent), character(character), kind(kind) { }
-    Token() : text(), line(0), character(0), indent(0), kind(IGNORE) { }
+    Token(std::string text, Source source, uint32_t indent, KIND kind)
+        : text(move(text)), source(source), indent(indent), kind(kind) { }
+    Token() : text(), indent(0), kind(IGNORE) { }
 
     std::string text;
-    uint32_t line, character, indent;
+    Source source;
+    uint32_t indent;
     KIND kind;
 };
 
 using Tokens = std::span<Token>;
+
 
 
 // Needs to embody
@@ -80,11 +92,19 @@ inline Token* peekToken(Tokens tokens) {
     return &tokens.front();
 }
 
-template <class T>
-inline ParseState<T> operator | (ParseState<T> opt1, ParseState<T> opt2) {
-    return empty(opt1) ? opt2 : opt1;
+
+template <class Type>
+inline ParseState<Type> operator | (ParseState<Type> p1, ParseState<Type> p2) {
+    if (p1.has_result() || (!p2.has_result() && !p2.has_errors()))
+        return std::move(p1);
+    return std::move(p2);
 }
 
-
+template <class Type, typename Lambda>
+inline ParseState<Type> operator | (ParseState<Type> p1, Lambda p2) {
+    if (p1.has_result())
+        return std::move(p1);
+    return p2();
+}
 
 #endif //YAFLCC_TOKEN_H

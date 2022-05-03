@@ -14,390 +14,465 @@ using namespace std;
 using namespace ast;
 
 
-struct GrammarParser {
-    Ast& ast;
 
-    ParseState<bool> parseModule(Tokens tk);
-};
-
-
-static vector<string> fail(Tokens tokens, char const * message) {
-    if (tokens.empty()) return { "end of file" };
-    return { to_string(tokens.front().line) + ':' + to_string(tokens.front().character) + ' ' + message };
+static vector<string> fail(Tokens tokens, char const *message) {
+    if (tokens.empty()) return {"end of file"};
+    auto& source = tokens.front().source;
+    return {to_string(source.line) + ':' + to_string(source.character) + ' ' + message};
 }
 
-template <class T> static vector<string> fail(ParseState<T> state, Tokens tokens, char const * message) {
+template<class T>
+static vector<string> fail(ParseState<T> state, Tokens tokens, char const *message) {
     vector<string> errors = state.errors();
     if (tokens.empty()) errors.emplace_back("end of file");
-    errors.emplace_back(to_string(tokens.front().line) + ':' + to_string(tokens.front().character) + ' ' + message);
+    auto& source = tokens.front().source;
+    errors.emplace_back(to_string(source.line) + ':' + to_string(source.character) + ' ' + message);
     return errors;
 }
 
-static string join(span<string> strings, string const & separator) {
+static string join(span<string> strings, string const &separator) {
     if (size(strings) == 0) return {};
     else if (size(strings) == 1) return strings[0];
     else return strings[0] + separator + join(strings.subspan(1), separator);
 }
 
-static ParseState<vector<string>> parseDottyName(Tokens tk) {
-    vector<string> names;
+template <typename TInt> static bool inRange(int64_t intValue) {
+    return intValue >= int64_t(numeric_limits<TInt>::min()) && intValue <= int64_t(numeric_limits<TInt>::max());
+}
 
-    auto name = getToken(tk);
-    if (name.result()->kind != Token::NAME)
-        return fail(name, "Expected NAME token");
-    tk = name;
 
-    names.emplace_back(name.result()->text);
+struct GrammarParser {
+    Ast &ast;
 
-    for (;;) {
-        auto dot = getToken(tk);
-        if (dot.result()->kind != Token::DOT)
-            return { tk, move(names) };
-        tk = dot;
 
-        name = getToken(tk);
+    ParseState<vector<string>> parseDottyName(Tokens tk) {
+        vector<string> names;
+
+        auto name = getToken(tk);
         if (name.result()->kind != Token::NAME)
             return fail(name, "Expected NAME token");
         tk = name;
 
         names.emplace_back(name.result()->text);
+
+        for (;;) {
+            auto dot = getToken(tk);
+            if (dot.result()->kind != Token::DOT)
+                return {tk, move(names)};
+            tk = dot;
+
+            name = getToken(tk);
+            if (name.result()->kind != Token::NAME)
+                return fail(name, "Expected NAME token");
+            tk = name;
+
+            names.emplace_back(name.result()->text);
+        }
     }
-}
 
-static ParseState<string> parseModuleName(Tokens tk) {
-    auto r1 = getToken(tk);
-    if (r1.result()->kind != Token::MODULE)
-        return fail(r1, "Expected MODULE token");
+    ParseState<string> parseModuleName(Tokens tk) {
+        auto r1 = getToken(tk);
+        if (r1.result()->kind != Token::MODULE)
+            return fail(tk, "Expected MODULE token");
 
-    auto r2 = parseDottyName(r1);
-    if (!r2.has_result())
-        return fail(move(r2), tk, "Expected a module name");
+        auto r2 = parseDottyName(r1);
+        if (!r2.has_result())
+            return fail(move(r2), tk, "Expected a module name");
 
-    return { r2, join(span(r2.result()), ".") };
-}
-
-static ParseState<TypeRef> parseTypeRef(Tokens tk) {
-    auto namesResult = parseDottyName(tk);
-    if (!namesResult.has_result())
-        return move(namesResult.errors());
-    tk = namesResult;
-    auto& names = namesResult.result();
-
-    if (size(names) > 1) {
-        return { tk, { .moduleName = join(span(names).subspan(0, size(names)-1), ".") , .typeName = names.back() }};
-    } else {
-        return { tk, { .typeName = names.back() }};
+        return {r2, join(span(r2.result()), ".")};
     }
-}
 
+    ParseState<Named> parseNamedType(Tokens tk) {
+        auto namesResult = parseDottyName(tk);
+        if (!namesResult.has_result())
+            return move(namesResult.errors());
+        tk = namesResult;
+        auto &names = namesResult.result();
 
-
-
-static ParseState<unique_ptr<Expression>> justValue(Tokens tk) {
-    auto token = getToken(tk);
-    tk = token;
-
-    auto text = token.result()->text;
-    switch (token.result()->kind) {
-        case Token::INTEGER:
-            return { tk, make_unique<Expression>(Expression::INTEGER, string(text)) };
-
-        case Token::FLOAT:
-            return { tk, make_unique<Expression>(Expression::FLOAT, string(text)) };
-
-        case Token::STRING:
-            return { tk, make_unique<Expression>(Expression::FLOAT, string(text.substr(1, text.size() - 2))) };
-
-        case Token::NAME:
-            return { tk, make_unique<Expression>(Expression::NAME, string(text)) };
-
-        default:
-            return fail(tk, "Expected name or number here");
+        if (size(names) > 1) {
+            auto module = ast.findOrCreateModule(join(span(names).subspan(0, size(names) - 1), "."));
+            return {tk, Named{ .typeName = names.back(), .module = module , .declaration = nullptr }};
+        } else {
+            return {tk, Named{ .typeName = names.back(), .module = nullptr, .declaration = nullptr }};
+        }
     }
-}
 
-typedef function<ParseState<unique_ptr<Expression>>(Tokens)> ParseExprFunc;
-typedef vector<pair<Token::KIND, string>> OpsVector;
+    ParseState<Tuple> parseTupleType(Tokens tk) {
+        auto open = getToken(tk);
+        if (open.result()->kind != Token::OBRACKET)
+            return {};
+        tk = open;
 
-static ParseState<unique_ptr<Expression>> parseUnaryExpr(Tokens tk, OpsVector const & opsVec, ParseExprFunc const & nextExpression) {
-    auto token = getToken(tk);
-    if (!token.has_result())
-        return nextExpression(tk);
+        Tuple tuple;
+        int count = 0;
+        bool needsComma = false;
+        while (peekToken(tk)->kind != Token::CBRACKET) {
+            auto name = "value" + to_string(++count);
 
-    auto found = find_if(begin(opsVec), end(opsVec), [&token](auto& op){return op.first == token.result()->kind;});
-    if (found == end(opsVec))
-        return nextExpression(tk);
+            // Comma or bracket
+            if (needsComma) {
+                auto comma = getToken(tk);
+                if (comma.result()->kind != Token::COMMA)
+                    return fail(tk, "Expected comma or close bracket");
+                tk = comma;
+            }
+            needsComma = true;
 
-    auto rhs = nextExpression(token);
-    if (!rhs.has_result())
-        return nextExpression(tk);
-    tk = rhs;
+            // Is this a named field? Otherwise the default name is left as is.
+            auto token = getToken(tk);
+            if (token.result()->kind == Token::NAME) {
+                // If next is colon, then this really is a name and not a type
+                auto colon = getToken(token);
+                if (colon.result()->kind == Token::COLON) {
+                    name = token.result()->text;
+                    tk = colon; // Advance
+                }
+            }
 
-    vector<unique_ptr<Expression>> params;
-    params.emplace_back(make_unique<Expression>(Expression::NAME, string(found->second)));
-    params.emplace_back(move(rhs.result()));
+            // Defo must have a type
+            auto nestedType = parseType(tk);
+            if (!nestedType.has_result())
+                return fail(tk, "Expected a type here");
+            tuple.parameters.emplace_back(Parameter{.name = name, .type = move(nestedType.result())});
+            tk = nestedType;
+        }
 
-    return { tk, make_unique<Expression>(Expression::CALL, move(params)) };
-}
+        auto close = getToken(tk);
+        return {close, move(tuple)};
+    }
 
-static ParseState<unique_ptr<Expression>> parseBinaryExpr(Tokens tk, OpsVector const & opsVec, ParseExprFunc const & nextExpression) {
-    auto lhs = nextExpression(tk);
-    if (!lhs.has_result())
-        return lhs;
-    tk = lhs;
+    ParseState<Function> parseFunctionType(Tokens tk) {
+        auto tuple = parseTupleType(tk);
+        if (!tuple.has_result())
+            return { };
+        tk = tuple;
 
-    for (;;) {
+        auto colon = getToken(tk);
+        if (colon.result()->kind != Token::COLON)
+            return { };
+        tk = colon;
+
+        auto result = parseType(tk);
+        if (!result.has_result())
+            return { };
+        tk = result;
+
+        return {tk, Function{.parameter = move(tuple.result()), .result = {move(result.result())} } };
+    }
+
+
+    ParseState<Type> parseType(Tokens tk) {
+        auto n = parseNamedType(tk);
+        if (n.has_result())
+            return {n, Type{.type{move(n.result())}}};
+
+        auto f = parseFunctionType(tk);
+        if (f.has_result())
+            return {f, Type{.type{move(f.result())}}};
+
+        auto t = parseTupleType(tk);
+        if (t.has_result())
+            return {t, Type{.type{move(t.result())}}};
+
+        if (n.has_errors())
+            return move(n.errors());
+        if (f.has_errors())
+            return move(f.errors());
+        return move(t.errors());
+    }
+
+
+    ParseState<Expression> parseIntrinsic(Tokens tk) {
+        auto intrinsic = getToken(tk);
+        if (intrinsic.result()->kind != Token::INTRINSIC)
+            return { };
+        tk = intrinsic;
+
+        return {tk, Expression{ .source = intrinsic.result()->source, .op = Intrinsic { }}};
+    }
+
+    ParseState<Expression> justValue(Tokens tk) {
+        auto token = getToken(tk);
+
+        auto text = token.result()->text;
+        switch (token.result()->kind) {
+            case Token::INTEGER:
+                text.erase(remove(begin(text), end(text), '_'), end(text));
+                try {
+                    auto base = text.starts_with("0b") ? 2 : (text.starts_with("0o") ? 8 : (text.starts_with("0x") ? 16 : 10));
+                    auto type = text.ends_with("i1") ? ast.typeInt8 : (text.ends_with("i2") ? ast.typeInt16 : (text.ends_with("i8") ? ast.typeInt64 : ast.typeInt32));
+                    if (base == 10) return {token, Expression{.type = type, .op = stoll(text, nullptr, 10)}};
+                    return {token, Expression{ .source = token.result()->source, .type = type, .op = (int64_t)stoull(text.substr(2), nullptr,  base)}};
+                } catch (out_of_range const &e) {
+                    return fail(tk, "Invalid string literal");
+                }
+
+            case Token::FLOAT:
+                return {token, Expression{ .source = token.result()->source, .type = text.ends_with("f4") ? ast.typeFloat32 : ast.typeFloat64, .op = stod(text)}};
+
+//            case Token::STRING:
+//                return { token, Expression{.type = ast.typeString, .op = text.substr(1, text.size() - 2) } };
+
+            case Token::NAME:
+                return {token, Expression{ .source = token.result()->source, .op = LoadVariable { .fieldName = text, .variable = nullptr } } };
+
+            default:
+                return fail(tk, "Expected name or number here");
+        }
+    }
+
+    typedef function<ParseState<Expression>(Tokens)> ParseExprFunc;
+    typedef vector<pair<Token::KIND, string>> OpsVector;
+
+    ParseState<Expression> parseUnaryExpr(
+            Tokens tk, int nextLevel, OpsVector const & opsVec) {
         auto token = getToken(tk);
         if (!token.has_result())
-            return move(lhs);
-        tk = token;
+            return parseExpression(tk, nextLevel);
 
-        auto found = find_if(begin(opsVec), end(opsVec), [&token](auto& op){return op.first == token.result()->kind;});
+        auto found = find_if(begin(opsVec), end(opsVec), [&token](auto &op) { return op.first == token.result()->kind; });
         if (found == end(opsVec))
-            return move(lhs);
+            return parseExpression(tk, nextLevel);
 
-        auto rhs = nextExpression(tk);
+        auto rhs = parseExpression(token, nextLevel);
         if (!rhs.has_result())
-            return move(lhs);
+            return parseExpression(tk, nextLevel);
         tk = rhs;
 
-        vector<unique_ptr<Expression>> params;
-        params.emplace_back(make_unique<Expression>(Expression::NAME, string(found->second)));
-        params.emplace_back(move(lhs.result()));
-        params.emplace_back(move(rhs.result()));
-
-        lhs.emplace(tk, make_unique<Expression>(Expression::CALL, move(params)));
+        return {tk, Expression{ .source = rhs.result().source, .op = Call{
+            .base = { { .source = rhs.result().source, .op = LoadVariable{.fieldName = found->second, .variable = nullptr } } },
+            .parameters = {
+                move(rhs.result())
+        } } } };
     }
-}
 
-static ParseState<unique_ptr<Expression>> parseTernaryExpr(Tokens tk, string const & opName, Token::KIND firstKind, Token::KIND secondKind, ParseExprFunc const & nextExpression) {
-    auto lhs = nextExpression(tk);
-    if (!lhs.has_result())
-        return lhs;
-    tk = lhs;
+    ParseState<Expression> parseBinaryExpr(
+            Tokens tk, int nextLevel, OpsVector const & opsVec) {
+        auto lhs = parseExpression(tk, nextLevel);
+        if (!lhs.has_result())
+            return lhs;
+        tk = lhs;
 
-    auto firstToken = getToken(tk);
-    if (!firstToken.has_result() || firstToken.result()->kind != firstKind)
-        return move(lhs);
-    tk = firstToken;
-
-    auto middle = parseTernaryExpr(tk, opName, firstKind, secondKind, nextExpression);
-    if (!middle.has_result())
-        return move(lhs);
-    tk = middle;
-
-    auto secondToken = getToken(tk);
-    if (!secondToken.has_result() || secondToken.result()->kind != secondKind)
-        return move(lhs);
-    tk = secondToken;
-
-    auto rhs = parseTernaryExpr(tk, opName, firstKind, secondKind, nextExpression);
-    if (!rhs.has_result())
-        return move(rhs);
-    tk = rhs;
-
-    vector<unique_ptr<Expression>> params;
-    params.emplace_back(make_unique<Expression>(Expression::NAME, opName));
-    params.emplace_back(move(lhs.result()));
-    params.emplace_back(move(middle.result()));
-    params.emplace_back(move(rhs.result()));
-
-    return { tk, make_unique<Expression>(Expression::CALL, move(params))};
-}
-
-auto parseExpression =
-        ParseExprFunc{bind(parseTernaryExpr, placeholders::_1, "`?:`", Token::QUESTION, Token::COLON,
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::OR , "`|`" } },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::XOR, "`^`" } },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::AND, "`&`" } },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::EQ , "`=`" }, {Token::NEQ , "`!=`"} },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::LT , "`<`" }, {Token::LTE , "`<=`"}, {Token::GTE , "`>=`" }, {Token::GT, "`>`" } },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::SHL, "`<<`"}, {Token::ASHR, "`>>`"}, {Token::LSHR, "`>>>`"} },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" } },
-        ParseExprFunc{bind(parseBinaryExpr, placeholders::_1, OpsVector{ {Token::MUL, "`*`" }, {Token::DIV , "`/`" }, {Token::REM , "`%`"  } },
-        ParseExprFunc{bind(parseUnaryExpr , placeholders::_1, OpsVector{ {Token::ADD, "`+`" }, {Token::SUB , "`-`" }, {Token::NOT , "`!`"  } },
-        ParseExprFunc{justValue}
-)})})})})})})})})})};
-
-
-
-
-
-static ParseState<unique_ptr<Function>> parseFunctionPrototype(Tokens tk, span<ScopeContext> scope = { }) {
-    auto name = getToken(tk);
-    if (name.result()->kind != Token::NAME)
-        return fail(name, "Expected NAME token");
-    tk = name;
-
-    auto fn = make_unique<Function>();
-    fn->name = name.result()->text;
-    fn->scope = scope;
-
-    auto oangle = getToken(tk);
-    if (oangle.result()->kind == Token::LT) {
-        tk = oangle;
-
-        bool commaRequired = false;
         for (;;) {
-            auto cangle = getToken(tk);
-            if (cangle.result()->kind == Token::GT) {
-                tk = cangle;
-                break;
-            }
+            auto token = getToken(tk);
+            if (!token.has_result())
+                return move(lhs);
+            tk = token;
 
-            if (commaRequired) {
-                auto comma = getToken(tk);
-                if (comma.result()->kind != Token::COMMA)
-                    return fail(comma, "Expected COMMA token");
-                tk = comma;
-            } commaRequired = true;
+            auto found = find_if(begin(opsVec), end(opsVec),
+                                 [&token](auto &op) { return op.first == token.result()->kind; });
+            if (found == end(opsVec))
+                return move(lhs);
 
-            // TODO: Parse actual generic constraint
-            auto param = getToken(tk);
-            if (param.result()->kind != Token::NAME)
-                return fail(param, "Expected NAME token");
-            tk = param;
+            auto rhs = parseExpression(tk, nextLevel);
+            if (!rhs.has_result())
+                return move(lhs);
+            tk = rhs;
 
-            fn->genericParameters.emplace_back(GenericParam{.name = param.result()->text });
+            return {tk, Expression{ .source = lhs.result().source, .op = Call{
+                .base = { { .source = lhs.result().source, .op = LoadVariable{.fieldName = found->second, .variable = nullptr } } },
+                .parameters = {
+                    move(lhs.result()),
+                    move(rhs.result())
+            } } } };
         }
     }
 
-    auto obracket = getToken(tk);
-    if (obracket.result()->kind == Token::OBRACKET) {
-        tk = obracket;
+    ParseState<Expression> parseTernaryExpr(
+            Tokens tk, int nextLevel, string const &opName, Token::KIND firstKind, Token::KIND secondKind) {
+        auto lhs = parseExpression(tk, nextLevel);
+        if (!lhs.has_result())
+            return lhs;
+        tk = lhs;
 
-        bool commaRequired = false;
-        for (;;) {
-            auto cbracket = getToken(tk);
-            if (cbracket.result()->kind == Token::CBRACKET) {
-                tk = cbracket;
-                break;
-            }
+        auto firstToken = getToken(tk);
+        if (!firstToken.has_result() || firstToken.result()->kind != firstKind)
+            return move(lhs);
+        tk = firstToken;
 
-            if (commaRequired) {
-                auto comma = getToken(tk);
-                if (comma.result()->kind != Token::COMMA)
-                    return fail(comma, "Expected COMMA token");
-                tk = comma;
-            } commaRequired = true;
+        auto middle = parseTernaryExpr(tk, nextLevel, opName, firstKind, secondKind);
+        if (!middle.has_result())
+            return move(lhs);
+        tk = middle;
 
-            auto param = parseFunctionPrototype(tk);
-            if (!param.has_result())
-                return move(param);
-            tk = param;
+        auto secondToken = getToken(tk);
+        if (!secondToken.has_result() || secondToken.result()->kind != secondKind)
+            return move(lhs);
+        tk = secondToken;
 
-            fn->parameters.push_back(move(param.result()));
+        auto rhs = parseTernaryExpr(tk, nextLevel, opName, firstKind, secondKind);
+        if (!rhs.has_result())
+            return move(rhs);
+        tk = rhs;
+
+        return {tk, Expression{ .source = lhs.result().source, .op = Call{
+            .base = { { .source = lhs.result().source, .op = LoadVariable{.fieldName = opName, .variable = nullptr } } },
+            .parameters = {
+                move(lhs.result()),
+                move(middle.result()),
+                move(rhs.result())
+        } } } };
+    }
+
+    ParseState<Expression> parseExpression(Tokens tk, int level = 0) {
+        switch (level) {
+            case 0:return parseTernaryExpr(tk, level + 1, "`?:`", Token::QUESTION, Token::COLON);
+            case 1: return parseBinaryExpr(tk, level + 1, {{Token::OR,   "`|`"}});
+            case 2: return parseBinaryExpr(tk, level + 1, {{Token::XOR,  "`^`"}});
+            case 3: return parseBinaryExpr(tk, level + 1, {{Token::AND,  "`&`"}});
+            case 4: return parseBinaryExpr(tk, level + 1, {{Token::EQ,   "`=`"}, {Token::NEQ,  "`!=`"}});
+            case 5: return parseBinaryExpr(tk, level + 1, {{Token::LT,   "`<`"}, {Token::LTE,  "`<=`"}, {Token::GTE,   "`>=`"}, {Token::GT,  "`>`"}});
+            case 6: return parseBinaryExpr(tk, level + 1, {{Token::SHL, "`<<`"}, {Token::ASHR, "`>>`"}, {Token::LSHR, "`>>>`"}});
+            case 7: return parseBinaryExpr(tk, level + 1, {{Token::ADD,  "`+`"}, {Token::SUB,   "`-`"}});
+            case 8: return parseBinaryExpr(tk, level + 1, {{Token::MUL,  "`*`"}, {Token::DIV,   "`/`"}, {Token::REM,    "`%`"}});
+            case 9: return parseUnaryExpr( tk, level + 1, {{Token::ADD,  "`+`"}, {Token::SUB,   "`-`"}, {Token::NOT,    "`!`"}});
+            default: return justValue(tk);
         }
     }
 
-    auto colon = getToken(tk);
-    if (colon.result()->kind != Token::COLON)
-        return fail(colon, "Expected COLON token");
-    tk = colon;
+    ParseState<Variable> parseLet(Tokens tk, ScopeContext* scope = nullptr) {
+        auto let = getToken(tk);
+        if (let.result()->kind != Token::LET)
+            return { }; // Not a let expression
+        tk = let;
 
-    auto type = parseTypeRef(tk);
-    if (!type.has_result())
-        return move(type.errors());
-    tk = type;
-    fn->result = move(type.result());
+        auto name = getToken(tk);
+        if (name.result()->kind != Token::NAME)
+            return fail(tk, "Expected NAME token");
+        tk = name;
 
-    auto equals = getToken(tk);
-    if (equals.result()->kind == Token::EQ) {
-        tk = equals;
+        Type type;
+        auto colon = getToken(tk);
+        if (colon.result()->kind == Token::COLON) {
+            auto rtype = parseType(tk);
+            if (!rtype.has_result())
+                return fail(rtype, tk, "Expected type");
+            type = move(rtype.result());
+            tk = rtype;
+        }
+
         auto expr = parseExpression(tk);
         if (!expr.has_result())
-            return move(expr.errors());
+            return fail(expr, tk, "Expected expression");
         tk = expr;
 
-        fn->body = move(expr.result());
+        return {tk, {
+            .source = let.result()->source,
+            .scope = scope,
+            .name = move(name.result()->text),
+            .type = move(type),
+            .value = move(expr.result())
+        }};
     }
 
-    return { tk, move(fn) };
-}
+    ParseState<Variable> parseFun(Tokens tk, ScopeContext* scope = nullptr) {
+        auto fun = getToken(tk);
+        if (fun.result()->kind != Token::FUN)
+            return { }; // Not a function declaration
+        tk = fun;
 
-static ParseState<unordered_set<string>> parseAnnotations(Tokens tk) {
-    auto token = getToken(tk);
-    if (token.result()->kind != Token::AT)
-        return { tk, unordered_set<string>() };
+        auto name = getToken(tk);
+        if (name.result()->kind != Token::NAME)
+            return fail(name, "Expected NAME token");
+        tk = name;
 
-    auto name = getToken(token);
-    if (name.result()->kind != Token::NAME)
-        return fail(tk, "Expected annotation");
+        auto type = parseFunctionType(tk);
+        if (!type.has_result())
+            return fail(type, name, "Expected function type");
+        tk = type;
 
-    auto result = parseAnnotations(name);
-    if (result.has_result()) {
-        auto& set = result.result();
-        set.insert(move(name.result()->text));
-        return { result, move(set) };
-    } else {
-        return fail(result, tk, "Bad annotation");
+        forward_list<Variable> parameters;
+        auto& typeParams = type.result().parameter.parameters;
+        for (auto it = rbegin(typeParams); it != rend(typeParams); it++)
+            parameters.emplace_front(Variable{.scope = nullptr, .name = it->name, .type = it->type });
+
+        auto equals = getToken(tk);
+        if (equals.result()->kind != Token::EQ)
+            return fail(type, "Expected equals");
+        tk = equals;
+
+        auto expr = parseIntrinsic(tk) | [&](){return parseExpression(tk);};
+        if (!expr.has_result())
+            return fail(expr, tk, "Expected expression");
+        tk = expr;
+
+        return {tk, {
+            .source = fun.result()->source,
+            .scope = scope,
+            .name = move(name.result()->text),
+            .type = Type{.type = type.result()}, // Copy because it is duplicated into the lambda as well
+            .value = Expression{.type = Type{.type = type.result()}, .op = Lambda{.parameters = move(parameters), .body = {move(expr.result())}}}
+        }};
     }
-}
 
-static ParseState<unique_ptr<Function>> parseFunction(Tokens tk, span<ScopeContext> scope) {
-    auto token = getToken(tk);
-    if (token.result()->kind != Token::FUN)
-        return { }; // No error and no result
-    tk = token;
-
-    auto annotations = parseAnnotations(tk);
-    if (annotations.has_errors())
-        return fail(annotations, tk, "Bad annotations");
-    tk = annotations;
-
-    auto funProto = parseFunctionPrototype(tk, scope);
-    if (funProto.has_result())
-        exchange(funProto.result()->annotations, annotations.result());
-    return funProto;
-}
-
-static ParseState<vector<ScopeContext>> parseScope(Tokens tk) {
-    vector<ScopeContext> imports;
-
-    imports.emplace_back(ScopeContext{.moduleName = "System" });
-
-    for (;;) {
+    ParseState<unordered_set<string>> parseAnnotations(Tokens tk) {
         auto token = getToken(tk);
-        if (token.result()->kind != Token::USE)
-            return { tk, move(imports) };
+        if (token.result()->kind != Token::AT)
+            return {tk, unordered_set<string>()};
 
-        auto nameResult = parseDottyName(tk);
-        if (!nameResult.has_result())
-            return fail(nameResult, "use keyword without import name");
-        tk = nameResult;
+        auto name = getToken(token);
+        if (name.result()->kind != Token::NAME)
+            return fail(tk, "Expected annotation");
 
-        auto& name = nameResult.result();
-        imports.emplace_back(ScopeContext{.moduleName = join(span(name), ".")});
+        auto result = parseAnnotations(name);
+        if (result.has_result()) {
+            auto &set = result.result();
+            set.insert(move(name.result()->text));
+            return {result, move(set)};
+        } else {
+            return fail(result, tk, "Bad annotation");
+        }
     }
-}
 
-ParseState<bool> GrammarParser::parseModule(Tokens tk) {
-    auto moduleName = parseModuleName(tk);
-    if (!moduleName.has_result())
-        return fail(move(moduleName), tk, "Module declaration is required");
-    tk = moduleName;
+    ParseState<ScopeContext> parseScope(Tokens tk, Module* owner) {
+        ScopeContext imports { .owner = owner, .modules { ast.findOrCreateModule("System") } };
 
-    auto module = ast.findOrCreateModule(moduleName.result());
+        for (;;) {
+            auto token = getToken(tk);
+            if (token.result()->kind != Token::USE) {
+                imports.modules.push_front(owner); // Owner must always be the first module searched
+                return {tk, move(imports)};
+            }
 
-    auto scopeResult = parseScope(tk);
-    if (!scopeResult.has_result())
-        return move(scopeResult.errors());
-    tk = scopeResult;
+            auto nameResult = parseDottyName(tk);
+            if (!nameResult.has_result())
+                return fail(nameResult, "use keyword without import name");
+            tk = nameResult;
 
-    module->scopes.emplace_back(move(scopeResult.result()));
-    span<ScopeContext> scope = module->scopes.back();
+            auto &name = nameResult.result();
+            imports.modules.push_front(ast.findOrCreateModule(join(span(name), ".")));
+        }
 
-    for (;;) {
-        auto state = parseFunction(tk, scope);
-        if (state.has_errors())
-            return move(state.errors());
-        if (!state.has_result()) // There are no more functions. End search.
-            return { tk, true };
-        tk = state;
-
-        module->functions.emplace_back(move(state.result()));
     }
-}
+
+    ParseState<monostate> parseModule(Tokens tk) {
+        auto moduleName = parseModuleName(tk);
+        if (!moduleName.has_result())
+            return fail(move(moduleName), tk, "Module declaration is required");
+        tk = moduleName;
+
+        auto module = ast.findOrCreateModule(moduleName.result());
+
+        auto scopeResult = parseScope(tk, module);
+        if (!scopeResult.has_result())
+            return move(scopeResult.errors());
+        tk = scopeResult;
+
+        auto scope = &module->scopes.emplace_front(move(scopeResult.result()));
+
+        for (;;) {
+            ParseState<Variable> variable = parseFun(tk, scope) | parseLet(tk, scope);
+            if (variable.has_errors())
+                return move(variable.errors());
+            if (!variable.has_result()) // There are no more functions. End search.
+                return {tk, monostate{}};
+            tk = variable;
+
+            module->variables.emplace_front(move(variable.result()));
+        }
+    }
+
+};
 
 void parseGrammar(Tokens tk, Ast& ast) {
     GrammarParser parser { .ast = ast };

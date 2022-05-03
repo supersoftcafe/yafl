@@ -2,4 +2,3 @@
 module System
 
 
-fun @Intrinsic `+`<V>(a:V,b:V):V  = a + b
