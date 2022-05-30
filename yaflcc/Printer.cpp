@@ -8,6 +8,21 @@ using namespace std;
 using namespace ast;
 
 
+ostream& operator << (ostream& out, Intrinsic const& e) {
+    out << "__intrinsic__ " << e.name << '(';
+    bool needsComma = false;
+    for (auto& param : e.parameters) {
+        if (needsComma) out << ", "; out << param;
+        needsComma = true;
+    }
+    return out << ')';
+}
+
+ostream& operator << (ostream& out, Condition const& e) {
+    auto& p = e.parameters;
+    return out << p.at(0) << " ? " << p.at(1) << " : " << p.at(2);
+}
+
 ostream& operator << (ostream& out, Call const& e) {
     out << e.base.front() << '(';
     bool needsComma = false;
@@ -53,8 +68,9 @@ ostream& operator << (ostream& out, Expression const& expr) {
         [&](StoreField    const & e) { out << e; },
         [&](StoreVariable const & e) { out << e; },
         [&](Call          const & e) { out << e; },
+        [&](Condition     const & e) { out << e; },
         [&](Lambda        const & e) { out << expr.type << " -> " << e.body.front(); },
-        [&](Intrinsic     const & e) { out << "__intrinsic__"; }
+        [&](Intrinsic     const & e) { out << e; }
     }, expr.op);
     return out;
 }

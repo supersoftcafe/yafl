@@ -13,6 +13,10 @@
 
 
 
+std::ostream& operator << (std::ostream& out, ast::Intrinsic const& e);
+
+std::ostream& operator << (std::ostream& out, ast::Condition const& e);
+
 std::ostream& operator << (std::ostream& out, ast::Call const& e);
 
 std::ostream& operator << (std::ostream& out, ast::StoreVariable const& e);

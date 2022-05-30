@@ -82,13 +82,22 @@ namespace ast {
     };
 
     struct Intrinsic {
+        string name;
+        forward_list<Expression> parameters;
+    };
+
+    struct Condition {
+        vector<Expression> parameters; // 1st = condition, 2nd = if true value, 3rd = if false value
+        // If just two elements, first must be a type that can resolve to bool implicitly
+        // Second must be same type and is returned if first resolves to false
+        // So,     a ? a : b    is same as     a ?: b
     };
 
     struct Expression {
         Source source;
         Type type;
         forward_list<Variable> variables;
-        variant<monostate, int64_t, double, string, LoadField, LoadVariable, StoreField, StoreVariable, Call, Lambda, Intrinsic> op;
+        variant<monostate, int64_t, double, string, LoadField, LoadVariable, StoreField, StoreVariable, Call, Lambda, Intrinsic, Condition> op;
     };
 
     struct Variable {
@@ -97,6 +106,10 @@ namespace ast {
         string name;
         Type type;
         Expression value;
+
+        bool isFunction() const {
+            return type.asFunction() && holds_alternative<Lambda>(value.op);
+        }
     };
 
 

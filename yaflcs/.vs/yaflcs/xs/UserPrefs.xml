@@ -1,0 +1,29 @@
+﻿<Properties StartupConfiguration="{3B169A89-C9F5-4D5A-873F-FDEBD8BE4F04}|Default">
+  <MonoDevelop.Ide.DebuggingService.PinnedWatches />
+  <MonoDevelop.Ide.DebuggingService.Breakpoints>
+    <BreakpointStore />
+  </MonoDevelop.Ide.DebuggingService.Breakpoints>
+  <MonoDevelop.Ide.Workbench ActiveDocument="yaflcs/Ast/Type.cs">
+    <Files>
+      <File FileName="yaflcs/Program.cs" Line="1" Column="1" />
+      <File FileName="yaflcs/Ast/Type.cs" Line="1" Column="1" />
+    </Files>
+    <Pads>
+      <Pad Id="ProjectPad">
+        <State name="__root__">
+          <Node name="yaflcs" expanded="True">
+            <Node name="yaflcs" expanded="True">
+              <Node name="Ast" expanded="True" />
+            </Node>
+          </Node>
+        </State>
+      </Pad>
+      <Pad Id="MonoDevelop.Debugger.WatchPad">
+        <State />
+      </Pad>
+    </Pads>
+  </MonoDevelop.Ide.Workbench>
+  <MonoDevelop.Ide.Workspace ActiveConfiguration="Debug" />
+  <MonoDevelop.Ide.ItemProperties.yaflcs FirstBuild="True" PreferredExecutionTarget="MonoDevelop.Default" />
+  <MultiItemStartupConfigurations />
+</Properties>

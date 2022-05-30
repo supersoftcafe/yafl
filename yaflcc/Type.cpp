@@ -6,28 +6,31 @@
 
 namespace ast {
 
-    Named::~Named() = default;
-    bool Named::operator == (Named const & b) const {
+    bool Type::operator == (Type const& b) const {
+        return visit(overloaded{
+            [&](Type::Tuple    const& a) { auto ptr = b.asTuple(   ); return ptr && a == *ptr; },
+            [&](Type::Function const& a) { auto ptr = b.asFunction(); return ptr && a == *ptr; },
+            [&](Type::Unknown  const& a) { return false; }
+        });
+    }
+
+    Type::Named::~Named() = default;
+    bool Type::Named::operator == (Named const & b) const {
         return typeName == b.typeName && declaration == b.declaration;
     }
 
-    Tuple::~Tuple() = default;
-    bool Tuple::operator == (Tuple const & b) const {
+    Type::Tuple::~Tuple() = default;
+    bool Type::Tuple::operator == (Tuple const & b) const {
         return parameters == b.parameters;
     }
 
-    Function::~Function() = default;
-    bool Function::operator == (Function const & b) const {
+    Type::Function::~Function() = default;
+    bool Type::Function::operator == (Function const & b) const {
         return parameter == b.parameter && result == b.result;
     }
 
-    Type::~Type() = default;
-    bool Type::operator == (Type const & b) const {
-        return type == b.type;
-    }
-
-    Parameter::~Parameter() = default;
-    bool Parameter::operator == (Parameter const & b) const {
+    Type::Parameter::~Parameter() = default;
+    bool Type::Parameter::operator == (Type::Parameter const & b) const {
         return type == b.type;
     }
 };

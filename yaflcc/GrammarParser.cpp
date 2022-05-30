@@ -181,14 +181,61 @@ struct GrammarParser {
         return move(t.errors());
     }
 
+    ParseState<forward_list<Expression>> parseParameters(Tokens tk) {
+        auto obracket = getToken(tk);
+        if (obracket.result()->kind != Token::OBRACKET)
+            return { };
+        tk = obracket;
 
-    ParseState<Expression> parseIntrinsic(Tokens tk) {
+        bool needsComma = false;
+        forward_list<Expression> params;
+        auto previousPosition = params.before_begin();
+
+        while (peekToken(tk)->kind != Token::CBRACKET) {
+            if (needsComma) {
+                auto comma = getToken(tk);
+                if (comma.result()->kind != Token::COMMA)
+                    return fail(tk, "expected comma");
+                tk = comma;
+            }
+            needsComma = true;
+
+            auto expr = parseExpression(tk);
+            if (expr.has_errors())
+                return { move(expr.errors()) };
+            else if (!expr.has_result())
+                return fail(tk, "expected expression as parameter");
+            tk = expr;
+
+            previousPosition = params.emplace_after(previousPosition, move(expr.result()));
+        }
+        tk = getToken(tk); // Guaranteed to be ')', so consume it
+
+        return { tk, move(params) };
+    }
+
+    ParseState<Expression> parseIntrinsic(Tokens tk, int nextLevel) {
         auto intrinsic = getToken(tk);
         if (intrinsic.result()->kind != Token::INTRINSIC)
-            return { };
+            return parseExpression(tk, nextLevel);
         tk = intrinsic;
 
-        return {tk, Expression{ .source = intrinsic.result()->source, .op = Intrinsic { }}};
+        auto name = getToken(tk);
+        if (name.result()->kind != Token::NAME)
+            return fail(tk, "expected name");
+        tk = name;
+
+        auto params = parseParameters(tk);
+        if (params.has_errors())
+            return { move(params.errors()) };
+        else if (!params.has_result())
+            return fail(tk, "expected parameters");
+        tk = params;
+
+        return {tk, Expression{ .source = intrinsic.result()->source, .op = Intrinsic {
+            .name = name.result()->text,
+            .parameters = move(params.result())
+        }}};
     }
 
     ParseState<Expression> justValue(Tokens tk) {
@@ -305,13 +352,19 @@ struct GrammarParser {
             return move(rhs);
         tk = rhs;
 
-        return {tk, Expression{ .source = lhs.result().source, .op = Call{
-            .base = { { .source = lhs.result().source, .op = LoadVariable{.fieldName = opName, .variable = nullptr } } },
-            .parameters = {
+        return {tk, Expression{ .source = lhs.result().source, .op = Condition{.parameters = {
                 move(lhs.result()),
                 move(middle.result()),
                 move(rhs.result())
-        } } } };
+        }}}};
+
+//        return {tk, Expression{ .source = lhs.result().source, .op = Call{
+//            .base = { { .source = lhs.result().source, .op = LoadVariable{.fieldName = opName, .variable = nullptr } } },
+//            .parameters = {
+//                move(lhs.result()),
+//                move(middle.result()),
+//                move(rhs.result())
+//        } } } };
     }
 
     ParseState<Expression> parseExpression(Tokens tk, int level = 0) {
@@ -326,6 +379,7 @@ struct GrammarParser {
             case 7: return parseBinaryExpr(tk, level + 1, {{Token::ADD,  "`+`"}, {Token::SUB,   "`-`"}});
             case 8: return parseBinaryExpr(tk, level + 1, {{Token::MUL,  "`*`"}, {Token::DIV,   "`/`"}, {Token::REM,    "`%`"}});
             case 9: return parseUnaryExpr( tk, level + 1, {{Token::ADD,  "`+`"}, {Token::SUB,   "`-`"}, {Token::NOT,    "`!`"}});
+            case 10: return parseIntrinsic(tk, level + 1);
             default: return justValue(tk);
         }
     }
@@ -391,7 +445,7 @@ struct GrammarParser {
             return fail(type, "Expected equals");
         tk = equals;
 
-        auto expr = parseIntrinsic(tk) | [&](){return parseExpression(tk);};
+        auto expr = parseExpression(tk);
         if (!expr.has_result())
             return fail(expr, tk, "Expected expression");
         tk = expr;

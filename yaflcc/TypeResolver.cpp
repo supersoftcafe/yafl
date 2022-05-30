@@ -87,6 +87,28 @@ struct TypeResolver {
         resolve(op.base.front(), declResolve, varResolve, Type{.type = move(functionSignature)});
     }
 
+    void resolve(Expression& expression, Condition& op, DeclResolve const* declResolve, VarResolve const* varResolve, Type const & receiverType) {
+        auto& condition = op.parameters.at(0);
+        auto&    ifTrue = op.parameters.at(1);
+        auto&   ifFalse = op.parameters.at(2);
+
+        resolve(condition, declResolve, varResolve, ast.typeBool);
+        if (!condition.type || condition.type != ast.typeBool)
+            error("Condition type is not bool");
+
+        if (receiverType || (!ifTrue.type && !ifFalse.type)) {
+            resolve(ifTrue , declResolve, varResolve, receiverType);
+            resolve(ifFalse, declResolve, varResolve, receiverType);
+        } if (ifTrue.type && !ifFalse.type) {
+            resolve(ifFalse, declResolve, varResolve, ifTrue.type);
+        } else if (!ifTrue.type && ifFalse.type) {
+            resolve(ifTrue, declResolve, varResolve, ifFalse.type);
+        }
+
+        if (!ifTrue.type || ifTrue.type != ifFalse.type)
+            error("Condition has type mismatch");
+    }
+
     void resolve(Expression& expression, Lambda& op, DeclResolve const* declResolve, VarResolve const* varResolve, Type const & receiverType) {
         for (auto& param : op.parameters)
             resolve(param.type, declResolve, varResolve);
@@ -122,6 +144,7 @@ struct TypeResolver {
             [&](StoreVariable& e) { resolve(expression, e, declResolve, &varResolve2, receiverType); },
             [&](Call         & e) { resolve(expression, e, declResolve, &varResolve2, receiverType); },
             [&](Lambda       & e) { resolve(expression, e, declResolve, &varResolve2, receiverType); },
+            [&](Condition    & e) { resolve(expression, e, declResolve, &varResolve2, receiverType); },
             [&](Intrinsic    & e) { }
         }, expression.op);
     }

@@ -17,58 +17,124 @@ namespace ast {
 
     struct Module;
     struct Declaration;
-    struct Parameter;
-    struct Type;
 
 
-    struct Named {
+    class Type {
+    private:
+        struct Impl {
+            enum Kind {NAMED, TUPLE, FUNCTION} kind;
+            explicit Impl(Kind kind) : kind(kind) { }
+            virtual ~Impl() = 0;
+        };
+        unique_ptr<Impl> pointer { };
+        explicit Type(Impl* ptr) : pointer(ptr) { }
+
+    public:
+        struct Named;
+        struct Tuple;
+        struct Function;
+        struct Unknown { };
+        struct Parameter;
+
+        Type() = default;
+        ~Type() = default;
+        template <typename TFun> auto visit(TFun fun);
+        template <typename TFun> auto visit(TFun fun) const;
+        bool operator == (Type const& b) const;
+
+        bool isNamed(   ) const { return pointer && pointer->kind == Impl::NAMED   ; }
+        bool isTuple(   ) const { return pointer && pointer->kind == Impl::TUPLE   ; }
+        bool isFunction() const { return pointer && pointer->kind == Impl::FUNCTION; }
+        bool isUnknown( ) const { return !pointer; }
+
+        Named    const* asNamed(   ) const;
+        Tuple    const* asTuple(   ) const;
+        Function const* asFunction() const;
+
+        Named   * asNamed(   );
+        Tuple   * asTuple(   );
+        Function* asFunction();
+    };
+
+    class Type::Named : Impl {
+    private:
+        friend class Type;
+
+    public:
         string typeName;
-        Module* module;
-        Declaration* declaration;
+        Module* module{};
+        Declaration* declaration{};
 
-        ~Named();
+        explicit Named(string typeName) : Impl(NAMED), typeName(move(typeName)) { }
+        ~Named() override;
         bool operator == (Named const & b) const;
     };
 
-    struct Tuple {
+    class Type::Tuple : Impl {
+    private:
+        friend class Type;
+
+    public:
         vector<Parameter> parameters;
 
-        ~Tuple();
+        Tuple() : Impl(TUPLE) { }
+        ~Tuple() override;
         bool operator == (Tuple const & b) const;
     };
 
-    struct Function {
-        Tuple parameter;
-        vector<Type> result; /* must be exactly one */
+    class Type::Function : Impl {
+    private:
+        friend class Type;
 
-        ~Function();
+    public:
+        Tuple   parameter;
+        Type    result; /* must be exactly one */
+
+        Function() : Impl(FUNCTION) { }
+        ~Function() override;
         bool operator == (Function const & b) const;
     };
 
-    struct Type {
-        variant<monostate, Named, Tuple, Function> type;
+    class Type::Parameter {
+    private:
+        friend class Type::Tuple;
 
-        ~Type();
-        bool operator == (Type const &) const;
-        operator bool () { return !holds_alternative<monostate>(type); }
-
-        Named* asNamed() { return get_if<Named>(&type); }
-        Function* asFunction() { return get_if<Function>(&type); }
-        Tuple* asTuple() { return get_if<Tuple>(&type); }
-
-        Named const* asNamed() const { return get_if<Named>(&type); }
-        Function const* asFunction() const { return get_if<Function>(&type); }
-        Tuple const* asTuple() const { return get_if<Tuple>(&type); }
-    };
-
-    struct Parameter {
+    public:
         string name;
         Type   type;
 
+        Parameter() = default;
         ~Parameter();
         bool operator == (Parameter const & b) const;
     };
 
+    template <typename TFun>
+    auto Type::visit(TFun fun) const {
+        switch (pointer ? pointer->kind : -1) {
+            case Impl::NAMED   : return fun(*dynamic_cast<Named    const*>(pointer.get()));
+            case Impl::TUPLE   : return fun(*dynamic_cast<Tuple    const*>(pointer.get()));
+            case Impl::FUNCTION: return fun(*dynamic_cast<Function const*>(pointer.get()));
+            default: return fun(Unknown{});
+        }
+    }
+
+    template <typename TFun>
+    auto Type::visit(TFun fun) {
+        switch (pointer ? pointer->kind : -1) {
+            case Impl::NAMED   : return fun(*dynamic_cast<Named   *>(pointer.get()));
+            case Impl::TUPLE   : return fun(*dynamic_cast<Tuple   *>(pointer.get()));
+            case Impl::FUNCTION: return fun(*dynamic_cast<Function*>(pointer.get()));
+            default: return fun(Unknown{});
+        }
+    }
+
+    Type::Named    const* Type::asNamed(   ) const { return isNamed(   ) ? dynamic_cast<Named   *>(pointer.get()) : nullptr; }
+    Type::Tuple    const* Type::asTuple(   ) const { return isTuple(   ) ? dynamic_cast<Tuple   *>(pointer.get()) : nullptr; }
+    Type::Function const* Type::asFunction() const { return isFunction() ? dynamic_cast<Function*>(pointer.get()) : nullptr; }
+
+    Type::Named   * Type::asNamed(   ) { return isNamed(   ) ? dynamic_cast<Named   *>(pointer.get()) : nullptr; }
+    Type::Tuple   * Type::asTuple(   ) { return isTuple(   ) ? dynamic_cast<Tuple   *>(pointer.get()) : nullptr; }
+    Type::Function* Type::asFunction() { return isFunction() ? dynamic_cast<Function*>(pointer.get()) : nullptr; }
 };
 
 

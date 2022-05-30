@@ -5,6 +5,11 @@ compiler/.gradle/**
 build-*
 .DS_Store
 CMakeLists.txt.user
+yaflcs/yaflcs/obj/**
+yaflk/.gradle/**
+yaflk/.idea/**
+yaflk/build/**
+
 
 cmake-build-debug
 
