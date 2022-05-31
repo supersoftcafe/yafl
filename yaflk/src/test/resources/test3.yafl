@@ -1,0 +1,6 @@
+
+fun `+`(a, b) = __builtin__ add_i32(a, b)
+
+fun addFour(a) = a + 4
+
+fun main() = addFour(27)

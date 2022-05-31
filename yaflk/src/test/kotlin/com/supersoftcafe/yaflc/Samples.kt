@@ -1,7 +1,5 @@
 package com.supersoftcafe.yaflc
 
-import org.junit.jupiter.api.Test
-
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -10,8 +8,13 @@ internal class Samples {
 
 
     @ParameterizedTest
-    @ValueSource(strings = arrayOf("test1.yafl" /*, "system.yafl" */))
-    fun LoadAndTest(file: String) {
+    @ValueSource(strings = [
+//        "test1.yafl",
+//        "test2.yafl",
+//        "test3.yafl",
+        "test4.yafl",
+    ])
+    fun loadAndTest(file: String) {
         val text = Samples::class.java.getResource("/$file")!!.readText()
         val ast = Ast()
 

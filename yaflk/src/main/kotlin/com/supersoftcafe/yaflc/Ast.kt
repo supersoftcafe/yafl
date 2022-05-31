@@ -48,7 +48,8 @@ sealed class Declaration(
         name: String,
         val body: ExpressionRef?,
         type: Type? = null,
-        sourceRef: SourceRef
+        sourceRef: SourceRef,
+        val global: Boolean = false
     ) : Declaration(name, sourceRef, type)
 
     class Function(
@@ -76,12 +77,14 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
     class LiteralFloat(val value: Double, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralInteger(val value: Long, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralString(val value: String, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
-    class LoadLocalVariable(val name: String, var variable: Declaration? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
+    class LoadVariable(val name: String, var variable: Declaration? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LoadBuiltin(val name: String, sourceRef: SourceRef, type: Type? = null, var builtinOp: BuiltinOp? = null) : Expression(sourceRef, type)
 
     class LoadField(val name: String, base: Expression, var field: Field? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init { addChild(base, type) }
     }
+
+    class StoreGlobal(val declarations: List<Pair<Declaration.Variable, ExpressionRef>>, val tail: ExpressionRef, sourceRef: SourceRef, type: Type) : Expression(sourceRef, type)
 
     class Lambda(val parameters: List<Declaration.Variable>, var result: Type?, val body: Expression?, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init { addChild(body, (type as? Type.Function)?.result) }
@@ -150,6 +153,7 @@ class Ast {
     val systemModule = Module("System")
     val systemModulePart = ModulePart(mutableListOf(systemModule), systemModule)
     val modules = mutableListOf(systemModule);
+    var init: Declaration.Function? = null
 
     val typeBool = createPrimitive("Bool", PrimitiveKind.Bool)
     val typeInt8 = createPrimitive("Int8", PrimitiveKind.Int8)

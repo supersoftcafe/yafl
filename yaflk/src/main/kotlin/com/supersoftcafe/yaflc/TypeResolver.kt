@@ -100,13 +100,13 @@ class TypeResolver(val ast: Ast) {
 
 
 
-    fun resolveExpressionLoadVariable(nodePath: NodePath, expression: Expression.LoadLocalVariable, reference: ExpressionRef): Errors {
+    fun resolveExpressionLoadVariable(nodePath: NodePath, expression: Expression.LoadVariable, reference: ExpressionRef): Errors {
         val newNodePath = nodePath.add(expression)
 
         if (expression.variable == null) {
             // TODO: Handle Module scoped variable loads
 
-            // Find anything that matches the expresson type. Might over-fetch on first few passes whilst type == null.
+            // Find anything that matches the expression type. Might over-fetch on first few passes whilst type == null.
             fun matcher(d: Declaration): Boolean =
                 d.name == expression.name && (d is Declaration.Variable || d is Declaration.Function) && d.type.maybeEquals(expression.type)
             var candidates = nodePath.findDeclarations(::matcher)
@@ -123,6 +123,10 @@ class TypeResolver(val ast: Ast) {
 
         val variable = expression.variable
             ?: return persistentListOf(expression.sourceRef to "Unknown variable reference")
+
+        if (variable is Declaration.Variable && variable.type == null && reference.receiver != null)
+            variable.type = reference.receiver
+
         if (expression.type == null) {
             expression.type = variable.type
             if (expression.type == null)
@@ -201,7 +205,7 @@ class TypeResolver(val ast: Ast) {
 
     fun resolveExpressionByType(nodePath: NodePath, expression: Expression, reference: ExpressionRef): Errors {
         return when (expression) {
-            is Expression.LoadLocalVariable -> resolveExpressionLoadVariable(nodePath, expression, reference)
+            is Expression.LoadVariable -> resolveExpressionLoadVariable(nodePath, expression, reference)
             is Expression.LoadBuiltin -> resolveExpressionLoadBuiltin(nodePath, expression, reference)
             is Expression.Call -> resolveExpressionCall(nodePath, expression, reference)
             is Expression.Condition -> TODO()
@@ -212,6 +216,7 @@ class TypeResolver(val ast: Ast) {
             is Expression.LiteralString -> TODO()
             is Expression.LoadField -> TODO()
             is Expression.Tuple -> resolveExpressionTuple(nodePath, expression, reference)
+            is Expression.StoreGlobal -> TODO()
         }
     }
 
@@ -238,19 +243,24 @@ class TypeResolver(val ast: Ast) {
         if (expression == null && !isParameter)
             return persistentListOf(variable.sourceRef to "Variable missing initialiser expression")
 
+        var errors = persistentListOf<Pair<SourceRef, String>>()
+
         if (expression != null) {
-            val expressionErrors = resolveExpression(newNodePath, expression, variable.body)
-            if (expressionErrors.isNotEmpty())
-                return expressionErrors
+            variable.body.receiver = variable.type
+            errors = errors.addAll(resolveExpression(newNodePath, expression, variable.body))
+            if (variable.type == null)
+                variable.type = expression.type
         }
 
-        if (variable.type == null && expression != null) {
+        if (variable.type != null) {
+            resolveType(nodePath, variable.type!!)
+        } else if (expression != null) {
             variable.type = expression.type
             if (variable.type == null)
-                return persistentListOf(variable.sourceRef to "Unknown variable type")
+                errors = errors.add(variable.sourceRef to "Unknown variable type")
         }
 
-        return persistentListOf()
+        return errors
     }
 
     fun resolvePrimitive(nodePath: NodePath, primitive: Declaration.Primitive): Errors {
@@ -306,8 +316,62 @@ class TypeResolver(val ast: Ast) {
         return errors
     }
 
+    fun createInitFunction(): Errors {
+        val mains = mutableListOf<Declaration.Function>()
+        for (module in ast.modules) {
+            for (part in module.parts) {
+                for (declaration in part.declarations) {
+                    if (declaration is Declaration.Function && declaration.name == "main" && declaration.result == ast.typeInt32 && declaration.parameters.isEmpty()) {
+                        mains += declaration
+                    }
+                }
+            }
+        }
+
+        if (mains.size > 1)
+            return persistentListOf(SourceRef.EMPTY to "Too many main methods found")
+        val main = mains.firstOrNull()
+            ?: return persistentListOf(SourceRef.EMPTY to "No 'fun main():Int32' found")
+
+        val variables = mutableListOf<Pair<Declaration.Variable, ExpressionRef>>()
+        for (module in ast.modules) {
+            for (part in module.parts) {
+                for (declaration in part.declarations) {
+                    if (declaration is Declaration.Variable) {
+                        variables += Pair(declaration, declaration.body!!)
+                    }
+                }
+            }
+        }
+
+        val mainType = Type.Function(Type.Tuple(listOf(), SourceRef.EMPTY), ast.typeInt32, SourceRef.EMPTY)
+        val unitExpr = Expression.Tuple(listOf(), SourceRef.EMPTY, Type.Tuple(listOf(), SourceRef.EMPTY))
+        val callMain = Expression.Call(
+            Expression.LoadVariable(main.name, main, SourceRef.EMPTY, mainType),
+            unitExpr,
+            SourceRef.EMPTY,
+            ast.typeInt32
+        )
+        val initVars = Expression.StoreGlobal(
+            variables,
+            ExpressionRef(callMain, ast.typeInt32),
+            SourceRef.EMPTY,
+            ast.typeInt32
+        )
+        ast.init = Declaration.Function(
+            "main",
+            listOf(),
+            ast.typeInt32,
+            ExpressionRef(initVars, ast.typeInt32),
+            mainType,
+            SourceRef.EMPTY
+        )
+
+        return persistentListOf()
+    }
+
     tailrec fun resolve(lastErrors: Errors = persistentListOf()): Errors {
-        val errors = ast.modules.foldErrors(::resolveModule)
+        val errors = ast.modules.foldErrors(::resolveModule).addAll(createInitFunction())
         return if (errors == lastErrors)
             errors
         else

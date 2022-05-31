@@ -76,9 +76,9 @@ class GrammarParser(val ast: Ast) {
 
 
 
-    fun parseNamed(tk: Tokens): Result<Expression.LoadLocalVariable> {
+    fun parseNamed(tk: Tokens): Result<Expression.LoadVariable> {
         val result = TokenKind.NAME(tk)
-            .map { sourceRef, name -> Expression.LoadLocalVariable(name.text, sourceRef = sourceRef) }
+            .map { sourceRef, name -> Expression.LoadVariable(name.text, sourceRef = sourceRef) }
         return result
     }
 
@@ -170,7 +170,7 @@ class GrammarParser(val ast: Ast) {
             { TokenIs(operations.map { it.second }) },
             { parseExpression(this, nextLevel) }).map { sourceRef, (op, expr) ->
             val opName = operations.first { it.second == op.kind }.first
-            val load = Expression.LoadLocalVariable(opName, sourceRef = sourceRef)
+            val load = Expression.LoadVariable(opName, sourceRef = sourceRef)
             val param = Expression.Tuple(listOf(TupleField(null, expr, null)), expr.sourceRef)
             val call = Expression.Call(load, param, sourceRef = sourceRef + expr.sourceRef)
             call
@@ -192,7 +192,7 @@ class GrammarParser(val ast: Ast) {
             { TokenIs(operations.map { it.second }) },
             { parseExpression(this, nextLevel) }).map { sourceRef, (op, right) ->
             val opName = operations.first { it.second == op.kind }.first
-            val load = Expression.LoadLocalVariable(opName, sourceRef = sourceRef)
+            val load = Expression.LoadVariable(opName, sourceRef = sourceRef)
             val param = Expression.Tuple(listOf(TupleField(null, left, null), TupleField(null, right, null)), left.sourceRef + right.sourceRef)
             val call = Expression.Call(load, param, left.sourceRef + right.sourceRef)
             call
@@ -284,7 +284,7 @@ class GrammarParser(val ast: Ast) {
             { If(TokenKind.COLON, ::parseType) },
             { If(TokenKind.EQ, ::parseExpression) }
         ).map { sourceRef, (_, name, type, body) ->
-            Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef)
+            Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global = true)
         }
         return result
     }

@@ -4,20 +4,24 @@ import com.supersoftcafe.yaflc.llvm.*
 
 class CodeGenerator(val ast: Ast) {
     companion object {
-        const val validCharacters = "-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._$"
+        const val validFirstCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_."
+        const val validFollowingCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_.0123456789"
     }
 
     val functions = mutableListOf<IrFunction>()
+    val variables = mutableListOf<IrVariable>()
     val output = StringBuilder()
 
 
     fun String.cleanName(): String {
         val builder = StringBuilder()
+        var validChars = validFirstCharacters
         for (chr in this) {
-            if (chr in validCharacters)
+            if (chr in validChars)
                 builder.append(chr)
             else
                 builder.append('$').append(chr.code).append("_")
+            validChars = validFollowingCharacters
         }
         return builder.toString()
     }
@@ -43,6 +47,11 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
+    fun Declaration.Variable.toIrVariable(): IrVariable {
+        val result = stuff.filterIsInstance<IrVariable>().firstOrNull()
+            ?: throw NullPointerException()
+        return result
+    }
 
 
     fun Declaration.Function.toIrFunction(): IrFunction {
@@ -60,17 +69,17 @@ class CodeGenerator(val ast: Ast) {
         return expression.value.toString()
     }
 
-    fun generateExpressionLoadLocalVariable(
-        expression: Expression.LoadLocalVariable,
+    fun generateExpressionLoadVariable(
+        expression: Expression.LoadVariable,
         function: IrFunction
     ): String {
         val result = when (val target = expression.variable) {
             is Declaration.Variable -> {
-                val resultVariable = function.nextVariable(expression.type!!.toIrType())
-                val register = target.stuff.filterIsInstance<IrVariable>().firstOrNull()
-                    ?: throw NullPointerException()
-                function += "  %${resultVariable.name} = load ${resultVariable.type}, ${register.type}* %${register.name}"
-                "%${resultVariable.name}"
+                val register = function.nextVariable(expression.type!!.toIrType())
+                val variable = target.toIrVariable()
+                val kind = if (target.global) '@' else '%'
+                function += "  %${register.name} = load ${register.type}, ${variable.type}* $kind${variable.name}"
+                "%${register.name}"
             }
             else -> TODO("Unsupported load target")
         }
@@ -115,7 +124,7 @@ class CodeGenerator(val ast: Ast) {
     ): String {
         return when (val target = expression.children.first().expression) {
             is Expression.LoadBuiltin -> generateExpressionCallBuiltin(expression, target.builtinOp!!.kind, function)
-            is Expression.LoadLocalVariable -> when (val variable = target.variable) {
+            is Expression.LoadVariable -> when (val variable = target.variable) {
                 is Declaration.Function -> generateExpressionCallStatic(expression, variable, function)
                 else -> TODO("Can't handle function pointers yet")
             }
@@ -149,6 +158,18 @@ class CodeGenerator(val ast: Ast) {
         return "%${resultVariable.name}"
     }
 
+    fun generateExpressionStoreGlobal(
+        expression: Expression.StoreGlobal,
+        function: IrFunction
+    ): String {
+        for ((declaration, init) in expression.declarations) {
+            val variable = declaration.toIrVariable()
+            val result = generateExpression(init.expression, function)
+            function += "  store ${variable.type} $result, ${variable.type}* @${variable.name}"
+        }
+        return generateExpression(expression.tail.expression, function)
+    }
+
     fun generateExpression(
         expression: Expression,
         function: IrFunction
@@ -163,92 +184,132 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LiteralString -> TODO()
             is Expression.LoadBuiltin -> TODO()
             is Expression.LoadField -> TODO()
-            is Expression.LoadLocalVariable -> generateExpressionLoadLocalVariable(expression, function)
+            is Expression.LoadVariable -> generateExpressionLoadVariable(expression, function)
             is Expression.Tuple -> TODO()
+            is Expression.StoreGlobal -> generateExpressionStoreGlobal(expression, function)
         }
         return result
     }
 
     fun generateFunction(declaration: Declaration.Function) {
         val function = declaration.toIrFunction()
-
         val result = generateExpression(declaration.body.expression, function)
-
         function += "  ret ${declaration.result!!.toIrType()} $result"
         function += "}"
     }
 
     fun generateIr() {
+        generateFunction(ast.init!!)
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
-                    when (declaration) {
-                        is Declaration.Struct -> TODO()
-                        is Declaration.Variable -> TODO()
-                        is Declaration.Function -> generateFunction(declaration)
+                    if (declaration is Declaration.Function) {
+                        generateFunction(declaration)
                     }
                 }
             }
         }
     }
 
+    fun createVariablePrototypes() {
+        for (module in ast.modules) {
+            for (part in module.parts) {
+                for (declaration in part.declarations) {
+                    if (declaration is Declaration.Variable) {
+                        val type = declaration.type!!.toIrType()
+                        val name = "var_" + (module.name + '_' + declaration.name).cleanName() + '_' + type
+                        val variable = IrVariable(name, type)
+
+                        declaration.stuff += variable
+                        variables += variable
+                    }
+                }
+            }
+        }
+    }
+
+    fun createFunctionPrototype(name: String, scope: String, result: IrType, declaration: Declaration.Function) {
+        val function = IrFunction(name, result)
+
+        for (param in declaration.parameters)
+            param.stuff += function.nextParameter(param.type!!.toIrType())
+        val parameters = function.parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
+
+        function += "define $scope ${function.result} @${function.name}($parameters) {"
+
+        for (param in function.parameters) {
+            function += "  %${param.name} = alloca ${param.type}"
+            function += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
+        }
+
+        declaration.stuff += function
+        functions += function
+    }
+
     fun createFunctionPrototypes() {
+        createFunctionPrototype("main", "dso_local", IrPrimitive.Int32, ast.init!!)
+
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
                     if (declaration is Declaration.Function) {
                         val result = declaration.result!!.toIrType()
-
-                        val name = module.name + '_' + declaration.name.cleanName() + '_' + result + declaration.parameters.joinToString("") { "_" + it.type?.toIrType().toString() }
-                        val function = IrFunction(name, result)
-
-                        for (param in declaration.parameters)
-                            param.stuff += function.nextParameter(param.type!!.toIrType())
-                        val parameters = function.parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
-
-                        function += "define internal ${function.result} @${function.name}($parameters) {"
-
-                        for (param in function.parameters) {
-                            function += "  %${param.name} = alloca ${param.type}"
-                            function += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
-                        }
-
-                        declaration.stuff += function
-                        functions.add(function)
+                        createFunctionPrototype(
+                            "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result + declaration.parameters.joinToString("") { "_" + it.type?.toIrType().toString() },
+                            "internal",
+                            result,
+                            declaration
+                        )
                     }
                 }
             }
         }
     }
 
+//    fun createInitFunction() {
+//        val mains = mutableListOf<Declaration.Function>()
+//        for (module in ast.modules) {
+//            for (part in module.parts) {
+//                for (declaration in part.declarations) {
+//                    if (declaration is Declaration.Function && declaration.name == "main" && declaration.result == ast.typeInt32 && declaration.parameters.isEmpty()) {
+//                        mains += declaration
+//                    }
+//                }
+//            }
+//        }
+//
+//        if (mains.size > 1) throw Exception("Too many main methods found")
+//        val main = mains.firstOrNull() ?: throw Exception("No 'fun main():Int32' found")
+//
+//        val initFunction = IrFunction("main", IrPrimitive.Int32)
+//        initFunction += "define dso_local i32 @main() {"
+//
+//        for (variable in variables) {
+//            val initExpr = Expression.StoreGlobal(
+//
+//            )
+//        }
+//    }
+
     fun writeIr() {
+        for (variable in variables)
+            output.append("@${variable.name} = internal global ${variable.type} zeroinitializer")
+                .append(System.lineSeparator())
         for (function in functions)
             output.append(function)
-
-        val mains = mutableListOf<Declaration.Function>()
-        for (module in ast.modules) {
-            for (part in module.parts) {
-                for (declaration in part.declarations) {
-                    if (declaration is Declaration.Function && declaration.name == "main" && declaration.result == ast.typeInt32 && declaration.parameters.isEmpty()) {
-                        mains += declaration
-                    }
-                }
-            }
-        }
-
-        if (mains.size > 1) throw Exception("Too many main methods found")
-        val main = mains.firstOrNull() ?: throw Exception("No main methods found")
-
-        val ls = System.lineSeparator()
-        output.append(ls)
-            .append("define dso_local i32 @main() {").append(ls)
-            .append("  %r = call i32 @${main.toIrFunction().name}()").append(ls)
-            .append("  ret i32 %r").append(ls)
-            .append("}").append(ls)
+//
+//        val ls = System.lineSeparator()
+//        output.append(ls)
+//            .append("define dso_local i32 @main() {").append(ls)
+//            .append("  %r = call i32 @${main.toIrFunction().name}()").append(ls)
+//            .append("  ret i32 %r").append(ls)
+//            .append("}").append(ls)
     }
 
     fun generate(): String {
         createFunctionPrototypes()
+        createVariablePrototypes()
+//        createInitFunction()
         generateIr()
         writeIr()
 
