@@ -18,28 +18,22 @@ class IrFunction(val name: String, val result: IrType) {
     private val _parameters = mutableListOf<IrVariable>()
     private val _variables  = mutableListOf<IrVariable>()
     private val _labels = mutableListOf<IrLabel>()
-    private val _body = mutableListOf<String>()
     private var uniqueValue = 0
 
     val parameters: List<IrVariable> get() = _parameters
     val variables: List<IrVariable> get() = _variables
     val labels: List<IrLabel> get() = _labels
-    val body: List<String> get() = _body
+
+    val preamble = mutableListOf<String>()
+    val body = mutableListOf<String>()
 
     fun nextParameter(type: IrType) = IrVariable("p_${++uniqueValue}", type).also(_parameters::add)
     fun nextVariable(type: IrType) = IrVariable("v_${++uniqueValue}", type).also(_variables::add)
     fun nextLabel() = IrLabel("l_${++uniqueValue}").also(_labels::add)
 
-    fun prepend(value: String) {
-        _body.add(0, value)
-    }
-
-    operator fun plusAssign(value: String) {
-        _body.add(value)
-    }
 
     override fun toString(): String {
         val ls = System.lineSeparator()
-        return _body.joinToString(ls, ls, ls)
+        return (preamble + body).joinToString(ls, ls, ls)
     }
 }

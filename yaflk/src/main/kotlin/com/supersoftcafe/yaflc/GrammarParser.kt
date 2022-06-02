@@ -226,25 +226,40 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseExpression(tk: Tokens, level: Int = 0): Result<Expression> {
-        val result = when (level) {
-            0 ->parseTernaryExpr(tk, level + 1)
-            1 -> parseBinaryExpr(tk, level + 1, "`|`"  to TokenKind.OR)
-            2 -> parseBinaryExpr(tk, level + 1, "`^`"  to TokenKind.XOR)
-            3 -> parseBinaryExpr(tk, level + 1, "`&`"  to TokenKind.AND)
-            4 -> parseBinaryExpr(tk, level + 1, "`=`"  to TokenKind.EQ, "`!=`"  to TokenKind.NEQ)
-            5 -> parseBinaryExpr(tk, level + 1, "`<`"  to TokenKind.LT, "`<=`"  to TokenKind.LTE , "`>=`"  to TokenKind.GTE, "`>`" to TokenKind.GT)
-            6 -> parseBinaryExpr(tk, level + 1, "`<<`" to TokenKind.SHL, "`>>`" to TokenKind.ASHR, "`>>>`" to TokenKind.LSHR)
-            7 -> parseBinaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB)
-            8 -> parseBinaryExpr(tk, level + 1, "`*`"  to TokenKind.MUL, "`/`"  to TokenKind.DIV , "`%`"   to TokenKind.REM)
-            9 -> parseUnaryExpr (tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB , "`!`"   to TokenKind.NOT)
-            10 -> parseCallExpr (tk, level + 1)
-            else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseLoadBuiltin, ::parseNamed, ::parseTupleExpr)
+    fun parseDeclarationsExpr(tk: Tokens, nextLevel: Int): Result<Expression> {
+        val result = when (val locals = parseLocalDeclarations(tk)) {
+            is Result.Absent -> parseExpression(tk, nextLevel)
+            is Result.Fail -> locals.xfer()
+            is Result.Ok ->
+                if (locals.value.isEmpty()) {
+                    parseExpression(tk, nextLevel)
+                } else when (val next = parseExpression(locals.tokens, nextLevel)) {
+                    is Result.Ok -> Result.Ok(Expression.DeclareLocal(locals.value, next.value, locals.sourceRef + next.sourceRef), locals.sourceRef + next.sourceRef, next.tokens)
+                    is Result.Absent -> Result.Fail(locals.sourceRef, "Missing expression")
+                    is Result.Fail -> next.xfer()
+                }
         }
         return result
     }
 
-
+    fun parseExpression(tk: Tokens, level: Int = 0): Result<Expression> {
+        val result = when (level) {
+            0 -> parseDeclarationsExpr(tk, level + 1)
+            1 -> parseTernaryExpr(tk, level + 1)
+            2 -> parseBinaryExpr(tk, level + 1, "`|`"  to TokenKind.OR)
+            3 -> parseBinaryExpr(tk, level + 1, "`^`"  to TokenKind.XOR)
+            4 -> parseBinaryExpr(tk, level + 1, "`&`"  to TokenKind.AND)
+            5 -> parseBinaryExpr(tk, level + 1, "`=`"  to TokenKind.EQ, "`!=`"  to TokenKind.NEQ)
+            6 -> parseBinaryExpr(tk, level + 1, "`<`"  to TokenKind.LT, "`<=`"  to TokenKind.LTE , "`>=`"  to TokenKind.GTE, "`>`" to TokenKind.GT)
+            7 -> parseBinaryExpr(tk, level + 1, "`<<`" to TokenKind.SHL, "`>>`" to TokenKind.ASHR, "`>>>`" to TokenKind.LSHR)
+            8 -> parseBinaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB)
+            9 -> parseBinaryExpr(tk, level + 1, "`*`"  to TokenKind.MUL, "`/`"  to TokenKind.DIV , "`%`"   to TokenKind.REM)
+            10 -> parseUnaryExpr (tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB , "`!`"   to TokenKind.NOT)
+            11 -> parseCallExpr (tk, level + 1)
+            else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseLoadBuiltin, ::parseNamed, ::parseTupleExpr)
+        }
+        return result
+    }
 
     fun parseFunParams(tk: Tokens): Result<PersistentList<Declaration.Variable>> {
         val result = tk.Parameters(
@@ -277,25 +292,27 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseLet(tk: Tokens): Result<Declaration.Variable> {
+    fun parseLet(tk: Tokens, global: Boolean): Result<Declaration.Variable> {
         val result = tk.AllOf(
             { FailIsAbsent(TokenKind.LET) },
             TokenKind.NAME,
             { If(TokenKind.COLON, ::parseType) },
             { If(TokenKind.EQ, ::parseExpression) }
         ).map { sourceRef, (_, name, type, body) ->
-            Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global = true)
+            Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global = global)
         }
         return result
     }
 
-    fun parseDeclaration(tk: Tokens): Result<Declaration> {
-        val result = tk.OneOf(::parseFun, ::parseLet)
+    fun parseLocalDeclarations(tk: Tokens): Result<PersistentList<Declaration>> {
+        val result = tk.Repeat { OneOf(::parseFun, { parseLet(this, global = false) } ) }
         return result
     }
 
-    fun parseDeclarations(tk: Tokens): Result<PersistentList<Declaration>> {
-        val result = tk.Repeat(::parseDeclaration)
+    fun parseGlobalDeclarations(tk: Tokens): Result<PersistentList<Declaration>> {
+        // Not parameterised function because we'll also parse structs here in the future, unlike
+        // local that will not parse structs
+        val result = tk.Repeat { OneOf(::parseFun, { parseLet(this, global = true) } ) }
         return result
     }
 
@@ -304,7 +321,7 @@ class GrammarParser(val ast: Ast) {
         val result = tk.AllOf(
             { If(TokenKind.MODULE, ::parseDottyName).map { _, b -> b?.joinToString(".") } },
             ::parseImports,
-            ::parseDeclarations)
+            ::parseGlobalDeclarations)
             .map { _, (moduleName, imports, declarations) ->
                 val module = ast.findOrCreateModule(moduleName ?: "Anonymous\$${ast.modules.size}")
                 val part = ModulePart(imports.add(ast.systemModule).add(module).distinct(), module)

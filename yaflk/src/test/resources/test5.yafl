@@ -1,0 +1,11 @@
+
+# Local named value
+
+fun `+`(a, b) = __builtin__ add_i32(a, b)
+fun `+`(a, b) = __builtin__ add_i64(a, b)
+
+fun addFour(a) = let four = 4 a + four
+
+let value = 27 + 8
+
+fun main() = addFour(value)

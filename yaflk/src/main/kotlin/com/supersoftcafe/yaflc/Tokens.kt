@@ -104,7 +104,11 @@ fun <V1, V2, V3, V4, V5, V6> Tokens.AllOf(p1: Parser<V1>, p2: Parser<V2>, p3: Pa
 
 
 fun <TValue> Tokens.Repeat(lambda: Parser<TValue>): Result<PersistentList<TValue>> {
-    tailrec fun Tokens.Repeat(root: PersistentList<TValue>): Result<PersistentList<TValue>> {
+    var loops = 0
+    fun Tokens.Repeat(root: PersistentList<TValue>): Result<PersistentList<TValue>> {
+        if (++loops == 100) {
+            println("break here")
+        }
         return when (val result = lambda()) {
             is Result.Ok -> result.tokens.Repeat(root.add(result.value))
             is Result.Fail -> result.xfer()

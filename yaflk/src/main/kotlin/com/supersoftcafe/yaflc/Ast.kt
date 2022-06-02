@@ -58,7 +58,8 @@ sealed class Declaration(
         var result: Type?,
         val body: ExpressionRef,
         type: Type? = null,
-        sourceRef: SourceRef
+        sourceRef: SourceRef,
+        val synthetic: Boolean = false
     ) : Declaration(name, sourceRef, type)
 }
 
@@ -74,6 +75,7 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
             children.add(ExpressionRef(expr, type))
     }
 
+    class LiteralBool(val value: Boolean, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralFloat(val value: Double, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralInteger(val value: Long, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralString(val value: String, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
@@ -84,9 +86,7 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         init { addChild(base, type) }
     }
 
-    class StoreGlobal(val declarations: List<Pair<Declaration.Variable, ExpressionRef>>, val tail: ExpressionRef, sourceRef: SourceRef, type: Type) : Expression(sourceRef, type)
-
-    class Lambda(val parameters: List<Declaration.Variable>, var result: Type?, val body: Expression?, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+    class Lambda(val parameters: List<Declaration.Variable>, var result: Type?, body: Expression?, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init { addChild(body, (type as? Type.Function)?.result) }
     }
 
@@ -105,8 +105,24 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         }
     }
 
-    class DeclareLocal(val declarations: List<Declaration>, val expression: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
-        init { addChild(expression) }
+    class StoreVariable(val name: String, val variable: Declaration.Variable? = null, init: Expression, tail: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        init {
+            addChild(init)
+            addChild(tail)
+        }
+    }
+
+    class DeclareLocal(val declarations: List<Declaration>, tail: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        init {
+            for (declaration in declarations) {
+                when (declaration) {
+                    is Declaration.Variable -> children.add(declaration.body!!)
+                    is Declaration.Function -> children.add(declaration.body)
+                    else -> throw IllegalArgumentException("${declaration::class.simpleName} cannot be declared in a local context")
+                }
+            }
+            addChild(tail)
+        }
     }
 
     class Tuple(fields: List<TupleField>, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
@@ -152,8 +168,12 @@ class BuiltinOp(val name: String, val parameter: Type.Tuple, val result: Type, v
 class Ast {
     val systemModule = Module("System")
     val systemModulePart = ModulePart(mutableListOf(systemModule), systemModule)
-    val modules = mutableListOf(systemModule);
-    var init: Declaration.Function? = null
+
+    val syntheticModule = Module("^Synthetic")
+    val syntheticModulePart = ModulePart(mutableListOf(systemModule, syntheticModule), syntheticModule)
+
+    val modules = mutableListOf(systemModule, syntheticModule)
+
 
     val typeBool = createPrimitive("Bool", PrimitiveKind.Bool)
     val typeInt8 = createPrimitive("Int8", PrimitiveKind.Int8)
@@ -194,5 +214,10 @@ class Ast {
 
     fun findOrCreateModule(name: String): Module {
         return modules.firstOrNull { it.name == name } ?: (Module(name).also { modules += it })
+    }
+
+    init {
+        systemModulePart.declarations += Declaration.Variable("true", ExpressionRef(Expression.LiteralBool(true, SourceRef.EMPTY, typeBool), typeBool), typeBool, SourceRef.EMPTY, global = true)
+        systemModulePart.declarations += Declaration.Variable("false", ExpressionRef(Expression.LiteralBool(false, SourceRef.EMPTY, typeBool), typeBool), typeBool, SourceRef.EMPTY, global = true)
     }
 }

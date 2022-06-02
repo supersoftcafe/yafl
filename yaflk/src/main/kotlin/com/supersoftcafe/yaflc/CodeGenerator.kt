@@ -69,6 +69,13 @@ class CodeGenerator(val ast: Ast) {
         return expression.value.toString()
     }
 
+    fun generateExpressionLiteralBool(
+        expression: Expression.LiteralBool,
+        function: IrFunction
+    ): String {
+        return if (expression.value) "1" else "0"
+    }
+
     fun generateExpressionLoadVariable(
         expression: Expression.LoadVariable,
         function: IrFunction
@@ -78,7 +85,7 @@ class CodeGenerator(val ast: Ast) {
                 val register = function.nextVariable(expression.type!!.toIrType())
                 val variable = target.toIrVariable()
                 val kind = if (target.global) '@' else '%'
-                function += "  %${register.name} = load ${register.type}, ${variable.type}* $kind${variable.name}"
+                function.body += "  %${register.name} = load ${register.type}, ${variable.type}* $kind${variable.name}"
                 "%${register.name}"
             }
             else -> TODO("Unsupported load target")
@@ -86,20 +93,26 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
+
     fun generateExpressionCallBuiltin(
         expression: Expression.Call,
         kind: BuiltinOpKind,
         function: IrFunction
     ): String {
-        val inputs = expression.children[1].expression.children.joinToString(", ") {
-            generateExpression(it.expression, function)
+        val children = expression.children[1].expression.children
+
+        fun llvmIntegerBinOp(op: String, type: IrType): String {
+            val inputs = children.joinToString(", ") { generateExpression(it.expression, function) }
+            val resultVariable = function.nextVariable(type)
+            function.body += "  %${resultVariable.name} = $op ${type.irName} $inputs"
+            return "%${resultVariable.name}"
         }
-        when (kind) {
-            BuiltinOpKind.ADD_I32 -> {
-                val resultVariable = function.nextVariable(IrPrimitive.Int32)
-                function += "  %${resultVariable.name} = add i32 $inputs"
-                return "%${resultVariable.name}"
-            }
+
+        return when (kind) {
+            BuiltinOpKind.ADD_I8 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
+            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
+            BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
+            BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add", IrPrimitive.Int64)
             else -> TODO("Builtin Op ${kind} not implemented yet")
         }
     }
@@ -114,7 +127,7 @@ class CodeGenerator(val ast: Ast) {
         }
         val targetAsIrFunction = target.toIrFunction()
         val resultVariable = function.nextVariable(expression.type!!.toIrType())
-        function += "  %${resultVariable.name} = call ${resultVariable.type} @${targetAsIrFunction.name}($inputs)"
+        function.body += "  %${resultVariable.name} = call ${resultVariable.type} @${targetAsIrFunction.name}($inputs)"
         return "%${resultVariable.name}"
     }
 
@@ -141,33 +154,54 @@ class CodeGenerator(val ast: Ast) {
         val falseLabel = function.nextLabel()
 
         val conditionResult = generateExpression(expression.children[0].expression, function)
-        function += "  br i1 $conditionResult, label %${trueLabel.name}, label %${falseLabel.name}"
+        function.body += "  br i1 $conditionResult, label %${trueLabel.name}, label %${falseLabel.name}"
 
-        function += "${trueLabel.name}:"
+        function.body += "${trueLabel.name}:"
         val trueResult = generateExpression(expression.children[1].expression, function)
-        function += "  br label %${endLabel.name}"
+        function.body += "  br label %${endLabel.name}"
 
-        function += "${falseLabel.name}:"
+        function.body += "${falseLabel.name}:"
         val falseResult = generateExpression(expression.children[2].expression, function)
-        function += "  br label %${endLabel.name}"
+        function.body += "  br label %${endLabel.name}"
 
         val resultVariable = function.nextVariable(expression.type!!.toIrType())
-        function += "${endLabel.name}:"
-        function += "  %${resultVariable.name} = phi ${resultVariable.type} [ $trueResult %${trueLabel.name} ], [ $falseResult, %${falseLabel.name} ]"
+        function.body += "${endLabel.name}:"
+        function.body += "  %${resultVariable.name} = phi ${resultVariable.type} [ $trueResult, %${trueLabel.name} ], [ $falseResult, %${falseLabel.name} ]"
 
         return "%${resultVariable.name}"
     }
 
-    fun generateExpressionStoreGlobal(
-        expression: Expression.StoreGlobal,
+    fun generateExpressionStoreVariable(
+        expression: Expression.StoreVariable,
         function: IrFunction
     ): String {
-        for ((declaration, init) in expression.declarations) {
-            val variable = declaration.toIrVariable()
-            val result = generateExpression(init.expression, function)
-            function += "  store ${variable.type} $result, ${variable.type}* @${variable.name}"
+        val kind = if (expression.variable!!.global) '@' else '%'
+        val variable = expression.variable!!.toIrVariable()
+        val result = generateExpression(expression.children[0].expression, function)
+        function.body += "  store ${variable.type} $result, ${variable.type}* $kind${variable.name}"
+        return generateExpression(expression.children[1].expression, function)
+    }
+
+    fun generateExpressionDeclareLocal(
+        expression: Expression.DeclareLocal,
+        function: IrFunction
+    ): String {
+        for (declaration in expression.declarations) {
+            when (declaration) {
+                is Declaration.Variable -> {
+                    val type = declaration.type!!.toIrType()
+                    val variable = function.nextVariable(type)
+                    val irVariable = IrVariable(variable.name, type)
+                    declaration.stuff += irVariable
+
+                    function.preamble += "  %${variable.name} = alloca ${variable.type}"
+                    val expressionResult = generateExpression(declaration.body!!.expression, function)
+                    function.body += "  store $type $expressionResult, $type* %${variable.name}"
+                }
+                else -> throw IllegalArgumentException("${declaration::class.simpleName}")
+            }
         }
-        return generateExpression(expression.tail.expression, function)
+        return generateExpression(expression.children.last().expression, function)
     }
 
     fun generateExpression(
@@ -175,10 +209,11 @@ class CodeGenerator(val ast: Ast) {
         function: IrFunction
     ): String {
         val result = when (expression) {
+            is Expression.LiteralBool -> generateExpressionLiteralBool(expression, function)
             is Expression.LiteralInteger -> generateExpressionLiteralInteger(expression, function)
             is Expression.Call -> generateExpressionCall(expression, function)
             is Expression.Condition -> generateExpressionCondition(expression, function)
-            is Expression.DeclareLocal -> TODO()
+            is Expression.DeclareLocal -> generateExpressionDeclareLocal(expression, function)
             is Expression.Lambda -> TODO()
             is Expression.LiteralFloat -> TODO()
             is Expression.LiteralString -> TODO()
@@ -186,7 +221,7 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LoadField -> TODO()
             is Expression.LoadVariable -> generateExpressionLoadVariable(expression, function)
             is Expression.Tuple -> TODO()
-            is Expression.StoreGlobal -> generateExpressionStoreGlobal(expression, function)
+            is Expression.StoreVariable -> generateExpressionStoreVariable(expression, function)
         }
         return result
     }
@@ -194,12 +229,11 @@ class CodeGenerator(val ast: Ast) {
     fun generateFunction(declaration: Declaration.Function) {
         val function = declaration.toIrFunction()
         val result = generateExpression(declaration.body.expression, function)
-        function += "  ret ${declaration.result!!.toIrType()} $result"
-        function += "}"
+        function.body += "  ret ${declaration.result!!.toIrType()} $result"
+        function.body += "}"
     }
 
     fun generateIr() {
-        generateFunction(ast.init!!)
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
@@ -228,18 +262,22 @@ class CodeGenerator(val ast: Ast) {
         }
     }
 
-    fun createFunctionPrototype(name: String, scope: String, result: IrType, declaration: Declaration.Function) {
+    fun createFunctionPrototype(module: Module, result: IrType, declaration: Declaration.Function) {
+        val name = if (declaration.synthetic) declaration.name
+        else "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result + declaration.parameters.joinToString("") { "_" + it.type?.toIrType().toString() }
+        val scope = if (declaration.synthetic) "dso_local" else "internal"
+
         val function = IrFunction(name, result)
 
         for (param in declaration.parameters)
             param.stuff += function.nextParameter(param.type!!.toIrType())
         val parameters = function.parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
 
-        function += "define $scope ${function.result} @${function.name}($parameters) {"
+        function.preamble += "define $scope ${function.result} @${function.name}($parameters) {"
 
         for (param in function.parameters) {
-            function += "  %${param.name} = alloca ${param.type}"
-            function += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
+            function.preamble += "  %${param.name} = alloca ${param.type}"
+            function.body += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
         }
 
         declaration.stuff += function
@@ -247,19 +285,13 @@ class CodeGenerator(val ast: Ast) {
     }
 
     fun createFunctionPrototypes() {
-        createFunctionPrototype("main", "dso_local", IrPrimitive.Int32, ast.init!!)
+//        createFunctionPrototype("main", "dso_local", IrPrimitive.Int32, ast.init!!)
 
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
                     if (declaration is Declaration.Function) {
-                        val result = declaration.result!!.toIrType()
-                        createFunctionPrototype(
-                            "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result + declaration.parameters.joinToString("") { "_" + it.type?.toIrType().toString() },
-                            "internal",
-                            result,
-                            declaration
-                        )
+                        createFunctionPrototype(module, declaration.result!!.toIrType(), declaration)
                     }
                 }
             }

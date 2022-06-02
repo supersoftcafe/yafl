@@ -193,6 +193,62 @@ class TypeResolver(val ast: Ast) {
         return persistentListOf()
     }
 
+    fun resolveExpressionLiteralBool(nodePath: NodePath, expression: Expression.LiteralBool, reference: ExpressionRef): Errors {
+        if (expression.type == null)
+            return persistentListOf(expression.sourceRef to "Compiler Bug: Unknown type")
+        return persistentListOf()
+    }
+
+    fun resolveExpressionDeclareLocal(nodePath: NodePath, expression: Expression.DeclareLocal, reference: ExpressionRef): Errors {
+        val declarations = expression.declarations
+        if (expression.type == null)
+            expression.type = declarations.last().type
+
+        val tail = expression.children.last()
+        tail.receiver = reference.receiver
+
+        val result = declarations.foldErrors { declaration ->
+            when (declaration) {
+                is Declaration.Variable -> {
+                    val body = declaration.body!!
+                    if (declaration.type != null) {
+                        body.receiver = declaration.type
+                    } else if (body.expression.type != null) {
+                        declaration.type = body.expression.type
+                    }
+                    if (declaration.type != body.expression.type) {
+                        persistentListOf(declaration.sourceRef to "Incompatible expression type for declaration")
+                    } else {
+                        persistentListOf()
+                    }
+                }
+                is Declaration.Function -> TODO()
+                else -> throw IllegalArgumentException("${declaration::class.simpleName} cannot be a local declaration")
+            }
+        }
+        return result
+    }
+
+    fun resolveExpressionCondition(nodePath: NodePath, expression: Expression.Condition, reference: ExpressionRef): Errors {
+        val children = expression.children
+        val conditionExpr = children[0]
+        val trueExpr = children[1]
+        val falseExpr = children[2]
+
+        conditionExpr.receiver = ast.typeBool
+        trueExpr.receiver = reference.receiver
+        falseExpr.receiver = reference.receiver
+
+        if (conditionExpr.expression.type != ast.typeBool)
+            return persistentListOf(conditionExpr.expression.sourceRef to "Expected boolean type")
+        if (trueExpr.expression.type != null && trueExpr.expression.type != falseExpr.expression.type)
+            return persistentListOf((trueExpr.expression.sourceRef + falseExpr.expression.sourceRef) to "Left and right of condition must have matching types")
+
+        expression.type = trueExpr.expression.type
+
+        return persistentListOf()
+    }
+
 
 
 
@@ -208,15 +264,16 @@ class TypeResolver(val ast: Ast) {
             is Expression.LoadVariable -> resolveExpressionLoadVariable(nodePath, expression, reference)
             is Expression.LoadBuiltin -> resolveExpressionLoadBuiltin(nodePath, expression, reference)
             is Expression.Call -> resolveExpressionCall(nodePath, expression, reference)
-            is Expression.Condition -> TODO()
-            is Expression.DeclareLocal -> TODO()
+            is Expression.Condition -> resolveExpressionCondition(nodePath, expression, reference)
+            is Expression.DeclareLocal -> resolveExpressionDeclareLocal(nodePath, expression, reference)
             is Expression.Lambda -> TODO()
             is Expression.LiteralFloat -> TODO()
+            is Expression.LiteralBool -> resolveExpressionLiteralBool(nodePath, expression, reference)
             is Expression.LiteralInteger -> resolveExpressionLiteralInteger(nodePath, expression, reference)
             is Expression.LiteralString -> TODO()
             is Expression.LoadField -> TODO()
             is Expression.Tuple -> resolveExpressionTuple(nodePath, expression, reference)
-            is Expression.StoreGlobal -> TODO()
+            is Expression.StoreVariable -> TODO()
         }
     }
 
@@ -241,21 +298,22 @@ class TypeResolver(val ast: Ast) {
 
         val expression = variable.body?.expression
         if (expression == null && !isParameter)
-            return persistentListOf(variable.sourceRef to "Variable missing initialiser expression")
+            return persistentListOf(variable.sourceRef to "Variable missing initializer expression")
 
         var errors = persistentListOf<Pair<SourceRef, String>>()
 
         if (expression != null) {
             variable.body.receiver = variable.type
             errors = errors.addAll(resolveExpression(newNodePath, expression, variable.body))
-            if (variable.type == null)
-                variable.type = expression.type
+//            if (variable.type == null)
+//                variable.type = expression.type
         }
 
         if (variable.type != null) {
             resolveType(nodePath, variable.type!!)
-        } else if (expression != null) {
-            variable.type = expression.type
+        } else  {
+            if (expression != null)
+                variable.type = expression.type
             if (variable.type == null)
                 errors = errors.add(variable.sourceRef to "Unknown variable type")
         }
@@ -333,12 +391,12 @@ class TypeResolver(val ast: Ast) {
         val main = mains.firstOrNull()
             ?: return persistentListOf(SourceRef.EMPTY to "No 'fun main():Int32' found")
 
-        val variables = mutableListOf<Pair<Declaration.Variable, ExpressionRef>>()
+        val variables = mutableListOf<Declaration.Variable>()
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
                     if (declaration is Declaration.Variable) {
-                        variables += Pair(declaration, declaration.body!!)
+                        variables += declaration
                     }
                 }
             }
@@ -349,32 +407,41 @@ class TypeResolver(val ast: Ast) {
         val callMain = Expression.Call(
             Expression.LoadVariable(main.name, main, SourceRef.EMPTY, mainType),
             unitExpr,
-            SourceRef.EMPTY,
+            main.sourceRef,
             ast.typeInt32
         )
-        val initVars = Expression.StoreGlobal(
-            variables,
-            ExpressionRef(callMain, ast.typeInt32),
-            SourceRef.EMPTY,
-            ast.typeInt32
-        )
-        ast.init = Declaration.Function(
+        val initVars = variables.fold<Declaration.Variable, Expression>(callMain) { tail, variable  ->
+            Expression.StoreVariable(
+                variable.name,
+                variable,
+                variable.body!!.expression,
+                tail,
+                variable.sourceRef,
+                ast.typeInt32
+            )
+        }
+        val initFunction = Declaration.Function(
             "main",
             listOf(),
             ast.typeInt32,
             ExpressionRef(initVars, ast.typeInt32),
             mainType,
-            SourceRef.EMPTY
+            SourceRef.EMPTY,
+            synthetic = true
         )
+
+        ast.syntheticModulePart.declarations += initFunction
 
         return persistentListOf()
     }
 
-    tailrec fun resolve(lastErrors: Errors = persistentListOf()): Errors {
-        val errors = ast.modules.foldErrors(::resolveModule).addAll(createInitFunction())
-        return if (errors == lastErrors)
-            errors
-        else
+    fun resolve(lastErrors: Errors = persistentListOf()): Errors {
+        val errors = ast.modules.foldErrors(::resolveModule)
+        return if (errors != lastErrors)
             resolve(errors)
+        else if (errors.isEmpty())
+            createInitFunction()
+        else
+            errors
     }
 }
