@@ -42,7 +42,7 @@ class CodeGenerator(val ast: Ast) {
                 else -> TODO("Declaration ${declaration} not supported yet")
             }
             is Type.Function -> TODO("Function type not supported yet")
-            is Type.Tuple -> TODO("Tuple type not supported yet")
+            is Type.Tuple -> IrTuple(fields.map { it.type!!.toIrType() })
         }
         return result
     }
@@ -104,7 +104,7 @@ class CodeGenerator(val ast: Ast) {
         fun llvmIntegerBinOp(op: String, type: IrType): String {
             val inputs = children.joinToString(", ") { generateExpression(it.expression, function) }
             val resultVariable = function.nextVariable(type)
-            function.body += "  %${resultVariable.name} = $op ${type.irName} $inputs"
+            function.body += "  %${resultVariable.name} = $op ${type.llvmType} $inputs"
             return "%${resultVariable.name}"
         }
 
@@ -204,6 +204,34 @@ class CodeGenerator(val ast: Ast) {
         return generateExpression(expression.children.last().expression, function)
     }
 
+    fun generateExpressionTuple(
+        expression: Expression.Tuple,
+        function: IrFunction
+    ): String {
+        val type = expression.type!!.toIrType() as IrTuple
+        val result = expression.children.foldIndexed("undef") { index, previous, next ->
+            val value = generateExpression(next.expression, function)
+            val temp = "%${function.nextVariable(type).name}"
+            function.body += "  $temp = insertvalue $type $previous, ${type.fields[index].llvmType} $value, $index"
+            temp
+        }
+        return result
+    }
+
+    fun generateExpressionDot(
+        expression: Expression.Dot,
+        function: IrFunction
+    ): String {
+        val base = expression.children[0].expression
+        val tupleType = base.type!!.toIrType() as IrTuple
+        val resultType = tupleType.fields[expression.fieldIndex!!]
+        val tupleValue = generateExpression(base, function)
+        val result = "%${function.nextVariable(resultType).name}"
+        function.body += "  $result = extractvalue $tupleType $tupleValue, ${expression.fieldIndex}"
+        return result
+    }
+
+
     fun generateExpression(
         expression: Expression,
         function: IrFunction
@@ -220,8 +248,9 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LoadBuiltin -> TODO()
             is Expression.LoadField -> TODO()
             is Expression.LoadVariable -> generateExpressionLoadVariable(expression, function)
-            is Expression.Tuple -> TODO()
+            is Expression.Tuple -> generateExpressionTuple(expression, function)
             is Expression.StoreVariable -> generateExpressionStoreVariable(expression, function)
+            is Expression.Dot -> generateExpressionDot(expression, function)
         }
         return result
     }
@@ -251,7 +280,7 @@ class CodeGenerator(val ast: Ast) {
                 for (declaration in part.declarations) {
                     if (declaration is Declaration.Variable) {
                         val type = declaration.type!!.toIrType()
-                        val name = "var_" + (module.name + '_' + declaration.name).cleanName() + '_' + type
+                        val name = "var_" + (module.name + '_' + declaration.name).cleanName() + '_' + type.simpleName
                         val variable = IrVariable(name, type)
 
                         declaration.stuff += variable
@@ -264,7 +293,7 @@ class CodeGenerator(val ast: Ast) {
 
     fun createFunctionPrototype(module: Module, result: IrType, declaration: Declaration.Function) {
         val name = if (declaration.synthetic) declaration.name
-        else "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result + declaration.parameters.joinToString("") { "_" + it.type?.toIrType().toString() }
+        else "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result.simpleName + '_' + declaration.parameters.joinToString("") { it.type!!.toIrType().simpleName }
         val scope = if (declaration.synthetic) "dso_local" else "internal"
 
         val function = IrFunction(name, result)
@@ -285,8 +314,6 @@ class CodeGenerator(val ast: Ast) {
     }
 
     fun createFunctionPrototypes() {
-//        createFunctionPrototype("main", "dso_local", IrPrimitive.Int32, ast.init!!)
-
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
@@ -298,44 +325,12 @@ class CodeGenerator(val ast: Ast) {
         }
     }
 
-//    fun createInitFunction() {
-//        val mains = mutableListOf<Declaration.Function>()
-//        for (module in ast.modules) {
-//            for (part in module.parts) {
-//                for (declaration in part.declarations) {
-//                    if (declaration is Declaration.Function && declaration.name == "main" && declaration.result == ast.typeInt32 && declaration.parameters.isEmpty()) {
-//                        mains += declaration
-//                    }
-//                }
-//            }
-//        }
-//
-//        if (mains.size > 1) throw Exception("Too many main methods found")
-//        val main = mains.firstOrNull() ?: throw Exception("No 'fun main():Int32' found")
-//
-//        val initFunction = IrFunction("main", IrPrimitive.Int32)
-//        initFunction += "define dso_local i32 @main() {"
-//
-//        for (variable in variables) {
-//            val initExpr = Expression.StoreGlobal(
-//
-//            )
-//        }
-//    }
-
     fun writeIr() {
         for (variable in variables)
             output.append("@${variable.name} = internal global ${variable.type} zeroinitializer")
                 .append(System.lineSeparator())
         for (function in functions)
             output.append(function)
-//
-//        val ls = System.lineSeparator()
-//        output.append(ls)
-//            .append("define dso_local i32 @main() {").append(ls)
-//            .append("  %r = call i32 @${main.toIrFunction().name}()").append(ls)
-//            .append("  ret i32 %r").append(ls)
-//            .append("}").append(ls)
     }
 
     fun generate(): String {

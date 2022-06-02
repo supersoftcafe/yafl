@@ -249,6 +249,20 @@ class TypeResolver(val ast: Ast) {
         return persistentListOf()
     }
 
+    fun resolveExpressionDot(nodePath: NodePath, expression: Expression.Dot, reference: ExpressionRef): Errors {
+        val base = expression.children[0]
+        val type = (base.expression.type as? Type.Tuple)
+            ?: return persistentListOf(expression.sourceRef to "Tuple or Struct expected")
+        base.receiver = type
+
+        val fieldIndex = type.fields.indexOfFirst { it.name == expression.fieldName }
+        if (fieldIndex == -1)
+            return persistentListOf(expression.sourceRef to "Field ${expression.fieldName} not found")
+
+        expression.type = type.fields[fieldIndex].type
+        expression.fieldIndex = fieldIndex
+        return persistentListOf()
+    }
 
 
 
@@ -274,6 +288,7 @@ class TypeResolver(val ast: Ast) {
             is Expression.LoadField -> TODO()
             is Expression.Tuple -> resolveExpressionTuple(nodePath, expression, reference)
             is Expression.StoreVariable -> TODO()
+            is Expression.Dot -> resolveExpressionDot(nodePath, expression, reference)
         }
     }
 
@@ -410,7 +425,7 @@ class TypeResolver(val ast: Ast) {
             main.sourceRef,
             ast.typeInt32
         )
-        val initVars = variables.fold<Declaration.Variable, Expression>(callMain) { tail, variable  ->
+        val initVars = variables.reversed().fold<Declaration.Variable, Expression>(callMain) { tail, variable  ->
             Expression.StoreVariable(
                 variable.name,
                 variable,

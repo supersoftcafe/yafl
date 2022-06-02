@@ -1,13 +1,20 @@
 package com.supersoftcafe.yaflc.llvm
 
 sealed interface IrType {
-    val irName: String
+    val llvmType: String
+    val simpleName: String
 }
-enum class IrPrimitive(override val irName: String) : IrType {
-    Bool("i1"), Int8("i8"), Int16("i16"), Int32("i32"), Int64("i64"), Float32("float"), Float64("double");
-
+enum class IrPrimitive(override val llvmType: String, override val simpleName: String) : IrType {
+    Bool("i1", "b"), Int8("i8", "1"), Int16("i16", "2"), Int32("i32", "4"), Int64("i64", "8"), Float32("float", "f"), Float64("double", "d");
     override fun toString(): String {
-        return irName
+        return llvmType
+    }
+}
+class IrTuple(val fields: List<IrType>) : IrType {
+    override val llvmType: String get() = fields.joinToString(",", "{", "}")
+    override val simpleName: String get() = fields.joinToString("", "t", "z") { it.simpleName }
+    override fun toString(): String {
+        return llvmType
     }
 }
 

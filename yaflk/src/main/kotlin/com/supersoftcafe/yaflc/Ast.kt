@@ -90,6 +90,13 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         init { addChild(body, (type as? Type.Function)?.result) }
     }
 
+    class Dot(target: Expression, val fieldName: String, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        var fieldIndex: Int? = null
+        init {
+            addChild(target)
+        }
+    }
+
     class Call(target: Expression, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init {
             addChild(target)

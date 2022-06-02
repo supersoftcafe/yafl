@@ -9,12 +9,13 @@ internal class Samples {
 
     @ParameterizedTest
     @ValueSource(strings = [
-        "test1.yafl",
-        "test2.yafl",
-        "test3.yafl",
-        "test4.yafl",
-        "test5.yafl",
-        "test6.yafl",
+//        "test1.yafl",
+//        "test2.yafl",
+//        "test3.yafl",
+//        "test4.yafl",
+//        "test5.yafl",
+//        "test6.yafl",
+        "test7.yafl",
     ])
     fun loadAndTest(file: String) {
         val text = Samples::class.java.getResource("/$file")!!.readText()

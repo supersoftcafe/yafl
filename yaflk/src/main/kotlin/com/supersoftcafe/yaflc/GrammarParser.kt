@@ -242,6 +242,19 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
+    fun parseDotExpr(tk: Tokens, nextLevel: Int): Result<Expression> {
+        val result = tk.AllOf(
+            { parseExpression(this, nextLevel) },
+            { ListOfWhile(TokenKind.DOT, TokenKind.NAME) }
+        ).map { sourceRef, (base, names) ->
+            names.fold(base) { expr, name ->
+                Expression.Dot(expr, name.text, sourceRef)
+            }
+        }
+        return result
+    }
+
+
     fun parseExpression(tk: Tokens, level: Int = 0): Result<Expression> {
         val result = when (level) {
             0 -> parseDeclarationsExpr(tk, level + 1)
@@ -254,8 +267,9 @@ class GrammarParser(val ast: Ast) {
             7 -> parseBinaryExpr(tk, level + 1, "`<<`" to TokenKind.SHL, "`>>`" to TokenKind.ASHR, "`>>>`" to TokenKind.LSHR)
             8 -> parseBinaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB)
             9 -> parseBinaryExpr(tk, level + 1, "`*`"  to TokenKind.MUL, "`/`"  to TokenKind.DIV , "`%`"   to TokenKind.REM)
-            10 -> parseUnaryExpr (tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB , "`!`"   to TokenKind.NOT)
+            10 -> parseUnaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB , "`!`"   to TokenKind.NOT)
             11 -> parseCallExpr (tk, level + 1)
+            12 -> parseDotExpr  (tk, level + 1)
             else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseLoadBuiltin, ::parseNamed, ::parseTupleExpr)
         }
         return result
