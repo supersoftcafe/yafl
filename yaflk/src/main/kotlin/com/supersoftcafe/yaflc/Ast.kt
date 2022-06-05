@@ -11,6 +11,8 @@ class Field(val name: String, var type: Type?, val sourceRef: SourceRef) {
     override fun hashCode(): Int {
         return type.hashCode()
     }
+
+    fun isComplete() = type.isComplete()
 }
 
 enum class PrimitiveKind(val irType: String) {
@@ -33,6 +35,7 @@ sealed class Declaration(
     class Struct(
         name: String,
         val fields: List<Field>,
+        val onHeap: Boolean,
         sourceRef: SourceRef,
         type: Type? = null
     ) : Declaration(name, sourceRef, type)
@@ -79,22 +82,10 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
     class LiteralFloat(val value: Double, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralInteger(val value: Long, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralString(val value: String, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
-    class LoadVariable(val name: String, var variable: Declaration? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LoadBuiltin(val name: String, sourceRef: SourceRef, type: Type? = null, var builtinOp: BuiltinOp? = null) : Expression(sourceRef, type)
-
-    class LoadField(val name: String, base: Expression, var field: Field? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
-        init { addChild(base, type) }
-    }
 
     class Lambda(val parameters: List<Declaration.Variable>, var result: Type?, body: Expression?, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init { addChild(body, (type as? Type.Function)?.result) }
-    }
-
-    class Dot(target: Expression, val fieldName: String, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
-        var fieldIndex: Int? = null
-        init {
-            addChild(target)
-        }
     }
 
     class Call(target: Expression, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
@@ -112,10 +103,29 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         }
     }
 
+    class LoadField(target: Expression, val fieldName: String, var fieldIndex: Int? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        init {
+            addChild(target)
+        }
+    }
+//    class StoreField(target: Expression, val fieldName: String, init: Expression, var fieldIndex: Int? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+//        init {
+//            addChild(init)
+//        }
+//    }
+
+    class LoadVariable(val name: String, var variable: Declaration? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class StoreVariable(val name: String, val variable: Declaration.Variable? = null, init: Expression, tail: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init {
             addChild(init)
             addChild(tail)
+        }
+    }
+
+    class New(init: List<Expression>, sourceRef: SourceRef, type: Type) : Expression(sourceRef, type) {
+        init {
+            for (expr in init)
+                addChild(expr)
         }
     }
 
@@ -138,21 +148,28 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
 }
 
 sealed class Type(val sourceRef: SourceRef) {
+    abstract fun isComplete(): Boolean
+
     class Named(val typeName: String, sourceRef: SourceRef, val moduleName: String? = null, var declaration: Declaration? = null) : Type(sourceRef) {
         override fun equals(other: Any?) = other is Named && declaration != null && declaration === other.declaration
         override fun hashCode() = declaration?.hashCode() ?: 0
+        override fun isComplete() = declaration != null
     }
 
     class Tuple(val fields: List<Field>, sourceRef: SourceRef) : Type(sourceRef) {
         override fun equals(other: Any?) = other is Tuple && fields == other.fields
         override fun hashCode() = fields.hashCode()
+        override fun isComplete() = fields.all(Field::isComplete)
     }
 
     class Function(val parameter: Tuple, var result: Type?, sourceRef: SourceRef) : Type(sourceRef) {
         override fun equals(other: Any?) = other is Function && parameter == other.parameter && result == other.result
         override fun hashCode() = 31 * parameter.hashCode() + result.hashCode()
+        override fun isComplete() = parameter.isComplete() && result.isComplete()
     }
 }
+
+fun Type?.isComplete() = this?.isComplete() == true
 
 class ModulePart(val imports: List<Module>, val module: Module) : INode {
     init {
@@ -167,7 +184,10 @@ class Module(val name: String) {
 
 enum class BuiltinOpKind {
     CONVERT_I8_to_I16, CONVERT_I16_TO_I32, CONVERT_I32_TO_I64, CONVERT_F32_TO_F64,
-    ADD_I8, ADD_I16, ADD_I32, ADD_I64, ADD_F32, ADD_F64;
+    ADD_I8, ADD_I16, ADD_I32, ADD_I64, ADD_F32, ADD_F64,
+    MUL_I8, MUL_I16, MUL_I32, MUL_I64, MUL_F32, MUL_F64,
+    SUB_I8, SUB_I16, SUB_I32, SUB_I64, SUB_F32, SUB_F64,
+    EQU_I8, EQU_I16, EQU_I32, EQU_I64, EQU_F32, EQU_F64,
 }
 
 class BuiltinOp(val name: String, val parameter: Type.Tuple, val result: Type, val kind: BuiltinOpKind)
@@ -200,6 +220,9 @@ class Ast {
         createBuiltinOp(BuiltinOpKind.ADD_I64, typeInt64, typeInt64, typeInt64),
         createBuiltinOp(BuiltinOpKind.ADD_F32, typeFloat32, typeFloat32, typeFloat32),
         createBuiltinOp(BuiltinOpKind.ADD_F64, typeFloat64, typeFloat64, typeFloat64),
+        createBuiltinOp(BuiltinOpKind.SUB_I32, typeInt32, typeInt32, typeInt32),
+        createBuiltinOp(BuiltinOpKind.MUL_I32, typeInt32, typeInt32, typeInt32),
+        createBuiltinOp(BuiltinOpKind.EQU_I32, typeBool, typeInt32, typeInt32),
     )
 
     private fun createPrimitive(name: String, kind: PrimitiveKind): Type {

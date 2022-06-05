@@ -9,13 +9,16 @@ internal class Samples {
 
     @ParameterizedTest
     @ValueSource(strings = [
-//        "test1.yafl",
-//        "test2.yafl",
-//        "test3.yafl",
-//        "test4.yafl",
-//        "test5.yafl",
-//        "test6.yafl",
+        "test1.yafl",
+        "test2.yafl",
+        "test3.yafl",
+        "test4.yafl",
+        "test5.yafl",
+        "test6.yafl",
         "test7.yafl",
+        "test8.yafl",
+        "test9.yafl",
+        "test10.yafl",
     ])
     fun loadAndTest(file: String) {
         val text = Samples::class.java.getResource("/$file")!!.readText()
@@ -23,6 +26,13 @@ internal class Samples {
 
         val parser = GrammarParser(ast)
         val tokens = Tokens(text, file)
+//
+//        var token = tokens.get()
+//        while (token.value.kind != TokenKind.EOI) {
+//            println("  Token ${token.value}")
+//            token = token.tokens.get()
+//        }
+
         val parseErrors = parser.parseIntoAst(tokens)
         assertEquals("", parseErrors.joinToString("\n"))
 

@@ -248,7 +248,7 @@ class GrammarParser(val ast: Ast) {
             { ListOfWhile(TokenKind.DOT, TokenKind.NAME) }
         ).map { sourceRef, (base, names) ->
             names.fold(base) { expr, name ->
-                Expression.Dot(expr, name.text, sourceRef)
+                Expression.LoadField(expr, name.text, null, sourceRef)
             }
         }
         return result
@@ -268,8 +268,8 @@ class GrammarParser(val ast: Ast) {
             8 -> parseBinaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB)
             9 -> parseBinaryExpr(tk, level + 1, "`*`"  to TokenKind.MUL, "`/`"  to TokenKind.DIV , "`%`"   to TokenKind.REM)
             10 -> parseUnaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB , "`!`"   to TokenKind.NOT)
-            11 -> parseCallExpr (tk, level + 1)
-            12 -> parseDotExpr  (tk, level + 1)
+            11 -> parseDotExpr  (tk, level + 1)
+            12 -> parseCallExpr (tk, level + 1)
             else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseLoadBuiltin, ::parseNamed, ::parseTupleExpr)
         }
         return result
@@ -292,7 +292,7 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseFun(tk: Tokens): Result<Declaration.Function> {
+    fun parseFun(tk: Tokens): Result<List<Declaration>> {
         val result = tk.AllOf(
             { FailIsAbsent(TokenKind.FUN) },
             TokenKind.NAME,
@@ -301,61 +301,84 @@ class GrammarParser(val ast: Ast) {
             TokenKind.EQ,
             ::parseExpression
         ).map { sourceRef, (_, name, parameters, result, _, body) ->
-            Declaration.Function(name.text, parameters, result, ExpressionRef(body, result), sourceRef = sourceRef)
+            listOf(Declaration.Function(name.text, parameters, result, ExpressionRef(body, result), sourceRef = sourceRef))
         }
         return result
     }
 
-    fun parseLet(tk: Tokens, global: Boolean): Result<Declaration.Variable> {
+    fun parseLet(tk: Tokens, global: Boolean = false): Result<List<Declaration>> {
         val result = tk.AllOf(
             { FailIsAbsent(TokenKind.LET) },
             TokenKind.NAME,
             { If(TokenKind.COLON, ::parseType) },
             { If(TokenKind.EQ, ::parseExpression) }
         ).map { sourceRef, (_, name, type, body) ->
-            Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global = global)
+            listOf(Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global = global))
         }
         return result
     }
 
-    fun parseLocalDeclarations(tk: Tokens): Result<PersistentList<Declaration>> {
-        val result = tk.Repeat { OneOf(::parseFun, { parseLet(this, global = false) } ) }
-        return result
-    }
-
-    fun parseGlobalDeclarations(tk: Tokens): Result<PersistentList<Declaration>> {
-        // Not parameterised function because we'll also parse structs here in the future, unlike
-        // local that will not parse structs
-        val result = tk.Repeat { OneOf(::parseFun, { parseLet(this, global = true) } ) }
-        return result
-    }
-
-
-    fun parseModulePart(tk: Tokens): Result<ModulePart> {
+    fun parseStruct(tk: Tokens, module: Module): Result<List<Declaration>> {
         val result = tk.AllOf(
-            { If(TokenKind.MODULE, ::parseDottyName).map { _, b -> b?.joinToString(".") } },
-            ::parseImports,
-            ::parseGlobalDeclarations)
-            .map { _, (moduleName, imports, declarations) ->
-                val module = ast.findOrCreateModule(moduleName ?: "Anonymous\$${ast.modules.size}")
-                val part = ModulePart(imports.add(ast.systemModule).add(module).distinct(), module)
-                part.declarations.addAll(declarations)
-                part
-            }
+            { FailIsAbsent({ OneOf(TokenKind.STRUCT, TokenKind.CLASS) }) },
+            TokenKind.NAME,
+            ::parseFunParams
+        ).map { sourceRef, (kind, name, parameters) ->
+            // Create struct declaration and constructor function together
+            val fields = parameters.map { Field(it.name, it.type, it.sourceRef) }
+            val structDecl = Declaration.Struct(name.text, fields, onHeap = kind.kind == TokenKind.CLASS, sourceRef = sourceRef)
+            val structType = Type.Named(name.text, sourceRef, module.name, structDecl)
+            val initList = parameters.map { param -> Expression.LoadVariable(param.name, param, param.sourceRef) }
+            val body = Expression.New(initList, sourceRef, structType)
+            val constructor = Declaration.Function(name.text, parameters, structType, ExpressionRef(body, structType), sourceRef = sourceRef)
+            listOf(structDecl, constructor)
+        }
         return result
     }
 
-    fun parseIntoAst(tokens: Tokens): PersistentList<Pair<SourceRef, String>> {
-        return when (val part = parseModulePart(tokens)) {
-            is Result.Absent -> persistentListOf(part.sourceRef to "Failed to find a module section")
-            is Result.Fail -> part.error
-            is Result.Ok -> {
-                val token = part.tokens.get()
-                if (token.value.kind != TokenKind.EOI)
-                    persistentListOf(token.sourceRef to "Unexpected token ${token.value.kind}")
-                else
-                    persistentListOf()
-            }
+    fun parseLocalDeclarations(tk: Tokens): Result<List<Declaration>> {
+        val result = tk.Repeat { OneOf(::parseFun, ::parseLet) }.map { _, lists -> lists.flatten() }
+        return result
+    }
+
+    fun parseGlobalDeclarations(tk: Tokens, module: Module): Result<List<Declaration>> {
+        val result = tk.Repeat { OneOf({ parseStruct(this, module) }, ::parseFun, { parseLet(this, global = true) } ) }
+            .map { _, lists -> lists.flatten() }
+        return result
+    }
+
+    fun createModuleAndPart(moduleName: String?, imports: PersistentList<Module>): Tuple2<Module, ModulePart> {
+        val module = ast.findOrCreateModule(moduleName ?: "Anonymous\$${ast.modules.size}")
+        val part = ModulePart(imports.add(ast.systemModule).add(module).distinct(), module)
+        return tupleOf(module, part)
+    }
+
+    fun parseIntoAst(tk: Tokens): PersistentList<Pair<SourceRef, String>> {
+        val headerResult = tk.AllOf(
+            { If(TokenKind.MODULE, ::parseDottyName).map { _, b -> b?.joinToString(".") } },
+            ::parseImports)
+
+        val (module, part, bodyTk) = when (headerResult) {
+            is Result.Fail -> return headerResult.error
+            is Result.Absent -> createModuleAndPart(null, persistentListOf()) + tupleOf(tk)
+            is Result.Ok -> createModuleAndPart(headerResult.value.v1, headerResult.value.v2) + tupleOf(headerResult.tokens)
+        }
+
+        val declarationsResult = parseGlobalDeclarations(bodyTk, module)
+
+        val (declarations, endTk) = when (declarationsResult) {
+            is Result.Fail -> return declarationsResult.error
+            is Result.Absent -> tupleOf(listOf(), bodyTk)
+            is Result.Ok -> tupleOf(declarationsResult.value, declarationsResult.tokens)
+        }
+
+        part.declarations.addAll(declarations)
+
+        val token = endTk.get()
+        return if (token.value.kind != TokenKind.EOI) {
+            persistentListOf(token.sourceRef to "Unexpected token ${token.value.kind}")
+        } else {
+            persistentListOf()
         }
     }
 }

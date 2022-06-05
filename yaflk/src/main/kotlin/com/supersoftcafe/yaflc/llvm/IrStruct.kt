@@ -6,21 +6,22 @@ sealed interface IrType {
 }
 enum class IrPrimitive(override val llvmType: String, override val simpleName: String) : IrType {
     Bool("i1", "b"), Int8("i8", "1"), Int16("i16", "2"), Int32("i32", "4"), Int64("i64", "8"), Float32("float", "f"), Float64("double", "d");
-    override fun toString(): String {
-        return llvmType
-    }
+    override fun toString() = llvmType
 }
 class IrTuple(val fields: List<IrType>) : IrType {
-    override val llvmType: String get() = fields.joinToString(",", "{", "}")
-    override val simpleName: String get() = fields.joinToString("", "t", "z") { it.simpleName }
-    override fun toString(): String {
-        return llvmType
-    }
+    override val llvmType get() = fields.joinToString(",", "{", "}")
+    override val simpleName get() = fields.joinToString("", "t", "z") { it.simpleName }
+    override fun toString() = llvmType
 }
+class IrStruct(val name: String, val type: () -> IrTuple) : IrType {
+    override val llvmType get() = "%struct_$name"
+    override val simpleName get() = "_str_${name}_"
+    override fun toString() = llvmType
+}
+
 
 class IrLabel(val name: String)
 class IrVariable(val name: String, val type: IrType)
-
 class IrFunction(val name: String, val result: IrType) {
     private val _parameters = mutableListOf<IrVariable>()
     private val _variables  = mutableListOf<IrVariable>()

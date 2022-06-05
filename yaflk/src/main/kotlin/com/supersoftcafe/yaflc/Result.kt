@@ -13,10 +13,7 @@ sealed class Result<out TValue> {
     }
 
     data class Fail<TValue>(val error: PersistentList<Pair<SourceRef, String>>) : Result<TValue>() {
-        constructor(sourceRef: SourceRef, message: String) : this(persistentListOf(sourceRef to message)) {
-            if (message == "Expected token [MODULE]")
-                println(message)
-        }
+        constructor(sourceRef: SourceRef, message: String) : this(persistentListOf(sourceRef to message))
         fun <TOut> xfer(): Result<TOut> = Fail(error)
     }
 

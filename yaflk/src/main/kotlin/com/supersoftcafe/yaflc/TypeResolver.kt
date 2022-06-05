@@ -30,7 +30,7 @@ class TypeResolver(val ast: Ast) {
     fun Type?.maybeEquals(other: Any?): Boolean {
         return if (this == null || other == null) true
         else when (this) {
-            is Type.Named -> other is Type.Named && other.typeName == typeName && other.moduleName == moduleName
+            is Type.Named -> other is Type.Named && (declaration == null || other.declaration == null || declaration == other.declaration)
             is Type.Tuple -> other is Type.Tuple && other.fields.maybeEquals(fields)
             is Type.Function -> other is Type.Function && other.result.maybeEquals(result) && other.parameter.fields.maybeEquals(parameter.fields)
         }
@@ -51,11 +51,9 @@ class TypeResolver(val ast: Ast) {
         }
     }
 
-    fun resolveField(nodePath: NodePath, field: Field): Errors {
-        val type = field.type
-            ?: return persistentListOf(field.sourceRef to "Unknown expression type")
-        resolveType(nodePath, type)
-        return persistentListOf()
+    fun resolveFieldType(nodePath: NodePath, field: Field): Errors {
+        return resolveType(nodePath, field.type
+            ?: return persistentListOf(field.sourceRef to "Unknown expression type"))
     }
 
     fun resolveTypeFunction(nodePath: NodePath, type: Type.Function): Errors {
@@ -85,7 +83,7 @@ class TypeResolver(val ast: Ast) {
     }
 
     fun resolveTypeTuple(nodePath: NodePath, type: Type.Tuple): Errors {
-        return type.fields.foldErrors { resolveField(nodePath, it) }
+        return type.fields.foldErrors { resolveFieldType(nodePath, it) }
     }
 
     fun resolveType(nodePath: NodePath, type: Type): Errors {
@@ -104,8 +102,6 @@ class TypeResolver(val ast: Ast) {
         val newNodePath = nodePath.add(expression)
 
         if (expression.variable == null) {
-            // TODO: Handle Module scoped variable loads
-
             // Find anything that matches the expression type. Might over-fetch on first few passes whilst type == null.
             fun matcher(d: Declaration): Boolean =
                 d.name == expression.name && (d is Declaration.Variable || d is Declaration.Function) && d.type.maybeEquals(expression.type)
@@ -118,14 +114,30 @@ class TypeResolver(val ast: Ast) {
             if (candidates.size > 1)
                 return persistentListOf(expression.sourceRef to "Ambiguous variable name")
 
+
             expression.variable = candidates.firstOrNull()
         }
 
         val variable = expression.variable
             ?: return persistentListOf(expression.sourceRef to "Unknown variable reference")
 
-        if (variable is Declaration.Variable && variable.type == null && reference.receiver != null)
-            variable.type = reference.receiver
+        when (variable) {
+            is Declaration.Variable -> {
+                if (variable.type == null && reference.receiver != null)
+                    variable.type = reference.receiver
+            }
+            is Declaration.Function -> {
+                // If any of the parameter types are unknown, and we know the type, update the parameter
+                val receiver = reference.receiver
+                if (receiver is Type.Function) {
+                    for ((param, input) in variable.parameters.zip(receiver.parameter.fields))
+                        if (param.type == null)
+                            param.type = input.type
+                    if (variable.result == null)
+                        variable.result = receiver.result
+                }
+            }
+        }
 
         if (expression.type == null) {
             expression.type = variable.type
@@ -162,29 +174,6 @@ class TypeResolver(val ast: Ast) {
         }
 
         return persistentListOf()
-    }
-
-    fun resolveExpressionTuple(nodePath: NodePath, expression: Expression.Tuple, reference: ExpressionRef): Errors {
-        val children = expression.children.filterIsInstance<TupleField>().toList()
-        val receiverFields = (reference.receiver as? Type.Tuple)?.fields ?: listOf()
-
-        if (expression.type == null && children.all { it.expression.type != null }) {
-            expression.type = Type.Tuple(children.mapIndexed { index, field ->
-                Field(field.name ?: "value$index", field.expression.type, field.expression.sourceRef)
-            }, expression.sourceRef)
-
-
-        }
-
-        val errors = if (children.size != receiverFields.size) {
-            persistentListOf(expression.sourceRef to "Incorrect number of tuple fields")
-        } else {
-            for ((ref, field) in children.zip(receiverFields))
-                ref.receiver = field.type
-            persistentListOf()
-        }
-
-        return errors
     }
 
     fun resolveExpressionLiteralInteger(nodePath: NodePath, expression: Expression.LiteralInteger, reference: ExpressionRef): Errors {
@@ -236,8 +225,8 @@ class TypeResolver(val ast: Ast) {
         val falseExpr = children[2]
 
         conditionExpr.receiver = ast.typeBool
-        trueExpr.receiver = reference.receiver
-        falseExpr.receiver = reference.receiver
+        trueExpr.receiver = reference.receiver ?: falseExpr.expression.type
+        falseExpr.receiver = reference.receiver ?: trueExpr.expression.type
 
         if (conditionExpr.expression.type != ast.typeBool)
             return persistentListOf(conditionExpr.expression.sourceRef to "Expected boolean type")
@@ -249,18 +238,80 @@ class TypeResolver(val ast: Ast) {
         return persistentListOf()
     }
 
-    fun resolveExpressionDot(nodePath: NodePath, expression: Expression.Dot, reference: ExpressionRef): Errors {
+    fun resolveExpressionLoadField(nodePath: NodePath, expression: Expression.LoadField, reference: ExpressionRef): Errors {
         val base = expression.children[0]
-        val type = (base.expression.type as? Type.Tuple)
-            ?: return persistentListOf(expression.sourceRef to "Tuple or Struct expected")
-        base.receiver = type
 
-        val fieldIndex = type.fields.indexOfFirst { it.name == expression.fieldName }
-        if (fieldIndex == -1)
-            return persistentListOf(expression.sourceRef to "Field ${expression.fieldName} not found")
+        when (val type = base.expression.type) {
+            is Type.Tuple -> {
+                base.receiver = type
 
-        expression.type = type.fields[fieldIndex].type
-        expression.fieldIndex = fieldIndex
+                val fieldIndex = type.fields.indexOfFirst { it.name == expression.fieldName }
+                if (fieldIndex == -1)
+                    return persistentListOf(expression.sourceRef to "Field ${expression.fieldName} not found")
+
+                expression.type = type.fields[fieldIndex].type
+                expression.fieldIndex = fieldIndex
+                return persistentListOf()
+            }
+            is Type.Named -> {
+                when (val declaration = type.declaration) {
+                    is Declaration.Struct -> {
+                        base.receiver = type
+
+                        val fieldIndex = declaration.fields.indexOfFirst { it.name == expression.fieldName }
+                        if (fieldIndex == -1)
+                            return persistentListOf(expression.sourceRef to "Field ${expression.fieldName} not found")
+
+                        val field = declaration.fields[fieldIndex]
+
+                        if (expression.type == null)
+                            expression.type = field.type
+
+                        expression.fieldIndex = fieldIndex
+                        return persistentListOf()
+                    }
+                    else -> {
+                        return persistentListOf(expression.sourceRef to "Tuple or Struct expected")
+                    }
+                }
+            }
+            else -> {
+                return persistentListOf(expression.sourceRef to "Tuple or Struct expected")
+            }
+        }
+    }
+
+    fun resolveExpressionTuple(nodePath: NodePath, expression: Expression.Tuple, reference: ExpressionRef): Errors {
+        val children = expression.children.filterIsInstance<TupleField>().toList()
+        val receiverFields = (reference.receiver as? Type.Tuple)?.fields ?: listOf()
+
+        if (expression.type == null && children.all { it.expression.type != null }) {
+            expression.type = Type.Tuple(children.mapIndexed { index, field ->
+                Field(field.name ?: "value$index", field.expression.type, field.expression.sourceRef)
+            }, expression.sourceRef)
+        }
+
+        val errors = if (children.size != receiverFields.size) {
+            persistentListOf(expression.sourceRef to "Incorrect number of tuple fields")
+        } else {
+            for ((ref, field) in children.zip(receiverFields))
+                ref.receiver = field.type
+            persistentListOf()
+        }
+
+        return errors
+    }
+
+    fun resolveExpressionNew(nodePath: NodePath, expression: Expression.New, reference: ExpressionRef): Errors {
+        val children = expression.children
+        val struct = (expression.type!! as Type.Named).declaration as Declaration.Struct
+
+        for ((exprRef, field) in children.zip(struct.fields)) {
+            if (field.type == null && exprRef.expression.type.isComplete())
+                field.type = exprRef.expression.type
+            exprRef.receiver = field.type
+        }
+
         return persistentListOf()
     }
 
@@ -285,10 +336,10 @@ class TypeResolver(val ast: Ast) {
             is Expression.LiteralBool -> resolveExpressionLiteralBool(nodePath, expression, reference)
             is Expression.LiteralInteger -> resolveExpressionLiteralInteger(nodePath, expression, reference)
             is Expression.LiteralString -> TODO()
-            is Expression.LoadField -> TODO()
             is Expression.Tuple -> resolveExpressionTuple(nodePath, expression, reference)
             is Expression.StoreVariable -> TODO()
-            is Expression.Dot -> resolveExpressionDot(nodePath, expression, reference)
+            is Expression.LoadField -> resolveExpressionLoadField(nodePath, expression, reference)
+            is Expression.New -> resolveExpressionNew(nodePath, expression, reference)
         }
     }
 
@@ -342,7 +393,7 @@ class TypeResolver(val ast: Ast) {
 
     fun resolveStruct(nodePath: NodePath, struct: Declaration.Struct): Errors {
         val newNodePath = nodePath.add(struct)
-        val result = struct.fields.foldErrors { resolveField(newNodePath, it) }
+        val result = struct.fields.foldErrors { resolveFieldType(newNodePath, it) }
         return result
     }
 

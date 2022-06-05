@@ -1,0 +1,14 @@
+
+# Two structs with two overloaded functions with a heap of type inference
+# The functions 'process' have explicit signatures because there is no way to infer these almost identical uses
+
+fun `+`(a, b) = __builtin__ add_i32(a, b)
+fun `+`(a, b) = __builtin__ add_i64(a, b)
+
+struct NumberPair1(left, right)
+struct NumberPair2(left, right)
+
+fun process(np: NumberPair1) = np.left + np.right
+fun process(np: NumberPair2) = np.left + np.right
+
+fun main() = process(NumberPair1(1, 8)) + process(NumberPair2(287,100))

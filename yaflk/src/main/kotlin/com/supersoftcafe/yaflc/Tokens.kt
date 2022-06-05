@@ -13,12 +13,28 @@ class Tokens private constructor(
 ) {
     constructor(input: String, file: String) : this(input, file, 1, 1, 0, true)
 
-    fun get() = get(this)
+    fun get(vararg lookingFor: TokenKind) = get(this, lookingFor)
 
     companion object {
-        private tailrec fun get(tk: Tokens): Result.Ok<Token> {
+        private tailrec fun get(tk: Tokens, lookingFor: Array<out TokenKind>): Result.Ok<Token> {
             if (tk.input.isEmpty())
                 return Result.Ok(Token(TokenKind.EOI, "", tk.indent), SourceRef(tk.file, tk.line, tk.character, tk.line, tk.character), tk)
+
+//            val foundList = TokenKind.values().mapNotNull { tokenKind ->
+//                tokenKind.rx?.find(tk.input)?.let {
+//                    if (it.range.first > 0) null else Pair(tokenKind, it.value)
+//                }
+//            }.sortedBy { it.second.length }
+
+//            val (tokenKind, value) = if (foundList.isEmpty()) {
+//                Pair(TokenKind.UNKNOWN, tk.input.substring(0, 1))
+//            } else if (lookingFor.isEmpty() || foundList.last().first in lookingFor) {
+//                foundList.last()
+//            } else if (lookingFor.isNotEmpty() && foundList.size > 1 && foundList.any { it.first in lookingFor && it.first.allowOverride }) {
+//                foundList.findLast { it.first in lookingFor && it.first.allowOverride }!!
+//            } else {
+//                Pair(TokenKind.UNKNOWN, tk.input.substring(0, 1))
+//            }
 
             val found = TokenKind.values().mapNotNull { tokenKind ->
                 tokenKind.rx?.find(tk.input)?.let {
@@ -51,7 +67,7 @@ class Tokens private constructor(
 
             val tokens = Tokens(tk.input.substring(value.length), tk.file, newLine, newCharacter, newIndent, newStartOfLine)
             return if (tokenKind == TokenKind.IGNORE)
-                get(tokens)
+                get(tokens, lookingFor)
             else
                 Result.Ok(Token(tokenKind,value, tk.indent), SourceRef(tk.file, tk.line, tk.character, newLine, newCharacter), tokens)
         }
@@ -182,11 +198,14 @@ fun <TValue> Tokens.FailIsAbsent(lambda: Parser<TValue>) =
     }
 
 fun Tokens.TokenIs(vararg kind: TokenKind): Result<Token> {
-    return TokenIs(kind.toList())
+    val token = get(*kind)
+    return if (token.value.kind in kind) token
+    else Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}]")
 }
 
 fun Tokens.TokenIs(kind: List<TokenKind>): Result<Token> {
-    val token = get()
-    return if (token.value.kind in kind) token
-    else Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}]")
+    return TokenIs(*kind.toTypedArray())
+//    val token = get()
+//    return if (token.value.kind in kind) token
+//    else Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}]")
 }

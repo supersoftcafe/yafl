@@ -1,10 +1,12 @@
 
-# Tuple
+# Struct with inferred types
 
 fun `+`(a, b) = __builtin__ add_i32(a, b)
 fun `+`(a, b) = __builtin__ add_i64(a, b)
 
+struct NumberPair(left, right)
+
 let wonder = 27
-let value = (left = wonder, right = 8)
+let value = NumberPair(wonder, 8)
 
 fun main() = value.left + value.right

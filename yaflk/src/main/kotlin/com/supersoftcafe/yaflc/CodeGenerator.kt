@@ -8,6 +8,7 @@ class CodeGenerator(val ast: Ast) {
         const val validFollowingCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_.0123456789"
     }
 
+    val structures = mutableListOf<IrStruct>()
     val functions = mutableListOf<IrFunction>()
     val variables = mutableListOf<IrVariable>()
     val output = StringBuilder()
@@ -38,7 +39,7 @@ class CodeGenerator(val ast: Ast) {
                     PrimitiveKind.Float32 -> IrPrimitive.Float32
                     PrimitiveKind.Float64 -> IrPrimitive.Float64
                 }
-                is Declaration.Struct -> TODO("Struct type not supported yet")
+                is Declaration.Struct -> decl.toIrType()
                 else -> TODO("Declaration ${declaration} not supported yet")
             }
             is Type.Function -> TODO("Function type not supported yet")
@@ -47,16 +48,19 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
+    fun Declaration.Struct.toIrType(): IrType {
+        val result = stuff.filterIsInstance<IrStruct>().first()
+        return result
+    }
+
     fun Declaration.Variable.toIrVariable(): IrVariable {
-        val result = stuff.filterIsInstance<IrVariable>().firstOrNull()
-            ?: throw NullPointerException()
+        val result = stuff.filterIsInstance<IrVariable>().first()
         return result
     }
 
 
     fun Declaration.Function.toIrFunction(): IrFunction {
-        val result = stuff.filterIsInstance<IrFunction>().firstOrNull()
-            ?: throw NullPointerException()
+        val result = stuff.filterIsInstance<IrFunction>().first()
         return result
     }
 
@@ -113,6 +117,9 @@ class CodeGenerator(val ast: Ast) {
             BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
             BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
             BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add", IrPrimitive.Int64)
+            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul", IrPrimitive.Int32)
+            BuiltinOpKind.SUB_I32 -> llvmIntegerBinOp("sub", IrPrimitive.Int32)
+            BuiltinOpKind.EQU_I32 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int32)
             else -> TODO("Builtin Op ${kind} not implemented yet")
         }
     }
@@ -204,6 +211,25 @@ class CodeGenerator(val ast: Ast) {
         return generateExpression(expression.children.last().expression, function)
     }
 
+    fun generateExpressionLoadField(
+        expression: Expression.LoadField,
+        function: IrFunction
+    ): String {
+        val base = expression.children[0].expression
+        fun loadTupleField(type: IrType, fields: List<IrType>): String {
+            val resultType = fields[expression.fieldIndex!!]
+            val tupleValue = generateExpression(base, function)
+            val result = "%${function.nextVariable(resultType).name}"
+            function.body += "  $result = extractvalue $type $tupleValue, ${expression.fieldIndex}"
+            return result
+        }
+        return when (val type = base.type!!.toIrType()) {
+            is IrTuple -> loadTupleField(type, type.fields)
+            is IrStruct -> loadTupleField(type, type.type().fields)
+            else -> throw IllegalStateException("${type::class.simpleName} not supported by LoadField")
+        }
+    }
+
     fun generateExpressionTuple(
         expression: Expression.Tuple,
         function: IrFunction
@@ -218,16 +244,23 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
-    fun generateExpressionDot(
-        expression: Expression.Dot,
+    fun generateExpressionNew(
+        expression: Expression.New,
         function: IrFunction
     ): String {
-        val base = expression.children[0].expression
-        val tupleType = base.type!!.toIrType() as IrTuple
-        val resultType = tupleType.fields[expression.fieldIndex!!]
-        val tupleValue = generateExpression(base, function)
-        val result = "%${function.nextVariable(resultType).name}"
-        function.body += "  $result = extractvalue $tupleType $tupleValue, ${expression.fieldIndex}"
+        fun newTuple(type: IrType, fields: List<IrType>): String {
+            return expression.children.foldIndexed("undef") { index, previous, next ->
+                val value = generateExpression(next.expression, function)
+                val temp = "%${function.nextVariable(type).name}"
+                function.body += "  $temp = insertvalue $type $previous, ${fields[index].llvmType} $value, $index"
+                temp
+            }
+        }
+        val result = when (val type = expression.type!!.toIrType()) {
+            is IrTuple -> newTuple(type, type.fields)
+            is IrStruct -> newTuple(type, type.type().fields)
+            else -> throw IllegalStateException("${type::class.simpleName} not supported by operator New")
+        }
         return result
     }
 
@@ -246,11 +279,11 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LiteralFloat -> TODO()
             is Expression.LiteralString -> TODO()
             is Expression.LoadBuiltin -> TODO()
-            is Expression.LoadField -> TODO()
             is Expression.LoadVariable -> generateExpressionLoadVariable(expression, function)
             is Expression.Tuple -> generateExpressionTuple(expression, function)
             is Expression.StoreVariable -> generateExpressionStoreVariable(expression, function)
-            is Expression.Dot -> generateExpressionDot(expression, function)
+            is Expression.LoadField -> generateExpressionLoadField(expression, function)
+            is Expression.New -> generateExpressionNew(expression, function)
         }
         return result
     }
@@ -274,24 +307,29 @@ class CodeGenerator(val ast: Ast) {
         }
     }
 
-    fun createVariablePrototypes() {
-        for (module in ast.modules) {
-            for (part in module.parts) {
-                for (declaration in part.declarations) {
-                    if (declaration is Declaration.Variable) {
-                        val type = declaration.type!!.toIrType()
-                        val name = "var_" + (module.name + '_' + declaration.name).cleanName() + '_' + type.simpleName
-                        val variable = IrVariable(name, type)
 
-                        declaration.stuff += variable
-                        variables += variable
-                    }
-                }
-            }
-        }
+
+    fun createStructurePrototype(module: Module, declaration: Declaration.Struct) {
+        val name = (module.name + '.' + declaration.name).cleanName()
+        val tuple = { IrTuple(declaration.fields.map { it.type!!.toIrType() }) }
+        val struct = IrStruct(name, tuple)
+
+        declaration.stuff += struct
+        structures += struct
     }
 
-    fun createFunctionPrototype(module: Module, result: IrType, declaration: Declaration.Function) {
+    fun createVariablePrototype(module: Module, declaration: Declaration.Variable) {
+        val type = declaration.type!!.toIrType()
+        val name = "var_" + (module.name + '_' + declaration.name).cleanName() + '_' + type.simpleName
+        val variable = IrVariable(name, type)
+
+        declaration.stuff += variable
+        variables += variable
+    }
+
+    fun createFunctionPrototype(module: Module, declaration: Declaration.Function) {
+        val result = declaration.result!!.toIrType()
+
         val name = if (declaration.synthetic) declaration.name
         else "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result.simpleName + '_' + declaration.parameters.joinToString("") { it.type!!.toIrType().simpleName }
         val scope = if (declaration.synthetic) "dso_local" else "internal"
@@ -313,12 +351,14 @@ class CodeGenerator(val ast: Ast) {
         functions += function
     }
 
-    fun createFunctionPrototypes() {
+    fun createPrototypes() {
         for (module in ast.modules) {
             for (part in module.parts) {
                 for (declaration in part.declarations) {
-                    if (declaration is Declaration.Function) {
-                        createFunctionPrototype(module, declaration.result!!.toIrType(), declaration)
+                    when (declaration) {
+                        is Declaration.Function ->  createFunctionPrototype(module, declaration)
+                        is Declaration.Variable ->  createVariablePrototype(module, declaration)
+                        is Declaration.Struct   -> createStructurePrototype(module, declaration)
                     }
                 }
             }
@@ -326,6 +366,9 @@ class CodeGenerator(val ast: Ast) {
     }
 
     fun writeIr() {
+        for (structure in structures)
+            output.append("${structure.llvmType} = type ${structure.type()}")
+                .append(System.lineSeparator())
         for (variable in variables)
             output.append("@${variable.name} = internal global ${variable.type} zeroinitializer")
                 .append(System.lineSeparator())
@@ -334,11 +377,15 @@ class CodeGenerator(val ast: Ast) {
     }
 
     fun generate(): String {
-        createFunctionPrototypes()
-        createVariablePrototypes()
-//        createInitFunction()
+        val stdlib = CodeGenerator::class.java.getResource("/stdlib.ll")!!.readText()
+        output.append(stdlib)
+
+        createPrototypes()
         generateIr()
         writeIr()
+
+        if (functions.size != functions.distinctBy { it.name }.size)
+            throw IllegalStateException("Found duplicate function in LLVM IR code")
 
         return output.toString()
     }

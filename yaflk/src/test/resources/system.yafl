@@ -2,10 +2,10 @@
 module System
 
 # Conversions
-fun `=`(a:System.Int8 ):System.Int16 = __builtin__ convert_i1_to_i2(a)
-fun `=`(a:System.Int16):System.Int32 = __builtin__ convert_i2_to_i4(a)
-fun `=`(a:System.Int32):System.Int64 = __builtin__ convert_i4_to_i8(a)
-fun `=`(a:System.Float32):System.Float64 = __builtin__ convert_f4_to_f8(a)
+fun `:=`(a:System.Int8 ):System.Int16 = __builtin__ convert_i8_to_i16(a)
+fun `:=`(a:System.Int16):System.Int32 = __builtin__ convert_i16_to_i32(a)
+fun `:=`(a:System.Int32):System.Int64 = __builtin__ convert_i32_to_i64(a)
+fun `:=`(a:System.Float32):System.Float64 = __builtin__ convert_f32_to_f64(a)
 
 
 # Implement the rule that any type is the tuple of itself
@@ -14,10 +14,31 @@ fun `=`(a:System.Float32):System.Float64 = __builtin__ convert_f4_to_f8(a)
 
 
 # Operators
-fun `+`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ add_i1(a, b)
-fun `+`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ add_i2(a, b)
-fun `+`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ add_i4(a, b)
-fun `+`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ add_i8(a, b)
-fun `+`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ add_f4(a, b)
-fun `+`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ add_f8(a, b)
+fun `+`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ add_i8(a, b)
+fun `+`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ add_i16(a, b)
+fun `+`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ add_i32(a, b)
+fun `+`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ add_i64(a, b)
+fun `+`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ add_f32(a, b)
+fun `+`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ add_f64(a, b)
+
+fun `-`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ sub_i8(a, b)
+fun `-`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ sub_i16(a, b)
+fun `-`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ sub_i32(a, b)
+fun `-`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ sub_i64(a, b)
+fun `-`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ sub_f32(a, b)
+fun `-`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ sub_f64(a, b)
+
+fun `*`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ mul_i8(a, b)
+fun `*`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ mul_i16(a, b)
+fun `*`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ mul_i32(a, b)
+fun `*`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ mul_i64(a, b)
+fun `*`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ mul_f32(a, b)
+fun `*`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ mul_f64(a, b)
+
+fun `=`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ equ_i8(a, b)
+fun `=`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ equ_i16(a, b)
+fun `=`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ equ_i32(a, b)
+fun `=`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ equ_i64(a, b)
+fun `=`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ equ_f32(a, b)
+fun `=`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ equ_f64(a, b)
 
