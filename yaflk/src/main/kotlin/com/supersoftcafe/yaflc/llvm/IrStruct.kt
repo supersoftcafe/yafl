@@ -13,9 +13,13 @@ class IrTuple(val fields: List<IrType>) : IrType {
     override val simpleName get() = fields.joinToString("", "t", "z") { it.simpleName }
     override fun toString() = llvmType
 }
-class IrStruct(val name: String, val type: () -> IrTuple) : IrType {
-    override val llvmType get() = "%struct_$name"
-    override val simpleName get() = "_str_${name}_"
+class IrStruct(
+    val name: String,
+    override val llvmType: String,
+    override val simpleName: String,
+    val onHeap: Boolean,
+    val getTuple: () -> IrTuple,
+) : IrType {
     override fun toString() = llvmType
 }
 

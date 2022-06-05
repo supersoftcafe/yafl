@@ -223,9 +223,24 @@ class CodeGenerator(val ast: Ast) {
             function.body += "  $result = extractvalue $type $tupleValue, ${expression.fieldIndex}"
             return result
         }
+        fun loadObjectField(type: IrStruct): String {
+            val objectValue = generateExpression(base, function)
+            val fieldType = expression.type!!.toIrType()
+            val fieldPtr = "%${function.nextVariable(fieldType).name}"
+            val reg = "%${function.nextVariable(fieldType).name}"
+            function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objectValue, i32 0, i32 ${expression.fieldIndex}"
+            function.body += "  $reg = load $fieldType, $fieldType* $fieldPtr"
+            return reg
+        }
         return when (val type = base.type!!.toIrType()) {
-            is IrTuple -> loadTupleField(type, type.fields)
-            is IrStruct -> loadTupleField(type, type.type().fields)
+            is IrTuple -> {
+                loadTupleField(type, type.fields)
+            }
+            is IrStruct -> if (type.onHeap) {
+                loadObjectField(type)
+            } else {
+                loadTupleField(type, type.getTuple().fields)
+            }
             else -> throw IllegalStateException("${type::class.simpleName} not supported by LoadField")
         }
     }
@@ -256,9 +271,34 @@ class CodeGenerator(val ast: Ast) {
                 temp
             }
         }
+        fun newObject(type: IrStruct): String {
+            val reg = "%${function.nextVariable(type).name}"
+            val tmp = "%${function.nextVariable(type).name}"
+            val sizep = "%${function.nextVariable(type).name}"
+            val size = "%${function.nextVariable(type).name}"
+
+            function.body += "  $sizep = getelementptr %${type.name}, %${type.name}* null, i32 1"
+            function.body += "  $size = ptrtoint %${type.name}* $sizep to i32"
+            function.body += "  $tmp = call i8* @alloc(i32 $size)"
+            function.body += "  $reg = bitcast i8* $tmp to %${type.name}*"
+
+            expression.children.forEachIndexed { index, expr ->
+                val value = generateExpression(expr.expression, function)
+                val fieldType = expr.expression.type!!.toIrType()
+                val fieldPtr = "%${function.nextVariable(fieldType).name}"
+                function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $reg, i32 0, i32 $index"
+                function.body += "  store $fieldType $value, $fieldType* $fieldPtr"
+            }
+
+            return reg
+        }
         val result = when (val type = expression.type!!.toIrType()) {
             is IrTuple -> newTuple(type, type.fields)
-            is IrStruct -> newTuple(type, type.type().fields)
+            is IrStruct -> if (type.onHeap) {
+                newObject(type)
+            } else {
+                newTuple(type, type.getTuple().fields)
+            }
             else -> throw IllegalStateException("${type::class.simpleName} not supported by operator New")
         }
         return result
@@ -310,10 +350,9 @@ class CodeGenerator(val ast: Ast) {
 
 
     fun createStructurePrototype(module: Module, declaration: Declaration.Struct) {
-        val name = (module.name + '.' + declaration.name).cleanName()
+        val name = "type_" + (module.name + '.' + declaration.name).cleanName()
         val tuple = { IrTuple(declaration.fields.map { it.type!!.toIrType() }) }
-        val struct = IrStruct(name, tuple)
-
+        val struct = IrStruct(name, "%$name${if(declaration.onHeap) "*" else ""}", "_type_$name", declaration.onHeap, tuple)
         declaration.stuff += struct
         structures += struct
     }
@@ -367,7 +406,7 @@ class CodeGenerator(val ast: Ast) {
 
     fun writeIr() {
         for (structure in structures)
-            output.append("${structure.llvmType} = type ${structure.type()}")
+            output.append("%${structure.name} = type ${structure.getTuple()}")
                 .append(System.lineSeparator())
         for (variable in variables)
             output.append("@${variable.name} = internal global ${variable.type} zeroinitializer")
