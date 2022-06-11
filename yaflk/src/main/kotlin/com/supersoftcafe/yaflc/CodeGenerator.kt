@@ -69,28 +69,27 @@ class CodeGenerator(val ast: Ast) {
     fun generateExpressionLiteralInteger(
         expression: Expression.LiteralInteger,
         function: IrFunction
-    ): String {
-        return expression.value.toString()
+    ): IrResult {
+        return IrValue(expression.value.toString(), expression.type!!.toIrType())
     }
 
     fun generateExpressionLiteralBool(
         expression: Expression.LiteralBool,
         function: IrFunction
-    ): String {
-        return if (expression.value) "1" else "0"
+    ): IrResult {
+        return IrValue(if (expression.value) "1" else "0", IrPrimitive.Bool)
     }
 
     fun generateExpressionLoadVariable(
         expression: Expression.LoadVariable,
         function: IrFunction
-    ): String {
-        val result = when (val target = expression.variable) {
+    ): IrResult {
+        val result = function.nextRegister(expression.type!!.toIrType())
+        when (val target = expression.variable) {
             is Declaration.Variable -> {
-                val register = function.nextVariable(expression.type!!.toIrType())
                 val variable = target.toIrVariable()
                 val kind = if (target.global) '@' else '%'
-                function.body += "  %${register.name} = load ${register.type}, ${variable.type}* $kind${variable.name}"
-                "%${register.name}"
+                function.body += "  $result = load ${result.type}, ${variable.type}* $kind${variable.name}"
             }
             else -> TODO("Unsupported load target")
         }
@@ -102,18 +101,19 @@ class CodeGenerator(val ast: Ast) {
         expression: Expression.Call,
         kind: BuiltinOpKind,
         function: IrFunction
-    ): String {
+    ): IrResult {
         val children = expression.children[1].expression.children
 
-        fun llvmIntegerBinOp(op: String, type: IrType): String {
-            val inputs = children.joinToString(", ") { generateExpression(it.expression, function) }
-            val resultVariable = function.nextVariable(type)
-            function.body += "  %${resultVariable.name} = $op ${type.llvmType} $inputs"
-            return "%${resultVariable.name}"
+        fun llvmIntegerBinOp(op: String, type: IrType): IrResult {
+            val inputResults = children.map { generateExpression(it.expression, function) }
+            val inputs = inputResults.joinToString(", ") { it.toString() }
+            val result = function.nextRegister(type)
+            function.body += "  $result = $op ${type.llvmType} $inputs"
+            return result
         }
 
         return when (kind) {
-            BuiltinOpKind.ADD_I8 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
+            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add", IrPrimitive.Int32)
             BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
             BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
             BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add", IrPrimitive.Int64)
@@ -128,20 +128,23 @@ class CodeGenerator(val ast: Ast) {
         expression: Expression.Call,
         target: Declaration.Function,
         function: IrFunction
-    ): String {
-        val inputs = expression.children[1].expression.children.joinToString(", ") {
-            "${it.expression.type!!.toIrType()} ${generateExpression(it.expression, function)}"
+    ): IrResult {
+        val inputResults = expression.children[1].expression.children.map {
+            generateExpression(it.expression, function)
+        }
+        val inputs = inputResults.joinToString(", ") {
+            "${it.type} $it"
         }
         val targetAsIrFunction = target.toIrFunction()
-        val resultVariable = function.nextVariable(expression.type!!.toIrType())
-        function.body += "  %${resultVariable.name} = call ${resultVariable.type} @${targetAsIrFunction.name}($inputs)"
-        return "%${resultVariable.name}"
+        val result = function.nextRegister(expression.type!!.toIrType())
+        function.body += "  $result = call ${result.type} @${targetAsIrFunction.name}($inputs)"
+        return result
     }
 
     fun generateExpressionCall(
         expression: Expression.Call,
         function: IrFunction
-    ): String {
+    ): IrResult {
         return when (val target = expression.children.first().expression) {
             is Expression.LoadBuiltin -> generateExpressionCallBuiltin(expression, target.builtinOp!!.kind, function)
             is Expression.LoadVariable -> when (val variable = target.variable) {
@@ -155,7 +158,7 @@ class CodeGenerator(val ast: Ast) {
     fun generateExpressionCondition(
         expression: Expression.Condition,
         function: IrFunction
-    ): String {
+    ): IrResult {
         val endLabel = function.nextLabel()
         val trueLabel = function.nextLabel()
         val falseLabel = function.nextLabel()
@@ -171,19 +174,19 @@ class CodeGenerator(val ast: Ast) {
         val falseResult = generateExpression(expression.children[2].expression, function)
         function.body += "  br label %${endLabel.name}"
 
-        val resultVariable = function.nextVariable(expression.type!!.toIrType())
+        val result = function.nextRegister(expression.type!!.toIrType())
         function.body += "${endLabel.name}:"
-        function.body += "  %${resultVariable.name} = phi ${resultVariable.type} [ $trueResult, %${trueLabel.name} ], [ $falseResult, %${falseLabel.name} ]"
+        function.body += "  %${result.name} = phi ${result.type} [ $trueResult, %${trueLabel.name} ], [ $falseResult, %${falseLabel.name} ]"
 
-        return "%${resultVariable.name}"
+        return result
     }
 
     fun generateExpressionStoreVariable(
         expression: Expression.StoreVariable,
         function: IrFunction
-    ): String {
+    ): IrResult {
         val kind = if (expression.variable!!.global) '@' else '%'
-        val variable = expression.variable!!.toIrVariable()
+        val variable = expression.variable.toIrVariable()
         val result = generateExpression(expression.children[0].expression, function)
         function.body += "  store ${variable.type} $result, ${variable.type}* $kind${variable.name}"
         return generateExpression(expression.children[1].expression, function)
@@ -192,18 +195,17 @@ class CodeGenerator(val ast: Ast) {
     fun generateExpressionDeclareLocal(
         expression: Expression.DeclareLocal,
         function: IrFunction
-    ): String {
+    ): IrResult {
         for (declaration in expression.declarations) {
             when (declaration) {
                 is Declaration.Variable -> {
                     val type = declaration.type!!.toIrType()
-                    val variable = function.nextVariable(type)
-                    val irVariable = IrVariable(variable.name, type)
-                    declaration.stuff += irVariable
+                    val variable = function.nextVariable2(type)
+                    declaration.stuff += variable
 
                     function.preamble += "  %${variable.name} = alloca ${variable.type}"
-                    val expressionResult = generateExpression(declaration.body!!.expression, function)
-                    function.body += "  store $type $expressionResult, $type* %${variable.name}"
+                    val variableValue = generateExpression(declaration.body!!.expression, function)
+                    function.body += "  store $type $variableValue, $type* %${variable.name}"
                 }
                 else -> throw IllegalArgumentException("${declaration::class.simpleName}")
             }
@@ -214,45 +216,45 @@ class CodeGenerator(val ast: Ast) {
     fun generateExpressionLoadField(
         expression: Expression.LoadField,
         function: IrFunction
-    ): String {
+    ): IrResult {
         val base = expression.children[0].expression
-        fun loadTupleField(type: IrType, fields: List<IrType>): String {
+        fun loadTupleField(type: IrType, fields: List<IrType>): IrResult {
             val resultType = fields[expression.fieldIndex!!]
             val tupleValue = generateExpression(base, function)
-            val result = "%${function.nextVariable(resultType).name}"
+            val result = function.nextRegister(resultType)
             function.body += "  $result = extractvalue $type $tupleValue, ${expression.fieldIndex}"
             return result
         }
-        fun loadObjectField(type: IrStruct): String {
+        fun loadObjectField(type: IrStruct): IrResult {
             val objectValue = generateExpression(base, function)
             val fieldType = expression.type!!.toIrType()
-            val fieldPtr = "%${function.nextVariable(fieldType).name}"
-            val reg = "%${function.nextVariable(fieldType).name}"
+            val fieldPtr = function.nextRegister(fieldType)
+            val result = function.nextRegister(fieldType)
             function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objectValue, i32 0, i32 ${expression.fieldIndex}"
-            function.body += "  $reg = load $fieldType, $fieldType* $fieldPtr"
-            return reg
+            function.body += "  $result = load $fieldType, $fieldType* $fieldPtr"
+            return result
         }
         return when (val type = base.type!!.toIrType()) {
-            is IrTuple -> {
+            is IrTuple ->
                 loadTupleField(type, type.fields)
-            }
-            is IrStruct -> if (type.onHeap) {
-                loadObjectField(type)
-            } else {
-                loadTupleField(type, type.getTuple().fields)
-            }
-            else -> throw IllegalStateException("${type::class.simpleName} not supported by LoadField")
+            is IrStruct ->
+                if (type.onHeap)
+                    loadObjectField(type)
+                else
+                    loadTupleField(type, type.getTuple().fields)
+            else ->
+                throw IllegalStateException("${type::class.simpleName} not supported by LoadField")
         }
     }
 
     fun generateExpressionTuple(
         expression: Expression.Tuple,
         function: IrFunction
-    ): String {
+    ): IrResult {
         val type = expression.type!!.toIrType() as IrTuple
-        val result = expression.children.foldIndexed("undef") { index, previous, next ->
+        val result = expression.children.foldIndexed(IrValue("undef", type) as IrResult) { index, previous, next ->
             val value = generateExpression(next.expression, function)
-            val temp = "%${function.nextVariable(type).name}"
+            val temp = function.nextRegister(type)
             function.body += "  $temp = insertvalue $type $previous, ${type.fields[index].llvmType} $value, $index"
             temp
         }
@@ -262,44 +264,50 @@ class CodeGenerator(val ast: Ast) {
     fun generateExpressionNew(
         expression: Expression.New,
         function: IrFunction
-    ): String {
-        fun newTuple(type: IrType, fields: List<IrType>): String {
-            return expression.children.foldIndexed("undef") { index, previous, next ->
+    ): IrResult {
+        fun newTuple(type: IrType, fields: List<IrType>): IrResult {
+            return expression.children.foldIndexed(IrValue("undef", type) as IrResult) { index, previous, next ->
                 val value = generateExpression(next.expression, function)
-                val temp = "%${function.nextVariable(type).name}"
+                val temp = function.nextRegister(type)
                 function.body += "  $temp = insertvalue $type $previous, ${fields[index].llvmType} $value, $index"
                 temp
             }
         }
-        fun newObject(type: IrStruct): String {
-            val reg = "%${function.nextVariable(type).name}"
-            val tmp = "%${function.nextVariable(type).name}"
-            val sizep = "%${function.nextVariable(type).name}"
-            val size = "%${function.nextVariable(type).name}"
+        fun newObject(type: IrStruct): IrResult {
+            val baseName = type.name.removePrefix("type_")
+
+            val  sizep = function.nextRegister(IrPrimitive.Pointer)
+            val   size = function.nextRegister(IrPrimitive.Int32)
+            val vtable = function.nextRegister(IrPrimitive.Pointer)
+            val    tmp = function.nextRegister(IrPrimitive.Pointer)
+            val objekt = function.nextRegister(type)
 
             function.body += "  $sizep = getelementptr %${type.name}, %${type.name}* null, i32 1"
             function.body += "  $size = ptrtoint %${type.name}* $sizep to i32"
-            function.body += "  $tmp = call i8* @alloc(i32 $size)"
-            function.body += "  $reg = bitcast i8* $tmp to %${type.name}*"
+            function.body += "  $vtable = bitcast %vttype_$baseName* @vtable_$baseName to %vtable*"
+            function.body += "  $tmp = call %object* @alloc(i32 $size, %vtable* $vtable)"
+            function.body += "  $objekt = bitcast %object* $tmp to %${type.name}*"
 
             expression.children.forEachIndexed { index, expr ->
                 val value = generateExpression(expr.expression, function)
                 val fieldType = expr.expression.type!!.toIrType()
-                val fieldPtr = "%${function.nextVariable(fieldType).name}"
-                function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $reg, i32 0, i32 $index"
+                val fieldPtr = function.nextRegister(fieldType)
+                function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objekt, i32 0, i32 $index"
                 function.body += "  store $fieldType $value, $fieldType* $fieldPtr"
             }
 
-            return reg
+            return objekt
         }
         val result = when (val type = expression.type!!.toIrType()) {
-            is IrTuple -> newTuple(type, type.fields)
-            is IrStruct -> if (type.onHeap) {
-                newObject(type)
-            } else {
-                newTuple(type, type.getTuple().fields)
-            }
-            else -> throw IllegalStateException("${type::class.simpleName} not supported by operator New")
+            is IrTuple ->
+                newTuple(type, type.fields)
+            is IrStruct ->
+                if (type.onHeap)
+                    newObject(type)
+                else
+                    newTuple(type, type.getTuple().fields)
+            else ->
+                throw IllegalStateException("${type::class.simpleName} not supported by operator New")
         }
         return result
     }
@@ -308,7 +316,7 @@ class CodeGenerator(val ast: Ast) {
     fun generateExpression(
         expression: Expression,
         function: IrFunction
-    ): String {
+    ): IrResult {
         val result = when (expression) {
             is Expression.LiteralBool -> generateExpressionLiteralBool(expression, function)
             is Expression.LiteralInteger -> generateExpressionLiteralInteger(expression, function)
@@ -325,6 +333,7 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LoadField -> generateExpressionLoadField(expression, function)
             is Expression.New -> generateExpressionNew(expression, function)
         }
+
         return result
     }
 
@@ -376,12 +385,13 @@ class CodeGenerator(val ast: Ast) {
         val function = IrFunction(name, result)
 
         for (param in declaration.parameters)
-            param.stuff += function.nextParameter(param.type!!.toIrType())
-        val parameters = function.parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
+            param.stuff += function.nextVariable2(param.type!!.toIrType())
+        val parameters = function.variables.toList()
 
-        function.preamble += "define $scope ${function.result} @${function.name}($parameters) {"
+        val parametersString = parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
+        function.preamble += "define $scope ${function.result} @${function.name}($parametersString) {"
 
-        for (param in function.parameters) {
+        for (param in parameters) {
             function.preamble += "  %${param.name} = alloca ${param.type}"
             function.body += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
         }
@@ -404,10 +414,41 @@ class CodeGenerator(val ast: Ast) {
         }
     }
 
+    fun classDeleteAndVTable(struct: IrStruct): String {
+        val baseName = struct.name.removePrefix("type_")
+
+        val delName = "del_$baseName"
+        val nl = System.lineSeparator()
+        val del = "define internal void @$delName(${struct.llvmType} %p0) {$nl" +
+                struct.getTuple().fields.mapIndexed { index, irType ->
+                    if (irType is IrStruct && irType.onHeap) {
+                        "  %v$index = getelementptr ${struct.llvmType}, ${struct.llvmType}* %p0, i32 0, i32 $index$nl" +
+                        "  %r$index = bitcast $irType* %v$index to %object*$nl" +
+                        "  call void @release(%object* %r$index)$nl"
+                    } else ""
+                }.joinToString("") +
+                "  ret void$nl" +
+                "}$nl$nl$nl"
+
+        val vttypeName = "vttype_$baseName"
+        val vttype = "%$vttypeName = type { void(${struct.llvmType})* }$nl$nl$nl"
+
+        val vtableName = "vtable_$baseName"
+        val vtable = "@$vtableName = internal global %$vttypeName {$nl" +
+                "  void(${struct.llvmType})* @$delName$nl" +
+                "}$nl$nl$nl"
+
+        return del + vttype + vtable
+    }
+
     fun writeIr() {
-        for (structure in structures)
-            output.append("%${structure.name} = type ${structure.getTuple()}")
+        for (struct in structures) {
+            output.append("%${struct.name} = type ${struct.getTuple()}")
                 .append(System.lineSeparator())
+            if (struct.onHeap) {
+                output.append(classDeleteAndVTable(struct))
+            }
+        }
         for (variable in variables)
             output.append("@${variable.name} = internal global ${variable.type} zeroinitializer")
                 .append(System.lineSeparator())

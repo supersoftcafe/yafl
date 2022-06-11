@@ -9,16 +9,16 @@ internal class Samples {
 
     @ParameterizedTest
     @ValueSource(strings = [
-//        "test1.yafl",
-//        "test2.yafl",
-//        "test3.yafl",
-//        "test4.yafl",
-//        "test5.yafl",
-//        "test6.yafl",
-//        "test7.yafl",
-//        "test8.yafl",
-//        "test9.yafl",
-//        "test10.yafl",
+        "test1.yafl",
+        "test2.yafl",
+        "test3.yafl",
+        "test4.yafl",
+        "test5.yafl",
+        "test6.yafl",
+        "test7.yafl",
+        "test8.yafl",
+        "test9.yafl",
+        "test10.yafl",
         "test11.yafl",
     ])
     fun loadAndTest(file: String) {
