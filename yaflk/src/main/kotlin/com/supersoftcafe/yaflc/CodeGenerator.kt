@@ -27,6 +27,14 @@ class CodeGenerator(val ast: Ast) {
         return builder.toString()
     }
 
+    fun IrType.hasObjectMembers(): Boolean {
+        return when (this) {
+            is IrTuple -> fields.any { it.hasObjectMembers() }
+            is IrStruct -> onHeap || getTuple().hasObjectMembers()
+            else -> false
+        }
+    }
+
     fun Type.toIrType(): IrType {
         val result = when (this) {
             is Type.Named -> when (val decl = declaration) {
@@ -136,7 +144,8 @@ class CodeGenerator(val ast: Ast) {
             "${it.type} $it"
         }
         val targetAsIrFunction = target.toIrFunction()
-        val result = function.nextRegister(expression.type!!.toIrType())
+        val type = expression.type!!.toIrType()
+        val result = function.nextRegister(type, owned = type.hasObjectMembers())
         function.body += "  $result = call ${result.type} @${targetAsIrFunction.name}($inputs)"
         return result
     }
@@ -159,22 +168,33 @@ class CodeGenerator(val ast: Ast) {
         expression: Expression.Condition,
         function: IrFunction
     ): IrResult {
-        val endLabel = function.nextLabel()
         val trueLabel = function.nextLabel()
         val falseLabel = function.nextLabel()
+        val endLabel = function.nextLabel()
 
         val conditionResult = generateExpression(expression.children[0].expression, function)
         function.body += "  br i1 $conditionResult, label %${trueLabel.name}, label %${falseLabel.name}"
 
         function.body += "${trueLabel.name}:"
-        val trueResult = generateExpression(expression.children[1].expression, function)
+        val trueResult = generateExpression(expression.children[1].expression, function, dontRelease = true)
+        val trueBranch = function.body.size
         function.body += "  br label %${endLabel.name}"
 
         function.body += "${falseLabel.name}:"
-        val falseResult = generateExpression(expression.children[2].expression, function)
+        val falseResult = generateExpression(expression.children[2].expression, function, dontRelease = true)
+        val falseBranch = function.body.size
         function.body += "  br label %${endLabel.name}"
 
-        val result = function.nextRegister(expression.type!!.toIrType())
+        val trueOwned = trueResult is IrRegister && trueResult.owned
+        val falseOwned = falseResult is IrRegister && falseResult.owned
+
+        // Insert an extra acquire as required into the appropriate branch block
+        if (falseResult is IrRegister && trueOwned && !falseOwned)
+            acquireNow(function, falseResult, falseBranch)
+        else if (trueResult is IrRegister && !trueOwned && falseOwned)
+            acquireNow(function, trueResult, trueBranch)
+
+        val result = function.nextRegister(expression.type!!.toIrType(), owned = trueOwned || falseOwned)
         function.body += "${endLabel.name}:"
         function.body += "  %${result.name} = phi ${result.type} [ $trueResult, %${trueLabel.name} ], [ $falseResult, %${falseLabel.name} ]"
 
@@ -185,10 +205,13 @@ class CodeGenerator(val ast: Ast) {
         expression: Expression.StoreVariable,
         function: IrFunction
     ): IrResult {
-        val kind = if (expression.variable!!.global) '@' else '%'
-        val variable = expression.variable.toIrVariable()
-        val result = generateExpression(expression.children[0].expression, function)
-        function.body += "  store ${variable.type} $result, ${variable.type}* $kind${variable.name}"
+        val variable = expression.variable!!
+        val kind = if (variable.global) '@' else '%'
+        val irVariable = expression.variable.toIrVariable()
+        val result = generateExpression(expression.children[0].expression, function, dontRelease = true)
+        if (variable.global && result is IrRegister && !result.owned)
+            acquireNow(function, result)
+        function.body += "  store ${irVariable.type} $result, ${irVariable.type}* $kind${irVariable.name}"
         return generateExpression(expression.children[1].expression, function)
     }
 
@@ -200,10 +223,10 @@ class CodeGenerator(val ast: Ast) {
             when (declaration) {
                 is Declaration.Variable -> {
                     val type = declaration.type!!.toIrType()
-                    val variable = function.nextVariable2(type)
+                    val variable = function.nextVariable(type)
                     declaration.stuff += variable
 
-                    function.preamble += "  %${variable.name} = alloca ${variable.type}"
+                    function.enter += "  %${variable.name} = alloca ${variable.type}"
                     val variableValue = generateExpression(declaration.body!!.expression, function)
                     function.body += "  store $type $variableValue, $type* %${variable.name}"
                 }
@@ -230,7 +253,7 @@ class CodeGenerator(val ast: Ast) {
             val fieldType = expression.type!!.toIrType()
             val fieldPtr = function.nextRegister(fieldType)
             val result = function.nextRegister(fieldType)
-            function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objectValue, i32 0, i32 ${expression.fieldIndex}"
+            function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objectValue, i32 0, i32 1, i32 ${expression.fieldIndex}"
             function.body += "  $result = load $fieldType, $fieldType* $fieldPtr"
             return result
         }
@@ -252,9 +275,13 @@ class CodeGenerator(val ast: Ast) {
         function: IrFunction
     ): IrResult {
         val type = expression.type!!.toIrType() as IrTuple
-        val result = expression.children.foldIndexed(IrValue("undef", type) as IrResult) { index, previous, next ->
-            val value = generateExpression(next.expression, function)
-            val temp = function.nextRegister(type)
+        val results = expression.children.map { generateExpression(it.expression, function, dontRelease = true) }
+        val isOwned = results.any { it is IrRegister && it.owned }
+
+        val result = results.foldIndexed(IrValue("undef", type) as IrResult) { index, previous, value ->
+            if (isOwned && value is IrRegister && !value.owned)
+                acquireNow(function, value)
+            val temp = function.nextRegister(type, owned = isOwned)
             function.body += "  $temp = insertvalue $type $previous, ${type.fields[index].llvmType} $value, $index"
             temp
         }
@@ -266,9 +293,13 @@ class CodeGenerator(val ast: Ast) {
         function: IrFunction
     ): IrResult {
         fun newTuple(type: IrType, fields: List<IrType>): IrResult {
-            return expression.children.foldIndexed(IrValue("undef", type) as IrResult) { index, previous, next ->
-                val value = generateExpression(next.expression, function)
-                val temp = function.nextRegister(type)
+            val results = expression.children.map { generateExpression(it.expression, function, dontRelease = true) }
+            val isOwned = results.any { it is IrRegister && it.owned }
+
+            return results.foldIndexed(IrValue("undef", type) as IrResult) { index, previous, value ->
+                if (isOwned && value is IrRegister && !value.owned)
+                    acquireNow(function, value)
+                val temp = function.nextRegister(type, owned = isOwned)
                 function.body += "  $temp = insertvalue $type $previous, ${fields[index].llvmType} $value, $index"
                 temp
             }
@@ -280,7 +311,7 @@ class CodeGenerator(val ast: Ast) {
             val   size = function.nextRegister(IrPrimitive.Int32)
             val vtable = function.nextRegister(IrPrimitive.Pointer)
             val    tmp = function.nextRegister(IrPrimitive.Pointer)
-            val objekt = function.nextRegister(type)
+            val objekt = function.nextRegister(type, owned = true)
 
             function.body += "  $sizep = getelementptr %${type.name}, %${type.name}* null, i32 1"
             function.body += "  $size = ptrtoint %${type.name}* $sizep to i32"
@@ -289,10 +320,12 @@ class CodeGenerator(val ast: Ast) {
             function.body += "  $objekt = bitcast %object* $tmp to %${type.name}*"
 
             expression.children.forEachIndexed { index, expr ->
-                val value = generateExpression(expr.expression, function)
+                val value = generateExpression(expr.expression, function, dontRelease = true)
+                if (value is IrRegister && !value.owned)
+                    acquireNow(function, value)
                 val fieldType = expr.expression.type!!.toIrType()
                 val fieldPtr = function.nextRegister(fieldType)
-                function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objekt, i32 0, i32 $index"
+                function.body += "  $fieldPtr = getelementptr %${type.name}, %${type.name}* $objekt, i32 0, i32 1, i32 $index"
                 function.body += "  store $fieldType $value, $fieldType* $fieldPtr"
             }
 
@@ -315,7 +348,8 @@ class CodeGenerator(val ast: Ast) {
 
     fun generateExpression(
         expression: Expression,
-        function: IrFunction
+        function: IrFunction,
+        dontRelease: Boolean = false
     ): IrResult {
         val result = when (expression) {
             is Expression.LiteralBool -> generateExpressionLiteralBool(expression, function)
@@ -334,14 +368,97 @@ class CodeGenerator(val ast: Ast) {
             is Expression.New -> generateExpressionNew(expression, function)
         }
 
+        if (!dontRelease && result is IrRegister && result.owned)
+            releaseLater(function, result)
+
         return result
+    }
+
+    fun releaseLater(function: IrFunction, register: IrRegister) {
+        fun release(type: IrType, path: String) {
+            when (type) {
+                is IrTuple ->
+                    type.fields.forEachIndexed { index, fieldType ->
+                        release(fieldType, "$path, $index")
+                    }
+                is IrStruct ->
+                    if (type.onHeap) {
+                        val from = if (path.isNotEmpty()) {
+                            val load = function.nextRegister(type)
+                            function.body += "  $load = extractvalue ${register.type} $register$path"
+                            load
+                        } else register
+
+                        val slot = function.nextRegister(from.type)
+                        val load = function.nextRegister(IrPrimitive.Pointer)
+                        val temp = function.nextRegister(IrPrimitive.Pointer)
+
+                        function.enter += "  $slot = alloca ${slot.type}"
+                        function.enter += "  store ${slot.type} null, ${slot.type}* $slot"
+
+                        function.body  += "  store ${slot.type} $from, ${slot.type}* $slot"
+
+                        function.exit += "  $load = load ${slot.type}, ${slot.type}* $slot"
+                        function.exit += "  $temp = bitcast ${slot.type} $load to %object*"
+                        function.exit += "  call void @release(%object* $temp)"
+                    } else {
+                        type.getTuple().fields.forEachIndexed { index, fieldType ->
+                            release(fieldType, "$path, $index")
+                        }
+                    }
+            }
+        }
+
+        if (!register.owned)
+            throw IllegalArgumentException("Not owned")
+        release(register.type, "")
+        register.owned = false
+    }
+
+    fun acquireNow(function: IrFunction, register: IrRegister, insertBefore: Int = -1) {
+        var insertIndex = if (insertBefore == -1) function.body.size else insertBefore
+
+        fun acquire(type: IrType, path: String): Boolean {
+            return when (type) {
+                is IrTuple -> {
+                    type.fields.foldIndexed(false) { index, prev, fieldType ->
+                        acquire(fieldType, "$path, $index") || prev
+                    }
+                }
+                is IrStruct ->
+                    if (type.onHeap) {
+                        val from = if (path.isNotEmpty()) {
+                            val load = function.nextRegister(type)
+                            function.body.add(insertIndex++, "  $load = extractvalue ${register.type} $register$path")
+                            load
+                        } else register
+                        val temp = function.nextRegister(IrPrimitive.Pointer)
+                        function.body.add(insertIndex++, "  $temp = bitcast $type $from to %object*")
+                        function.body.add(insertIndex++, "  call void @acquire(%object* $temp)")
+                        true
+                    } else {
+                        type.getTuple().fields.foldIndexed(false) { index, prev, fieldType ->
+                            acquire(fieldType, "$path, $index") || prev
+                        }
+                    }
+                else -> false
+            }
+        }
+
+        if (register.owned)
+            throw IllegalArgumentException("Already owned")
+        register.owned = acquire(register.type, "")
     }
 
     fun generateFunction(declaration: Declaration.Function) {
         val function = declaration.toIrFunction()
-        val result = generateExpression(declaration.body.expression, function)
-        function.body += "  ret ${declaration.result!!.toIrType()} $result"
-        function.body += "}"
+        val result = generateExpression(declaration.body.expression, function, dontRelease = true)
+
+        if (result is IrRegister && !result.owned)
+            acquireNow(function, result)
+
+        function.exit += "  ret ${declaration.result!!.toIrType()} $result"
+        function.exit += "}"
     }
 
     fun generateIr() {
@@ -385,15 +502,15 @@ class CodeGenerator(val ast: Ast) {
         val function = IrFunction(name, result)
 
         for (param in declaration.parameters)
-            param.stuff += function.nextVariable2(param.type!!.toIrType())
+            param.stuff += function.nextVariable(param.type!!.toIrType())
         val parameters = function.variables.toList()
 
         val parametersString = parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
-        function.preamble += "define $scope ${function.result} @${function.name}($parametersString) {"
+        function.enter += "define $scope ${function.result} @${function.name}($parametersString) {"
 
         for (param in parameters) {
-            function.preamble += "  %${param.name} = alloca ${param.type}"
-            function.body += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
+            function.enter += "  %${param.name} = alloca ${param.type}"
+            function.enter += "  store ${param.type} %${param.name}_in, ${param.type}* %${param.name}"
         }
 
         declaration.stuff += function
@@ -422,7 +539,7 @@ class CodeGenerator(val ast: Ast) {
         val del = "define internal void @$delName(${struct.llvmType} %p0) {$nl" +
                 struct.getTuple().fields.mapIndexed { index, irType ->
                     if (irType is IrStruct && irType.onHeap) {
-                        "  %v$index = getelementptr ${struct.llvmType}, ${struct.llvmType}* %p0, i32 0, i32 $index$nl" +
+                        "  %v$index = getelementptr %${struct.name}, %${struct.name}* %p0, i32 0, i32 1, i32 $index$nl" +
                         "  %r$index = bitcast $irType* %v$index to %object*$nl" +
                         "  call void @release(%object* %r$index)$nl"
                     } else ""
@@ -443,7 +560,7 @@ class CodeGenerator(val ast: Ast) {
 
     fun writeIr() {
         for (struct in structures) {
-            output.append("%${struct.name} = type ${struct.getTuple()}")
+            output.append("%${struct.name} = type { %object, ${struct.getTuple()} }")
                 .append(System.lineSeparator())
             if (struct.onHeap) {
                 output.append(classDeleteAndVTable(struct))

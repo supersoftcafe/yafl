@@ -27,13 +27,13 @@ class IrStruct(
 
 class IrLabel(val name: String)
 
-class IrVariable(val name: String, val type: IrType, val owned: Boolean = false)
+class IrVariable(val name: String, val type: IrType, var owned: Boolean = false)
 
 sealed class IrResult(val type: IrType)
 class IrValue(val value: String, type: IrType) : IrResult(type) {
     override fun toString() = value
 }
-class IrRegister(val name: String, type: IrType, val owned: Boolean = false) : IrResult(type) {
+class IrRegister(val name: String, type: IrType, var owned: Boolean = false) : IrResult(type) {
     override fun toString() = "%$name"
 }
 
@@ -47,16 +47,19 @@ class IrFunction(val name: String, val result: IrType) {
     val labels   : List<IrLabel   > get() = _labels
 
     // Function declaration and lots of alloca
-    val preamble = mutableListOf<String>()
+    val enter = mutableListOf<String>()
 
     // The actual code of the function
     val body = mutableListOf<String>()
 
+    // Final cleanup actions
+    val exit = mutableListOf<String>()
+
     // Registers that point to stack memory of the actual value. Parameters and let statements.
-    fun nextVariable2(type: IrType) = IrVariable("v${_variables.size}", type).also(_variables::add)
+    fun nextVariable(type: IrType) = IrVariable("v${_variables.size}", type).also(_variables::add)
 
     // Temporary results of expressions as llvm register values.
-    fun nextRegister(type: IrType) = IrRegister("r${_registers.size}", type).also(_registers::add)
+    fun nextRegister(type: IrType, owned: Boolean = false) = IrRegister("r${_registers.size}", type, owned).also(_registers::add)
 
     // Just labels
     fun nextLabel() = IrLabel("l${_labels.size}").also(_labels::add)
@@ -64,7 +67,7 @@ class IrFunction(val name: String, val result: IrType) {
 
     override fun toString(): String {
         val ls = System.lineSeparator()
-        return (preamble + body).joinToString(ls, ls, ls)
+        return (enter + body + exit).joinToString(ls, ls, ls)
     }
 }
 

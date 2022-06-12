@@ -1,0 +1,14 @@
+
+fun `+`(a, b) = __builtin__ add_i32(a, b)
+fun `+`(a, b) = __builtin__ add_i64(a, b)
+
+class Number(value)
+class Nested(number)
+
+let x = Number(27)
+
+fun make() = (one = 1, two = Nested(Number(2)))
+
+fun other(cond) = cond ? Number(28) : x
+
+fun main() = make().two.number.value + other(false).value
