@@ -337,7 +337,7 @@ class TypeResolver(val ast: Ast) {
             is Expression.LiteralInteger -> resolveExpressionLiteralInteger(nodePath, expression, reference)
             is Expression.LiteralString -> TODO()
             is Expression.Tuple -> resolveExpressionTuple(nodePath, expression, reference)
-            is Expression.StoreVariable -> TODO()
+            is Expression.InitGlobal -> TODO()
             is Expression.LoadField -> resolveExpressionLoadField(nodePath, expression, reference)
             is Expression.New -> resolveExpressionNew(nodePath, expression, reference)
         }
@@ -477,7 +477,7 @@ class TypeResolver(val ast: Ast) {
             ast.typeInt32
         )
         val initVars = variables.reversed().fold<Declaration.Variable, Expression>(callMain) { tail, variable  ->
-            Expression.StoreVariable(
+            Expression.InitGlobal(
                 variable.name,
                 variable,
                 variable.body!!.expression,
@@ -487,7 +487,7 @@ class TypeResolver(val ast: Ast) {
             )
         }
         val initFunction = Declaration.Function(
-            "main",
+            "synth_main",
             listOf(),
             ast.typeInt32,
             ExpressionRef(initVars, ast.typeInt32),

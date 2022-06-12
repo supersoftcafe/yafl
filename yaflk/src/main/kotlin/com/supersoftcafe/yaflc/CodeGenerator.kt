@@ -201,17 +201,24 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
-    fun generateExpressionStoreVariable(
-        expression: Expression.StoreVariable,
+    fun generateExpressionInitGlobal(
+        expression: Expression.InitGlobal,
         function: IrFunction
     ): IrResult {
         val variable = expression.variable!!
-        val kind = if (variable.global) '@' else '%'
+        if (!variable.global)
+            throw IllegalArgumentException("InitGlobal can only be used on globals")
         val irVariable = expression.variable.toIrVariable()
+        val type = irVariable.type
+
         val result = generateExpression(expression.children[0].expression, function, dontRelease = true)
         if (variable.global && result is IrRegister && !result.owned)
             acquireNow(function, result)
-        function.body += "  store ${irVariable.type} $result, ${irVariable.type}* $kind${irVariable.name}"
+        function.body += "  store $type $result, $type* @${irVariable.name}"
+
+        if (result is IrRegister)
+           releaseLater(function, result)
+
         return generateExpression(expression.children[1].expression, function)
     }
 
@@ -313,10 +320,9 @@ class CodeGenerator(val ast: Ast) {
             val    tmp = function.nextRegister(IrPrimitive.Pointer)
             val objekt = function.nextRegister(type, owned = true)
 
-            function.body += "  $sizep = getelementptr %${type.name}, %${type.name}* null, i32 1"
-            function.body += "  $size = ptrtoint %${type.name}* $sizep to i32"
+            function.body += "  $size = ptrtoint %${type.name}* getelementptr(%${type.name}, %${type.name}* null, i32 1) to i32"
             function.body += "  $vtable = bitcast %vttype_$baseName* @vtable_$baseName to %vtable*"
-            function.body += "  $tmp = call %object* @alloc(i32 $size, %vtable* $vtable)"
+            function.body += "  $tmp = call %object* @create_object(i32 $size, %vtable* $vtable)"
             function.body += "  $objekt = bitcast %object* $tmp to %${type.name}*"
 
             expression.children.forEachIndexed { index, expr ->
@@ -363,7 +369,7 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LoadBuiltin -> TODO()
             is Expression.LoadVariable -> generateExpressionLoadVariable(expression, function)
             is Expression.Tuple -> generateExpressionTuple(expression, function)
-            is Expression.StoreVariable -> generateExpressionStoreVariable(expression, function)
+            is Expression.InitGlobal -> generateExpressionInitGlobal(expression, function)
             is Expression.LoadField -> generateExpressionLoadField(expression, function)
             is Expression.New -> generateExpressionNew(expression, function)
         }
@@ -497,7 +503,7 @@ class CodeGenerator(val ast: Ast) {
 
         val name = if (declaration.synthetic) declaration.name
         else "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result.simpleName + '_' + declaration.parameters.joinToString("") { it.type!!.toIrType().simpleName }
-        val scope = if (declaration.synthetic) "dso_local" else "internal"
+        //val scope = if (declaration.synthetic) "dso_local" else "internal"
 
         val function = IrFunction(name, result)
 
@@ -506,7 +512,7 @@ class CodeGenerator(val ast: Ast) {
         val parameters = function.variables.toList()
 
         val parametersString = parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
-        function.enter += "define $scope ${function.result} @${function.name}($parametersString) {"
+        function.enter += "define internal ${function.result} @${function.name}($parametersString) {"
 
         for (param in parameters) {
             function.enter += "  %${param.name} = alloca ${param.type}"
@@ -540,10 +546,14 @@ class CodeGenerator(val ast: Ast) {
                 struct.getTuple().fields.mapIndexed { index, irType ->
                     if (irType is IrStruct && irType.onHeap) {
                         "  %v$index = getelementptr %${struct.name}, %${struct.name}* %p0, i32 0, i32 1, i32 $index$nl" +
-                        "  %r$index = bitcast $irType* %v$index to %object*$nl" +
-                        "  call void @release(%object* %r$index)$nl"
+                        "  %r$index = bitcast $irType* %v$index to %object**$nl" +
+                        "  %x$index = load %object*, %object** %r$index$nl" +
+                        "  call void @release(%object* %x$index)$nl"
                     } else ""
                 }.joinToString("") +
+                "  %size = ptrtoint %${struct.name}* getelementptr(%${struct.name}, %${struct.name}* null, i32 1) to i32$nl" +
+                "  %objekt = bitcast ${struct.llvmType} %p0 to %object*$nl" +
+                "  call void @delete_object(i32 %size, %object* %objekt)$nl" +
                 "  ret void$nl" +
                 "}$nl$nl$nl"
 

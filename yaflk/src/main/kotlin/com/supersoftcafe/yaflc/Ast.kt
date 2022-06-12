@@ -115,7 +115,7 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
 //    }
 
     class LoadVariable(val name: String, var variable: Declaration? = null, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
-    class StoreVariable(val name: String, val variable: Declaration.Variable? = null, init: Expression, tail: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+    class InitGlobal(val name: String, val variable: Declaration.Variable? = null, init: Expression, tail: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init {
             addChild(init)
             addChild(tail)
