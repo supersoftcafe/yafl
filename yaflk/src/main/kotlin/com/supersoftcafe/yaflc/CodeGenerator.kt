@@ -1,6 +1,8 @@
 package com.supersoftcafe.yaflc
 
 import com.supersoftcafe.yaflc.llvm.*
+import kotlinx.collections.immutable.PersistentList
+import kotlinx.collections.immutable.persistentListOf
 
 class CodeGenerator(val ast: Ast) {
     companion object {
@@ -216,8 +218,7 @@ class CodeGenerator(val ast: Ast) {
             acquireNow(function, result)
         function.body += "  store $type $result, $type* @${irVariable.name}"
 
-        if (result is IrRegister)
-           releaseLater(function, result)
+        releaseLater(function, irVariable)
 
         return generateExpression(expression.children[1].expression, function)
     }
@@ -380,20 +381,45 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
+
     fun releaseLater(function: IrFunction, register: IrRegister) {
-        fun release(type: IrType, path: String) {
+        if (!register.owned)
+            throw IllegalArgumentException("Not owned")
+
+        releaseLater(function, register.type) { type, path ->
+            if (path.isNotEmpty()) {
+                val load = function.nextRegister(type)
+                val pathStr = path.joinToString()
+                function.body += "  $load = extractvalue ${register.type} $register, $pathStr"
+                load
+            } else {
+                register
+            }
+        }
+
+        register.owned = false
+    }
+
+    fun releaseLater(function: IrFunction, variable: IrVariable) {
+        releaseLater(function, variable.type) { type, path ->
+            val load = function.nextRegister(type)
+            val pathStr = path.map { ", i32 $it" }.joinToString("")
+            function.body += "  ${load}_ref = getelementptr ${variable.type}, ${variable.type}* @${variable.name}, i32 0$pathStr"
+            function.body += "  $load = load $type, $type* ${load}_ref"
+            load
+        }
+    }
+
+    fun releaseLater(function: IrFunction, varType: IrType, varGet: (IrType, List<Int>) -> IrRegister) {
+        fun release(type: IrType, path: PersistentList<Int>) {
             when (type) {
                 is IrTuple ->
                     type.fields.forEachIndexed { index, fieldType ->
-                        release(fieldType, "$path, $index")
+                        release(fieldType, path.add(index))
                     }
                 is IrStruct ->
                     if (type.onHeap) {
-                        val from = if (path.isNotEmpty()) {
-                            val load = function.nextRegister(type)
-                            function.body += "  $load = extractvalue ${register.type} $register$path"
-                            load
-                        } else register
+                        val from = varGet(type, path)
 
                         val slot = function.nextRegister(from.type)
                         val load = function.nextRegister(IrPrimitive.Pointer)
@@ -409,16 +435,13 @@ class CodeGenerator(val ast: Ast) {
                         function.exit += "  call void @release(%object* $temp)"
                     } else {
                         type.getTuple().fields.forEachIndexed { index, fieldType ->
-                            release(fieldType, "$path, $index")
+                            release(fieldType, path.add(index))
                         }
                     }
             }
         }
 
-        if (!register.owned)
-            throw IllegalArgumentException("Not owned")
-        release(register.type, "")
-        register.owned = false
+        release(varType, persistentListOf())
     }
 
     fun acquireNow(function: IrFunction, register: IrRegister, insertBefore: Int = -1) {
