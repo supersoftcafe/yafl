@@ -4,7 +4,7 @@
 fun `+`(a, b) = __builtin__ add_i32(a, b)
 fun `+`(a, b) = __builtin__ add_i64(a, b)
 
-let wonder = 27
-let value = (left = wonder, right = 8)
+val wonder = 27
+val value = (left = wonder, right = 8)
 
 fun main() = value.left + value.right

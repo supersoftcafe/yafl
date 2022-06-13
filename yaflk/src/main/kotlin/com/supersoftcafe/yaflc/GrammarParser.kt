@@ -308,7 +308,7 @@ class GrammarParser(val ast: Ast) {
 
     fun parseLet(tk: Tokens, global: Boolean = false): Result<List<Declaration>> {
         val result = tk.AllOf(
-            { FailIsAbsent(TokenKind.LET) },
+            { FailIsAbsent(TokenKind.VAL) },
             TokenKind.NAME,
             { If(TokenKind.COLON, ::parseType) },
             { If(TokenKind.EQ, ::parseExpression) }

@@ -1,0 +1,29 @@
+
+# Interfaces!!  Finally something juicy
+
+interface Thingy
+  val getValue
+  fun addOther(a)
+
+# Checking that parser doesn't overrun the end
+fun notMember1() = 1
+
+# Passing classes around is discouraged as they expose everything
+# Interface is the accepted way to hide implementation
+# No class inheritance, therefore no class vtable...  But there is an interface vtable
+class Stuff(value, other):Thingy
+  val getValue = self.value
+  fun addOther(a) = a + self.other
+
+# Checking that parser doesn't overrun the end
+fun notMember2() = 2
+
+# And then the ultimate in conciseness, anonymous object with capture
+fun doit(value, other) =
+  object:Thingy
+    val getValue = value
+    fun addOther(a) = a + other
+
+
+fun main() = notMember1() + notMember2()
+

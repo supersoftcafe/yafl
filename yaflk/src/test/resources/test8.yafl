@@ -6,7 +6,7 @@ fun `+`(a, b) = __builtin__ add_i64(a, b)
 
 struct NumberPair(left, right)
 
-let wonder = 27
-let value = NumberPair(wonder, 8)
+val wonder = 27
+val value = NumberPair(wonder, 8)
 
 fun main() = value.left + value.right

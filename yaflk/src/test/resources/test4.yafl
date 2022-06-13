@@ -5,6 +5,6 @@ fun `+`(a, b) = __builtin__ add_i32(a, b)
 
 fun addFour(a) = a + 4
 
-let value = 27 + 8
+val value = 27 + 8
 
 fun main() = addFour(value)

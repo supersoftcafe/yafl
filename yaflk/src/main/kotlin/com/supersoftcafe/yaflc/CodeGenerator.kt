@@ -321,9 +321,9 @@ class CodeGenerator(val ast: Ast) {
             val    tmp = function.nextRegister(IrPrimitive.Pointer)
             val objekt = function.nextRegister(type, owned = true)
 
-            function.body += "  $size = ptrtoint %${type.name}* getelementptr(%${type.name}, %${type.name}* null, i32 1) to i32"
+            function.body += "  $size = ptrtoint %${type.name}* getelementptr(%${type.name}, %${type.name}* null, i32 1) to %size_t"
             function.body += "  $vtable = bitcast %vttype_$baseName* @vtable_$baseName to %vtable*"
-            function.body += "  $tmp = call %object* @create_object(i32 $size, %vtable* $vtable)"
+            function.body += "  $tmp = call %object* @create_object(%size_t $size, %vtable* $vtable)"
             function.body += "  $objekt = bitcast %object* $tmp to %${type.name}*"
 
             expression.children.forEachIndexed { index, expr ->
@@ -574,9 +574,9 @@ class CodeGenerator(val ast: Ast) {
                         "  call void @release(%object* %x$index)$nl"
                     } else ""
                 }.joinToString("") +
-                "  %size = ptrtoint %${struct.name}* getelementptr(%${struct.name}, %${struct.name}* null, i32 1) to i32$nl" +
+                "  %size = ptrtoint %${struct.name}* getelementptr(%${struct.name}, %${struct.name}* null, i32 1) to %size_t$nl" +
                 "  %objekt = bitcast ${struct.llvmType} %p0 to %object*$nl" +
-                "  call void @delete_object(i32 %size, %object* %objekt)$nl" +
+                "  call void @delete_object(%size_t %size, %object* %objekt)$nl" +
                 "  ret void$nl" +
                 "}$nl$nl$nl"
 
@@ -592,16 +592,17 @@ class CodeGenerator(val ast: Ast) {
     }
 
     fun writeIr() {
+        val nl = System.lineSeparator()
         for (struct in structures) {
-            output.append("%${struct.name} = type { %object, ${struct.getTuple()} }")
-                .append(System.lineSeparator())
             if (struct.onHeap) {
+                output.append("%${struct.name} = type { %object, ${struct.getTuple()} }$nl$nl")
                 output.append(classDeleteAndVTable(struct))
+            } else {
+                output.append("%${struct.name} = type ${struct.getTuple()}$nl$nl")
             }
         }
         for (variable in variables)
-            output.append("@${variable.name} = internal global ${variable.type} zeroinitializer")
-                .append(System.lineSeparator())
+            output.append("@${variable.name} = internal global ${variable.type} zeroinitializer$nl$nl")
         for (function in functions)
             output.append(function)
     }
