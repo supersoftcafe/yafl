@@ -13,7 +13,7 @@ inline fun <T> Iterable<T>.foldErrors(lambda: (T) -> Errors): Errors {
     return fold(persistentListOf()) { list, value -> list.addAll(lambda(value)) }
 }
 
-fun String.runCommand(input: String): String? {
+fun String.runCommand(input: String): Pair<String,String> {
     try {
         val parts = this.split("\\s".toRegex())
         val proc = ProcessBuilder(*parts.toTypedArray())
@@ -26,11 +26,12 @@ fun String.runCommand(input: String): String? {
         proc.outputStream.close()
 
         val result = proc.waitFor()
-        val text = proc.inputStream.bufferedReader().readText()
+        val stdout = proc.inputStream.bufferedReader().readText()
+        val stderr = proc.errorStream.bufferedReader().readText()
 
-        return if (result == 0) text else null
+        return Pair(stdout, stderr)
     } catch(e: IOException) {
         e.printStackTrace()
-        return null
+        return Pair("", e.stackTraceToString())
     }
 }

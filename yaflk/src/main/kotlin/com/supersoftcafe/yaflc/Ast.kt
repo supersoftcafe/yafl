@@ -67,7 +67,7 @@ sealed class Declaration(
 }
 
 open class ExpressionRef(var expression: Expression, var receiver: Type?)
-class TupleField(val name: String?, expression: Expression, receiver: Type?) : ExpressionRef(expression, receiver)
+class TupleField(val name: String?, expression: Expression, receiver: Type?, val unpack: Boolean) : ExpressionRef(expression, receiver)
 
 sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
     val stuff = mutableListOf<Any>()
@@ -92,6 +92,13 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         init {
             addChild(target)
             addChild(parameter)
+        }
+    }
+
+    class Apply(left: Expression, right: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        init {
+            addChild(left)
+            addChild(right)
         }
     }
 
@@ -183,7 +190,7 @@ class Module(val name: String) {
 }
 
 enum class BuiltinOpKind {
-    CONVERT_I8_to_I16, CONVERT_I16_TO_I32, CONVERT_I32_TO_I64, CONVERT_F32_TO_F64,
+    CONVERT_I8_TO_I16, CONVERT_I16_TO_I32, CONVERT_I32_TO_I64, CONVERT_F32_TO_F64,
     ADD_I8, ADD_I16, ADD_I32, ADD_I64, ADD_F32, ADD_F64,
     MUL_I8, MUL_I16, MUL_I32, MUL_I64, MUL_F32, MUL_F64,
     SUB_I8, SUB_I16, SUB_I32, SUB_I64, SUB_F32, SUB_F64,
@@ -210,9 +217,9 @@ class Ast {
     val typeFloat32 = createPrimitive("Float32", PrimitiveKind.Float32)
     val typeFloat64 = createPrimitive("Float64", PrimitiveKind.Float64)
     val builtinOps = listOf(
-        createBuiltinOp(BuiltinOpKind.CONVERT_I8_to_I16, typeInt16, typeInt8),
+        createBuiltinOp(BuiltinOpKind.CONVERT_I8_TO_I16, typeInt16, typeInt8),
         createBuiltinOp(BuiltinOpKind.CONVERT_I16_TO_I32, typeInt32, typeInt16),
-        createBuiltinOp(BuiltinOpKind.CONVERT_F32_TO_F64, typeInt64, typeInt32),
+        createBuiltinOp(BuiltinOpKind.CONVERT_I32_TO_I64, typeInt64, typeInt32),
         createBuiltinOp(BuiltinOpKind.CONVERT_F32_TO_F64, typeFloat64, typeFloat32),
         createBuiltinOp(BuiltinOpKind.ADD_I8, typeInt8, typeInt8, typeInt8),
         createBuiltinOp(BuiltinOpKind.ADD_I16, typeInt16, typeInt16, typeInt16),
@@ -220,9 +227,24 @@ class Ast {
         createBuiltinOp(BuiltinOpKind.ADD_I64, typeInt64, typeInt64, typeInt64),
         createBuiltinOp(BuiltinOpKind.ADD_F32, typeFloat32, typeFloat32, typeFloat32),
         createBuiltinOp(BuiltinOpKind.ADD_F64, typeFloat64, typeFloat64, typeFloat64),
+        createBuiltinOp(BuiltinOpKind.SUB_I8, typeInt8, typeInt8, typeInt8),
+        createBuiltinOp(BuiltinOpKind.SUB_I16, typeInt16, typeInt16, typeInt16),
         createBuiltinOp(BuiltinOpKind.SUB_I32, typeInt32, typeInt32, typeInt32),
+        createBuiltinOp(BuiltinOpKind.SUB_I64, typeInt64, typeInt64, typeInt64),
+        createBuiltinOp(BuiltinOpKind.SUB_F32, typeFloat32, typeFloat32, typeFloat32),
+        createBuiltinOp(BuiltinOpKind.SUB_F64, typeFloat64, typeFloat64, typeFloat64),
+        createBuiltinOp(BuiltinOpKind.MUL_I8, typeInt8, typeInt8, typeInt8),
+        createBuiltinOp(BuiltinOpKind.MUL_I16, typeInt16, typeInt16, typeInt16),
         createBuiltinOp(BuiltinOpKind.MUL_I32, typeInt32, typeInt32, typeInt32),
+        createBuiltinOp(BuiltinOpKind.MUL_I64, typeInt64, typeInt64, typeInt64),
+        createBuiltinOp(BuiltinOpKind.MUL_F32, typeFloat32, typeFloat32, typeFloat32),
+        createBuiltinOp(BuiltinOpKind.MUL_F64, typeFloat64, typeFloat64, typeFloat64),
+        createBuiltinOp(BuiltinOpKind.EQU_I8, typeBool, typeInt8, typeInt8),
+        createBuiltinOp(BuiltinOpKind.EQU_I16, typeBool, typeInt16, typeInt16),
         createBuiltinOp(BuiltinOpKind.EQU_I32, typeBool, typeInt32, typeInt32),
+        createBuiltinOp(BuiltinOpKind.EQU_I64, typeBool, typeInt64, typeInt64),
+        createBuiltinOp(BuiltinOpKind.EQU_F32, typeBool, typeFloat32, typeFloat32),
+        createBuiltinOp(BuiltinOpKind.EQU_F64, typeBool, typeFloat64, typeFloat64),
     )
 
     private fun createPrimitive(name: String, kind: PrimitiveKind): Type {

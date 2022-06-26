@@ -99,12 +99,9 @@ class GrammarParser(val ast: Ast) {
     fun parseInteger(tk: Tokens): Result<Expression.LiteralInteger> {
         val result = TokenKind.INTEGER(tk).mapResult { token ->
             val t1 = token.value.text
-            val (type, t2, bits) = when {
-                t1.endsWith("i1") -> tupleOf(ast.typeInt8, t1.dropLast(2), 8)
-                t1.endsWith("i2") -> tupleOf(ast.typeInt16, t1.dropLast(2), 16)
-                t1.endsWith("i4") -> tupleOf(ast.typeInt32, t1.dropLast(2), 32)
-                t1.endsWith("i8") -> tupleOf(ast.typeInt64, t1.dropLast(2), 64)
-                else -> tupleOf(ast.typeInt32, t1, 32)
+            val (bits, t2) = when (val index = t1.indexOf('i')) {
+                -1 -> tupleOf(32, t1)
+                else -> tupleOf(t1.substring(index+1).toInt(), t1.substring(0, index))
             }
             val (radix, t3) = when {
                 t2.startsWith("0b") -> tupleOf(2, t2.drop(2))
@@ -114,11 +111,23 @@ class GrammarParser(val ast: Ast) {
                 else -> tupleOf(10, t2)
             }
 
-            val bigInt = t3.toBigInteger(radix)
-            if (bigInt.bitLength() > (if (radix == 10) bits - 1 else bits))
-                Result.Fail(token.sourceRef, "Integer out of range")
-            else
-                Result.Ok(Expression.LiteralInteger(bigInt.toLong(), token.sourceRef, type), token.sourceRef, token.tokens)
+            val type = when (bits) {
+                8 -> ast.typeInt8
+                16 -> ast.typeInt16
+                32 -> ast.typeInt32
+                64 -> ast.typeInt64
+                else -> null
+            }
+
+            if (type == null) {
+                Result.Fail(token.sourceRef, "Invalid integer size")
+            } else {
+                val bigInt = t3.toBigInteger(radix)
+                if (bigInt.bitLength() > (if (radix == 10) bits - 1 else bits))
+                    Result.Fail(token.sourceRef, "Integer out of range")
+                else
+                    Result.Ok(Expression.LiteralInteger(bigInt.toLong(), token.sourceRef, type), token.sourceRef, token.tokens)
+            }
         }
         return result
     }
@@ -133,8 +142,9 @@ class GrammarParser(val ast: Ast) {
         val result = tk.Parameters(
             { FailIsAbsent(TokenKind.OBRACKET) },
             { OneOf(
-                { AllOf(TokenKind.NAME, TokenKind.EQ, ::parseExpression).map { sourceRef, (name, _, expr) -> TupleField(name.text, expr, null) } },
-                { parseExpression(this).map { sourceRef, expr -> TupleField(null, expr, null) } }
+                { AllOf(TokenKind.NAME, TokenKind.EQ, ::parseExpression).map { _, (name, _, expr) -> TupleField(name.text, expr, null, false) } },
+                { AllOf(TokenKind.MUL, ::parseExpression ).map { _, (_, expr) -> TupleField(null, expr, null, true) }  },
+                { parseExpression(this).map { _, expr -> TupleField(null, expr, null, false) } },
             )},
             TokenKind.COMMA,
             TokenKind.CBRACKET).map { sourceRef, fields ->
@@ -171,7 +181,7 @@ class GrammarParser(val ast: Ast) {
             { parseExpression(this, nextLevel) }).map { sourceRef, (op, expr) ->
             val opName = operations.first { it.second == op.kind }.first
             val load = Expression.LoadVariable(opName, sourceRef = sourceRef)
-            val param = Expression.Tuple(listOf(TupleField(null, expr, null)), expr.sourceRef)
+            val param = Expression.Tuple(listOf(TupleField(null, expr, null, false)), expr.sourceRef)
             val call = Expression.Call(load, param, sourceRef = sourceRef + expr.sourceRef)
             call
         }
@@ -193,7 +203,7 @@ class GrammarParser(val ast: Ast) {
             { parseExpression(this, nextLevel) }).map { sourceRef, (op, right) ->
             val opName = operations.first { it.second == op.kind }.first
             val load = Expression.LoadVariable(opName, sourceRef = sourceRef)
-            val param = Expression.Tuple(listOf(TupleField(null, left, null), TupleField(null, right, null)), left.sourceRef + right.sourceRef)
+            val param = Expression.Tuple(listOf(TupleField(null, left, null, false), TupleField(null, right, null, false)), left.sourceRef + right.sourceRef)
             val call = Expression.Call(load, param, left.sourceRef + right.sourceRef)
             call
         }
@@ -242,6 +252,23 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
+    fun parseApplyExpr(tk: Tokens, nextLevel: Int): Result<Expression> {
+        val leftResult = parseExpression(tk, nextLevel)
+        if (leftResult !is Result.Ok)
+            return leftResult
+        val left = leftResult.value
+
+        val result = leftResult.tokens.AllOf(
+            TokenKind.APPLY,
+            { parseExpression(this, nextLevel) }
+        ).map { _, (_, right) -> Expression.Apply(left, right, left.sourceRef + right.sourceRef) }
+
+        if (result !is Result.Ok)
+            return leftResult
+
+        return result
+    }
+
     fun parseDotExpr(tk: Tokens, nextLevel: Int): Result<Expression> {
         val result = tk.AllOf(
             { parseExpression(this, nextLevel) },
@@ -268,8 +295,9 @@ class GrammarParser(val ast: Ast) {
             8 -> parseBinaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB)
             9 -> parseBinaryExpr(tk, level + 1, "`*`"  to TokenKind.MUL, "`/`"  to TokenKind.DIV , "`%`"   to TokenKind.REM)
             10 -> parseUnaryExpr(tk, level + 1, "`+`"  to TokenKind.ADD, "`-`"  to TokenKind.SUB , "`!`"   to TokenKind.NOT)
-            11 -> parseDotExpr  (tk, level + 1)
-            12 -> parseCallExpr (tk, level + 1)
+            11 -> parseApplyExpr(tk, level + 1)
+            12 -> parseDotExpr  (tk, level + 1)
+            13 -> parseCallExpr (tk, level + 1)
             else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseLoadBuiltin, ::parseNamed, ::parseTupleExpr)
         }
         return result

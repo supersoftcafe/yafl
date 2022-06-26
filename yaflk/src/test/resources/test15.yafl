@@ -1,0 +1,24 @@
+
+# Generics with traits
+
+fun `:=`(a:System.Int16):System.Int32 = __builtin__ convert_i16_to_i32(a)
+fun `+`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ add_i32(a, b)
+
+# Simple trait that declares functional capabilities
+trait Foldable<X,Y>
+  fun fold(l:X,r:Y):X
+
+# Trait that adds to other traits
+trait TxFoldable<X,Y>:Foldable<X,Y>
+  fun transform(l:X):X
+
+# Automatic type promotion through ':=' operator
+fun fold(l:Int32, r:Int16): Int32 = l + r
+
+# Generics with traits constraint
+fun fold<X,Y>(l:X, p1:Y, p2:Y) where TxFoldable<X,Y>
+# Use of dot operator syntax for function calling, left operand is prepended as first parameter
+  = l.fold(p1).fold(p2).transform()
+
+fun main() = fold(32, 1i16, 7i16)
+

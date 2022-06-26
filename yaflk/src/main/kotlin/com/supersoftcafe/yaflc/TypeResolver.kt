@@ -151,7 +151,7 @@ class TypeResolver(val ast: Ast) {
         if (expression.builtinOp == null)
             expression.builtinOp = ast.builtinOps.firstOrNull { it.name == expression.name }
         val op = expression.builtinOp
-            ?: return persistentListOf(expression.sourceRef to "Unknown built in operation")
+            ?: return persistentListOf(expression.sourceRef to "Unknown built in operation ${expression.name}")
 
         if (expression.type == null)
             expression.type = Type.Function(op.parameter, op.result, expression.sourceRef)
@@ -162,10 +162,19 @@ class TypeResolver(val ast: Ast) {
     fun resolveExpressionCall(nodePath: NodePath, expression: Expression.Call, reference: ExpressionRef): Errors {
         val target = expression.children.first()
         val parameter = expression.children.last()
-        val tuple = Type.Tuple((parameter.expression as? Expression.Tuple)?.children?.filterIsInstance<TupleField>()?.mapIndexed { index, it -> Field(it.name ?: "value$index", it.expression.type, SourceRef.EMPTY) } ?: listOf(), SourceRef.EMPTY)
+        val tupleExprFields = (parameter.expression as? Expression.Tuple)?.children?.filterIsInstance<TupleField>() ?: listOf()
+        val tupleUnpackedFields = tupleExprFields.flatMapIndexed { index, it ->
+            val type = it.expression.type
+            if (it.unpack && type is Type.Tuple) {
+                type.fields
+            } else {
+                listOf(Field(it.name ?: "value$index", type, SourceRef.EMPTY))
+            }
+        }
+        val paramTuple = Type.Tuple(tupleUnpackedFields, SourceRef.EMPTY)
 
         parameter.receiver = (target.expression.type as? Type.Function)?.parameter
-        target.receiver = Type.Function(tuple, reference.receiver, SourceRef.EMPTY)
+        target.receiver = Type.Function(paramTuple, reference.receiver, SourceRef.EMPTY)
 
         if (expression.type == null) {
             val type = (target.expression.type as? Type.Function)?.result
@@ -283,23 +292,40 @@ class TypeResolver(val ast: Ast) {
 
     fun resolveExpressionTuple(nodePath: NodePath, expression: Expression.Tuple, reference: ExpressionRef): Errors {
         val children = expression.children.filterIsInstance<TupleField>().toList()
-        val receiverFields = (reference.receiver as? Type.Tuple)?.fields ?: listOf()
+
+        if (children.any { it.unpack && it.expression.type == null }) {
+            return persistentListOf() // Don't process tuple until unpacked children have known types
+        }
 
         if (expression.type == null && children.all { it.expression.type != null }) {
-            expression.type = Type.Tuple(children.mapIndexed { index, field ->
-                Field(field.name ?: "value$index", field.expression.type, field.expression.sourceRef)
+            expression.type = Type.Tuple(children.flatMapIndexed { index, field ->
+                val type = field.expression.type
+                if (field.unpack && type is Type.Tuple)
+                    type.fields
+                else
+                    listOf(Field(field.name ?: "value$index", field.expression.type, field.expression.sourceRef))
             }, expression.sourceRef)
         }
 
-        val errors = if (children.size != receiverFields.size) {
-            persistentListOf(expression.sourceRef to "Incorrect number of tuple fields")
-        } else {
-            for ((ref, field) in children.zip(receiverFields))
-                ref.receiver = field.type
-            persistentListOf()
+        var receiverInputs = (reference.receiver as? Type.Tuple)?.fields ?: listOf()
+        for (child in children) {
+            val count = if (child.unpack) (child.expression.type as? Type.Tuple)?.fields?.size ?: 1 else 1
+            val list = receiverInputs.take(count)
+            receiverInputs = receiverInputs.drop(count)
+
+            if (list.size != count)
+                return persistentListOf(expression.sourceRef to "Incorrect number of tuple fields")
+
+            child.receiver = if (count == 1)
+                    list.first().type
+                else
+                    Type.Tuple(list, expression.sourceRef)
         }
 
-        return errors
+        if (receiverInputs.isNotEmpty())
+            return persistentListOf(expression.sourceRef to "Incorrect number of tuple fields")
+
+        return persistentListOf()
     }
 
     fun resolveExpressionNew(nodePath: NodePath, expression: Expression.New, reference: ExpressionRef): Errors {
@@ -313,6 +339,22 @@ class TypeResolver(val ast: Ast) {
         }
 
         return persistentListOf()
+    }
+
+    fun resolveExpressionApply(nodePath: NodePath, expression: Expression.Apply, reference: ExpressionRef): Errors {
+        // Re-write as simple call
+
+        val  left = expression.children[0].expression
+        val right = expression.children[1].expression
+
+        if (right is Expression.Call) {
+            val target = right.children[0].expression
+            val params = right.children[1].expression as Expression.Tuple
+            reference.expression = Expression.Call(target, Expression.Tuple(listOf(TupleField(null, left, null, true)) + params.children.filterIsInstance<TupleField>(), params.sourceRef), left.sourceRef + right.sourceRef)
+            return persistentListOf(expression.sourceRef to "Re-writing to unpacked parameter")
+        } else {
+            return persistentListOf(expression.sourceRef to "Right side of |> operator must be a call")
+        }
     }
 
 
@@ -340,6 +382,7 @@ class TypeResolver(val ast: Ast) {
             is Expression.InitGlobal -> TODO()
             is Expression.LoadField -> resolveExpressionLoadField(nodePath, expression, reference)
             is Expression.New -> resolveExpressionNew(nodePath, expression, reference)
+            is Expression.Apply -> resolveExpressionApply(nodePath, expression, reference)
         }
     }
 

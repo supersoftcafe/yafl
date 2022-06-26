@@ -114,22 +114,50 @@ class CodeGenerator(val ast: Ast) {
     ): IrResult {
         val children = expression.children[1].expression.children
 
+        fun llvmIntegerUnaryOp(op: String, type: IrType): IrResult {
+            val input = generateExpression(children[0].expression, function)
+            val result = function.nextRegister(type)
+            function.body += "  $result = $op ${input.type} $input to $type"
+            return result
+        }
+
         fun llvmIntegerBinOp(op: String, type: IrType): IrResult {
             val inputResults = children.map { generateExpression(it.expression, function) }
             val inputs = inputResults.joinToString(", ") { it.toString() }
             val result = function.nextRegister(type)
-            function.body += "  $result = $op ${type.llvmType} $inputs"
+            function.body += "  $result = $op $type $inputs"
             return result
         }
 
         return when (kind) {
-            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add", IrPrimitive.Int32)
-            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
+            BuiltinOpKind.CONVERT_I8_TO_I16 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int16)
+            BuiltinOpKind.CONVERT_I16_TO_I32 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int32)
+            BuiltinOpKind.CONVERT_I32_TO_I64 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int64)
+            BuiltinOpKind.CONVERT_F32_TO_F64 -> llvmIntegerUnaryOp("fpext", IrPrimitive.Float64)
+            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add", IrPrimitive.Int8)
+            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int16)
             BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
             BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add", IrPrimitive.Int64)
-            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul", IrPrimitive.Int32)
+            BuiltinOpKind.ADD_F32 -> llvmIntegerBinOp("fadd", IrPrimitive.Float32)
+            BuiltinOpKind.ADD_F64 -> llvmIntegerBinOp("fadd", IrPrimitive.Float64)
+            BuiltinOpKind.SUB_I8  -> llvmIntegerBinOp("sub", IrPrimitive.Int8)
+            BuiltinOpKind.SUB_I16 -> llvmIntegerBinOp("sub", IrPrimitive.Int16)
             BuiltinOpKind.SUB_I32 -> llvmIntegerBinOp("sub", IrPrimitive.Int32)
+            BuiltinOpKind.SUB_I64 -> llvmIntegerBinOp("sub", IrPrimitive.Int64)
+            BuiltinOpKind.SUB_F32 -> llvmIntegerBinOp("fsub", IrPrimitive.Float32)
+            BuiltinOpKind.SUB_F64 -> llvmIntegerBinOp("fsub", IrPrimitive.Float64)
+            BuiltinOpKind.MUL_I8  -> llvmIntegerBinOp("mul", IrPrimitive.Int8)
+            BuiltinOpKind.MUL_I16 -> llvmIntegerBinOp("mul", IrPrimitive.Int16)
+            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul", IrPrimitive.Int32)
+            BuiltinOpKind.MUL_I64 -> llvmIntegerBinOp("mul", IrPrimitive.Int64)
+            BuiltinOpKind.MUL_F32 -> llvmIntegerBinOp("fmul", IrPrimitive.Float32)
+            BuiltinOpKind.MUL_F64 -> llvmIntegerBinOp("fmul", IrPrimitive.Float64)
+            BuiltinOpKind.EQU_I8 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int8)
+            BuiltinOpKind.EQU_I16 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int16)
             BuiltinOpKind.EQU_I32 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int32)
+            BuiltinOpKind.EQU_I64 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int64)
+            BuiltinOpKind.EQU_F32 -> llvmIntegerBinOp("fcmp oeq", IrPrimitive.Float32)
+            BuiltinOpKind.EQU_F64 -> llvmIntegerBinOp("fcmp oeq", IrPrimitive.Float64)
             else -> TODO("Builtin Op ${kind} not implemented yet")
         }
     }
@@ -139,12 +167,24 @@ class CodeGenerator(val ast: Ast) {
         target: Declaration.Function,
         function: IrFunction
     ): IrResult {
-        val inputResults = expression.children[1].expression.children.map {
-            generateExpression(it.expression, function)
+        val inputResults = expression.children[1].expression.children.flatMap {
+            val exprResult = generateExpression(it.expression, function)
+            val type = exprResult.type
+            if (it is TupleField && it.unpack && type is IrTuple) {
+                type.fields.mapIndexed { index, fieldType ->
+                    val fieldRegister = function.nextRegister(fieldType) // Always borrowed as tuple handles ownership
+                    function.body += "  $fieldRegister = extractvalue $type $exprResult, $index"
+                    Pair(fieldType, fieldRegister)
+                }
+            } else {
+                listOf(Pair(type, exprResult))
+            }
         }
-        val inputs = inputResults.joinToString(", ") {
-            "${it.type} $it"
+
+        val inputs = inputResults.joinToString(", ") { (type, name) ->
+            "$type $name"
         }
+
         val targetAsIrFunction = target.toIrFunction()
         val type = expression.type!!.toIrType()
         val result = function.nextRegister(type, owned = type.hasObjectMembers())
@@ -373,6 +413,7 @@ class CodeGenerator(val ast: Ast) {
             is Expression.InitGlobal -> generateExpressionInitGlobal(expression, function)
             is Expression.LoadField -> generateExpressionLoadField(expression, function)
             is Expression.New -> generateExpressionNew(expression, function)
+            is Expression.Apply -> throw UnsupportedOperationException("Expression.Apply is not real code")
         }
 
         if (!dontRelease && result is IrRegister && result.owned)
@@ -565,20 +606,26 @@ class CodeGenerator(val ast: Ast) {
 
         val delName = "del_$baseName"
         val nl = System.lineSeparator()
-        val del = "define internal void @$delName(${struct.llvmType} %p0) {$nl" +
-                struct.getTuple().fields.mapIndexed { index, irType ->
-                    if (irType is IrStruct && irType.onHeap) {
-                        "  %v$index = getelementptr %${struct.name}, %${struct.name}* %p0, i32 0, i32 1, i32 $index$nl" +
-                        "  %r$index = bitcast $irType* %v$index to %object**$nl" +
-                        "  %x$index = load %object*, %object** %r$index$nl" +
-                        "  call void @release(%object* %x$index)$nl"
-                    } else ""
-                }.joinToString("") +
-                "  %size = ptrtoint %${struct.name}* getelementptr(%${struct.name}, %${struct.name}* null, i32 1) to %size_t$nl" +
-                "  %objekt = bitcast ${struct.llvmType} %p0 to %object*$nl" +
-                "  call void @delete_object(%size_t %size, %object* %objekt)$nl" +
-                "  ret void$nl" +
-                "}$nl$nl$nl"
+
+        // TODO: Order these such that the most complex release happens last
+        val releases = struct.getTuple().fields.flatMapIndexed { index, irType ->
+            if (irType is IrStruct && irType.onHeap) listOf(
+                "  %v$index = getelementptr %${struct.name}, %${struct.name}* %p0, i32 0, i32 1, i32 $index",
+                "  %r$index = bitcast $irType* %v$index to %object**",
+                "  %x$index = load %object*, %object** %r$index",
+                "  call void @release(%object* %x$index)"
+            ) else listOf()
+        }
+
+        // Make sure the last call to @release comes just before the 'ret' statement so that it can tail call
+        val delete = listOf("define internal void @$delName(${struct.llvmType} %p0) {") + releases.dropLast(1) + listOf(
+            "  %size = ptrtoint %${struct.name}* getelementptr(%${struct.name}, %${struct.name}* null, i32 1) to %size_t",
+            "  %objekt = bitcast ${struct.llvmType} %p0 to %object*",
+            "  call void @delete_object(%size_t %size, %object* %objekt)"
+        ) + releases.takeLast(1) + "  ret void" + "}"
+
+        // Joint it back up to make a whole function string
+        val del = delete.joinToString(nl, "", "$nl$nl$nl")
 
         val vttypeName = "vttype_$baseName"
         val vttype = "%$vttypeName = type { void(${struct.llvmType})* }$nl$nl$nl"

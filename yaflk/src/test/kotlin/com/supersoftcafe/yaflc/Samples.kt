@@ -21,17 +21,41 @@ internal class Samples {
         "test10.yafl",
         "test11.yafl",
         "test12.yafl",
-//        "test13.yafl",
     ])
-    fun loadAndTest(file: String) {
-        val text = Samples::class.java.getResource("/$file")!!.readText()
+    fun testBland(file: String) {
+        testWithFiles("/bland/$file")
+    }
+
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+//        "unpack.yafl",
+        "apply.yafl",
+    ])
+    fun testClasses(file: String) {
+        testWithFiles("/classes/$file")
+    }
+
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+        "test1.yafl",
+    ])
+    fun testSystem(file: String) {
+        testWithFiles("/system/system.yafl", "/system/$file")
+    }
+
+
+    fun testWithFiles(vararg files: String) {
         val ast = Ast()
 
         val parser = GrammarParser(ast)
-        val tokens = Tokens(text, file)
 
-        val parseErrors = parser.parseIntoAst(tokens)
-        assertEquals("", parseErrors.joinToString("\n"))
+        for (file in files) {
+            val text = Samples::class.java.getResource(file)!!.readText()
+            val parseErrors = parser.parseIntoAst(Tokens(text, file))
+            assertEquals("", parseErrors.joinToString("\n"))
+        }
 
         val typeResolver = TypeResolver(ast)
         val resolveErrors = typeResolver.resolve()
@@ -39,10 +63,10 @@ internal class Samples {
 
         val generator = CodeGenerator(ast)
         val code = generator.generate()
-        println(code)
 
-        val optimized = "opt --O3 -S".runCommand(code)
-        assertNotNull(optimized)
-//        println(optimized)
+        val (stdout, stderr) = "opt --O3 -S".runCommand(code)
+        assertEquals("", stderr)
+
+        println(code)
     }
 }

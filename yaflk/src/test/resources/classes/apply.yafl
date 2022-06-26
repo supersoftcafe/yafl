@@ -1,0 +1,5 @@
+
+
+fun `+`(a, b) = __builtin__ add_i32(a, b)
+
+fun main() = 13 |> `+`(27)

@@ -1,0 +1,14 @@
+
+# Indentation as syntax. Parser must recognise that 'thirty' is not a part of the class.
+
+# Interfaces can only have functions
+interface TheAdder
+  fun addValue(a:Int32)
+
+class Something(value:Int32) : TheAdder
+  fun addValue(a) = a + value
+
+val thirty = 30
+
+fun main() = thirty
+

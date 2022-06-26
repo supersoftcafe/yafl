@@ -1,29 +1,14 @@
 
-# Interfaces!!  Finally something juicy
+# Automatic type promotion
 
-interface Thingy
-  val getValue
-  fun addOther(a)
+fun `:=`(a:System.Int8 ):System.Int16 = __builtin__ convert_i8_to_i16(a)
+fun `:=`(a:System.Int16):System.Int32 = __builtin__ convert_i16_to_i32(a)
+fun `:=`(a:System.Int32):System.Int64 = __builtin__ convert_i32_to_i64(a)
 
-# Checking that parser doesn't overrun the end
-fun notMember1() = 1
+fun `+`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ add_i8(a, b)
+fun `+`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ add_i16(a, b)
+fun `+`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ add_i32(a, b)
+fun `+`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ add_i64(a, b)
 
-# Passing classes around is discouraged as they expose everything
-# Interface is the accepted way to hide implementation
-# No class inheritance, therefore no class vtable...  But there is an interface vtable
-class Stuff(value, other):Thingy
-  val getValue = self.value
-  fun addOther(a) = a + self.other
-
-# Checking that parser doesn't overrun the end
-fun notMember2() = 2
-
-# And then the ultimate in conciseness, anonymous object with capture
-fun doit(value, other) =
-  object:Thingy
-    val getValue = value
-    fun addOther(a) = a + other
-
-
-fun main() = notMember1() + notMember2()
+fun main() = 7 + 13i16
 

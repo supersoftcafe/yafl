@@ -1,0 +1,4 @@
+
+fun addFour(a: System.Int32): System.Int32 = a + 4
+
+fun main(): System.Int32 = addFour(27)

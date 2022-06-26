@@ -9,8 +9,8 @@ fun `:=`(a:System.Float32):System.Float64 = __builtin__ convert_f32_to_f64(a)
 
 
 # Implement the rule that any type is the tuple of itself
-# fun <X> `=`(a:(x:X)):X = a.x
-# fun <X> `=`(a:X):(X) = (a.x)
+# fun <X> `:=`(a:(x:X)):X = a.x
+# fun <X> `:=`(a:X):(X) = (a.x)
 
 
 # Operators
@@ -35,10 +35,10 @@ fun `*`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ mul_i64(a, b)
 fun `*`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ mul_f32(a, b)
 fun `*`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ mul_f64(a, b)
 
-fun `=`(a:System.Int8 , b:System.Int8 ):System.Int8  = __builtin__ equ_i8(a, b)
-fun `=`(a:System.Int16, b:System.Int16):System.Int16 = __builtin__ equ_i16(a, b)
-fun `=`(a:System.Int32, b:System.Int32):System.Int32 = __builtin__ equ_i32(a, b)
-fun `=`(a:System.Int64, b:System.Int64):System.Int64 = __builtin__ equ_i64(a, b)
-fun `=`(a:System.Float32, b:System.Float32):System.Float32 = __builtin__ equ_f32(a, b)
-fun `=`(a:System.Float64, b:System.Float64):System.Float64 = __builtin__ equ_f64(a, b)
+fun `=`(a:System.Int8 , b:System.Int8 ):System.Bool  = __builtin__ equ_i8(a, b)
+fun `=`(a:System.Int16, b:System.Int16):System.Bool = __builtin__ equ_i16(a, b)
+fun `=`(a:System.Int32, b:System.Int32):System.Bool = __builtin__ equ_i32(a, b)
+fun `=`(a:System.Int64, b:System.Int64):System.Bool = __builtin__ equ_i64(a, b)
+fun `=`(a:System.Float32, b:System.Float32):System.Bool = __builtin__ equ_f32(a, b)
+fun `=`(a:System.Float64, b:System.Float64):System.Bool = __builtin__ equ_f64(a, b)
 

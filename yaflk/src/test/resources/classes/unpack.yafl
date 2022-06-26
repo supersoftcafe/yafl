@@ -1,0 +1,12 @@
+
+# Dot operator as syntactic sugar to prepend left values to parameter set
+
+fun `+`(a, b) = __builtin__ add_i32(a, b)
+
+val oneValue = 13
+val twoValues = (13, 27)
+
+fun unpackOne() = `+`(*oneValue, 27)
+fun unpackTwo() = `+`(*twoValues)
+
+fun main() = unpackOne() + unpackTwo()
