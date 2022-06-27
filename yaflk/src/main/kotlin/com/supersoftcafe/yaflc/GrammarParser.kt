@@ -320,16 +320,26 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseFun(tk: Tokens): Result<List<Declaration>> {
-        val result = tk.AllOf(
-            { FailIsAbsent(TokenKind.FUN) },
-            TokenKind.NAME,
-            ::parseFunParams,
-            { If(TokenKind.COLON, ::parseType) },
-            TokenKind.EQ,
-            ::parseExpression
-        ).map { sourceRef, (_, name, parameters, result, _, body) ->
-            listOf(Declaration.Function(name.text, parameters, result, ExpressionRef(body, result), sourceRef = sourceRef))
+    fun parseFun(tk: Tokens, requiredIndent: Int = 0): Result<List<Declaration>> {
+        val hasfun = TokenKind.FUN(tk)
+
+        val result = when (hasfun) {
+            is Result.Absent -> return hasfun.xfer()
+            is Result.Fail -> Result.Absent(SourceRef.EMPTY)
+            is Result.Ok -> {
+                if (hasfun.indent < requiredIndent)
+                    Result.Absent(SourceRef.EMPTY)
+                else
+                    hasfun.tokens.AllOf(
+                        { FailIsAbsent(TokenKind.FUN) },
+                        TokenKind.NAME,
+                        ::parseFunParams,
+                        { If(TokenKind.COLON, ::parseType) },
+                        { If(TokenKind.EQ, ::parseExpression) }
+                    ).map { sourceRef, (_, name, parameters, result, body) ->
+                        listOf(Declaration.Function(name.text, parameters, result, body?.let { ExpressionRef(it, result) }, null, sourceRef))
+                    }
+            }
         }
         return result
     }
@@ -341,7 +351,7 @@ class GrammarParser(val ast: Ast) {
             { If(TokenKind.COLON, ::parseType) },
             { If(TokenKind.EQ, ::parseExpression) }
         ).map { sourceRef, (_, name, type, body) ->
-            listOf(Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global = global))
+            listOf(Declaration.Variable(name.text, body?.let { ExpressionRef(it, type) }, type, sourceRef, global))
         }
         return result
     }
@@ -364,13 +374,30 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
+    fun parseInterface(tk: Tokens, module: Module): Result<List<Declaration>> {
+        val hasiface = TokenKind.INTERFACE(tk)
+
+        val result = when (hasiface) {
+            is Result.Absent -> return hasiface.xfer()
+            is Result.Fail -> Result.Absent(SourceRef.EMPTY)
+            is Result.Ok -> {
+                val indent = hasiface.indent + 1
+                hasiface.tokens.AllOf(TokenKind.NAME, { Repeat({ parseFun(this, indent) }) }).map { sourceRef, (name, functions) ->
+
+                }
+            }
+        }
+
+        return result
+    }
+
     fun parseLocalDeclarations(tk: Tokens): Result<List<Declaration>> {
         val result = tk.Repeat { OneOf(::parseFun, ::parseLet) }.map { _, lists -> lists.flatten() }
         return result
     }
 
     fun parseGlobalDeclarations(tk: Tokens, module: Module): Result<List<Declaration>> {
-        val result = tk.Repeat { OneOf({ parseStruct(this, module) }, ::parseFun, { parseLet(this, global = true) } ) }
+        val result = tk.Repeat { OneOf({ parseStruct(this, module) }, {parseInterface(this, module)}, ::parseFun, { parseLet(this, global = true) } ) }
             .map { _, lists -> lists.flatten() }
         return result
     }

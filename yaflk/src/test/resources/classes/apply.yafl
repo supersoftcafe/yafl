@@ -1,4 +1,5 @@
 
+# Apply operator takes left side and expands into first argument(s) of right side function call
 
 fun `+`(a, b) = __builtin__ add_i32(a, b)
 

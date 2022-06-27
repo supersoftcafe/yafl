@@ -40,6 +40,13 @@ sealed class Declaration(
         type: Type? = null
     ) : Declaration(name, sourceRef, type)
 
+    class Interface(
+        name: String,
+        val functions: List<Declaration.Function>,
+        sourceRef: SourceRef,
+        type: Type? = null
+    ) : Declaration(name, sourceRef, type)
+
     class Primitive(
         name: String,
         val kind: PrimitiveKind,
@@ -59,7 +66,7 @@ sealed class Declaration(
         name: String,
         val parameters: List<Variable>,
         var result: Type?,
-        val body: ExpressionRef,
+        val body: ExpressionRef?,
         type: Type? = null,
         sourceRef: SourceRef,
         val synthetic: Boolean = false
@@ -95,6 +102,7 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         }
     }
 
+    // This gets replaced with a Call
     class Apply(left: Expression, right: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init {
             addChild(left)
@@ -141,7 +149,7 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
             for (declaration in declarations) {
                 when (declaration) {
                     is Declaration.Variable -> children.add(declaration.body!!)
-                    is Declaration.Function -> children.add(declaration.body)
+                    is Declaration.Function -> children.add(declaration.body!!)
                     else -> throw IllegalArgumentException("${declaration::class.simpleName} cannot be declared in a local context")
                 }
             }

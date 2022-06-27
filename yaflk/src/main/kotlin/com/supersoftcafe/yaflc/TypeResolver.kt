@@ -442,14 +442,15 @@ class TypeResolver(val ast: Ast) {
 
     fun resolveFunction(nodePath: NodePath, function: Declaration.Function): Errors {
         val newNodePath = nodePath.add(function)
+        val body = function.body
+            ?: return persistentListOf(function.sourceRef to "Global function ${function.name} does not have a body")
 
-        function.body.receiver = function.result
+        body.receiver = function.result
 
-        // TODO: Derive parameter types from the body. For now though we require them to be specified
         var errors = function.parameters.foldErrors { resolveVariable(newNodePath, it, true) }
-            .addAll( resolveExpression(newNodePath, function.body.expression, function.body) )
+            .addAll( resolveExpression(newNodePath, body.expression, body) )
 
-        val result = function.result ?: function.body.expression.type
+        val result = function.result ?: body.expression.type
         function.result = result ?: return errors.add(function.sourceRef to "Cannot determine result type")
 
         if (function.type == null && function.parameters.all { it.type != null })
@@ -462,12 +463,17 @@ class TypeResolver(val ast: Ast) {
         return errors
     }
 
+    fun resolveInterface(nodePath: NodePath, function: Declaration.Interface): Errors {
+        TODO()
+    }
+
     fun resolveDeclaration(nodePath: NodePath, declaration: Declaration): Errors {
         val result = when (declaration) {
             is Declaration.Function -> resolveFunction(nodePath, declaration)
             is Declaration.Variable -> resolveVariable(nodePath, declaration, false)
             is Declaration.Primitive -> resolvePrimitive(nodePath, declaration)
             is Declaration.Struct -> resolveStruct(nodePath, declaration)
+            is Declaration.Interface -> resolveInterface(nodePath, declaration)
         }
         return result
     }

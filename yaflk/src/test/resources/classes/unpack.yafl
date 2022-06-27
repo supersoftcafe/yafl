@@ -1,5 +1,6 @@
 
-# Dot operator as syntactic sugar to prepend left values to parameter set
+# Takes tuple and unpacks into outer tuple to make a new bigger tuple
+# Useful on function calls where multiple parameters come from the result of some other call
 
 fun `+`(a, b) = __builtin__ add_i32(a, b)
 

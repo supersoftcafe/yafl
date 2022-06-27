@@ -522,7 +522,7 @@ class CodeGenerator(val ast: Ast) {
 
     fun generateFunction(declaration: Declaration.Function) {
         val function = declaration.toIrFunction()
-        val result = generateExpression(declaration.body.expression, function, dontRelease = true)
+        val result = generateExpression(declaration.body!!.expression, function, dontRelease = true)
 
         if (result is IrRegister && !result.owned)
             acquireNow(function, result)

@@ -1,211 +1,74 @@
 package com.supersoftcafe.yaflc
 
-import kotlinx.collections.immutable.PersistentList
-import kotlinx.collections.immutable.persistentListOf
+class Tokens private constructor(private val tokens: Array<Token>, private val index: Int) {
 
-class Tokens private constructor(
-    private val input: String,
-    private val file: String,
-    private val line: Int,
-    private val character: Int,
-    private val indent: Int,
-    private val startOfLine: Boolean
-) {
-    constructor(input: String, file: String) : this(input, file, 1, 1, 0, true)
+    constructor(text: String, file: String) : this(parse(text, file), 0)
+    val head get() = tokens[0]
+    val tail get() = Tokens(tokens, index + 1)
+    val list get() = tokens.asList().subList(index, tokens.size)
 
-    fun get(vararg lookingFor: TokenKind) = get(this, lookingFor)
 
-    companion object {
-        private tailrec fun get(tk: Tokens, lookingFor: Array<out TokenKind>): Result.Ok<Token> {
-            if (tk.input.isEmpty())
-                return Result.Ok(Token(TokenKind.EOI, "", tk.indent), SourceRef(tk.file, tk.line, tk.character, tk.line, tk.character), tk)
+    private companion object {
+        fun parse(text: String, file: String): Array<Token> {
+            val tokenKinds = TokenKind.values()
+            val result = mutableListOf<Token>()
+            val blocks = mutableListOf<Int>()
+            var input = text
 
-//            val foundList = TokenKind.values().mapNotNull { tokenKind ->
-//                tokenKind.rx?.find(tk.input)?.let {
-//                    if (it.range.first > 0) null else Pair(tokenKind, it.value)
-//                }
-//            }.sortedBy { it.second.length }
+            var line = 0
+            var indent = 0
+            var character = 0
+            var startOfLine = true
 
-//            val (tokenKind, value) = if (foundList.isEmpty()) {
-//                Pair(TokenKind.UNKNOWN, tk.input.substring(0, 1))
-//            } else if (lookingFor.isEmpty() || foundList.last().first in lookingFor) {
-//                foundList.last()
-//            } else if (lookingFor.isNotEmpty() && foundList.size > 1 && foundList.any { it.first in lookingFor && it.first.allowOverride }) {
-//                foundList.findLast { it.first in lookingFor && it.first.allowOverride }!!
-//            } else {
-//                Pair(TokenKind.UNKNOWN, tk.input.substring(0, 1))
-//            }
+            while (input.isNotEmpty()) {
+                val groups = regex.find(input)!!.groups
+                val (kind, match) = tokenKinds.firstNotNullOf { groups[it.name]?.let { m -> Pair(it, m.value) } }
+                val sourceRef = SourceRef(file, line, character, line, character + match.length - 1)
+                input = input.substring(match.length)
 
-            val found = TokenKind.values().mapNotNull { tokenKind ->
-                tokenKind.rx?.find(tk.input)?.let {
-                    if (it.range.first > 0) null else Pair(tokenKind, it.value)
+                if (blocks.isNotEmpty() && indent <= blocks.last()) {
+                    result += Token(TokenKind.EOB, "", SourceRef.EMPTY)
+                    blocks.removeLast()
                 }
-            }.maxByOrNull { it.second.length }
 
-            val (tokenKind, value) = found ?: Pair(TokenKind.UNKNOWN, tk.input.substring(0, 1))
+                if (kind.blockStart) {
+                    blocks += indent
+                }
 
-            var newLine = tk.line
-            var newCharacter = tk.character
-            var newIndent = tk.indent
-            var newStartOfLine = tk.startOfLine
+                if (kind != TokenKind.IGNORE) {
+                    result += Token(kind, match, sourceRef)
+                }
 
-            for (chr in value) {
-                if (chr == '\n') {
-                    newLine += 1;
-                    newCharacter = 1;
-                    newStartOfLine = true
-                    newIndent = 0
-                } else {
-                    if (newStartOfLine) {
-                        if (chr == ' ') newIndent += 1;
-                        else newStartOfLine = false;
+                for (chr in match) {
+                    if (chr == '\n') {
+                        line += 1;
+                        character = 1;
+                        startOfLine = true
+                        indent = 0
+                    } else {
+                        if (startOfLine) {
+                            if (chr == ' ') indent += 1;
+                            else startOfLine = false;
+                        }
+                        if (chr != '\r')
+                            character += 1;
                     }
-                    if (chr != '\r')
-                        newCharacter += 1;
                 }
             }
 
-            val tokens = Tokens(tk.input.substring(value.length), tk.file, newLine, newCharacter, newIndent, newStartOfLine)
-            return if (tokenKind == TokenKind.IGNORE)
-                get(tokens, lookingFor)
-            else
-                Result.Ok(Token(tokenKind,value, tk.indent), SourceRef(tk.file, tk.line, tk.character, newLine, newCharacter), tokens)
-        }
-    }
-}
-
-
-
-
-
-
-
-fun <TValue> Tokens.OneOf(first: Parser<TValue>, vararg others: Parser<TValue>): Result<TValue> {
-    return others.fold(first()) { previousResult, second ->
-        when (previousResult) {
-            is Result.Ok -> previousResult
-            is Result.Fail ->
-                when (val secondResult = second()) {
-                    is Result.Ok -> secondResult
-                    is Result.Fail -> previousResult
-                    is Result.Absent -> previousResult
-                }
-            is Result.Absent -> second()
-        }
-    }
-}
-
-fun <V1, V2> Tokens.AllOf(p1: Parser<V1>, p2: Parser<V2>): Result<Tuple2<V1, V2>> =
-    when (val result1 = p1()) {
-        is Result.Absent -> result1.xfer()
-        is Result.Fail -> result1.xfer()
-        is Result.Ok -> when (val result2 = result1.tokens.p2()) {
-            is Result.Absent -> result2.xfer()
-            is Result.Fail -> result2.xfer()
-            is Result.Ok -> Result.Ok(tupleOf(result1.value, result2.value), result1.sourceRef + result2.sourceRef, result2.tokens)
-        }
-    }
-
-fun <V1, V2, V3> Tokens.AllOf(p1: Parser<V1>, p2: Parser<V2>, p3: Parser<V3>) =
-    AllOf(p1) { AllOf(p2, p3) }.map { _, (l, r) -> tupleOf(l, r.v1, r.v2) }
-
-fun <V1, V2, V3, V4> Tokens.AllOf(p1: Parser<V1>, p2: Parser<V2>, p3: Parser<V3>, p4: Parser<V4>) =
-    AllOf({ AllOf(p1, p2) }, { AllOf(p3, p4) }).map { _, (l, r) -> l + r }
-
-fun <V1, V2, V3, V4, V5> Tokens.AllOf(p1: Parser<V1>, p2: Parser<V2>, p3: Parser<V3>, p4: Parser<V4>, p5: Parser<V5>) =
-    AllOf({ AllOf(p1, p2, p3) }, { AllOf(p4, p5) }).map { _, (l, r) -> l + r }
-
-fun <V1, V2, V3, V4, V5, V6> Tokens.AllOf(p1: Parser<V1>, p2: Parser<V2>, p3: Parser<V3>, p4: Parser<V4>, p5: Parser<V5>, p6: Parser<V6>) =
-    AllOf({ AllOf(p1, p2, p3) }, { AllOf(p4, p5, p6) }).map { _, (l, r) -> l + r }
-
-
-fun <TValue> Tokens.Repeat(lambda: Parser<TValue>): Result<PersistentList<TValue>> {
-    var loops = 0
-    fun Tokens.Repeat(root: PersistentList<TValue>): Result<PersistentList<TValue>> {
-        if (++loops == 100) {
-            println("break here")
-        }
-        return when (val result = lambda()) {
-            is Result.Ok -> result.tokens.Repeat(root.add(result.value))
-            is Result.Fail -> result.xfer()
-            is Result.Absent -> Result.Ok(root, result.sourceRef, this)
-        }
-    }
-    return Repeat(persistentListOf())
-}
-
-fun <TValue> Tokens.ListOfWhile(separator: Parser<*>, lambda: Parser<TValue>): Result<PersistentList<TValue>> {
-    tailrec fun Tokens.ListOfWhile(root: PersistentList<TValue>, sourceRef: SourceRef): Result<PersistentList<TValue>> {
-        return when (val sep = separator()) {
-            is Result.Absent, is Result.Fail -> Result.Ok(root, sourceRef, this)
-            is Result.Ok -> when (val result = lambda(sep.tokens)) {
-                is Result.Ok -> result.tokens.ListOfWhile(root.add(result.value), sourceRef + sep.sourceRef + result.sourceRef)
-                is Result.Fail -> result.xfer()
-                is Result.Absent -> result.xfer()
+            while (blocks.isNotEmpty()) {
+                result += Token(TokenKind.EOB, "", SourceRef.EMPTY)
+                blocks.removeLast()
             }
+
+            result += Token(TokenKind.EOI, "", SourceRef.EMPTY)
+
+            return result.toTypedArray()
         }
+
+        val regex = Regex(TokenKind.values()
+            .filter { it.pattern.isNotEmpty() }
+            .joinToString("|", "^") { "(?<${it.name}>${it.pattern})" }
+            , RegexOption.MULTILINE)
     }
-    return ListOfWhile(persistentListOf(), SourceRef.EMPTY)
-}
-
-fun <TValue> Tokens.Parameters(
-    open: Parser<*>,
-    lambda: Parser<TValue>,
-    separator: Parser<*>,
-    close: Parser<*>
-): Result<PersistentList<TValue>> {
-    val result = OneOf(
-        { AllOf(open, close).map { _, _ -> persistentListOf() } },
-        { AllOf(open, lambda, close).map { _, (_, value, _) -> persistentListOf(value) } },
-        { AllOf(open, lambda, { ListOfWhile(separator, lambda) }, close).map { _, (_, value, more, _) -> persistentListOf(value).addAll(more) } }
-    )
-    return result
-
-//    return when (val openResult = open()) {
-//        is Result.Absent -> openResult.xfer()
-//        is Result.Fail -> openResult.xfer()
-//        is Result.Ok ->
-//            when (val closeResult = openResult.tokens.close()) {
-//                is Result.Ok -> Result.Ok(persistentListOf(), openResult.sourceRef + closeResult.sourceRef, closeResult.tokens)
-//                is Result.Fail, is Result.Absent ->
-//                    openResult.tokens.AllOf(lambda, { ListOfWhile(separator, lambda) }, close)
-//                        .map { (a, b) -> persistentListOf(a).addAll(b) }
-//            }
-//    }
-}
-
-//    AllOf(open, {
-//        OneOf(
-//            close.map { persistentListOf<TValue>() },
-//            { AllOf(lambda, close).map { (p1, _) -> persistentListOf(p1) } },
-//            { AllOf(lambda, { ListOfWhile(separator, lambda) }).map { (p1, pn) -> persistentListOf(p1).addAll(pn) } }
-//        )
-//    }).map { (_, params) -> params }
-
-
-fun <TValue> Tokens.If(check: Parser<*>, lambda: Parser<TValue>) =
-    when (val preamble = check()) {
-        is Result.Ok -> lambda(preamble.tokens)
-        is Result.Fail -> Result.Ok(null, SourceRef.EMPTY, this)
-        is Result.Absent -> Result.Ok(null, SourceRef.EMPTY, this)
-    }
-
-fun <TValue> Tokens.FailIsAbsent(lambda: Parser<TValue>) =
-    when (val result = lambda()) {
-        is Result.Ok -> result
-        is Result.Fail -> Result.Absent(result.error.first().first)
-        is Result.Absent -> result.xfer()
-    }
-
-fun Tokens.TokenIs(vararg kind: TokenKind): Result<Token> {
-    val token = get(*kind)
-    return if (token.value.kind in kind) token
-    else Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}]")
-}
-
-fun Tokens.TokenIs(kind: List<TokenKind>): Result<Token> {
-    return TokenIs(*kind.toTypedArray())
-//    val token = get()
-//    return if (token.value.kind in kind) token
-//    else Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}]")
 }

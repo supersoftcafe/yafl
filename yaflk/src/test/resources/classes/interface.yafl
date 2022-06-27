@@ -5,10 +5,8 @@
 interface TheAdder
   fun addValue(a:Int32)
 
-class Something(value:Int32) : TheAdder
+class Something(value:Int32)
   fun addValue(a) = a + value
-
-val thirty = 30
 
 fun main() = thirty
 

@@ -1,13 +1,12 @@
 package com.supersoftcafe.yaflc
 
-enum class TokenKind(val rx: Regex?, val allowOverride: Boolean = false) : (Tokens) -> Result<Token> {
+enum class TokenKind(val pattern: String, val blockStart: Boolean = false) : (Tokens) -> Result<Token> {
     IGNORE("([ \r\n]+)|(#[^\r\n]*\n)"),
-    UNKNOWN(null),
-    EOI(null),
 
     BUILTIN("__builtin__"),
     MODULE("module"),
     STRUCT("struct"),
+    INTERFACE("interface", true),
     CLASS("class"),
     WHERE("where"),
     FUN("fun"),
@@ -21,14 +20,18 @@ enum class TokenKind(val rx: Regex?, val allowOverride: Boolean = false) : (Toke
 
     APPLY("\\|>"),
     DOT("\\."), AT("@"),
-    ADD("\\+", true), SUB("\\-", true), MUL("\\*"), DIV("/"), REM("%"),
+    ADD("\\+"), SUB("\\-"), MUL("\\*"), DIV("/"), REM("%"),
     SHL("<<"), ASHR(">>"), LSHR(">>>"),
     AND("&"), OR("\\|"), XOR("\\^"), NOT("!"),
     EQ("="), NEQ("!="), LT("<"), LTE("<="), GT(">"), GTE(">="),
 
-    OBRACKET("\\("), CBRACKET("\\)"), OSQUARE("\\["), CSQUARE("\\]"), OCURLEY("\\{"), CCURLEY("\\}"), COMMA(",");
+    OBRACKET("\\("), CBRACKET("\\)"), OSQUARE("\\["), CSQUARE("\\]"), OCURLEY("\\{"), CCURLEY("\\}"), COMMA(","),
+
+    EOI(""),
+    EOB(""),
+    UNKNOWN(".");
 
     override fun invoke(tokens: Tokens): Result<Token> = tokens.TokenIs(this)
 
-    constructor(pattern: String, allowOverride: Boolean = false) : this(Regex("^($pattern)", RegexOption.MULTILINE), allowOverride)
+//    constructor(pattern: String, allowOverride: Boolean = false) : this(Regex("^($pattern)", RegexOption.MULTILINE), allowOverride)
 }
