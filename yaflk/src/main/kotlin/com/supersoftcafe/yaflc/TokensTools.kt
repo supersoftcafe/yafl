@@ -166,7 +166,7 @@ fun Tokens.TokenIs(vararg kind: TokenKind): Result<Token> {
     return if (token.kind in kind)
         Result.Ok(token, token.sourceRef, tail)
     else
-        Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}]")
+        Result.Fail(token.sourceRef, "Expected token [${kind.joinToString(" / ")}] but got ${token.kind}")
 }
 
 fun Tokens.TokenIs(kind: List<TokenKind>): Result<Token> {

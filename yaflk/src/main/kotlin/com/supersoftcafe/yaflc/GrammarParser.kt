@@ -320,26 +320,15 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseFun(tk: Tokens, requiredIndent: Int = 0): Result<List<Declaration>> {
-        val hasfun = TokenKind.FUN(tk)
-
-        val result = when (hasfun) {
-            is Result.Absent -> return hasfun.xfer()
-            is Result.Fail -> Result.Absent(SourceRef.EMPTY)
-            is Result.Ok -> {
-                if (hasfun.indent < requiredIndent)
-                    Result.Absent(SourceRef.EMPTY)
-                else
-                    hasfun.tokens.AllOf(
-                        { FailIsAbsent(TokenKind.FUN) },
-                        TokenKind.NAME,
-                        ::parseFunParams,
-                        { If(TokenKind.COLON, ::parseType) },
-                        { If(TokenKind.EQ, ::parseExpression) }
-                    ).map { sourceRef, (_, name, parameters, result, body) ->
-                        listOf(Declaration.Function(name.text, parameters, result, body?.let { ExpressionRef(it, result) }, null, sourceRef))
-                    }
-            }
+    fun parseFun(tk: Tokens): Result<List<Declaration.Function>> {
+        val result = tk.AllOf(
+            { FailIsAbsent(TokenKind.FUN) },
+            TokenKind.NAME,
+            ::parseFunParams,
+            { If(TokenKind.COLON, ::parseType) },
+            { If(TokenKind.EQ, ::parseExpression) }
+        ).map { sourceRef, (_, name, parameters, result, body) ->
+            listOf(Declaration.Function(name.text, parameters, result, body?.let { ExpressionRef(it, result) }, null, sourceRef))
         }
         return result
     }
@@ -374,20 +363,15 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseInterface(tk: Tokens, module: Module): Result<List<Declaration>> {
-        val hasiface = TokenKind.INTERFACE(tk)
-
-        val result = when (hasiface) {
-            is Result.Absent -> return hasiface.xfer()
-            is Result.Fail -> Result.Absent(SourceRef.EMPTY)
-            is Result.Ok -> {
-                val indent = hasiface.indent + 1
-                hasiface.tokens.AllOf(TokenKind.NAME, { Repeat({ parseFun(this, indent) }) }).map { sourceRef, (name, functions) ->
-
-                }
-            }
+    fun parseInterface(tk: Tokens, module: Module): Result<List<Declaration.Interface>> {
+        val result = tk.AllOf(
+            { FailIsAbsent(TokenKind.INTERFACE) },
+            TokenKind.NAME,
+            { Repeat(::parseFun) },
+            TokenKind.EOB
+        ).map { sourceRef, (_, name, functions, _) ->
+            listOf(Declaration.Interface(name.text, functions.flatten(), name.sourceRef))
         }
-
         return result
     }
 
@@ -429,9 +413,9 @@ class GrammarParser(val ast: Ast) {
 
         part.declarations.addAll(declarations)
 
-        val token = endTk.get()
-        return if (token.value.kind != TokenKind.EOI) {
-            persistentListOf(token.sourceRef to "Unexpected token ${token.value.kind}")
+        val token = endTk.head
+        return if (token.kind != TokenKind.EOI) {
+            persistentListOf(token.sourceRef to "Unexpected token ${token.kind}")
         } else {
             persistentListOf()
         }

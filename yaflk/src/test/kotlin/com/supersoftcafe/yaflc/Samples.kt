@@ -29,8 +29,8 @@ internal class Samples {
 
     @ParameterizedTest
     @ValueSource(strings = [
-//        "unpack.yafl",
-//        "apply.yafl",
+        "unpack.yafl",
+        "apply.yafl",
         "interface.yafl",
     ])
     fun testClasses(file: String) {

@@ -1,6 +1,6 @@
 package com.supersoftcafe.yaflc
 
-enum class TokenKind(val pattern: String, val blockStart: Boolean = false) : (Tokens) -> Result<Token> {
+enum class TokenKind(val rx: Regex?, val blockStart: Boolean = false) : (Tokens) -> Result<Token> {
     IGNORE("([ \r\n]+)|(#[^\r\n]*\n)"),
 
     BUILTIN("__builtin__"),
@@ -27,11 +27,11 @@ enum class TokenKind(val pattern: String, val blockStart: Boolean = false) : (To
 
     OBRACKET("\\("), CBRACKET("\\)"), OSQUARE("\\["), CSQUARE("\\]"), OCURLEY("\\{"), CCURLEY("\\}"), COMMA(","),
 
-    EOI(""),
-    EOB(""),
+    EOI(null),
+    EOB(null),
     UNKNOWN(".");
 
     override fun invoke(tokens: Tokens): Result<Token> = tokens.TokenIs(this)
 
-//    constructor(pattern: String, allowOverride: Boolean = false) : this(Regex("^($pattern)", RegexOption.MULTILINE), allowOverride)
+    constructor(pattern: String, blockStart: Boolean = false) : this(Regex("^($pattern)", RegexOption.MULTILINE), blockStart)
 }
