@@ -5,7 +5,7 @@ class Tokens private constructor(private val tokens: Array<Token>, private val i
     constructor(text: String, file: String) : this(parse(text, file), 0)
     val head get() = tokens[index]
     val tail get() = Tokens(tokens, index + 1)
-//    val list get() = tokens.asList().subList(index, tokens.size)
+    val list get() = tokens.asList().subList(index, tokens.size)
 
 
     private companion object {

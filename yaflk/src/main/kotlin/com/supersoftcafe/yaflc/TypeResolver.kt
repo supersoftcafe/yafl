@@ -159,6 +159,20 @@ class TypeResolver(val ast: Ast) {
         return persistentListOf()
     }
 
+    fun resolveExpressionInterfaceCall(nodePath: NodePath, expression: Expression.InterfaceCall, reference: ExpressionRef): Errors {
+        val target = expression.children.first()
+        val parameter = expression.children.last()
+
+        val targetType = target.expression.type
+        if (targetType !is Type.Named || targetType.declaration !is Declaration.Interface)
+            return persistentListOf(expression.sourceRef to "Base of interface call must be an interface")
+
+        if (expression.type == null)
+            return persistentListOf(expression.sourceRef to "Interface functions must have a return type")
+
+        return persistentListOf()
+    }
+
     fun resolveExpressionCall(nodePath: NodePath, expression: Expression.Call, reference: ExpressionRef): Errors {
         val target = expression.children.first()
         val parameter = expression.children.last()
@@ -383,6 +397,7 @@ class TypeResolver(val ast: Ast) {
             is Expression.LoadField -> resolveExpressionLoadField(nodePath, expression, reference)
             is Expression.New -> resolveExpressionNew(nodePath, expression, reference)
             is Expression.Apply -> resolveExpressionApply(nodePath, expression, reference)
+            is Expression.InterfaceCall -> resolveExpressionInterfaceCall(nodePath, expression, reference)
         }
     }
 
@@ -440,14 +455,14 @@ class TypeResolver(val ast: Ast) {
         return result
     }
 
-    fun resolveFunction(nodePath: NodePath, function: Declaration.Function): Errors {
+    fun resolveFunctionImpl(nodePath: NodePath, function: Declaration.Function): Errors {
         val newNodePath = nodePath.add(function)
         val body = function.body
-            ?: return persistentListOf(function.sourceRef to "Global function ${function.name} does not have a body")
+            ?: return persistentListOf(function.sourceRef to "Function ${function.name} must have a body")
 
         body.receiver = function.result
 
-        var errors = function.parameters.foldErrors { resolveVariable(newNodePath, it, true) }
+        var errors = function.parameters.foldErrors { resolveVariable(nodePath, it, true) }
             .addAll( resolveExpression(newNodePath, body.expression, body) )
 
         val result = function.result ?: body.expression.type
@@ -457,19 +472,40 @@ class TypeResolver(val ast: Ast) {
             function.type = Type.Function(Type.Tuple(function.parameters.map { Field(it.name, it.type, it.sourceRef) }, function.sourceRef), result, function.sourceRef)
 
         if (function.type != null)
-            errors = errors.addAll(resolveType(newNodePath, function.type!!))
-        errors = errors.addAll(resolveType(newNodePath, result))
+            errors = errors.addAll(resolveType(nodePath, function.type!!))
+        errors = errors.addAll(resolveType(nodePath, result))
 
         return errors
     }
 
-    fun resolveInterface(nodePath: NodePath, function: Declaration.Interface): Errors {
-        TODO()
+    fun resolveInterfaceFunction(nodePath: NodePath, function: InterfaceFunction): Errors {
+        var errors = function.parameters.foldErrors { resolveFieldType(nodePath, it) }
+
+        val result = function.result
+            ?: return errors.add(function.sourceRef to "Cannot determine result type")
+
+//        if (function.type == null && function.parameters.all { it.type != null })
+//            function.type = Type.Function(Type.Tuple(function.parameters.map { Field(it.name, it.type, it.sourceRef) }, function.sourceRef), result, function.sourceRef)
+
+//        if (function.type != null)
+//            errors = errors.addAll(resolveType(nodePath, function.type!!))
+        errors = errors.addAll(resolveType(nodePath, result))
+
+        return errors
+    }
+
+    fun resolveInterface(nodePath: NodePath, iface: Declaration.Interface): Errors {
+        val newNodePath = nodePath.add(iface)
+
+        val errors = iface.functions.foldErrors { resolveInterfaceFunction(newNodePath, it) }
+            .addAll(iface.extensions.foldErrors { resolveType(nodePath, it) })
+
+        return errors
     }
 
     fun resolveDeclaration(nodePath: NodePath, declaration: Declaration): Errors {
         val result = when (declaration) {
-            is Declaration.Function -> resolveFunction(nodePath, declaration)
+            is Declaration.Function -> resolveFunctionImpl(nodePath, declaration)
             is Declaration.Variable -> resolveVariable(nodePath, declaration, false)
             is Declaration.Primitive -> resolvePrimitive(nodePath, declaration)
             is Declaration.Struct -> resolveStruct(nodePath, declaration)

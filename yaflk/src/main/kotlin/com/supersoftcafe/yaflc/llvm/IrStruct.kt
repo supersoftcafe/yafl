@@ -25,6 +25,25 @@ class IrStruct(
     override fun toString() = llvmType
 }
 
+class IrInterface(
+    val vtName: String,
+    override val llvmType: String,
+    override val simpleName: String,
+    val functions: List<IrInterfaceFunction>
+) : IrType {
+    override fun toString() = llvmType
+}
+
+class IrInterfaceFunction(
+    val slot: Int,
+    val llvmType: String,
+    val result: IrType,
+    val parameters: List<IrType>
+) {
+    override fun toString() = llvmType
+}
+
+
 class IrLabel(val name: String)
 
 class IrVariable(val name: String, val type: IrType, var owned: Boolean = false)
@@ -36,7 +55,6 @@ class IrValue(val value: String, type: IrType) : IrResult(type) {
 class IrRegister(val name: String, type: IrType, var owned: Boolean = false) : IrResult(type) {
     override fun toString() = "%$name"
 }
-
 class IrFunction(val name: String, val result: IrType) {
     private val _variables = mutableListOf<IrVariable>()
     private val _registers = mutableListOf<IrRegister>()

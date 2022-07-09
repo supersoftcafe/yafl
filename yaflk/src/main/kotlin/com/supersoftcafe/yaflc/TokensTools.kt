@@ -132,6 +132,14 @@ fun <TValue> Tokens.ListOfWhile(separator: Parser<*>, lambda: Parser<TValue>): R
     return ListOfWhile(persistentListOf(), SourceRef.EMPTY)
 }
 
+fun <TValue> Tokens.CommaList(
+    lambda: Parser<TValue>,
+    separator: Parser<*>
+): Result<PersistentList<TValue>> {
+    val result = AllOf(lambda, { ListOfWhile(separator, lambda) }).map { _, (value, more) -> persistentListOf(value).addAll(more) }
+    return result
+}
+
 fun <TValue> Tokens.Parameters(
     open: Parser<*>,
     lambda: Parser<TValue>,
@@ -141,7 +149,7 @@ fun <TValue> Tokens.Parameters(
     val result = OneOf(
         { AllOf(open, close).map { _, _ -> persistentListOf() } },
         { AllOf(open, lambda, close).map { _, (_, value, _) -> persistentListOf(value) } },
-        { AllOf(open, lambda, { ListOfWhile(separator, lambda) }, close).map { _, (_, value, more, _) -> persistentListOf(value).addAll(more) } }
+        { AllOf(open, { CommaList(lambda, separator) }, close).map { _, (_, list, _) -> list } }
     )
     return result
 }

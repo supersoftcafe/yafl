@@ -10,6 +10,7 @@ class CodeGenerator(val ast: Ast) {
         const val validFollowingCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_.0123456789"
     }
 
+    val interfaces = mutableListOf<IrInterface>()
     val structures = mutableListOf<IrStruct>()
     val functions = mutableListOf<IrFunction>()
     val variables = mutableListOf<IrVariable>()
@@ -60,6 +61,11 @@ class CodeGenerator(val ast: Ast) {
 
     fun Declaration.Struct.toIrType(): IrType {
         val result = stuff.filterIsInstance<IrStruct>().first()
+        return result
+    }
+
+    fun Declaration.Interface.toIrType(): IrType {
+        val result = stuff.filterIsInstance<IrInterface>().first()
         return result
     }
 
@@ -162,12 +168,11 @@ class CodeGenerator(val ast: Ast) {
         }
     }
 
-    fun generateExpressionCallStatic(
-        expression: Expression.Call,
-        target: Declaration.Function,
+    fun generateParameterResults(
+        tuple: Expression,
         function: IrFunction
-    ): IrResult {
-        val inputResults = expression.children[1].expression.children.flatMap {
+    ): String {
+        val inputResults = tuple.children.flatMap {
             val exprResult = generateExpression(it.expression, function)
             val type = exprResult.type
             if (it is TupleField && it.unpack && type is IrTuple) {
@@ -180,10 +185,27 @@ class CodeGenerator(val ast: Ast) {
                 listOf(Pair(type, exprResult))
             }
         }
+        return inputResults.joinToString(", ") { (type, name) -> "$type $name" }
+    }
 
-        val inputs = inputResults.joinToString(", ") { (type, name) ->
-            "$type $name"
-        }
+    fun generateExpressionInterfaceCall(
+        expression: Expression.InterfaceCall,
+        function: IrFunction
+    ): IrResult {
+        val target = generateExpression(expression.children.first().expression, function)
+        val inputs = generateParameterResults(expression.children[1].expression, function)
+
+        val type = expression.type!!.toIrType()
+        val result = function.nextRegister(type, owned = type.hasObjectMembers())
+        function.body += ""
+    }
+
+    fun generateExpressionCallStatic(
+        expression: Expression.Call,
+        target: Declaration.Function,
+        function: IrFunction
+    ): IrResult {
+        val inputs = generateParameterResults(expression.children[1].expression, function)
 
         val targetAsIrFunction = target.toIrFunction()
         val type = expression.type!!.toIrType()
@@ -414,6 +436,7 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LoadField -> generateExpressionLoadField(expression, function)
             is Expression.New -> generateExpressionNew(expression, function)
             is Expression.Apply -> throw UnsupportedOperationException("Expression.Apply is not real code")
+            is Expression.InterfaceCall -> generateExpressionInterfaceCall(expression, function)
         }
 
         if (!dontRelease && result is IrRegister && result.owned)
@@ -544,18 +567,33 @@ class CodeGenerator(val ast: Ast) {
     }
 
 
+    fun createInterfacePrototype(module: Module, declaration: Declaration.Interface) {
+        val name = ("vtable_" + module.name + '.' + declaration.name).cleanName()
+
+        val prototypes = declaration.functions.mapIndexed { index, func ->
+            val result = func.result!!.toIrType()
+            val params = func.parameters.map { it.type!!.toIrType() }
+            val llvmType = "$result(%object*,${params.joinToString()})*"
+            val prototype = IrInterfaceFunction(index, llvmType, result, params)
+            prototype
+        }
+
+        val iface = IrInterface(name, "{i8*,%$name*}", "_$name", prototypes)
+        declaration.stuff += iface
+        interfaces += iface
+    }
 
     fun createStructurePrototype(module: Module, declaration: Declaration.Struct) {
-        val name = "type_" + (module.name + '.' + declaration.name).cleanName()
+        val name = ("type_" + module.name + '.' + declaration.name).cleanName()
         val tuple = { IrTuple(declaration.fields.map { it.type!!.toIrType() }) }
-        val struct = IrStruct(name, "%$name${if(declaration.onHeap) "*" else ""}", "_type_$name", declaration.onHeap, tuple)
+        val struct = IrStruct(name, "%$name${if(declaration.onHeap) "*" else ""}", "_$name", declaration.onHeap, tuple)
         declaration.stuff += struct
         structures += struct
     }
 
     fun createVariablePrototype(module: Module, declaration: Declaration.Variable) {
         val type = declaration.type!!.toIrType()
-        val name = "var_" + (module.name + '_' + declaration.name).cleanName() + '_' + type.simpleName
+        val name = ("var_" + module.name + '_' + declaration.name).cleanName() + '_' + type.simpleName
         val variable = IrVariable(name, type)
 
         declaration.stuff += variable
@@ -566,7 +604,7 @@ class CodeGenerator(val ast: Ast) {
         val result = declaration.result!!.toIrType()
 
         val name = if (declaration.synthetic) declaration.name
-        else "fun_" + (module.name + '_' + declaration.name).cleanName() + '_' + result.simpleName + '_' + declaration.parameters.joinToString("") { it.type!!.toIrType().simpleName }
+        else ("fun_" + module.name + '_' + declaration.name).cleanName() + '_' + result.simpleName + '_' + declaration.parameters.joinToString("") { it.type!!.toIrType().simpleName }
         //val scope = if (declaration.synthetic) "dso_local" else "internal"
 
         val function = IrFunction(name, result)
@@ -595,6 +633,7 @@ class CodeGenerator(val ast: Ast) {
                         is Declaration.Function ->  createFunctionPrototype(module, declaration)
                         is Declaration.Variable ->  createVariablePrototype(module, declaration)
                         is Declaration.Struct   -> createStructurePrototype(module, declaration)
+                        is Declaration.Interface-> createInterfacePrototype(module, declaration)
                     }
                 }
             }
@@ -638,8 +677,15 @@ class CodeGenerator(val ast: Ast) {
         return del + vttype + vtable
     }
 
+    fun interfaceVTable(iface: IrInterface): String {
+        val nl = System.lineSeparator()
+        val result = "%${iface.vtName} = type { { void(%object*)* }, { ${iface.functions.joinToString()} } }$nl$nl$nl"
+        return result
+    }
+
     fun writeIr() {
         val nl = System.lineSeparator()
+
         for (struct in structures) {
             if (struct.onHeap) {
                 output.append("%${struct.name} = type { %object, ${struct.getTuple()} }$nl$nl")
@@ -648,10 +694,18 @@ class CodeGenerator(val ast: Ast) {
                 output.append("%${struct.name} = type ${struct.getTuple()}$nl$nl")
             }
         }
-        for (variable in variables)
+
+        for (iface in interfaces) {
+            output.append(interfaceVTable(iface))
+        }
+
+        for (variable in variables) {
             output.append("@${variable.name} = internal global ${variable.type} zeroinitializer$nl$nl")
-        for (function in functions)
+        }
+
+        for (function in functions) {
             output.append(function)
+        }
     }
 
     fun generate(): String {

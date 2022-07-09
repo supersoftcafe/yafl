@@ -3,10 +3,9 @@
 
 # Interfaces can only have functions
 interface TheAdder
-  fun addValue(a:Int32)
+  fun addValue(a:Int32):Int32
 
-class Something(value:Int32)
-  fun addValue(a) = a + value
+fun thirty() = 30
 
-fun main() = thirty
+fun main() = thirty()
 

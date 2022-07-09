@@ -25,6 +25,8 @@ enum class PrimitiveKind(val irType: String) {
     Float64("f8")
 }
 
+class InterfaceFunction(val name: String, val parameters: List<Field>, val sourceRef: SourceRef, val result: Type?)
+
 sealed class Declaration(
     val name: String,
     val sourceRef: SourceRef,
@@ -42,7 +44,8 @@ sealed class Declaration(
 
     class Interface(
         name: String,
-        val functions: List<Declaration.Function>,
+        val functions: List<InterfaceFunction>,
+        val extensions: List<Type>,
         sourceRef: SourceRef,
         type: Type? = null
     ) : Declaration(name, sourceRef, type)
@@ -73,6 +76,7 @@ sealed class Declaration(
     ) : Declaration(name, sourceRef, type)
 }
 
+
 open class ExpressionRef(var expression: Expression, var receiver: Type?)
 class TupleField(val name: String?, expression: Expression, receiver: Type?, val unpack: Boolean) : ExpressionRef(expression, receiver)
 
@@ -96,6 +100,13 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
     }
 
     class Call(target: Expression, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        init {
+            addChild(target)
+            addChild(parameter)
+        }
+    }
+
+    class InterfaceCall(target: Expression, val slot: Int, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init {
             addChild(target)
             addChild(parameter)
