@@ -93,10 +93,15 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
     class LiteralFloat(val value: Double, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralInteger(val value: Long, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
     class LiteralString(val value: String, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type)
-    class LoadBuiltin(val name: String, sourceRef: SourceRef, type: Type? = null, var builtinOp: BuiltinOp? = null) : Expression(sourceRef, type)
 
     class Lambda(val parameters: List<Declaration.Variable>, var result: Type?, body: Expression?, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
         init { addChild(body, (type as? Type.Function)?.result) }
+    }
+
+    class Builtin(val name: String, val op: BuiltinOp?, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+        init {
+            addChild(parameter)
+        }
     }
 
     class Call(target: Expression, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
@@ -106,12 +111,12 @@ sealed class Expression(val sourceRef: SourceRef, var type: Type?) : INode {
         }
     }
 
-    class InterfaceCall(target: Expression, val slot: Int, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
-        init {
-            addChild(target)
-            addChild(parameter)
-        }
-    }
+//    class InterfaceCall(target: Expression, val slot: Int, parameter: Tuple, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
+//        init {
+//            addChild(target)
+//            addChild(parameter)
+//        }
+//    }
 
     // This gets replaced with a Call
     class Apply(left: Expression, right: Expression, sourceRef: SourceRef, type: Type? = null) : Expression(sourceRef, type) {
@@ -235,7 +240,7 @@ class Ast {
     val typeInt64 = createPrimitive("Int64", PrimitiveKind.Int64)
     val typeFloat32 = createPrimitive("Float32", PrimitiveKind.Float32)
     val typeFloat64 = createPrimitive("Float64", PrimitiveKind.Float64)
-    val builtinOps = listOf(
+    val builtinOps = mapOf(
         createBuiltinOp(BuiltinOpKind.CONVERT_I8_TO_I16, typeInt16, typeInt8),
         createBuiltinOp(BuiltinOpKind.CONVERT_I16_TO_I32, typeInt32, typeInt16),
         createBuiltinOp(BuiltinOpKind.CONVERT_I32_TO_I64, typeInt64, typeInt32),
@@ -274,13 +279,13 @@ class Ast {
 
     private fun createBuiltinOp(
         kind: BuiltinOpKind, result: Type, vararg params: Type
-    ): BuiltinOp {
-        return BuiltinOp(
-            kind.name.lowercase(), Type.Tuple(
+    ): Pair<String, BuiltinOp> {
+        val name = kind.name.lowercase()
+        return Pair(name, BuiltinOp(name, Type.Tuple(
                 params.toList().mapIndexed { index, type -> Field("value$index", type, SourceRef.EMPTY) },
                 SourceRef.EMPTY
             ), result, kind
-        )
+        ))
     }
 
     fun findOrCreateModule(name: String): Module {

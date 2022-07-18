@@ -132,9 +132,16 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseLoadBuiltin(tk: Tokens): Result<Expression.LoadBuiltin> {
-        val result = tk.AllOf({ FailIsAbsent(TokenKind.BUILTIN) }, TokenKind.NAME)
-            .map { sourceRef, (_, name) -> Expression.LoadBuiltin(name.text, sourceRef) }
+    fun parseBuiltin(tk: Tokens): Result<Expression.Builtin> {
+        val result = tk.AllOf(
+            { FailIsAbsent(TokenKind.BUILTIN) },
+            TokenKind.NAME,
+            ::parseTupleExpr
+        ).map { sourceRef, (_, name, params) ->
+            val op = ast.builtinOps[name.text]
+            val type = op?.result
+            Expression.Builtin(name.text, op, params, sourceRef, type)
+        }
         return result
     }
 
@@ -298,7 +305,7 @@ class GrammarParser(val ast: Ast) {
             11 -> parseApplyExpr(tk, level + 1)
             12 -> parseDotExpr  (tk, level + 1)
             13 -> parseCallExpr (tk, level + 1)
-            else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseLoadBuiltin, ::parseNamed, ::parseTupleExpr)
+            else -> tk.OneOf(::parseInteger, ::parseFloat, ::parseBuiltin, ::parseNamed, ::parseTupleExpr)
         }
         return result
     }
@@ -380,20 +387,20 @@ class GrammarParser(val ast: Ast) {
             }
 
             // The global functions that use internal only mechanisms to invoke the interface method
-            val realFuncs = functions.mapIndexed { index, func ->
-                val self = Declaration.Variable("p\$self", null, ifaceType, sourceRef)
-                val params = func.parameters.mapIndexed { index, p ->
-                        Declaration.Variable("p\$$index", p.body, p.type, p.sourceRef)
-                    }
-                val body = Expression.InterfaceCall(
-                    Expression.LoadVariable("p\$self", self, func.sourceRef, ifaceType),
-                    index,
-                    Expression.Tuple(params.map { TupleField(it.name, Expression.LoadVariable(it.name, it, it.sourceRef, it.type), it.type, false) }, func.sourceRef),
-                    func.sourceRef,
-                    func.type
-                )
-                Declaration.Function(func.name, params, func.result, ExpressionRef(body, func.type), func.type, func.sourceRef, synthetic = true)
-            }
+//            val realFuncs = functions.mapIndexed { index, func ->
+//                val self = Declaration.Variable("p\$self", null, ifaceType, sourceRef)
+//                val params = func.parameters.mapIndexed { index, p ->
+//                        Declaration.Variable("p\$$index", p.body, p.type, p.sourceRef)
+//                    }
+//                val body = Expression.InterfaceCall(
+//                    Expression.LoadVariable("p\$self", self, func.sourceRef, ifaceType),
+//                    index,
+//                    Expression.Tuple(params.map { TupleField(it.name, Expression.LoadVariable(it.name, it, it.sourceRef, it.type), it.type, false) }, func.sourceRef),
+//                    func.sourceRef,
+//                    func.type
+//                )
+//                Declaration.Function(func.name, params, func.result, ExpressionRef(body, func.type), func.type, func.sourceRef, synthetic = true)
+//            }
 
             // The interface declaration
             val iface = Declaration.Interface(name.text, ifaceFuncs, extensions ?: listOf(), name.sourceRef)
@@ -401,7 +408,7 @@ class GrammarParser(val ast: Ast) {
             ifaceType.declaration = iface
 
             // Return the global functions supporting this interface along with the interface itself
-            realFuncs + iface
+            listOf(iface)
         }
         return result
     }

@@ -6,12 +6,19 @@ sealed interface IrType {
 }
 enum class IrPrimitive(override val llvmType: String, override val simpleName: String) : IrType {
     Bool("i1", "b"), Int8("i8", "1"), Int16("i16", "2"), Int32("i32", "4"), Int64("i64", "8"), Float32("float", "f"), Float64("double", "d"),
-    Pointer("i8*", "p");
+    Pointer("i8*", "p"), Lambda("%lambda", "l"), Object("%object*", "o");
     override fun toString() = llvmType
 }
 class IrTuple(val fields: List<IrType>) : IrType {
-    override val llvmType get() = if (fields.isEmpty()) "void" else fields.joinToString(",", "{", "}")
-    override val simpleName get() = fields.joinToString("", "t", "z") { it.simpleName }
+    override val llvmType = if (fields.isEmpty()) "void" else fields.joinToString(",", "{", "}")
+    override val simpleName = fields.joinToString("", "t", "z") { it.simpleName }
+    override fun toString() = llvmType
+}
+class IrLambda(val result: IrType, val params: IrTuple) : IrType {
+    override val llvmType get() = "%lambda"
+    val typeIfGlobal = "$result(${params.fields.joinToString()} )*"
+    val typeIfMember = "$result(${(listOf(IrPrimitive.Object) + params.fields).joinToString()} )*"
+    override val simpleName = params.fields.joinToString("F", result.toString())
     override fun toString() = llvmType
 }
 fun IrVoid() = IrTuple(listOf())

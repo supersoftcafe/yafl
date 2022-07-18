@@ -53,7 +53,7 @@ class CodeGenerator(val ast: Ast) {
                 is Declaration.Struct -> decl.toIrType()
                 else -> TODO("Declaration ${declaration} not supported yet")
             }
-            is Type.Function -> TODO("Function type not supported yet")
+            is Type.Function -> IrLambda(result!!.toIrType(), parameter.toIrType() as IrTuple)
             is Type.Tuple -> IrTuple(fields.map { it.type!!.toIrType() })
         }
         return result
@@ -100,132 +100,166 @@ class CodeGenerator(val ast: Ast) {
         expression: Expression.LoadVariable,
         function: IrFunction
     ): IrResult {
-        val result = function.nextRegister(expression.type!!.toIrType())
+        val type = expression.type!!.toIrType()
+        val result = function.nextRegister(type)
+
         when (val target = expression.variable) {
             is Declaration.Variable -> {
                 val variable = target.toIrVariable()
                 val kind = if (target.global) '@' else '%'
+
                 function.body += "  $result = load ${result.type}, ${variable.type}* $kind${variable.name}"
             }
+
+            is Declaration.Function -> {
+                val targetFunc = target.toIrFunction()
+                val ftype = type as IrLambda
+
+                val temp1 = function.nextRegister(IrPrimitive.Pointer)
+                val temp2 = function.nextRegister(IrPrimitive.Lambda)
+
+                function.body += "  $temp1 = bitcast ${ftype.typeIfGlobal} @${targetFunc.name} to ${IrPrimitive.Pointer}"
+                function.body += "  $temp2 = insertvalue %lambda undef, ${IrPrimitive.Pointer} $temp1, 0"
+                function.body += "  $result = insertvalue %lambda $temp2, ${IrPrimitive.Object} null, 1"
+            }
+
             else -> TODO("Unsupported load target")
         }
+
         return result
     }
 
 
-    fun generateExpressionCallBuiltin(
-        expression: Expression.Call,
-        kind: BuiltinOpKind,
+    fun generateExpressionBuiltin(
+        expression: Expression.Builtin,
         function: IrFunction
     ): IrResult {
-        val children = expression.children[1].expression.children
+        val op = expression.op!!
+        val param = generateExpression(expression.children[0].expression, function)
+        val result = function.nextRegister(expression.type!!.toIrType())
+        val types = param.type as IrTuple
 
-        fun llvmIntegerUnaryOp(op: String, type: IrType): IrResult {
-            val input = generateExpression(children[0].expression, function)
-            val result = function.nextRegister(type)
-            function.body += "  $result = $op ${input.type} $input to $type"
-            return result
+        fun llvmIntegerUnaryOp(op: String) {
+            val param0 = function.nextRegister(types.fields[0])
+            function.body += "  $param0 = extractvalue $types $param, 0"
+            function.body += "  $result = $op ${param0.type} $param0 to ${result.type}"
         }
 
-        fun llvmIntegerBinOp(op: String, type: IrType): IrResult {
-            val inputResults = children.map { generateExpression(it.expression, function) }
-            val inputs = inputResults.joinToString(", ") { it.toString() }
-            val result = function.nextRegister(type)
-            function.body += "  $result = $op $type $inputs"
-            return result
+        fun llvmIntegerBinOp(op: String) {
+            val param0 = function.nextRegister(types.fields[0])
+            val param1 = function.nextRegister(types.fields[1])
+            function.body += "  $param0 = extractvalue $types $param, 0"
+            function.body += "  $param1 = extractvalue $types $param, 1"
+            function.body += "  $result = $op ${result.type} $param0, $param1"
         }
 
-        return when (kind) {
-            BuiltinOpKind.CONVERT_I8_TO_I16 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int16)
-            BuiltinOpKind.CONVERT_I16_TO_I32 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int32)
-            BuiltinOpKind.CONVERT_I32_TO_I64 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int64)
-            BuiltinOpKind.CONVERT_F32_TO_F64 -> llvmIntegerUnaryOp("fpext", IrPrimitive.Float64)
-            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add", IrPrimitive.Int8)
-            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int16)
-            BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
-            BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add", IrPrimitive.Int64)
-            BuiltinOpKind.ADD_F32 -> llvmIntegerBinOp("fadd", IrPrimitive.Float32)
-            BuiltinOpKind.ADD_F64 -> llvmIntegerBinOp("fadd", IrPrimitive.Float64)
-            BuiltinOpKind.SUB_I8  -> llvmIntegerBinOp("sub", IrPrimitive.Int8)
-            BuiltinOpKind.SUB_I16 -> llvmIntegerBinOp("sub", IrPrimitive.Int16)
-            BuiltinOpKind.SUB_I32 -> llvmIntegerBinOp("sub", IrPrimitive.Int32)
-            BuiltinOpKind.SUB_I64 -> llvmIntegerBinOp("sub", IrPrimitive.Int64)
-            BuiltinOpKind.SUB_F32 -> llvmIntegerBinOp("fsub", IrPrimitive.Float32)
-            BuiltinOpKind.SUB_F64 -> llvmIntegerBinOp("fsub", IrPrimitive.Float64)
-            BuiltinOpKind.MUL_I8  -> llvmIntegerBinOp("mul", IrPrimitive.Int8)
-            BuiltinOpKind.MUL_I16 -> llvmIntegerBinOp("mul", IrPrimitive.Int16)
-            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul", IrPrimitive.Int32)
-            BuiltinOpKind.MUL_I64 -> llvmIntegerBinOp("mul", IrPrimitive.Int64)
-            BuiltinOpKind.MUL_F32 -> llvmIntegerBinOp("fmul", IrPrimitive.Float32)
-            BuiltinOpKind.MUL_F64 -> llvmIntegerBinOp("fmul", IrPrimitive.Float64)
-            BuiltinOpKind.EQU_I8 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int8)
-            BuiltinOpKind.EQU_I16 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int16)
-            BuiltinOpKind.EQU_I32 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int32)
-            BuiltinOpKind.EQU_I64 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int64)
-            BuiltinOpKind.EQU_F32 -> llvmIntegerBinOp("fcmp oeq", IrPrimitive.Float32)
-            BuiltinOpKind.EQU_F64 -> llvmIntegerBinOp("fcmp oeq", IrPrimitive.Float64)
-            else -> TODO("Builtin Op ${kind} not implemented yet")
+        when (op.kind) {
+            BuiltinOpKind.CONVERT_I8_TO_I16 -> llvmIntegerUnaryOp("sext")
+            BuiltinOpKind.CONVERT_I16_TO_I32 -> llvmIntegerUnaryOp("sext")
+            BuiltinOpKind.CONVERT_I32_TO_I64 -> llvmIntegerUnaryOp("sext")
+            BuiltinOpKind.CONVERT_F32_TO_F64 -> llvmIntegerUnaryOp("fpext")
+            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add")
+            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add")
+            BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add")
+            BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add")
+            BuiltinOpKind.ADD_F32 -> llvmIntegerBinOp("fadd")
+            BuiltinOpKind.ADD_F64 -> llvmIntegerBinOp("fadd")
+            BuiltinOpKind.SUB_I8  -> llvmIntegerBinOp("sub")
+            BuiltinOpKind.SUB_I16 -> llvmIntegerBinOp("sub")
+            BuiltinOpKind.SUB_I32 -> llvmIntegerBinOp("sub")
+            BuiltinOpKind.SUB_I64 -> llvmIntegerBinOp("sub")
+            BuiltinOpKind.SUB_F32 -> llvmIntegerBinOp("fsub")
+            BuiltinOpKind.SUB_F64 -> llvmIntegerBinOp("fsub")
+            BuiltinOpKind.MUL_I8  -> llvmIntegerBinOp("mul")
+            BuiltinOpKind.MUL_I16 -> llvmIntegerBinOp("mul")
+            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul")
+            BuiltinOpKind.MUL_I64 -> llvmIntegerBinOp("mul")
+            BuiltinOpKind.MUL_F32 -> llvmIntegerBinOp("fmul")
+            BuiltinOpKind.MUL_F64 -> llvmIntegerBinOp("fmul")
+            BuiltinOpKind.EQU_I8 -> llvmIntegerBinOp("icmp eq")
+            BuiltinOpKind.EQU_I16 -> llvmIntegerBinOp("icmp eq")
+            BuiltinOpKind.EQU_I32 -> llvmIntegerBinOp("icmp eq")
+            BuiltinOpKind.EQU_I64 -> llvmIntegerBinOp("icmp eq")
+            BuiltinOpKind.EQU_F32 -> llvmIntegerBinOp("fcmp oeq")
+            BuiltinOpKind.EQU_F64 -> llvmIntegerBinOp("fcmp oeq")
+            else -> TODO("Builtin Op ${op.kind} not implemented yet")
         }
-    }
 
-    fun generateParameterResults(
-        tuple: Expression,
-        function: IrFunction
-    ): String {
-        val inputResults = tuple.children.flatMap {
-            val exprResult = generateExpression(it.expression, function)
-            val type = exprResult.type
-            if (it is TupleField && it.unpack && type is IrTuple) {
-                type.fields.mapIndexed { index, fieldType ->
-                    val fieldRegister = function.nextRegister(fieldType) // Always borrowed as tuple handles ownership
-                    function.body += "  $fieldRegister = extractvalue $type $exprResult, $index"
-                    Pair(fieldType, fieldRegister)
-                }
-            } else {
-                listOf(Pair(type, exprResult))
-            }
-        }
-        return inputResults.joinToString(", ") { (type, name) -> "$type $name" }
-    }
-
-    fun generateExpressionInterfaceCall(
-        expression: Expression.InterfaceCall,
-        function: IrFunction
-    ): IrResult {
-        val target = generateExpression(expression.children.first().expression, function)
-        val inputs = generateParameterResults(expression.children[1].expression, function)
-
-        val type = expression.type!!.toIrType()
-        val result = function.nextRegister(type, owned = type.hasObjectMembers())
-        function.body += ""
-    }
-
-    fun generateExpressionCallStatic(
-        expression: Expression.Call,
-        target: Declaration.Function,
-        function: IrFunction
-    ): IrResult {
-        val inputs = generateParameterResults(expression.children[1].expression, function)
-
-        val targetAsIrFunction = target.toIrFunction()
-        val type = expression.type!!.toIrType()
-        val result = function.nextRegister(type, owned = type.hasObjectMembers())
-        function.body += "  $result = call ${result.type} @${targetAsIrFunction.name}($inputs)"
         return result
     }
+
+//    fun generateParameterResults(
+//        tuple: Expression,
+//        function: IrFunction
+//    ): String {
+//        val inputResults = tuple.children.flatMap {
+//            val exprResult = generateExpression(it.expression, function)
+//            val type = exprResult.type
+//            if (it is TupleField && it.unpack && type is IrTuple) {
+//                type.fields.mapIndexed { index, fieldType ->
+//                    val fieldRegister = function.nextRegister(fieldType) // Always borrowed as tuple handles ownership
+//                    function.body += "  $fieldRegister = extractvalue $type $exprResult, $index"
+//                    Pair(fieldType, fieldRegister)
+//                }
+//            } else {
+//                listOf(Pair(type, exprResult))
+//            }
+//        }
+//        return inputResults.joinToString(", ") { (type, name) -> "$type $name" }
+//    }
+
+//    fun generateExpressionInterfaceCall(
+//        expression: Expression.InterfaceCall,
+//        function: IrFunction
+//    ): IrResult {
+//        val target = generateExpression(expression.children.first().expression, function)
+//        val inputs = generateParameterResults(expression.children[1].expression, function)
+//
+//        val type = expression.type!!.toIrType()
+//        val result = function.nextRegister(type, owned = type.hasObjectMembers())
+//        function.body += ""
+//    }
+
+//    fun generateExpressionCallStatic(
+//        expression: Expression.Call,
+//        target: Declaration.Function,
+//        function: IrFunction
+//    ): IrResult {
+//        val inputs = generateParameterResults(expression.children[1].expression, function)
+//
+//        val targetAsIrFunction = target.toIrFunction()
+//        val type = expression.type!!.toIrType()
+//        val result = function.nextRegister(type, owned = type.hasObjectMembers())
+//        function.body += "  $result = call ${result.type} @${targetAsIrFunction.name}($inputs)"
+//        return result
+//    }
 
     fun generateExpressionCall(
         expression: Expression.Call,
         function: IrFunction
     ): IrResult {
-        return when (val target = expression.children.first().expression) {
-            is Expression.LoadBuiltin -> generateExpressionCallBuiltin(expression, target.builtinOp!!.kind, function)
-            is Expression.LoadVariable -> when (val variable = target.variable) {
-                is Declaration.Function -> generateExpressionCallStatic(expression, variable, function)
-                else -> TODO("Can't handle function pointers yet")
-            }
-            else -> TODO("Can't handle function targets like this")
-        }
+        val (target, params) = expression.children.map { generateExpression(it.expression, function) }
+        val ftype = target.type as IrLambda
+        val types = (params.type as IrTuple).fields
+
+        val temp1 = function.nextRegister(IrPrimitive.Pointer)
+        val temp2 = function.nextRegister(IrPrimitive.Object)
+        val temp3 = function.nextRegister(target.type)
+
+        function.body += "  $temp1 = extractvalue %lambda $target, 0"
+        function.body += "  $temp2 = extractvalue %lambda $target, 1"
+        function.body += "  $temp3 = bitcast i8* $temp1 to ${ftype.typeIfMember}"
+
+        val paramRegisters = types.mapIndexed { index, fieldType ->
+            val tmp = function.nextRegister(fieldType)
+            function.body += "  $tmp = extractvalue ${params.type} $params, $index"
+            ", $fieldType $tmp"
+        }.joinToString("")
+
+        val result = function.nextRegister(expression.type!!.toIrType())
+        function.body += "  $result = call ${result.type} $temp3(%object* nest $temp2$paramRegisters)"
+
+        return result
     }
 
     fun generateExpressionCondition(
@@ -424,19 +458,19 @@ class CodeGenerator(val ast: Ast) {
             is Expression.LiteralBool -> generateExpressionLiteralBool(expression, function)
             is Expression.LiteralInteger -> generateExpressionLiteralInteger(expression, function)
             is Expression.Call -> generateExpressionCall(expression, function)
+            is Expression.Builtin -> generateExpressionBuiltin(expression, function)
             is Expression.Condition -> generateExpressionCondition(expression, function)
             is Expression.DeclareLocal -> generateExpressionDeclareLocal(expression, function)
             is Expression.Lambda -> TODO()
             is Expression.LiteralFloat -> TODO()
             is Expression.LiteralString -> TODO()
-            is Expression.LoadBuiltin -> TODO()
             is Expression.LoadVariable -> generateExpressionLoadVariable(expression, function)
             is Expression.Tuple -> generateExpressionTuple(expression, function)
             is Expression.InitGlobal -> generateExpressionInitGlobal(expression, function)
             is Expression.LoadField -> generateExpressionLoadField(expression, function)
             is Expression.New -> generateExpressionNew(expression, function)
             is Expression.Apply -> throw UnsupportedOperationException("Expression.Apply is not real code")
-            is Expression.InterfaceCall -> generateExpressionInterfaceCall(expression, function)
+//            is Expression.InterfaceCall -> generateExpressionInterfaceCall(expression, function)
         }
 
         if (!dontRelease && result is IrRegister && result.owned)

@@ -147,31 +147,26 @@ class TypeResolver(val ast: Ast) {
         return persistentListOf()
     }
 
-    fun resolveExpressionLoadBuiltin(nodePath: NodePath, expression: Expression.LoadBuiltin, reference: ExpressionRef): Errors {
-        if (expression.builtinOp == null)
-            expression.builtinOp = ast.builtinOps.firstOrNull { it.name == expression.name }
-        val op = expression.builtinOp
-            ?: return persistentListOf(expression.sourceRef to "Unknown built in operation ${expression.name}")
-
-        if (expression.type == null)
-            expression.type = Type.Function(op.parameter, op.result, expression.sourceRef)
-
+    fun resolveExpressionBuiltin(nodePath: NodePath, expression: Expression.Builtin, reference: ExpressionRef): Errors {
+        val op = expression.op ?: return persistentListOf(expression.sourceRef to "Unknown built in operation ${expression.name}")
+        expression.children[0].receiver = op.parameter
+        expression.type = op.result
         return persistentListOf()
     }
 
-    fun resolveExpressionInterfaceCall(nodePath: NodePath, expression: Expression.InterfaceCall, reference: ExpressionRef): Errors {
-        val target = expression.children.first()
-        val parameter = expression.children.last()
-
-        val targetType = target.expression.type
-        if (targetType !is Type.Named || targetType.declaration !is Declaration.Interface)
-            return persistentListOf(expression.sourceRef to "Base of interface call must be an interface")
-
-        if (expression.type == null)
-            return persistentListOf(expression.sourceRef to "Interface functions must have a return type")
-
-        return persistentListOf()
-    }
+//    fun resolveExpressionInterfaceCall(nodePath: NodePath, expression: Expression.InterfaceCall, reference: ExpressionRef): Errors {
+//        val target = expression.children.first()
+//        val parameter = expression.children.last()
+//
+//        val targetType = target.expression.type
+//        if (targetType !is Type.Named || targetType.declaration !is Declaration.Interface)
+//            return persistentListOf(expression.sourceRef to "Base of interface call must be an interface")
+//
+//        if (expression.type == null)
+//            return persistentListOf(expression.sourceRef to "Interface functions must have a return type")
+//
+//        return persistentListOf()
+//    }
 
     fun resolveExpressionCall(nodePath: NodePath, expression: Expression.Call, reference: ExpressionRef): Errors {
         val target = expression.children.first()
@@ -383,7 +378,7 @@ class TypeResolver(val ast: Ast) {
     fun resolveExpressionByType(nodePath: NodePath, expression: Expression, reference: ExpressionRef): Errors {
         return when (expression) {
             is Expression.LoadVariable -> resolveExpressionLoadVariable(nodePath, expression, reference)
-            is Expression.LoadBuiltin -> resolveExpressionLoadBuiltin(nodePath, expression, reference)
+            is Expression.Builtin -> resolveExpressionBuiltin(nodePath, expression, reference)
             is Expression.Call -> resolveExpressionCall(nodePath, expression, reference)
             is Expression.Condition -> resolveExpressionCondition(nodePath, expression, reference)
             is Expression.DeclareLocal -> resolveExpressionDeclareLocal(nodePath, expression, reference)
@@ -397,7 +392,7 @@ class TypeResolver(val ast: Ast) {
             is Expression.LoadField -> resolveExpressionLoadField(nodePath, expression, reference)
             is Expression.New -> resolveExpressionNew(nodePath, expression, reference)
             is Expression.Apply -> resolveExpressionApply(nodePath, expression, reference)
-            is Expression.InterfaceCall -> resolveExpressionInterfaceCall(nodePath, expression, reference)
+//            is Expression.InterfaceCall -> resolveExpressionInterfaceCall(nodePath, expression, reference)
         }
     }
 
