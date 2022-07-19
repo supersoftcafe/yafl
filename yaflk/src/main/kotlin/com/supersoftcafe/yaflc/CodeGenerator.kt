@@ -257,7 +257,7 @@ class CodeGenerator(val ast: Ast) {
         }.joinToString("")
 
         val result = function.nextRegister(expression.type!!.toIrType())
-        function.body += "  $result = call ${result.type} $temp3(%object* nest $temp2$paramRegisters)"
+        function.body += "  $result = call ${result.type} $temp3(%object* $temp2$paramRegisters)"
 
         return result
     }
@@ -647,8 +647,8 @@ class CodeGenerator(val ast: Ast) {
             param.stuff += function.nextVariable(param.type!!.toIrType())
         val parameters = function.variables.toList()
 
-        val parametersString = parameters.joinToString(", ") { "${it.type} %${it.name}_in" }
-        function.enter += "define internal ${function.result} @${function.name}($parametersString) {"
+        val parametersString = parameters.joinToString("") { ", ${it.type} %${it.name}_in" }
+        function.enter += "define internal ${function.result} @${function.name}(%object*$parametersString) {"
 
         for (param in parameters) {
             function.enter += "  %${param.name} = alloca ${param.type}"

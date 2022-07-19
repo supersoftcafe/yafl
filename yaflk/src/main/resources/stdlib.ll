@@ -15,7 +15,7 @@ declare dso_local i32 @printf(i8* noalias nocapture, ...)
 
 
 define dso_local i32 @main() {
-    %result = call i32 @synth_main()
+    %result = call i32 @synth_main(%object* null)
     %param = getelementptr inbounds [11 x i8], [11 x i8]* @formatstr, i32 0, i32 0
     %count = load %size_t, %size_t* @memoryCounter
     %ignore = call i32 (i8*, ...) @printf(i8* %param, %size_t %count)

@@ -16,7 +16,7 @@ class IrTuple(val fields: List<IrType>) : IrType {
 }
 class IrLambda(val result: IrType, val params: IrTuple) : IrType {
     override val llvmType get() = "%lambda"
-    val typeIfGlobal = "$result(${params.fields.joinToString()} )*"
+    val typeIfGlobal = "$result(${(listOf(IrPrimitive.Object) + params.fields).joinToString()} )*"
     val typeIfMember = "$result(${(listOf(IrPrimitive.Object) + params.fields).joinToString()} )*"
     override val simpleName = params.fields.joinToString("F", result.toString())
     override fun toString() = llvmType
