@@ -27,19 +27,20 @@ class IrStruct(
     override val llvmType: String,
     override val simpleName: String,
     val onHeap: Boolean,
-    val getTuple: () -> IrTuple,
+    private val getTuple: () -> IrTuple,
 ) : IrType {
+    val tuple get() = getTuple()
     override fun toString() = llvmType
 }
 
-class IrInterface(
-    val vtName: String,
-    override val llvmType: String,
-    override val simpleName: String,
-    val functions: List<IrInterfaceFunction>
-) : IrType {
-    override fun toString() = llvmType
-}
+//class IrInterface(
+//    val vtName: String,
+//    override val llvmType: String,
+//    override val simpleName: String,
+//    val functions: List<IrInterfaceFunction>
+//) : IrType {
+//    override fun toString() = llvmType
+//}
 
 class IrInterfaceFunction(
     val slot: Int,

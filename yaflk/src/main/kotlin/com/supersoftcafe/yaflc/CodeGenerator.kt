@@ -10,7 +10,7 @@ class CodeGenerator(val ast: Ast) {
         const val validFollowingCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_.0123456789"
     }
 
-    val interfaces = mutableListOf<IrInterface>()
+//    val interfaces = mutableListOf<IrInterface>()
     val structures = mutableListOf<IrStruct>()
     val functions = mutableListOf<IrFunction>()
     val variables = mutableListOf<IrVariable>()
@@ -28,14 +28,6 @@ class CodeGenerator(val ast: Ast) {
             validChars = validFollowingCharacters
         }
         return builder.toString()
-    }
-
-    fun IrType.hasObjectMembers(): Boolean {
-        return when (this) {
-            is IrTuple -> fields.any { it.hasObjectMembers() }
-            is IrStruct -> onHeap || getTuple().hasObjectMembers()
-            else -> false
-        }
     }
 
     fun Type.toIrType(): IrType {
@@ -64,10 +56,10 @@ class CodeGenerator(val ast: Ast) {
         return result
     }
 
-    fun Declaration.Interface.toIrType(): IrType {
-        val result = stuff.filterIsInstance<IrInterface>().first()
-        return result
-    }
+//    fun Declaration.Interface.toIrType(): IrType {
+//        val result = stuff.filterIsInstance<IrInterface>().first()
+//        return result
+//    }
 
     fun Declaration.Variable.toIrVariable(): IrVariable {
         val result = stuff.filterIsInstance<IrVariable>().first()
@@ -139,49 +131,49 @@ class CodeGenerator(val ast: Ast) {
         val result = function.nextRegister(expression.type!!.toIrType())
         val types = param.type as IrTuple
 
-        fun llvmIntegerUnaryOp(op: String) {
+        fun llvmIntegerUnaryOp(op: String, type: IrPrimitive) {
             val param0 = function.nextRegister(types.fields[0])
             function.body += "  $param0 = extractvalue $types $param, 0"
-            function.body += "  $result = $op ${param0.type} $param0 to ${result.type}"
+            function.body += "  $result = $op $type $param0 to ${result.type}"
         }
 
-        fun llvmIntegerBinOp(op: String) {
+        fun llvmIntegerBinOp(op: String, type: IrPrimitive) {
             val param0 = function.nextRegister(types.fields[0])
             val param1 = function.nextRegister(types.fields[1])
             function.body += "  $param0 = extractvalue $types $param, 0"
             function.body += "  $param1 = extractvalue $types $param, 1"
-            function.body += "  $result = $op ${result.type} $param0, $param1"
+            function.body += "  $result = $op $type $param0, $param1"
         }
 
         when (op.kind) {
-            BuiltinOpKind.CONVERT_I8_TO_I16 -> llvmIntegerUnaryOp("sext")
-            BuiltinOpKind.CONVERT_I16_TO_I32 -> llvmIntegerUnaryOp("sext")
-            BuiltinOpKind.CONVERT_I32_TO_I64 -> llvmIntegerUnaryOp("sext")
-            BuiltinOpKind.CONVERT_F32_TO_F64 -> llvmIntegerUnaryOp("fpext")
-            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add")
-            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add")
-            BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add")
-            BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add")
-            BuiltinOpKind.ADD_F32 -> llvmIntegerBinOp("fadd")
-            BuiltinOpKind.ADD_F64 -> llvmIntegerBinOp("fadd")
-            BuiltinOpKind.SUB_I8  -> llvmIntegerBinOp("sub")
-            BuiltinOpKind.SUB_I16 -> llvmIntegerBinOp("sub")
-            BuiltinOpKind.SUB_I32 -> llvmIntegerBinOp("sub")
-            BuiltinOpKind.SUB_I64 -> llvmIntegerBinOp("sub")
-            BuiltinOpKind.SUB_F32 -> llvmIntegerBinOp("fsub")
-            BuiltinOpKind.SUB_F64 -> llvmIntegerBinOp("fsub")
-            BuiltinOpKind.MUL_I8  -> llvmIntegerBinOp("mul")
-            BuiltinOpKind.MUL_I16 -> llvmIntegerBinOp("mul")
-            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul")
-            BuiltinOpKind.MUL_I64 -> llvmIntegerBinOp("mul")
-            BuiltinOpKind.MUL_F32 -> llvmIntegerBinOp("fmul")
-            BuiltinOpKind.MUL_F64 -> llvmIntegerBinOp("fmul")
-            BuiltinOpKind.EQU_I8 -> llvmIntegerBinOp("icmp eq")
-            BuiltinOpKind.EQU_I16 -> llvmIntegerBinOp("icmp eq")
-            BuiltinOpKind.EQU_I32 -> llvmIntegerBinOp("icmp eq")
-            BuiltinOpKind.EQU_I64 -> llvmIntegerBinOp("icmp eq")
-            BuiltinOpKind.EQU_F32 -> llvmIntegerBinOp("fcmp oeq")
-            BuiltinOpKind.EQU_F64 -> llvmIntegerBinOp("fcmp oeq")
+            BuiltinOpKind.CONVERT_I8_TO_I16 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int16)
+            BuiltinOpKind.CONVERT_I16_TO_I32 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int32)
+            BuiltinOpKind.CONVERT_I32_TO_I64 -> llvmIntegerUnaryOp("sext", IrPrimitive.Int64)
+            BuiltinOpKind.CONVERT_F32_TO_F64 -> llvmIntegerUnaryOp("fpext", IrPrimitive.Float64)
+            BuiltinOpKind.ADD_I8  -> llvmIntegerBinOp("add", IrPrimitive.Int8)
+            BuiltinOpKind.ADD_I16 -> llvmIntegerBinOp("add", IrPrimitive.Int16)
+            BuiltinOpKind.ADD_I32 -> llvmIntegerBinOp("add", IrPrimitive.Int32)
+            BuiltinOpKind.ADD_I64 -> llvmIntegerBinOp("add", IrPrimitive.Int64)
+            BuiltinOpKind.ADD_F32 -> llvmIntegerBinOp("fadd", IrPrimitive.Float32)
+            BuiltinOpKind.ADD_F64 -> llvmIntegerBinOp("fadd", IrPrimitive.Float64)
+            BuiltinOpKind.SUB_I8  -> llvmIntegerBinOp("sub", IrPrimitive.Int8)
+            BuiltinOpKind.SUB_I16 -> llvmIntegerBinOp("sub", IrPrimitive.Int16)
+            BuiltinOpKind.SUB_I32 -> llvmIntegerBinOp("sub", IrPrimitive.Int32)
+            BuiltinOpKind.SUB_I64 -> llvmIntegerBinOp("sub", IrPrimitive.Int64)
+            BuiltinOpKind.SUB_F32 -> llvmIntegerBinOp("fsub", IrPrimitive.Float32)
+            BuiltinOpKind.SUB_F64 -> llvmIntegerBinOp("fsub", IrPrimitive.Float64)
+            BuiltinOpKind.MUL_I8  -> llvmIntegerBinOp("mul", IrPrimitive.Int8)
+            BuiltinOpKind.MUL_I16 -> llvmIntegerBinOp("mul", IrPrimitive.Int16)
+            BuiltinOpKind.MUL_I32 -> llvmIntegerBinOp("mul", IrPrimitive.Int32)
+            BuiltinOpKind.MUL_I64 -> llvmIntegerBinOp("mul", IrPrimitive.Int64)
+            BuiltinOpKind.MUL_F32 -> llvmIntegerBinOp("fmul", IrPrimitive.Float32)
+            BuiltinOpKind.MUL_F64 -> llvmIntegerBinOp("fmul", IrPrimitive.Float64)
+            BuiltinOpKind.EQU_I8 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int8)
+            BuiltinOpKind.EQU_I16 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int16)
+            BuiltinOpKind.EQU_I32 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int32)
+            BuiltinOpKind.EQU_I64 -> llvmIntegerBinOp("icmp eq", IrPrimitive.Int64)
+            BuiltinOpKind.EQU_F32 -> llvmIntegerBinOp("fcmp oeq", IrPrimitive.Float32)
+            BuiltinOpKind.EQU_F64 -> llvmIntegerBinOp("fcmp oeq", IrPrimitive.Float64)
             else -> TODO("Builtin Op ${op.kind} not implemented yet")
         }
 
@@ -368,7 +360,7 @@ class CodeGenerator(val ast: Ast) {
                 if (type.onHeap)
                     loadObjectField(type)
                 else
-                    loadTupleField(type, type.getTuple().fields)
+                    loadTupleField(type, type.tuple.fields)
             else ->
                 throw IllegalStateException("${type::class.simpleName} not supported by LoadField")
         }
@@ -441,7 +433,7 @@ class CodeGenerator(val ast: Ast) {
                 if (type.onHeap)
                     newObject(type)
                 else
-                    newTuple(type, type.getTuple().fields)
+                    newTuple(type, type.tuple.fields)
             else ->
                 throw IllegalStateException("${type::class.simpleName} not supported by operator New")
         }
@@ -532,7 +524,7 @@ class CodeGenerator(val ast: Ast) {
                         function.exit += "  $temp = bitcast ${slot.type} $load to %object*"
                         function.exit += "  call void @release(%object* $temp)"
                     } else {
-                        type.getTuple().fields.forEachIndexed { index, fieldType ->
+                        type.tuple.fields.forEachIndexed { index, fieldType ->
                             release(fieldType, path.add(index))
                         }
                     }
@@ -564,7 +556,7 @@ class CodeGenerator(val ast: Ast) {
                         function.body.add(insertIndex++, "  call void @acquire(%object* $temp)")
                         true
                     } else {
-                        type.getTuple().fields.foldIndexed(false) { index, prev, fieldType ->
+                        type.tuple.fields.foldIndexed(false) { index, prev, fieldType ->
                             acquire(fieldType, "$path, $index") || prev
                         }
                     }
@@ -601,21 +593,21 @@ class CodeGenerator(val ast: Ast) {
     }
 
 
-    fun createInterfacePrototype(module: Module, declaration: Declaration.Interface) {
-        val name = ("vtable_" + module.name + '.' + declaration.name).cleanName()
-
-        val prototypes = declaration.functions.mapIndexed { index, func ->
-            val result = func.result!!.toIrType()
-            val params = func.parameters.map { it.type!!.toIrType() }
-            val llvmType = "$result(%object*,${params.joinToString()})*"
-            val prototype = IrInterfaceFunction(index, llvmType, result, params)
-            prototype
-        }
-
-        val iface = IrInterface(name, "{i8*,%$name*}", "_$name", prototypes)
-        declaration.stuff += iface
-        interfaces += iface
-    }
+//    fun createInterfacePrototype(module: Module, declaration: Declaration.Interface) {
+//        val name = ("vtable_" + module.name + '.' + declaration.name).cleanName()
+//
+//        val prototypes = declaration.functions.mapIndexed { index, func ->
+//            val result = func.result!!.toIrType()
+//            val params = func.parameters.map { it.type!!.toIrType() }
+//            val llvmType = "$result(%object*,${params.joinToString()})*"
+//            val prototype = IrInterfaceFunction(index, llvmType, result, params)
+//            prototype
+//        }
+//
+//        val iface = IrInterface(name, "{i8*,%$name*}", "_$name", prototypes)
+//        declaration.stuff += iface
+//        interfaces += iface
+//    }
 
     fun createStructurePrototype(module: Module, declaration: Declaration.Struct) {
         val name = ("type_" + module.name + '.' + declaration.name).cleanName()
@@ -667,7 +659,7 @@ class CodeGenerator(val ast: Ast) {
                         is Declaration.Function ->  createFunctionPrototype(module, declaration)
                         is Declaration.Variable ->  createVariablePrototype(module, declaration)
                         is Declaration.Struct   -> createStructurePrototype(module, declaration)
-                        is Declaration.Interface-> createInterfacePrototype(module, declaration)
+//                        is Declaration.Interface-> createInterfacePrototype(module, declaration)
                     }
                 }
             }
@@ -681,7 +673,7 @@ class CodeGenerator(val ast: Ast) {
         val nl = System.lineSeparator()
 
         // TODO: Order these such that the most complex release happens last
-        val releases = struct.getTuple().fields.flatMapIndexed { index, irType ->
+        val releases = struct.tuple.fields.flatMapIndexed { index, irType ->
             if (irType is IrStruct && irType.onHeap) listOf(
                 "  %v$index = getelementptr %${struct.name}, %${struct.name}* %p0, i32 0, i32 1, i32 $index",
                 "  %r$index = bitcast $irType* %v$index to %object**",
@@ -711,27 +703,27 @@ class CodeGenerator(val ast: Ast) {
         return del + vttype + vtable
     }
 
-    fun interfaceVTable(iface: IrInterface): String {
-        val nl = System.lineSeparator()
-        val result = "%${iface.vtName} = type { { void(%object*)* }, { ${iface.functions.joinToString()} } }$nl$nl$nl"
-        return result
-    }
+//    fun interfaceVTable(iface: IrInterface): String {
+//        val nl = System.lineSeparator()
+//        val result = "%${iface.vtName} = type { { void(%object*)* }, { ${iface.functions.joinToString()} } }$nl$nl$nl"
+//        return result
+//    }
 
     fun writeIr() {
         val nl = System.lineSeparator()
 
         for (struct in structures) {
             if (struct.onHeap) {
-                output.append("%${struct.name} = type { %object, ${struct.getTuple()} }$nl$nl")
+                output.append("%${struct.name} = type { %object, ${struct.tuple} }$nl$nl")
                 output.append(classDeleteAndVTable(struct))
             } else {
-                output.append("%${struct.name} = type ${struct.getTuple()}$nl$nl")
+                output.append("%${struct.name} = type ${struct.tuple}$nl$nl")
             }
         }
 
-        for (iface in interfaces) {
-            output.append(interfaceVTable(iface))
-        }
+//        for (iface in interfaces) {
+//            output.append(interfaceVTable(iface))
+//        }
 
         for (variable in variables) {
             output.append("@${variable.name} = internal global ${variable.type} zeroinitializer$nl$nl")

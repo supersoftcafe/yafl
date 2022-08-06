@@ -370,48 +370,48 @@ class GrammarParser(val ast: Ast) {
         return result
     }
 
-    fun parseInterface(tk: Tokens, module: Module): Result<List<Declaration>> {
-        val result = tk.AllOf(
-            { FailIsAbsent(TokenKind.INTERFACE) },
-            TokenKind.NAME,
-            { If(TokenKind.COLON, { CommaList(::parseTypeNamed, TokenKind.COMMA)} ) },
-            { Repeat(::parseFun).map { _, it -> it.flatten() } },
-            TokenKind.EOB
-        ).map { sourceRef, (_, name, extensions, functions, _) ->
-            val ifaceType = Type.Named(name.text, sourceRef, module.name)
-
-            // The function prototypes on the interface
-            val ifaceFuncs = functions.map { f ->
-                val params = f.parameters.map { p -> Field(p.name, p.type, p.sourceRef) }
-                InterfaceFunction(f.name, params, f.sourceRef, f.result)
-            }
-
-            // The global functions that use internal only mechanisms to invoke the interface method
-//            val realFuncs = functions.mapIndexed { index, func ->
-//                val self = Declaration.Variable("p\$self", null, ifaceType, sourceRef)
-//                val params = func.parameters.mapIndexed { index, p ->
-//                        Declaration.Variable("p\$$index", p.body, p.type, p.sourceRef)
-//                    }
-//                val body = Expression.InterfaceCall(
-//                    Expression.LoadVariable("p\$self", self, func.sourceRef, ifaceType),
-//                    index,
-//                    Expression.Tuple(params.map { TupleField(it.name, Expression.LoadVariable(it.name, it, it.sourceRef, it.type), it.type, false) }, func.sourceRef),
-//                    func.sourceRef,
-//                    func.type
-//                )
-//                Declaration.Function(func.name, params, func.result, ExpressionRef(body, func.type), func.type, func.sourceRef, synthetic = true)
+//    fun parseInterface(tk: Tokens, module: Module): Result<List<Declaration>> {
+//        val result = tk.AllOf(
+//            { FailIsAbsent(TokenKind.INTERFACE) },
+//            TokenKind.NAME,
+//            { If(TokenKind.COLON, { CommaList(::parseTypeNamed, TokenKind.COMMA)} ) },
+//            { Repeat(::parseFun).map { _, it -> it.flatten() } },
+//            TokenKind.EOB
+//        ).map { sourceRef, (_, name, extensions, functions, _) ->
+//            val ifaceType = Type.Named(name.text, sourceRef, module.name)
+//
+//            // The function prototypes on the interface
+//            val ifaceFuncs = functions.map { f ->
+//                val params = f.parameters.map { p -> Field(p.name, p.type, p.sourceRef) }
+//                InterfaceFunction(f.name, params, f.sourceRef, f.result)
 //            }
-
-            // The interface declaration
-            val iface = Declaration.Interface(name.text, ifaceFuncs, extensions ?: listOf(), name.sourceRef)
-
-            ifaceType.declaration = iface
-
-            // Return the global functions supporting this interface along with the interface itself
-            listOf(iface)
-        }
-        return result
-    }
+//
+//            // The global functions that use internal only mechanisms to invoke the interface method
+////            val realFuncs = functions.mapIndexed { index, func ->
+////                val self = Declaration.Variable("p\$self", null, ifaceType, sourceRef)
+////                val params = func.parameters.mapIndexed { index, p ->
+////                        Declaration.Variable("p\$$index", p.body, p.type, p.sourceRef)
+////                    }
+////                val body = Expression.InterfaceCall(
+////                    Expression.LoadVariable("p\$self", self, func.sourceRef, ifaceType),
+////                    index,
+////                    Expression.Tuple(params.map { TupleField(it.name, Expression.LoadVariable(it.name, it, it.sourceRef, it.type), it.type, false) }, func.sourceRef),
+////                    func.sourceRef,
+////                    func.type
+////                )
+////                Declaration.Function(func.name, params, func.result, ExpressionRef(body, func.type), func.type, func.sourceRef, synthetic = true)
+////            }
+//
+//            // The interface declaration
+//            val iface = Declaration.Interface(name.text, ifaceFuncs, extensions ?: listOf(), name.sourceRef)
+//
+//            ifaceType.declaration = iface
+//
+//            // Return the global functions supporting this interface along with the interface itself
+//            listOf(iface)
+//        }
+//        return result
+//    }
 
     fun parseLocalDeclarations(tk: Tokens): Result<List<Declaration>> {
         val result = tk.Repeat { OneOf(::parseFun, ::parseLet) }.map { _, lists -> lists.flatten() }
@@ -419,7 +419,9 @@ class GrammarParser(val ast: Ast) {
     }
 
     fun parseGlobalDeclarations(tk: Tokens, module: Module): Result<List<Declaration>> {
-        val result = tk.Repeat { OneOf({ parseStruct(this, module) }, { parseInterface(this, module) }, ::parseFun, { parseLet(this, global = true) } ) }
+        val result = tk.Repeat { OneOf({ parseStruct(this, module) },
+//            { parseInterface(this, module) },
+            ::parseFun, { parseLet(this, global = true) } ) }
             .map { _, lists -> lists.flatten() }
         return result
     }

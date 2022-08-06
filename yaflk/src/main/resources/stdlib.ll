@@ -5,9 +5,9 @@ declare dso_local noalias %object* @malloc(%size_t) "alloc-family"="malloc"
 declare dso_local void @free(%object*) "alloc-family"="malloc"
 declare dso_local i32 @printf(i8* noalias nocapture, ...)
 
-%vtable = type { [ 0 x i8* ] }
+%vtable = type { { %size_t, void(%object*)* }, [ 0 x %size_t* ] }
 %object = type { %vtable*, %size_t }
-%lambda = type { i8*, %object* }
+%lambda = type { %size_t*, %object* }
 
 @memoryCounter = internal global %size_t zeroinitializer
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
@@ -15,14 +15,14 @@ declare dso_local i32 @printf(i8* noalias nocapture, ...)
 
 
 define dso_local i32 @main() {
-    %result = call i32 @synth_main(%object* null)
+    %result = tail call tailcc i32 @synth_main(%object* null)
     %param = getelementptr inbounds [11 x i8], [11 x i8]* @formatstr, i32 0, i32 0
     %count = load %size_t, %size_t* @memoryCounter
-    %ignore = call i32 (i8*, ...) @printf(i8* %param, %size_t %count)
+    %ignore = tail call i32 (i8*, ...) @printf(i8* %param, %size_t %count)
     ret i32 %result
 }
 
-define internal %object* @create_object(%size_t %p0, %vtable* %p1) {
+define internal tailcc %object* @create_object(%size_t %p0, %vtable* %p1) {
 ;    atomicrmw add %size_t* @memoryCounter, %size_t %p0 acquire
     %old = load %size_t, %size_t* @memoryCounter
     %new = add %size_t %old, %p0
@@ -36,7 +36,7 @@ define internal %object* @create_object(%size_t %p0, %vtable* %p1) {
     ret %object* %result
 }
 
-define internal void @delete_object(%size_t %p0, %object* %p1) {
+define internal tailcc void @delete_object(%size_t %p0, %object* %p1) {
 ;    atomicrmw sub %size_t* @memoryCounter, %size_t %p0 acquire
     %old = load %size_t, %size_t* @memoryCounter
     %new = sub %size_t %old, %p0
@@ -48,17 +48,16 @@ define internal void @delete_object(%size_t %p0, %object* %p1) {
 
 
 
-define internal void @releaseActual(%object* %p0) {
+define internal tailcc void @releaseActual(%object* %p0) {
     %dealloc_1 = getelementptr %object, %object* %p0, i32 0, i32 0
     %dealloc_2 = load %vtable*, %vtable** %dealloc_1
-    %dealloc_3 = getelementptr %vtable, %vtable* %dealloc_2, i32 0, i32 0, i32 0
-    %dealloc_4 = load i8*, i8** %dealloc_3
-    %dealloc_5 = bitcast i8* %dealloc_4 to void(%object*)*
-    musttail call void %dealloc_5(%object* %p0)
+    %dealloc_3 = getelementptr %vtable, %vtable* %dealloc_2, i32 0, i32 0, i32 1
+    %dealloc_4 = load void(%object*)*, void(%object*)** %dealloc_3
+    musttail call tailcc void %dealloc_4(%object* %p0)
     ret void
 }
 
-define internal void @release(%object* %p0) {
+define internal tailcc void @release(%object* %p0) {
 entry:
     %isNull = icmp eq %object* null, %p0
     br i1 %isNull, label %return, label %notNull, !prof !{!"branch_weights", i32 0, i32 1}
@@ -75,13 +74,13 @@ notNull:
 
     br i1 %isOne, label %dealloc, label %return, !prof !{!"branch_weights", i32 1, i32 0}
 dealloc:
-    musttail call void @releaseActual(%object* %p0)
+    musttail call tailcc void @releaseActual(%object* %p0)
     ret void
 return:
     ret void
 }
 
-define internal void @acquire(%object* %p0) {
+define internal tailcc void @acquire(%object* %p0) {
 entry:
     %isNull = icmp eq %object* null, %p0
     br i1 %isNull, label %return, label %notNull, !prof !{!"branch_weights", i32 0, i32 1}
@@ -99,3 +98,29 @@ return:
     ret void
 }
 
+define internal tailcc %lambda @lookup_virtual_method(%object* %obj_ptr, %size_t %id) {
+start:
+    %vt_ptr_ptr = getelementptr %object, %object* %obj_ptr, i32 0, i32 0
+    %vt_ptr = load %vtable*, %vtable** %vt_ptr_ptr
+    %mask_ptr = getelementptr %vtable, %vtable* %vt_ptr, i32 0, i32 0, i32 0
+    %mask = load %size_t, %size_t* %mask_ptr
+    br label %loop
+
+loop:
+    %id2 = phi %size_t [ %id, %start ], [ %index, %loop ]
+    %id3 = add %size_t %id2, 1
+    %index = and %size_t %mask, %id3
+
+    %method_ptr_ptr = getelementptr %vtable, %vtable* %vt_ptr, i32 0, i32 1, %size_t %index
+    %method_ptr = load %size_t*, %size_t** %method_ptr_ptr
+    %target_id_ptr = getelementptr %size_t, %size_t* %method_ptr, i32 -1
+    %target_id = load %size_t, %size_t* %target_id_ptr
+
+    %isneq = icmp ne %size_t %id, %target_id
+    br i1 %isneq, label %loop, label %finish
+
+finish:
+    %result1 = insertvalue %lambda undef, %size_t* %method_ptr, 0
+    %result2 = insertvalue %lambda %result1, %object* %obj_ptr, 1
+    ret %lambda %result2
+}
