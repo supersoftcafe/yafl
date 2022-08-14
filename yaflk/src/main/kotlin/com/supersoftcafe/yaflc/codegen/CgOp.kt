@@ -7,24 +7,25 @@ sealed class CgOp {
     open fun updateLabels(labelMap: (String) -> String): CgOp = this
     open fun updateRegisters(registerMap: (String) -> String): CgOp = this
 
+    data class Label(val name: String) : CgOp() {
+        override val result: String get() = ""
+        override val resultType: CgType get() = CgTypePrimitive.VOID
+        override fun toIr(context: CgContext) = "$name:\n"
+        override fun updateLabels(labelMap: (String) -> String) = copy(name = labelMap(name))
+    }
+
     data class Jump(val dest: String) : CgOp() {
         override val result: String get() = ""
         override val resultType: CgType get() = CgTypePrimitive.VOID
-
-        override fun toIr(context: CgContext): String {
-            return "  br label $dest\n"
-        }
-
-        override fun updateLabels(labelMap: (String) -> String): CgOp {
-            return copy(dest = labelMap(dest))
-        }
+        override fun toIr(context: CgContext) = "  br label %$dest\n"
+        override fun updateLabels(labelMap: (String) -> String) = copy(dest = labelMap(dest))
     }
 
     data class Branch(val boolReg: String, val ifTrue: String, val ifFalse: String) : CgOp() {
         override val result: String get() = ""
         override val resultType: CgType get() = CgTypePrimitive.VOID
         override fun toIr(context: CgContext): String {
-            return "  br i1 $boolReg, label $ifTrue, label $ifFalse\n"
+            return "  br i1 $boolReg, label %$ifTrue, label %$ifFalse\n"
         }
 
         override fun updateLabels(labelMap: (String) -> String): CgOp {
@@ -61,6 +62,66 @@ sealed class CgOp {
         }
     }
 
+    data class GetObjectFieldPtr(override val result: String, val pointer: String, val dataType: CgType, val fieldIndexes: IntArray) : CgOp() {
+        override val resultType = CgTypePointer( fieldIndexes.fold(dataType) { acc, fieldIndex -> (acc as CgTypeStruct).fields[fieldIndex] })
+
+        override fun toIr(context: CgContext): String {
+            return "  $result.object = bitcast %object* $pointer to $dataType*\n" +
+                   "  $result = getelementptr $dataType, $dataType* $result.object, i32 0, i32 1" + fieldIndexes.joinToString("") { fieldIndex -> ", i32 $fieldIndex" } + "\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = registerMap(result), pointer = registerMap(pointer))
+        }
+    }
+
+    data class Load(override val result: String, override val resultType: CgType, val name: String) : CgOp() {
+        override fun toIr(context: CgContext): String {
+            return "  $result = load $resultType, $resultType* $name\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = registerMap(result), name = registerMap(name))
+        }
+    }
+
+    data class Store(val targetType: CgType, val name: String, val value: String) : CgOp() {
+        override val result: String get() = ""
+        override val resultType: CgType get() = CgTypePrimitive.VOID
+
+        override fun toIr(context: CgContext): String {
+            return "  store $targetType $value, $targetType* $name\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(name = registerMap(name), value = registerMap(value))
+        }
+    }
+
+    data class ExtractValue(override val result: String, val structReg: String, val structType: CgType, val fieldIndexes: IntArray) : CgOp() {
+        override val resultType = fieldIndexes.fold(structType) { acc, fieldIndex -> (acc as CgTypeStruct).fields[fieldIndex] }
+
+        override fun toIr(context: CgContext): String {
+            return "  $result = extractvalue $structType $structReg" + fieldIndexes.joinToString("") { fieldIndex -> ", $fieldIndex" } + "\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = registerMap(result), structReg = registerMap(structReg))
+        }
+    }
+
+    data class InsertValue(override val result: String, val structReg: String, val structType: CgTypeStruct, val fieldIndexes: IntArray, val value: String, val valueType: CgType) : CgOp() {
+        override val resultType: CgType get() = structType
+
+        override fun toIr(context: CgContext): String {
+            return "  $result = insertvalue $structType $structReg, $valueType $value" + fieldIndexes.joinToString("") { fieldIndex -> ", $fieldIndex" } + "\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = registerMap(result), structReg = registerMap(structReg), value = registerMap(value))
+        }
+    }
+
     data class LoadStaticCallable(override val result: String, val objectReg: String, val nameOfFunction: String) : CgOp() {
         override val resultType: CgType get() = CgTypePrimitive.CALLABLE
         override fun toIr(context: CgContext): String {
@@ -78,7 +139,7 @@ sealed class CgOp {
         override val resultType: CgType get() = CgTypePrimitive.CALLABLE
         override fun toIr(context: CgContext): String {
             val slotId = context.slotNameToId(nameOfSlot)
-            return "  $result = call %lambda @lookup_virtual_method(%object* $objectReg, %size_t $slotId)\n"
+            return "  $result = call %lambda @lookupVirtualMethod(%object* $objectReg, %size_t $slotId)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -110,7 +171,7 @@ sealed class CgOp {
     data class New(override val result: String, val className: String) : CgOp() {
         override val resultType: CgType get() = CgTypePrimitive.OBJECT
         override fun toIr(context: CgContext): String {
-            return "  $result = tail call tailcc %object* @create_object(%size_t " +
+            return "  $result = tail call tailcc %object* @newObject(%size_t " +
                    "ptrtoint( %typeof.object\$$className* getelementptr ( %typeof.object\$$className, %typeof.object\$$className* null, i32 1 ) to %size_t)" +
                    ", %vtable* bitcast( %typeof.vtable\$$className* @$className to %vtable*))\n"
         }
@@ -120,15 +181,15 @@ sealed class CgOp {
         override val result: String get() = ""
         override val resultType: CgType get() = CgTypePrimitive.VOID
         override fun toIr(context: CgContext): String {
-            return "  tail call tailcc @acquire(%object* $objectReg)\n"
+            return "  tail call tailcc void @acquire(%object* $objectReg)\n"
         }
     }
 
-    data class Release(val objectReg: String) : CgOp() {
+    data class Release(val variableName: String) : CgOp() {
         override val result: String get() = ""
         override val resultType: CgType get() = CgTypePrimitive.VOID
         override fun toIr(context: CgContext): String {
-            return "  tail call tailcc @release(%object* $objectReg)\n"
+            return "  tail call tailcc void @release(%object** $variableName)\n"
         }
     }
 

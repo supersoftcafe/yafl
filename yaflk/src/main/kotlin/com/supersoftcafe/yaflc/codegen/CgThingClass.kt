@@ -4,7 +4,7 @@ import kotlin.math.max
 
 data class CgThingClass(
     val name: String,
-    val fields: List<CgThingVariable>,
+    val dataType: CgTypeStruct,
     val functions: List<CgThingFunction>,
     val delete: CgThingFunction // Must be void(object*)
 ) : CgThing {
@@ -20,11 +20,9 @@ data class CgThingClass(
             "%size_t* bitcast ( %typeof.$it* @$it to %size_t* )"
         }
 
-        val fieldsStr = fields.joinToString("") { ", ${it.type}" }
-
         return CgLlvmIr(
             types = "%typeof.vtable\$$name = type { { %size_t, void(%object*)* }, [ $size x %size_t* ] }\n" +
-                    "%typeof.object\$$name = type { %object$fieldsStr }\n",
+                    "%typeof.object\$$name = type { %object, $dataType }\n",
             declarations = "@$name = internal global %typeof.vtable\$$name { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @${delete.name} }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n")
     }
 

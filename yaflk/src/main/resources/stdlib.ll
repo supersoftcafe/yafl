@@ -22,8 +22,7 @@ define dso_local i32 @main() {
     ret i32 %result
 }
 
-define internal tailcc %object* @create_object(%size_t %p0, %vtable* %p1) {
-;    atomicrmw add %size_t* @memoryCounter, %size_t %p0 acquire
+define internal tailcc %object* @newObject(%size_t %p0, %vtable* %p1) {
     %old = load %size_t, %size_t* @memoryCounter
     %new = add %size_t %old, %p0
     store %size_t %new, %size_t* @memoryCounter
@@ -36,8 +35,7 @@ define internal tailcc %object* @create_object(%size_t %p0, %vtable* %p1) {
     ret %object* %result
 }
 
-define internal tailcc void @delete_object(%size_t %p0, %object* %p1) {
-;    atomicrmw sub %size_t* @memoryCounter, %size_t %p0 acquire
+define internal tailcc void @deleteObject(%size_t %p0, %object* %p1) {
     %old = load %size_t, %size_t* @memoryCounter
     %new = sub %size_t %old, %p0
     store %size_t %new, %size_t* @memoryCounter
@@ -57,48 +55,59 @@ define internal tailcc void @releaseActual(%object* %p0) {
     ret void
 }
 
-define internal tailcc void @release(%object* %p0) {
+define internal tailcc void @release(%object** %p0) {
 entry:
-    %isNull = icmp eq %object* null, %p0
-    br i1 %isNull, label %return, label %notNull, !prof !{!"branch_weights", i32 0, i32 1}
-notNull:
-    %refcnt_ptr = getelementptr %object, %object* %p0, i32 0, i32 1
-
-;    %old = atomicrmw sub %size_t* %refcnt_ptr, %size_t 1 acquire
-;    %isOne = icmp eq %size_t %old, 1
-
-    %old = load %size_t, %size_t* %refcnt_ptr
-    %new = sub %size_t %old, 1
-    store %size_t %new, %size_t* %refcnt_ptr
-    %isOne = icmp eq %size_t %new, 0
-
-    br i1 %isOne, label %dealloc, label %return, !prof !{!"branch_weights", i32 1, i32 0}
-dealloc:
-    musttail call tailcc void @releaseActual(%object* %p0)
+    %oref = load %object*, %object** %p0
+    %is_null = icmp eq %object* null, %oref
+    br i1 %is_null, label %skip, label %check_count
+check_count:
+    %refcnt_ptr = getelementptr %object, %object* %oref, i32 0, i32 1
+    %refcnt = load %size_t, %size_t* %refcnt_ptr
+    switch %size_t %refcnt, label %subtract [ %size_t 0, label %skip
+                                              %size_t 1, label %dealloc ]
+subtract:
+; If count is greater than one, subject one
+    %newcnt = sub %size_t %refcnt, 1
+    store %size_t %newcnt, %size_t* %refcnt_ptr
     ret void
-return:
+dealloc:
+; If the count is one, this object is to be released now
+    musttail call tailcc void @releaseActual(%object* %oref)
+    ret void
+skip:
+; If the reference is null or the count is zero, skip the release
+    ret void
+}
+
+define internal tailcc void @releaseMany(%object** %p0, %object** %p1) {
+entry:
+    %isEnd = icmp eq %object** %p0, %p1
+    br i1 %isEnd, label %exit, label %iterate
+iterate:
+    call tailcc void @release(%object** %p0)
+    %next = getelementptr %object*, %object** %p0, i32 1
+    musttail call tailcc void @releaseMany(%object** %next, %object** %p1)
+    ret void
+exit:
     ret void
 }
 
 define internal tailcc void @acquire(%object* %p0) {
 entry:
-    %isNull = icmp eq %object* null, %p0
-    br i1 %isNull, label %return, label %notNull, !prof !{!"branch_weights", i32 0, i32 1}
-notNull:
     %refcnt_ptr = getelementptr %object, %object* %p0, i32 0, i32 1
-
-;    %old = atomicrmw add %size_t* %refcnt_ptr, %size_t 1 acquire
-
-    %old = load %size_t, %size_t* %refcnt_ptr
-    %new = add %size_t %old, 1
-    store %size_t %new, %size_t* %refcnt_ptr
-
+    %refcnt = load %size_t, %size_t* %refcnt_ptr
+    switch %size_t %refcnt, label %add [ %size_t 0, label %skip ]
+add:
+; If count is non zero, add one
+    %newcnt = add %size_t %refcnt, 1
+    store %size_t %newcnt, %size_t* %refcnt_ptr
     ret void
-return:
+skip:
+; If the count is zero, this object can never be acquired
     ret void
 }
 
-define internal tailcc %lambda @lookup_virtual_method(%object* %obj_ptr, %size_t %id) {
+define internal tailcc %lambda @lookupVirtualMethod(%object* %obj_ptr, %size_t %id) {
 start:
     %vt_ptr_ptr = getelementptr %object, %object* %obj_ptr, i32 0, i32 0
     %vt_ptr = load %vtable*, %vtable** %vt_ptr_ptr

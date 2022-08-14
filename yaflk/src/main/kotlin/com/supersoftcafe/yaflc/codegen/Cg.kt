@@ -3,8 +3,13 @@ package com.supersoftcafe.yaflc.codegen
 import com.supersoftcafe.yaflc.utils.*
 
 
-private inline fun <reified TElement : CgThing> Iterable<CgThing>.toIr(context: CgContext, toIr: (TElement, CgContext) -> CgLlvmIr) =
-    asSequence().filterIsInstance<TElement>().fold(CgLlvmIr()) { acc, value -> acc + toIr(value, context) }
+private inline fun <reified TElement : CgThing> Iterable<CgThing>.toIr(
+    context: CgContext,
+    toIr: (TElement, CgContext) -> CgLlvmIr,
+    vararg translations: (TElement) -> TElement
+) = asSequence().filterIsInstance<TElement>()
+    .map { el -> translations.fold(el) { acc, op -> op(acc) } }
+    .fold(CgLlvmIr()) { acc, value -> acc + toIr(value, context) }
 
 fun generateLlvmIr(things: Iterable<CgThing>): Either<String> {
     // Assign identities to virtual method names
@@ -15,10 +20,10 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String> {
         .mapIndexed { index, name -> Pair(name, index) }    // Assign a unique id to each name
         .toMap()
 
-    val   context = CgContext(slotIds)
-    val   classes = things.toIr(context, CgThingClass::toIr)
-    val functions = things.toIr(context, CgThingFunction::toIr)
-    val    stdlib = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
+    val context = CgContext(slotIds)
+    val classes = things.toIr(context, CgThingClass::toIr)
+    val functions = things.toIr(context, CgThingFunction::toIr, ::ArcPhase)
+    val stdlib = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
 
     val combined = stdlib + classes + functions
 
