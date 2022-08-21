@@ -55,9 +55,10 @@ define internal tailcc void @releaseActual(%object* %p0) {
     ret void
 }
 
-define internal tailcc void @release(%object** %p0) {
+define internal tailcc void @release(%object** %orefref) {
 entry:
-    %oref = load %object*, %object** %p0
+    %oref = load %object*, %object** %orefref
+    store %object* null, %object** %orefref
     %is_null = icmp eq %object* null, %oref
     br i1 %is_null, label %skip, label %check_count
 check_count:

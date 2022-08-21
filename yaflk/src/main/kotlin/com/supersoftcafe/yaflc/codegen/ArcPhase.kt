@@ -1,19 +1,19 @@
 package com.supersoftcafe.yaflc.codegen
 
-private fun FindObjectFields(type: CgType): List<IntArray> {
+private fun findObjectFields(type: CgType): List<IntArray> {
     return when (type) {
         CgTypePrimitive.OBJECT -> listOf(intArrayOf())
         is CgTypeStruct -> type.fields.flatMapIndexed { index, fieldType ->
-            FindObjectFields(fieldType).map { intArrayOf(index) + it }
+            findObjectFields(fieldType).map { intArrayOf(index) + it }
         }
         else -> listOf()
     }
 }
 
-fun ArcPhase(thing: CgThingFunction): CgThingFunction {
+fun arcPhase(thing: CgThingFunction): CgThingFunction {
     // Declarations of ARC variables that hold references for later release
     val arcVars = thing.body.flatMap { op ->
-        val objectFields = FindObjectFields(op.resultType)
+        val objectFields = findObjectFields(op.resultType)
         if (objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.Call)) {
             objectFields.map { fieldPath ->
                 val pathStr = fieldPath.joinToString("$")
@@ -26,7 +26,7 @@ fun ArcPhase(thing: CgThingFunction): CgThingFunction {
 
     // Insert ARC code after New/Call and before Ret
     val modifiedBody = thing.body.flatMapIndexed { opIndex, op ->
-        val objectFields = FindObjectFields(op.resultType)
+        val objectFields = findObjectFields(op.resultType)
         if (objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.Call)) {
             // Store value(s) for a later release just before the return statement
             listOf(op) + objectFields.flatMap { fieldPath ->

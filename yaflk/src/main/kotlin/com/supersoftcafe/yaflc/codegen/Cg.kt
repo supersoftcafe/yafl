@@ -20,12 +20,13 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String> {
         .mapIndexed { index, name -> Pair(name, index) }    // Assign a unique id to each name
         .toMap()
 
-    val context = CgContext(slotIds)
-    val classes = things.toIr(context, CgThingClass::toIr)
-    val functions = things.toIr(context, CgThingFunction::toIr, ::ArcPhase)
-    val stdlib = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
+    val context   = CgContext(slotIds)
+    val classes   = things.toIr(context, CgThingClass   ::toIr)
+    val functions = things.toIr(context, CgThingFunction::toIr, ::arcPhase)
+    val variables = things.toIr(context, CgThingVariable::toIr)
+    val stdlib    = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
 
-    val combined = stdlib + classes + functions
+    val combined = stdlib + classes + variables + functions
 
     return Some(combined.toString())
 }

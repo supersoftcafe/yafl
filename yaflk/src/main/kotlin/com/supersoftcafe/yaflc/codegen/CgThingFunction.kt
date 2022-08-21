@@ -1,8 +1,9 @@
 package com.supersoftcafe.yaflc.codegen
 
+
 data class CgThingFunction(
     val name: String,
-    val result: CgType,
+    val resultType: CgType,
     val params: List<CgThingVariable>,
     val variables: List<CgThingVariable>,
     val body: List<CgOp>
@@ -20,11 +21,12 @@ data class CgThingFunction(
 
     fun toIr(context: CgContext): CgLlvmIr {
         val paramTypeStr = params.joinToString { "${it.type}" }
-        val paramVarStr = params.joinToString { "${it.type} ${it.name}" }
-        val lines = variables.map { "  ${it.name} = alloca ${it.type}\n" } + body.map { it.toIr(context) }
+        val paramVarStr = params.joinToString { "${it.type} %${it.name.escape()}" }
+        val lines = variables.map { "  %${it.name.escape()} = alloca ${it.type}\n" } + body.map { it.toIr(context) }
+        val functionTypeName = CgValue.Register("typeof.$name")
         return CgLlvmIr(
-            types = "%typeof.$name = type $result($paramTypeStr)\n",
-            declarations = lines.joinToString("", "define internal tailcc $result @$name ($paramVarStr) {\n", "}\n\n"))
+            types = "$functionTypeName = type $resultType($paramTypeStr)\n",
+            declarations = lines.joinToString("", "define internal tailcc $resultType @${name.escape()}($paramVarStr) {\n", "}\n\n"))
     }
 
     fun addPreamble(preamble: List<CgOp>): CgThingFunction {
@@ -41,7 +43,7 @@ data class CgThingFunction(
             CgTypePrimitive.VOID,
             CgThingVariable.THIS,
             CgOp.Label("start"),
-            CgOp.Return(CgTypePrimitive.VOID, ""))
+            CgOp.Return(CgTypePrimitive.VOID, CgValue.Immediate("")))
 
         fun main(vararg body: CgOp) =
             CgThingFunction("synth_main", CgTypePrimitive.INT32, CgThingVariable.THIS, *body)
