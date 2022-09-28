@@ -12,6 +12,9 @@ yaflk/build/**
 yaflk2/.gradle/**
 yaflk2/.idea/**
 yaflk2/build/**
+yaflk3/.gradle/**
+yaflk3/.idea/**
+yaflk3/build/**
 
 
 

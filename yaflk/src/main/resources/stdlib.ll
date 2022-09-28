@@ -12,10 +12,13 @@ declare dso_local i32 @printf(i8* noalias nocapture, ...)
 @memoryCounter = internal global %size_t zeroinitializer
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
 
+@global_unit_vt = internal global { { void(%object*)*, %size_t }, [ 0 x %size_t* ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %size_t* ] [ ] }
+@global_unit = internal global %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %size_t* ] }* @global_unit_vt to %vtable*), %size_t 0 }
+
 
 
 define dso_local i32 @main() {
-    %result = tail call tailcc i32 @synth_main(%object* null)
+    %result = tail call tailcc i32 @synth_main(%object* @global_unit)
     %param = getelementptr inbounds [11 x i8], [11 x i8]* @formatstr, i32 0, i32 0
     %count = load %size_t, %size_t* @memoryCounter
     %ignore = tail call i32 (i8*, ...) @printf(i8* %param, %size_t %count)

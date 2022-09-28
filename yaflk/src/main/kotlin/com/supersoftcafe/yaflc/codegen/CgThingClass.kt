@@ -15,20 +15,20 @@ data class CgThingClass(
         val array = flattenHashTable((0..mask).map { index -> slots.filter { (_, slot) -> (slot and mask) == index }.map { (name, _) -> name } })
 
         val vtableInitialiser = array.joinToString { name -> if (name != null) {
-            val functionName = CgValue.Global(name)
-            val functionTypeName = CgValue.Register("typeof.$functionName")
+            val functionName = "@$name".llEscape()
+            val functionTypeName = "%typeof.$functionName".llEscape()
             "%size_t* bitcast ( $functionTypeName* $functionName to %size_t* )"
         } else {
             "%size_t* null"
         }}
 
-        val vtableDataName = CgValue.Global("vtable\$$name")
-        val objectTypeName = CgValue.Register("typeof.object\$$name")
-        val vtableTypeName = CgValue.Register("typeof.vtable\$$name")
+        val vtableDataName = "@vtable\$$name".llEscape()
+        val objectTypeName = "%typeof.object\$$name".llEscape()
+        val vtableTypeName = "%typeof.vtable\$$name".llEscape()
         return CgLlvmIr(
             types = "$vtableTypeName = type { { %size_t, void(%object*)* }, [ $size x %size_t* ] }\n" +
                     "$objectTypeName = type { %object, $dataType }\n",
-            declarations = "$vtableDataName = internal global $vtableTypeName { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @${delete.name.escape()} }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n")
+            declarations = "$vtableDataName = internal global $vtableTypeName { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @${delete.name.llEscape()} }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n")
     }
 
     private tailrec fun <TEntry> flattenHashTable(array: List<List<TEntry>>): List<TEntry?> {

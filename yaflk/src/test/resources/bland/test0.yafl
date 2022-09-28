@@ -1,0 +1,2 @@
+
+fun main(): System.Int32 = 42
