@@ -1,6 +1,5 @@
 grammar Yafl;
 
-
 MODULE      : 'module';
 USING       : 'using';
 FUN         : 'fun';
@@ -8,6 +7,7 @@ LET         : 'let';
 STRUCT      : 'struct';
 INTERFACE   : 'interface';
 CLASS       : 'class';
+OBJECT      : 'object';
 ENUM        : 'enum';
 LAZY        : 'lazy';
 DASH_ARROW  : '->';
@@ -30,7 +30,6 @@ typeOfTuplePart : NAME ( ':' type )? ( '=' expression )? ;
 typeOfTuple     : '(' ( typeOfTuplePart ',' )* typeOfTuplePart? ')' ;
 typeOfLambda    : typeOfTuple DASH_ARROW type ;
 
-
 type            : typeRef               # namedType
                 | typeOfTuple           # tupleType
                 | typeOfLambda          # lambdaType
@@ -38,26 +37,28 @@ type            : typeRef               # namedType
 
 expression  : left=expression operator='.' name=NAME                        # dotExpr
             | left=expression params=exprOfTuple                            # callExpr
+            | left=expression APPLY right=expression params=exprOfTuple     # applyExpr
             | left=expression operator=( '*' | '/' | '%' ) right=expression # productExpr
             | left=expression operator=( '+' | '-'       ) right=expression # sumExpr
             | left=expression operator=( '<' | '=' | '>' ) right=expression # compareExpr
             | condition=expression '?' left=expression ':' right=expression # ifExpr
             | exprOfTuple                                                   # tupleExpr
+            | OBJECT ':' typeRef ( '|' typeRef )* ( '{' function* '}' )?    # objectExpr
             | typeOfTuple DASH_ARROW expression                             # lambdaExpr
             | STRING                                                        # stringExpr
             | INTEGER                                                       # integerExpr
+            | NAME                                                          # nameExpr
             ;
 
 module      : MODULE typeRef ;
 using       : USING typeRef ;
-funProto    : FUN NAME typeOfTuple? ( ':' type )? ;
-funWithExpr : funProto '=' expression ;
+function    : FUN NAME typeOfTuple? ( ':' type )? ( '=' expression )? ;
 letWithExpr : LET NAME ( ':' type )? '=' expression ;
-interface   : INTERFACE NAME ( ':' typeRef ( '|' typeRef )* )? ( '{' funProto+ '}' )? ;
-class       : CLASS NAME typeOfTuple? ( ':' typeRef ( '|' typeRef )* )? ( '{' funWithExpr+ '}' )? ;
-struct      : STRUCT NAME typeOfTuple funWithExpr+ ( '{' funWithExpr+ '}' )? ;
-enum        : ENUM NAME ( '{' ( ( NAME typeOfTuple? ) | funWithExpr )* '}' )? ;
-declaration : letWithExpr | funWithExpr | interface | class | struct | enum ;
+interface   : INTERFACE NAME ( ':' typeRef ( '|' typeRef )* )? ( '{' function+ '}' )? ;
+class       : CLASS NAME typeOfTuple? ( ':' typeRef ( '|' typeRef )* )? ( '{' function* '}' )? ;
+struct      : STRUCT NAME typeOfTuple ( '{' function* '}' )? ;
+enum        : ENUM NAME ( '{' ( ( NAME typeOfTuple? ) | function )* '}' )? ;
+declaration : letWithExpr | function | interface | class | struct | enum ;
 
 root        : module using* declaration* EOF ;
 
