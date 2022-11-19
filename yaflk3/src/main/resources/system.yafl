@@ -1,0 +1,12 @@
+
+module System
+
+alias Bool : __primitive__ bool
+alias Int8  : __primitive__ int8
+alias Int16 : __primitive__ int16
+alias Int32 : __primitive__ int32
+alias Int64 : __primitive__ int64
+alias Float32 : __primitive__ float32
+alias Float64 : __primitive__ float64
+
+fun `+`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ add_i32(l, r)

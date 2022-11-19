@@ -1,7 +1,11 @@
 grammar Yafl;
 
+BUILTIN     : '__builtin__' ;
+PRIMITIVE   : '__primitive__';
+
 MODULE      : 'module';
-USING       : 'using';
+IMPORT      : 'import';
+ALIAS       : 'alias';
 FUN         : 'fun';
 LET         : 'let';
 STRUCT      : 'struct';
@@ -10,11 +14,13 @@ CLASS       : 'class';
 OBJECT      : 'object';
 ENUM        : 'enum';
 LAZY        : 'lazy';
-DASH_ARROW  : '->';
-APPLY       : '|>';
+LAMBDA      : '=>';
+PIPE_RIGHT  : '|>';
+PIPE_MAYBE  : '?>';
+NAMESPACE   : NAME '::';
 
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z0-9_]*) ;
-INTEGER     : '-'?(('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*))([sSiIlL]|'i8'|'i16'|'i32'|'i64')? ;
+INTEGER     : [+\-]?(('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*))([sSlL]|'i8'|'i16'|'i32'|'i64')? ;
 STRING      : '"' .*? '"' ;
 
 WS          : [ \t\r\n]+ -> skip ;
@@ -22,43 +28,55 @@ COMMENT     : '#' ~'\n'+ -> skip ;
 
 
 
-exprOfTuplePart : ( NAME '=' )? expression ;
+qualifiedName   : NAMESPACE* NAME ;
+exprOfTuplePart : (( NAME '=' ) | unpack='*' )? expression ;
 exprOfTuple     : '(' ( exprOfTuplePart ',' )* exprOfTuplePart? ')' ;
 
-typeRef         : NAME ( '.' NAME )* ;
-typeOfTuplePart : NAME ( ':' type )? ( '=' expression )? ;
+typeRef         : qualifiedName ;
+typePrimitive   : PRIMITIVE NAME ;
+typeOfTuplePart : ( NAME ':' )? type ;
 typeOfTuple     : '(' ( typeOfTuplePart ',' )* typeOfTuplePart? ')' ;
-typeOfLambda    : typeOfTuple DASH_ARROW type ;
+typeOfLambda    : typeOfTuple LAMBDA type ;
 
 type            : typeRef               # namedType
+                | typePrimitive         # primitiveType
                 | typeOfTuple           # tupleType
                 | typeOfLambda          # lambdaType
                 ;
 
-expression  : left=expression operator='.' name=NAME                        # dotExpr
+unpackTuplePart : unpackTuple | ( NAME ( ':' type )? ( '=' expression )? ) ;
+unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
+
+letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
+function    : FUN NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
+
+
+expression  : BUILTIN NAME params=exprOfTuple?                              # builtinExpr
+            | left=expression operator='.' right=NAME                       # dotExpr
             | left=expression params=exprOfTuple                            # callExpr
-            | left=expression APPLY right=expression params=exprOfTuple     # applyExpr
+            | left=expression operator=(PIPE_RIGHT | PIPE_MAYBE) right=expression params=exprOfTuple # applyExpr
             | left=expression operator=( '*' | '/' | '%' ) right=expression # productExpr
             | left=expression operator=( '+' | '-'       ) right=expression # sumExpr
             | left=expression operator=( '<' | '=' | '>' ) right=expression # compareExpr
             | condition=expression '?' left=expression ':' right=expression # ifExpr
             | exprOfTuple                                                   # tupleExpr
             | OBJECT ':' typeRef ( '|' typeRef )* ( '{' function* '}' )?    # objectExpr
-            | typeOfTuple DASH_ARROW expression                             # lambdaExpr
+            | letWithExpr ';'? expression                                   # letExpr
+            | function ';'? expression                                      # functionExpr
+            | unpackTuple ( ':' type )? LAMBDA expression                   # lambdaExpr
             | STRING                                                        # stringExpr
             | INTEGER                                                       # integerExpr
-            | NAME                                                          # nameExpr
+            | qualifiedName                                                 # nameExpr
             ;
 
 module      : MODULE typeRef ;
-using       : USING typeRef ;
-function    : FUN NAME typeOfTuple? ( ':' type )? ( '=' expression )? ;
-letWithExpr : LET NAME ( ':' type )? '=' expression ;
-interface   : INTERFACE NAME ( ':' typeRef ( '|' typeRef )* )? ( '{' function+ '}' )? ;
-class       : CLASS NAME typeOfTuple? ( ':' typeRef ( '|' typeRef )* )? ( '{' function* '}' )? ;
-struct      : STRUCT NAME typeOfTuple ( '{' function* '}' )? ;
-enum        : ENUM NAME ( '{' ( ( NAME typeOfTuple? ) | function )* '}' )? ;
-declaration : letWithExpr | function | interface | class | struct | enum ;
+import_     : IMPORT typeRef ;
+interface   : INTERFACE NAME ( ':' typeRef ( '|' typeRef )* )? ( '{' function* '}' )? ;
+class       : CLASS NAME unpackTuple? ( ':' typeRef ( '|' typeRef )* )? ( '{' function* '}' )? ;
+struct      : STRUCT NAME unpackTuple ( '{' function* '}' )? ;
+enum        : ENUM NAME ( '{' ( ( NAME unpackTuple? ) | function )* '}' )? ;
+alias       : ALIAS NAME ':' type ;
+declaration : letWithExpr | function | interface | class | struct | enum | alias;
 
-root        : module using* declaration* EOF ;
+root        : module import_* declaration* EOF ;
 

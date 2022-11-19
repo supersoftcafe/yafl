@@ -1,91 +1,10 @@
+
 module Test
 
-using System
+import System
 
+let two = 2
 
-# Lazy keyword to support late evaluation of parameters and circular constructions
-# Mutable?
+fun operation(a) => a + two
 
-
-
-struct Complex (r: Float, i: Float)
-  fun `+` o:Complex = Complex(r+o.r, i+o.i)
-  fun toString = "{$r,$i}"
-
-interface Container
-  fun contents():List<Item>
-  fun isFull():Bool
-
-interface Other
-  fun isFull():Bool
-
-
-
-class Bag(perfume:Item, brush:Item):Container,Other
-  fun contents() = listOf(perfume, brush)
-  fun isFull() = true
-
-fun howDoIKnowThisIsNotPartOfBag() = hmm
-
-
-
-enum Result
-  Success(value, tokens)
-  Failure(error)
-  Missing
-
-fun testResult(n:Int, r:Result):String =
-  when n
-    10 = (when r
-      Success(v,t) = "success $v $t"
-      Failure(e) = "error $e"
-      Missing = "missing")
-    20 = "twenty"
-    _ = "other"
-
-fun oneParam(value:String):String = value
-
-fun factorial(value) =
-  fun inner(n, a) = n = 1 ? a : inner(n-1, n*a)
-  inner(value, 1)
-
-fun newTuple() = (first = 5, second = 10)
-fun addThem(a, b) = a + b
-fun testAdd() = addThem(*newTuple())
-
-fun returnsAFunction(x:Int):(Int):Int = (y:Int):Int = x + y
-
-
-
-
-// A function with param
-let value : (Int)->Int = (x:Int)->x+27    // A function
-fun value(x:Int):Int = x+27                 // Shorthand for above
-
-// If syntax requires a type that we don't know, use ?
-let value : (?)->? = (x)->x+27
-fun value(x) = x+27
-let value = (x)->x+27   // Or just let the whole thing infer the type
-
-// A function with no param
-let value : ()->Int = ()->27    // A function that returns 27
-fun value():Int = 27            // Shorthand for above
-
-// Syntactic sugar to magically convert params to lambdas
-fun if(c, lazy a, lazy b) = c ? a : b               // a and b are zero param function pointers
-fun test(a:Int,b:Int,c:Int) = if(true, a+b, b+c)    // lazy tag tells caller to generate expressions as lambdas
-
-// Would have been this
-fun if(c, a:()->Int, b:()->Int) = c ? a() : b()
-fun test(a:Int,b:Int,c:Int) = if(true, ()->a+b, ()->b+c)
-
-
-
-
-
-let adder1(x:Int,y:Int):Int = x + y
-let adder2:(Int,Int):Int = (x:Int,y:Int):Int = x + y
-
-fun callToString(o:Thing) = o.toString
-
-fun main = factorial(5)
+fun main() => operation(2)

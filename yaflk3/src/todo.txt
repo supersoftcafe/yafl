@@ -1,0 +1,5 @@
+Remove 'Counter' from 'Ast' and use 'Namer' instead, as encourages more parallelism and can be retained for later at each node level.
+Get rid of tuple unpack. Apply operator takes callable expression result as right arg and a call is curried explicitly instead:
+  e.g someValue |> doSomething(87, $1)
+  is equivalent to to doSomething(87, $1)(someValue)
+Conditional apply (think Monad) operator is done like Haskell using map that takes callable param.

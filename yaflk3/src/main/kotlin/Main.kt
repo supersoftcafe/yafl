@@ -1,30 +1,53 @@
 
 import com.supersoftcafe.yafl.antlr.*
+import com.supersoftcafe.yafl.ast.*
+import com.supersoftcafe.yafl.codegen.generateLlvmIr
+import com.supersoftcafe.yafl.codegen.optimizeLlvmIr
+import com.supersoftcafe.yafl.parsetoast.addToAst
+import com.supersoftcafe.yafl.tointermediate.convertToIntermediate
+import com.supersoftcafe.yafl.translate.inferTypes
+import com.supersoftcafe.yafl.translate.resolveTypes
+import com.supersoftcafe.yafl.utils.Either
 import org.antlr.v4.runtime.*
-import org.antlr.v4.runtime.tree.*
 
-fun yaflParser(file: String): YaflParser.RootContext {
-    val lexer = YaflLexer(CharStreams.fromString(file))
+
+fun sourceToParseTree(contents: String): YaflParser.RootContext {
+    val lexer = YaflLexer(CharStreams.fromString(contents))
     val tokenStream = CommonTokenStream(lexer)
     val parser = YaflParser(tokenStream)
-
     return parser.root()
 }
 
 
+fun yaflBuild(vararg files: String): Either<String, List<String>> {
+    val ast = files
+        .map { file -> Pair(file, Ast::class.java.getResource(file)!!.readText()) }
+        .map { (file, contents) -> Pair(file, sourceToParseTree(contents)) }
+        .fold(Ast()) { ast, (file, tree) -> addToAst(ast, file, tree) }
+        .let { resolveTypes(it) }
+        .map { inferTypes(it) }
+        .map { convertToIntermediate(it) }
+        .map { generateLlvmIr(it.reversed()) }
+        .map { optimizeLlvmIr(it) }
 
-
-fun yaflBuild(files: Map<String, String>): String {
-
+    return ast
 }
 
 
 
 
 fun main(args: Array<String>) {
-    println("Hello World!")
+    val ast = yaflBuild("/system.yafl", "/test.yafl")
+    when (ast) {
+        is Either.Some -> {
+            println("Success")
+            println(ast.value)
+        }
 
-    // Try adding program arguments via Run/Debug configuration.
-    // Learn more about running applications: https://www.jetbrains.com/help/idea/running-applications.html.
-    println("Program arguments: ${args.joinToString()}")
+        is Either.Error -> {
+            println("Failure")
+            for (e in ast.error)
+                println(e)
+        }
+    }
 }
