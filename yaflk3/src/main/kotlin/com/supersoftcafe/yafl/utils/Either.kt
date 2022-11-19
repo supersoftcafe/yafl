@@ -19,7 +19,11 @@ sealed class Either<TValue,TError> {
         fun <TValue,TError> some(value: TValue) : Either<TValue,TError> = Some(value)
         fun <TValue,TError> error(error: TError) : Either<TValue,TError> = Error(error)
 
-        fun <TResult,TVal1,TVal2,TError> combine(val1: Either<TVal1,TError>, val2: Either<TVal2,TError>, op: (TVal1,TVal2) -> Either<TResult,TError>): Either<TResult,TError> {
+        fun <TResult, TVal1, TVal2, TError> combine(
+            val1: Either<TVal1, TError>,
+            val2: Either<TVal2, TError>,
+            op: (TVal1, TVal2) -> Either<TResult, TError>
+        ): Either<TResult, TError> {
             return when (val1) {
                 is Error -> Error(val1.error)
                 is Some -> when (val2) {
@@ -29,7 +33,12 @@ sealed class Either<TValue,TError> {
             }
         }
 
-        fun <TResult,TVal1,TVal2,TVal3,TError> combine(val1: Either<TVal1,TError>, val2: Either<TVal2,TError>, val3: Either<TVal3,TError>, op: (TVal1,TVal2,TVal3) -> Either<TResult,TError>): Either<TResult,TError> {
+        fun <TResult, TVal1, TVal2, TVal3, TError> combine(
+            val1: Either<TVal1, TError>,
+            val2: Either<TVal2, TError>,
+            val3: Either<TVal3, TError>,
+            op: (TVal1, TVal2, TVal3) -> Either<TResult, TError>
+        ): Either<TResult, TError> {
             return when (val1) {
                 is Error -> Error(val1.error)
                 is Some -> when (val2) {
@@ -37,6 +46,28 @@ sealed class Either<TValue,TError> {
                     is Some -> when (val3) {
                         is Error -> Error(val3.error)
                         is Some ->  op(val1.value, val2.value, val3.value)
+                    }
+                }
+            }
+        }
+
+        fun <TResult, TVal1, TVal2, TVal3, TVal4, TError> combine(
+            val1: Either<TVal1, TError>,
+            val2: Either<TVal2, TError>,
+            val3: Either<TVal3, TError>,
+            val4: Either<TVal4, TError>,
+            op: (TVal1, TVal2, TVal3, TVal4) -> Either<TResult, TError>
+        ): Either<TResult, TError> {
+            return when (val1) {
+                is Error -> Error(val1.error)
+                is Some -> when (val2) {
+                    is Error -> Error(val2.error)
+                    is Some -> when (val3) {
+                        is Error -> Error(val3.error)
+                        is Some -> when (val4) {
+                            is Error -> Error(val4.error)
+                            is Some -> op(val1.value, val2.value, val3.value, val4.value)
+                        }
                     }
                 }
             }

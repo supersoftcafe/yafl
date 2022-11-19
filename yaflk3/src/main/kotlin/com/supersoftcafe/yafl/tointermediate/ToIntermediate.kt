@@ -178,14 +178,21 @@ private fun Expression.toCgOps(namer: Namer, globals: Globals, locals: Map<Long,
                     }
             }
 
-        is Expression.Add ->
+        is Expression.BuiltinBinary ->
             Either.combine(
                 typeRef.toCgType(globals),
                 left.toCgOps(namer + 1, globals, locals),
                 right.toCgOps(namer + 2, globals, locals)
             ) { type, (left_ops, left_result), (right_ops, right_result) ->
-                val result = CgValue.Register(namer.plus(2).toString(), type)
-                val op = CgOp.Binary(result, CgBinaryOp.ADD, left_result, right_result)
+                val cgOp = when (op) {
+                    BuiltinBinaryOp.ADD_I32, BuiltinBinaryOp.ADD_I64 -> CgBinaryOp.ADD
+                    BuiltinBinaryOp.EQU_I32 -> CgBinaryOp.ICMP_EQ
+                    BuiltinBinaryOp.MUL_I32 -> CgBinaryOp.MUL
+                    BuiltinBinaryOp.SUB_I32 -> CgBinaryOp.SUB
+                }
+
+                val result = CgValue.Register(namer.plus(3).toString(), type)
+                val op = CgOp.Binary(result, cgOp, left_result, right_result)
                 Either.Some(Pair(left_ops + right_ops + op, result))
             }
 
@@ -194,8 +201,34 @@ private fun Expression.toCgOps(namer: Namer, globals: Globals, locals: Map<Long,
             typeRef.toCgType(globals)
                 .map { type -> dataRef.toCgValue(type, globals, namer) }
 
+        is Expression.If ->
+            Either.combine(
+                typeRef.toCgType(globals),
+                ifTrue.toCgOps(namer + 1, globals, locals),
+                ifFalse.toCgOps(namer + 2, globals, locals),
+                condition.toCgOps(namer + 3, globals, locals)
+            ) { type, (ifTrueOps, ifTrueResult), (ifFalseOps, ifFalseResult), (conditionOps, conditionResult) ->
+                val ifTrueLabel = CgOp.Label(namer.plus(4).toString())
+                val ifFalseLabel = CgOp.Label(namer.plus(5).toString())
+                val endLabel = CgOp.Label(namer.plus(6).toString())
+                val result = CgValue.Register(namer.plus(7).toString(), type)
+
+                val ops = conditionOps +
+                        CgOp.Branch(conditionResult, ifTrueLabel.name, ifFalseLabel.name) +
+                        ifTrueLabel +
+                        ifTrueOps +
+                        CgOp.Jump(endLabel.name) +
+                        ifFalseLabel +
+                        ifFalseOps +
+                        CgOp.Jump(endLabel.name) +
+                        endLabel +
+                        CgOp.Phi(result, listOf(Pair(ifTrueResult, ifTrueLabel.name), Pair(ifFalseResult, ifFalseLabel.name)))
+
+                Either.Some(Pair(ops, result))
+            }
+
         else ->
-            TODO()
+            TODO("Operation ${this.javaClass.canonicalName} not implemented")
     }
 }
 

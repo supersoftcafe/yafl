@@ -10,3 +10,6 @@ alias Float32 : __primitive__ float32
 alias Float64 : __primitive__ float64
 
 fun `+`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ add_i32(l, r)
+fun `*`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ mul_i32(l, r)
+fun `-`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ sub_i32(l, r)
+fun `=`(l: System::Int32, r: System::Int32): System::Bool => __builtin__ equ_i32(l, r)

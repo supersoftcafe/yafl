@@ -11,15 +11,18 @@ import org.antlr.v4.runtime.tree.TerminalNode
 private fun YaflParser.BuiltinExprContext.toBuiltinExpression(
     file: String
 ): Expression {
-    fun build(builder: (SourceRef, TypeRef, Expression, Expression) -> Expression, typeRef: TypeRef): Expression {
+    fun build(builder: (SourceRef, TypeRef, BuiltinBinaryOp, Expression, Expression) -> Expression, op: BuiltinBinaryOp, typeRef: TypeRef): Expression {
         val params = params.exprOfTuplePart().map { it.expression().toExpression(file) }
         if (params.size != 2)
             throw IllegalArgumentException("Param count must be 2")
-        return builder(toSourceRef(file), typeRef, params[0], params[1])
+        return builder(toSourceRef(file), typeRef, op, params[0], params[1])
     }
     return when (val name = NAME().text) {
-        "add_i32" -> build(Expression::Add, TypeRef.Primitive(PrimitiveKind.Int32))
-        "add_i64" -> build(Expression::Add, TypeRef.Primitive(PrimitiveKind.Int64))
+        "add_i32" -> build(Expression::BuiltinBinary, BuiltinBinaryOp.ADD_I32, TypeRef.Primitive(PrimitiveKind.Int32))
+        "add_i64" -> build(Expression::BuiltinBinary, BuiltinBinaryOp.ADD_I64, TypeRef.Primitive(PrimitiveKind.Int64))
+        "mul_i32" -> build(Expression::BuiltinBinary, BuiltinBinaryOp.MUL_I32, TypeRef.Primitive(PrimitiveKind.Int32))
+        "sub_i32" -> build(Expression::BuiltinBinary, BuiltinBinaryOp.SUB_I32, TypeRef.Primitive(PrimitiveKind.Int32))
+        "equ_i32" -> build(Expression::BuiltinBinary, BuiltinBinaryOp.EQU_I32, TypeRef.Primitive(PrimitiveKind.Bool))
         else -> throw IllegalArgumentException("Unrecognised builtin $name")
     }
 }
@@ -69,20 +72,14 @@ private fun YaflParser.ApplyExprContext.toApplyExpression(
 private fun YaflParser.IntegerExprContext.toIntegerExpression(
     file: String
 ): Expression {
-    fun String.parse(type: PrimitiveKind, sign: Boolean, radix: Int) =
-        Expression.Integer(toSourceRef(file), TypeRef.Primitive(type), toLong(radix) * (if (sign) -1 else 1))
+    fun String.parse(type: PrimitiveKind, radix: Int) =
+        Expression.Integer(toSourceRef(file), TypeRef.Primitive(type), toLong(radix))
 
-    fun String.parse(type: PrimitiveKind, sign: Boolean) = when (take(2)) {
-        "0b" -> drop(2).parse(type, sign, 2)
-        "0o" -> drop(2).parse(type, sign, 8)
-        "0x" -> drop(2).parse(type, sign, 16)
-        else -> parse(type, sign, 10)
-    }
-
-    fun String.parse(type: PrimitiveKind) = when (take(1)) {
-        "-" -> drop(1).parse(type, true)
-        "+" -> drop(1).parse(type, false)
-        else -> parse(type, false)
+    fun String.parse(type: PrimitiveKind) = when (take(2)) {
+        "0b" -> drop(2).parse(type, 2)
+        "0o" -> drop(2).parse(type, 8)
+        "0x" -> drop(2).parse(type, 16)
+        else -> parse(type, 10)
     }
 
     fun String.parse() = when {

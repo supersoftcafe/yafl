@@ -118,7 +118,7 @@ class ResolveTypes() {
                         Both(copy(typeRef = it))
                     }
 
-            is Expression.Add ->
+            is Expression.BuiltinBinary ->
                 Both.merge(
                     typeRef.resolveTypes(sourceRef, findDeclarations),
                     left.resolveTypes(findDeclarations),

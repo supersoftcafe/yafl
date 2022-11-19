@@ -202,11 +202,11 @@ class InferTypes(private val typeHints: TypeHints) {
             is Expression.Float, is Expression.Integer, null ->
                 Both(Pair(this, emptyTypeHints()))
 
-            is Expression.Add -> {
-                typeRef.combineTypes(sourceRef, listOf(receiver, left.typeRef, right.typeRef)).map { typeRef ->
+            is Expression.BuiltinBinary -> {
+                typeRef.combineTypes(sourceRef, listOf(receiver)).map { typeRef ->
                     Both.merge(
-                        left.inferTypes(typeRef, findDeclarations),
-                        right.inferTypes(typeRef, findDeclarations)
+                        left.inferTypes(op.ltype, findDeclarations),
+                        right.inferTypes(op.rtype, findDeclarations)
                     ) { (leftExpr, leftHints), (rightExpr, rightHints) ->
                         val hints = leftHints + rightHints
                         Both(Pair(copy(typeRef = typeRef, left = leftExpr!!, right = rightExpr!!), hints))
@@ -266,6 +266,19 @@ class InferTypes(private val typeHints: TypeHints) {
                         }
                     }.map { fields ->
                         Both(Pair(copy(typeRef = typeRef, fields = fields.map { it.first }), fields.fold(emptyTypeHints()) { acc, (_, h) -> acc + h }))
+                    }
+                }
+            }
+
+            is Expression.If -> {
+                typeRef.combineTypes(sourceRef, listOf(receiver, ifFalse.typeRef, ifTrue.typeRef)).map { typeRef ->
+                    Both.merge(
+                        condition.inferTypes(TypeRef.Primitive(PrimitiveKind.Bool), findDeclarations),
+                        ifFalse.inferTypes(typeRef, findDeclarations),
+                        ifTrue.inferTypes(typeRef, findDeclarations)
+                    ) { (conditionExpr, condHints), (ifFalseExpr, ifFalseHints), (ifTrueExpr, ifTrueHints) ->
+                        val hints = condHints + ifFalseHints + ifTrueHints
+                        Both(Pair(copy(typeRef = typeRef, condition = conditionExpr!!, ifTrue = ifTrueExpr!!, ifFalse = ifFalseExpr!!), hints))
                     }
                 }
             }

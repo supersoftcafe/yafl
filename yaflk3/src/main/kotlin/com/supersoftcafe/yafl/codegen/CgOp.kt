@@ -51,7 +51,7 @@ sealed class CgOp {
 
     data class Binary(override val result: CgValue.Register, val op: CgBinaryOp, val input1: CgValue, val input2: CgValue) : CgOp() {
         override fun toIr(context: CgContext): String {
-            return "  $result = $op ${result.type} $input1, $input2\n"
+            return "  $result = $op ${input1.type} $input1, $input2\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {

@@ -19,7 +19,7 @@ sealed class Expression {
 
     data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression): Expression()
 
-    data class Add(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val left: Expression, val right: Expression): Expression()
+    data class BuiltinBinary(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val op: BuiltinBinaryOp, val left: Expression, val right: Expression): Expression()
 
     data class Integer(override val sourceRef: SourceRef, override val typeRef: TypeRef, val value: Long): Expression()
 
