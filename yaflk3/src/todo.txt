@@ -1,5 +1,67 @@
-Remove 'Counter' from 'Ast' and use 'Namer' instead, as encourages more parallelism and can be retained for later at each node level.
+
+## Calling convention
+
+<return type> Func(void** deferredReleaseArea, void* this, params...)
+A function keeps its own internal deferred release area but also can add to the caller supplied deferred release area.
+A function that returns an object from its parameter list will not need to update the deferredReleaseArea.
+The deferredReleaseArea is big enough to hold all pointers in the return type and is initialised to null.
+
+Struct that exceeds 32 bytes in size or has more than 1 object pointer is heap allocated.
+That way the return-type of a function can never return more than one reference that needs deferred release.
+
+
+
+## Todo
+
+Constructor parameter type inference needs to be fixed.
+Change the name 'class' to 'type'.
+Put small classes on the stack.
+When a TypeRef is set by the parser, it must not be overridden later by inference. Basically, once inferred, don't re-infer.
+  Well, unless it's another reason for the constructor returning the wrong type. Maybe type inference is broken.
+For some reason %"this" isn't always the name of the first parameter of each function. Fix it.
+
+
+Check classes for ambiguous duplicate default implementations in hierarchy
+
+
+Add DataRef.Member(level: Int) where level is how high far up the 'this' parent list to walk. 0 = this, 1 = this.this etc
+Load will emit correct 'this' walking code if DataRef is member.
+Reference to 'this' needs to resolve correctly. Walking up can be done with 'this.this' etc.
+Class members of Declaration.Let need better info on which is a Lambda or a real function, because resolving code
+won't know if a member is in the parameter list or the member list.
+
+
+Rename TypeRef.Named to TypeRef.UserType.
+
+TypeRef.Named has 'extends' field now. Populate it from resolve phase.
+fuzzyEquals should also take into account 'extends'. Remember that there is no Unresolved after resolve phase.
+Interface is a special case of class that cannot have state, only functions, and can only extend other interfaces.
+Anonymous object creation can only define functions, as its only purpose is to implement an interface. All state is from capture of locals.
+A class with no constructor parameters is implicitly a singleton. Its only purpose is to implement an interface.
+
+Replace 'class' and 'struct' with 'type'. Compiler decides how to implement each one.
+* Can only extend interfaces.
+* Can only be stack allocated if small, has no reference types and does not implement any interfaces.
+
+
+
+
+
 Get rid of tuple unpack. Apply operator takes callable expression result as right arg and a call is curried explicitly instead:
   e.g someValue |> doSomething(87, $1)
   is equivalent to to doSomething(87, $1)(someValue)
-Conditional apply (think Monad) operator is done like Haskell using map that takes callable param.
+Conditional apply (think Monad) operator is done like Haskell using map that takes callable param. This requires generics.
+
+Add Expression.Klass support.
+* All members are Declaration.Let, even virtual functions. If constructor parameter has right name and signature, then
+  it is the implementation for an interface function.
+
+
+## Future
+
+Generics
+
+
+## Done
+
+Remove 'Counter' from 'Ast' and use 'Namer' instead, as encourages more parallelism and can be retained for later at each node level.

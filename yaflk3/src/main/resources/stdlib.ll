@@ -117,10 +117,11 @@ start:
     %vt_ptr = load %vtable*, %vtable** %vt_ptr_ptr
     %mask_ptr = getelementptr %vtable, %vtable* %vt_ptr, i32 0, i32 0, i32 0
     %mask = load %size_t, %size_t* %mask_ptr
+    %id1 = sub %size_t %id, 1
     br label %loop
 
 loop:
-    %id2 = phi %size_t [ %id, %start ], [ %index, %loop ]
+    %id2 = phi %size_t [ %id1, %start ], [ %index, %loop ]
     %id3 = add %size_t %id2, 1
     %index = and %size_t %mask, %id3
 

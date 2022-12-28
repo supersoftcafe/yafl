@@ -32,6 +32,6 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String,List<String>> {
 }
 
 fun optimizeLlvmIr(text: String): Either<String,List<String>> {
-    return "opt --O3 -S".runCommand(text)
+    return "opt --O1 -S".runCommand(text)
 }
 

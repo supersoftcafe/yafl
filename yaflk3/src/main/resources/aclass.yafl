@@ -1,0 +1,12 @@
+
+module Test
+
+import System
+
+class Thing(height, age) {
+    fun both() => height + age
+}
+
+# fun Thing(a,b) => a + b
+
+fun main() => Thing(180, 48).both()

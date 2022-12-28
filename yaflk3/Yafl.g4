@@ -36,7 +36,7 @@ typeRef         : qualifiedName ;
 typePrimitive   : PRIMITIVE NAME ;
 typeOfTuplePart : ( NAME ':' )? type ;
 typeOfTuple     : '(' ( typeOfTuplePart ',' )* typeOfTuplePart? ')' ;
-typeOfLambda    : typeOfTuple LAMBDA type ;
+typeOfLambda    : typeOfTuple ':' type ;
 
 type            : typeRef               # namedType
                 | typePrimitive         # primitiveType
@@ -69,14 +69,15 @@ expression  : BUILTIN NAME params=exprOfTuple?                              # bu
             | qualifiedName                                                 # nameExpr
             ;
 
+extends     : ':' typeRef ( ',' typeRef )* ;
 module      : MODULE typeRef ;
 import_     : IMPORT typeRef ;
-interface   : INTERFACE NAME ( ':' typeRef ( '|' typeRef )* )? ( '{' function* '}' )? ;
-class       : CLASS NAME unpackTuple? ( ':' typeRef ( '|' typeRef )* )? ( '{' function* '}' )? ;
-struct      : STRUCT NAME unpackTuple ( '{' function* '}' )? ;
+interface   : INTERFACE NAME extends? ( '{' function* '}' )? ;
+class       : CLASS NAME unpackTuple? extends? ( '{' classMember* '}' )? ;
 enum        : ENUM NAME ( '{' ( ( NAME unpackTuple? ) | function )* '}' )? ;
 alias       : ALIAS NAME ':' type ;
-declaration : letWithExpr | function | interface | class | struct | enum | alias;
+declaration : letWithExpr | function | interface | class | enum | alias;
+classMember :  function ;
 
 root        : module import_* declaration* EOF ;
 

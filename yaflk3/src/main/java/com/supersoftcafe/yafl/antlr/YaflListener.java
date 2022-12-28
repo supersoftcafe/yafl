@@ -368,6 +368,16 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitCompareExpr(YaflParser.CompareExprContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link YaflParser#extends}.
+	 * @param ctx the parse tree
+	 */
+	void enterExtends(YaflParser.ExtendsContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#extends}.
+	 * @param ctx the parse tree
+	 */
+	void exitExtends(YaflParser.ExtendsContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link YaflParser#module}.
 	 * @param ctx the parse tree
 	 */
@@ -447,6 +457,16 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitDeclaration(YaflParser.DeclarationContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#classMember}.
+	 * @param ctx the parse tree
+	 */
+	void enterClassMember(YaflParser.ClassMemberContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#classMember}.
+	 * @param ctx the parse tree
+	 */
+	void exitClassMember(YaflParser.ClassMemberContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#root}.
 	 * @param ctx the parse tree

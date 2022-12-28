@@ -5,19 +5,20 @@ import kotlin.math.max
 data class CgThingClass(
     val name: String,
     val dataType: CgTypeStruct,
-    val functions: List<CgThingFunction>,
-    val delete: CgThingFunction // Must be void(object*)
+    val functions: Map<String, String>, // Signature to Global name
+    val deleteGlobalName: String // Must be void(object*)
 ) : CgThing {
     fun toIr(context: CgContext): CgLlvmIr {
-        val slots = functions.mapNotNull { function -> context.slotNameToId(function.name)?.let { slotId -> Pair(function.name, slotId) } }
+        val slots = functions
+            .mapNotNull { (nameOfSlot, globalName) -> context.slotNameToId(nameOfSlot)?.let { slotId -> Pair(globalName, slotId) } }
+
         val size = max(4, (slots.size + slots.size / 2).takeHighestOneBit() * 2)
         val mask = size - 1
-        val array = flattenHashTable((0..mask).map { index -> slots.filter { (_, slot) -> (slot and mask) == index }.map { (name, _) -> name } })
+        val array = flattenHashTable((0..mask)
+            .map { index -> slots.filter { (_, slot) -> (slot and mask) == index }.map { (name, _) -> name } })
 
         val vtableInitialiser = array.joinToString { name -> if (name != null) {
-            val functionName = "@\"$name\""
-            val functionTypeName = "%\"typeof.$functionName\""
-            "%size_t* bitcast ( $functionTypeName* $functionName to %size_t* )"
+            "%size_t* bitcast ( %\"typeof.$name\"* @\"$name\" to %size_t* )"
         } else {
             "%size_t* null"
         }}
@@ -28,7 +29,7 @@ data class CgThingClass(
         return CgLlvmIr(
             types = "$vtableTypeName = type { { %size_t, void(%object*)* }, [ $size x %size_t* ] }\n" +
                     "$objectTypeName = type { %object, $dataType }\n",
-            declarations = "$vtableDataName = internal global $vtableTypeName { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @\"${delete.name}\" }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n")
+            declarations = "$vtableDataName = internal global $vtableTypeName { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @\"$deleteGlobalName\" }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n")
     }
 
     private tailrec fun <TEntry> flattenHashTable(array: List<List<TEntry>>): List<TEntry?> {

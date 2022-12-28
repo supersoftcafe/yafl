@@ -1,6 +1,6 @@
 package com.supersoftcafe.yafl.utils
 
-sealed class Either<TValue,TError> {
+sealed class Either<out TValue,TError> {
     abstract fun <TResult> map(op: (TValue) -> Either<TResult,TError>): Either<TResult,TError>
 
     abstract fun <TExtra> with(extra: TExtra): Either<Pair<TValue, TExtra>, TError>

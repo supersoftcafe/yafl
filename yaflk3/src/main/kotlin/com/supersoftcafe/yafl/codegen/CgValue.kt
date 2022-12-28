@@ -8,7 +8,7 @@ sealed class CgValue {
         override fun toString() = "@\"$name\""
     }
     data class Register(val name: String, override val type: CgType) : CgValue() {
-        override fun toString() = "%\"$name\""
+        override fun toString() = if (name.isEmpty()) name else "%\"$name\""
         override fun updateRegisters(registerMap: (String) -> String) = Register(registerMap(name), type)
     }
     data class Immediate(val value: String, override val type: CgType) : CgValue() {

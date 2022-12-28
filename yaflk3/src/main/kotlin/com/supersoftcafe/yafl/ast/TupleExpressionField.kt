@@ -7,4 +7,4 @@ package com.supersoftcafe.yafl.ast
 //    data class Indexed(override val expression: Expression, val index: Int, val unpack: Boolean) : TupleField()
 //}
 
-data class TupleExpressionField(val expression: Expression, val unpack: Boolean, val name: String?)
+data class TupleExpressionField(val unpack: Boolean, val name: String?, val expression: Expression)

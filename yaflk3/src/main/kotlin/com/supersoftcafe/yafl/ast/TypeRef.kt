@@ -1,11 +1,13 @@
 package com.supersoftcafe.yafl.ast
 
+import com.supersoftcafe.yafl.utils.Namer
+
 sealed class TypeRef {
     abstract val resolved: Boolean      // Type might be incomplete, but all known parts are resolved
     abstract val complete: Boolean      // Type might have unresolved parts, but we do have all parts
 
     data class Tuple(val fields: List<TupleTypeField>) : TypeRef() {
-        override fun equals(other: Any?) = other is Tuple && fields == other.fields;
+        override fun equals(other: Any?) = other is Tuple && fields == other.fields
         override fun hashCode() = fields.hashCode()
         override val resolved = fields.all { it.typeRef?.resolved != false }
         override val complete = fields.all { it.typeRef?.complete == true }
@@ -16,17 +18,22 @@ sealed class TypeRef {
         override val complete = parameter?.complete == true && result?.complete == true
     }
 
-    data class Unresolved(val name: String) : TypeRef() {
+    data class Unresolved(val name: String, val id: Namer?) : TypeRef() {
         override val resolved = false
         override val complete = true
     }
 
-    data class Named(val name: String, val id: Long) : TypeRef() {
+    data class Named(val name: String, val id: Namer, val extends: List<TypeRef.Named>) : TypeRef() {
         override val resolved = true
         override val complete = true
     }
 
     data class Primitive(val kind: PrimitiveKind) : TypeRef() {
+        override val resolved = true
+        override val complete = true
+    }
+
+    object Unit : TypeRef() {
         override val resolved = true
         override val complete = true
     }

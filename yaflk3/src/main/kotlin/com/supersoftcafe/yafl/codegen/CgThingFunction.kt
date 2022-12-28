@@ -2,15 +2,16 @@ package com.supersoftcafe.yafl.codegen
 
 
 data class CgThingFunction(
-    val name: String,
+    val globalName: String,     // A globally unique name that can be used to refer to the function definition
+    val nameOfSlot: String,     // A signature that multiple functions can share if they are effectively equivalent
     val resultType: CgType,
     val params: List<CgValue.Register>,
     val variables: List<CgThingVariable>,
     val body: List<CgOp>
 ) : CgThing, Iterable<CgOp> {
-    constructor(name: String, result: CgType, param1: CgValue.Register, vararg body: CgOp) : this(name, result, listOf(param1), listOf(), body.toList())
-    constructor(name: String, result: CgType, param1: CgValue.Register, param2: CgValue.Register, vararg body: CgOp) : this(name, result, listOf(param1, param2), listOf(), body.toList())
-    constructor(name: String, result: CgType, params: List<CgValue.Register>, vararg body: CgOp) : this(name, result, params, listOf(), body.toList())
+    constructor(globalName: String, nameOfSlot: String, result: CgType, param1: CgValue.Register, vararg body: CgOp) : this(globalName, nameOfSlot, result, listOf(param1), listOf(), body.toList())
+    constructor(globalName: String, nameOfSlot: String, result: CgType, param1: CgValue.Register, param2: CgValue.Register, vararg body: CgOp) : this(globalName, nameOfSlot, result, listOf(param1, param2), listOf(), body.toList())
+    constructor(globalName: String, nameOfSlot: String, result: CgType, params: List<CgValue.Register>, vararg body: CgOp) : this(globalName, nameOfSlot, result, params, listOf(), body.toList())
 
     init {
         if (params.firstOrNull()?.type != CgTypePrimitive.OBJECT)
@@ -23,10 +24,11 @@ data class CgThingFunction(
         val paramTypeStr = params.joinToString { "${it.type}" }
         val paramVarStr = params.joinToString { "${it.type} %\"${it.name}\"" }
         val lines = variables.map { "  %\"${it.name}\" = alloca ${it.type}\n" } + body.map { it.toIr(context) }
-        val functionTypeName = CgValue.Register("typeof.$name", CgTypePrimitive.VOID)
+        val functionTypeName = CgValue.Register("typeof.$globalName", CgTypePrimitive.VOID)
+        val idPrefix = context.slotNameToId(nameOfSlot)?.let { "prefix %size_t $it " } ?: ""
         return CgLlvmIr(
             types = "$functionTypeName = type $resultType($paramTypeStr)\n",
-            declarations = lines.joinToString("", "define internal tailcc $resultType @\"$name\"($paramVarStr) {\n", "}\n\n"))
+            declarations = lines.joinToString("", "define internal tailcc $resultType @\"$globalName\"($paramVarStr) $idPrefix{\n", "}\n\n"))
     }
 
     fun addPreamble(preamble: List<CgOp>): CgThingFunction {
@@ -39,13 +41,15 @@ data class CgThingFunction(
     }
 
     companion object {
-        fun nothing(name: String) = CgThingFunction(name,
+        fun nothing(name: String, signature: String) = CgThingFunction(
+            name,
+            signature,
             CgTypePrimitive.VOID,
             CgValue.THIS,
             CgOp.Label("start"),
             CgOp.Return(CgValue.Immediate("", CgTypePrimitive.VOID)))
 
         fun main(vararg body: CgOp) =
-            CgThingFunction("synth_main", CgTypePrimitive.INT32, CgValue.THIS, *body)
+            CgThingFunction("synth_main", "synth_main", CgTypePrimitive.INT32, CgValue.THIS, *body)
     }
 }

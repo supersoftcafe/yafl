@@ -2,5 +2,6 @@ package com.supersoftcafe.yafl.ast
 
 data class TypeHint(
     val sourceRef: SourceRef,
-    val typeRef: TypeRef
+    val inputTypeRef: TypeRef? = null,
+    val outputTypeRef: TypeRef? = null
 )

@@ -1,5 +1,7 @@
 package com.supersoftcafe.yafl.ast
 
+import com.supersoftcafe.yafl.utils.Namer
+
 
 sealed class Expression {
     abstract val sourceRef: SourceRef
@@ -8,8 +10,11 @@ sealed class Expression {
 
     data class LoadData(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val dataRef: DataRef): Expression()
 
-    data class LoadMember(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val base: Expression, val name: String): Expression()
+    data class LoadMember(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val base: Expression, val name: String, val id: Namer? = null): Expression()
 
+    data class NewStruct(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression): Expression()
+
+    data class NewKlass(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression): Expression()
 
     data class If(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val condition: Expression, val ifTrue: Expression, val ifFalse: Expression): Expression()
 
@@ -19,7 +24,7 @@ sealed class Expression {
 
     data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression): Expression()
 
-    data class BuiltinBinary(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val op: BuiltinBinaryOp, val left: Expression, val right: Expression): Expression()
+    data class BuiltinBinary(override val sourceRef: SourceRef, override val typeRef: TypeRef, val op: BuiltinBinaryOp, val left: Expression, val right: Expression): Expression()
 
     data class Integer(override val sourceRef: SourceRef, override val typeRef: TypeRef, val value: Long): Expression()
 

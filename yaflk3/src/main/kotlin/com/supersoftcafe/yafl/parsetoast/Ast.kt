@@ -2,9 +2,10 @@ package com.supersoftcafe.yafl.parsetoast
 
 import com.supersoftcafe.yafl.antlr.YaflParser
 import com.supersoftcafe.yafl.ast.*
+import com.supersoftcafe.yafl.utils.Namer
 
 
-fun addToAst(ast: Ast, file: String, tree: YaflParser.RootContext): Ast {
+fun parseToAst(namer: Namer, file: String, tree: YaflParser.RootContext): Ast {
     val moduleName = tree.module().typeRef().qualifiedName().toName()
     val imports = importsOf(listOf(moduleName) + tree.import_().map { it.typeRef().qualifiedName().toName() })
     val prefix = "$moduleName::"
@@ -19,11 +20,12 @@ fun addToAst(ast: Ast, file: String, tree: YaflParser.RootContext): Ast {
 //        }
 
     // Add all actual declarations from this file
-    val (declarations, counter) = tree.declaration()
-        .fold(Pair(listOf<Root>(), ast.counter)) { (declarations, tailCounter), declaration ->
-            val (tailDeclaration, tailCounter) = declaration.toDeclaration(file, tailCounter, true, prefix)
-            Pair(declarations + Root(imports, tailDeclaration, file), tailCounter)
+    val declarations = tree.declaration()
+        .flatMapIndexed { index, declaration ->
+            declaration.toDeclaration(file, namer + index, Scope.Global, prefix).map {
+                Root(imports, it, file)
+            }
         }
 
-    return ast.copy(counter = counter, ast.declarations + declarations)
+    return Ast(declarations = declarations)
 }

@@ -31,7 +31,7 @@ private fun YaflParser.ExprOfTupleContext.toTupleExpression(
     file: String
 ): Expression {
     val result = Expression.Tuple(toSourceRef(file), null, exprOfTuplePart().map {
-        TupleExpressionField(it.expression().toExpression(file), it.unpack != null, it.NAME()?.text)
+        TupleExpressionField(it.unpack != null, it.NAME()?.text, it.expression().toExpression(file))
     })
 
     if (result.fields.size == 1 && result.fields[0].name == null && !result.fields[0].unpack) {
@@ -54,8 +54,8 @@ private fun YaflParser.ApplyExprContext.toApplyExpression(
                     toSourceRef(file),
                     null,
                     listOf(
-                        TupleExpressionField(right.parameter, true, null),
-                        TupleExpressionField(left, true, null)
+                        TupleExpressionField(true, null, right.parameter),
+                        TupleExpressionField(true, null, left)
                     )
                 )
             )
@@ -113,8 +113,8 @@ private fun YaflParser.ExpressionContext.toBinaryOperator(
             sourceRef,
             null,
             listOf(
-                TupleExpressionField(left.toExpression(file), false, null),
-                TupleExpressionField(right.toExpression(file), false, null)
+                TupleExpressionField(false, null, left.toExpression(file)),
+                TupleExpressionField(false, null, right.toExpression(file))
             )
         )
     )
@@ -131,7 +131,7 @@ private fun YaflParser.CallExprContext.toCallExpression(
         if (params is Expression.Tuple) params else Expression.Tuple(
             params.sourceRef,
             TypeRef.Tuple(listOf(TupleTypeField(params.typeRef, null))),
-            listOf(TupleExpressionField(params, false, null))
+            listOf(TupleExpressionField(false, null, params))
         )
     )
 }

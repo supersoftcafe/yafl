@@ -26,31 +26,54 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
 
     // Insert ARC code after New/Call and before Ret
     val modifiedBody = thing.body.flatMapIndexed { opIndex, op ->
-        val objectFields = findObjectFields(op.result.type)
-        if (objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.Call)) {
-            // Store value(s) for a later release just before the return statement
-            listOf(op) + objectFields.flatMap { fieldPath ->
-                val pathStr = fieldPath.joinToString("$")
-                if (fieldPath.isNotEmpty()) {
-                    val from = CgValue.Register(op.result.name + pathStr, CgTypePrimitive.OBJECT)
-                    val extract = CgOp.ExtractValue(from, op.result, fieldPath)
-                    val store = CgOp.Store(CgTypePrimitive.OBJECT, CgValue.Register("${op.result}.arc$pathStr", CgTypePointer(from.type)), from)
-                    listOf(extract, store)
+        when (op) {
+            is CgOp.New, is CgOp.Call -> {
+                val objectFields = findObjectFields(op.result.type)
+                if (objectFields.isNotEmpty()) {
+                    // Store value(s) for a later release just before the return statement
+                    listOf(op) + objectFields.flatMap { fieldPath ->
+                        val pathStr = fieldPath.joinToString("$")
+                        if (fieldPath.isNotEmpty()) {
+                            val from = CgValue.Register(op.result.name + pathStr, CgTypePrimitive.OBJECT)
+                            val extract = CgOp.ExtractValue(from, op.result, fieldPath)
+                            val store = CgOp.Store(CgTypePrimitive.OBJECT, CgValue.Register("${op.result.name}.arc$pathStr", CgTypePointer(from.type)), from)
+                            listOf(extract, store)
+                        } else {
+                            val store = CgOp.Store(CgTypePrimitive.OBJECT, CgValue.Register("${op.result.name}.arc", CgTypePointer(op.result.type)), op.result)
+                            listOf(store)
+                        }
+                    }
                 } else {
-                    val store = CgOp.Store(CgTypePrimitive.OBJECT, CgValue.Register("${op.result}.arc", CgTypePointer(op.result.type)), op.result)
-                    listOf(store)
+                    listOf(op)
                 }
             }
 
-        } else if (op is CgOp.Return) {
-            // Acquire the return, but then release everything. Return is safe due to extra acquire.
-            val releases = arcVars.map { arcVar -> CgOp.Release(CgValue.Register(arcVar.name, CgTypePointer(CgTypePrimitive.OBJECT))) }
-            if (op.result.type == CgTypePrimitive.OBJECT)
-                 listOf(CgOp.Acquire(op.returnValue)) + releases + op
-            else releases + op
+            is CgOp.Return -> {
+                val objectFields = findObjectFields(op.returnValue.type)
 
-        } else {
-            listOf(op)
+                // Acquire the return, but then release everything. Return is safe due to extra acquire.
+                val acquires = objectFields.flatMap { fieldPath ->
+                    val pathStr = fieldPath.joinToString("$")
+                    if (fieldPath.isNotEmpty()) {
+                        val from = CgValue.Register((op.returnValue as CgValue.Register).name + pathStr, CgTypePrimitive.OBJECT)
+                        val extract = CgOp.ExtractValue(from, op.returnValue, fieldPath)
+                        val acquire = CgOp.Acquire(from)
+                        listOf(extract, acquire)
+                    } else {
+                        listOf(CgOp.Acquire(op.returnValue))
+                    }
+                }
+
+                val releases = arcVars.map { arcVar ->
+                    CgOp.Release(CgValue.Register(arcVar.name, CgTypePointer(CgTypePrimitive.OBJECT)))
+                }
+
+                acquires + releases + op
+            }
+
+            else -> {
+                listOf(op)
+            }
         }
     }
 

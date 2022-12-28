@@ -1,7 +1,8 @@
 package com.supersoftcafe.yafl.ast
 
+import com.supersoftcafe.yafl.utils.Namer
+
 data class Ast(
-    val counter: Long = 0,
     val declarations: List<Root> = listOf(),
     val typeHints: TypeHints = TypeHints()
 ) {
@@ -12,5 +13,9 @@ data class Ast(
 
     fun findDeclarations(imports: Imports): (String)->List<Declaration> {
         return { name -> findDeclarations(imports, name) }
+    }
+
+    operator fun plus(other: Ast): Ast {
+        return Ast(declarations = declarations + other.declarations, typeHints = typeHints + other.typeHints)
     }
 }

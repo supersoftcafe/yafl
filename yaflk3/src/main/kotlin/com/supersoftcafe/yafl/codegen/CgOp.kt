@@ -59,13 +59,13 @@ sealed class CgOp {
         }
     }
 
-    data class GetObjectFieldPtr(override val result: CgValue.Register, val pointer: CgValue, val objectName: String, val fieldIndex: Int) : CgOp() {
+    data class GetObjectFieldPtr(override val result: CgValue.Register, val pointer: CgValue, val objectName: String, val fieldIndex: Int = -1) : CgOp() {
 
         override fun toIr(context: CgContext): String {
             val dataType = "%\"typeof.object\$$objectName\""
             val tempRegister = "%\"${result.name}.object\""
             return "  $tempRegister = bitcast %object* $pointer to $dataType*\n" +
-                   "  $result = getelementptr $dataType, $dataType* $tempRegister, i32 0, i32 1, i32 $fieldIndex\n"
+                   "  $result = getelementptr $dataType, $dataType* $tempRegister, i32 0, i32 1" + (if (fieldIndex >= 0) ", i32 $fieldIndex\n" else "\n")
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -142,7 +142,7 @@ sealed class CgOp {
 
         override fun toIr(context: CgContext): String {
             val slotId = context.slotNameToId(nameOfSlot)
-            return "  $result = call %lambda @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n"
+            return "  $result = tail call tailcc %lambda @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -180,6 +180,25 @@ sealed class CgOp {
             val objectTypeName = "%\"typeof.object\$$className\""
             val vtableTypeName = "%\"typeof.vtable\$$className\""
             return "  $result = tail call tailcc %object* @newObject(%size_t ptrtoint($objectTypeName* getelementptr ($objectTypeName, $objectTypeName* null, i32 1) to %size_t), %vtable* bitcast($vtableTypeName* $vtableDataName to %vtable*))\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = result.updateRegisters(registerMap))
+        }
+    }
+
+    data class Delete(val pointer: CgValue, val className: String) : CgOp() {
+        override val result: CgValue.Register get() = CgValue.VOID
+
+        override fun toIr(context: CgContext): String {
+            val vtableDataName = "@\"vtable\$$className\""
+            val objectTypeName = "%\"typeof.object\$$className\""
+            val vtableTypeName = "%\"typeof.vtable\$$className\""
+            return "  tail call tailcc void @deleteObject(%size_t ptrtoint($objectTypeName* getelementptr ($objectTypeName, $objectTypeName* null, i32 1) to %size_t), %object* $pointer)\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return Acquire(pointer = pointer.updateRegisters(registerMap))
         }
     }
 

@@ -223,6 +223,12 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitCompareExpr(YaflParser.CompareExprContext ctx);
 	/**
+	 * Visit a parse tree produced by {@link YaflParser#extends}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitExtends(YaflParser.ExtendsContext ctx);
+	/**
 	 * Visit a parse tree produced by {@link YaflParser#module}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -270,6 +276,12 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitDeclaration(YaflParser.DeclarationContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link YaflParser#classMember}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitClassMember(YaflParser.ClassMemberContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#root}.
 	 * @param ctx the parse tree
