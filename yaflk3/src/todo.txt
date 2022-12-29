@@ -1,0 +1,50 @@
+
+# Todo
+
+Remove use of tuple as call parameters.
+  Slight increase in parser complexity.
+  Ast needs list of parameters instead of single tuple parameter.
+  Reduces complexity of generated IR code.
+  Makes adding lambda shorthand (using $1 etc) simpler later.
+
+Add print support to help with output of results.
+
+Add array support.
+Add enum support.
+Add generics support.
+
+Add explicit currying of calls using $1 etc parameters.
+Get rid of tuple unpack. Use currying instead for apply operator.
+Put simple classes on the stack.
+
+
+# Notes
+
+## Anonymous objects
+Anonymous object creation can only define functions, as its only purpose is to implement an interface. All state is from capture of locals.
+
+## Class changes
+Replace 'class' and 'struct' with 'type'. Compiler decides how to implement each one.
+* Can only extend interfaces.
+* Can only be stack allocated if <= 32 bytes, <= 1 object ref, <= 0 interfaces
+
+## Calling conventions to improve ref counting performance
+<return type> Func(void** deferredReleaseArea, void* this, params...)
+A function keeps its own internal deferred release area but also can add to the caller supplied deferred release area.
+A function that returns an object from its parameter list will not need to update the deferredReleaseArea.
+The deferredReleaseArea is big enough to hold all pointers in the return type and is initialised to null.
+
+## Currying
+Get rid of tuple unpack. Apply operator takes callable expression result as right arg and a call is curried explicitly instead:
+  e.g someValue |> doSomething(87, $1)
+  is equivalent to to doSomething(87, $1)(someValue)
+Conditional apply (think Monad) operator is done like Haskell using map that takes callable param. This requires generics.
+
+## Arrays
+Any class parameter can be an array. It is initialised with a callable param.
+  class Cat(legs: Leg[4])   # Fixed length array
+  class Something(a: Quark[4], size: Int32, b: Blob[size])  # Variable size array must be last parameter
+
+## Generics
+Thinking
+

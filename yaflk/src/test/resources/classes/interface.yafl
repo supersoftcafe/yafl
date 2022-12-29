@@ -1,10 +1,15 @@
 
-# Indentation as syntax. Parser must recognise that 'thirty' is not a part of the class.
-
-# Interfaces can only have functions
+# Interfaces can only have functions.
+# They can have default implementations.
 interface TheAdder
   fun addValue(a:Int32):Int32
 
+# There is no class inheritance, therefore the only things
+# that can appear to the left of the colon are interfaces.
+class ANumber : TheAdder
+  fun addValue(a) = a + 1
+
+# Indentation as syntax. Parser must recognise that 'thirty' is not a part of the class.
 fun thirty() = 30
 
 fun main() = thirty()

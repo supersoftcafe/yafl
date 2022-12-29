@@ -25,8 +25,6 @@ enum class PrimitiveKind(val irType: String) {
     Float64("f8")
 }
 
-class InterfaceFunction(val name: String, val parameters: List<Field>, val sourceRef: SourceRef, val result: Type?)
-
 sealed class Declaration(
     val name: String,
     val sourceRef: SourceRef,
@@ -42,13 +40,12 @@ sealed class Declaration(
         type: Type? = null
     ) : Declaration(name, sourceRef, type)
 
-    class Interface(
-        name: String,
-        val functions: List<InterfaceFunction>,
-        val extensions: List<Type>,
-        sourceRef: SourceRef,
-        type: Type? = null
-    ) : Declaration(name, sourceRef, type)
+//    class Interface(
+//        name: String,
+//        val functions: List<Function>,
+//        sourceRef: SourceRef,
+//        type: Type? = null
+//    ) : Declaration(name, sourceRef, type)
 
     class Primitive(
         name: String,

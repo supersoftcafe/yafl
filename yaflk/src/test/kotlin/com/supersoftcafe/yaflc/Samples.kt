@@ -1,5 +1,10 @@
 package com.supersoftcafe.yaflc
 
+import com.supersoftcafe.yaflc.asttoir.astToIr
+import com.supersoftcafe.yaflc.codegen.generateLlvmIr
+import com.supersoftcafe.yaflc.codegen.optimizeLlvmIr
+import com.supersoftcafe.yaflc.utils.None
+import com.supersoftcafe.yaflc.utils.Some
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -9,7 +14,8 @@ internal class Samples {
 
     @ParameterizedTest
     @ValueSource(strings = [
-        "test1.yafl",
+        "test0.yafl",
+//        "test1.yafl",
 //        "test2.yafl",
 //        "test3.yafl",
 //        "test4.yafl",
@@ -62,12 +68,22 @@ internal class Samples {
         val resolveErrors = typeResolver.resolve()
         assertEquals("", resolveErrors.joinToString("\n"))
 
-        val generator = CodeGenerator(ast)
-        val code = generator.generate()
+        val things = astToIr(ast)
+        val llvmIr = generateLlvmIr(things)
+        when (llvmIr) {
+            is Some<String> -> {
+                println(llvmIr)
+                val optimised = optimizeLlvmIr(llvmIr.value)
+                when (optimised) {
+                    is None<String> -> {
+                        fail<Unit>("optimizeLlvmIr: " + optimised.error)
+                    }
 
-        println(code)
-
-        val (stdout, stderr) = "opt --O3 -S".runCommand(code)
-        assertEquals("", stderr)
+                }
+            }
+            is None<String> -> {
+                fail<Unit>("generateLlvmIr: " + llvmIr.error)
+            }
+        }
     }
 }
