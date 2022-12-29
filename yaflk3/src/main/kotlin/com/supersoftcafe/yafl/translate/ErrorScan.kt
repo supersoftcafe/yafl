@@ -8,21 +8,39 @@ import com.supersoftcafe.yafl.utils.Namer
 private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: TypeHints) {
     private fun TypeRef?.scan(sourceRef: SourceRef): List<String> {
         return when (this) {
-            null -> listOf("$sourceRef unknown type")
-            is TypeRef.Unresolved -> listOf("$sourceRef unresolved type '$name'")
-            is TypeRef.Tuple -> fields.flatMap { it.typeRef.scan(sourceRef) }
-            is TypeRef.Callable -> result.scan(sourceRef) + parameter.scan(sourceRef)
-            is TypeRef.Named -> listOf()
-            is TypeRef.Primitive -> listOf()
-            TypeRef.Unit -> listOf()
+            null ->
+                listOf("$sourceRef unknown type")
+
+            is TypeRef.Unresolved ->
+                listOf("$sourceRef unresolved type '$name'")
+
+            is TypeRef.Tuple ->
+                fields.flatMap { it.typeRef.scan(sourceRef) }
+
+            is TypeRef.Callable ->
+                result.scan(sourceRef) + parameter.scan(sourceRef)
+
+            is TypeRef.Named ->
+                listOf()
+
+            is TypeRef.Primitive ->
+                listOf()
+
+            TypeRef.Unit ->
+                listOf()
         }
     }
 
     private fun DataRef?.scan(sourceRef: SourceRef): List<String> {
         return when (this) {
-            null -> listOf("$sourceRef unknown reference")
-            is DataRef.Unresolved -> listOf("$sourceRef unresolved reference '$name'")
-            is DataRef.Resolved -> listOf()
+            null ->
+                listOf("$sourceRef unknown reference")
+
+            is DataRef.Unresolved ->
+                listOf("$sourceRef unresolved reference '$name'")
+
+            is DataRef.Resolved ->
+                listOf()
         }
     }
 
@@ -69,8 +87,12 @@ private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: Typ
             is Expression.BuiltinBinary ->
                 (left.scan() + right.scan()).ifEmpty {
                     listOfNotNull(
-                        if (left  != op.ltype) "${left .sourceRef} does not match operator type" else null,
-                        if (right != op.rtype) "${right.sourceRef} does not match operator type" else null
+                        if (left.typeRef  != op.ltype)
+                            "${left .sourceRef} does not match operator type"
+                        else null,
+                        if (right.typeRef != op.rtype)
+                            "${right.sourceRef} does not match operator type"
+                        else null
                     )
                 }
 
@@ -165,11 +187,9 @@ private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: Typ
 
 
 
-fun scanForErrors(ast: Ast): Either<Ast, List<String>> {
-    val errors = ScanForErrors(
+fun scanForErrors(ast: Ast): List<String> {
+    return ScanForErrors(
         ast.declarations.associate { (_, declaration, _) -> declaration.id to declaration },
         ast.typeHints
     ).scan(ast)
-
-    return if (errors.isEmpty()) Either.some(ast) else Either.error(errors)
 }

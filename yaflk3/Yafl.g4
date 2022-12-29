@@ -8,7 +8,6 @@ IMPORT      : 'import';
 ALIAS       : 'alias';
 FUN         : 'fun';
 LET         : 'let';
-STRUCT      : 'struct';
 INTERFACE   : 'interface';
 CLASS       : 'class';
 OBJECT      : 'object';

@@ -369,7 +369,7 @@ private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals
         listOf(),
             cleanupCode.dropLast(1) +
             CgOp.Delete(CgValue.THIS, className) + // Insert delete just before final call to release, if exists
-            cleanupCode.takeLast(1) + // Final release after delete so it can tail call to avoid some stack overflows
+            cleanupCode.takeLast(1) + // Final release after delete, so it can tail call to avoid some stack overflows
             CgOp.Return(CgValue.VOID)
     )
 
