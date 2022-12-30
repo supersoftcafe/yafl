@@ -51,6 +51,19 @@ internal class MergeTypesKtTest {
         assertEquals(intType, param_b?.typeRef)
     }
 
+    @Test
+    fun `brackets of single value treated as same`() {
+        val ast = yaflBuild("fun main() => 1 * (2 + 3)\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
+        assertEquals(intType, decl?.returnType)
+    }
+
+    @Test
+    fun `conditional expression`() {
+        val ast = yaflBuild("fun main() => (1 = 1) ? 1 : 2\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
+        assertEquals(intType, decl?.returnType)
+    }
 
 
 

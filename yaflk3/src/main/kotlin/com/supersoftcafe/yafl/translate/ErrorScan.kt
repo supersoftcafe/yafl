@@ -116,12 +116,17 @@ private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: Typ
     }
 
     private fun Declaration.Function.scanFunction(): List<String> {
-        return thisDeclaration.scanLet() +
+        val bodyError =
+            if (scope != Scope.Global || body != null || "extern" in attributes) listOf()
+            else listOf("$sourceRef function declared without body")
+
+        return bodyError +
+                thisDeclaration.scanLet() +
                 parameters.flatMap { it.scanLet() } +
                 (body?.scan() ?: listOf()).ifEmpty {
                     returnType.scan(sourceRef).ifEmpty {
                         if (body == null || returnType.isAssignableFrom(body.typeRef)) listOf()
-                        else listOf("$sourceRef incompatible unction return type and expression")
+                        else listOf("$sourceRef incompatible function return type and expression")
                     }
                 }
     }

@@ -87,6 +87,12 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitLambdaType(YaflParser.LambdaTypeContext ctx);
 	/**
+	 * Visit a parse tree produced by {@link YaflParser#attributes}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitAttributes(YaflParser.AttributesContext ctx);
+	/**
 	 * Visit a parse tree produced by {@link YaflParser#unpackTuplePart}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -252,12 +258,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitClass(YaflParser.ClassContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitStruct(YaflParser.StructContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#enum}.
 	 * @param ctx the parse tree

@@ -19,7 +19,7 @@ PIPE_MAYBE  : '?>';
 NAMESPACE   : NAME '::';
 
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z0-9_]*) ;
-INTEGER     : (('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*))([sSlL]|'i8'|'i16'|'i32'|'i64')? ;
+INTEGER     : (('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*)|'0')([sSlL]|'i8'|'i16'|'i32'|'i64')? ;
 STRING      : '"' .*? '"' ;
 
 WS          : [ \t\r\n]+ -> skip ;
@@ -28,7 +28,7 @@ COMMENT     : '#' ~'\n'+ -> skip ;
 
 
 qualifiedName   : NAMESPACE* NAME ;
-exprOfTuplePart : (( NAME '=' ) | unpack='*' )? expression ;
+exprOfTuplePart : ( NAME '=' )? expression ;
 exprOfTuple     : '(' ( exprOfTuplePart ',' )* exprOfTuplePart? ')' ;
 
 typeRef         : qualifiedName ;
@@ -43,11 +43,13 @@ type            : typeRef               # namedType
                 | typeOfLambda          # lambdaType
                 ;
 
+attributes      : '[' NAME* ']' ;
+
 unpackTuplePart : unpackTuple | ( NAME ( ':' type )? ( '=' expression )? ) ;
 unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
 
 letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
-function    : FUN NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
+function    : FUN attributes? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
 
 
 expression  : BUILTIN NAME params=exprOfTuple?                              # builtinExpr

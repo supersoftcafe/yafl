@@ -3,10 +3,11 @@ module Test
 
 import System
 
-class Thing(height, age) {
-    fun both() => height + age
-}
+#class Thing(height, age) {
+#    fun both() => height + age
+#}
+#fun main() => Thing(180, 48).both()
 
-# fun Thing(a,b) => a + b
+fun print(value: Int32): Int32 => value < 0 ? putchar(45) + print(0-value) : ((value < 10 ? 0 : print(value/10)) + putchar(48 + value%10))
 
-fun main() => Thing(180, 48).both()
+fun main() => print(0-2003)

@@ -82,6 +82,7 @@ sealed class Declaration {
         val returnType: TypeRef?,
         val sourceReturnType: TypeRef?,
         override val body: Expression?,
+        val attributes: Set<String> = setOf(),
     ) : Data() {
         override fun toString() = "fun $name"
         override val typeRef = TypeRef.Callable(TypeRef.Tuple(parameters.map { TupleTypeField(it.typeRef, it.name) }), returnType ?: body?.typeRef)

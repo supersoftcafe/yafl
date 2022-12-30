@@ -136,6 +136,16 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitLambdaType(YaflParser.LambdaTypeContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link YaflParser#attributes}.
+	 * @param ctx the parse tree
+	 */
+	void enterAttributes(YaflParser.AttributesContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#attributes}.
+	 * @param ctx the parse tree
+	 */
+	void exitAttributes(YaflParser.AttributesContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link YaflParser#unpackTuplePart}.
 	 * @param ctx the parse tree
 	 */
@@ -417,16 +427,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitClass(YaflParser.ClassContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 */
-	void enterStruct(YaflParser.StructContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 */
-	void exitStruct(YaflParser.StructContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#enum}.
 	 * @param ctx the parse tree
