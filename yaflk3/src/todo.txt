@@ -9,6 +9,10 @@ Remove use of tuple as call parameters.
 
 Adjust codegen so that Call of LoadMember/LoadData, where the target is a real function, are direct LLVM calls.
 
+Remove built in error reporting from resolve phase. Use error checking code instead.
+
+
+
 Add print support to help with output of results.
 
 Add array support.
