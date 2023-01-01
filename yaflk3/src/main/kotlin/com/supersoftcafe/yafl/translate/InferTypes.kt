@@ -190,7 +190,7 @@ class InferTypes(private val typeHints: TypeHints) {
                 )
                 Pair(copy(
                     callable = newCallable!!,
-                    parameter = newParameter!!,
+                    parameter = newParameter as Expression.Tuple,
                     typeRef = typeRef
                 ), callHints + paramHints)
             }

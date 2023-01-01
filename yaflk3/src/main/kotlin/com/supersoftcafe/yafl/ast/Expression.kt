@@ -22,7 +22,7 @@ sealed class Expression {
 
     data class Tuple(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val fields: List<TupleExpressionField>): Expression()
 
-    data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression): Expression()
+    data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression.Tuple): Expression()
 
     data class BuiltinBinary(override val sourceRef: SourceRef, override val typeRef: TypeRef, val op: BuiltinBinaryOp, val left: Expression, val right: Expression): Expression()
 

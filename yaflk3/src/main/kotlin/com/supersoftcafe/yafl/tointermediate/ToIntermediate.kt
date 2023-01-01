@@ -217,15 +217,17 @@ private fun Expression.toCgOps(
             loadMemberToCgOps(namer, globals, locals)
 
         is Expression.Call -> {
+            // TODO: Parameter is Expression.Tuple. Evaluate each member directly and avoid constructing and
+            // deconstructing a whole tuple, with all that copying. Will make the output more readable.
             val type = typeRef.toCgType(globals)
             val (cops, cresult) = callable.toCgOps(namer + 1, globals, locals)
-            val (pops, presult) = parameter.toCgOps(namer + 2, globals, locals)
+            val result = CgValue.Register((namer + 2).toString(), type)
+            val params = parameter.fields.mapIndexed { index, param ->
+                param.expression.toCgOps(namer + (3 + index), globals, locals)
+            }
 
-            val (eops, eresult) = presult.extractAll(namer + 3)
-            val result = CgValue.Register(namer.plus(3).toString(), type)
-            val op = CgOp.Call(result, cresult, eresult)
-
-            Pair(cops + pops + eops + op, result)
+            val op = CgOp.Call(result, cresult, params.map { (_, value) -> value })
+            Pair(cops + params.flatMap { (ops, _) -> ops } + op, result)
         }
 
         is Expression.Tuple -> {

@@ -102,7 +102,7 @@ class ResolveTypes() {
                     callable.resolveTypes(findDeclarations),
                     parameter.resolveTypes(findDeclarations)
                 ) { t, c, p ->
-                    Both(copy(typeRef = t, callable = c!!, parameter = p!!))
+                    Both(copy(typeRef = t, callable = c!!, parameter = p as Expression.Tuple))
                 }
 
             is Expression.Tuple ->
