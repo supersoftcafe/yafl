@@ -91,7 +91,7 @@ private fun TypeRef?.toCgType(globals: Globals): CgType {
             (globals.type[id] ?: throw IllegalStateException("Type lookup failure")).toCgType(globals)
 
         is TypeRef.Callable ->
-            CgTypePrimitive.CALLABLE
+            CgTypeStruct.functionPointer
 
         is TypeRef.Tuple ->
             toCgType(globals)
@@ -176,6 +176,74 @@ private fun Expression.LoadMember.loadMemberToCgOps(
     return result
 }
 
+
+private fun Expression.Call.callToCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Declaration.Data>
+): Pair<List<CgOp>, CgValue> {
+    // Try to emit relatively efficient code here in order to make the LLVM IR output more readable. It won't
+    // affect the final optimised output from OPT, but does make debugging the compiler easier.
+
+    val resultReg = CgValue.Register((namer + 2).toString(), typeRef.toCgType(globals))
+    val params = parameter.fields.mapIndexed { index, param ->
+        param.expression.toCgOps(namer + (3 + index), globals, locals)
+    }
+    val paramVals = params.map { (_, value) -> value }
+    val paramOps = params.flatMap { (ops, _) -> ops }
+
+    fun writeDynamicCall(): Pair<List<CgOp>, CgValue> {
+        val (cops, cresult) = callable.toCgOps(namer + 1, globals, locals)
+        val op = CgOp.Call(resultReg, cresult, paramVals)
+        return Pair(cops + paramOps + op, resultReg)
+    }
+
+    fun writeStaticCall(function: Declaration.Function, base: CgValue): Pair<List<CgOp>, CgValue> {
+        val op = CgOp.CallStatic(resultReg, base, function.globalDataName(), paramVals)
+        return Pair(paramOps + op, resultReg)
+    }
+
+    fun writeVirtualCall(function: Declaration.Function, base: CgValue): Pair<List<CgOp>, CgValue> {
+        val op = CgOp.CallVirtual(resultReg, base, function.signature!!, paramVals)
+        return Pair(paramOps + op, resultReg)
+    }
+
+    when (val callable = callable) {
+        is Expression.LoadMember -> {
+            val declaration = globals.type[(callable.base.typeRef as TypeRef.Named).id]
+            if (declaration is Declaration.Klass) {
+                val member = declaration.findMember(callable.id!!, globals)
+                    ?: throw IllegalStateException("Member ${callable.id} of ${declaration.name} not found")
+                if (member is Declaration.Function) {
+                    val (bops, bresult) = callable.base.toCgOps(namer + 1, globals, locals)
+                    val (cops, cresult) = if (declaration.isInterface)
+                        writeVirtualCall(member, bresult)
+                    else writeStaticCall(member, bresult)
+                    return Pair(bops + cops, cresult)
+                }
+            }
+            return writeDynamicCall()
+        }
+
+        is Expression.LoadData -> {
+            val dataRef = callable.dataRef
+            if (dataRef is DataRef.Resolved) {
+                if (dataRef.scope == Scope.Global) {
+                    val data = globals.data[dataRef.id]
+                    if (data is Declaration.Function) {
+                        return writeStaticCall(data, CgValue.UNIT)
+                    }
+                }
+            }
+            return writeDynamicCall()
+        }
+
+        else -> {
+            return writeDynamicCall()
+        }
+    }
+}
+
 private fun Expression.toCgOps(
     namer: Namer,
     globals: Globals,
@@ -189,12 +257,6 @@ private fun Expression.toCgOps(
         is Expression.Integer -> {
             val type = typeRef.toCgType(globals)
             Pair(listOf<CgOp>(), CgValue.Immediate(value.toString(), type))
-        }
-
-        is Expression.NewStruct -> {
-            // A struct is equivalent to a tuple of the same members in the same order.
-            // The parameter to new is a tuple. Nothing more to do, just pass the call down the line.
-            parameter.toCgOps(namer, globals, locals)
         }
 
         is Expression.NewKlass -> {
@@ -216,17 +278,8 @@ private fun Expression.toCgOps(
         is Expression.LoadMember ->
             loadMemberToCgOps(namer, globals, locals)
 
-        is Expression.Call -> {
-            val type = typeRef.toCgType(globals)
-            val (cops, cresult) = callable.toCgOps(namer + 1, globals, locals)
-            val (pops, presult) = parameter.toCgOps(namer + 2, globals, locals)
-
-            val (eops, eresult) = presult.extractAll(namer + 3)
-            val result = CgValue.Register(namer.plus(3).toString(), type)
-            val op = CgOp.Call(result, cresult, eresult)
-
-            Pair(cops + pops + eops + op, result)
-        }
+        is Expression.Call ->
+            callToCgOps(namer, globals, locals)
 
         is Expression.Tuple -> {
             val type = typeRef.toCgType(globals)
@@ -234,12 +287,7 @@ private fun Expression.toCgOps(
                 Pair(listOf(), listOf())
             ) { index, (acc_ops, acc_value), field ->
                 val (ops, value) = field.expression.toCgOps(namer + (index * 3), globals, locals)
-                if (field.unpack) {
-                    val (extract_ops, extract_result) = value.extractAll(namer + (index * 3 + 1))
-                    Pair(acc_ops + ops + extract_ops, acc_value + extract_result)
-                } else {
-                    Pair(acc_ops + ops, acc_value + value)
-                }
+                Pair(acc_ops + ops, acc_value + value)
             }
             values.foldIndexed(Pair(ops, CgValue.undef(type))) { index, (ops, acc), value ->
                 val op = CgOp.InsertValue(namer.plus(index * 3 + 2).toString(), acc, intArrayOf(index), value)
@@ -247,21 +295,15 @@ private fun Expression.toCgOps(
             }
         }
 
-        is Expression.BuiltinBinary -> {
-            val type = typeRef.toCgType(globals)
-            val (left_ops, left_result) = left.toCgOps(namer + 1, globals, locals)
-            val (right_ops, right_result) = right.toCgOps(namer + 2, globals, locals)
-
-            val cgOp = when (op) {
-                BuiltinBinaryOp.ADD_I32, BuiltinBinaryOp.ADD_I64 -> CgBinaryOp.ADD
-                BuiltinBinaryOp.EQU_I32 -> CgBinaryOp.ICMP_EQ
-                BuiltinBinaryOp.MUL_I32 -> CgBinaryOp.MUL
-                BuiltinBinaryOp.SUB_I32 -> CgBinaryOp.SUB
-            }
-
-            val result = CgValue.Register(namer.plus(3).toString(), type)
-            val op = CgOp.Binary(result, cgOp, left_result, right_result)
-            Pair(left_ops + right_ops + op, result)
+        is Expression.Llvmir -> {
+            val result = CgValue.Register((namer + 1).toString(), typeRef.toCgType(globals))
+            val params = inputs.mapIndexed { index, input -> input.toCgOps(namer + 2 + index, globals, locals) }
+            val op = CgOp.LlvmIr(
+                result,
+                pattern,
+                params.map { (ops, value) -> value }
+            )
+            Pair(params.flatMap { (ops, value) -> ops } + op, result)
         }
 
         is Expression.LoadData -> {
@@ -270,15 +312,23 @@ private fun Expression.toCgOps(
         }
 
         is Expression.If -> {
+            // TODO: Fix labels used on phi statement when having nested ifs. Scan back from branch to find
+            // correct label, as it may have come from further down the tree.
+
             val type = typeRef.toCgType(globals)
+
+            val (conditionOps, conditionResult) = condition.toCgOps(namer + 0, globals, locals)
             val (ifTrueOps, ifTrueResult) = ifTrue.toCgOps(namer + 1, globals, locals)
             val (ifFalseOps, ifFalseResult) = ifFalse.toCgOps(namer + 2, globals, locals)
-            val (conditionOps, conditionResult) = condition.toCgOps(namer + 3, globals, locals)
 
-            val ifTrueLabel = CgOp.Label(namer.plus(4).toString())
-            val ifFalseLabel = CgOp.Label(namer.plus(5).toString())
-            val endLabel = CgOp.Label(namer.plus(6).toString())
-            val result = CgValue.Register(namer.plus(7).toString(), type)
+            val ifTrueLabel = CgOp.Label(namer.plus(3).toString())
+            val ifFalseLabel = CgOp.Label(namer.plus(4).toString())
+
+            val ifTrueOriginLabel  = (ifTrueOps .lastOrNull { it is CgOp.Label } as? CgOp.Label) ?: ifTrueLabel
+            val ifFalseOriginLabel = (ifFalseOps.lastOrNull { it is CgOp.Label } as? CgOp.Label) ?: ifFalseLabel
+
+            val endLabel = CgOp.Label(namer.plus(5).toString())
+            val result = CgValue.Register(namer.plus(6).toString(), type)
 
             val ops = conditionOps +
                     CgOp.Branch(conditionResult, ifTrueLabel.name, ifFalseLabel.name) +
@@ -289,7 +339,7 @@ private fun Expression.toCgOps(
                     ifFalseOps +
                     CgOp.Jump(endLabel.name) +
                     endLabel +
-                    CgOp.Phi(result, listOf(Pair(ifTrueResult, ifTrueLabel.name), Pair(ifFalseResult, ifFalseLabel.name)))
+                    CgOp.Phi(result, listOf(Pair(ifTrueResult, ifTrueOriginLabel.name), Pair(ifFalseResult, ifFalseOriginLabel.name)))
 
             Pair(ops, result)
         }
@@ -299,8 +349,27 @@ private fun Expression.toCgOps(
     }
 }
 
+private fun Declaration.Function.toIntermediateExternalFunction(
+    namer: Namer,
+    globals: Globals
+): List<CgThingExternalFunction> {
+    val params = (listOf(thisDeclaration) + parameters).map { param ->
+        val paramType = param.typeRef.toCgType(globals)
+        CgValue.Register(localName(param.name, param.id), paramType)
+    }
 
-private fun Declaration.Function.toIntermediateFunction(namer: Namer, globals: Globals): List<CgThingFunction> {
+    return listOf(CgThingExternalFunction(
+        globalDataName(),
+        name.substringAfterLast("::"),
+        typeRef.result!!.toCgType(globals),
+        params,
+    ))
+}
+
+private fun Declaration.Function.toIntermediateFunction(
+    namer: Namer,
+    globals: Globals
+): List<CgThingFunction> {
     val body = body!!
     val type = typeRef
 
@@ -432,7 +501,9 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
                 declaration.toIntermediateVariable(namer, globals)
 
             is Declaration.Function ->
-                declaration.toIntermediateFunction(namer, globals)
+                if ("extern" in declaration.attributes)
+                     declaration.toIntermediateExternalFunction(namer, globals)
+                else declaration.toIntermediateFunction(namer, globals)
         }
     }
 
@@ -463,7 +534,7 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
     val initOps = globalVars.flatMapIndexed { index, (thing, initFunc) ->
         val namerBase = initNamer + index
 
-        val methodReg = CgValue.Register(namerBase.plus(0).toString(), CgTypePrimitive.CALLABLE)
+        val methodReg = CgValue.Register(namerBase.plus(0).toString(), CgTypeStruct.functionPointer)
         val resultReg = CgValue.Register(namerBase.plus(1).toString(), thing.type)
         listOf(
             CgOp.LoadStaticCallable(methodReg, CgValue.NULL, initFunc.globalName),
@@ -473,11 +544,10 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
     }
 
     val mainNamer = initNamer + globalVars.size
-    val mainMethodReg = CgValue.Register(mainNamer.plus(0).toString(), CgTypePrimitive.CALLABLE)
+    val mainMethodReg = CgValue.Register(mainNamer.plus(0).toString(), CgTypeStruct.functionPointer)
     val mainResultReg = CgValue.Register(mainNamer.plus(1).toString(), CgTypePrimitive.INT32)
     val retOps = listOf(
-        CgOp.LoadStaticCallable(mainMethodReg, CgValue.NULL, userMain.globalDataName()),
-        CgOp.Call(mainResultReg, mainMethodReg, listOf()),
+        CgOp.CallStatic(mainResultReg, CgValue.UNIT, userMain.globalDataName(), listOf()),
         CgOp.Return(mainResultReg)
     )
 

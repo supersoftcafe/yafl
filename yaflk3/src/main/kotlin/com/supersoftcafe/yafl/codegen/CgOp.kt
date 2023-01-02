@@ -41,21 +41,32 @@ sealed class CgOp {
         }
 
         override fun updateLabels(labelMap: (String) -> String): CgOp {
-            return copy(sources = sources.map { (value, label) -> Pair(value, labelMap(label)) })
+            return copy(
+                sources = sources.map { (value, label) -> Pair(value, labelMap(label)) }
+            )
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(result = result.updateRegisters(registerMap), sources = sources.map { (value, label) -> Pair(value.updateRegisters(registerMap), label) })
+            return copy(
+                result = result.updateRegisters(registerMap),
+                sources = sources.map { (value, label) -> Pair(value.updateRegisters(registerMap), label) }
+            )
         }
     }
 
-    data class Binary(override val result: CgValue.Register, val op: CgBinaryOp, val input1: CgValue, val input2: CgValue) : CgOp() {
+    data class LlvmIr(override val result: CgValue.Register, val pattern: String, val inputs: List<CgValue>): CgOp() {
         override fun toIr(context: CgContext): String {
-            return "  $result = $op ${input1.type} $input1, $input2\n"
+            val p = (listOf(result) + inputs).foldIndexed(pattern) { index, pattern, value ->
+                pattern.replace("\${$index}", value.toString())
+            }
+            return "  $p\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(result = result.updateRegisters(registerMap), input1 = input1.updateRegisters(registerMap), input2 = input2.updateRegisters(registerMap))
+            return copy(
+                result = result.updateRegisters(registerMap),
+                inputs = inputs.map { it.updateRegisters(registerMap) }
+            )
         }
     }
 
@@ -121,32 +132,52 @@ sealed class CgOp {
     }
 
     data class LoadStaticCallable(override val result: CgValue.Register, val pointer: CgValue, val nameOfFunction: String) : CgOp() {
-        constructor(resultName: String, pointer: CgValue, nameOfFunction: String) : this(CgValue.Register(resultName, CgTypePrimitive.CALLABLE), pointer, nameOfFunction)
+        constructor(resultName: String, pointer: CgValue, nameOfFunction: String) : this(CgValue.Register(resultName, CgTypeStruct.functionPointer), pointer, nameOfFunction)
+
+        init {
+            if (result.type != CgTypeStruct.functionPointer)
+                throw IllegalArgumentException("LoadStaticCallable result must be CgTypeStruct.functionPointer")
+        }
 
         override fun toIr(context: CgContext): String {
             val typeOfFunctionName = "%\"typeof.$nameOfFunction\""
             val tempResult2 = "%\"${result.name}.2\""
             val tempResult1 = "%\"${result.name}.1\""
-            return "  $tempResult2 = bitcast $typeOfFunctionName* @\"$nameOfFunction\" to %size_t*\n" +
-                   "  $tempResult1 = insertvalue %lambda undef, %size_t* $tempResult2, 0\n" +
-                   "  $result = insertvalue %lambda $tempResult1, %object* $pointer, 1\n"
+            return "  $tempResult2 = bitcast $typeOfFunctionName* @\"$nameOfFunction\" to %funptr\n" +
+                   "  $tempResult1 = insertvalue ${CgTypeStruct.functionPointer} undef, %funptr $tempResult2, 0\n" +
+                   "  $result = insertvalue ${CgTypeStruct.functionPointer} $tempResult1, %object* $pointer, 1\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(result = result.updateRegisters(registerMap), pointer = pointer.updateRegisters(registerMap))
+            return copy(
+                result = result.updateRegisters(registerMap),
+                pointer = pointer.updateRegisters(registerMap)
+            )
         }
     }
 
     data class LoadVirtualCallable(override val result: CgValue.Register, val pointer: CgValue, val nameOfSlot: String) : CgOp() {
-        constructor(resultName: String, pointer: CgValue, nameOfSlot: String) : this(CgValue.Register(resultName, CgTypePrimitive.CALLABLE), pointer, nameOfSlot)
+        constructor(resultName: String, pointer: CgValue, nameOfSlot: String) : this(CgValue.Register(resultName, CgTypeStruct.functionPointer), pointer, nameOfSlot)
+
+        init {
+            if (result.type != CgTypeStruct.functionPointer)
+                throw IllegalArgumentException("LoadStaticCallable result must be CgTypeStruct.functionPointer")
+        }
 
         override fun toIr(context: CgContext): String {
             val slotId = context.slotNameToId(nameOfSlot)
-            return "  $result = tail call tailcc %lambda @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n"
+            val funptr = "%\"${result.name}.funptr\""
+            val tmp = "%\"${result.name}.tmp\""
+            return "  $funptr = tail call tailcc %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
+                   "  $tmp = insertvalue ${CgTypeStruct.functionPointer} undef, %funptr $funptr, 0\n" +
+                   "  $result = insertvalue ${CgTypeStruct.functionPointer} $tmp, %object* %pointer, 1\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(result = result.updateRegisters(registerMap), pointer = pointer.updateRegisters(registerMap))
+            return copy(
+                result = result.updateRegisters(registerMap),
+                pointer = pointer.updateRegisters(registerMap)
+            )
         }
     }
 
@@ -163,14 +194,51 @@ sealed class CgOp {
             val tempResult1 = "%\"${result.name}.1\""
             val tempResult2 = "%\"${result.name}.2\""
             val tempResult3 = "%\"${result.name}.3\""
-            return "  $tempResult1 = extractvalue %lambda $methodReg, 0\n" +
-                   "  $tempResult2 = extractvalue %lambda $methodReg, 1\n" +
+            return "  $tempResult1 = extractvalue ${CgTypeStruct.functionPointer} $methodReg, 0\n" +
+                   "  $tempResult2 = extractvalue ${CgTypeStruct.functionPointer} $methodReg, 1\n" +
                    "  $tempResult3 = bitcast %size_t* $tempResult1 to ${result.type}(%object*$paramDecl)*\n" +
                    "  ${prefix}tail call tailcc ${result.type} $tempResult3(%object* $tempResult2$paramStr)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
             return copy(result = result.updateRegisters(registerMap), methodReg = methodReg.updateRegisters(registerMap), params = params.map { it.updateRegisters(registerMap) })
+        }
+    }
+
+    data class CallStatic(override val result: CgValue.Register, val pointer: CgValue, val nameOfFunction: String, val params: List<CgValue>) : CgOp() {
+        init {
+            if (result.name.isEmpty())
+                throw IllegalArgumentException("Result name must not be empty")
+        }
+
+        override fun toIr(context: CgContext): String {
+            val paramStr = params.joinToString("") { ", ${it.type} $it" }
+            val prefix = if (result.type == CgTypePrimitive.VOID) "" else "$result = "
+            return "  ${prefix}tail call tailcc ${result.type} @\"$nameOfFunction\"(%object* $pointer$paramStr)\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = result.updateRegisters(registerMap), pointer = pointer.updateRegisters(registerMap), params = params.map { it.updateRegisters(registerMap) })
+        }
+    }
+
+    data class CallVirtual(override val result: CgValue.Register, val pointer: CgValue, val nameOfSlot: String, val params: List<CgValue>): CgOp() {
+        init {
+            if (result.name.isEmpty())
+                throw IllegalArgumentException("Result name must not be empty")
+        }
+
+        override fun toIr(context: CgContext): String {
+            val slotId = context.slotNameToId(nameOfSlot)
+            val paramStr = params.joinToString("") { ", ${it.type} $it" }
+            val prefix = if (result.type == CgTypePrimitive.VOID) "" else "$result = "
+            val funptr = "%\"${result.name}.funptr\""
+            return "  $funptr = tail call tailcc %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
+                   "  ${prefix}tail call tailcc ${result.type} $funptr(%object* $pointer$paramStr)\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = result.updateRegisters(registerMap), pointer = pointer.updateRegisters(registerMap), params = params.map { it.updateRegisters(registerMap) })
         }
     }
 

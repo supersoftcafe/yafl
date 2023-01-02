@@ -136,6 +136,16 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitLambdaType(YaflParser.LambdaTypeContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link YaflParser#attributes}.
+	 * @param ctx the parse tree
+	 */
+	void enterAttributes(YaflParser.AttributesContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#attributes}.
+	 * @param ctx the parse tree
+	 */
+	void exitAttributes(YaflParser.AttributesContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link YaflParser#unpackTuplePart}.
 	 * @param ctx the parse tree
 	 */
@@ -260,6 +270,18 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitNameExpr(YaflParser.NameExprContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code bitXorExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterBitXorExpr(YaflParser.BitXorExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code bitXorExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitBitXorExpr(YaflParser.BitXorExprContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code functionExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -272,6 +294,18 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitFunctionExpr(YaflParser.FunctionExprContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code shiftExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterShiftExpr(YaflParser.ShiftExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code shiftExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitShiftExpr(YaflParser.ShiftExprContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code stringExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -283,6 +317,30 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitStringExpr(YaflParser.StringExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code bitOrExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterBitOrExpr(YaflParser.BitOrExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code bitOrExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitBitOrExpr(YaflParser.BitOrExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code unaryExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterUnaryExpr(YaflParser.UnaryExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code unaryExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitUnaryExpr(YaflParser.UnaryExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code productExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -307,6 +365,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitSumExpr(YaflParser.SumExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code llvmirExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterLlvmirExpr(YaflParser.LlvmirExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code llvmirExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitLlvmirExpr(YaflParser.LlvmirExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code lambdaExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -344,6 +414,18 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitTupleExpr(YaflParser.TupleExprContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code bitAndExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterBitAndExpr(YaflParser.BitAndExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code bitAndExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitBitAndExpr(YaflParser.BitAndExprContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code callExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -367,6 +449,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitCompareExpr(YaflParser.CompareExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code equalExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterEqualExpr(YaflParser.EqualExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code equalExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitEqualExpr(YaflParser.EqualExprContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#extends}.
 	 * @param ctx the parse tree
@@ -417,16 +511,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitClass(YaflParser.ClassContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 */
-	void enterStruct(YaflParser.StructContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 */
-	void exitStruct(YaflParser.StructContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#enum}.
 	 * @param ctx the parse tree

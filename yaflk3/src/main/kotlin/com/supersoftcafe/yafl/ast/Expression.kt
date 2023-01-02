@@ -12,8 +12,6 @@ sealed class Expression {
 
     data class LoadMember(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val base: Expression, val name: String, val id: Namer? = null): Expression()
 
-    data class NewStruct(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression): Expression()
-
     data class NewKlass(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression): Expression()
 
     data class If(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val condition: Expression, val ifTrue: Expression, val ifFalse: Expression): Expression()
@@ -22,9 +20,9 @@ sealed class Expression {
 
     data class Tuple(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val fields: List<TupleExpressionField>): Expression()
 
-    data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression): Expression()
+    data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression.Tuple): Expression()
 
-    data class BuiltinBinary(override val sourceRef: SourceRef, override val typeRef: TypeRef, val op: BuiltinBinaryOp, val left: Expression, val right: Expression): Expression()
+    data class Llvmir(override val sourceRef: SourceRef, override val typeRef: TypeRef, val pattern: String, val inputs: List<Expression>) : Expression()
 
     data class Integer(override val sourceRef: SourceRef, override val typeRef: TypeRef, val value: Long): Expression()
 

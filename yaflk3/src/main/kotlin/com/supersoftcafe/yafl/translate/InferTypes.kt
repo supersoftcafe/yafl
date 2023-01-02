@@ -2,9 +2,7 @@ package com.supersoftcafe.yafl.translate
 
 
 import com.supersoftcafe.yafl.ast.*
-import com.supersoftcafe.yafl.utils.Both
 import com.supersoftcafe.yafl.utils.Either
-import com.supersoftcafe.yafl.utils.mapIndexed
 
 
 class InferTypes(private val typeHints: TypeHints) {
@@ -102,15 +100,11 @@ class InferTypes(private val typeHints: TypeHints) {
                 } ?: Pair(copy(base = base!!), baseHints)
             }
 
-            is Expression.BuiltinBinary -> {
-                // Binary operator is always well-defined out of the parser
-                val (leftExpr, leftHints) = left.inferTypes(op.ltype, findDeclarations)
-                val (rightExpr, rightHints) = right.inferTypes(op.rtype, findDeclarations)
-
-                val hints = leftHints + rightHints
+            is Expression.Llvmir -> {
+                val newInputs = inputs.map { it.inferTypes(null, findDeclarations) }
+                val hints = newInputs.fold(emptyTypeHints()) { acc, (expr, hints) -> acc + hints }
                 Pair(copy(
-                    left = leftExpr!!,
-                    right = rightExpr!!
+                    inputs = newInputs.map { (expr, hints) -> expr!! }
                 ), hints)
             }
 
@@ -190,7 +184,7 @@ class InferTypes(private val typeHints: TypeHints) {
                 )
                 Pair(copy(
                     callable = newCallable!!,
-                    parameter = newParameter!!,
+                    parameter = newParameter as Expression.Tuple,
                     typeRef = typeRef
                 ), callHints + paramHints)
             }
@@ -373,7 +367,7 @@ private fun inferTypes2(ast: Ast): Ast {
 
 fun inferTypes(ast: Ast): Either<Ast, List<String>> {
     val result = inferTypes2(ast)
-    val errors = scanForErrors(result)
+    val errors = inferTypesErrorScan(result)
 
     return if (errors.isEmpty())
          Either.Some(result)

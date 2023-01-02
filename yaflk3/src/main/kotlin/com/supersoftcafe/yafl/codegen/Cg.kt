@@ -21,12 +21,14 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String,List<String>> {
         .toMap()
 
     val context   = CgContext(slotIds)
-    val classes   = things.toIr(context, CgThingClass   ::toIr)
-    val functions = things.toIr(context, CgThingFunction::toIr, ::arcPhase)
-    val variables = things.toIr(context, CgThingVariable::toIr)
-    val stdlib    = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
 
-    val combined = stdlib + classes + variables + functions
+    val classes = things.toIr(context, CgThingClass::toIr)
+    val variables = things.toIr(context, CgThingVariable::toIr)
+    val functions = things.toIr(context, CgThingFunction::toIr, ::arcPhase)
+    val externFunctions = things.toIr(context, CgThingExternalFunction::toIr)
+    val stdlib = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
+
+    val combined = stdlib + externFunctions + classes + variables + functions
 
     return Either.Some(combined.toString())
 }

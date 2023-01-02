@@ -137,7 +137,7 @@ fun YaflParser.ClassContext.toDeclaration(
         Expression.NewKlass(constrSourceRef, klassType,
             Expression.Tuple(constrSourceRef, paramType,
                 constrParams.map { constrParam ->
-                    TupleExpressionField(false, constrParam.name,
+                    TupleExpressionField(constrParam.name,
                         Expression.LoadData(constrSourceRef, constrParam.typeRef,
                             DataRef.Resolved(constrParam.name, constrParam.id, constrParam.scope),
                         ),
@@ -167,7 +167,8 @@ fun YaflParser.FunctionContext.toDeclaration(
         unpackTuple().toDeclarationLets(file, id + 2, Scope.Local),
         null,
         type()?.toTypeRef(),
-        expression()?.toExpression(file)
+        expression()?.toExpression(file),
+        attributes()?.NAME()?.map { it.text }?.toSet() ?: setOf()
     ))
 }
 

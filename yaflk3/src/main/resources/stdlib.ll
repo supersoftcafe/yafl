@@ -5,15 +5,15 @@ declare dso_local noalias %object* @malloc(%size_t) "alloc-family"="malloc"
 declare dso_local void @free(%object*) "alloc-family"="malloc"
 declare dso_local i32 @printf(i8* noalias nocapture, ...)
 
-%vtable = type { { %size_t, void(%object*)* }, [ 0 x %size_t* ] }
+%funptr = type %size_t*
+%vtable = type { { %size_t, void(%object*)* }, [ 0 x %funptr ] }
 %object = type { %vtable*, %size_t }
-%lambda = type { %size_t*, %object* }
 
 @memoryCounter = internal global %size_t zeroinitializer
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
 
-@global_unit_vt = internal global { { void(%object*)*, %size_t }, [ 0 x %size_t* ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %size_t* ] [ ] }
-@global_unit = internal global %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %size_t* ] }* @global_unit_vt to %vtable*), %size_t 0 }
+@global_unit_vt = internal global { { void(%object*)*, %size_t }, [ 0 x %funptr ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %funptr ] [ ] }
+@global_unit = internal global %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %funptr ] }* @global_unit_vt to %vtable*), %size_t 0 }
 
 
 
@@ -111,7 +111,7 @@ skip:
     ret void
 }
 
-define internal tailcc %lambda @lookupVirtualMethod(%object* %obj_ptr, %size_t %id) {
+define internal tailcc %funptr @lookupVirtualMethod(%object* %obj_ptr, %size_t %id) {
 start:
     %vt_ptr_ptr = getelementptr %object, %object* %obj_ptr, i32 0, i32 0
     %vt_ptr = load %vtable*, %vtable** %vt_ptr_ptr
@@ -126,7 +126,7 @@ loop:
     %index = and %size_t %mask, %id3
 
     %method_ptr_ptr = getelementptr %vtable, %vtable* %vt_ptr, i32 0, i32 1, %size_t %index
-    %method_ptr = load %size_t*, %size_t** %method_ptr_ptr
+    %method_ptr = load %funptr, %funptr* %method_ptr_ptr
     %target_id_ptr = getelementptr %size_t, %size_t* %method_ptr, i32 -1
     %target_id = load %size_t, %size_t* %target_id_ptr
 
@@ -134,7 +134,5 @@ loop:
     br i1 %isneq, label %loop, label %finish
 
 finish:
-    %result1 = insertvalue %lambda undef, %size_t* %method_ptr, 0
-    %result2 = insertvalue %lambda %result1, %object* %obj_ptr, 1
-    ret %lambda %result2
+    ret %funptr %method_ptr
 }

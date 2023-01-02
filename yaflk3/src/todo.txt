@@ -1,24 +1,26 @@
 
 # Todo
 
-Remove use of tuple as call parameters.
-  Slight increase in parser complexity.
-  Ast needs list of parameters instead of single tuple parameter.
-  Reduces complexity of generated IR code.
-  Makes adding lambda shorthand (using $1 etc) simpler later.
+Ensure class deleter has correct 'release' logic from ARC, not from codegen.
+Ensure that lambda instances are correctly handled for memory management.
 
-Add print support to help with output of results.
+
 
 Add array support.
 Add enum support.
 Add generics support.
 
 Add explicit currying of calls using $1 etc parameters.
-Get rid of tuple unpack. Use currying instead for apply operator.
 Put simple classes on the stack.
 
 
 # Notes
+
+## 'if' as well as '?' support
+For clearer code. Maybe add 'when' as well, at least a simple version for now.
+
+## General statement sequences
+This is a bit like doing 'let x = print(60)' and then discarding x. Semantically the same, so why not support statements?
 
 ## Anonymous objects
 Anonymous object creation can only define functions, as its only purpose is to implement an interface. All state is from capture of locals.
@@ -46,5 +48,17 @@ Any class parameter can be an array. It is initialised with a callable param.
   class Something(a: Quark[4], size: Int32, b: Blob[size])  # Variable size array must be last parameter
 
 ## Generics
-Thinking
+
+## Enums
+
+## Pattern matching switch expression
+
+## Deconstructing declarations for parameters and for let statements
+
+## Apply operator
+
+## Lazy evaluation
+Parameter, to function or class, can be marked with & to mean that the expression passed in at any call
+site is implicitly converted to a lambda, and the parameter itself is a callable that returns the given
+value.
 
