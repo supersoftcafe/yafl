@@ -22,7 +22,7 @@ Type inference is a big thing. You can write a program almost never having to pr
 
 # Progress
 
-Currently the compiler works. It's a big manual, but really it does useful stuff and generates beautiful LLVM IR that when compiled does work. Automatic heap management is mostly working. Type inference mostly works. It's a beautiful language!
+Currently the compiler works. It's a bit manual, but really it does useful stuff and generates beautiful LLVM IR that when compiled does work. Automatic heap management is mostly working. Type inference mostly works. It's a beautiful language!
 
 No io, strings or generics yet. This is a big problem, and made bigger because I have to do them in a particular order that means that we won't get string support until relatively late.
 
