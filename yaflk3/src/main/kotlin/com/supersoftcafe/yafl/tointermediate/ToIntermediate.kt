@@ -259,12 +259,6 @@ private fun Expression.toCgOps(
             Pair(listOf<CgOp>(), CgValue.Immediate(value.toString(), type))
         }
 
-        is Expression.NewStruct -> {
-            // A struct is equivalent to a tuple of the same members in the same order.
-            // The parameter to new is a tuple. Nothing more to do, just pass the call down the line.
-            parameter.toCgOps(namer, globals, locals)
-        }
-
         is Expression.NewKlass -> {
             // A klass is a struct on the heap plus some behaviour.
 
@@ -301,24 +295,15 @@ private fun Expression.toCgOps(
             }
         }
 
-        is Expression.BuiltinBinary -> {
-            val type = typeRef.toCgType(globals)
-            val (left_ops, left_result) = left.toCgOps(namer + 1, globals, locals)
-            val (right_ops, right_result) = right.toCgOps(namer + 2, globals, locals)
-
-            val cgOp = when (op) {
-                BuiltinBinaryOp.ADD_I32, BuiltinBinaryOp.ADD_I64 -> CgBinaryOp.ADD
-                BuiltinBinaryOp.EQU_I32 -> CgBinaryOp.ICMP_EQ
-                BuiltinBinaryOp. LT_I32 -> CgBinaryOp.ICMP_SLT
-                BuiltinBinaryOp.MUL_I32 -> CgBinaryOp.MUL
-                BuiltinBinaryOp.DIV_I32 -> CgBinaryOp.SDIV
-                BuiltinBinaryOp.REM_I32 -> CgBinaryOp.SREM
-                BuiltinBinaryOp.SUB_I32 -> CgBinaryOp.SUB
-            }
-
-            val result = CgValue.Register(namer.plus(3).toString(), type)
-            val op = CgOp.Binary(result, cgOp, left_result, right_result)
-            Pair(left_ops + right_ops + op, result)
+        is Expression.Llvmir -> {
+            val result = CgValue.Register((namer + 1).toString(), typeRef.toCgType(globals))
+            val params = inputs.mapIndexed { index, input -> input.toCgOps(namer + 2 + index, globals, locals) }
+            val op = CgOp.LlvmIr(
+                result,
+                pattern,
+                params.map { (ops, value) -> value }
+            )
+            Pair(params.flatMap { (ops, value) -> ops } + op, result)
         }
 
         is Expression.LoadData -> {

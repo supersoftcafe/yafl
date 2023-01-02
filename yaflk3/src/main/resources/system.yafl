@@ -9,13 +9,149 @@ alias Int64 : __primitive__ int64
 alias Float32 : __primitive__ float32
 alias Float64 : __primitive__ float64
 
-fun `+`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ add_i32(l, r)
-fun `+`(l: System::Int64, r: System::Int64): System::Int64 => __builtin__ add_i64(l, r)
-fun `*`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ mul_i32(l, r)
-fun `/`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ div_i32(l, r)
-fun `%`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ rem_i32(l, r)
-fun `-`(l: System::Int32, r: System::Int32): System::Int32 => __builtin__ sub_i32(l, r)
-fun `=`(l: System::Int32, r: System::Int32): System::Bool => __builtin__ equ_i32(l, r)
-fun `<`(l: System::Int32, r: System::Int32): System::Bool => __builtin__ lt_i32(l, r)
+fun int8(r: System::Int8): System::Int8 => r
+fun int8(r: System::Int16): System::Int8 => __llvm_ir__<Int8>("${0} = trunc i16 ${1} to i8", r)
+fun int8(r: System::Int32): System::Int8 => __llvm_ir__<Int8>("${0} = trunc i32 ${1} to i8", r)
+fun int8(r: System::Int64): System::Int8 => __llvm_ir__<Int8>("${0} = trunc i64 ${1} to i8", r)
+fun int8(r: System::Float32): System::Int8 => __llvm_ir__<Int8>("${0} = fptosi float ${1} to i8", r)
+fun int8(r: System::Float64): System::Int8 => __llvm_ir__<Int8>("${0} = fptosi double ${1} to i8", r)
+
+fun int16(r: System::Int8): System::Int16 => __llvm_ir__<Int16>("${0} = sext i8 ${1} to i16", r)
+fun int16(r: System::Int16): System::Int16 => r
+fun int16(r: System::Int32): System::Int16 => __llvm_ir__<Int16>("${0} = trunc i32 ${1} to i16", r)
+fun int16(r: System::Int64): System::Int16 => __llvm_ir__<Int16>("${0} = trunc i64 ${1} to i16", r)
+fun int16(r: System::Float32): System::Int16 => __llvm_ir__<Int16>("${0} = fptosi float ${1} to i16", r)
+fun int16(r: System::Float64): System::Int16 => __llvm_ir__<Int16>("${0} = fptosi double ${1} to i16", r)
+
+fun int32(r: System::Int8): System::Int32 => __llvm_ir__<Int32>("${0} = sext i8 ${1} to i32", r)
+fun int32(r: System::Int16): System::Int32 => __llvm_ir__<Int32>("${0} = sext i16 ${1} to i32", r)
+fun int32(r: System::Int32): System::Int32 => r
+fun int32(r: System::Int64): System::Int32 => __llvm_ir__<Int32>("${0} = trunc i64 ${1} to i32", r)
+fun int32(r: System::Float32): System::Int32 => __llvm_ir__<Int32>("${0} = fptosi float ${1} to i32", r)
+fun int32(r: System::Float64): System::Int32 => __llvm_ir__<Int32>("${0} = fptosi double ${1} to i32", r)
+
+fun int64(r: System::Int8): System::Int64 => __llvm_ir__<Int64>("${0} = sext i8 ${1} to i64", r)
+fun int64(r: System::Int16): System::Int64 => __llvm_ir__<Int64>("${0} = sext i16 ${1} to i64", r)
+fun int64(r: System::Int32): System::Int64 => __llvm_ir__<Int64>("${0} = sext i32 ${1} to i64", r)
+fun int32(r: System::Int64): System::Int64 => r
+fun int64(r: System::Float32): System::Int64 => __llvm_ir__<Int64>("${0} = fptosi float ${1} to i64", r)
+fun int64(r: System::Float64): System::Int64 => __llvm_ir__<Int64>("${0} = fptosi double ${1} to i64", r)
+
+fun `+`(r: System::Int8): System::Int8 => r
+fun `+`(r: System::Int16): System::Int16 => r
+fun `+`(r: System::Int32): System::Int32 => r
+fun `+`(r: System::Int64): System::Int64 => r
+fun `+`(r: System::Float32): System::Float32 => r
+fun `+`(r: System::Float64): System::Float64 => r
+
+fun `-`(r: System::Int8): System::Int8 => 0i8 - r
+fun `-`(r: System::Int16): System::Int16 => 0i16 - r
+fun `-`(r: System::Int32): System::Int32 => 0i32 - r
+fun `-`(r: System::Int64): System::Int64 => 0i64 - r
+fun `-`(r: System::Float32): System::Float32 => __llvm_ir__<Float32>("${0} = fneg float ${1}", r)
+fun `-`(r: System::Float64): System::Float64 => __llvm_ir__<Float64>("${0} = fneg double ${1}", r)
+
+fun `+`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = add i8 ${1}, ${2}", l, r)
+fun `+`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = add i16 ${1}, ${2}", l, r)
+fun `+`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = add i32 ${1}, ${2}", l, r)
+fun `+`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = add i64 ${1}, ${2}", l, r)
+fun `+`(l: System::Float32, r: System::Float32): System::Float32 => __llvm_ir__<Float32>("${0} = fadd float ${1}, ${2}", l, r)
+fun `+`(l: System::Float64, r: System::Float64): System::Float64 => __llvm_ir__<Float64>("${0} = fadd double ${1}, ${2}", l, r)
+
+fun `-`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = sub i8 ${1}, ${2}", l, r)
+fun `-`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = sub i16 ${1}, ${2}", l, r)
+fun `-`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = sub i32 ${1}, ${2}", l, r)
+fun `-`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = sub i64 ${1}, ${2}", l, r)
+fun `-`(l: System::Float32, r: System::Float32): System::Float32 => __llvm_ir__<Float32>("${0} = fsub float ${1}, ${2}", l, r)
+fun `-`(l: System::Float64, r: System::Float64): System::Float64 => __llvm_ir__<Float64>("${0} = fsub double ${1}, ${2}", l, r)
+
+fun `*`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = mul i8 ${1}, ${2}", l, r)
+fun `*`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = mul i16 ${1}, ${2}", l, r)
+fun `*`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = mul i32 ${1}, ${2}", l, r)
+fun `*`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = mul i64 ${1}, ${2}", l, r)
+fun `*`(l: System::Float32, r: System::Float32): System::Float32 => __llvm_ir__<Float32>("${0} = fmul float ${1}, ${2}", l, r)
+fun `*`(l: System::Float64, r: System::Float64): System::Float64 => __llvm_ir__<Float64>("${0} = fmul double ${1}, ${2}", l, r)
+
+fun `/`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = sdiv i8 ${1}, ${2}", l, r)
+fun `/`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = sdiv i16 ${1}, ${2}", l, r)
+fun `/`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = sdiv i32 ${1}, ${2}", l, r)
+fun `/`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = sdiv i64 ${1}, ${2}", l, r)
+fun `/`(l: System::Float32, r: System::Float32): System::Float32 => __llvm_ir__<Float32>("${0} = fdiv float ${1}, ${2}", l, r)
+fun `/`(l: System::Float64, r: System::Float64): System::Float64 => __llvm_ir__<Float64>("${0} = fdiv double ${1}, ${2}", l, r)
+
+fun `%`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = srem i8 ${1}, ${2}", l, r)
+fun `%`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = srem i16 ${1}, ${2}", l, r)
+fun `%`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = srem i32 ${1}, ${2}", l, r)
+fun `%`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = srem i64 ${1}, ${2}", l, r)
+fun `%`(l: System::Float32, r: System::Float32): System::Float32 => __llvm_ir__<Float32>("${0} = frem float ${1}, ${2}", l, r)
+fun `%`(l: System::Float64, r: System::Float64): System::Float64 => __llvm_ir__<Float64>("${0} = frem double ${1}, ${2}", l, r)
+
+fun `&`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = and i8 ${1}, ${2}", l, r)
+fun `&`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = and i16 ${1}, ${2}", l, r)
+fun `&`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = and i32 ${1}, ${2}", l, r)
+fun `&`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = and i64 ${1}, ${2}", l, r)
+
+fun `|`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = or i8 ${1}, ${2}", l, r)
+fun `|`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = or i16 ${1}, ${2}", l, r)
+fun `|`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = or i32 ${1}, ${2}", l, r)
+fun `|`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = or i64 ${1}, ${2}", l, r)
+
+fun `^`(l: System::Int8, r: System::Int8): System::Int8 => __llvm_ir__<Int8>("${0} = xor i8 ${1}, ${2}", l, r)
+fun `^`(l: System::Int16, r: System::Int16): System::Int16 => __llvm_ir__<Int16>("${0} = xor i16 ${1}, ${2}", l, r)
+fun `^`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = xor i32 ${1}, ${2}", l, r)
+fun `^`(l: System::Int64, r: System::Int64): System::Int64 => __llvm_ir__<Int64>("${0} = xor i64 ${1}, ${2}", l, r)
+
+fun `<<`(l: System::Int8, r: System::Int32): System::Int8 => __llvm_ir__<Int8>("${0} = shl i8 ${1}, ${2}", l, int8(r & 7))
+fun `<<`(l: System::Int16, r: System::Int32): System::Int16 => __llvm_ir__<Int16>("${0} = shl i16 ${1}, ${2}", l, int16(r & 15))
+fun `<<`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = shl i32 ${1}, ${2}", l, int32(r & 31))
+fun `<<`(l: System::Int64, r: System::Int32): System::Int64 => __llvm_ir__<Int64>("${0} = shl i64 ${1}, ${2}", l, int64(r & 63))
+
+fun `>>`(l: System::Int8, r: System::Int32): System::Int8 => __llvm_ir__<Int8>("${0} = lshr i8 ${1}, ${2}", l, int8(r & 7))
+fun `>>`(l: System::Int16, r: System::Int32): System::Int16 => __llvm_ir__<Int16>("${0} = lshr i16 ${1}, ${2}", l, int16(r & 15))
+fun `>>`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<Int32>("${0} = lshr i32 ${1}, ${2}", l, int32(r & 31))
+fun `>>`(l: System::Int64, r: System::Int32): System::Int64 => __llvm_ir__<Int64>("${0} = lshr i64 ${1}, ${2}", l, int64(r & 63))
+
+fun `=`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<Bool>("${0} = icmp eq i8 ${1}, ${2}", l, r)
+fun `=`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<Bool>("${0} = icmp eq i16 ${1}, ${2}", l, r)
+fun `=`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<Bool>("${0} = icmp eq i32 ${1}, ${2}", l, r)
+fun `=`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<Bool>("${0} = icmp eq i64 ${1}, ${2}", l, r)
+fun `=`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<Bool>("${0} = fcmp oeq float ${1}, ${2}", l, r)
+fun `=`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<Bool>("${0} = fcmp oeq double ${1}, ${2}", l, r)
+
+fun `!=`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<Bool>("${0} = icmp ne i8 ${1}, ${2}", l, r)
+fun `!=`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<Bool>("${0} = icmp ne i16 ${1}, ${2}", l, r)
+fun `!=`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<Bool>("${0} = icmp ne i32 ${1}, ${2}", l, r)
+fun `!=`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<Bool>("${0} = icmp ne i64 ${1}, ${2}", l, r)
+fun `!=`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<Bool>("${0} = fcmp une float ${1}, ${2}", l, r)
+fun `!=`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<Bool>("${0} = fcmp une double ${1}, ${2}", l, r)
+
+fun `<`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<Bool>("${0} = icmp slt i8 ${1}, ${2}", l, r)
+fun `<`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<Bool>("${0} = icmp slt i16 ${1}, ${2}", l, r)
+fun `<`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<Bool>("${0} = icmp slt i32 ${1}, ${2}", l, r)
+fun `<`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<Bool>("${0} = icmp slt i64 ${1}, ${2}", l, r)
+fun `<`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<Bool>("${0} = fcmp olt float ${1}, ${2}", l, r)
+fun `<`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<Bool>("${0} = fcmp olt double ${1}, ${2}", l, r)
+
+fun `>`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<Bool>("${0} = icmp sgt i8 ${1}, ${2}", l, r)
+fun `>`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<Bool>("${0} = icmp sgt i16 ${1}, ${2}", l, r)
+fun `>`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<Bool>("${0} = icmp sgt i32 ${1}, ${2}", l, r)
+fun `>`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<Bool>("${0} = icmp sgt i64 ${1}, ${2}", l, r)
+fun `>`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<Bool>("${0} = fcmp ogt float ${1}, ${2}", l, r)
+fun `>`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<Bool>("${0} = fcmp ogt double ${1}, ${2}", l, r)
+
+fun `<=`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<Bool>("${0} = icmp sle i8 ${1}, ${2}", l, r)
+fun `<=`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<Bool>("${0} = icmp sle i16 ${1}, ${2}", l, r)
+fun `<=`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<Bool>("${0} = icmp sle i32 ${1}, ${2}", l, r)
+fun `<=`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<Bool>("${0} = icmp sle i64 ${1}, ${2}", l, r)
+fun `<=`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<Bool>("${0} = fcmp ole float ${1}, ${2}", l, r)
+fun `<=`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<Bool>("${0} = fcmp ole double ${1}, ${2}", l, r)
+
+fun `>=`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<Bool>("${0} = icmp sge i8 ${1}, ${2}", l, r)
+fun `>=`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<Bool>("${0} = icmp sge i16 ${1}, ${2}", l, r)
+fun `>=`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<Bool>("${0} = icmp sge i32 ${1}, ${2}", l, r)
+fun `>=`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<Bool>("${0} = icmp sge i64 ${1}, ${2}", l, r)
+fun `>=`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<Bool>("${0} = fcmp oge float ${1}, ${2}", l, r)
+fun `>=`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<Bool>("${0} = fcmp oge double ${1}, ${2}", l, r)
+
 
 fun [extern] putchar(c: System::Int32): System::Int32

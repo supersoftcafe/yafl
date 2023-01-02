@@ -1,13 +1,11 @@
 
 module Test
 
+import Io
 import System
 
-#class Thing(height, age) {
-#    fun both() => height + age
-#}
-#fun main() => Thing(180, 48).both()
+class Thing(height, age) {
+    fun both() => height + age
+}
 
-fun print(value: Int32): Int32 => value < 0 ? putchar(45) + print(0-value) : ((value < 10 ? 0 : print(value/10)) + putchar(48 + value%10))
-
-fun main() => print(0-2003)
+fun main() => print(-Thing(180, 48).both())

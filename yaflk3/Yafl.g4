@@ -1,6 +1,6 @@
 grammar Yafl;
 
-BUILTIN     : '__builtin__' ;
+LLVM_IR     : '__llvm_ir__' ;
 PRIMITIVE   : '__primitive__';
 
 MODULE      : 'module';
@@ -17,6 +17,12 @@ LAMBDA      : '=>';
 PIPE_RIGHT  : '|>';
 PIPE_MAYBE  : '?>';
 NAMESPACE   : NAME '::';
+CMP_LE      : '<=';
+CMP_GE      : '>=';
+CMP_EQ      : '=';
+CMP_NE      : '!=';
+SHL         : '<<';
+SHR         : '>>';
 
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z0-9_]*) ;
 INTEGER     : (('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*)|'0')([sSlL]|'i8'|'i16'|'i32'|'i64')? ;
@@ -51,14 +57,21 @@ unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
 letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
 function    : FUN attributes? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
 
-
-expression  : BUILTIN NAME params=exprOfTuple?                              # builtinExpr
+expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
             | left=expression operator='.' right=NAME                       # dotExpr
             | left=expression params=exprOfTuple                            # callExpr
             | left=expression operator=(PIPE_RIGHT | PIPE_MAYBE) right=expression params=exprOfTuple # applyExpr
-            | left=expression operator=( '*' | '/' | '%' ) right=expression # productExpr
-            | left=expression operator=( '+' | '-'       ) right=expression # sumExpr
-            | left=expression operator=( '<' | '=' | '>' ) right=expression # compareExpr
+
+            | operator=( '+' | '-' ) right=expression                                         # unaryExpr
+            | left=expression operator=( '*' | '/' | '%'                   ) right=expression # productExpr
+            | left=expression operator=( '+' | '-'                         ) right=expression # sumExpr
+            | left=expression operator=( SHL | SHR                         ) right=expression # shiftExpr
+            | left=expression operator=( CMP_LE | '<' | '>' | CMP_GE ) right=expression       # compareExpr
+            | left=expression operator=( CMP_EQ | CMP_NE ) right=expression                   # equalExpr
+            | left=expression operator='&' right=expression                                   # bitAndExpr
+            | left=expression operator='^' right=expression                                   # bitXorExpr
+            | left=expression operator='|' right=expression                                   # bitOrExpr
+
             | condition=expression '?' left=expression ':' right=expression # ifExpr
             | exprOfTuple                                                   # tupleExpr
             | OBJECT ':' typeRef ( '|' typeRef )* ( '{' function* '}' )?    # objectExpr

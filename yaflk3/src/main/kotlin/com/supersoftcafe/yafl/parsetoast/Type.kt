@@ -15,8 +15,8 @@ fun YaflParser.TypeRefContext.toTypeRef(): TypeRef.Unresolved {
     return TypeRef.Unresolved(qualifiedName().toName(), null)
 }
 
-private fun YaflParser.TypePrimitiveContext.toTypeRef(): TypeRef.Primitive {
-    return when (val name = NAME().text) {
+fun toPrimitiveTypeRef(name: String): TypeRef.Primitive {
+    return when (name) {
         "bool"    -> TypeRef.Primitive(PrimitiveKind.Bool)
         "int8"    -> TypeRef.Primitive(PrimitiveKind.Int8)
         "int16"   -> TypeRef.Primitive(PrimitiveKind.Int16)
@@ -26,6 +26,10 @@ private fun YaflParser.TypePrimitiveContext.toTypeRef(): TypeRef.Primitive {
         "float64" -> TypeRef.Primitive(PrimitiveKind.Float64)
         else -> throw IllegalArgumentException("Unknown primitive type $name")
     }
+}
+
+private fun YaflParser.TypePrimitiveContext.toTypeRef(): TypeRef.Primitive {
+    return toPrimitiveTypeRef(NAME().text)
 }
 
 private fun YaflParser.TypeOfTupleContext.toTypeRef(): TypeRef.Tuple {

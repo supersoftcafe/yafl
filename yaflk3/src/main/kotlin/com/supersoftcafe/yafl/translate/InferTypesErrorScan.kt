@@ -1,11 +1,10 @@
 package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
-import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
 
 
-private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: TypeHints) {
+private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) {
     private fun TypeRef?.scan(sourceRef: SourceRef): List<String> {
         return when (this) {
             null ->
@@ -84,17 +83,9 @@ private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: Typ
                     }
                 }
 
-            is Expression.BuiltinBinary ->
-                (left.scan() + right.scan()).ifEmpty {
-                    listOfNotNull(
-                        if (left.typeRef  != op.ltype)
-                            "${left .sourceRef} does not match operator type"
-                        else null,
-                        if (right.typeRef != op.rtype)
-                            "${right.sourceRef} does not match operator type"
-                        else null
-                    )
-                }
+            is Expression.Llvmir -> {
+                inputs.flatMap { it.scan() }
+            }
 
             is Expression.Lambda ->
                 parameters.flatMap { it.scan() } + body.scan()
@@ -108,8 +99,6 @@ private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: Typ
                         if (id == null) "$sourceRef member $name not found" else null
                     )
                 }
-
-            is Expression.NewStruct -> TODO()
         }.ifEmpty {
             typeRef.scan(sourceRef)
         }
@@ -192,8 +181,8 @@ private class ScanForErrors(val globals: Map<Namer, Declaration>, val hints: Typ
 
 
 
-fun scanForErrors(ast: Ast): List<String> {
-    return ScanForErrors(
+fun inferTypesErrorScan(ast: Ast): List<String> {
+    return InferTypesErrorScan(
         ast.declarations.associate { (_, declaration, _) -> declaration.id to declaration },
         ast.typeHints
     ).scan(ast)

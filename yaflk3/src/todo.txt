@@ -1,15 +1,11 @@
 
 # Todo
 
-Remove use of tuple as call parameters.
-- Slight increase in parser complexity.
-- Ast needs list of parameters instead of single tuple parameter.
-- Reduces complexity of generated IR code.
-- Makes adding lambda shorthand (using $1 etc) simpler later.
+Change __builtin__ to directly reference LLVM IR.
 
-Adjust codegen so that Call of LoadMember/LoadData, where the target is a real function, are direct LLVM calls.
+Unary operator '-'. Optimise when applied to a literal.
 
-Remove built in error reporting from resolve phase. Use error checking code instead.
+Add simple statements that discard result. So instead of expression + expression, one can write expression; expression.
 
 
 

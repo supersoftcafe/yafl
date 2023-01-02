@@ -41,21 +41,32 @@ sealed class CgOp {
         }
 
         override fun updateLabels(labelMap: (String) -> String): CgOp {
-            return copy(sources = sources.map { (value, label) -> Pair(value, labelMap(label)) })
+            return copy(
+                sources = sources.map { (value, label) -> Pair(value, labelMap(label)) }
+            )
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(result = result.updateRegisters(registerMap), sources = sources.map { (value, label) -> Pair(value.updateRegisters(registerMap), label) })
+            return copy(
+                result = result.updateRegisters(registerMap),
+                sources = sources.map { (value, label) -> Pair(value.updateRegisters(registerMap), label) }
+            )
         }
     }
 
-    data class Binary(override val result: CgValue.Register, val op: CgBinaryOp, val input1: CgValue, val input2: CgValue) : CgOp() {
+    data class LlvmIr(override val result: CgValue.Register, val pattern: String, val inputs: List<CgValue>): CgOp() {
         override fun toIr(context: CgContext): String {
-            return "  $result = $op ${input1.type} $input1, $input2\n"
+            val p = (listOf(result) + inputs).foldIndexed(pattern) { index, pattern, value ->
+                pattern.replace("\${$index}", value.toString())
+            }
+            return "  $p\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(result = result.updateRegisters(registerMap), input1 = input1.updateRegisters(registerMap), input2 = input2.updateRegisters(registerMap))
+            return copy(
+                result = result.updateRegisters(registerMap),
+                inputs = inputs.map { it.updateRegisters(registerMap) }
+            )
         }
     }
 
