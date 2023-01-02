@@ -5,7 +5,9 @@ import Io
 import System
 
 class Thing(height, age) {
-    fun both() => height + age
+    fun both(value) => height + age + value
 }
 
-fun main() => print(-Thing(180, 48).both())
+fun doSomethingWith(value, getter: (Int32) : Int32) => print(getter(value))
+
+fun main() => doSomethingWith(27, Thing(180, 48).both)

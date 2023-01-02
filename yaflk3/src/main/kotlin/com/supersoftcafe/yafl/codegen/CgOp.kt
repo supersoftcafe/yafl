@@ -144,8 +144,8 @@ sealed class CgOp {
             val tempResult2 = "%\"${result.name}.2\""
             val tempResult1 = "%\"${result.name}.1\""
             return "  $tempResult2 = bitcast $typeOfFunctionName* @\"$nameOfFunction\" to %funptr\n" +
-                   "  $tempResult1 = insertvalue %lambda undef, %funptr $tempResult2, 0\n" +
-                   "  $result = insertvalue %lambda $tempResult1, %object* $pointer, 1\n"
+                   "  $tempResult1 = insertvalue ${CgTypeStruct.functionPointer} undef, %funptr $tempResult2, 0\n" +
+                   "  $result = insertvalue ${CgTypeStruct.functionPointer} $tempResult1, %object* $pointer, 1\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -169,8 +169,8 @@ sealed class CgOp {
             val funptr = "%\"${result.name}.funptr\""
             val tmp = "%\"${result.name}.tmp\""
             return "  $funptr = tail call tailcc %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
-                   "  $tmp = insertvalue %lambda undef, %funptr $funptr, 0\n" +
-                   "  $result = insertvalue %lambda $tmp, %object* %pointer, 1\n"
+                   "  $tmp = insertvalue ${CgTypeStruct.functionPointer} undef, %funptr $funptr, 0\n" +
+                   "  $result = insertvalue ${CgTypeStruct.functionPointer} $tmp, %object* %pointer, 1\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -194,8 +194,8 @@ sealed class CgOp {
             val tempResult1 = "%\"${result.name}.1\""
             val tempResult2 = "%\"${result.name}.2\""
             val tempResult3 = "%\"${result.name}.3\""
-            return "  $tempResult1 = extractvalue %lambda $methodReg, 0\n" +
-                   "  $tempResult2 = extractvalue %lambda $methodReg, 1\n" +
+            return "  $tempResult1 = extractvalue ${CgTypeStruct.functionPointer} $methodReg, 0\n" +
+                   "  $tempResult2 = extractvalue ${CgTypeStruct.functionPointer} $methodReg, 1\n" +
                    "  $tempResult3 = bitcast %size_t* $tempResult1 to ${result.type}(%object*$paramDecl)*\n" +
                    "  ${prefix}tail call tailcc ${result.type} $tempResult3(%object* $tempResult2$paramStr)\n"
         }

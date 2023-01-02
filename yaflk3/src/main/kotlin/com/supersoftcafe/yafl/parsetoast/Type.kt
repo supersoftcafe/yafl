@@ -15,7 +15,7 @@ fun YaflParser.TypeRefContext.toTypeRef(): TypeRef.Unresolved {
     return TypeRef.Unresolved(qualifiedName().toName(), null)
 }
 
-fun toPrimitiveTypeRef(name: String): TypeRef.Primitive {
+private fun toPrimitiveTypeRef(name: String): TypeRef.Primitive {
     return when (name) {
         "bool"    -> TypeRef.Primitive(PrimitiveKind.Bool)
         "int8"    -> TypeRef.Primitive(PrimitiveKind.Int8)
@@ -39,7 +39,10 @@ private fun YaflParser.TypeOfTupleContext.toTypeRef(): TypeRef.Tuple {
 }
 
 private fun YaflParser.TypeOfLambdaContext.toTypeRef(): TypeRef.Callable {
-    TODO()
+    return TypeRef.Callable(
+        typeOfTuple().toTypeRef(),
+        type().toTypeRef()
+    )
 }
 
 fun YaflParser.TypeContext.toTypeRef(): TypeRef {

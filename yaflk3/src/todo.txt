@@ -1,15 +1,10 @@
 
 # Todo
 
-Change __builtin__ to directly reference LLVM IR.
-
-Unary operator '-'. Optimise when applied to a literal.
-
-Add simple statements that discard result. So instead of expression + expression, one can write expression; expression.
+Ensure class deleter has correct 'release' logic from ARC, not from codegen.
+Ensure that lambda instances are correctly handled for memory management.
 
 
-
-Add print support to help with output of results.
 
 Add array support.
 Add enum support.

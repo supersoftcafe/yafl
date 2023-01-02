@@ -8,7 +8,6 @@ declare dso_local i32 @printf(i8* noalias nocapture, ...)
 %funptr = type %size_t*
 %vtable = type { { %size_t, void(%object*)* }, [ 0 x %funptr ] }
 %object = type { %vtable*, %size_t }
-%lambda = type { %funptr, %object* }
 
 @memoryCounter = internal global %size_t zeroinitializer
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1

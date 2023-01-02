@@ -547,8 +547,7 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
     val mainMethodReg = CgValue.Register(mainNamer.plus(0).toString(), CgTypeStruct.functionPointer)
     val mainResultReg = CgValue.Register(mainNamer.plus(1).toString(), CgTypePrimitive.INT32)
     val retOps = listOf(
-        CgOp.LoadStaticCallable(mainMethodReg, CgValue.NULL, userMain.globalDataName()),
-        CgOp.Call(mainResultReg, mainMethodReg, listOf()),
+        CgOp.CallStatic(mainResultReg, CgValue.UNIT, userMain.globalDataName(), listOf()),
         CgOp.Return(mainResultReg)
     )
 
