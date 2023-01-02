@@ -1,8 +1,0 @@
-
-inc System
-
-
-
-
-fun main(args: Array<String>): Int
-    return Debug.write("Test") # All debug IO returns the integer 0

@@ -1,5 +1,0 @@
-
-module Main
-
-fun main:System.Int32 = 2
-
