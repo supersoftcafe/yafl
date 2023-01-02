@@ -1,3 +1,0 @@
-module Main
-
-fun main(value:Int32):Int32 = 2 + value

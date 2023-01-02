@@ -1,77 +1,45 @@
-# Yet Another Functional Language
+# Yet Another Functional Language (YAFL)
 
-This has been ticking over in my mind for years. The obsession of a seasoned developer, of many before me. What is the perfect progamming language. Not just imperitive vs functional, or functional vs oo which is to my mind a silly comparison as they are not mutually exclusive. It's more about what are the various paradigms and languages bringing to the table that we love, that help to improve reliability, performance and maintainability, and do that by making our jobs as programmers easier. No pressure.
+Like many before me, I have issues with the current crop of programming languages. So I am going to create my own. Crazy yes?
 
-## Goals
+Actually, I have been working on it for some time. Maybe half a year, or more. I have lost count.
 
-Influences on my thinking so far have been Kotlin and Haskell, with a hint of Python. Here are my takes on the positives each of these languages bring.
-### Clear and easy to visually parse
-Kotlin has a very clear syntax. It's compact and yet easy to visually parse at the same time. This is in contrast to Haskell which is extremely compact, but at the expense of visual parsability. Python is worth a mention here, as it brings good visual parsing to the table by another mechanism, which is indentation as a part of the grammar. The goal here is to have much of the clarity of Kotlin but without the curley braces everywhere, more like python. No list comprehensions, again leaning on the clear English approach of Kotlin. No direct use of indentation as a part of the grammar either. It's a really fine line to walk, but I have prototyped and am getting towards a regular grammar that does not require the use of braces or indentation.
-### Names and concepts that are familiar to imperative programmers
-Obviously Haskell will fail this one. Kotlin again wins out with its policy of using clear English words for actions instead of symbols, and the terms used are more familar to the imperative programmer. However it at the same times borrows heavily from some base functional principles to achieve many of the same results.
-### Implicit parallelism
-Ah...   This is of course absolute idealism, and none of the languages do this. Kotlin has coroutines, which are absolutely amazing, but you still have to use them, you still have to plan and think about parallelism. My goal is to make it absolutely invisible to the programmer. You run your software on a computer, that's all. If it has more cores, it uses them, end of.
-### Low overhead
-No standard library. The simplest hello world program should be tiny. This is one of the stated goals of Rust, and I fully buy into it having come from a Java background and living with the multiple tonnes of runtime dependencies every Java program has. The goal here is to compile for a target physical architecture, and get a small binary at the end.
-### Implicit memory management
-Each of these languages solves this in a different way, and Kotlin even solves it in different ways depending on the underlying platform being targeted. Unfortunately garbage collection whilst amazing is a heavy weight solution that breaks the "low overhead" goal many times over. Python solves this with reference counting, but brings in other performance killers like the global interpreter lock. Objective-C and Swift are the gold standard of ARC (automatic reference counting) for memory management. I hope to follow in those footsteps, but take advantage of a functional focus to reduce the overheads further.
-### Functional does not exactly have to mean immutable
-It's a thorny topic, but if you get down to basics functional programming is about having a black box. For a given set of inputs the outputs will always be the same, and what happens in the box doesn't matter. Of course that box is a function, and the idea is that nothing outside of the function should be able to influence the result. Some of the immutability of functional languages is how that promise is kept, but one area does not contribute, and that is the immutability of locally defined values within the function, the *val* vs *var* debate. I think that we need to allow some amount of mutability so long as we maintain the black box promise. This is a complex subject that has serious impact on the goals of implicit parallelism and implicit memory management. It needs some serious thought.
-### It's functions all the way down
-Well, not quite. But in a sense every named thing is a function and every operator is too. You might think that the number '27' is a literal constant, but really it's a function of type integer that always provides a single well defined result due to having no parameters. Of course this is not literally true at the end of the day, but it provides a useful set of semantics for the language itself and for the programmer thinking about what their code actually means.
-### Generics
-Haskell has this, as does Kotlin. They go by different names and are expressed in different ways, but they definitely exist in both languages. The ability to define a function as operation on a any of type that fullful a set of prerequisites. Python achieves this through duck typing, which works too, but lets the runtime find the issues. This will definately be a strictly typed language, but well thought out generics can give you something that feels almost like duck typing with none of the cost. Haskell did it with heap loads of type inference (a really really big dollop of type inference), Kotlin comes close but no dice. What can Yafl do.
-### And more
-More to come. Partial applications. Implicit parameters from the context. We can mix these concepts with the dot notation from Kotlin to provide something familiar. This needs more thought, as do other ideas. So far this list is a good start, and a lot to think about.
+So, here it is. YAFL. The design goals are as follows:
 
-## Examples
+1. Highly scalable both in terms of memory and compute. For this I mean that it should be a highly capable language for targeting small embedded systems with a single slow core and memory measured in Kbytes up to 96 core 128 Tbyte beasts, and be highly effective at using all of the resources available.
+2. No threads and no locking, at least not explicitly. Just write the logic of your program, and the compiler takes care of the rest.
+3. Concise, but not too concise. Haskell is bloody concise, and as a result is unreadable. Java is overtly obtuse, and as a result is unmaintainable. Kotlin does well, but doesn't go far enough. There is a happy sweet spot that I hope to achieve.
+4. Remove anti-patterns. There is heated debate on what is an anti-patttern, so for the sake of argument just assume that my word is law and I know best. I'll not be having class hierarchies for example.
+5. No null. Just doesn't exist. Get over it.
 
-Some untested examples to try out the syntax for visual appeal. This is an ultra simple persistent list.
-Note the lack of curley braces for code blocks. Also note the extensive use of captures for object members.
-It's largely following a functional style but with the gramatical trappings of an imperitive language.
+Functional is not a design goal, but is a useful paradigm to achieve these goals. It helps to simplify both the automatic memory management and auto parallelism. Pure functional isn't a goal either, and I don't intend to go that far, but balancing mutable vs immutable will be interesting. I am thinking of having islands of mutability.
 
-    # Something between a Haskell type class and a Rust trait.
-    # No implementations here. But defaults can be provided later.
-    class Vec<Element>
-        fun at(index:Int):Element
-        fun count:Int
+To keep things simple, nearly all operators are functions. "1 + 2" will always compile to "`+`(1, 2)", which is a function call to `+`. We will rely on the LLVM optimiser to remove the extra bloat, but what we get is super simple operator overloading.
 
-    # Use of assignment and implicit result. 'object' keyword as used in Kotlin.
-    fun vecOf<Element> = object: Vec<Element>
-        fun at(index) = throw("Not found")
-        fun count = 0
+Overloads are a thing. Even Rust that eschews overloads actually does have them, just by another mechanism. Just imagine having a 'println' method that can't take a variety of input types. What a pain. In my world overloading is simple, just define multiple variants of a function with slightly different signatures.
 
-    # Here we have the builtin 'lookup' function, using a 'pair' syntax to give
-    # it a set of options. This doesn't replace Kotlin's 'when', but makes for
-    # a nice compact alternative.
-    fun vecOf<Element>(el0: Element) = object: Vec<Element>
-        fun at(index) = lookup(index, 0 -> el0)
-        fun count = 1
+Type inference is a big thing. You can write a program almost never having to provide type information, despite this being a strongly typed language.
 
-    fun vecOf<Element>(el0: Element, el1: Element) = object: Vec<Element>
-        fun at(index) = lookup(index, 0 -> el0, 1 -> el1)
-        fun count = 2
+# Progress
 
-    # Use of 'return' keyword instead of assignment. It feels more tidy here. Also the nested
-    # function that helps to reduce clutter and large nested expressions. Interesting use of
-    # lookup, instead of finding the index we look for zeros. Lastly careful application of
-    # lazy evaluation means that the createVector method will only be used if the last option
-    # in the list is actually matched, taking much from the Haskell approach.
-    fun concat<Element>(vec0: Vec<Element>, vec1: Vec<Element>)
-        fun createVector = Vec<Element>
-            fun count = vec0.count + vec1.count
-            fun at(index) = index < vec0.count ? vec0.at(index) : vec1.at(index - vec0.count)
-        return lookup(0, vec0.count -> vec1, vec1.count -> vec0, 0 -> createVector)
+Currently the compiler works. It's a big manual, but really it does useful stuff and generates beautiful LLVM IR that when compiled does work. Automatic heap management is mostly working. Type inference mostly works. It's a beautiful language!
 
-The builtin 'lookup' function and also an equivalent of Kotlin's 'when' deviate from both Kotlin's standard
-approach and that of functional languages in that I will not require them to be exhaustive. I might add
-a keyword that indicates that the programmer wants them to be exhaustive, but that's all. If absent, and
-a match is not found an exception will automatically be thrown. I see this as being very similar to divide by
-zero. We don't demand checks for zero before division operators, we runtime error because the inputs were invalid.
+No io, strings or generics yet. This is a big problem, and made bigger because I have to do them in a particular order that means that we won't get string support until relatively late.
 
-Lazy evaluation is a cornerstone of Haskell. I don't propose as much here, but careful application of it
-should give good efficiency and make the use of functions instead of language constructs much more viable.
-Kotlin achieves this by using specific inline functions that take inline lambda parameters. It's very
-declarative, and that's sonmething I'd like to avoid. This'll be yet another fine line to walk, having
-implicit lazy evaluation without the cost of doing it everywhere.
+This program builds, and works. It produces a shit-tonne of LLVM IR, and it's beautiful.
+
+```
+module Test
+
+import Io
+import System
+
+class Thing(height, age) {
+    fun both(value) => height + age + value
+}
+
+fun doSomethingWith(value, getter: (Int32) : Int32) => print(getter(value))
+
+fun main() => doSomethingWith(27, Thing(180, 48).both)
+```
 
