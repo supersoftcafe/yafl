@@ -1,0 +1,27 @@
+
+module System
+
+class String(_size: Int32, _data: Int8[_size])
+
+
+class String(_buffer: (Int32):Int32, _base: Int32, _size: Int32) {
+    fun size() => _size
+    fun empty() => _size = 0
+    fun split() => (_buffer(0), String(_buffer, _base + 1, _size - 1)
+    fun at(i) => _buffer(_base + i)
+
+    fun append(r: String) => String(StringPair(this, r).at, 0, _size + r.size())
+    fun append(r: Int32) => String(StringAndChar(this, r).at, 0, _size + 1)
+}
+
+class StringAndChar(l: String, r: Int32) {
+    fun at(i) => i < l.size() ? l[i] : r
+}
+
+class StringPair(l: String, r: String) {
+    fun at(i) => i < l.size() ? l[i] : r[i]
+}
+
+
+fun print(value: String): Int32 => value.empty() ? 0 : (let (head, tail) = value.split() putchar(head) + print(tail))
+

@@ -1,7 +1,14 @@
 
 # Todo
 
+Add mutable support with 'mutable' attribute and enforcement. 'mutable' attribute cannot be infered, it must be explicit.
+Add mutation operator ':='.
+Add 'new' operator that implicitly returns a mutable type.
+Add array support. Arrays are not distinct types, but rather a layout modified on class members.
+  Constructor function takes initialiser callable and uses it to initialise array parts.
+
 Ensure class deleter has correct 'release' logic from ARC, not from codegen.
+  If penultimate opcode is a 'release', swap with free(this) so that tailcall will work.
 Ensure that lambda instances are correctly handled for memory management.
 
 
