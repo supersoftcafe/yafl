@@ -16,7 +16,7 @@ LAZY        : 'lazy';
 LAMBDA      : '=>';
 PIPE_RIGHT  : '|>';
 PIPE_MAYBE  : '?>';
-NAMESPACE   : NAME '::';
+NAMESPACE   : '::';
 CMP_LE      : '<=';
 CMP_GE      : '>=';
 CMP_EQ      : '=';
@@ -33,7 +33,7 @@ COMMENT     : '#' ~'\n'+ -> skip ;
 
 
 
-qualifiedName   : NAMESPACE* NAME ;
+qualifiedName   : ( NAME NAMESPACE )* NAME ;
 exprOfTuplePart : ( NAME '=' )? expression ;
 exprOfTuple     : '(' ( exprOfTuplePart ',' )* exprOfTuplePart? ')' ;
 
@@ -47,6 +47,7 @@ type            : typeRef               # namedType
                 | typePrimitive         # primitiveType
                 | typeOfTuple           # tupleType
                 | typeOfLambda          # lambdaType
+                | type '[' size=INTEGER ']'  # arrayType
                 ;
 
 attributes      : '[' NAME* ']' ;
@@ -58,19 +59,20 @@ letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
 function    : FUN attributes? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
 
 expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
-            | left=expression operator='.' right=NAME                       # dotExpr
-            | left=expression params=exprOfTuple                            # callExpr
+            | left=expression operator='.' right=NAME                         # dotExpr
+            | left=expression params=exprOfTuple                              # callExpr
+            | left=expression '[' right=expression ']'                        # arrayLookupExpr
             | left=expression operator=(PIPE_RIGHT | PIPE_MAYBE) right=expression params=exprOfTuple # applyExpr
 
-            | operator=( '+' | '-' ) right=expression                                         # unaryExpr
-            | left=expression operator=( '*' | '/' | '%'                   ) right=expression # productExpr
-            | left=expression operator=( '+' | '-'                         ) right=expression # sumExpr
-            | left=expression operator=( SHL | SHR                         ) right=expression # shiftExpr
-            | left=expression operator=( CMP_LE | '<' | '>' | CMP_GE ) right=expression       # compareExpr
-            | left=expression operator=( CMP_EQ | CMP_NE ) right=expression                   # equalExpr
-            | left=expression operator='&' right=expression                                   # bitAndExpr
-            | left=expression operator='^' right=expression                                   # bitXorExpr
-            | left=expression operator='|' right=expression                                   # bitOrExpr
+            |                 operator=(          '+' | '-'          ) right=expression # unaryExpr
+            | left=expression operator=(          '*' | '/' | '%'    ) right=expression # productExpr
+            | left=expression operator=(          '+' | '-'          ) right=expression # sumExpr
+            | left=expression operator=( SHL                | SHR    ) right=expression # shiftExpr
+            | left=expression operator=( CMP_LE | '<' | '>' | CMP_GE ) right=expression # compareExpr
+            | left=expression operator=( CMP_EQ |             CMP_NE ) right=expression # equalExpr
+            | left=expression operator=           '&'                  right=expression # bitAndExpr
+            | left=expression operator=           '^'                  right=expression # bitXorExpr
+            | left=expression operator=           '|'                  right=expression # bitOrExpr
 
             | condition=expression '?' left=expression ':' right=expression # ifExpr
             | exprOfTuple                                                   # tupleExpr
@@ -78,6 +80,7 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
             | letWithExpr ';'? expression                                   # letExpr
             | function ';'? expression                                      # functionExpr
             | unpackTuple ( ':' type )? LAMBDA expression                   # lambdaExpr
+            | '[' expression ( ',' expression )* ','? ']'                   # newArrayExpr
             | STRING                                                        # stringExpr
             | INTEGER                                                       # integerExpr
             | qualifiedName                                                 # nameExpr
@@ -91,7 +94,7 @@ class       : CLASS NAME unpackTuple? extends? ( '{' classMember* '}' )? ;
 enum        : ENUM NAME ( '{' ( ( NAME unpackTuple? ) | function )* '}' )? ;
 alias       : ALIAS NAME ':' type ;
 declaration : letWithExpr | function | interface | class | enum | alias;
-classMember :  function ;
+classMember : function ;
 
 root        : module import_* declaration* EOF ;
 

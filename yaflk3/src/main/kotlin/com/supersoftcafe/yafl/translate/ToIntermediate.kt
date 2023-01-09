@@ -1,4 +1,4 @@
-package com.supersoftcafe.yafl.tointermediate
+package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.codegen.*
@@ -63,6 +63,9 @@ private fun Declaration.Type.toCgType(globals: Globals) = when (this) {
     is Declaration.Klass  -> CgTypePrimitive.OBJECT
 }
 
+private fun TypeRef.Array.toCgType(globals: Globals) =
+    CgTypeArray(type.toCgType(globals), size!!.toInt())
+
 private fun TypeRef.Tuple.toCgType(globals: Globals) =
     CgTypeStruct(fields.map { it.typeRef.toCgType(globals) })
 
@@ -92,6 +95,9 @@ private fun TypeRef?.toCgType(globals: Globals): CgType {
 
         is TypeRef.Callable ->
             CgTypeStruct.functionPointer
+
+        is TypeRef.Array ->
+            toCgType(globals)
 
         is TypeRef.Tuple ->
             toCgType(globals)
@@ -244,12 +250,62 @@ private fun Expression.Call.callToCgOps(
     }
 }
 
+private fun Expression.tupleOrArrayToCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Declaration.Data>,
+    initializers: List<Expression>,
+): Pair<List<CgOp>, CgValue> {
+    val type = typeRef.toCgType(globals)
+    val (ops, values) = initializers.foldIndexed<Expression, Pair<List<CgOp>, List<CgValue>>>(
+        Pair(listOf(), listOf())
+    ) { index, (acc_ops, acc_value), initializer ->
+        val (ops, value) = initializer.toCgOps(namer + (index * 3), globals, locals)
+        Pair(acc_ops + ops, acc_value + value)
+    }
+    val result = values.foldIndexed(Pair(ops, CgValue.undef(type))) { index, (ops, acc), value ->
+        val op = CgOp.InsertValue(namer.plus(index * 3 + 2).toString(), acc, intArrayOf(index), value)
+        Pair(ops + op, op.result)
+    }
+    return result
+}
+
 private fun Expression.toCgOps(
     namer: Namer,
     globals: Globals,
     locals: Map<Namer, Declaration.Data>
 ): Pair<List<CgOp>, CgValue> {
     return when (this) {
+        is Expression.Characters -> TODO()
+        is Expression.Float -> TODO()
+
+        is Expression.ArrayLookup -> {
+            val (arrayOps, arrayReg) = array.toCgOps(namer+1, globals, locals)
+            val result = CgValue.Register((namer+2).toString(), (arrayReg.type as CgTypeArray).type)
+            if (index is Expression.Integer) {
+                // Error scan will not allow out of bounds constants this far, so a runtime check is not needed.
+                val ops = listOf(
+                    CgOp.ExtractValue(result, arrayReg, intArrayOf(index.value.toInt())))
+                Pair(arrayOps + ops, result)
+            } else {
+                // Runtime check and push register to stack for a memory operation.
+                val (indexOps, indexReg) = index.toCgOps(namer+5, globals, locals)
+                val tmp1 = CgValue.Register((namer+3).toString(), CgTypePointer(arrayReg.type))
+                val tmp2 = CgValue.Register((namer+4).toString(), CgTypePointer(result.type))
+                val ops = listOf(
+                    CgOp.CheckArrayAccess(indexReg, (array.typeRef as TypeRef.Array).size!!.toInt()),
+                    CgOp.Alloca(tmp1),
+                    CgOp.Store(arrayReg.type, tmp1, arrayReg),
+                    CgOp.GetElementPtr(tmp2, tmp1, listOf(CgValue.ZERO, indexReg)),
+                    CgOp.Load(result, tmp2))
+                Pair(arrayOps + indexOps + ops, result)
+            }
+        }
+
+        // Tuple and Array have almost identical init code
+        is Expression.NewArray -> tupleOrArrayToCgOps(namer, globals, locals, elements)
+        is Expression.Tuple -> tupleOrArrayToCgOps(namer, globals, locals, fields.map { it.expression })
+
         is Expression.Lambda -> {
             throw IllegalStateException("No lambda should exist here")
         }
@@ -281,20 +337,6 @@ private fun Expression.toCgOps(
         is Expression.Call ->
             callToCgOps(namer, globals, locals)
 
-        is Expression.Tuple -> {
-            val type = typeRef.toCgType(globals)
-            val (ops, values) = fields.foldIndexed<TupleExpressionField, Pair<List<CgOp>, List<CgValue>>>(
-                Pair(listOf(), listOf())
-            ) { index, (acc_ops, acc_value), field ->
-                val (ops, value) = field.expression.toCgOps(namer + (index * 3), globals, locals)
-                Pair(acc_ops + ops, acc_value + value)
-            }
-            values.foldIndexed(Pair(ops, CgValue.undef(type))) { index, (ops, acc), value ->
-                val op = CgOp.InsertValue(namer.plus(index * 3 + 2).toString(), acc, intArrayOf(index), value)
-                Pair(ops + op, op.result)
-            }
-        }
-
         is Expression.Llvmir -> {
             val result = CgValue.Register((namer + 1).toString(), typeRef.toCgType(globals))
             val params = inputs.mapIndexed { index, input -> input.toCgOps(namer + 2 + index, globals, locals) }
@@ -312,9 +354,6 @@ private fun Expression.toCgOps(
         }
 
         is Expression.If -> {
-            // TODO: Fix labels used on phi statement when having nested ifs. Scan back from branch to find
-            // correct label, as it may have come from further down the tree.
-
             val type = typeRef.toCgType(globals)
 
             val (conditionOps, conditionResult) = condition.toCgOps(namer + 0, globals, locals)
@@ -343,9 +382,9 @@ private fun Expression.toCgOps(
 
             Pair(ops, result)
         }
-
-        else ->
-            TODO("Operation ${this.javaClass.canonicalName} not implemented")
+//
+//        else ->
+//            TODO("Operation ${this.javaClass.canonicalName} not implemented")
     }
 }
 
@@ -374,9 +413,9 @@ private fun Declaration.Function.toIntermediateFunction(
     val type = typeRef
 
     val (ops, returnValue) = body.toCgOps(
-        namer,
-        globals,
+        namer, globals,
         parameters.associateBy { it.id })
+
     val params = (listOf(thisDeclaration) + parameters).map { param ->
         val paramType = param.typeRef.toCgType(globals)
         CgValue.Register(localName(param.name, param.id), paramType)
@@ -537,8 +576,7 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
         val methodReg = CgValue.Register(namerBase.plus(0).toString(), CgTypeStruct.functionPointer)
         val resultReg = CgValue.Register(namerBase.plus(1).toString(), thing.type)
         listOf(
-            CgOp.LoadStaticCallable(methodReg, CgValue.NULL, initFunc.globalName),
-            CgOp.Call(resultReg, methodReg, listOf()),
+            CgOp.CallStatic(resultReg, CgValue.UNIT, initFunc.globalName, listOf()),
             CgOp.Store(thing.type, CgValue.Global(thing.name, thing.type), resultReg)
         )
     }

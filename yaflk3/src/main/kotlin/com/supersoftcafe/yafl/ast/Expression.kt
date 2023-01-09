@@ -8,11 +8,15 @@ sealed class Expression {
     abstract val typeRef: TypeRef?
 
 
+    data class ArrayLookup(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val array: Expression, val index: Expression) : Expression()
+
+    data class NewArray(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val elements: List<Expression>) : Expression()
+
     data class LoadData(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val dataRef: DataRef): Expression()
 
     data class LoadMember(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val base: Expression, val name: String, val id: Namer? = null): Expression()
 
-    data class NewKlass(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression): Expression()
+    data class NewKlass(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression.Tuple): Expression()
 
     data class If(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val condition: Expression, val ifTrue: Expression, val ifFalse: Expression): Expression()
 

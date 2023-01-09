@@ -3,6 +3,7 @@ package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Either
+import com.supersoftcafe.yafl.utils.invert
 
 
 class InferTypes(private val typeHints: TypeHints) {
@@ -35,19 +36,37 @@ class InferTypes(private val typeHints: TypeHints) {
         }
     }
 
+    private fun List<Expression>.inferTypesExpressions(
+        receiver: TypeRef?,
+        findDeclarations: (String) -> List<Declaration>
+    ): Pair<List<Expression>, TypeHints> {
+        val result = map { it.inferTypes(receiver, findDeclarations) }
+        return Pair(result.map { (e, _) -> e!! }, result.fold(emptyTypeHints()) { acc, (_, h) -> acc + h })
+    }
 
     private fun Expression?.inferTypes(
         receiver: TypeRef?,
         findDeclarations: (String) -> List<Declaration>,
     ): Pair<Expression?, TypeHints> {
         return when (this) {
-            is Expression.Float, is Expression.Integer, null ->
+            is Expression.ArrayLookup -> {
+                val (array, arrayHints) = array.inferTypes(TypeRef.Array(type = receiver, size = null), findDeclarations)
+                val (index, indexHints) = index.inferTypes(TypeRef.Int32, findDeclarations)
+                Pair(copy(typeRef = (array?.typeRef as? TypeRef.Array)?.type, array = array!!, index = index!!), arrayHints + indexHints)
+            }
+
+            is Expression.NewArray -> {
+                val (elements, hints) = elements.inferTypesExpressions(receiver, findDeclarations)
+                val elementType = mergeTypes(null,
+                    outputTypes = listOfNotNull((receiver as? TypeRef.Array)?.type),
+                    inputTypes = elements.mapNotNull { it.typeRef })
+                Pair(copy(typeRef = TypeRef.Array(elementType, elements.size.toLong()), elements = elements), hints)
+            }
+
+            is Expression.Float, is Expression.Integer, is Expression.Characters, null ->
                 Pair(this, emptyTypeHints())
 
             is Expression.NewKlass -> {
-                // Each field of the tuple parameter can add a hint to TypeHints for the target Let for the class
-                // The field Lets can build a tuple receiver for the parameter building expression
-                // Target class is fixed at parse time, so no inference on this.typeRef.
                 val typeRef = typeRef as TypeRef.Named
 
                 val declaration = findDeclarations(typeRef.name).single { it.id == typeRef.id } as Declaration.Klass
@@ -56,8 +75,8 @@ class InferTypes(private val typeHints: TypeHints) {
                     TupleTypeField(it.typeRef, it.name)
                 }), findDeclarations)
 
-                val hints =
-                    (parameter?.typeRef as? TypeRef.Tuple)?.fields?.zip(declaration.parameters) { tupleField, paramField ->
+                val hints = (parameter?.typeRef as? TypeRef.Tuple)?.fields
+                    ?.zip(declaration.parameters) { tupleField, paramField ->
                         when (val tr = tupleField.typeRef) {
                             null -> emptyTypeHints()
                             else -> typeHintsOf(paramField.id to TypeHint(sourceRef, inputTypeRef = tr))
@@ -65,7 +84,7 @@ class InferTypes(private val typeHints: TypeHints) {
                     }
 
                 Pair(copy(
-                    parameter = parameter!!
+                    parameter = parameter as Expression.Tuple
                 ), hints?.fold(paramHints, TypeHints::plus) ?: paramHints)
             }
 
@@ -74,22 +93,25 @@ class InferTypes(private val typeHints: TypeHints) {
 
                 when (val baseTypeRef = base?.typeRef) {
                     is TypeRef.Named ->
-                        when (val declaration =
-                            findDeclarations(baseTypeRef.name).single { it.id == baseTypeRef.id }) {
+                        when (val declaration = findDeclarations(baseTypeRef.name).single { it.id == baseTypeRef.id }) {
                             is Declaration.Klass -> {
+
                                 (declaration.parameters + declaration.members).firstOrNull {
                                     it.name == name && it.typeRef.mightBeAssignableTo(receiver)
                                 }?.let { entry ->
+
                                     val entryHint = if (receiver != null) {
                                         typeHintsOf(entry.id to TypeHint(sourceRef, outputTypeRef = receiver))
                                     } else {
                                         emptyTypeHints()
                                     }
+
                                     Pair(copy(
                                         base = base,
                                         typeRef = entry.typeRef,
                                         id = entry.id
                                     ), baseHints + entryHint)
+
                                 }
                             }
 
@@ -116,10 +138,10 @@ class InferTypes(private val typeHints: TypeHints) {
                         sourceRef, typeRef,
                         Expression.LoadData(
                             sourceRef, null,
-                            DataRef.Unresolved("this")
+                            DataRef.Unresolved("this"),
                         ),
                         declaration.name,
-                        declaration.id
+                        declaration.id,
                     ), emptyTypeHints())
                 } else {
                     val newTypeRef = mergeTypes(
@@ -170,7 +192,8 @@ class InferTypes(private val typeHints: TypeHints) {
 
             is Expression.Call -> {
                 val typeRef = mergeTypes(
-                    null, outputType = receiver,
+                    null,
+                    outputType = receiver,
                     inputType = (callable.typeRef as? TypeRef.Callable)?.result
                 )
 
@@ -213,7 +236,7 @@ class InferTypes(private val typeHints: TypeHints) {
                     inputTypes = listOfNotNull(ifFalse.typeRef, ifTrue.typeRef)
                 )
 
-                val (conditionExpr, condHints) = condition.inferTypes(TypeRef.Primitive(PrimitiveKind.Bool), findDeclarations)
+                val (conditionExpr, condHints) = condition.inferTypes(TypeRef.Bool, findDeclarations)
                 val (ifFalseExpr, ifFalseHints) = ifFalse.inferTypes(typeRef, findDeclarations)
                 val (ifTrueExpr, ifTrueHints) = ifTrue.inferTypes(typeRef, findDeclarations)
 
@@ -224,9 +247,6 @@ class InferTypes(private val typeHints: TypeHints) {
                     ifFalse = ifFalseExpr!!
                 ), condHints + ifFalseHints + ifTrueHints)
             }
-
-            else ->
-                TODO()
         }
     }
 
@@ -241,10 +261,11 @@ class InferTypes(private val typeHints: TypeHints) {
         )
 
         val (body, typeHints) = body.inferTypes(typeRefOfLet, findDeclarations)
+
         return Pair(copy(
             signature = typeRefOfLet.toSignature(name),
             typeRef = typeRefOfLet,
-            body = body,
+            body = body
         ), typeHints)
     }
 
@@ -302,8 +323,8 @@ class InferTypes(private val typeHints: TypeHints) {
     private fun Declaration.Klass.inferTypesKlass(
         findDeclarations: (String) -> List<Declaration>
     ): Pair<Declaration.Klass, TypeHints> {
-        val (parameters, parametersHints) = parameters.inferTypesDeclarations(findDeclarations)
-        val (members, membersHints) = members.inferTypesDeclarations { name ->
+        val (parameters, parametersHints) = parameters.inferTypesParameters(findDeclarations)
+        val (members, membersHints) = members.inferTypesMembers { name ->
             findMembers(name, findDeclarations) + findDeclarations(name)
         }
 
@@ -313,11 +334,29 @@ class InferTypes(private val typeHints: TypeHints) {
         ), membersHints + parametersHints)
     }
 
-    private fun List<Declaration>.inferTypesDeclarations(
+    private fun List<Declaration.Let>.inferTypesParameters(
         findDeclarations: (String) -> List<Declaration>
-    ): Pair<List<Declaration>, TypeHints> {
+    ): Pair<List<Declaration.Let>, TypeHints> {
+        // Each array dimension and default value expression can see parameters to the left. That's what makes it
+        // different to inferTypesMembers, which can see all members simultaneously. Parameters can't see to the
+        // right. This is true for both class and function parameters.
+
+        return if (isEmpty()) {
+            Pair(listOf(), emptyTypeHints())
+        } else {
+            val (headParam, headHints) = first().inferTypes(findDeclarations)
+            val (tailParams, tailHints) = drop(1).inferTypesParameters { name ->
+                (if (name == headParam.name) listOf(headParam) else listOf()) + findDeclarations(name)
+            }
+            Pair(listOf(headParam as Declaration.Let) + tailParams, headHints + tailHints)
+        }
+    }
+
+    private fun List<Declaration.Function>.inferTypesMembers(
+        findDeclarations: (String) -> List<Declaration>
+    ): Pair<List<Declaration.Function>, TypeHints> {
         val result = map { it.inferTypes(findDeclarations) }
-        return Pair(result.map { (d, _) -> d }, result.fold(TypeHints()) { acc, (_, h) -> acc + h })
+        return Pair(result.map { (d, _) -> d as Declaration.Function }, result.fold(TypeHints()) { acc, (_, h) -> acc + h })
     }
 
     private fun Declaration.inferTypes(

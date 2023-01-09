@@ -3,6 +3,8 @@ package com.supersoftcafe.yafl.parsetoast
 import com.supersoftcafe.yafl.antlr.YaflParser
 import com.supersoftcafe.yafl.ast.*
 import org.antlr.v4.runtime.Token
+import org.antlr.v4.runtime.tree.TerminalNode
+
 
 
 private fun YaflParser.LlvmirExprContext.toLlvmirExpression(
@@ -35,11 +37,11 @@ private fun YaflParser.ApplyExprContext.toApplyExpression(
     TODO()
 }
 
-private fun YaflParser.IntegerExprContext.toIntegerExpression(
-    file: String
-): Expression {
+fun TerminalNode.parseToInteger(
+    sourceRef: SourceRef
+): Expression.Integer {
     fun String.parse(type: PrimitiveKind, radix: Int) =
-        Expression.Integer(toSourceRef(file), TypeRef.Primitive(type), toLong(radix))
+        Expression.Integer(sourceRef, TypeRef.Primitive(type), toLong(radix))
 
     fun String.parse(type: PrimitiveKind) = when (take(2)) {
         "0b" -> drop(2).parse(type, 2)
@@ -49,16 +51,22 @@ private fun YaflParser.IntegerExprContext.toIntegerExpression(
     }
 
     fun String.parse() = when {
-        endsWith("i8") -> dropLast(2).parse(PrimitiveKind.Int8)
-        endsWith("i16") -> dropLast(3).parse(PrimitiveKind.Int16)
-        endsWith("i32") -> dropLast(3).parse(PrimitiveKind.Int32)
-        endsWith("i64") -> dropLast(3).parse(PrimitiveKind.Int64)
-        endsWith("s") || endsWith("S") -> dropLast(1).parse(PrimitiveKind.Int16)
-        endsWith("l") || endsWith("L") -> dropLast(1).parse(PrimitiveKind.Int64)
-        else -> parse(PrimitiveKind.Int32)
+        endsWith("i8") -> dropLast(2).parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int8)
+        endsWith("i16") -> dropLast(3).parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int16)
+        endsWith("i32") -> dropLast(3).parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int32)
+        endsWith("i64") -> dropLast(3).parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int64)
+        endsWith("s") || endsWith("S") -> dropLast(1).parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int16)
+        endsWith("l") || endsWith("L") -> dropLast(1).parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int64)
+        else -> parse(com.supersoftcafe.yafl.ast.PrimitiveKind.Int32)
     }
 
     return text.parse()
+}
+
+private fun YaflParser.IntegerExprContext.toIntegerExpression(
+    file: String
+): Expression.Integer {
+    return INTEGER().parseToInteger(toSourceRef(file))
 }
 
 private fun call(sourceRef: SourceRef, name: String, vararg params: Expression): Expression.Call {
@@ -107,6 +115,9 @@ fun YaflParser.ExpressionContext.toExpression(
     file: String
 ): Expression {
     return when (this) {
+        is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file), right.toExpression(file))
+        is YaflParser.NewArrayExprContext -> Expression.NewArray(toSourceRef(file), TypeRef.Array(null, expression().size.toLong()), expression().map { it.toExpression(file) })
+
         is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()))
         is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file), right.text)
 

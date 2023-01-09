@@ -1,7 +1,16 @@
 
 # Todo
 
-Add mutable support with 'mutable' attribute and enforcement. 'mutable' attribute cannot be infered, it must be explicit.
+Arrays are fixed size only.
+Arrays are initialised using [el1, el2] etc, explicitly.
+Arrays can be declared anywhere that a type is allowable. Parameters, return, members, tuple field, whatever.
+For now, just let LLVM take care of parameter passing like it does for Tuple.
+Expression.ArrayLookup and Expression.NewArray. A bit like Call and NewKlass.
+TypeRef.Array a bit like TypeRef.Tuple.
+
+
+
+Add mutable support with 'mutable' attribute and enforcement. 'mutable' attribute cannot be inferred, it must be explicit.
 Add mutation operator ':='.
 Add 'new' operator that implicitly returns a mutable type.
 Add array support. Arrays are not distinct types, but rather a layout modified on class members.

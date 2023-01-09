@@ -4,8 +4,9 @@ import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.codegen.generateLlvmIr
 import com.supersoftcafe.yafl.codegen.optimizeLlvmIr
 import com.supersoftcafe.yafl.parsetoast.parseToAst
-import com.supersoftcafe.yafl.tointermediate.convertToIntermediate
+import com.supersoftcafe.yafl.translate.convertToIntermediate
 import com.supersoftcafe.yafl.translate.inferTypes
+import com.supersoftcafe.yafl.translate.parseErrorScan
 import com.supersoftcafe.yafl.translate.resolveTypes
 import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
@@ -27,7 +28,8 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
         .map { (file, contents) -> Pair(file, sourceToParseTree(contents)) }
         .mapIndexed { index, (file, tree) -> parseToAst(namer + index, file, tree) }
         .fold(Ast()) { acc, ast -> acc + ast }
-        .let { resolveTypes(it) }
+        .let { parseErrorScan(it) }
+        .map { resolveTypes(it) }
         .map { inferTypes(it) }
         .map { Either.some(convertToIntermediate(it)) }
         .map { generateLlvmIr(it.reversed()) }
@@ -41,7 +43,7 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
 
 
 fun main(args: Array<String>) {
-    val ast = yaflBuild("/system.yafl", "/io.yafl", "/aclass.yafl")
+    val ast = yaflBuild("/system.yafl", "/io.yafl", "/array.yafl")
     when (ast) {
         is Either.Some -> {
             println("Success")

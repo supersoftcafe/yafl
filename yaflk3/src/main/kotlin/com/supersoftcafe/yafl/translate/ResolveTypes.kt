@@ -39,6 +39,9 @@ class ResolveTypes() {
                 }
             }
 
+            is TypeRef.Array ->
+                copy(type = type.resolveTypes(sourceRef, findDeclarations))
+
             is TypeRef.Tuple ->
                 copy(fields = fields.map { field ->
                     field.copy(typeRef = field.typeRef?.resolveTypes(sourceRef, findDeclarations) ?: field.typeRef)
@@ -62,17 +65,29 @@ class ResolveTypes() {
             null, is Expression.Float, is Expression.Integer, is Expression.Characters ->
                 this
 
-            is Expression.NewKlass -> {
+            is Expression.ArrayLookup -> {
+                val a = array.resolveTypes(findDeclarations)!!
+                val i = index.resolveTypes(findDeclarations)!!
+                copy(array = a, index = i)
+            }
+
+            is Expression.NewArray -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
+                val e = elements.map { it.resolveTypes(findDeclarations)!! }
+                copy(typeRef = t, elements = e)
+            }
+
+            is Expression.NewKlass -> {
+                val t = typeRef.resolveTypes(sourceRef, findDeclarations)!!
                 val p = parameter.resolveTypes(findDeclarations)
-                copy(typeRef = t!!, parameter = p!!)
+                copy(typeRef = t, parameter = p as Expression.Tuple)
             }
 
             is Expression.Call -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
-                val c = callable.resolveTypes(findDeclarations)
+                val c = callable.resolveTypes(findDeclarations)!!
                 val p = parameter.resolveTypes(findDeclarations)
-                copy(typeRef = t, callable = c!!, parameter = p as Expression.Tuple)
+                copy(typeRef = t, callable = c, parameter = p as Expression.Tuple)
             }
 
             is Expression.Tuple -> {
@@ -84,16 +99,16 @@ class ResolveTypes() {
             }
 
             is Expression.If -> {
-                val c = condition.resolveTypes(findDeclarations)
-                val t = ifTrue.resolveTypes(findDeclarations)
-                val f = ifFalse.resolveTypes(findDeclarations)
-                copy(condition = c!!, ifTrue = t!!, ifFalse = f!!)
+                val c = condition.resolveTypes(findDeclarations)!!
+                val t = ifTrue.resolveTypes(findDeclarations)!!
+                val f = ifFalse.resolveTypes(findDeclarations)!!
+                copy(condition = c, ifTrue = t, ifFalse = f)
             }
 
             is Expression.LoadMember -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
-                val b = base.resolveTypes(findDeclarations)
-                copy(typeRef = t, base = b!!)
+                val b = base.resolveTypes(findDeclarations)!!
+                copy(typeRef = t, base = b)
             }
 
             is Expression.LoadData -> {
@@ -102,16 +117,16 @@ class ResolveTypes() {
             }
 
             is Expression.Llvmir -> {
-                val t = typeRef.resolveTypes(sourceRef, findDeclarations)
+                val t = typeRef.resolveTypes(sourceRef, findDeclarations)!!
                 val i = inputs.map { it.resolveTypes(findDeclarations)!! }
-                copy(typeRef = t!!, inputs = i)
+                copy(typeRef = t, inputs = i)
             }
 
             is Expression.Lambda -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
-                val b = body.resolveTypes(findDeclarations)
-                val p = parameters.map { it.resolveTypes(findDeclarations) }
-                copy(typeRef = t, body = b!!, parameters = p.filterIsInstance<Declaration.Let>())
+                val b = body.resolveTypes(findDeclarations)!!
+                val p = parameters.map { it.resolveTypes(findDeclarations) as Declaration.Let }
+                copy(typeRef = t, body = b, parameters = p)
             }
         }
     }
@@ -141,7 +156,7 @@ class ResolveTypes() {
             is Declaration.Klass -> {
                 val p = parameters.resolveDeclarations(findDeclarations)
                 val m = members.resolveDeclarations { name ->
-                    findDeclarations(name) + parameters.filter { it.name == name }
+                    findDeclarations(name) + parameters.filter { it.name == name } + members.filter { it.name == name }
                 }
                 val e = extends.resolveTypeRefs(sourceRef, findDeclarations)
                 copy(

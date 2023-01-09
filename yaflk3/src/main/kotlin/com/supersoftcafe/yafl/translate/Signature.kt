@@ -13,6 +13,10 @@ fun TypeRef?.toSignature(): String? {
             else null
         }
 
+        is TypeRef.Array -> {
+            "[$size x ${type.toSignature()}]"
+        }
+
         is TypeRef.Tuple -> {
             val types = fields.mapNotNull { it.typeRef.toSignature() }
             if (types.size == fields.size)

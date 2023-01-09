@@ -6,6 +6,11 @@ sealed class TypeRef {
     abstract val resolved: Boolean      // Type might be incomplete, but all known parts are resolved
     abstract val complete: Boolean      // Type might have unresolved parts, but we do have all parts
 
+    data class Array(val type: TypeRef?, val size: Long?) : TypeRef() {
+        override val resolved = type?.resolved != false
+        override val complete = type?.complete == true
+    }
+
     data class Tuple(val fields: List<TupleTypeField>) : TypeRef() {
         override fun equals(other: Any?) = other is Tuple && fields == other.fields
         override fun hashCode() = fields.hashCode()
@@ -36,5 +41,15 @@ sealed class TypeRef {
     object Unit : TypeRef() {
         override val resolved = true
         override val complete = true
+    }
+
+    companion object {
+        val Bool = TypeRef.Primitive(PrimitiveKind.Bool)
+        val Int8 = TypeRef.Primitive(PrimitiveKind.Int8)
+        val Int16 = TypeRef.Primitive(PrimitiveKind.Int16)
+        val Int32 = TypeRef.Primitive(PrimitiveKind.Int32)
+        val Int64 = TypeRef.Primitive(PrimitiveKind.Int64)
+        val Float32 = TypeRef.Primitive(PrimitiveKind.Float32)
+        val Float64 = TypeRef.Primitive(PrimitiveKind.Float64)
     }
 }

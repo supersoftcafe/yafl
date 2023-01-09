@@ -7,7 +7,7 @@ import com.supersoftcafe.yafl.ast.TypeRef
 
 
 fun YaflParser.QualifiedNameContext.toName(): String {
-    return NAMESPACE().joinToString("", "", NAME().text) { it.text }
+    return NAME().joinToString("::")
 }
 
 
@@ -17,13 +17,13 @@ fun YaflParser.TypeRefContext.toTypeRef(): TypeRef.Unresolved {
 
 private fun toPrimitiveTypeRef(name: String): TypeRef.Primitive {
     return when (name) {
-        "bool"    -> TypeRef.Primitive(PrimitiveKind.Bool)
-        "int8"    -> TypeRef.Primitive(PrimitiveKind.Int8)
-        "int16"   -> TypeRef.Primitive(PrimitiveKind.Int16)
-        "int32"   -> TypeRef.Primitive(PrimitiveKind.Int32)
-        "int64"   -> TypeRef.Primitive(PrimitiveKind.Int64)
-        "float32" -> TypeRef.Primitive(PrimitiveKind.Float32)
-        "float64" -> TypeRef.Primitive(PrimitiveKind.Float64)
+        "bool"    -> TypeRef.Bool
+        "int8"    -> TypeRef.Int8
+        "int16"   -> TypeRef.Int16
+        "int32"   -> TypeRef.Int32
+        "int64"   -> TypeRef.Int64
+        "float32" -> TypeRef.Float32
+        "float64" -> TypeRef.Float64
         else -> throw IllegalArgumentException("Unknown primitive type $name")
     }
 }
@@ -32,17 +32,28 @@ private fun YaflParser.TypePrimitiveContext.toTypeRef(): TypeRef.Primitive {
     return toPrimitiveTypeRef(NAME().text)
 }
 
-private fun YaflParser.TypeOfTupleContext.toTypeRef(): TypeRef.Tuple {
-    return TypeRef.Tuple(typeOfTuplePart().map {
+private fun YaflParser.TypeOfTupleContext.toTypeRef(): TypeRef {
+    val type = TypeRef.Tuple(typeOfTuplePart().map {
         TupleTypeField(it.type().toTypeRef(), it.NAME()?.text)
     })
+
+    return if (type.fields.size == 1 && type.fields[0].name == null) {
+        type.fields[0].typeRef!!
+    } else {
+        type
+    }
 }
 
 private fun YaflParser.TypeOfLambdaContext.toTypeRef(): TypeRef.Callable {
+    val param = typeOfTuple().toTypeRef()
     return TypeRef.Callable(
-        typeOfTuple().toTypeRef(),
+        if (param is TypeRef.Tuple) param else TypeRef.Tuple(listOf(TupleTypeField(param, null))),
         type().toTypeRef()
     )
+}
+
+private fun YaflParser.ArrayTypeContext.toTypeRef(): TypeRef.Array {
+    return TypeRef.Array(type().toTypeRef(), INTEGER().parseToInteger(toSourceRef("")).value)
 }
 
 fun YaflParser.TypeContext.toTypeRef(): TypeRef {
@@ -51,6 +62,7 @@ fun YaflParser.TypeContext.toTypeRef(): TypeRef {
         is YaflParser.PrimitiveTypeContext -> typePrimitive().toTypeRef()
         is YaflParser.TupleTypeContext -> typeOfTuple().toTypeRef()
         is YaflParser.LambdaTypeContext -> typeOfLambda().toTypeRef()
+        is YaflParser.ArrayTypeContext -> toTypeRef()
         else -> throw IllegalArgumentException()
     }
 }

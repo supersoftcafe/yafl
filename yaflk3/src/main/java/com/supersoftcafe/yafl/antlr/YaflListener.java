@@ -100,17 +100,29 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitNamedType(YaflParser.NamedTypeContext ctx);
 	/**
-	 * Enter a parse tree produced by the {@code primitiveType}
+	 * Enter a parse tree produced by the {@code lambdaType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void enterPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
+	void enterLambdaType(YaflParser.LambdaTypeContext ctx);
 	/**
-	 * Exit a parse tree produced by the {@code primitiveType}
+	 * Exit a parse tree produced by the {@code lambdaType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void exitPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
+	void exitLambdaType(YaflParser.LambdaTypeContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code arrayType}
+	 * labeled alternative in {@link YaflParser#type}.
+	 * @param ctx the parse tree
+	 */
+	void enterArrayType(YaflParser.ArrayTypeContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code arrayType}
+	 * labeled alternative in {@link YaflParser#type}.
+	 * @param ctx the parse tree
+	 */
+	void exitArrayType(YaflParser.ArrayTypeContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code tupleType}
 	 * labeled alternative in {@link YaflParser#type}.
@@ -124,17 +136,17 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitTupleType(YaflParser.TupleTypeContext ctx);
 	/**
-	 * Enter a parse tree produced by the {@code lambdaType}
+	 * Enter a parse tree produced by the {@code primitiveType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void enterLambdaType(YaflParser.LambdaTypeContext ctx);
+	void enterPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
 	/**
-	 * Exit a parse tree produced by the {@code lambdaType}
+	 * Exit a parse tree produced by the {@code primitiveType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void exitLambdaType(YaflParser.LambdaTypeContext ctx);
+	void exitPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#attributes}.
 	 * @param ctx the parse tree
@@ -209,18 +221,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitApplyExpr(YaflParser.ApplyExprContext ctx);
-	/**
-	 * Enter a parse tree produced by the {@code builtinExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 */
-	void enterBuiltinExpr(YaflParser.BuiltinExprContext ctx);
-	/**
-	 * Exit a parse tree produced by the {@code builtinExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 */
-	void exitBuiltinExpr(YaflParser.BuiltinExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code objectExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -402,6 +402,18 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitIfExpr(YaflParser.IfExprContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code arrayLookupExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterArrayLookupExpr(YaflParser.ArrayLookupExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code arrayLookupExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitArrayLookupExpr(YaflParser.ArrayLookupExprContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code tupleExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -437,6 +449,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitCallExpr(YaflParser.CallExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code newArrayExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterNewArrayExpr(YaflParser.NewArrayExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code newArrayExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitNewArrayExpr(YaflParser.NewArrayExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code compareExpr}
 	 * labeled alternative in {@link YaflParser#expression}.

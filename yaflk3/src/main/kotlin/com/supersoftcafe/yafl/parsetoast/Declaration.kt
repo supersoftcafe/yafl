@@ -129,9 +129,13 @@ fun YaflParser.ClassContext.toDeclaration(
     )
 
     val constrSourceRef = unpackTuple()?.toSourceRef(file) ?: klassSourceRef
-    val constrParams = parameters.mapIndexed { index, parameter -> parameter.copy(id = constructorId + index, scope = Scope.Local) }
-    val paramType = TypeRef.Tuple(parameters.map { parameter -> TupleTypeField(parameter.typeRef, parameter.name) })
+    val paramType = TypeRef.Tuple(parameters.map { parameter ->
+        TupleTypeField(parameter.typeRef, parameter.name)
+    })
     val thisDecl = Declaration.Let(constrSourceRef, "this", thisId, Scope.Local, TypeRef.Unit, TypeRef.Unit, null)
+    val constrParams = parameters.mapIndexed { index, parameter ->
+        parameter.copy(id = constructorId + index, scope = Scope.Local)
+    }
 
     val constructor = Declaration.Function(constrSourceRef, klassName, constructorId, scope, thisDecl, constrParams, null, klassType,
         Expression.NewKlass(constrSourceRef, klassType,

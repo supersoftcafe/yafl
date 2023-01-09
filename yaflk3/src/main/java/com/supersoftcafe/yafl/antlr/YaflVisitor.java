@@ -66,12 +66,19 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitNamedType(YaflParser.NamedTypeContext ctx);
 	/**
-	 * Visit a parse tree produced by the {@code primitiveType}
+	 * Visit a parse tree produced by the {@code lambdaType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
+	T visitLambdaType(YaflParser.LambdaTypeContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code arrayType}
+	 * labeled alternative in {@link YaflParser#type}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitArrayType(YaflParser.ArrayTypeContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code tupleType}
 	 * labeled alternative in {@link YaflParser#type}.
@@ -80,12 +87,12 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitTupleType(YaflParser.TupleTypeContext ctx);
 	/**
-	 * Visit a parse tree produced by the {@code lambdaType}
+	 * Visit a parse tree produced by the {@code primitiveType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitLambdaType(YaflParser.LambdaTypeContext ctx);
+	T visitPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#attributes}.
 	 * @param ctx the parse tree
@@ -130,13 +137,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitApplyExpr(YaflParser.ApplyExprContext ctx);
-	/**
-	 * Visit a parse tree produced by the {@code builtinExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitBuiltinExpr(YaflParser.BuiltinExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code objectExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -243,6 +243,13 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitIfExpr(YaflParser.IfExprContext ctx);
 	/**
+	 * Visit a parse tree produced by the {@code arrayLookupExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitArrayLookupExpr(YaflParser.ArrayLookupExprContext ctx);
+	/**
 	 * Visit a parse tree produced by the {@code tupleExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -263,6 +270,13 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitCallExpr(YaflParser.CallExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code newArrayExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitNewArrayExpr(YaflParser.NewArrayExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code compareExpr}
 	 * labeled alternative in {@link YaflParser#expression}.

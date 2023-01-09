@@ -4,20 +4,26 @@ import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Namer
 
 
-private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) {
-    private fun TypeRef?.scan(sourceRef: SourceRef): List<String> {
-        return when (this) {
+private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) : AbstractErrorScan() {
+    override fun scan(self: TypeRef?, sourceRef: SourceRef): List<String> {
+        return when (self) {
             null ->
                 listOf("$sourceRef unknown type")
 
             is TypeRef.Unresolved ->
-                listOf("$sourceRef unresolved type '$name'")
+                listOf("$sourceRef unresolved type '${self.name}'")
+
+            is TypeRef.Array ->
+                if (self.size == null)
+                    listOf("$sourceRef size is unknown")
+                else
+                    scan(self.type, sourceRef)
 
             is TypeRef.Tuple ->
-                fields.flatMap { it.typeRef.scan(sourceRef) }
+                self.fields.flatMap { scan(it.typeRef, sourceRef) }
 
             is TypeRef.Callable ->
-                result.scan(sourceRef) + parameter.scan(sourceRef)
+                scan(self.result, sourceRef) + scan(self.parameter, sourceRef)
 
             is TypeRef.Named ->
                 listOf()
@@ -30,13 +36,13 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
         }
     }
 
-    private fun DataRef?.scan(sourceRef: SourceRef): List<String> {
-        return when (this) {
+    override fun scan(self: DataRef?, sourceRef: SourceRef): List<String> {
+        return when (self) {
             null ->
                 listOf("$sourceRef unknown reference")
 
             is DataRef.Unresolved ->
-                listOf("$sourceRef unresolved reference '$name'")
+                listOf("$sourceRef unresolved reference '${self.name}'")
 
             is DataRef.Resolved ->
                 listOf()
@@ -44,137 +50,121 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
     }
 
 
-    private fun Expression.scan(): List<String> {
-        return when (this) {
-            is Expression.NewKlass -> listOf<String>()  // Only exists in generated code, so should never have errors
-            is Expression.Characters -> listOf<String>()
-            is Expression.Integer -> listOf<String>()
-            is Expression.Float -> listOf<String>()
+    override fun scan(self: Expression?): List<String> {
+        return super.scan(self).ifEmpty {
+            when (self) {
+                is Expression.NewArray -> {
+                    if (self.elements.isEmpty())
+                        listOf("${self.sourceRef} empty arrays are not allowed")
+                    else if (self.elements.any { it.typeRef != self.elements[0].typeRef })
+                        listOf("${self.sourceRef} array type could not be inferred")
+                    else
+                        listOf()
+                }
 
-            is Expression.If ->
-                (condition.scan() + ifTrue.scan() + ifFalse.scan()).ifEmpty {
+                is Expression.ArrayLookup -> {
+                    val arrayTypeRef = self.array.typeRef
+                    if (self.index.typeRef != TypeRef.Int32)
+                        listOf("${self.sourceRef} index must be Int32")
+                    else if (arrayTypeRef !is TypeRef.Array)
+                        listOf("${self.sourceRef} not an array")
+                    else if (arrayTypeRef.size == null)
+                        listOf("${self.sourceRef} incomplete array type, size unknown")
+                    else if (self.index is Expression.Integer && (self.index.value < 0 || self.index.value > arrayTypeRef.size))
+                        listOf("${self.sourceRef} array index out of bounds")
+                    else
+                        listOf()
+                }
+
+                is Expression.If -> {
                     listOfNotNull(
-                        if (condition.typeRef != TypeRef.Primitive(PrimitiveKind.Bool))
-                            "${condition.sourceRef} is not a boolean expression"
+                        if (self.condition.typeRef != TypeRef.Bool)
+                            "${self.condition.sourceRef} is not a boolean expression"
                         else null,
-                        if (typeRef == null)
-                            "$sourceRef conditional branch types are not compatible"
+                        if (self.typeRef == null)
+                            "${self.sourceRef} conditional branch types are not compatible"
                         else null
                     )
                 }
 
-            is Expression.Tuple ->
-                fields.flatMap { it.expression.scan() }
-
-            is Expression.Call ->
-                (callable.scan() + parameter.scan()).ifEmpty {
-                    val targetParams = (callable.typeRef as TypeRef.Callable).parameter!!.fields
-                    val sourceParams = (parameter.typeRef as TypeRef.Tuple).fields
+                is Expression.Call -> {
+                    val targetParams = (self.callable.typeRef as TypeRef.Callable).parameter!!.fields
+                    val sourceParams = (self.parameter.typeRef as TypeRef.Tuple).fields
 
                     if (targetParams.size != sourceParams.size) {
-                        listOf("${parameter.sourceRef} parameter count does not match function requirements")
+                        listOf("${self.parameter.sourceRef} parameter count does not match function requirements")
                     } else {
                         targetParams.mapIndexedNotNull { index, target ->
                             val source = sourceParams[index]
                             if (!target.typeRef.isAssignableFrom(source.typeRef))
-                                "${parameter.sourceRef} parameter $index does not match target type"
+                                "${self.parameter.sourceRef} parameter $index does not match target type"
                             else null
                         }
                     }
                 }
 
-            is Expression.Llvmir -> {
-                inputs.flatMap { it.scan() }
-            }
-
-            is Expression.Lambda ->
-                parameters.flatMap { it.scan() } + body.scan()
-
-            is Expression.LoadData ->
-                dataRef.scan(sourceRef)
-
-            is Expression.LoadMember ->
-                base.scan().ifEmpty {
+                is Expression.LoadMember -> {
                     listOfNotNull(
-                        if (id == null) "$sourceRef member $name not found" else null
+                        if (self.id != null) null
+                        else "${self.sourceRef} member ${self.name} not found",
                     )
                 }
-        }.ifEmpty {
-            typeRef.scan(sourceRef)
-        }
-    }
 
-    private fun Declaration.Function.scanFunction(): List<String> {
-        val bodyError =
-            if (scope != Scope.Global || body != null || "extern" in attributes) listOf()
-            else listOf("$sourceRef function declared without body")
-
-        return bodyError +
-                thisDeclaration.scanLet() +
-                parameters.flatMap { it.scanLet() } +
-                (body?.scan() ?: listOf()).ifEmpty {
-                    returnType.scan(sourceRef).ifEmpty {
-                        if (body == null || returnType.isAssignableFrom(body.typeRef)) listOf()
-                        else listOf("$sourceRef incompatible function return type and expression")
-                    }
-                }
-    }
-
-    private fun Declaration.Let.scanLet(): List<String> {
-        // Try not to return too many errors. If the expression body has an error, don't
-        // then also report the almost inevitable type errors on the declaration or assignment.
-        return (body?.scan() ?: listOf()).ifEmpty {
-            typeRef.scan(sourceRef).ifEmpty {
-                if (body == null || typeRef.isAssignableFrom(body.typeRef)) listOf()
-                else listOf("$sourceRef incompatible types between let and expression")
+                else -> listOf()
             }
         }
     }
 
-    private fun Declaration.Alias.scanAlias(): List<String> {
-        return typeRef.scan(sourceRef)
-    }
+    override fun scanFunction(self: Declaration.Function): List<String> {
+        return super.scanFunction(self).ifEmpty {
+            listOfNotNull(
+                if (self.scope != Scope.Global || self.body != null || "extern" in self.attributes)
+                    null
+                else
+                    "${self.sourceRef} function declared without body",
 
-    private fun Declaration.Klass.scanKlass(): List<String> {
-        return parameters.flatMap { it.scanLet() } +
-                members.flatMap { it.scanFunction() } +
-                extends.flatMap { it.scan(sourceRef) }.ifEmpty {
-                    // If there have been no errors in the inherited interfaces, check for correct function overrides etc
-                    if (extends.filterIsInstance<TypeRef.Named>().any { globals[it.id]?.scan()?.isEmpty() != true }) {
-                        listOf()
-                    } else {
-                        val members = flattenClassMembersBySignature { name, id -> globals[id]!! }
-
-                        members
-                            // No ambiguity with duplicate inherited implementations
-                            .filterValues { it.size > 1 }
-                            .map { (key, list) ->
-                                val func = list.first()
-                                "${func.sourceRef} Multiple implementations of ${func.name}"
-                            } + if (isInterface) listOf() else
-                                // No unimplemented functions
-                                members
-                                    .filterValues { it.first().body == null }
-                                    .map { (key, list) ->
-                                        val func = list.first()
-                                        "${func.sourceRef} Unimplemented"
-                                    }
-                    }
-                }
-    }
-
-    private fun Declaration.scan(): List<String> {
-        return when (this) {
-            is Declaration.Function -> scanFunction()
-            is Declaration.Let -> scanLet()
-            is Declaration.Klass -> scanKlass()
-            is Declaration.Alias -> scanAlias()
+                if (self.body == null || self.returnType.isAssignableFrom(self.body.typeRef))
+                    null
+                else
+                    "${self.sourceRef} incompatible function return type and expression"
+            )
         }
     }
 
-    fun scan(ast: Ast): List<String> {
-        return ast.declarations.flatMap { (_, declaration, _) ->
-            declaration.scan()
+    override fun scanLet(self: Declaration.Let): List<String> {
+        return super.scanLet(self).ifEmpty {
+            listOfNotNull(
+                if (self.body == null || self.typeRef.isAssignableFrom(self.body.typeRef))
+                    null
+                else
+                    "${self.sourceRef} incompatible types between let and expression"
+            )
+        }
+    }
+
+    override fun scanKlass(self: Declaration.Klass): List<String> {
+        return super.scanKlass(self).ifEmpty {
+            // If there have been no errors in the inherited interfaces, check for correct function overrides etc
+            if (self.extends.filterIsInstance<TypeRef.Named>().any { scan(globals[it.id]).isNotEmpty() }) {
+                listOf()
+            } else {
+                val members = self.flattenClassMembersBySignature { name, id -> globals[id]!! }
+
+                members
+                    // No ambiguity with duplicate inherited implementations
+                    .filterValues { it.size > 1 }
+                    .map { (key, list) ->
+                        val func = list.first()
+                        "${func.sourceRef} Multiple implementations of ${func.name}"
+                    } + if (self.isInterface) listOf() else
+                // No unimplemented functions
+                    members
+                        .filterValues { it.first().body == null }
+                        .map { (key, list) ->
+                            val func = list.first()
+                            "${func.sourceRef} Unimplemented"
+                        }
+            }
         }
     }
 }

@@ -7,6 +7,32 @@ sealed class CgOp {
     open fun updateLabels(labelMap: (String) -> String): CgOp = this
     open fun updateRegisters(registerMap: (String) -> String): CgOp = this
 
+    data class Alloca(override val result: CgValue.Register) : CgOp() {
+        init {
+            assert(result.type is CgTypePointer)
+        }
+
+        override fun toIr(context: CgContext): String {
+            val type = result.type as CgTypePointer
+            return "  $result = alloca ${type.target}\n"
+        }
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(
+                result = result.updateRegisters(registerMap)
+            )
+        }
+    }
+
+    data class CheckArrayAccess(val index: CgValue, val size: Int): CgOp() {
+        override val result: CgValue.Register get() = CgValue.VOID
+        override fun toIr(context: CgContext): String {
+            return "  call tailcc void @checkArrayAccess(i32 $index, i32 $size)\n"
+        }
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(index = index.updateRegisters(registerMap))
+        }
+    }
+
     data class Label(val name: String) : CgOp() {
         override val result: CgValue.Register get() = CgValue.VOID
         override fun toIr(context: CgContext) = "\"$name\":\n"
@@ -70,8 +96,25 @@ sealed class CgOp {
         }
     }
 
-    data class GetObjectFieldPtr(override val result: CgValue.Register, val pointer: CgValue, val objectName: String, val fieldIndex: Int = -1) : CgOp() {
+    data class GetElementPtr(override val result: CgValue.Register, val pointer: CgValue, val indexes: List<CgValue>) : CgOp() {
+        override fun toIr(context: CgContext): String {
+            val dataType = when (pointer) {
+                is CgValue.Register -> when (val type = pointer.type) {
+                    is CgTypePointer -> type.target.toString()
+                    else -> throw IllegalArgumentException("Registers must be of pointer type")
+                }
+                is CgValue.Global -> when (val type = pointer.type) {
+                    is CgTypeStruct, is CgTypeArray -> type.toString()
+                    else -> throw IllegalArgumentException("Globals must be of struct or array type")
+                }
+                else -> throw IllegalArgumentException("pointer must be register or global")
+            }
 
+            return indexes.joinToString("", "  $result = getelementptr $dataType, $dataType* $pointer", "\n") { ", i32 $it" }
+        }
+    }
+
+    data class GetObjectFieldPtr(override val result: CgValue.Register, val pointer: CgValue, val objectName: String, val fieldIndex: Int = -1) : CgOp() {
         override fun toIr(context: CgContext): String {
             val dataType = "%\"typeof.object\$$objectName\""
             val tempRegister = "%\"${result.name}.object\""

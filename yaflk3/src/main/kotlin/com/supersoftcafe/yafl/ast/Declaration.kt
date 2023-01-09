@@ -67,7 +67,7 @@ sealed class Declaration {
         override val typeRef: TypeRef?,
         override val sourceTypeRef: TypeRef?,
         override val body: Expression?,
-        override val signature: String? = null
+        override val signature: String? = null,
     ) : Data() {
         override fun toString() = "let $name"
     }

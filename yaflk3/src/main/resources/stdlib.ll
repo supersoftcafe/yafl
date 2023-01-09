@@ -4,6 +4,7 @@
 declare dso_local noalias %object* @malloc(%size_t) "alloc-family"="malloc"
 declare dso_local void @free(%object*) "alloc-family"="malloc"
 declare dso_local i32 @printf(i8* noalias nocapture, ...)
+declare dso_local void @abort()
 
 %funptr = type %size_t*
 %vtable = type { { %size_t, void(%object*)* }, [ 0 x %funptr ] }
@@ -11,6 +12,7 @@ declare dso_local i32 @printf(i8* noalias nocapture, ...)
 
 @memoryCounter = internal global %size_t zeroinitializer
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
+@arrayerrorstr = private unnamed_addr constant [12 x i8] c"Array index\00", align 1
 
 @global_unit_vt = internal global { { void(%object*)*, %size_t }, [ 0 x %funptr ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %funptr ] [ ] }
 @global_unit = internal global %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %funptr ] }* @global_unit_vt to %vtable*), %size_t 0 }
@@ -23,6 +25,23 @@ define dso_local i32 @main() {
     %count = load %size_t, %size_t* @memoryCounter
     %ignore = tail call i32 (i8*, ...) @printf(i8* %param, %size_t %count)
     ret i32 %result
+}
+
+define internal tailcc void @abortWithMessage(i8* %msg) noreturn noinline {
+    %ignore = tail call i32 (i8*, ...) @printf(i8* %msg)
+    call void @abort() noreturn
+    ret void
+}
+
+define internal tailcc void @checkArrayAccess(i32 %index, i32 %size) {
+    %arrayCheck = icmp uge i32 %index, %size
+    br i1 %arrayCheck, label %bounds_bad, label %bounds_ok
+bounds_bad:
+    %param = getelementptr inbounds [12 x i8], [12 x i8]* @arrayerrorstr, i32 0, i32 0
+    call tailcc void @abortWithMessage(i8* %param) noreturn
+    ret void
+bounds_ok:
+    ret void
 }
 
 define internal tailcc %object* @newObject(%size_t %p0, %vtable* %p1) {
