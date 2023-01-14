@@ -9,6 +9,7 @@ data class Namer(private val name: String) {
         return copy(name = "$name$suffix")
     }
 
+    fun toString(count: Int) = plus(count).toString()
     override fun toString() = name
 
     companion object {

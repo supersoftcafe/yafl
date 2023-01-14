@@ -39,9 +39,6 @@ class ResolveTypes() {
                 }
             }
 
-            is TypeRef.Array ->
-                copy(type = type.resolveTypes(sourceRef, findDeclarations))
-
             is TypeRef.Tuple ->
                 copy(fields = fields.map { field ->
                     field.copy(typeRef = field.typeRef?.resolveTypes(sourceRef, findDeclarations) ?: field.typeRef)
@@ -69,12 +66,6 @@ class ResolveTypes() {
                 val a = array.resolveTypes(findDeclarations)!!
                 val i = index.resolveTypes(findDeclarations)!!
                 copy(array = a, index = i)
-            }
-
-            is Expression.NewArray -> {
-                val t = typeRef.resolveTypes(sourceRef, findDeclarations)
-                val e = elements.map { it.resolveTypes(findDeclarations)!! }
-                copy(typeRef = t, elements = e)
             }
 
             is Expression.NewKlass -> {

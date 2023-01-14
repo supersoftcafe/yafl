@@ -15,46 +15,42 @@ abstract class AbstractErrorScan {
         return listOf()
     }
 
-    protected open fun scan(self: Expression?): List<String> {
+    protected open fun scan(self: Expression?, parent: Expression?): List<String> {
         return if (self == null) listOf()
         else scan(self.typeRef, self.sourceRef).ifEmpty {
             when (self) {
-                is Expression.NewArray ->
-                    self.elements.flatMap { scan(it) }.ifEmpty { scan(self.typeRef, self.sourceRef) }
-
                 is Expression.ArrayLookup ->
-                    scan(self.array) + scan(self.index)
+                    scan(self.array, self) + scan(self.index, self)
 
                 is Expression.NewKlass ->
-                    scan(self.parameter)
+                    scan(self.parameter, self)
 
                 is Expression.Llvmir ->
                     self.inputs.flatMap {
-                        scan(it)
+                        scan(it, self)
                     }
 
                 is Expression.Call ->
-                    scan(self.callable) +
-                            scan(self.parameter)
+                    scan(self.callable, self) + scan(self.parameter, self)
 
                 is Expression.Tuple ->
                     self.fields.flatMap {
-                        scan(it.expression)
+                        scan(it.expression, self)
                     }
 
                 is Expression.Lambda ->
-                    scan(self.body) +
+                    scan(self.body, self) +
                             self.parameters.flatMap {
                                 scan(it)
                             }
 
                 is Expression.If ->
-                    scan(self.condition) +
-                            scan(self.ifTrue) +
-                            scan(self.ifFalse)
+                    scan(self.condition, self) +
+                            scan(self.ifTrue, self) +
+                            scan(self.ifFalse, self)
 
                 is Expression.LoadMember ->
-                    scan(self.base)
+                    scan(self.base, self)
 
                 is Expression.LoadData ->
                     scan(self.dataRef, self.sourceRef)
@@ -69,14 +65,14 @@ abstract class AbstractErrorScan {
         return scanSource(self.sourceReturnType, self.sourceRef).ifEmpty { scan(self.returnType, self.sourceRef) } +
                 scan(self.thisDeclaration) +
                 self.parameters.flatMap { scan(it) } +
-                scan(self.body)
+                scan(self.body, null)
     }
 
     protected open fun scanLet(self: Declaration.Let): List<String> {
         return scanSource(self.sourceTypeRef, self.sourceRef).ifEmpty {
             scan(self.typeRef, self.sourceRef)
         } +
-            scan(self.body)
+            scan(self.body, null)
     }
 
     protected open fun scanAlias(self: Declaration.Alias): List<String> {

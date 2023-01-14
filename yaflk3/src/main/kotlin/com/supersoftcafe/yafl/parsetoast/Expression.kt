@@ -116,7 +116,6 @@ fun YaflParser.ExpressionContext.toExpression(
 ): Expression {
     return when (this) {
         is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file), right.toExpression(file))
-        is YaflParser.NewArrayExprContext -> Expression.NewArray(toSourceRef(file), TypeRef.Array(null, expression().size.toLong()), expression().map { it.toExpression(file) })
 
         is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()))
         is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file), right.text)

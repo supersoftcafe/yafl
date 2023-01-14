@@ -13,12 +13,6 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
             is TypeRef.Unresolved ->
                 listOf("$sourceRef unresolved type '${self.name}'")
 
-            is TypeRef.Array ->
-                if (self.size == null)
-                    listOf("$sourceRef size is unknown")
-                else
-                    scan(self.type, sourceRef)
-
             is TypeRef.Tuple ->
                 self.fields.flatMap { scan(it.typeRef, sourceRef) }
 
@@ -49,31 +43,29 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
         }
     }
 
+    private fun getKlassParam(self: Expression.LoadMember): Triple<Declaration.Klass, Declaration, Long?> {
+        val klass = globals[(self.base.typeRef as TypeRef.Named).id] as Declaration.Klass
+        val param = klass.parameters.firstOrNull { it.id == self.id } ?: klass.members.first { it.id == self.id }
+        return Triple(klass, param, (param as? Declaration.Let)?.arraySize)
+    }
 
-    override fun scan(self: Expression?): List<String> {
-        return super.scan(self).ifEmpty {
+
+    override fun scan(self: Expression?, parent: Expression?): List<String> {
+        return super.scan(self, parent).ifEmpty {
             when (self) {
-                is Expression.NewArray -> {
-                    if (self.elements.isEmpty())
-                        listOf("${self.sourceRef} empty arrays are not allowed")
-                    else if (self.elements.any { it.typeRef != self.elements[0].typeRef })
-                        listOf("${self.sourceRef} array type could not be inferred")
-                    else
-                        listOf()
-                }
-
                 is Expression.ArrayLookup -> {
-                    val arrayTypeRef = self.array.typeRef
-                    if (self.index.typeRef != TypeRef.Int32)
-                        listOf("${self.sourceRef} index must be Int32")
-                    else if (arrayTypeRef !is TypeRef.Array)
-                        listOf("${self.sourceRef} not an array")
-                    else if (arrayTypeRef.size == null)
-                        listOf("${self.sourceRef} incomplete array type, size unknown")
-                    else if (self.index is Expression.Integer && (self.index.value < 0 || self.index.value > arrayTypeRef.size))
-                        listOf("${self.sourceRef} array index out of bounds")
-                    else
-                        listOf()
+                    if (self.array !is Expression.LoadMember) {
+                        listOf("${self.sourceRef} array lookup can only be applied to class members")
+                    } else {
+                        val (klass, member, arraySize) = getKlassParam(self.array)
+
+                        if (arraySize == null)
+                            listOf("${self.sourceRef} member is not an array")
+                        else if (self.index is Expression.Integer && (self.index.value < 0 || self.index.value >= arraySize))
+                            listOf("${self.index.sourceRef} array index out of bounds")
+                        else
+                            listOf()
+                    }
                 }
 
                 is Expression.If -> {
@@ -104,9 +96,14 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                 }
 
                 is Expression.LoadMember -> {
+                    val (klass, param, arraySize) = getKlassParam(self)
+
                     listOfNotNull(
                         if (self.id != null) null
                         else "${self.sourceRef} member ${self.name} not found",
+
+                        if (parent is Expression.ArrayLookup || arraySize == null) null
+                        else "${self.sourceRef} member is an array"
                     )
                 }
 

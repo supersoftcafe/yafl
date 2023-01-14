@@ -18,9 +18,6 @@ fun TypeRef?.mightBeAssignableTo(receiver: TypeRef? ): Boolean {
         is TypeRef.Primitive ->
             (receiver as? TypeRef.Primitive)?.kind == kind
 
-        is TypeRef.Array ->
-            receiver is TypeRef.Array && (size == null || receiver.size == null || size == receiver.size) && (type == null || receiver.type == null || type == receiver.type)
-
         is TypeRef.Tuple ->
             fields.size == (receiver as? TypeRef.Tuple)?.fields?.size
                     && fields.zip(receiver.fields).all { (l, r) -> l.typeRef.mightBeAssignableTo(r.typeRef) }
@@ -72,7 +69,6 @@ fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
         isAssignableFrom(other.fields[0].typeRef)
     } else when (this) {
         is TypeRef.Named -> other is TypeRef.Named && (other.id == id || other.extends.any { isAssignableFrom(it) })
-        is TypeRef.Array -> other is TypeRef.Array && size != null && size == other.size && type.isAssignableFrom(other.type)
         is TypeRef.Tuple -> other is TypeRef.Tuple && fields.size == other.fields.size && fields.zip(other.fields).all { (l, r) -> l.typeRef.isAssignableFrom(r.typeRef) }
         is TypeRef.Callable -> other is TypeRef.Callable && result.isAssignableFrom(other.result) && other.parameter.isAssignableFrom(parameter)
         is TypeRef.Primitive, TypeRef.Unit -> other == this
@@ -101,17 +97,6 @@ fun mergeTypes(
     fun checkEverythingIs(predicate: (TypeRef)->Boolean) = inputTypes.all(predicate) && outputTypes.all(predicate)
 
     return when (parsedType) {
-        is TypeRef.Array ->
-            if (checkEverythingIs { it is TypeRef.Array && (it.size == null || it.size == parsedType.size)}) {
-                parsedType.copy(type = mergeTypes(
-                    parsedType.type,
-                    inputTypes .mapNotNull { (it as? TypeRef.Array)?.type },
-                    outputTypes.mapNotNull { (it as? TypeRef.Array)?.type }
-                ))
-            } else {
-                parsedType
-            }
-
         // If the original code specifies a tuple, we need to see what parts are well-defined and keep those.
         // However, the parts that are not well-defined can be inferred.
         is TypeRef.Tuple ->
@@ -156,23 +141,6 @@ fun mergeTypes(
         // Full inference. What are we dealing with?
         null ->
             when (val candidateType = inputTypes.firstOrNull() ?: outputTypes.firstOrNull()) {
-                is TypeRef.Array -> {
-                    if (checkEverythingIs { it is TypeRef.Array }) {
-                        TypeRef.Array(
-                            size = (inputTypes + outputTypes).mapNotNull {
-                                (it as? TypeRef.Array)?.size
-                            }.distinct().singleOrNull(),
-                            type = mergeTypes(
-                                null,
-                                inputTypes .mapNotNull { (it as? TypeRef.Array)?.type },
-                                outputTypes.mapNotNull { (it as? TypeRef.Array)?.type }
-                            )
-                        )
-                    } else {
-                        null
-                    }
-                }
-
                 is TypeRef.Tuple -> {
                     if (checkEverythingIs { it is TypeRef.Tuple && it.fields.size == candidateType.fields.size }) {
                         TypeRef.Tuple(

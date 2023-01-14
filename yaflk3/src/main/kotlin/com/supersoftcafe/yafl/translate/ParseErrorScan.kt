@@ -5,22 +5,42 @@ import com.supersoftcafe.yafl.utils.Either
 
 private class ParseErrorScan : AbstractErrorScan() {
 
-    override fun scanSource(self: TypeRef?, sourceRef: SourceRef): List<String> {
-        return super.scanSource(self, sourceRef).ifEmpty {
-            when (self) {
-                is TypeRef.Array -> {
-                    val size = self.size
-                    if (size == null)
-                        listOf("$sourceRef array size missing")
-                    else if (size > Integer.MAX_VALUE.toLong())
-                        listOf("$sourceRef array size must be less than ${Integer.MAX_VALUE}")
-                    else if (size < 1L)
-                        listOf("$sourceRef array size must be greater than zero")
-                    else
-                        listOf()
-                }
+    override fun scanLet(self: Declaration.Let): List<String> {
+        return super.scanLet(self).ifEmpty {
+            if (self.arraySize != null && (self.arraySize < 1 || self.arraySize > Int.MAX_VALUE)) {
+                listOf("${self.sourceRef} array size must be between 1 and ${Int.MAX_VALUE}")
+            } else {
+                listOf()
+            }
+        }
+    }
 
-                else -> listOf()
+    override fun scanFunction(self: Declaration.Function): List<String> {
+        return super.scanFunction(self).ifEmpty {
+            self.parameters.flatMap { let ->
+                if (let.arraySize != null) {
+                    listOf("${let.sourceRef} array specified not valid here")
+                } else {
+                    listOf()
+                }
+            }
+        }
+    }
+
+    override fun scan(self: Expression?, parent: Expression?): List<String> {
+        return super.scan(self, parent).ifEmpty {
+            when (self) {
+                is Expression.Lambda ->
+                    self.parameters.flatMap { let ->
+                        if (let.arraySize != null) {
+                            listOf("${let.sourceRef} array specified not valid here")
+                        } else {
+                            listOf()
+                        }
+                    }
+
+                else ->
+                    listOf()
             }
         }
     }

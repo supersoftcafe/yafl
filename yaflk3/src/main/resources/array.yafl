@@ -4,12 +4,9 @@ module Test
 import IO
 import System
 
-class Box(value)
+class Array(value[4])
 
-let index1 = Box(2)
-let index2 = Box(1)
-let array = [10, 11, 12, 13]
+fun init(index) => (index + 7) * 2
 
-
-fun main() => array[index1.value] + array[index2.value]
+fun main() => print(Array(init).value[2])
 

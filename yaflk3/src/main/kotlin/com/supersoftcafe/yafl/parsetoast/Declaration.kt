@@ -4,13 +4,6 @@ import com.supersoftcafe.yafl.antlr.YaflParser
 import com.supersoftcafe.yafl.utils.Namer
 import com.supersoftcafe.yafl.ast.*
 
-//
-//fun YaflParser.EnumContext.toDeclaration(id: Long, isGlobal: Boolean, prefix: String = ""): Pair<Declaration.Enum, Long> {
-//    TODO()
-//}
-//
-
-
 
 fun YaflParser.UnpackTupleContext?.toDeclarationLets(
     file: String,
@@ -22,15 +15,18 @@ fun YaflParser.UnpackTupleContext?.toDeclarationLets(
     } else {
         unpackTuplePart().mapIndexed { index, part ->
             if (part.NAME() != null) {
+                val sourceRef = part.toSourceRef(file)
+
                 // It's a parameter
                 Declaration.Let(
-                    part.toSourceRef(file),
+                    sourceRef,
                     part.NAME().text,
                     id + index,
                     scope,
                     null,
                     part.type()?.toTypeRef(),
-                    part.expression()?.toExpression(file)
+                    part.expression()?.toExpression(file),
+                    arraySize = part.INTEGER()?.parseToInteger(sourceRef)?.value
                 )
             } else {
                 // It's an unpacking tuple
@@ -129,20 +125,30 @@ fun YaflParser.ClassContext.toDeclaration(
     )
 
     val constrSourceRef = unpackTuple()?.toSourceRef(file) ?: klassSourceRef
-    val paramType = TypeRef.Tuple(parameters.map { parameter ->
-        TupleTypeField(parameter.typeRef, parameter.name)
-    })
     val thisDecl = Declaration.Let(constrSourceRef, "this", thisId, Scope.Local, TypeRef.Unit, TypeRef.Unit, null)
+
     val constrParams = parameters.mapIndexed { index, parameter ->
-        parameter.copy(id = constructorId + index, scope = Scope.Local)
+        parameter.copy(
+            arraySize = null,
+            scope = Scope.Local,
+            id = constructorId + index,
+            sourceTypeRef = if (parameter.arraySize != null)
+                   TypeRef.Callable(TypeRef.Tuple(listOf(TupleTypeField(TypeRef.Int32, null))), parameter.sourceTypeRef)
+              else parameter.sourceTypeRef,
+        )
     }
 
+    val paramType = TypeRef.Tuple(constrParams.map { parameter ->
+        TupleTypeField(parameter.sourceTypeRef, parameter.name)
+    })
+
+    // TODO: How to construct an object with arrays?
     val constructor = Declaration.Function(constrSourceRef, klassName, constructorId, scope, thisDecl, constrParams, null, klassType,
         Expression.NewKlass(constrSourceRef, klassType,
             Expression.Tuple(constrSourceRef, paramType,
                 constrParams.map { constrParam ->
                     TupleExpressionField(constrParam.name,
-                        Expression.LoadData(constrSourceRef, constrParam.typeRef,
+                        Expression.LoadData(constrSourceRef, constrParam.sourceTypeRef,
                             DataRef.Resolved(constrParam.name, constrParam.id, constrParam.scope),
                         ),
                     )

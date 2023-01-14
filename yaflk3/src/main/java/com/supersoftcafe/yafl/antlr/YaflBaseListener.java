@@ -124,25 +124,13 @@ public class YaflBaseListener implements YaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterLambdaType(YaflParser.LambdaTypeContext ctx) { }
+	@Override public void enterPrimitiveType(YaflParser.PrimitiveTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitLambdaType(YaflParser.LambdaTypeContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterArrayType(YaflParser.ArrayTypeContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitArrayType(YaflParser.ArrayTypeContext ctx) { }
+	@Override public void exitPrimitiveType(YaflParser.PrimitiveTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -160,13 +148,13 @@ public class YaflBaseListener implements YaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterPrimitiveType(YaflParser.PrimitiveTypeContext ctx) { }
+	@Override public void enterLambdaType(YaflParser.LambdaTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void exitPrimitiveType(YaflParser.PrimitiveTypeContext ctx) { }
+	@Override public void exitLambdaType(YaflParser.LambdaTypeContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *

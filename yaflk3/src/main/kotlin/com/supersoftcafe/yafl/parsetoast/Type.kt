@@ -52,17 +52,12 @@ private fun YaflParser.TypeOfLambdaContext.toTypeRef(): TypeRef.Callable {
     )
 }
 
-private fun YaflParser.ArrayTypeContext.toTypeRef(): TypeRef.Array {
-    return TypeRef.Array(type().toTypeRef(), INTEGER().parseToInteger(toSourceRef("")).value)
-}
-
 fun YaflParser.TypeContext.toTypeRef(): TypeRef {
     return when (this) {
         is YaflParser.NamedTypeContext -> typeRef().toTypeRef()
         is YaflParser.PrimitiveTypeContext -> typePrimitive().toTypeRef()
         is YaflParser.TupleTypeContext -> typeOfTuple().toTypeRef()
         is YaflParser.LambdaTypeContext -> typeOfLambda().toTypeRef()
-        is YaflParser.ArrayTypeContext -> toTypeRef()
         else -> throw IllegalArgumentException()
     }
 }

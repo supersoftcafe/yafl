@@ -13,9 +13,6 @@ private class ResolveTypesErrorScan(val globals: Map<Namer, Declaration>, val hi
             is TypeRef.Unresolved ->
                 listOf("$sourceRef unresolved type '${self.name}'")
 
-            is TypeRef.Array ->
-                scanSource(self.type, sourceRef)
-
             is TypeRef.Tuple ->
                 self.fields.flatMap { scanSource(it.typeRef, sourceRef) }
 

@@ -51,20 +51,11 @@ private fun DataRef?.toCgValue(type: CgType, globals: Globals, namer: Namer): Pa
 
 
 
-//private fun Declaration.Struct.toCgType(globals: Globals) =
-//    CgTypeStruct(parameters.map { it.typeRef.toCgType(globals) })
-
-private fun Declaration.Klass.toCgTypeStruct(globals: Globals) =
-    CgTypeStruct(parameters.map { it.typeRef.toCgType(globals) })
-
 private fun Declaration.Type.toCgType(globals: Globals) = when (this) {
     is Declaration.Alias  -> throw IllegalStateException("Dangling alias")
 //    is Declaration.Struct -> toCgType(globals)
     is Declaration.Klass  -> CgTypePrimitive.OBJECT
 }
-
-private fun TypeRef.Array.toCgType(globals: Globals) =
-    CgTypeArray(type.toCgType(globals), size!!.toInt())
 
 private fun TypeRef.Tuple.toCgType(globals: Globals) =
     CgTypeStruct(fields.map { it.typeRef.toCgType(globals) })
@@ -95,9 +86,6 @@ private fun TypeRef?.toCgType(globals: Globals): CgType {
 
         is TypeRef.Callable ->
             CgTypeStruct.functionPointer
-
-        is TypeRef.Array ->
-            toCgType(globals)
 
         is TypeRef.Tuple ->
             toCgType(globals)
@@ -134,7 +122,8 @@ private fun Declaration.Klass.findMember(id: Namer, globals: Globals): Declarati
 private fun Expression.LoadMember.loadMemberToCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>
+    locals: Map<Namer, Declaration.Data>,
+    getIndex: (Declaration.Let) -> Pair<List<CgOp>, CgValue?> = { Pair(listOf(), null) }
 ): Pair<List<CgOp>, CgValue> {
     val (baseOps, baseReg) = base.toCgOps(namer + 1, globals, locals)
 
@@ -151,13 +140,15 @@ private fun Expression.LoadMember.loadMemberToCgOps(
                 val objectName = globalTypeName(declaration.name, declaration.id)
                 val type = member.typeRef.toCgType(globals)
 
+                val (indexOps, indexReg) = getIndex(member)
+
                 val gopReg = CgValue.Register(namer.plus(2).toString(), CgTypePointer(type))
-                val gopOp = CgOp.GetObjectFieldPtr(gopReg, baseReg, objectName, memberIndex)
+                val gopOp = CgOp.GetObjectFieldPtr(gopReg, baseReg, objectName, memberIndex, indexReg)
 
                 val loadReg = CgValue.Register(namer.plus(3).toString(), type)
                 val loadOp = CgOp.Load(loadReg, gopReg)
 
-                Pair(baseOps + gopOp + loadOp, loadReg)
+                Pair(baseOps + indexOps + gopOp + loadOp, loadReg)
 
             } else if (declaration.isInterface) {
                 // Virtual function call
@@ -250,6 +241,63 @@ private fun Expression.Call.callToCgOps(
     }
 }
 
+private fun Expression.NewKlass.toNewKlassCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Declaration.Data>,
+): Pair<List<CgOp>, CgValue> {
+    val type = typeRef as TypeRef.Named
+    val typeName = globalTypeName(type.name, type.id)
+    val klass = globals.type[type.id] as Declaration.Klass
+
+    val newReg = CgValue.Register(namer.toString(1), CgTypePrimitive.OBJECT)
+    val newOp = CgOp.New(newReg, typeName)
+
+    val initOps = parameter.fields.zip(klass.parameters).flatMapIndexed { fieldIndex, (tupleField, parameterDefinition) ->
+        val namer = namer + (1 + fieldIndex)
+
+        val arraySize = parameterDefinition.arraySize
+        val (paramOps, paramReg) = tupleField.expression.toCgOps(namer + 1, globals, locals)
+
+        if (arraySize != null) {
+            // Array field, value is a lambda to initialise elements
+            val sizeImm = CgValue.Immediate(arraySize.toString(), CgTypePrimitive.INT32)
+            val headLabel = CgOp.Label(namer.toString(2))
+            val bodyLabel = CgOp.Label(namer.toString(3))
+            val exitLabel = CgOp.Label(namer.toString(4))
+            val indexReg = CgValue.Register(namer.toString(5), CgTypePrimitive.INT32)
+            val valueReg = CgValue.Register(namer.toString(6), parameterDefinition.typeRef.toCgType(globals))
+            val indexTmpReg = CgValue.Register(namer.toString(7), CgTypePrimitive.INT32)
+            val compareReg = CgValue.Register(namer.toString(8), CgTypePrimitive.BOOL)
+            val fieldPtrReg = CgValue.Register(namer.toString(9), CgTypePointer(valueReg.type))
+
+            paramOps + listOf(
+                CgOp.Jump(headLabel.name),
+                headLabel,
+                CgOp.Jump(bodyLabel.name),
+                bodyLabel,
+                CgOp.Phi(indexReg, listOf(CgValue.ZERO to headLabel.name, indexTmpReg to bodyLabel.name)),
+                CgOp.Call(valueReg, paramReg, listOf(indexReg)),
+                CgOp.GetObjectFieldPtr(fieldPtrReg, newReg, typeName, fieldIndex, indexReg),
+                CgOp.Store(valueReg.type, fieldPtrReg, valueReg),
+                CgOp.BinaryMath(indexTmpReg, "add", indexReg, CgValue.ONE),
+                CgOp.BinaryMath(compareReg, "icmp ult", indexTmpReg, sizeImm),
+                CgOp.Branch(compareReg, bodyLabel.name, exitLabel.name),
+                exitLabel,
+            )
+        } else {
+            // Normal field
+            val fieldPtrReg = CgValue.Register(namer.toString(2), CgTypePointer(paramReg.type))
+            val getFieldOp = CgOp.GetObjectFieldPtr(fieldPtrReg, newReg, typeName, fieldIndex)
+            val writeOp = CgOp.Store(paramReg.type, fieldPtrReg, paramReg)
+            paramOps + getFieldOp + writeOp
+        }
+    }
+
+    return Pair(listOf(newOp) + initOps, newReg)
+}
+
+
 private fun Expression.tupleOrArrayToCgOps(
     namer: Namer,
     globals: Globals,
@@ -279,57 +327,26 @@ private fun Expression.toCgOps(
         is Expression.Characters -> TODO()
         is Expression.Float -> TODO()
 
-        is Expression.ArrayLookup -> {
-            val (arrayOps, arrayReg) = array.toCgOps(namer+1, globals, locals)
-            val result = CgValue.Register((namer+2).toString(), (arrayReg.type as CgTypeArray).type)
-            if (index is Expression.Integer) {
-                // Error scan will not allow out of bounds constants this far, so a runtime check is not needed.
-                val ops = listOf(
-                    CgOp.ExtractValue(result, arrayReg, intArrayOf(index.value.toInt())))
-                Pair(arrayOps + ops, result)
-            } else {
-                // Runtime check and push register to stack for a memory operation.
-                val (indexOps, indexReg) = index.toCgOps(namer+5, globals, locals)
-                val tmp1 = CgValue.Register((namer+3).toString(), CgTypePointer(arrayReg.type))
-                val tmp2 = CgValue.Register((namer+4).toString(), CgTypePointer(result.type))
-                val ops = listOf(
-                    CgOp.CheckArrayAccess(indexReg, (array.typeRef as TypeRef.Array).size!!.toInt()),
-                    CgOp.Alloca(tmp1),
-                    CgOp.Store(arrayReg.type, tmp1, arrayReg),
-                    CgOp.GetElementPtr(tmp2, tmp1, listOf(CgValue.ZERO, indexReg)),
-                    CgOp.Load(result, tmp2))
-                Pair(arrayOps + indexOps + ops, result)
+        is Expression.ArrayLookup ->
+            (array as Expression.LoadMember).loadMemberToCgOps(namer+2, globals, locals) { member ->
+                val (indexOps, indexReg) = index.toCgOps(namer + 1, globals, locals)
+                val check = CgOp.CheckArrayAccess(indexReg, member.arraySize!!.toInt())
+                Pair(indexOps + check, indexReg)
             }
-        }
 
-        // Tuple and Array have almost identical init code
-        is Expression.NewArray -> tupleOrArrayToCgOps(namer, globals, locals, elements)
-        is Expression.Tuple -> tupleOrArrayToCgOps(namer, globals, locals, fields.map { it.expression })
+        is Expression.Tuple ->
+            tupleOrArrayToCgOps(namer, globals, locals, fields.map { it.expression })
 
-        is Expression.Lambda -> {
+        is Expression.Lambda ->
             throw IllegalStateException("No lambda should exist here")
-        }
 
         is Expression.Integer -> {
             val type = typeRef.toCgType(globals)
-            Pair(listOf<CgOp>(), CgValue.Immediate(value.toString(), type))
+            Pair(listOf(), CgValue.Immediate(value.toString(), type))
         }
 
-        is Expression.NewKlass -> {
-            // A klass is a struct on the heap plus some behaviour.
-
-            val type = typeRef as TypeRef.Named
-            val typeName = globalTypeName(type.name, type.id)
-
-            val (paramOps, paramReg) = parameter.toCgOps(namer.plus(1), globals, locals)
-            val newReg = CgValue.Register(namer.plus(2).toString(), CgTypePrimitive.OBJECT)
-            val newOp = CgOp.New(newReg, typeName)
-            val ptrReg = CgValue.Register(namer.plus(3).toString(), CgTypePointer(paramReg.type))
-            val ptrOp = CgOp.GetObjectFieldPtr(ptrReg, newReg, typeName)
-            val writeOp = CgOp.Store(paramReg.type, ptrReg, paramReg)
-
-            Pair(paramOps + newOp + ptrOp + writeOp, newReg)
-        }
+        is Expression.NewKlass ->
+            toNewKlassCgOps(namer, globals, locals)
 
         is Expression.LoadMember ->
             loadMemberToCgOps(namer, globals, locals)
@@ -481,12 +498,12 @@ private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals
             CgOp.Return(CgValue.VOID)
     )
 
-    val struct = toCgTypeStruct(globals)
+    val fields = parameters.map { CgClassField(it.typeRef.toCgType(globals), it.arraySize?.toInt()) }
     val vtable = findVTableEntries(globals)
 
     return justGetTheMembers(namer, globals) +
             listOf<CgThing>(deleter) +
-            CgThingClass(className, struct, vtable, deleter.globalName)
+            CgThingClass(className, fields, vtable, deleter.globalName)
 }
 
 private fun Declaration.Let.toIntermediateVariable(namer: Namer, globals: Globals): List<CgThing> {

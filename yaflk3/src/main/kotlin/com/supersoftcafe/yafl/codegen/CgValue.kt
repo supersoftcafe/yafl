@@ -21,6 +21,7 @@ sealed class CgValue {
         val VOID = CgValue.Register("", CgTypePrimitive.VOID)
         val UNIT = CgValue.Global("global_unit", CgTypePrimitive.OBJECT)
         val ZERO = CgValue.Immediate("0", CgTypePrimitive.INT32)
+        val ONE = CgValue.Immediate("1", CgTypePrimitive.INT32)
 
         fun undef(type: CgType): CgValue = CgValue.Immediate("undef", type)
     }

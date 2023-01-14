@@ -50,17 +50,9 @@ class InferTypes(private val typeHints: TypeHints) {
     ): Pair<Expression?, TypeHints> {
         return when (this) {
             is Expression.ArrayLookup -> {
-                val (array, arrayHints) = array.inferTypes(TypeRef.Array(type = receiver, size = null), findDeclarations)
+                val (array, arrayHints) = array.inferTypes(receiver, findDeclarations)
                 val (index, indexHints) = index.inferTypes(TypeRef.Int32, findDeclarations)
-                Pair(copy(typeRef = (array?.typeRef as? TypeRef.Array)?.type, array = array!!, index = index!!), arrayHints + indexHints)
-            }
-
-            is Expression.NewArray -> {
-                val (elements, hints) = elements.inferTypesExpressions(receiver, findDeclarations)
-                val elementType = mergeTypes(null,
-                    outputTypes = listOfNotNull((receiver as? TypeRef.Array)?.type),
-                    inputTypes = elements.mapNotNull { it.typeRef })
-                Pair(copy(typeRef = TypeRef.Array(elementType, elements.size.toLong()), elements = elements), hints)
+                Pair(copy(array = array!!, index = index!!, typeRef = array.typeRef), arrayHints + indexHints)
             }
 
             is Expression.Float, is Expression.Integer, is Expression.Characters, null ->
@@ -72,14 +64,28 @@ class InferTypes(private val typeHints: TypeHints) {
                 val declaration = findDeclarations(typeRef.name).single { it.id == typeRef.id } as Declaration.Klass
 
                 val (parameter, paramHints) = parameter.inferTypes(TypeRef.Tuple(declaration.parameters.map {
-                    TupleTypeField(it.typeRef, it.name)
+                    TupleTypeField(if (it.arraySize != null) {
+                        // Array requires a lambda parameter
+                        TypeRef.Callable(TypeRef.Tuple(listOf(TupleTypeField(TypeRef.Int32, null))), it.typeRef)
+                    } else {
+                        // Otherwise just the value
+                        it.typeRef
+                    }, it.name)
                 }), findDeclarations)
 
                 val hints = (parameter?.typeRef as? TypeRef.Tuple)?.fields
                     ?.zip(declaration.parameters) { tupleField, paramField ->
                         when (val tr = tupleField.typeRef) {
                             null -> emptyTypeHints()
-                            else -> typeHintsOf(paramField.id to TypeHint(sourceRef, inputTypeRef = tr))
+                            else -> {
+                                typeHintsOf(paramField.id to TypeHint(sourceRef, inputTypeRef = if (paramField.arraySize != null) {
+                                    // Array member hint is the lambda return type
+                                    (tr as? TypeRef.Callable)?.result
+                                } else {
+                                    // Otherwise just the type
+                                    tr
+                                }))
+                            }
                         }
                     }
 

@@ -100,29 +100,17 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitNamedType(YaflParser.NamedTypeContext ctx);
 	/**
-	 * Enter a parse tree produced by the {@code lambdaType}
+	 * Enter a parse tree produced by the {@code primitiveType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void enterLambdaType(YaflParser.LambdaTypeContext ctx);
+	void enterPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
 	/**
-	 * Exit a parse tree produced by the {@code lambdaType}
+	 * Exit a parse tree produced by the {@code primitiveType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void exitLambdaType(YaflParser.LambdaTypeContext ctx);
-	/**
-	 * Enter a parse tree produced by the {@code arrayType}
-	 * labeled alternative in {@link YaflParser#type}.
-	 * @param ctx the parse tree
-	 */
-	void enterArrayType(YaflParser.ArrayTypeContext ctx);
-	/**
-	 * Exit a parse tree produced by the {@code arrayType}
-	 * labeled alternative in {@link YaflParser#type}.
-	 * @param ctx the parse tree
-	 */
-	void exitArrayType(YaflParser.ArrayTypeContext ctx);
+	void exitPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code tupleType}
 	 * labeled alternative in {@link YaflParser#type}.
@@ -136,17 +124,17 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitTupleType(YaflParser.TupleTypeContext ctx);
 	/**
-	 * Enter a parse tree produced by the {@code primitiveType}
+	 * Enter a parse tree produced by the {@code lambdaType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void enterPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
+	void enterLambdaType(YaflParser.LambdaTypeContext ctx);
 	/**
-	 * Exit a parse tree produced by the {@code primitiveType}
+	 * Exit a parse tree produced by the {@code lambdaType}
 	 * labeled alternative in {@link YaflParser#type}.
 	 * @param ctx the parse tree
 	 */
-	void exitPrimitiveType(YaflParser.PrimitiveTypeContext ctx);
+	void exitLambdaType(YaflParser.LambdaTypeContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#attributes}.
 	 * @param ctx the parse tree

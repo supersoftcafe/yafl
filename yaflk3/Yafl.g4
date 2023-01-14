@@ -47,12 +47,11 @@ type            : typeRef               # namedType
                 | typePrimitive         # primitiveType
                 | typeOfTuple           # tupleType
                 | typeOfLambda          # lambdaType
-                | type '[' size=INTEGER ']'  # arrayType
                 ;
 
 attributes      : '[' NAME* ']' ;
 
-unpackTuplePart : unpackTuple | ( NAME ( ':' type )? ( '=' expression )? ) ;
+unpackTuplePart : unpackTuple | ( NAME ( '[' INTEGER ']' )? ( ':' type )? ( '=' expression )? ) ;
 unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
 
 letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
@@ -85,6 +84,9 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
             | INTEGER                                                       # integerExpr
             | qualifiedName                                                 # nameExpr
             ;
+
+//classParam  : NAME ( '[' INTEGER ']' )? ( ':' type )? ( '=' expression )? ;
+//classParams : '(' ( classParam ',' )* classParam? ')' ;
 
 extends     : ':' typeRef ( ',' typeRef )* ;
 module      : MODULE typeRef ;

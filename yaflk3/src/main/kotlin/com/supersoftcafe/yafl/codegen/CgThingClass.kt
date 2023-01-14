@@ -2,9 +2,14 @@ package com.supersoftcafe.yafl.codegen
 
 import kotlin.math.max
 
+data class CgClassField(
+    val type: CgType,
+    val arraySize: Int?
+)
+
 data class CgThingClass(
     val name: String,
-    val dataType: CgTypeStruct,
+    val fields: List<CgClassField>,
     val functions: Map<String, String>, // Signature to Global name
     val deleteGlobalName: String // Must be void(object*)
 ) : CgThing {
@@ -26,9 +31,14 @@ data class CgThingClass(
         val vtableDataName = "@\"vtable\$$name\""
         val objectTypeName = "%\"typeof.object\$$name\""
         val vtableTypeName = "%\"typeof.vtable\$$name\""
+
+        val fieldsIr = fields.joinToString { field ->
+            field.arraySize?.let { "[ $it x ${field.type} ]" } ?: "${field.type}"
+        }
+
         return CgLlvmIr(
             types = "$vtableTypeName = type { { %size_t, void(%object*)* }, [ $size x %size_t* ] }\n" +
-                    "$objectTypeName = type { %object, $dataType }\n",
+                    "$objectTypeName = type { %object, { $fieldsIr } }\n",
             declarations = "$vtableDataName = internal global $vtableTypeName { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @\"$deleteGlobalName\" }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n")
     }
 
