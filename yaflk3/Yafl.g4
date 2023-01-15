@@ -1,7 +1,8 @@
 grammar Yafl;
 
-LLVM_IR     : '__llvm_ir__' ;
+LLVM_IR     : '__llvm_ir__';
 PRIMITIVE   : '__primitive__';
+ASSERT      : '__assert__';
 
 MODULE      : 'module';
 IMPORT      : 'import';
@@ -51,13 +52,14 @@ type            : typeRef               # namedType
 
 attributes      : '[' NAME* ']' ;
 
-unpackTuplePart : unpackTuple | ( NAME ( '[' INTEGER ']' )? ( ':' type )? ( '=' expression )? ) ;
+unpackTuplePart : unpackTuple | ( NAME ( '[' ( expression CMP_LE )? INTEGER ']' )? ( ':' type )? ) ;
 unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
 
 letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
 function    : FUN attributes? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
 
 expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
+            | ASSERT '(' value=expression ',' condition=expression ',' message=STRING ')' # assertExpr
             | left=expression operator='.' right=NAME                         # dotExpr
             | left=expression params=exprOfTuple                              # callExpr
             | left=expression '[' right=expression ']'                        # arrayLookupExpr

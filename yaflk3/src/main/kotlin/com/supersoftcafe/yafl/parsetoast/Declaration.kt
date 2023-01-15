@@ -23,9 +23,13 @@ fun YaflParser.UnpackTupleContext?.toDeclarationLets(
                     part.NAME().text,
                     id + index,
                     scope,
-                    null,
-                    part.type()?.toTypeRef(),
-                    part.expression()?.toExpression(file),
+
+                    typeRef = null,
+                    sourceTypeRef = part.type()?.toTypeRef(),
+
+                    body = null,
+
+                    dynamicArraySize = part.expression()?.toExpression(file),
                     arraySize = part.INTEGER()?.parseToInteger(sourceRef)?.value
                 )
             } else {
@@ -102,6 +106,8 @@ fun YaflParser.ClassContext.toDeclaration(
     val klassId = id + 3
     val constructorId = id + 4
     val thisId = id + 5
+    val arraySizeId = id + 6
+    val arraySizeThisParamId = id + 7
 
     val klassName = prefix + NAME().text
     val klassType = TypeRef.Unresolved(klassName, klassId)
@@ -110,7 +116,19 @@ fun YaflParser.ClassContext.toDeclaration(
     val parameters = unpackTuple().toDeclarationLets(file, parameterId, scopeOfMembers)
     val members = classMember().flatMapIndexed { index, classMember ->
         classMember.function().toDeclaration(file, memberId + index, scopeOfMembers, klassType)
-    }
+    } + listOfNotNull(parameters.lastOrNull()?.let { param ->
+        // If there is an array, add a virtual function to calculate the array size
+        param.arraySize?.let {
+            Declaration.Function(
+                param.sourceRef, "array\$size",
+                arraySizeId, scopeOfMembers,
+                Declaration.Let(param.sourceRef, "this", arraySizeThisParamId, Scope.Local, klassType, klassType, null),
+                listOf(), TypeRef.Int32, TypeRef.Int32,
+                param.dynamicArraySize ?: Expression.Integer(param.sourceRef, TypeRef.Int32, param.arraySize),
+                guidance = listOf(Guidance.ExcludeMember(param.name, param.id))
+            )
+        }
+    })
 
     val klassSourceRef = toSourceRef(file)
     val klass = Declaration.Klass(
@@ -118,7 +136,7 @@ fun YaflParser.ClassContext.toDeclaration(
         klassName,
         klassId,
         scope,
-        parameters,
+        parameters.map { it.copy(dynamicArraySize = null) },
         members,
         extends_().toExtends(),
         isInterface = false
@@ -127,8 +145,10 @@ fun YaflParser.ClassContext.toDeclaration(
     val constrSourceRef = unpackTuple()?.toSourceRef(file) ?: klassSourceRef
     val thisDecl = Declaration.Let(constrSourceRef, "this", thisId, Scope.Local, TypeRef.Unit, TypeRef.Unit, null)
 
+    // Constructor params need to have different ids and slight modifications for arrays
     val constrParams = parameters.mapIndexed { index, parameter ->
         parameter.copy(
+            dynamicArraySize = null,
             arraySize = null,
             scope = Scope.Local,
             id = constructorId + index,
@@ -142,7 +162,6 @@ fun YaflParser.ClassContext.toDeclaration(
         TupleTypeField(parameter.sourceTypeRef, parameter.name)
     })
 
-    // TODO: How to construct an object with arrays?
     val constructor = Declaration.Function(constrSourceRef, klassName, constructorId, scope, thisDecl, constrParams, null, klassType,
         Expression.NewKlass(constrSourceRef, klassType,
             Expression.Tuple(constrSourceRef, paramType,

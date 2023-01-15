@@ -20,7 +20,7 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String,List<String>> {
         .mapIndexed { index, name -> Pair(name, index) }    // Assign a unique id to each name
         .toMap()
 
-    val context   = CgContext(slotIds)
+    val context = CgContext(slotIds, mapOf())
 
     val classes = things.toIr(context, CgThingClass::toIr)
     val variables = things.toIr(context, CgThingVariable::toIr)

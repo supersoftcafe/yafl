@@ -19,6 +19,9 @@ abstract class AbstractErrorScan {
         return if (self == null) listOf()
         else scan(self.typeRef, self.sourceRef).ifEmpty {
             when (self) {
+                is Expression.Assert ->
+                    scan(self.value, self) + scan(self.condition, self)
+
                 is Expression.ArrayLookup ->
                     scan(self.array, self) + scan(self.index, self)
 

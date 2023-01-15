@@ -123,7 +123,7 @@ private fun Expression.LoadMember.loadMemberToCgOps(
     namer: Namer,
     globals: Globals,
     locals: Map<Namer, Declaration.Data>,
-    getIndex: (Declaration.Let) -> Pair<List<CgOp>, CgValue?> = { Pair(listOf(), null) }
+    getIndex: (Declaration.Let, CgValue) -> Pair<List<CgOp>, CgValue?> = { _, _ -> Pair(listOf(), null) }
 ): Pair<List<CgOp>, CgValue> {
     val (baseOps, baseReg) = base.toCgOps(namer + 1, globals, locals)
 
@@ -140,7 +140,7 @@ private fun Expression.LoadMember.loadMemberToCgOps(
                 val objectName = globalTypeName(declaration.name, declaration.id)
                 val type = member.typeRef.toCgType(globals)
 
-                val (indexOps, indexReg) = getIndex(member)
+                val (indexOps, indexReg) = getIndex(member, baseReg)
 
                 val gopReg = CgValue.Register(namer.plus(2).toString(), CgTypePointer(type))
                 val gopOp = CgOp.GetObjectFieldPtr(gopReg, baseReg, objectName, memberIndex, indexReg)
@@ -241,6 +241,26 @@ private fun Expression.Call.callToCgOps(
     }
 }
 
+private fun Expression.ArrayLookup.toArrayLookupCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Declaration.Data>,
+): Pair<List<CgOp>, CgValue> {
+    return (array as Expression.LoadMember).loadMemberToCgOps(namer+2, globals, locals) { member, base ->
+        val klass = globals.type[(array.base.typeRef as TypeRef.Named).id] as Declaration.Klass
+        val arraySizeReg = CgValue.Register(namer.toString(3), CgTypePrimitive.INT32)
+        val sizingFunction = klass.members.single { it.name == "array\$size" }.globalDataName()
+
+        val (indexOps, indexReg) = index.toCgOps(namer + 1, globals, locals)
+        val checkOps = listOf(
+            CgOp.CallStatic(arraySizeReg, base, sizingFunction, listOf()),
+            CgOp.CheckArrayAccess(indexReg, arraySizeReg)
+        )
+
+        Pair(indexOps + checkOps, indexReg)
+    }
+}
+
 private fun Expression.NewKlass.toNewKlassCgOps(
     namer: Namer,
     globals: Globals,
@@ -249,52 +269,87 @@ private fun Expression.NewKlass.toNewKlassCgOps(
     val type = typeRef as TypeRef.Named
     val typeName = globalTypeName(type.name, type.id)
     val klass = globals.type[type.id] as Declaration.Klass
+    val fieldNamer = namer + 9
 
+    val (paramOpsTmp, paramRegs) = parameter.fields.mapIndexed { fieldIndex, tupleField ->
+        tupleField.expression.toCgOps(fieldNamer + fieldIndex, globals, locals)
+    }.invert()
+    val paramOps = paramOpsTmp.flatten()
+
+    val arraySizeReg = CgValue.Register(namer.toString(3), CgTypePrimitive.INT32)
     val newReg = CgValue.Register(namer.toString(1), CgTypePrimitive.OBJECT)
-    val newOp = CgOp.New(newReg, typeName)
+    val arraySize = klass.parameters.lastOrNull()?.arraySize
 
-    val initOps = parameter.fields.zip(klass.parameters).flatMapIndexed { fieldIndex, (tupleField, parameterDefinition) ->
-        val namer = namer + (1 + fieldIndex)
+    val newOps = if (arraySize != null) {
+        // Array container. A bit of a hack, by creating a dummy object on the stack with minimal size
+        // we can initialise the members (except the array) and then call the sizing function. LLVM
+        // should be able to optimize this away, and it saves us from duplicating the sizing expression.
 
-        val arraySize = parameterDefinition.arraySize
-        val (paramOps, paramReg) = tupleField.expression.toCgOps(namer + 1, globals, locals)
+        val dummyReg = CgValue.Register(namer.toString(2), CgTypePrimitive.OBJECT)
+        val sizeCheckReg = CgValue.Register(namer.toString(4), CgTypePrimitive.BOOL)
+        val sizingFunction = klass.members.single { it.name == "array\$size" }.globalDataName()
+        listOf(
+            // Use sizing function with dummy object, last arg is array, don't use it
+            CgOp.DummyObjectOnStack(dummyReg, typeName, paramRegs.dropLast(1)),
+            CgOp.CallStatic(arraySizeReg, dummyReg, sizingFunction, listOf()),
 
-        if (arraySize != null) {
+            // Must not be bigger than maximum allowable array size
+            CgOp.BinaryMath(sizeCheckReg, "icmp ule", arraySizeReg, CgValue.Immediate(arraySize.toString(), CgTypePrimitive.INT32)),
+            CgOp.Assert(sizeCheckReg, "array allocation exceeds upper bound"),
+
+            CgOp.NewArray(newReg, typeName, klass.parameters.last().typeRef.toCgType(globals), klass.parameters.size - 1, arraySizeReg)
+        )
+
+    } else {
+        // Normal object
+        listOf(CgOp.New(newReg, typeName))
+    }
+
+    val initOps = paramRegs.zip(klass.parameters).flatMapIndexed { fieldIndex, (paramReg, parameterDefinition) ->
+        val fieldNamer = fieldNamer + fieldIndex
+
+        if (parameterDefinition.arraySize != null) {
             // Array field, value is a lambda to initialise elements
-            val sizeImm = CgValue.Immediate(arraySize.toString(), CgTypePrimitive.INT32)
-            val headLabel = CgOp.Label(namer.toString(2))
-            val bodyLabel = CgOp.Label(namer.toString(3))
-            val exitLabel = CgOp.Label(namer.toString(4))
-            val indexReg = CgValue.Register(namer.toString(5), CgTypePrimitive.INT32)
-            val valueReg = CgValue.Register(namer.toString(6), parameterDefinition.typeRef.toCgType(globals))
-            val indexTmpReg = CgValue.Register(namer.toString(7), CgTypePrimitive.INT32)
-            val compareReg = CgValue.Register(namer.toString(8), CgTypePrimitive.BOOL)
-            val fieldPtrReg = CgValue.Register(namer.toString(9), CgTypePointer(valueReg.type))
+            val headLabel = CgOp.Label(fieldNamer.toString(1))
+            val bodyLabel = CgOp.Label(fieldNamer.toString(2))
+            val exitLabel = CgOp.Label(fieldNamer.toString(3))
+            val testLabel = CgOp.Label(fieldNamer.toString(4))
 
-            paramOps + listOf(
+            val indexReg = CgValue.Register(fieldNamer.toString(5), CgTypePrimitive.INT32)
+            val valueReg = CgValue.Register(fieldNamer.toString(6), parameterDefinition.typeRef.toCgType(globals))
+            val indexTmpReg = CgValue.Register(fieldNamer.toString(7), CgTypePrimitive.INT32)
+            val compareReg = CgValue.Register(fieldNamer.toString(8), CgTypePrimitive.BOOL)
+            val fieldPtrReg = CgValue.Register(fieldNamer.toString(9), CgTypePointer(valueReg.type))
+
+            listOf(
                 CgOp.Jump(headLabel.name),
                 headLabel,
-                CgOp.Jump(bodyLabel.name),
-                bodyLabel,
+                CgOp.Jump(testLabel.name),
+
+                testLabel,
                 CgOp.Phi(indexReg, listOf(CgValue.ZERO to headLabel.name, indexTmpReg to bodyLabel.name)),
+                CgOp.BinaryMath(compareReg, "icmp ult", indexReg, arraySizeReg),
+                CgOp.Branch(compareReg, bodyLabel.name, exitLabel.name),
+
+                bodyLabel,
                 CgOp.Call(valueReg, paramReg, listOf(indexReg)),
                 CgOp.GetObjectFieldPtr(fieldPtrReg, newReg, typeName, fieldIndex, indexReg),
                 CgOp.Store(valueReg.type, fieldPtrReg, valueReg),
                 CgOp.BinaryMath(indexTmpReg, "add", indexReg, CgValue.ONE),
-                CgOp.BinaryMath(compareReg, "icmp ult", indexTmpReg, sizeImm),
-                CgOp.Branch(compareReg, bodyLabel.name, exitLabel.name),
+                CgOp.Jump(testLabel.name),
+
                 exitLabel,
             )
         } else {
             // Normal field
-            val fieldPtrReg = CgValue.Register(namer.toString(2), CgTypePointer(paramReg.type))
+            val fieldPtrReg = CgValue.Register(fieldNamer.toString(2), CgTypePointer(paramReg.type))
             val getFieldOp = CgOp.GetObjectFieldPtr(fieldPtrReg, newReg, typeName, fieldIndex)
             val writeOp = CgOp.Store(paramReg.type, fieldPtrReg, paramReg)
-            paramOps + getFieldOp + writeOp
+            listOf(getFieldOp, writeOp)
         }
     }
 
-    return Pair(listOf(newOp) + initOps, newReg)
+    return Pair(paramOps + newOps + initOps, newReg)
 }
 
 
@@ -318,6 +373,16 @@ private fun Expression.tupleOrArrayToCgOps(
     return result
 }
 
+private fun Expression.Assert.toAssertCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Declaration.Data>
+): Pair<List<CgOp>, CgValue> {
+    val (conditionOps, conditionReg) = condition.toCgOps(namer, globals, locals)
+    val (valueOps, valueReg) = value.toCgOps(namer, globals, locals)
+    return Pair(conditionOps + CgOp.Assert(conditionReg, message) + valueOps, valueReg)
+}
+
 private fun Expression.toCgOps(
     namer: Namer,
     globals: Globals,
@@ -327,12 +392,11 @@ private fun Expression.toCgOps(
         is Expression.Characters -> TODO()
         is Expression.Float -> TODO()
 
+        is Expression.Assert ->
+            toAssertCgOps(namer, globals, locals)
+
         is Expression.ArrayLookup ->
-            (array as Expression.LoadMember).loadMemberToCgOps(namer+2, globals, locals) { member ->
-                val (indexOps, indexReg) = index.toCgOps(namer + 1, globals, locals)
-                val check = CgOp.CheckArrayAccess(indexReg, member.arraySize!!.toInt())
-                Pair(indexOps + check, indexReg)
-            }
+            toArrayLookupCgOps(namer, globals, locals)
 
         is Expression.Tuple ->
             tupleOrArrayToCgOps(namer, globals, locals, fields.map { it.expression })
@@ -498,7 +562,13 @@ private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals
             CgOp.Return(CgValue.VOID)
     )
 
-    val fields = parameters.map { CgClassField(it.typeRef.toCgType(globals), it.arraySize?.toInt()) }
+    // TODO: Create className/array$size function and add to class function list. For future virtualization, if needed.
+    //       NewKlass to use array$size, passing in stack based synthetic partial object for params. LLVM will get rid of it.
+    //          Allocation needs to calculate size
+    //          If size '>' max array size, abort
+    //       ArrayLookup to use array$size for bounds checks.
+
+    val fields = parameters.map { CgClassField(it.typeRef.toCgType(globals), it.arraySize != null) }
     val vtable = findVTableEntries(globals)
 
     return justGetTheMembers(namer, globals) +

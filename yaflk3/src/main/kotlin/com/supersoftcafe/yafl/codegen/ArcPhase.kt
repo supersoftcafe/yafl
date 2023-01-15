@@ -14,7 +14,7 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
     // Declarations of ARC variables that hold references for later release
     val arcVars = thing.body.flatMap { op ->
         val objectFields = findObjectFields(op.result.type)
-        if (objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.Call)) {
+        if (objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.NewArray|| op is CgOp.Call)) {
             objectFields.map { fieldPath ->
                 val pathStr = fieldPath.joinToString("$")
                 CgThingVariable("${op.result.name}.arc$pathStr", CgTypePrimitive.OBJECT)
@@ -27,7 +27,7 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
     // Insert ARC code after New/Call and before Ret
     val modifiedBody = thing.body.flatMapIndexed { opIndex, op ->
         when (op) {
-            is CgOp.New, is CgOp.Call -> {
+            is CgOp.New, is CgOp.NewArray, is CgOp.Call -> {
                 val objectFields = findObjectFields(op.result.type)
                 if (objectFields.isNotEmpty()) {
                     // Store value(s) for a later release just before the return statement

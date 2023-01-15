@@ -117,6 +117,13 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitFunction(YaflParser.FunctionContext ctx);
 	/**
+	 * Visit a parse tree produced by the {@code assertExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitAssertExpr(YaflParser.AssertExprContext ctx);
+	/**
 	 * Visit a parse tree produced by the {@code dotExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -173,26 +180,12 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitFunctionExpr(YaflParser.FunctionExprContext ctx);
 	/**
-	 * Visit a parse tree produced by the {@code shiftExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitShiftExpr(YaflParser.ShiftExprContext ctx);
-	/**
 	 * Visit a parse tree produced by the {@code stringExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	T visitStringExpr(YaflParser.StringExprContext ctx);
-	/**
-	 * Visit a parse tree produced by the {@code bitOrExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitBitOrExpr(YaflParser.BitOrExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code unaryExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -215,13 +208,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitSumExpr(YaflParser.SumExprContext ctx);
 	/**
-	 * Visit a parse tree produced by the {@code llvmirExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitLlvmirExpr(YaflParser.LlvmirExprContext ctx);
-	/**
 	 * Visit a parse tree produced by the {@code lambdaExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -235,20 +221,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitIfExpr(YaflParser.IfExprContext ctx);
-	/**
-	 * Visit a parse tree produced by the {@code arrayLookupExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitArrayLookupExpr(YaflParser.ArrayLookupExprContext ctx);
-	/**
-	 * Visit a parse tree produced by the {@code tupleExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitTupleExpr(YaflParser.TupleExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code bitAndExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -277,6 +249,41 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitCompareExpr(YaflParser.CompareExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code shiftExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitShiftExpr(YaflParser.ShiftExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code bitOrExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitBitOrExpr(YaflParser.BitOrExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code llvmirExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitLlvmirExpr(YaflParser.LlvmirExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code arrayLookupExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitArrayLookupExpr(YaflParser.ArrayLookupExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code tupleExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitTupleExpr(YaflParser.TupleExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code equalExpr}
 	 * labeled alternative in {@link YaflParser#expression}.

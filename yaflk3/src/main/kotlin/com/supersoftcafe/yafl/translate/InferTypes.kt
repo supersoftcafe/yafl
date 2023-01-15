@@ -49,6 +49,12 @@ class InferTypes(private val typeHints: TypeHints) {
         findDeclarations: (String) -> List<Declaration>,
     ): Pair<Expression?, TypeHints> {
         return when (this) {
+            is Expression.Assert -> {
+                val (value, valueHints) = value.inferTypes(receiver, findDeclarations)
+                val (condition, conditionHints) = condition.inferTypes(TypeRef.Bool, findDeclarations)
+                Pair(copy(value = value!!, condition = condition!!, typeRef = value.typeRef), valueHints + conditionHints)
+            }
+
             is Expression.ArrayLookup -> {
                 val (array, arrayHints) = array.inferTypes(receiver, findDeclarations)
                 val (index, indexHints) = index.inferTypes(TypeRef.Int32, findDeclarations)
@@ -267,12 +273,14 @@ class InferTypes(private val typeHints: TypeHints) {
         )
 
         val (body, typeHints) = body.inferTypes(typeRefOfLet, findDeclarations)
+        val (dynamicArraySize, dynamicArraySizeHints) = dynamicArraySize.inferTypes(TypeRef.Int32, findDeclarations)
 
         return Pair(copy(
+            dynamicArraySize = dynamicArraySize,
             signature = typeRefOfLet.toSignature(name),
             typeRef = typeRefOfLet,
             body = body
-        ), typeHints)
+        ), typeHints + dynamicArraySizeHints)
     }
 
     private fun Declaration.Function.inferTypesFunction(
@@ -294,15 +302,13 @@ class InferTypes(private val typeHints: TypeHints) {
         val (bodyExpr, bodyHints) = body.inferTypes(sourceReturnType ?: returnType) { name ->
             (parameters + thisDeclaration).filter { it.name == name } + findDeclarations(name)
         }
-        val params = parameters.map { param ->
-            param.inferTypes(findDeclarations)
-        }
+        val (params, paramHints2) = parameters.inferTypesParameters(findDeclarations)
 
         return Pair(copy(
-            parameters = params.map { (p, _) -> p as Declaration.Let },
+            parameters = params,
             returnType = sourceReturnType ?: bodyExpr?.typeRef,
             body = bodyExpr,
-        ), params.fold(bodyHints + paramHints) { acc, (_, h) -> acc + h })
+        ), bodyHints + paramHints + paramHints2)
     }
 
 
@@ -335,15 +341,15 @@ class InferTypes(private val typeHints: TypeHints) {
         }
 
         return Pair(copy(
-            members = members.filterIsInstance<Declaration.Function>(),
-            parameters = parameters.filterIsInstance<Declaration.Let>()
+            members = members,
+            parameters = parameters
         ), membersHints + parametersHints)
     }
 
     private fun List<Declaration.Let>.inferTypesParameters(
         findDeclarations: (String) -> List<Declaration>
     ): Pair<List<Declaration.Let>, TypeHints> {
-        // Each array dimension and default value expression can see parameters to the left. That's what makes it
+        // Default expressions and array size expressions can see parameters to the left. That's what makes it
         // different to inferTypesMembers, which can see all members simultaneously. Parameters can't see to the
         // right. This is true for both class and function parameters.
 
@@ -414,7 +420,9 @@ fun inferTypes(ast: Ast): Either<Ast, List<String>> {
     val result = inferTypes2(ast)
     val errors = inferTypesErrorScan(result)
 
-    return if (errors.isEmpty())
-         Either.Some(result)
-    else Either.Error(errors)
+    return if (errors.isEmpty()) {
+        Either.Some(result)
+    } else {
+        Either.Error(errors)
+    }
 }

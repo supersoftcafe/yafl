@@ -8,6 +8,7 @@ sealed class Declaration {
     abstract val name: String
     abstract val scope: Scope
     abstract val sourceRef: SourceRef
+    abstract val guidance: List<Guidance>
 
     sealed class Data : Declaration() {
         abstract val signature: String?
@@ -33,6 +34,7 @@ sealed class Declaration {
         override val id: Namer,
         override val scope: Scope,
         val typeRef: TypeRef,
+        override val guidance: List<Guidance> = listOf()
     ) : Type() {
         override fun toString() = "alias $name"
     }
@@ -54,7 +56,8 @@ sealed class Declaration {
         val parameters: List<Declaration.Let>,
         val members: List<Declaration.Function>,
         val extends: List<TypeRef>,
-        val isInterface: Boolean
+        val isInterface: Boolean,
+        override val guidance: List<Guidance> = listOf()
     ) : Type() {
         override fun toString() = "class $name"
     }
@@ -67,8 +70,10 @@ sealed class Declaration {
         override val typeRef: TypeRef?,
         override val sourceTypeRef: TypeRef?,
         override val body: Expression?,
+        val dynamicArraySize: Expression? = null,
         val arraySize: Long? = null,
         override val signature: String? = null,
+        override val guidance: List<Guidance> = listOf()
     ) : Data() {
         override fun toString() = "let $name"
     }
@@ -84,6 +89,7 @@ sealed class Declaration {
         val sourceReturnType: TypeRef?,
         override val body: Expression?,
         val attributes: Set<String> = setOf(),
+        override val guidance: List<Guidance> = listOf()
     ) : Data() {
         override fun toString() = "fun $name"
         override val typeRef = TypeRef.Callable(TypeRef.Tuple(parameters.map { TupleTypeField(it.typeRef, it.name) }), returnType ?: body?.typeRef)

@@ -8,7 +8,8 @@ data class Ast(
 ) {
     fun findDeclarations(imports: Imports, name: String): List<Declaration> {
         val names = imports.paths.map { if (it.isEmpty() || name.contains("::")) name else "$it::$name" }
-        return declarations.map { it.declaration }.filter { it.name in names }
+        val result = declarations.map { it.declaration }.filter { it.name in names }
+        return result
     }
 
     fun findDeclarations(imports: Imports): (String)->List<Declaration> {

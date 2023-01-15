@@ -62,6 +62,12 @@ class ResolveTypes() {
             null, is Expression.Float, is Expression.Integer, is Expression.Characters ->
                 this
 
+            is Expression.Assert -> {
+                val v = value.resolveTypes(findDeclarations)!!
+                val c = condition.resolveTypes(findDeclarations)!!
+                copy(value = v, condition = c)
+            }
+
             is Expression.ArrayLookup -> {
                 val a = array.resolveTypes(findDeclarations)!!
                 val i = index.resolveTypes(findDeclarations)!!
@@ -158,10 +164,11 @@ class ResolveTypes() {
             }
 
             is Declaration.Let -> {
+                val d = dynamicArraySize.resolveTypes(findDeclarations)
                 val s = sourceTypeRef.resolveTypes(sourceRef, findDeclarations)
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
                 val b = body.resolveTypes(findDeclarations)
-                copy(sourceTypeRef = s, typeRef = t, body = b)
+                copy(sourceTypeRef = s, typeRef = t, body = b, dynamicArraySize = d)
             }
 
             is Declaration.Function -> {

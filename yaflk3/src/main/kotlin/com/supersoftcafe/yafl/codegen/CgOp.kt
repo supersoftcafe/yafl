@@ -1,5 +1,7 @@
 package com.supersoftcafe.yafl.codegen
 
+import java.util.concurrent.locks.Condition
+
 sealed class CgOp {
     abstract val result: CgValue.Register
     abstract fun toIr(context: CgContext): String
@@ -24,14 +26,28 @@ sealed class CgOp {
         }
     }
 
-    data class CheckArrayAccess(val index: CgValue, val size: Int) : CgOp() {
+    data class Assert(val condition: CgValue, val message: String): CgOp() {
+        override val result: CgValue.Register get() = CgValue.VOID
+        override fun toIr(context: CgContext): String {
+            // val messageGlobal = context.literalStringToGlobalRef(message)
+            return  "  call tailcc void @assertWithMessage(${condition.type} $condition, i8* getelementptr([12 x i8], [12 x i8]* @arrayerrorstr, i32 0, i32 0))\n"
+        }
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(condition = condition.updateRegisters(registerMap))
+        }
+    }
+
+    data class CheckArrayAccess(val index: CgValue, val size: CgValue) : CgOp() {
         override val result: CgValue.Register get() = CgValue.VOID
         override fun toIr(context: CgContext): String {
             return "  call tailcc void @checkArrayAccess(i32 $index, i32 $size)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return copy(index = index.updateRegisters(registerMap))
+            return copy(
+                index = index.updateRegisters(registerMap),
+                size = size.updateRegisters(registerMap),
+            )
         }
     }
 
@@ -352,12 +368,54 @@ sealed class CgOp {
         }
     }
 
+
+    data class DummyObjectOnStack(
+        override val result: CgValue.Register,
+        val className: String,
+        val initValues: List<CgValue>
+    ) : CgOp() {
+        override fun toIr(context: CgContext): String {
+            val objectTypeName = "%\"typeof.object\$$className\""
+            val     pointerReg = "%\"${result.name}.ptr\""
+
+            return "  $pointerReg = alloca $objectTypeName\n" +
+                    initValues.withIndex().joinToString { (index, value) ->
+                        "  %\"${result.name}.$index\" = getelementptr $objectTypeName, $objectTypeName* $pointerReg, i32 0, i32 1, i32 $index\n" +
+                        "  store ${value.type} $value, ${value.type}* %\"${result.name}.$index\"\n" } +
+                   "  $result = bitcast $objectTypeName* $pointerReg to %object*\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(
+                result = result.updateRegisters(registerMap),
+                initValues = initValues.map { it.updateRegisters(registerMap) }
+            )
+        }
+    }
+
     data class New(override val result: CgValue.Register, val className: String) : CgOp() {
         override fun toIr(context: CgContext): String {
             val vtableDataName = "@\"vtable\$$className\""
             val objectTypeName = "%\"typeof.object\$$className\""
             val vtableTypeName = "%\"typeof.vtable\$$className\""
             return "  $result = tail call tailcc %object* @newObject(%size_t ptrtoint($objectTypeName* getelementptr ($objectTypeName, $objectTypeName* null, i32 1) to %size_t), %vtable* bitcast($vtableTypeName* $vtableDataName to %vtable*))\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(result = result.updateRegisters(registerMap))
+        }
+    }
+
+    data class NewArray(override val result: CgValue.Register, val className: String, val arrayFieldType: CgType, val arrayField: Int, val arraySize: CgValue) : CgOp() {
+        override fun toIr(context: CgContext): String {
+            val  vtableDataName = "@\"vtable\$$className\""
+            val  objectTypeName = "%\"typeof.object\$$className\""
+            val  vtableTypeName = "%\"typeof.vtable\$$className\""
+            val objectEndPtrReg = CgValue.Register("${result.name}.end", CgTypePointer(arrayFieldType))
+            val   objectSizeReg = CgValue.Register("${result.name}.size", CgTypePrimitive.INT32)
+            return "  $objectEndPtrReg = getelementptr $objectTypeName, $objectTypeName* null, i32 0, i32 1, i32 $arrayField, ${arraySize.type} $arraySize\n" +
+                   "  $objectSizeReg = ptrtoint $arrayFieldType* $objectEndPtrReg to %size_t\n" +
+                   "  $result = tail call tailcc %object* @newObject(%size_t $objectSizeReg, %vtable* bitcast($vtableTypeName* $vtableDataName to %vtable*))\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {

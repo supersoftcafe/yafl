@@ -15,15 +15,23 @@ private class ParseErrorScan : AbstractErrorScan() {
         }
     }
 
+    private fun List<Declaration.Let>.testForArray(): List<String> {
+        return mapNotNull { let ->
+            let.arraySize?.let {
+                "${let.sourceRef} array specifier not valid here"
+            }
+        }
+    }
+
+    override fun scanKlass(self: Declaration.Klass): List<String> {
+        return super.scanKlass(self).ifEmpty {
+            self.parameters.dropLast(1).testForArray()
+        }
+    }
+
     override fun scanFunction(self: Declaration.Function): List<String> {
         return super.scanFunction(self).ifEmpty {
-            self.parameters.flatMap { let ->
-                if (let.arraySize != null) {
-                    listOf("${let.sourceRef} array specified not valid here")
-                } else {
-                    listOf()
-                }
-            }
+            self.parameters.testForArray()
         }
     }
 
@@ -31,13 +39,7 @@ private class ParseErrorScan : AbstractErrorScan() {
         return super.scan(self, parent).ifEmpty {
             when (self) {
                 is Expression.Lambda ->
-                    self.parameters.flatMap { let ->
-                        if (let.arraySize != null) {
-                            listOf("${let.sourceRef} array specified not valid here")
-                        } else {
-                            listOf()
-                        }
-                    }
+                    self.parameters.testForArray()
 
                 else ->
                     listOf()

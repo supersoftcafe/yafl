@@ -4,7 +4,7 @@ import kotlin.math.max
 
 data class CgClassField(
     val type: CgType,
-    val arraySize: Int?
+    val isArray: Boolean = false
 )
 
 data class CgThingClass(
@@ -33,7 +33,11 @@ data class CgThingClass(
         val vtableTypeName = "%\"typeof.vtable\$$name\""
 
         val fieldsIr = fields.joinToString { field ->
-            field.arraySize?.let { "[ $it x ${field.type} ]" } ?: "${field.type}"
+            if (field.isArray) {
+                "[ 0 x ${field.type} ]"
+            } else {
+                "${field.type}"
+            }
         }
 
         return CgLlvmIr(

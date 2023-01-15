@@ -7,6 +7,18 @@ import org.antlr.v4.runtime.tree.TerminalNode
 
 
 
+
+private fun YaflParser.AssertExprContext.toAssertExpression(
+    file: String
+): Expression {
+    return Expression.Assert(
+        toSourceRef(file),
+        null,
+        value.toExpression(file),
+        condition.toExpression(file),
+        message.text.removeSurrounding("\""))
+}
+
 private fun YaflParser.LlvmirExprContext.toLlvmirExpression(
     file: String
 ): Expression {
@@ -115,6 +127,8 @@ fun YaflParser.ExpressionContext.toExpression(
     file: String
 ): Expression {
     return when (this) {
+        is YaflParser.AssertExprContext -> toAssertExpression(file)
+
         is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file), right.toExpression(file))
 
         is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()))

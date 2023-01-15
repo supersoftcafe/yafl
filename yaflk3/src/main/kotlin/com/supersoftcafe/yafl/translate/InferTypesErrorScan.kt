@@ -53,7 +53,13 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
     override fun scan(self: Expression?, parent: Expression?): List<String> {
         return super.scan(self, parent).ifEmpty {
             when (self) {
-                is Expression.ArrayLookup -> {
+                is Expression.Assert ->
+                    if (self.condition.typeRef != TypeRef.Bool)
+                        listOf("${self.condition.sourceRef} condition expression is not boolean")
+                    else
+                        listOf()
+
+                is Expression.ArrayLookup ->
                     if (self.array !is Expression.LoadMember) {
                         listOf("${self.sourceRef} array lookup can only be applied to class members")
                     } else {
@@ -66,9 +72,8 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                         else
                             listOf()
                     }
-                }
 
-                is Expression.If -> {
+                is Expression.If ->
                     listOfNotNull(
                         if (self.condition.typeRef != TypeRef.Bool)
                             "${self.condition.sourceRef} is not a boolean expression"
@@ -77,7 +82,6 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                             "${self.sourceRef} conditional branch types are not compatible"
                         else null
                     )
-                }
 
                 is Expression.Call -> {
                     val targetParams = (self.callable.typeRef as TypeRef.Callable).parameter!!.fields
@@ -107,7 +111,8 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                     )
                 }
 
-                else -> listOf()
+                else ->
+                    listOf()
             }
         }
     }

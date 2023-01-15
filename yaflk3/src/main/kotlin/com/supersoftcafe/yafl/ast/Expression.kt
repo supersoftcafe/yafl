@@ -7,6 +7,8 @@ sealed class Expression {
     abstract val sourceRef: SourceRef
     abstract val typeRef: TypeRef?
 
+    data class Assert(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val value: Expression, val condition: Expression, val message: String) : Expression()
+
     data class ArrayLookup(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val array: Expression, val index: Expression) : Expression()
 
     data class LoadData(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val dataRef: DataRef): Expression()

@@ -1,12 +1,12 @@
 
 module Test
 
-import IO
+import Io
 import System
 
-class Array(value[4])
+class Array(size: Int16, value[Int32(size) <= 100]: Int32)
 
 fun init(index) => (index + 7) * 2
 
-fun main() => print(Array(init).value[2])
+fun main() => print(Array(4i16, init).value[7])
 

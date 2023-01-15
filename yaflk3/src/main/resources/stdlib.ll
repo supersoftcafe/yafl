@@ -33,6 +33,15 @@ define internal tailcc void @abortWithMessage(i8* %msg) noreturn noinline {
     ret void
 }
 
+define internal tailcc void @assertWithMessage(i1 %cond, i8* %msg) {
+    br i1 %cond, label %cond_ok, label %cond_bad
+cond_bad:
+    call tailcc void @abortWithMessage(i8* %msg) noreturn
+    ret void
+cond_ok:
+    ret void
+}
+
 define internal tailcc void @checkArrayAccess(i32 %index, i32 %size) {
     %arrayCheck = icmp uge i32 %index, %size
     br i1 %arrayCheck, label %bounds_bad, label %bounds_ok
