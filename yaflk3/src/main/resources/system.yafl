@@ -111,12 +111,12 @@ fun `>>`(l: System::Int16, r: System::Int32): System::Int16 => __llvm_ir__<Syste
 fun `>>`(l: System::Int32, r: System::Int32): System::Int32 => __llvm_ir__<System::Int32>("${0} = lshr i32 ${1}, ${2}", l, Int32(r & 31))
 fun `>>`(l: System::Int64, r: System::Int32): System::Int64 => __llvm_ir__<System::Int64>("${0} = lshr i64 ${1}, ${2}", l, Int64(r & 63))
 
-fun `=`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i8 ${1}, ${2}", l, r)
-fun `=`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i16 ${1}, ${2}", l, r)
-fun `=`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i32 ${1}, ${2}", l, r)
-fun `=`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i64 ${1}, ${2}", l, r)
-fun `=`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<System::Bool>("${0} = fcmp oeq float ${1}, ${2}", l, r)
-fun `=`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<System::Bool>("${0} = fcmp oeq double ${1}, ${2}", l, r)
+fun `==`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i8 ${1}, ${2}", l, r)
+fun `==`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i16 ${1}, ${2}", l, r)
+fun `==`(l: System::Int32, r: System::Int32): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i32 ${1}, ${2}", l, r)
+fun `==`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp eq i64 ${1}, ${2}", l, r)
+fun `==`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<System::Bool>("${0} = fcmp oeq float ${1}, ${2}", l, r)
+fun `==`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<System::Bool>("${0} = fcmp oeq double ${1}, ${2}", l, r)
 
 fun `!=`(l: System::Int8, r: System::Int8): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp ne i8 ${1}, ${2}", l, r)
 fun `!=`(l: System::Int16, r: System::Int16): System::Bool => __llvm_ir__<System::Bool>("${0} = icmp ne i16 ${1}, ${2}", l, r)

@@ -2,23 +2,26 @@ package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
 
-abstract class AbstractErrorScan {
-    protected open fun scanSource(self: TypeRef?, sourceRef: SourceRef): List<String> {
+abstract class AbstractScanner<TResult> {
+    open fun scanSource(self: TypeRef?, sourceRef: SourceRef): List<TResult> {
         return listOf()
     }
 
-    protected open fun scan(self: TypeRef?, sourceRef: SourceRef): List<String> {
+    open fun scan(self: TypeRef?, sourceRef: SourceRef): List<TResult> {
         return listOf()
     }
 
-    protected open fun scan(self: DataRef?, sourceRef: SourceRef): List<String> {
+    open fun scan(self: DataRef?, sourceRef: SourceRef): List<TResult> {
         return listOf()
     }
 
-    protected open fun scan(self: Expression?, parent: Expression?): List<String> {
+    open fun scan(self: Expression?, parent: Expression?): List<TResult> {
         return if (self == null) listOf()
         else scan(self.typeRef, self.sourceRef).ifEmpty {
             when (self) {
+                is Expression.Let ->
+                    scan(self.let) + scan(self.tail, self)
+
                 is Expression.Assert ->
                     scan(self.value, self) + scan(self.condition, self)
 
@@ -64,31 +67,31 @@ abstract class AbstractErrorScan {
         }
     }
 
-    protected open fun scanFunction(self: Declaration.Function): List<String> {
+    open fun scanFunction(self: Declaration.Function): List<TResult> {
         return scanSource(self.sourceReturnType, self.sourceRef).ifEmpty { scan(self.returnType, self.sourceRef) } +
                 scan(self.thisDeclaration) +
                 self.parameters.flatMap { scan(it) } +
                 scan(self.body, null)
     }
 
-    protected open fun scanLet(self: Declaration.Let): List<String> {
+    open fun scanLet(self: Declaration.Let): List<TResult> {
         return scanSource(self.sourceTypeRef, self.sourceRef).ifEmpty {
             scan(self.typeRef, self.sourceRef)
-        } +
-            scan(self.body, null)
+        } + scan(self.body, null) +
+            scan(self.dynamicArraySize, null)
     }
 
-    protected open fun scanAlias(self: Declaration.Alias): List<String> {
+    open fun scanAlias(self: Declaration.Alias): List<TResult> {
         return scan(self.typeRef, self.sourceRef)
     }
 
-    protected open fun scanKlass(self: Declaration.Klass): List<String> {
+    open fun scanKlass(self: Declaration.Klass): List<TResult> {
         return self.parameters.flatMap { scanLet(it) } +
                 self.members.flatMap { scanFunction(it) } +
                 self.extends.flatMap { scan(it, self.sourceRef) }
     }
 
-    protected open fun scan(self: Declaration?): List<String> {
+    open fun scan(self: Declaration?): List<TResult> {
         return when (self) {
             null -> listOf()
             is Declaration.Function -> scanFunction(self)
@@ -98,7 +101,7 @@ abstract class AbstractErrorScan {
         }
     }
 
-    open fun scan(ast: Ast): List<String> {
+    open fun scan(ast: Ast): List<TResult> {
         return ast.declarations.flatMap { (_, declaration, _) ->
             scan(declaration)
         }

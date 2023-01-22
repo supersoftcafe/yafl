@@ -4,7 +4,7 @@ import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Namer
 
 
-private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) : AbstractErrorScan() {
+private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) : AbstractScanner<String>() {
     override fun scan(self: TypeRef?, sourceRef: SourceRef): List<String> {
         return when (self) {
             null ->

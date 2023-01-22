@@ -395,10 +395,8 @@ sealed class CgOp {
 
     data class New(override val result: CgValue.Register, val className: String) : CgOp() {
         override fun toIr(context: CgContext): String {
-            val vtableDataName = "@\"vtable\$$className\""
-            val objectTypeName = "%\"typeof.object\$$className\""
-            val vtableTypeName = "%\"typeof.vtable\$$className\""
-            return "  $result = tail call tailcc %object* @newObject(%size_t ptrtoint($objectTypeName* getelementptr ($objectTypeName, $objectTypeName* null, i32 1) to %size_t), %vtable* bitcast($vtableTypeName* $vtableDataName to %vtable*))\n"
+            val classInfo = CgClassInfo(className)
+            return "  $result = tail call tailcc %object* @newObject(%size_t ptrtoint(${classInfo.objectTypeName}* getelementptr (${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1) to %size_t), %vtable* bitcast(${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*))\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -408,14 +406,12 @@ sealed class CgOp {
 
     data class NewArray(override val result: CgValue.Register, val className: String, val arrayFieldType: CgType, val arrayField: Int, val arraySize: CgValue) : CgOp() {
         override fun toIr(context: CgContext): String {
-            val  vtableDataName = "@\"vtable\$$className\""
-            val  objectTypeName = "%\"typeof.object\$$className\""
-            val  vtableTypeName = "%\"typeof.vtable\$$className\""
+            val classInfo = CgClassInfo(className)
             val objectEndPtrReg = CgValue.Register("${result.name}.end", CgTypePointer(arrayFieldType))
             val   objectSizeReg = CgValue.Register("${result.name}.size", CgTypePrimitive.INT32)
-            return "  $objectEndPtrReg = getelementptr $objectTypeName, $objectTypeName* null, i32 0, i32 1, i32 $arrayField, ${arraySize.type} $arraySize\n" +
+            return "  $objectEndPtrReg = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 0, i32 1, i32 $arrayField, ${arraySize.type} $arraySize\n" +
                    "  $objectSizeReg = ptrtoint $arrayFieldType* $objectEndPtrReg to %size_t\n" +
-                   "  $result = tail call tailcc %object* @newObject(%size_t $objectSizeReg, %vtable* bitcast($vtableTypeName* $vtableDataName to %vtable*))\n"
+                   "  $result = tail call tailcc %object* @newObject(%size_t $objectSizeReg, %vtable* bitcast(${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*))\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -423,18 +419,35 @@ sealed class CgOp {
         }
     }
 
-    data class Delete(val pointer: CgValue, val className: String) : CgOp() {
+    data class Delete(val pointer: CgValue.Register, val className: String) : CgOp() {
         override val result: CgValue.Register get() = CgValue.VOID
 
         override fun toIr(context: CgContext): String {
-            val vtableDataName = "@\"vtable\$$className\""
-            val objectTypeName = "%\"typeof.object\$$className\""
-            val vtableTypeName = "%\"typeof.vtable\$$className\""
-            return "  tail call tailcc void @deleteObject(%size_t ptrtoint($objectTypeName* getelementptr ($objectTypeName, $objectTypeName* null, i32 1) to %size_t), %object* $pointer)\n"
+            val classInfo = CgClassInfo(className)
+            return "  tail call tailcc void ${classInfo.deleteFuncName}(%object* $pointer)\n"
+//            return "  tail call tailcc void @deleteObject(%size_t ptrtoint(${classInfo.objectTypeName}* getelementptr (${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1) to %size_t), %object* $pointer)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return Acquire(pointer = pointer.updateRegisters(registerMap))
+            return copy(pointer = pointer.updateRegisters(registerMap))
+        }
+    }
+
+    data class DeleteArray(val pointer: CgValue.Register, val className: String, val arraySize: CgValue) : CgOp() {
+        override val result: CgValue.Register get() = CgValue.VOID
+
+        override fun toIr(context: CgContext): String {
+            val classInfo = CgClassInfo(className)
+            return "  tail call tailcc void ${classInfo.deleteFuncName}(%object* $pointer, i32 $arraySize)\n"
+//            val objectEndPtrReg = CgValue.Register("${pointer.name}.end", CgTypePointer(arrayFieldType))
+//            val   objectSizeReg = CgValue.Register("${pointer.name}.size", CgTypePrimitive.INT32)
+//            return "  $objectEndPtrReg = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 0, i32 1, i32 $arrayField, ${arraySize.type} $arraySize\n" +
+//                    "  $objectSizeReg = ptrtoint $arrayFieldType* $objectEndPtrReg to %size_t\n" +
+//                    "  tail call tailcc %object* @deleteObject(%size_t $objectSizeReg, %object* $pointer)\n"
+        }
+
+        override fun updateRegisters(registerMap: (String) -> String): CgOp {
+            return copy(pointer = pointer.updateRegisters(registerMap))
         }
     }
 
@@ -446,7 +459,7 @@ sealed class CgOp {
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return Acquire(pointer = pointer.updateRegisters(registerMap))
+            return copy(pointer = pointer.updateRegisters(registerMap))
         }
     }
 
@@ -454,11 +467,11 @@ sealed class CgOp {
         override val result: CgValue.Register get() = CgValue.VOID
 
         override fun toIr(context: CgContext): String {
-            return "  tail call tailcc void @release(%object** $pointer)\n"
+            return "  tail call tailcc void @releaseRef(%object** $pointer)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
-            return Release(pointer = pointer.updateRegisters(registerMap))
+            return copy(pointer = pointer.updateRegisters(registerMap))
         }
     }
 

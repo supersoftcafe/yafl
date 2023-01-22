@@ -7,6 +7,6 @@ import System
 # fun operation(a) => a + two
 # fun main() => operation(2)
 
-fun factorial(n, a) => n = 1 ? a : factorial(n-1, n*a)
+fun factorial(n, a) => n == 1 ? a : factorial(n-1, n*a)
 
 fun main() => factorial(5, 1)

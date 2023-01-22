@@ -11,10 +11,41 @@ private fun findObjectFields(type: CgType): List<IntArray> {
 }
 
 fun arcPhase(thing: CgThingFunction): CgThingFunction {
+    // If there is a single return statement we can exclude the register it
+    // references from ARC processing, IIF that register is set from a single
+    // call to New/NewArray or Call. Quite specific, but also quite common.
+    val registerToExclude = (thing.body.singleOrNull { it is CgOp.Return } as? CgOp.Return) ?.returnValue ?. let { reg ->
+        thing.body.singleOrNull {
+            (it is CgOp.New || it is CgOp.NewArray || it is CgOp.Call) &&
+                    it.result == reg
+        }?.result }
+
+    // Find all registers that are the result of a call to New or NewArray
+    val registerOfNew = thing.body.mapNotNull {
+        if (it is CgOp.New)
+            it.result
+        else if (it is CgOp.NewArray)
+            it.result
+        else
+            null
+    }.toSet()
+
+    // Using results of New/NewArray find all GEPs that derive a member pointer from them
+    // This will be used to identify Store operations that need a call to acquire
+    val registerOfGep = thing.body.mapNotNull {
+        if (it is CgOp.GetObjectFieldPtr && it.pointer in registerOfNew)
+            it.result
+        else
+            null
+    }.toSet()
+
+    if (thing.globalName == "d\$Test::main:():System::Int32\$a3b3")
+        println()
+
     // Declarations of ARC variables that hold references for later release
     val arcVars = thing.body.flatMap { op ->
         val objectFields = findObjectFields(op.result.type)
-        if (objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.NewArray|| op is CgOp.Call)) {
+        if (op.result != registerToExclude && objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.NewArray|| op is CgOp.Call || op is CgOp.CallStatic || op is CgOp.CallVirtual)) {
             objectFields.map { fieldPath ->
                 val pathStr = fieldPath.joinToString("$")
                 CgThingVariable("${op.result.name}.arc$pathStr", CgTypePrimitive.OBJECT)
@@ -27,9 +58,30 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
     // Insert ARC code after New/Call and before Ret
     val modifiedBody = thing.body.flatMapIndexed { opIndex, op ->
         when (op) {
-            is CgOp.New, is CgOp.NewArray, is CgOp.Call -> {
+            is CgOp.Store -> {
+                val objectFields = findObjectFields(op.value.type)
+                if (op.pointer in registerOfGep && objectFields.isNotEmpty()) {
+                    // If this is a store to initialise an object field, we might need to call acquire
+                    val reg = op.value as CgValue.Register
+                    listOf(op) + objectFields.flatMap { fieldPath ->
+                        val pathStr = fieldPath.joinToString("$")
+                        if (fieldPath.isNotEmpty()) {
+                            val from = CgValue.Register(reg.name + pathStr, CgTypePrimitive.OBJECT)
+                            val extract = CgOp.ExtractValue(from, reg, fieldPath)
+                            val acquire = CgOp.Acquire(from)
+                            listOf(extract, acquire)
+                        } else {
+                            listOf(CgOp.Acquire(op.value))
+                        }
+                    }
+                } else {
+                    listOf(op)
+                }
+            }
+
+            is CgOp.New, is CgOp.NewArray, is CgOp.Call, is CgOp.CallStatic, is CgOp.CallVirtual -> {
                 val objectFields = findObjectFields(op.result.type)
-                if (objectFields.isNotEmpty()) {
+                if (op.result != registerToExclude && objectFields.isNotEmpty()) {
                     // Store value(s) for a later release just before the return statement
                     listOf(op) + objectFields.flatMap { fieldPath ->
                         val pathStr = fieldPath.joinToString("$")
@@ -51,17 +103,21 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
             is CgOp.Return -> {
                 val objectFields = findObjectFields(op.returnValue.type)
 
-                // Acquire the return, but then release everything. Return is safe due to extra acquire.
-                val acquires = objectFields.flatMap { fieldPath ->
-                    val pathStr = fieldPath.joinToString("$")
-                    if (fieldPath.isNotEmpty()) {
-                        val from = CgValue.Register((op.returnValue as CgValue.Register).name + pathStr, CgTypePrimitive.OBJECT)
-                        val extract = CgOp.ExtractValue(from, op.returnValue, fieldPath)
-                        val acquire = CgOp.Acquire(from)
-                        listOf(extract, acquire)
-                    } else {
-                        listOf(CgOp.Acquire(op.returnValue))
+                val acquires = if (op.returnValue != registerToExclude && objectFields.isNotEmpty()) {
+                    // Acquire the return, but then release everything. Return is safe due to extra acquire.
+                    objectFields.flatMap { fieldPath ->
+                        val pathStr = fieldPath.joinToString("$")
+                        if (fieldPath.isNotEmpty()) {
+                            val from = CgValue.Register((op.returnValue as CgValue.Register).name + pathStr, CgTypePrimitive.OBJECT)
+                            val extract = CgOp.ExtractValue(from, op.returnValue, fieldPath)
+                            val acquire = CgOp.Acquire(from)
+                            listOf(extract, acquire)
+                        } else {
+                            listOf(CgOp.Acquire(op.returnValue))
+                        }
                     }
+                } else {
+                    listOf()
                 }
 
                 val releases = arcVars.map { arcVar ->

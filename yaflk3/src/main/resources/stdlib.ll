@@ -14,8 +14,8 @@ declare dso_local void @abort()
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
 @arrayerrorstr = private unnamed_addr constant [12 x i8] c"Array index\00", align 1
 
-@global_unit_vt = internal global { { void(%object*)*, %size_t }, [ 0 x %funptr ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %funptr ] [ ] }
-@global_unit = internal global %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %funptr ] }* @global_unit_vt to %vtable*), %size_t 0 }
+@global_unit_vt = internal constant { { void(%object*)*, %size_t }, [ 0 x %funptr ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %funptr ] [ ] }
+@global_unit = internal constant %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %funptr ] }* @global_unit_vt to %vtable*), %size_t 0 }
 
 
 
@@ -86,12 +86,7 @@ define internal tailcc void @releaseActual(%object* %p0) {
     ret void
 }
 
-define internal tailcc void @release(%object** %orefref) {
-entry:
-    %oref = load %object*, %object** %orefref
-    store %object* null, %object** %orefref
-    %is_null = icmp eq %object* null, %oref
-    br i1 %is_null, label %skip, label %check_count
+define internal tailcc void @release(%object* %oref) noinline {
 check_count:
     %refcnt_ptr = getelementptr %object, %object* %oref, i32 0, i32 1
     %refcnt = load %size_t, %size_t* %refcnt_ptr
@@ -107,24 +102,24 @@ dealloc:
     musttail call tailcc void @releaseActual(%object* %oref)
     ret void
 skip:
-; If the reference is null or the count is zero, skip the release
+; If the reference is count is zero, skip the release
     ret void
 }
 
-define internal tailcc void @releaseMany(%object** %p0, %object** %p1) {
+define internal tailcc void @releaseRef(%object** %orefref) {
 entry:
-    %isEnd = icmp eq %object** %p0, %p1
-    br i1 %isEnd, label %exit, label %iterate
-iterate:
-    call tailcc void @release(%object** %p0)
-    %next = getelementptr %object*, %object** %p0, i32 1
-    musttail call tailcc void @releaseMany(%object** %next, %object** %p1)
+    %oref = load %object*, %object** %orefref
+    store %object* null, %object** %orefref
+    %is_null = icmp eq %object* null, %oref
+    br i1 %is_null, label %skip, label %check_count
+check_count:
+    musttail call tailcc void @release(%object* %oref)
     ret void
-exit:
+skip:
     ret void
 }
 
-define internal tailcc void @acquire(%object* %p0) {
+define internal tailcc void @acquire(%object* %p0) noinline {
 entry:
     %refcnt_ptr = getelementptr %object, %object* %p0, i32 0, i32 1
     %refcnt = load %size_t, %size_t* %refcnt_ptr

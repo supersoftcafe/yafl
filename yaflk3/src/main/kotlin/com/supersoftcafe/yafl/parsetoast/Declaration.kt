@@ -7,7 +7,7 @@ import com.supersoftcafe.yafl.ast.*
 
 fun YaflParser.UnpackTupleContext?.toDeclarationLets(
     file: String,
-    id: Namer,
+    namer: Namer,
     scope: Scope
 ): List<Declaration.Let> {
     return if (this == null) {
@@ -16,12 +16,13 @@ fun YaflParser.UnpackTupleContext?.toDeclarationLets(
         unpackTuplePart().mapIndexed { index, part ->
             if (part.NAME() != null) {
                 val sourceRef = part.toSourceRef(file)
+                val id = namer + index
 
                 // It's a parameter
                 Declaration.Let(
                     sourceRef,
                     part.NAME().text,
-                    id + index,
+                    id,
                     scope,
 
                     typeRef = null,
@@ -29,7 +30,7 @@ fun YaflParser.UnpackTupleContext?.toDeclarationLets(
 
                     body = null,
 
-                    dynamicArraySize = part.expression()?.toExpression(file),
+                    dynamicArraySize = part.expression()?.toExpression(file, id),
                     arraySize = part.INTEGER()?.parseToInteger(sourceRef)?.value
                 )
             } else {
@@ -106,8 +107,6 @@ fun YaflParser.ClassContext.toDeclaration(
     val klassId = id + 3
     val constructorId = id + 4
     val thisId = id + 5
-    val arraySizeId = id + 6
-    val arraySizeThisParamId = id + 7
 
     val klassName = prefix + NAME().text
     val klassType = TypeRef.Unresolved(klassName, klassId)
@@ -116,19 +115,7 @@ fun YaflParser.ClassContext.toDeclaration(
     val parameters = unpackTuple().toDeclarationLets(file, parameterId, scopeOfMembers)
     val members = classMember().flatMapIndexed { index, classMember ->
         classMember.function().toDeclaration(file, memberId + index, scopeOfMembers, klassType)
-    } + listOfNotNull(parameters.lastOrNull()?.let { param ->
-        // If there is an array, add a virtual function to calculate the array size
-        param.arraySize?.let {
-            Declaration.Function(
-                param.sourceRef, "array\$size",
-                arraySizeId, scopeOfMembers,
-                Declaration.Let(param.sourceRef, "this", arraySizeThisParamId, Scope.Local, klassType, klassType, null),
-                listOf(), TypeRef.Int32, TypeRef.Int32,
-                param.dynamicArraySize ?: Expression.Integer(param.sourceRef, TypeRef.Int32, param.arraySize),
-                guidance = listOf(Guidance.ExcludeMember(param.name, param.id))
-            )
-        }
-    })
+    }
 
     val klassSourceRef = toSourceRef(file)
     val klass = Declaration.Klass(
@@ -136,7 +123,7 @@ fun YaflParser.ClassContext.toDeclaration(
         klassName,
         klassId,
         scope,
-        parameters.map { it.copy(dynamicArraySize = null) },
+        parameters.map { it.copy(body = null) }, // default value applies to constructor function
         members,
         extends_().toExtends(),
         isInterface = false
@@ -148,7 +135,7 @@ fun YaflParser.ClassContext.toDeclaration(
     // Constructor params need to have different ids and slight modifications for arrays
     val constrParams = parameters.mapIndexed { index, parameter ->
         parameter.copy(
-            dynamicArraySize = null,
+            dynamicArraySize = null, // array size can only be used by NewKlass and not constructor function
             arraySize = null,
             scope = Scope.Local,
             id = constructorId + index,
@@ -181,42 +168,46 @@ fun YaflParser.ClassContext.toDeclaration(
 
 fun YaflParser.FunctionContext.toDeclaration(
     file: String,
-    id: Namer,
+    namer: Namer,
     scope: Scope,
     thisType: TypeRef,
     prefix: String = ""
 ): List<Declaration.Function> {
     val sourceRef = toSourceRef(file)
+    val extensionType = extensionType?.toTypeRef()
+    val thisType = if (thisType == TypeRef.Unit && extensionType != null) extensionType else thisType
+
     return listOf(Declaration.Function(
         sourceRef,
         prefix + NAME().text,
-        id + 3,
+        namer + 3,
         scope,
-        Declaration.Let(sourceRef, "this", id + 1, Scope.Local, thisType, thisType, null),
-        unpackTuple().toDeclarationLets(file, id + 2, Scope.Local),
+        Declaration.Let(sourceRef, "this", namer + 1, Scope.Local, thisType, thisType, null),
+        unpackTuple().toDeclarationLets(file, namer + 2, Scope.Local),
         null,
         type()?.toTypeRef(),
-        expression()?.toExpression(file),
-        attributes()?.NAME()?.map { it.text }?.toSet() ?: setOf()
+        body = expression()?.toExpression(file, namer + 4),
+        attributes = attributes()?.NAME()?.map { it.text }?.toSet() ?: setOf(),
+        extensionType = extensionType,
     ))
 }
 
 fun YaflParser.LetWithExprContext.toDeclaration(
     file: String,
-    id: Namer,
+    namer: Namer,
     scope: Scope,
     prefix: String = ""
-): List<Declaration.Let> {
+): Declaration.Let {
     return when (val upt = unpackTuple()) {
-        null -> listOf(Declaration.Let(
+        null -> Declaration.Let(
             toSourceRef(file),
             prefix + NAME().text,
-            id,
+            namer + 1,
             scope,
             null,
             type()?.toTypeRef(),
-            expression().toExpression(file)
-        ))
+            expression().toExpression(file, namer + 2)
+        )
 
         else -> throw UnsupportedOperationException()
     }
@@ -233,6 +224,6 @@ fun YaflParser.DeclarationContext.toDeclaration(
         ?: class_()?.toDeclaration(file, id, scope, prefix)
         ?: interface_()?.toDeclaration(file, id, scope, prefix)
         ?: function()?.toDeclaration(file, id, scope, TypeRef.Unit, prefix)
-        ?: letWithExpr()?.toDeclaration(file, id, scope, prefix)
+        ?: letWithExpr()?.toDeclaration(file, id, scope, prefix)?.let { listOf(it) }
         ?: throw IllegalArgumentException()
 }

@@ -1,6 +1,9 @@
 package com.supersoftcafe.yafl.codegen
 
-class CgThingVariable(val name: String, val type: CgType) : CgThing {
+class CgThingVariable(
+    val name: String,
+    val type: CgType
+) : CgThing {
 
     // Only if this is a global var. As a local this function should not be used.
     fun toIr(context: CgContext): CgLlvmIr {

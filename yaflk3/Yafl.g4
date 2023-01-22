@@ -20,7 +20,7 @@ PIPE_MAYBE  : '?>';
 NAMESPACE   : '::';
 CMP_LE      : '<=';
 CMP_GE      : '>=';
-CMP_EQ      : '=';
+CMP_EQ      : '==';
 CMP_NE      : '!=';
 SHL         : '<<';
 SHR         : '>>';
@@ -55,8 +55,8 @@ attributes      : '[' NAME* ']' ;
 unpackTuplePart : unpackTuple | ( NAME ( '[' ( expression CMP_LE )? INTEGER ']' )? ( ':' type )? ) ;
 unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
 
-letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ;
-function    : FUN attributes? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ;
+letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ';'? ;
+function    : FUN attributes? (extensionType=typeRef '.' )? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ';'? ;
 
 expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
             | ASSERT '(' value=expression ',' condition=expression ',' message=STRING ')' # assertExpr
@@ -75,7 +75,7 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
             | left=expression operator=           '^'                  right=expression # bitXorExpr
             | left=expression operator=           '|'                  right=expression # bitOrExpr
 
-            | condition=expression '?' left=expression ':' right=expression # ifExpr
+            | condition=expression ( '?' left=expression ':' right=expression ) # ifExpr
             | exprOfTuple                                                   # tupleExpr
             | OBJECT ':' typeRef ( '|' typeRef )* ( '{' function* '}' )?    # objectExpr
             | letWithExpr ';'? expression                                   # letExpr
@@ -91,12 +91,12 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
 //classParams : '(' ( classParam ',' )* classParam? ')' ;
 
 extends     : ':' typeRef ( ',' typeRef )* ;
-module      : MODULE typeRef ;
-import_     : IMPORT typeRef ;
-interface   : INTERFACE NAME extends? ( '{' function* '}' )? ;
-class       : CLASS NAME unpackTuple? extends? ( '{' classMember* '}' )? ;
-enum        : ENUM NAME ( '{' ( ( NAME unpackTuple? ) | function )* '}' )? ;
-alias       : ALIAS NAME ':' type ;
+module      : MODULE typeRef ';'? ;
+import_     : IMPORT typeRef ';'? ;
+interface   : INTERFACE NAME extends? ( '{' function* '}' )? ';'? ;
+class       : CLASS NAME unpackTuple? extends? ( '{' classMember* '}' )? ';'? ;
+enum        : ENUM NAME ( '{' ( ( NAME unpackTuple? ) | function )* '}' )? ';'? ;
+alias       : ALIAS NAME ':' type ';'? ;
 declaration : letWithExpr | function | interface | class | enum | alias;
 classMember : function ;
 

@@ -2,10 +2,7 @@ package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.antlr.YaflLexer
 import com.supersoftcafe.yafl.antlr.YaflParser
-import com.supersoftcafe.yafl.ast.Ast
-import com.supersoftcafe.yafl.ast.Declaration
-import com.supersoftcafe.yafl.ast.PrimitiveKind
-import com.supersoftcafe.yafl.ast.TypeRef
+import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.parsetoast.parseToAst
 import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
@@ -18,21 +15,25 @@ internal class MergeTypesKtTest {
 
     @Test
     fun `given an immediate constant, let is of type int`() {
-        val ast = yaflBuild("let value = 1")
+        val ast = yaflBuild(
+                "let value = 1")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value" }?.declaration as? Declaration.Let
         assertEquals(TypeRef.Int32, decl?.typeRef)
     }
 
     @Test
     fun `given an immediate constant, function is of type int`() {
-        val ast = yaflBuild("fun main() => 1")
+        val ast = yaflBuild(
+                "fun main() => 1")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
         assertEquals(TypeRef.Int32, decl?.returnType)
     }
 
     @Test
     fun `function is used with int, so parameter type becomes int`() {
-        val ast = yaflBuild("fun value(a) => a\nfun main() => value(1)\n")
+        val ast = yaflBuild(
+                "fun value(a) => a\n" +
+                "fun main() => value(1)\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value" }?.declaration as? Declaration.Function
         val param_a = decl?.parameters?.firstOrNull { it.name == "a" }
         assertEquals(TypeRef.Int32, decl?.returnType)
@@ -41,7 +42,9 @@ internal class MergeTypesKtTest {
 
     @Test
     fun `function is used with int + int, so parameter type becomes int`() {
-        val ast = yaflBuild("fun value(a, b) => a + b\nfun main() => value(1, 2)\n")
+        val ast = yaflBuild(
+                "fun value(a, b) => a + b\n" +
+                "fun main() => value(1, 2)\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value" }?.declaration as? Declaration.Function
         val param_a = decl?.parameters?.firstOrNull { it.name == "a" }
         val param_b = decl?.parameters?.firstOrNull { it.name == "b" }
@@ -52,17 +55,48 @@ internal class MergeTypesKtTest {
 
     @Test
     fun `brackets of single value treated as same`() {
-        val ast = yaflBuild("fun main() => 1 * (2 + 3)\n")
+        val ast = yaflBuild(
+                "fun main() => 1 * (2 + 3)\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
         assertEquals(TypeRef.Int32, decl?.returnType)
     }
 
     @Test
     fun `conditional expression`() {
-        val ast = yaflBuild("fun main() => (1 = 1) ? 1 : 2\n")
+        val ast = yaflBuild(
+                "fun main() => (1 == 1) ? 1 : 2\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
         assertEquals(TypeRef.Int32, decl?.returnType)
     }
+
+    @Test
+    fun `lambda parameter type is inferred`() {
+        val ast = yaflBuild(
+                "fun f1(a:(Int32):Int8) => 1\n" +
+                "fun f2() => f1( (i) => 1i8 )\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::f2" }?.declaration as? Declaration.Function
+        val call = decl?.body as? Expression.Call
+        val lambda = call?.parameter?.fields?.firstOrNull()?.expression as? Expression.Lambda
+        val lambdaParam = lambda?.parameters?.firstOrNull()
+        assertEquals(TypeRef.Int32, lambdaParam?.typeRef)
+    }
+
+    @Test
+    fun `lambda parameter type is inferred2`() {
+        val ast = yaflBuild(
+                "fun test( l : (Int32):Int8 ) => Int32(l(1))\n" +
+                "fun main() => test( (v)=>Int8(v) )\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
+        val call = decl?.body as? Expression.Call
+        val lambda = call?.parameter?.fields?.firstOrNull()?.expression as? Expression.Lambda
+        val lambdaParam = lambda?.parameters?.firstNotNullOfOrNull { it.typeRef }
+        val lambdaResult = (lambda?.typeRef as? TypeRef.Callable)?.result
+        val bodyResult = lambda?.body?.typeRef
+        assertEquals(TypeRef.Int32, lambdaParam)
+        assertEquals(TypeRef.Int8, lambdaResult)
+        assertEquals(TypeRef.Int8, bodyResult)
+    }
+
 
 
 

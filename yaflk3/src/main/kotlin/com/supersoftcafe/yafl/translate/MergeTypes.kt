@@ -1,5 +1,6 @@
 package com.supersoftcafe.yafl.translate
 
+import com.supersoftcafe.yafl.ast.Declaration
 import com.supersoftcafe.yafl.ast.TupleTypeField
 import com.supersoftcafe.yafl.ast.TypeRef
 
@@ -74,6 +75,10 @@ fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
         is TypeRef.Primitive, TypeRef.Unit -> other == this
         is TypeRef.Unresolved, null -> false
     }
+}
+
+fun TypeRef?.isAssignableFrom(other: Declaration.Klass): Boolean {
+    return this is TypeRef.Named && (id == other.id || other.extends.any { isAssignableFrom(it) })
 }
 
 fun List<TypeRef.Named>.mostSpecificType(): TypeRef.Named? {

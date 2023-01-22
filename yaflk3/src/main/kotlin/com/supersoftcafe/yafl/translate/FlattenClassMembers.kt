@@ -8,7 +8,7 @@ import com.supersoftcafe.yafl.utils.Namer
 /**
  * Find all members up the hierarchy returning duplicate implementations where they are not
  * overridden by the inheritor. Rules are:
- *  1. If all inherited members are without implementation, just pick on to return.
+ *  1. If all inherited members are without implementation, just pick one to return.
  *  2. If any have implementation, do not return the ones without implementation.
  *  3. Any function at current level overrides inherited ones.
  */

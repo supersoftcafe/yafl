@@ -19,7 +19,7 @@ sealed class Expression {
 
     data class If(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val condition: Expression, val ifTrue: Expression, val ifFalse: Expression): Expression()
 
-    data class Lambda(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val parameters: List<Declaration.Let>, val body: Expression): Expression()
+    data class Lambda(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val parameters: List<Declaration.Let>, val body: Expression, val id: Namer): Expression()
 
     data class Tuple(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val fields: List<TupleExpressionField>): Expression()
 
@@ -31,9 +31,9 @@ sealed class Expression {
 
     data class Float(override val sourceRef: SourceRef, override val typeRef: TypeRef, val value: Double): Expression()
 
-    data class Characters(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val value: String): Expression()
+    data class Characters(override val sourceRef: SourceRef, override val typeRef: TypeRef, val value: String): Expression()
 
-    // data class Let(override val typeRef: TypeRef?, val let: Declaration.Let, val tail: Expression): Expression()
+    data class Let(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val let: Declaration.Let, val tail: Expression): Expression()
 
     // data class Function(override val typeRef: TypeRef?, val function: Declaration.Function, val tail: Expression): Expression()
 }

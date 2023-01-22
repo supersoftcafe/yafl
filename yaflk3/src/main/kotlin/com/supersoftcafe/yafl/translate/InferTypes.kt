@@ -49,6 +49,14 @@ class InferTypes(private val typeHints: TypeHints) {
         findDeclarations: (String) -> List<Declaration>,
     ): Pair<Expression?, TypeHints> {
         return when (this) {
+            is Expression.Let -> {
+                val (let, letHints) = let.inferTypes(findDeclarations)
+                val (tail, tailHints) = tail.inferTypes(receiver) { name ->
+                    findDeclarations(name) + if (let.name == name) listOf(let) else listOf()
+                }
+                Pair(copy(let = let as Declaration.Let, tail = tail!!, typeRef = tail.typeRef), letHints + tailHints)
+            }
+
             is Expression.Assert -> {
                 val (value, valueHints) = value.inferTypes(receiver, findDeclarations)
                 val (condition, conditionHints) = condition.inferTypes(TypeRef.Bool, findDeclarations)
@@ -84,7 +92,7 @@ class InferTypes(private val typeHints: TypeHints) {
                         when (val tr = tupleField.typeRef) {
                             null -> emptyTypeHints()
                             else -> {
-                                typeHintsOf(paramField.id to TypeHint(sourceRef, inputTypeRef = if (paramField.arraySize != null) {
+                                typeHintsOf(paramField.id to TypeHint(inputTypeRef = if (paramField.arraySize != null) {
                                     // Array member hint is the lambda return type
                                     (tr as? TypeRef.Callable)?.result
                                 } else {
@@ -108,19 +116,28 @@ class InferTypes(private val typeHints: TypeHints) {
                         when (val declaration = findDeclarations(baseTypeRef.name).single { it.id == baseTypeRef.id }) {
                             is Declaration.Klass -> {
 
-                                (declaration.parameters + declaration.members).firstOrNull {
-                                    it.name == name && it.typeRef.mightBeAssignableTo(receiver)
+                                val candidatesByName =
+                                    // Candidate member functions
+                                    (declaration.parameters + declaration.members).filter { it.name == name } +
+                                    // Candidate extension functions
+                                    findDeclarations(name).filterIsInstance<Declaration.Function>().filter {
+                                        it.thisDeclaration.typeRef.isAssignableFrom(declaration)
+                                    }
+
+                                // TODO: Also search extends hierarchy
+                                candidatesByName.singleOrNull {
+                                    it.typeRef.mightBeAssignableTo(receiver)
                                 }?.let { entry ->
 
                                     val entryHint = if (receiver != null) {
-                                        typeHintsOf(entry.id to TypeHint(sourceRef, outputTypeRef = receiver))
+                                        typeHintsOf(entry.id to TypeHint(outputTypeRef = receiver))
                                     } else {
                                         emptyTypeHints()
                                     }
 
                                     Pair(copy(
                                         base = base,
-                                        typeRef = entry.typeRef,
+                                        typeRef = if (entry.typeRef?.complete == true) entry.typeRef else typeRef,
                                         id = entry.id
                                     ), baseHints + entryHint)
 
@@ -163,7 +180,7 @@ class InferTypes(private val typeHints: TypeHints) {
                     )
 
                     val hints = if (declaration == null || newTypeRef == null) emptyTypeHints()
-                    else typeHintsOf(declaration.id to TypeHint(sourceRef, outputTypeRef = newTypeRef))
+                    else typeHintsOf(declaration.id to TypeHint(outputTypeRef = newTypeRef))
 
                     Pair(copy(
                         dataRef = newDataRef,
@@ -186,6 +203,9 @@ class InferTypes(private val typeHints: TypeHints) {
                     outputType = receiver
                 )
 
+                // TODO: TypeRef found the correct param type, but it didn't make it to the Let param
+                //       Why?
+
                 val (newBody, bodyHints) = body.inferTypes((typeRef as? TypeRef.Callable)?.result) { name ->
                     parameters.filter { it.name == name } + findDeclarations(name)
                 }
@@ -195,11 +215,16 @@ class InferTypes(private val typeHints: TypeHints) {
 
                 val hints = paramsWithHints.fold(bodyHints) { acc, h -> acc + h.second }
                 val params = paramsWithHints.map { it.first }
+
+                val typeRefHints = typeHintsOf(((typeRef as? TypeRef.Callable)?.parameter?.fields ?: listOf()).zip(params).map {
+                        (hint, param) -> param.id to TypeHint(inputTypeRef = hint.typeRef)
+                })
+
                 Pair(copy(
                     typeRef = typeRef,
                     body = newBody!!,
                     parameters = params
-                ), hints)
+                ), hints + typeRefHints)
             }
 
             is Expression.Call -> {
@@ -293,7 +318,7 @@ class InferTypes(private val typeHints: TypeHints) {
             (typeRef as? TypeRef.Callable)?.parameter?.fields?.mapIndexedNotNull { index, field ->
                 field.typeRef?.let { typeRef ->
                     parameters.getOrNull(index)?.let { param ->
-                        param.id to TypeHint(sourceRef, inputTypeRef = typeRef)
+                        param.id to TypeHint(inputTypeRef = typeRef)
                     }
                 }
             } ?: listOf()
@@ -335,7 +360,10 @@ class InferTypes(private val typeHints: TypeHints) {
     private fun Declaration.Klass.inferTypesKlass(
         findDeclarations: (String) -> List<Declaration>
     ): Pair<Declaration.Klass, TypeHints> {
+        // Parameters can only see other parameters to the left of their position
         val (parameters, parametersHints) = parameters.inferTypesParameters(findDeclarations)
+
+        // Members can see all parameters and all members
         val (members, membersHints) = members.inferTypesMembers { name ->
             findMembers(name, findDeclarations) + findDeclarations(name)
         }
@@ -356,19 +384,23 @@ class InferTypes(private val typeHints: TypeHints) {
         return if (isEmpty()) {
             Pair(listOf(), emptyTypeHints())
         } else {
-            val (headParam, headHints) = first().inferTypes(findDeclarations)
+            val (headParam, headHints) = first().inferTypesLet(findDeclarations)
             val (tailParams, tailHints) = drop(1).inferTypesParameters { name ->
-                (if (name == headParam.name) listOf(headParam) else listOf()) + findDeclarations(name)
+                if (name == headParam.name)
+                    // Change scope to local for klass due to its duality as a member and a local
+                    listOf(headParam.copy(scope = Scope.Local)) + findDeclarations(name)
+                else
+                    findDeclarations(name)
             }
-            Pair(listOf(headParam as Declaration.Let) + tailParams, headHints + tailHints)
+            Pair(listOf(headParam) + tailParams, headHints + tailHints)
         }
     }
 
     private fun List<Declaration.Function>.inferTypesMembers(
         findDeclarations: (String) -> List<Declaration>
     ): Pair<List<Declaration.Function>, TypeHints> {
-        val result = map { it.inferTypes(findDeclarations) }
-        return Pair(result.map { (d, _) -> d as Declaration.Function }, result.fold(TypeHints()) { acc, (_, h) -> acc + h })
+        val result = map { it.inferTypesFunction(findDeclarations) }
+        return Pair(result.map { (d, _) -> d }, result.fold(TypeHints()) { acc, (_, h) -> acc + h })
     }
 
     private fun Declaration.inferTypes(

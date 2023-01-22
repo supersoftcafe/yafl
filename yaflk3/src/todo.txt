@@ -1,33 +1,21 @@
 
 # Todo
 
-Arrays are fixed size only.
-Arrays are initialised using [el1, el2] etc, explicitly.
-Arrays can be declared anywhere that a type is allowable. Parameters, return, members, tuple field, whatever.
-For now, just let LLVM take care of parameter passing like it does for Tuple.
-Expression.ArrayLookup and Expression.NewArray. A bit like Call and NewKlass.
-TypeRef.Array a bit like TypeRef.Tuple.
+
+Fix ARC. Maybe do it in the AST to IR phase?
+  Fix class deleter releasing of dependent references.
+Improve output during compilation to print phase info as it goes.
+
+Update globals to have pointer to string and pointer to vtable with proper global type instead of specific type
+to reduce IR codegen and amount of temporary registers.
 
 
 
-Add mutable support with 'mutable' attribute and enforcement. 'mutable' attribute cannot be inferred, it must be explicit.
-Add mutation operator ':='.
-Add 'new' operator that implicitly returns a mutable type.
-Add array support. Arrays are not distinct types, but rather a layout modified on class members.
-  Constructor function takes initialiser callable and uses it to initialise array parts.
-
-Ensure class deleter has correct 'release' logic from ARC, not from codegen.
-  If penultimate opcode is a 'release', swap with free(this) so that tailcall will work.
-Ensure that lambda instances are correctly handled for memory management.
-
-
-
-Add array support.
 Add enum support.
 Add generics support.
 
-Add explicit currying of calls using $1 etc parameters.
-Put simple classes on the stack.
+Add explicit currying of calls using $1 etc parameters, replacing with lambda in AST.
+Put small and simple classes on the stack.
 
 
 # Notes
@@ -78,3 +66,7 @@ Parameter, to function or class, can be marked with & to mean that the expressio
 site is implicitly converted to a lambda, and the parameter itself is a callable that returns the given
 value.
 
+## Mutability
+Add mutable support with 'mutable' attribute and enforcement. 'mutable' attribute cannot be inferred, it must be explicit.
+Add mutation operator ':='.
+Add 'new' operator that implicitly returns a mutable type.

@@ -2,6 +2,7 @@ package com.supersoftcafe.yafl.parsetoast
 
 import com.supersoftcafe.yafl.antlr.YaflParser
 import com.supersoftcafe.yafl.ast.*
+import com.supersoftcafe.yafl.utils.Namer
 import org.antlr.v4.runtime.Token
 import org.antlr.v4.runtime.tree.TerminalNode
 
@@ -9,31 +10,34 @@ import org.antlr.v4.runtime.tree.TerminalNode
 
 
 private fun YaflParser.AssertExprContext.toAssertExpression(
-    file: String
+    file: String,
+    namer: Namer,
 ): Expression {
     return Expression.Assert(
         toSourceRef(file),
         null,
-        value.toExpression(file),
-        condition.toExpression(file),
+        value.toExpression(file, namer+1),
+        condition.toExpression(file, namer+2),
         message.text.removeSurrounding("\""))
 }
 
 private fun YaflParser.LlvmirExprContext.toLlvmirExpression(
-    file: String
+    file: String,
+    namer: Namer,
 ): Expression {
     return Expression.Llvmir(
         toSourceRef(file),
         type().toTypeRef(),
         pattern.text.removeSurrounding("\""),
-        expression().map { it.toExpression(file) })
+        expression().map { it.toExpression(file, namer) })
 }
 
 private fun YaflParser.ExprOfTupleContext.toTupleExpression(
-    file: String
+    file: String,
+    namer: Namer,
 ): Expression {
     val result = Expression.Tuple(toSourceRef(file), null, exprOfTuplePart().map {
-        TupleExpressionField(it.NAME()?.text, it.expression().toExpression(file))
+        TupleExpressionField(it.NAME()?.text, it.expression().toExpression(file, namer))
     })
 
     if (result.fields.size == 1 && result.fields[0].name == null) {
@@ -44,7 +48,8 @@ private fun YaflParser.ExprOfTupleContext.toTupleExpression(
 }
 
 private fun YaflParser.ApplyExprContext.toApplyExpression(
-    file: String
+    file: String,
+    namer: Namer,
 ): Expression {
     TODO()
 }
@@ -92,26 +97,29 @@ private fun call(sourceRef: SourceRef, name: String, vararg params: Expression):
 
 private fun YaflParser.ExpressionContext.toUnaryOperator(
     file: String,
+    namer: Namer,
     operator: Token,
     right: YaflParser.ExpressionContext
 ): Expression {
-    return call(toSourceRef(file), "`${operator.text}`", right.toExpression(file))
+    return call(toSourceRef(file), "`${operator.text}`", right.toExpression(file, namer))
 }
 
 private fun YaflParser.ExpressionContext.toBinaryOperator(
     file: String,
+    namer: Namer,
     left: YaflParser.ExpressionContext,
     operator: Token,
     right: YaflParser.ExpressionContext
 ): Expression {
-    return call(toSourceRef(file), "`${operator.text}`", left.toExpression(file), right.toExpression(file))
+    return call(toSourceRef(file), "`${operator.text}`", left.toExpression(file, namer + 1), right.toExpression(file, namer + 2))
 }
 
 private fun YaflParser.CallExprContext.toCallExpression(
-    file: String
+    file: String,
+    namer: Namer,
 ): Expression {
-    val left = left.toExpression(file)
-    val params = params.toTupleExpression(file)
+    val left = left.toExpression(file, namer + 1)
+    val params = params.toTupleExpression(file, namer + 2)
 
     return Expression.Call(
         toSourceRef(file), null, left,
@@ -124,39 +132,41 @@ private fun YaflParser.CallExprContext.toCallExpression(
 }
 
 fun YaflParser.ExpressionContext.toExpression(
-    file: String
+    file: String,
+    namer: Namer,
 ): Expression {
     return when (this) {
-        is YaflParser.AssertExprContext -> toAssertExpression(file)
+        is YaflParser.AssertExprContext -> toAssertExpression(file, namer)
 
-        is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file), right.toExpression(file))
+        is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file, namer + 1), right.toExpression(file, namer + 2))
 
         is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()))
-        is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file), right.text)
+        is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file, namer), right.text)
 
-        is YaflParser.LlvmirExprContext -> toLlvmirExpression(file)
-        is YaflParser.CallExprContext -> toCallExpression(file)
-        is YaflParser.ApplyExprContext -> toApplyExpression(file)
+        is YaflParser.LlvmirExprContext -> toLlvmirExpression(file, namer)
+        is YaflParser.CallExprContext -> toCallExpression(file, namer)
+        is YaflParser.ApplyExprContext -> toApplyExpression(file, namer)
 
-        is YaflParser.UnaryExprContext -> toUnaryOperator(file, operator, right)
-        is YaflParser.ProductExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.SumExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.ShiftExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.CompareExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.EqualExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.BitAndExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.BitXorExprContext -> toBinaryOperator(file, left, operator, right)
-        is YaflParser.BitOrExprContext -> toBinaryOperator(file, left, operator, right)
+        is YaflParser.UnaryExprContext -> toUnaryOperator(file, namer, operator, right)
+        is YaflParser.ProductExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.SumExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.ShiftExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.CompareExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.EqualExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.BitAndExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.BitXorExprContext -> toBinaryOperator(file, namer, left, operator, right)
+        is YaflParser.BitOrExprContext -> toBinaryOperator(file, namer, left, operator, right)
 
-        is YaflParser.IfExprContext -> Expression.If(toSourceRef(file), null, condition.toExpression(file), left.toExpression(file), right.toExpression(file))
+        is YaflParser.IfExprContext -> Expression.If(toSourceRef(file), null, condition.toExpression(file, namer + 1), left.toExpression(file, namer + 2), right.toExpression(file, namer + 3))
 
-        is YaflParser.TupleExprContext -> exprOfTuple().toTupleExpression(file)
+        is YaflParser.TupleExprContext -> exprOfTuple().toTupleExpression(file, namer)
         is YaflParser.ObjectExprContext -> TODO()
-        // is YaflParser.LetExprContext -> Expression.Let(null, letWithExpr().toDeclaration(id, isGlobal = false), expression().toExpression())
+        is YaflParser.LetExprContext -> Expression.Let(toSourceRef(file), null, letWithExpr().toDeclaration(file, namer + 1, Scope.Local), expression().toExpression(file, namer + 2))
         // is YaflParser.FunctionExprContext -> Expression.Function(null, function().toDeclaration(id, isGlobal = false), expression().toExpression())
 
-        is YaflParser.LambdaExprContext -> TODO()
-        is YaflParser.StringExprContext -> TODO()
+        is YaflParser.LambdaExprContext -> Expression.Lambda(toSourceRef(file), null, unpackTuple().toDeclarationLets(file, namer+1, Scope.Local), expression().toExpression(file, namer+2), namer+3)
+
+        is YaflParser.StringExprContext -> Expression.Characters(toSourceRef(file), TypeRef.Unresolved("System::String", null), text.removeSurrounding("\""))
         is YaflParser.IntegerExprContext -> toIntegerExpression(file)
 
 

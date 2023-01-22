@@ -1,7 +1,6 @@
 package com.supersoftcafe.yafl.ast
 
 import org.antlr.v4.runtime.ParserRuleContext
-import org.antlr.v4.runtime.tree.TerminalNode
 
 data class SourceRef(
     val file: String,
@@ -19,4 +18,8 @@ data class SourceRef(
     )
 
     override fun toString() = "$file($startLine:$startOffset,$stopLine:$stopOffset)"
+
+    companion object {
+        val EMPTY = SourceRef("", 0, 0, 0, 0)
+    }
 }

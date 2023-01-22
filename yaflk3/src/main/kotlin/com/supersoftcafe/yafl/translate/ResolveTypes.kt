@@ -59,8 +59,19 @@ class ResolveTypes() {
         findDeclarations: (String) -> List<Declaration>
     ): Expression? {
         return when (this) {
-            null, is Expression.Float, is Expression.Integer, is Expression.Characters ->
+            null, is Expression.Float, is Expression.Integer ->
                 this
+
+            is Expression.Characters -> {
+                val t = typeRef.resolveTypes(sourceRef, findDeclarations)!!
+                copy(typeRef = t)
+            }
+
+            is Expression.Let -> {
+                val l = let.resolveTypes(findDeclarations) as Declaration.Let
+                val t = tail.resolveTypes(findDeclarations)!!
+                copy(let = l, tail = t)
+            }
 
             is Expression.Assert -> {
                 val v = value.resolveTypes(findDeclarations)!!
@@ -176,12 +187,14 @@ class ResolveTypes() {
                 val p = parameters.resolveDeclarations(findDeclarations)
                 val b = body.resolveTypes(findDeclarations)
                 val r = sourceReturnType.resolveTypes(sourceRef, findDeclarations)
+                val e = extensionType.resolveTypes(sourceRef, findDeclarations)
 
                 copy(
-                    thisDeclaration = t as Declaration.Let,
                     body = b,
+                    extensionType = e,
+                    sourceReturnType = r,
+                    thisDeclaration = t as Declaration.Let,
                     parameters = p.filterIsInstance<Declaration.Let>(),
-                    sourceReturnType = r
                 )
             }
         }

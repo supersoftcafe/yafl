@@ -9,11 +9,11 @@ import com.supersoftcafe.yafl.utils.*
 private class Globals(val type: Map<Namer, Declaration.Type>, val data: Map<Namer, Declaration.Data>)
 
 private fun localName(name: String, id: Namer) = "l$$name$$id"
-private fun Declaration.Data.globalDataName() = "d$$signature$$id"
+private fun Declaration.Data.globalDataName() = "d$${signature!!}$$id"
 private fun globalTypeName(name: String, id: Namer) = "t$$name$$id"
 
 
-private fun DataRef?.toCgValue(type: CgType, globals: Globals, namer: Namer): Pair<List<CgOp>,CgValue> {
+private fun DataRef?.toCgValue(type: CgType, globals: Globals, locals: Map<Namer, Pair<Declaration.Data, CgValue>>, namer: Namer): Pair<List<CgOp>,CgValue> {
     return when (this) {
         null ->
             throw IllegalStateException("Dangling null DataRef")
@@ -26,8 +26,10 @@ private fun DataRef?.toCgValue(type: CgType, globals: Globals, namer: Namer): Pa
                 is Scope.Member ->
                     throw IllegalStateException("Dangling member scope")
 
-                Scope.Local ->
-                    Pair(listOf(), CgValue.Register(localName(name, id), type))
+                Scope.Local -> {
+                    val (_, value) = locals[id]!!
+                    Pair(listOf(), value)
+                }
 
                 Scope.Global ->
                     when (val data = globals.data[id]) {
@@ -119,10 +121,20 @@ private fun Declaration.Klass.findMember(id: Namer, globals: Globals): Declarati
         }
 }
 
+private fun Expression.Let.toLetCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
+): Pair<List<CgOp>, CgValue> {
+    val (valueOps, valueReg) = let.body!!.toCgOps(namer + 1, globals, locals)
+    val (tailOps, tailReg) = tail.toCgOps(namer + 2, globals, locals + Pair(let.id, let to valueReg))
+    return (valueOps + tailOps) to tailReg
+}
+
 private fun Expression.LoadMember.loadMemberToCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
     getIndex: (Declaration.Let, CgValue) -> Pair<List<CgOp>, CgValue?> = { _, _ -> Pair(listOf(), null) }
 ): Pair<List<CgOp>, CgValue> {
     val (baseOps, baseReg) = base.toCgOps(namer + 1, globals, locals)
@@ -177,7 +189,7 @@ private fun Expression.LoadMember.loadMemberToCgOps(
 private fun Expression.Call.callToCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>
 ): Pair<List<CgOp>, CgValue> {
     // Try to emit relatively efficient code here in order to make the LLVM IR output more readable. It won't
     // affect the final optimised output from OPT, but does make debugging the compiler easier.
@@ -241,30 +253,72 @@ private fun Expression.Call.callToCgOps(
     }
 }
 
+private fun calculateDynamicArraySize(
+    base: CgValue,
+    klass: Declaration.Klass,
+    member: Declaration.Let,
+    namer: Namer,
+    globals: Globals,
+): Pair<List<CgOp>, CgValue> {
+    val dataRefs = member.dynamicArraySize!!.findLocalDataReferences()
+
+    val loadNamer = namer+1
+    val (loaderOps, loaderValues) = klass.parameters.mapIndexed { index, param ->
+        if (param.id in dataRefs) {
+            // Expression does reference this klass parameter, so we need to load the field into
+            // a register.
+            val type = param.typeRef.toCgType(globals)
+            val pointer = CgValue.Register(loadNamer.toString(index * 2 + 0), CgTypePointer(type))
+            val value = CgValue.Register(loadNamer.toString(index * 2 + 1), type)
+            listOf(
+                CgOp.GetObjectFieldPtr(pointer, base, globalTypeName(klass.name, klass.id), index),
+                CgOp.Load(value, pointer)
+            ) to value
+        } else {
+            // Expression doesn't use this field. LLVM would optimize the load away, but I'd still prefer
+            // to be able to visually parse the output, so we'll avoid emitting code in these cases.
+            listOf<CgOp>() to CgValue.UNIT
+        }
+    }.invert()
+
+    // Pass in fresh 'locals' lookup keyed by klass parameters, associated with CgValue generated up above
+    // in 'paramRegs', and then generate IR from the expression. Result is ops and register.
+    val newKlassLocals = klass.parameters.zip(loaderValues).dropLast(1).associate { (param, reg) ->
+        param.id to Pair(param, reg)
+    }
+
+    val (arraySizeOps, arraySizeReg) = member.dynamicArraySize.toCgOps(namer+2, globals, newKlassLocals)
+
+    return Pair(loaderOps.flatten() + arraySizeOps, arraySizeReg)
+}
+
 private fun Expression.ArrayLookup.toArrayLookupCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
 ): Pair<List<CgOp>, CgValue> {
     return (array as Expression.LoadMember).loadMemberToCgOps(namer+2, globals, locals) { member, base ->
         val klass = globals.type[(array.base.typeRef as TypeRef.Named).id] as Declaration.Klass
-        val arraySizeReg = CgValue.Register(namer.toString(3), CgTypePrimitive.INT32)
-        val sizingFunction = klass.members.single { it.name == "array\$size" }.globalDataName()
 
-        val (indexOps, indexReg) = index.toCgOps(namer + 1, globals, locals)
-        val checkOps = listOf(
-            CgOp.CallStatic(arraySizeReg, base, sizingFunction, listOf()),
-            CgOp.CheckArrayAccess(indexReg, arraySizeReg)
-        )
+        val (arraySizeOps, arraySizeReg) = if (member.dynamicArraySize != null) {
+            calculateDynamicArraySize(base, klass, member, namer+3, globals)
+        } else {
+            Pair(listOf<CgOp>(), CgValue.Immediate(member.arraySize.toString(), CgTypePrimitive.INT32))
+        }
 
-        Pair(indexOps + checkOps, indexReg)
+        val (indexOps, indexReg) = index.toCgOps(namer+1, globals, locals)
+
+        val checkOp = CgOp.CheckArrayAccess(indexReg, arraySizeReg)
+
+        Pair(arraySizeOps + indexOps + checkOp, indexReg)
     }
 }
+
 
 private fun Expression.NewKlass.toNewKlassCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
 ): Pair<List<CgOp>, CgValue> {
     val type = typeRef as TypeRef.Named
     val typeName = globalTypeName(type.name, type.id)
@@ -276,11 +330,27 @@ private fun Expression.NewKlass.toNewKlassCgOps(
     }.invert()
     val paramOps = paramOpsTmp.flatten()
 
-    val arraySizeReg = CgValue.Register(namer.toString(3), CgTypePrimitive.INT32)
     val newReg = CgValue.Register(namer.toString(1), CgTypePrimitive.OBJECT)
-    val arraySize = klass.parameters.lastOrNull()?.arraySize
+    val lastParam = klass.parameters.lastOrNull()
+    val dynamicArraySize = lastParam?.dynamicArraySize
+    val arraySize = lastParam?.arraySize
 
-    val newOps = if (arraySize != null) {
+    val (newOps, arraySizeReg) = if (dynamicArraySize != null) {
+        // Pass in fresh 'locals' lookup keyed by klass parameters, associated with CgValue generated up above
+        // in 'paramRegs', and then generate IR from the expression. Result is ops and register.
+        val newKlassLocals = klass.parameters.zip(paramRegs).dropLast(1).associate { (param, reg) ->
+            param.id to Pair(param, reg)
+        }
+        val (arraySizeOps, arraySizeReg) = dynamicArraySize.toCgOps(namer + 3, globals, newKlassLocals)
+        
+        Pair(arraySizeOps + CgOp.NewArray(
+            newReg, typeName,
+            klass.parameters.last().typeRef.toCgType(globals),
+            klass.parameters.size - 1,
+            arraySizeReg)
+        , arraySizeReg)
+
+        /*
         // Array container. A bit of a hack, by creating a dummy object on the stack with minimal size
         // we can initialise the members (except the array) and then call the sizing function. LLVM
         // should be able to optimize this away, and it saves us from duplicating the sizing expression.
@@ -294,15 +364,39 @@ private fun Expression.NewKlass.toNewKlassCgOps(
             CgOp.CallStatic(arraySizeReg, dummyReg, sizingFunction, listOf()),
 
             // Must not be bigger than maximum allowable array size
-            CgOp.BinaryMath(sizeCheckReg, "icmp ule", arraySizeReg, CgValue.Immediate(arraySize.toString(), CgTypePrimitive.INT32)),
+            CgOp.BinaryMath(
+                sizeCheckReg,
+                "icmp ule",
+                arraySizeReg,
+                CgValue.Immediate(arraySize.toString(), CgTypePrimitive.INT32)
+            ),
             CgOp.Assert(sizeCheckReg, "array allocation exceeds upper bound"),
 
-            CgOp.NewArray(newReg, typeName, klass.parameters.last().typeRef.toCgType(globals), klass.parameters.size - 1, arraySizeReg)
+            CgOp.NewArray(
+                newReg,
+                typeName,
+                klass.parameters.last().typeRef.toCgType(globals),
+                klass.parameters.size - 1,
+                arraySizeReg
+            )
         )
+        */
+
+    } else if (arraySize != null) {
+        // Array container of fixed size
+        val arraySizeReg = CgValue.Immediate(arraySize.toString(), CgTypePrimitive.INT32)
+        Pair(listOf(CgOp.NewArray(
+            newReg, typeName,
+            klass.parameters.last().typeRef.toCgType(globals),
+            klass.parameters.size - 1,
+            arraySizeReg)
+        ), arraySizeReg)
 
     } else {
         // Normal object
-        listOf(CgOp.New(newReg, typeName))
+        Pair(listOf(
+            CgOp.New(newReg, typeName)
+        ), CgValue.ZERO)
     }
 
     val initOps = paramRegs.zip(klass.parameters).flatMapIndexed { fieldIndex, (paramReg, parameterDefinition) ->
@@ -356,7 +450,7 @@ private fun Expression.NewKlass.toNewKlassCgOps(
 private fun Expression.tupleOrArrayToCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
     initializers: List<Expression>,
 ): Pair<List<CgOp>, CgValue> {
     val type = typeRef.toCgType(globals)
@@ -376,7 +470,7 @@ private fun Expression.tupleOrArrayToCgOps(
 private fun Expression.Assert.toAssertCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>
 ): Pair<List<CgOp>, CgValue> {
     val (conditionOps, conditionReg) = condition.toCgOps(namer, globals, locals)
     val (valueOps, valueReg) = value.toCgOps(namer, globals, locals)
@@ -386,11 +480,14 @@ private fun Expression.Assert.toAssertCgOps(
 private fun Expression.toCgOps(
     namer: Namer,
     globals: Globals,
-    locals: Map<Namer, Declaration.Data>
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>
 ): Pair<List<CgOp>, CgValue> {
     return when (this) {
         is Expression.Characters -> TODO()
         is Expression.Float -> TODO()
+
+        is Expression.Let ->
+            toLetCgOps(namer, globals, locals)
 
         is Expression.Assert ->
             toAssertCgOps(namer, globals, locals)
@@ -431,7 +528,7 @@ private fun Expression.toCgOps(
 
         is Expression.LoadData -> {
             val type = typeRef.toCgType(globals)
-            dataRef.toCgValue(type, globals, namer)
+            dataRef.toCgValue(type, globals, locals, namer)
         }
 
         is Expression.If -> {
@@ -493,20 +590,17 @@ private fun Declaration.Function.toIntermediateFunction(
     val body = body!!
     val type = typeRef
 
-    val (ops, returnValue) = body.toCgOps(
-        namer, globals,
-        parameters.associateBy { it.id })
-
-    val params = (listOf(thisDeclaration) + parameters).map { param ->
-        val paramType = param.typeRef.toCgType(globals)
-        CgValue.Register(localName(param.name, param.id), paramType)
+    val locals = (listOf(thisDeclaration) + parameters).associate {
+        it.id to Pair(it, CgValue.Register(localName(it.name, it.id), it.typeRef!!.toCgType(globals)))
     }
+
+    val (ops, returnValue) = body.toCgOps(namer, globals, locals)
 
     return listOf(CgThingFunction(
         globalDataName(),
         signature!!,
         type.result!!.toCgType(globals),
-        params,
+        locals.values.map { (_, value) -> value },
         listOf(),
         ops + CgOp.Return(returnValue)
     ))
@@ -535,19 +629,37 @@ private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals
 
     val className = globalTypeName(name, id)
 
-    val cleanupCode = parameters.flatMapIndexed { index, param ->
-        if (param.typeRef.toCgType(globals) == CgTypePrimitive.OBJECT) {
-            val regName = (namer + 1).toString()
-            val ptrReg = CgValue.Register("$regName.p", CgTypePointer(CgTypePrimitive.OBJECT))
-            val objReg = CgValue.Register("$regName.o", CgTypePrimitive.OBJECT)
-            listOf(
-                CgOp.GetObjectFieldPtr(ptrReg, CgValue.THIS, className, index),
-                CgOp.Load(objReg, ptrReg),
-                CgOp.Release(objReg)
-            )
+//    val cleanUpId = namer + 1
+//    val cleanupCode = parameters.flatMapIndexed { index, param ->
+//        if (param.typeRef.toCgType(globals) == CgTypePrimitive.OBJECT) {
+//            val regName = cleanUpId.toString(index)
+//            // TODO: Handle nested structure fields as well
+//            val ptrReg = CgValue.Register("$regName.p", CgTypePointer(CgTypePrimitive.OBJECT))
+//            listOf(
+//                CgOp.GetObjectFieldPtr(ptrReg, CgValue.THIS, className, index),
+//                CgOp.Release(ptrReg)
+//            )
+//        } else {
+//            listOf()
+//        }
+//    }
+
+    val arrayParam = parameters.lastOrNull()?.takeIf { it.arraySize != null }
+    val fields = parameters.map { CgClassField(it.typeRef.toCgType(globals), it.arraySize != null) }
+    val deleteOps = if (arrayParam != null) {
+        val (sizeOps, sizeReg) = if (arrayParam.dynamicArraySize != null) {
+            calculateDynamicArraySize(CgValue.THIS, this, arrayParam, namer, globals)
         } else {
-            listOf()
+            Pair(listOf<CgOp>(), CgValue.Immediate(arrayParam.arraySize.toString(), CgTypePrimitive.INT32))
         }
+        sizeOps +
+            CgOp.DeleteArray(CgValue.THIS, className, sizeReg) +
+            CgOp.Return(CgValue.VOID)
+    } else {
+        listOf(
+            CgOp.Delete(CgValue.THIS, className),
+            CgOp.Return(CgValue.VOID)
+        )
     }
 
     val deleter = CgThingFunction(
@@ -556,55 +668,56 @@ private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals
         CgTypePrimitive.VOID,
         listOf(CgValue.THIS),
         listOf(),
-            cleanupCode.dropLast(1) +
-            CgOp.Delete(CgValue.THIS, className) + // Insert delete just before final call to release, if exists
-            cleanupCode.takeLast(1) + // Final release after delete, so it can tail call to avoid some stack overflows
-            CgOp.Return(CgValue.VOID)
+        deleteOps
     )
 
-    // TODO: Create className/array$size function and add to class function list. For future virtualization, if needed.
-    //       NewKlass to use array$size, passing in stack based synthetic partial object for params. LLVM will get rid of it.
-    //          Allocation needs to calculate size
-    //          If size '>' max array size, abort
-    //       ArrayLookup to use array$size for bounds checks.
-
-    val fields = parameters.map { CgClassField(it.typeRef.toCgType(globals), it.arraySize != null) }
     val vtable = findVTableEntries(globals)
 
-    return justGetTheMembers(namer, globals) +
-            listOf<CgThing>(deleter) +
+    return justGetTheMembers(namer + 2, globals) + listOf<CgThing>(deleter) +
             CgThingClass(className, fields, vtable, deleter.globalName)
 }
 
 private fun Declaration.Let.toIntermediateVariable(namer: Namer, globals: Globals): List<CgThing> {
     val body = body!!
-
-    // Variable and init function
-    val type = typeRef.toCgType(globals)
-    val (ops, result) = body.toCgOps(namer, globals, mapOf())
-
     val globalName = globalDataName()
+    val type = typeRef.toCgType(globals)
 
-    return listOf(
-        CgThingVariable(globalName, type),
-        CgThingFunction(
-            "init\$$globalName",
-            "init",
-            type,
-            listOf(CgValue.THIS),
-            listOf(),
-            ops + CgOp.Return(result)
+    if (body is Expression.Characters) {
+        // Static string
+
+        val stringClass = globals.type.values.first { it is Declaration.Klass && it.name == "System::String" }
+        val stringBytes = body.value.encodeToByteArray()
+
+        return listOf(
+            CgThingClassInstance(
+                globalName,
+                globalTypeName(stringClass.name, stringClass.id),
+                listOf(stringBytes.size, stringBytes)
+            )
         )
-    )
+
+    } else {
+        // Variable and init function
+        val (ops, result) = body.toCgOps(namer, globals, mapOf())
+
+        return listOf(
+            CgThingVariable(globalName, type),
+            CgThingFunction(
+                "init\$$globalName",
+                "init",
+                type,
+                listOf(CgValue.THIS),
+                listOf(),
+                ops + CgOp.Return(result)
+            )
+        )
+    }
 }
 
 /* There should be no nested lambdas remaining, so all variable references are either
  * global, parameter or immediate local, with no nested functions.
  */
 fun convertToIntermediate(ast: Ast): List<CgThing> {
-    // TODO: Locate the 'main' function. There must be only one, with no params and a single Int32 result.
-    //    In below mapping, give that main function a well defined name
-
     val globals = Globals(
         ast.declarations.mapNotNull { it.declaration as? Declaration.Type }.associateBy { it.id },
         ast.declarations.mapNotNull { it.declaration as? Declaration.Data }.associateBy { it.id })

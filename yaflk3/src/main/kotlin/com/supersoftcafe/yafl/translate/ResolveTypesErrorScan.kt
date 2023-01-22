@@ -4,7 +4,7 @@ import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Namer
 
 
-private class ResolveTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) : AbstractErrorScan() {
+private class ResolveTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) : AbstractScanner<String>() {
     override fun scanSource(self: TypeRef?, sourceRef: SourceRef): List<String> {
         return when (self) {
             null, is TypeRef.Named, is TypeRef.Primitive, TypeRef.Unit ->
@@ -19,6 +19,10 @@ private class ResolveTypesErrorScan(val globals: Map<Namer, Declaration>, val hi
             is TypeRef.Callable ->
                 scanSource(self.result, sourceRef) + scanSource(self.parameter, sourceRef)
         }
+    }
+
+    override fun scan(self: TypeRef?, sourceRef: SourceRef): List<String> {
+        return scanSource(self, sourceRef)
     }
 }
 
