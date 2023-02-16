@@ -31,6 +31,9 @@ abstract class AbstractScanner<TResult> {
                 is Expression.NewKlass ->
                     scan(self.parameter, self)
 
+                is Expression.RawPointer ->
+                    scan(self.field, self)
+
                 is Expression.Llvmir ->
                     self.inputs.flatMap {
                         scan(it, self)
@@ -38,6 +41,9 @@ abstract class AbstractScanner<TResult> {
 
                 is Expression.Call ->
                     scan(self.callable, self) + scan(self.parameter, self)
+
+                is Expression.Parallel ->
+                    scan(self.parameter, self)
 
                 is Expression.Tuple ->
                     self.fields.flatMap {

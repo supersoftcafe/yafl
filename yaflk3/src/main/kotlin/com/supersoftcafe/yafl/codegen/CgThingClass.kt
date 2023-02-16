@@ -23,7 +23,7 @@ data class CgThingClass(
         }
     }
 
-    fun toIr(context: CgContext): CgLlvmIr {
+    override fun toIr(context: CgContext): CgLlvmIr {
         val slots = functions
             .mapNotNull { (nameOfSlot, globalName) -> context.slotNameToId(nameOfSlot)?.let { slotId -> Pair(globalName, slotId) } }
 
@@ -53,10 +53,10 @@ data class CgThingClass(
         val arrayField = fields.lastOrNull()?.takeIf { it.isArray }
 
         val deleteHead = listOf(if (arrayField != null) {
-            "define internal tailcc void ${classInfo.deleteFuncName}(%object* %opaque_pointer, i32 %array_size) {"
+            "define internal void ${classInfo.deleteFuncName}(%object* %object_ptr, i32 %array_size) {"
         } else {
-            "define internal tailcc void ${classInfo.deleteFuncName}(%object* %opaque_pointer) {"
-        }, "entry:", "  %pointer = bitcast %object* %opaque_pointer to ${classInfo.objectTypeName}*")
+            "define internal void ${classInfo.deleteFuncName}(%object* %object_ptr) {"
+        }, "entry:")
 
         val deleteTail = fields.withIndex().reversed().flatMap { (index, field) ->
             val objectPaths = field.type.findObjectPaths()
@@ -68,9 +68,9 @@ data class CgThingClass(
                     val nameSuffix = path.joinToString("", "_$index") { "_$it" }
                     val pathForGep = path.joinToString("") { ", i32 $it" }
                     listOf(
-                        "  %field$nameSuffix = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* %pointer, i32 0, i32 1, i32 $index$pathForGep",
-                        "  %value$nameSuffix = load %object*, %object** %field$nameSuffix",
-                        "  tail call tailcc void @release(%object* %value$nameSuffix)")
+                        "  %field$nameSuffix = getelementptr ${classInfo.objectTypeName}, ptr %object_ptr, i32 0, i32 1, i32 $index$pathForGep",
+                        "  %value$nameSuffix = load ptr, ptr %field$nameSuffix",
+                        "  tail call void @release(ptr %value$nameSuffix)")
                 }
 
             } else {
@@ -86,9 +86,9 @@ data class CgThingClass(
                     val nameSuffix = path.joinToString("", "_$index") { "_$it" }
                     val pathForGep = path.joinToString("") { ", i32 $it" }
                     listOf(
-                        "  %field$nameSuffix = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* %pointer, i32 0, i32 1, i32 $index, i32 %index$pathForGep",
-                        "  %value$nameSuffix = load %object*, %object** %field$nameSuffix",
-                        "  tail call tailcc void @release(%object* %value$nameSuffix)")
+                        "  %field$nameSuffix = getelementptr ${classInfo.objectTypeName}, ptr %object_ptr, i32 0, i32 1, i32 $index, i32 %index$pathForGep",
+                        "  %value$nameSuffix = load ptr, ptr %field$nameSuffix",
+                        "  tail call void @release(ptr %value$nameSuffix)")
                 } + listOf(
                     "  %next_index = add %size_t %index, 1",
                     "  br label %loop"
@@ -98,15 +98,15 @@ data class CgThingClass(
 
         val deleteObject = if (arrayField != null) {
             listOf(
-                "  %size_as_gep = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 0, i32 1, i32 ${fields.size - 1}, i32 %array_size",
-                "  %size_as_int = ptrtoint ${arrayField.type}* %size_as_gep to %size_t")
+                "  %size_as_gep = getelementptr ${classInfo.objectTypeName}, ptr null, i32 0, i32 1, i32 ${fields.size - 1}, i32 %array_size",
+                "  %size_as_int = ptrtoint ptr %size_as_gep to %size_t")
         } else {
             listOf(
-                "  %size_as_gep = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1",
-                "  %size_as_int = ptrtoint ${classInfo.objectTypeName}* %size_as_gep to %size_t")
-        } + "  tail call tailcc void @deleteObject(%size_t %size_as_int, %object* %opaque_pointer)"
+                "  %size_as_gep = getelementptr ${classInfo.objectTypeName}, ptr null, i32 1",
+                "  %size_as_int = ptrtoint ptr %size_as_gep to %size_t")
+        } + "  tail call void @deleteObject(%size_t %size_as_int, ptr %object_ptr)"
 
-        val deleteDeclaration = (deleteHead + if (deleteTail.lastOrNull()?.contains("@releaseActual") == true) {
+        val deleteDeclaration = (deleteHead + if (deleteTail.lastOrNull()?.contains("@release") == true) {
             // Re-arrange last few calls to benefit from a tail call
             deleteTail.dropLast(1) + deleteObject + deleteTail.takeLast(1)
         } else {
@@ -117,9 +117,9 @@ data class CgThingClass(
 
 
         return CgLlvmIr(
-            types = "${classInfo.vtableTypeName} = type { { %size_t, void(%object*)* }, [ $size x %size_t* ] }\n" +
+            types = "${classInfo.vtableTypeName} = type { { %size_t, ptr }, [ $size x ptr ] }\n" +
                     "${classInfo.objectTypeName} = type { %object, { $fieldsIr } }\n",
-            declarations = "${classInfo.vtableDataName} = internal constant ${classInfo.vtableTypeName} { { %size_t, void(%object*)* } { %size_t $mask, void(%object*)* @\"$deleteGlobalName\" }, [ $size x %size_t* ] [ $vtableInitialiser ] }\n\n" +
+            declarations = "${classInfo.vtableDataName} = internal constant ${classInfo.vtableTypeName} { { %size_t, ptr } { %size_t $mask, ptr @\"$deleteGlobalName\" }, [ $size x ptr ] [ $vtableInitialiser ] }\n\n" +
                     deleteDeclaration
         )
     }

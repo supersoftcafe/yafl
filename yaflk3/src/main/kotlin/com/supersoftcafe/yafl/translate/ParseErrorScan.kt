@@ -55,6 +55,12 @@ private class ParseErrorScan : AbstractScanner<String>() {
     override fun scan(self: Expression?, parent: Expression?): List<String> {
         return super.scan(self, parent).ifEmpty {
             when (self) {
+                is Expression.RawPointer ->
+                    if (self.field !is Expression.LoadMember)
+                        listOf("${self.sourceRef} raw pointer can only be used with a field access expression")
+                    else
+                        listOf()
+
                 is Expression.Let ->
                     if (self.let.body == null)
                         listOf("${self.sourceRef} let must have initializer expression" )

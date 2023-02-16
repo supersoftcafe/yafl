@@ -10,6 +10,14 @@
 
 static atomic_size_t total_memory_usage = 0;
 
+static void heap_dump_status() {
+    DEBUG("Final memory usage is %ld\n", total_memory_usage);
+}
+
+void heap_init() {
+    atexit(heap_dump_status);
+}
+
 struct object* heap_alloc(struct vtable* vtable, size_t size) {
     assert(size >= sizeof(struct object));
 

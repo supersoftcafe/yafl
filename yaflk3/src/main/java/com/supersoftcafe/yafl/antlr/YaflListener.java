@@ -222,6 +222,18 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitApplyExpr(YaflParser.ApplyExprContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code powerExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterPowerExpr(YaflParser.PowerExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code powerExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitPowerExpr(YaflParser.PowerExprContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code objectExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -305,6 +317,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitStringExpr(YaflParser.StringExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code parallelExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterParallelExpr(YaflParser.ParallelExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code parallelExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitParallelExpr(YaflParser.ParallelExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code unaryExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -449,6 +473,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitLlvmirExpr(YaflParser.LlvmirExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code rawPointerExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterRawPointerExpr(YaflParser.RawPointerExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code rawPointerExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitRawPointerExpr(YaflParser.RawPointerExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code arrayLookupExpr}
 	 * labeled alternative in {@link YaflParser#expression}.

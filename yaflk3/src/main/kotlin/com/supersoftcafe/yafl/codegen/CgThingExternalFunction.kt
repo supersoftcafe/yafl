@@ -13,15 +13,18 @@ data class CgThingExternalFunction(
     }
 
 
-    fun toIr(context: CgContext): CgLlvmIr {
+    override fun toIr(context: CgContext): CgLlvmIr {
         val paramTypeStr = params.joinToString { "${it.type}" }
         val paramVarStr = params.joinToString { "${it.type} %\"${it.name}\"" }
         val functionTypeName = CgValue.Register("typeof.$globalName", CgTypePrimitive.VOID)
 
         val paramsSansThis = params.drop(1)
 
-        val externDecl = paramsSansThis.joinToString(", ", "declare dso_local $resultType @\"$externName\"(", ")\n") { it.type.toString() }
-        val globalDecl = "define internal tailcc $resultType @\"$globalName\"($paramVarStr) {\n"
+        val externDecl = paramsSansThis.joinToString(", ", "declare dso_local noundef $resultType @\"$externName\"(", ") local_unnamed_addr\n") {
+            it.type.toString() + " noundef" + if (it.type is CgTypePointer || (it.type is CgTypePrimitive && it.type.subType == CgSubType.POINTER))
+                " readonly nocapture" else ""
+        }
+        val globalDecl = "define internal $resultType @\"$globalName\"($paramVarStr) {\n"
         val callOp = paramsSansThis.joinToString(", ", "  %result = call $resultType @\"$externName\"(", ")\n") { "${it.type} $it" }
         val retOp = "  ret $resultType %result\n"
 

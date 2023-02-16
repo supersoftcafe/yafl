@@ -49,6 +49,11 @@ class InferTypes(private val typeHints: TypeHints) {
         findDeclarations: (String) -> List<Declaration>,
     ): Pair<Expression?, TypeHints> {
         return when (this) {
+            is Expression.RawPointer -> {
+                val (field, fieldHints) = field.inferTypes(null, findDeclarations)
+                Pair(copy(field = field!!), fieldHints)
+            }
+
             is Expression.Let -> {
                 val (let, letHints) = let.inferTypes(findDeclarations)
                 val (tail, tailHints) = tail.inferTypes(receiver) { name ->
@@ -247,6 +252,14 @@ class InferTypes(private val typeHints: TypeHints) {
                     parameter = newParameter as Expression.Tuple,
                     typeRef = typeRef
                 ), callHints + paramHints)
+            }
+
+            is Expression.Parallel -> {
+                val (newParameter, paramHints) = parameter.inferTypes(receiver, findDeclarations)
+                Pair(copy(
+                    parameter = newParameter as Expression.Tuple,
+                    typeRef = newParameter.typeRef
+                ), paramHints)
             }
 
             is Expression.Tuple -> {

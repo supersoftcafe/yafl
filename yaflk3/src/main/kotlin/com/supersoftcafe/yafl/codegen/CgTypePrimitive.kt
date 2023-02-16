@@ -10,7 +10,12 @@ enum class CgTypePrimitive(override val llvmType: String, val subType: CgSubType
     FLOAT32("float", CgSubType.FLOAT),
     FLOAT64("double", CgSubType.FLOAT),
     OBJECT("%object*", CgSubType.POINTER), // Pointer to base of heap managed object
-    FUNPTR("%funptr", CgSubType.POINTER);   // Pointer to first machine code instruction of a function
+    FUNPTR("%funptr", CgSubType.POINTER),   // Pointer to first machine code instruction of a function
+
+    INT("%int", CgSubType.INT),
+    SIZE("%size_t", CgSubType.INT),
+    POINTER("i8*", CgSubType.POINTER),
+    ;
 
     override fun toString() = llvmType
 }

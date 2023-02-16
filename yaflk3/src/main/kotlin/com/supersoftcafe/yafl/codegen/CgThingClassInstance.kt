@@ -25,11 +25,12 @@ data class CgThingClassInstance(
         }
     }
 
-    fun toIr(context: CgContext): CgLlvmIr {
+    override fun toIr(context: CgContext): CgLlvmIr {
         val classInfo = CgClassInfo(className)
 
         val (contentType, contentData) = fieldValues.toContent()
         val fullType = "{ %object, $contentType }"
+
 
         return CgLlvmIr(declarations =
             "@\"$name.obj\" = internal constant $fullType { %object { %vtable* bitcast( ${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*), %size_t 0 }, $contentType $contentData }\n" +

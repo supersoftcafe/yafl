@@ -21,6 +21,13 @@ private fun YaflParser.AssertExprContext.toAssertExpression(
         message.text.removeSurrounding("\""))
 }
 
+private fun YaflParser.RawPointerExprContext.toRawPointerExpression(
+    file: String,
+    namer: Namer,
+): Expression {
+    return Expression.RawPointer(toSourceRef(file), TypeRef.Pointer, this.value.toExpression(file, namer))
+}
+
 private fun YaflParser.LlvmirExprContext.toLlvmirExpression(
     file: String,
     namer: Namer,
@@ -131,6 +138,22 @@ private fun YaflParser.CallExprContext.toCallExpression(
     )
 }
 
+private fun YaflParser.ParallelExprContext.toParallelExpression(
+    file: String,
+    namer: Namer,
+): Expression {
+    val params = params.toTupleExpression(file, namer + 2)
+
+    return Expression.Parallel(
+        toSourceRef(file), null,
+        if (params is Expression.Tuple) params else Expression.Tuple(
+            params.sourceRef,
+            TypeRef.Tuple(listOf(TupleTypeField(params.typeRef, null))),
+            listOf(TupleExpressionField(null, params))
+        )
+    )
+}
+
 fun YaflParser.ExpressionContext.toExpression(
     file: String,
     namer: Namer,
@@ -143,11 +166,14 @@ fun YaflParser.ExpressionContext.toExpression(
         is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()))
         is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file, namer), right.text)
 
+        is YaflParser.RawPointerExprContext -> toRawPointerExpression(file, namer)
         is YaflParser.LlvmirExprContext -> toLlvmirExpression(file, namer)
         is YaflParser.CallExprContext -> toCallExpression(file, namer)
+        is YaflParser.ParallelExprContext -> toParallelExpression(file, namer)
         is YaflParser.ApplyExprContext -> toApplyExpression(file, namer)
 
         is YaflParser.UnaryExprContext -> toUnaryOperator(file, namer, operator, right)
+        is YaflParser.PowerExprContext -> toBinaryOperator(file, namer, left, operator, right)
         is YaflParser.ProductExprContext -> toBinaryOperator(file, namer, left, operator, right)
         is YaflParser.SumExprContext -> toBinaryOperator(file, namer, left, operator, right)
         is YaflParser.ShiftExprContext -> toBinaryOperator(file, namer, left, operator, right)

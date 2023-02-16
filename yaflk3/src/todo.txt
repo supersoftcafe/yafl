@@ -2,16 +2,38 @@
 # Todo
 
 
-Fix ARC. Maybe do it in the AST to IR phase?
-  Fix class deleter releasing of dependent references.
+Add struct support.
+
+Index access to tuple using variable if all elements are of same type.
+Index access to any tuple using constant literal.
+
+Add enum support. Do basic implementation with selector first.
+
+Optimise enums for compressed formats that use lower bits of pointer members.
+
+Nested enums to share selector word where possible.
+   I can see situation of Either being enum, but within is String which is also an enum.
+   That should still efficiently fit in registers and return from a function efficiently.
+
+Convert String to group of types centred on an enum definition. Goal is that short strings
+and especially single codepoint strings do not require a heap allocation. Yafl will not
+have a Char type, so short strings must be efficient.
+
+
+
+
+
+
+
 Improve output during compilation to print phase info as it goes.
+
+Integer constants can self promote their type to wider integers.
 
 Update globals to have pointer to string and pointer to vtable with proper global type instead of specific type
 to reduce IR codegen and amount of temporary registers.
 
 
 
-Add enum support.
 Add generics support.
 
 Add explicit currying of calls using $1 etc parameters, replacing with lambda in AST.

@@ -256,6 +256,18 @@ public class YaflBaseListener implements YaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
+	@Override public void enterPowerExpr(YaflParser.PowerExprContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitPowerExpr(YaflParser.PowerExprContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
 	@Override public void enterObjectExpr(YaflParser.ObjectExprContext ctx) { }
 	/**
 	 * {@inheritDoc}
@@ -335,6 +347,18 @@ public class YaflBaseListener implements YaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitStringExpr(YaflParser.StringExprContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterParallelExpr(YaflParser.ParallelExprContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitParallelExpr(YaflParser.ParallelExprContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -479,6 +503,18 @@ public class YaflBaseListener implements YaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitLlvmirExpr(YaflParser.LlvmirExprContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterRawPointerExpr(YaflParser.RawPointerExprContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitRawPointerExpr(YaflParser.RawPointerExprContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *

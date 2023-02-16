@@ -153,3 +153,16 @@ fun `>=`(l: System::Int64, r: System::Int64): System::Bool => __llvm_ir__<System
 fun `>=`(l: System::Float32, r: System::Float32): System::Bool => __llvm_ir__<System::Bool>("${0} = fcmp oge float ${1}, ${2}", l, r)
 fun `>=`(l: System::Float64, r: System::Float64): System::Bool => __llvm_ir__<System::Bool>("${0} = fcmp oge double ${1}, ${2}", l, r)
 
+
+fun _pow(base: Int32, exp: Int32, result: Int32): Int32 =>
+  let x = (exp & 1) == 0 ? result : (result * base);
+  (exp >> 1) == 0 ? x : _pow(base*base, exp >> 1, x)
+
+fun `**`(base: Int32, exp: Int32): Int32 => _pow(base, exp, 1)
+
+
+fun _pow(base: Int64, exp: Int32, result: Int64): Int64 =>
+  let x = (exp & 1) == 0 ? result : (result * base);
+  (exp >> 1) == 0 ? x : _pow(base*base, exp >> 1, x)
+
+fun `**`(base: Int64, exp: Int32): Int64 => _pow(base, exp, 1i64)

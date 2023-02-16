@@ -70,6 +70,10 @@ private fun TypeRef.Primitive.toCgType() = when (kind) {
     PrimitiveKind.Int64   -> CgTypePrimitive.INT64
     PrimitiveKind.Float32 -> CgTypePrimitive.FLOAT32
     PrimitiveKind.Float64 -> CgTypePrimitive.FLOAT64
+
+    PrimitiveKind.Int     -> CgTypePrimitive.INT
+    PrimitiveKind.Size    -> CgTypePrimitive.SIZE
+    PrimitiveKind.Pointer -> CgTypePrimitive.POINTER
 }
 
 private fun TypeRef?.toCgType(globals: Globals): CgType {
@@ -253,6 +257,30 @@ private fun Expression.Call.callToCgOps(
     }
 }
 
+private fun Expression.Parallel.parallelToCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>
+): Pair<List<CgOp>, CgValue> {
+    val id = namer.toString(parameter.fields.size)
+
+    val blocks = parameter.fields.mapIndexed { index, field ->
+        field.expression.toCgOps(namer + index, globals, locals)
+    }
+
+    val blockOps = blocks.flatMap { (ops, _) ->
+        listOf(CgOp.ParallelBlock(id)) + ops
+    }
+
+    val type = CgTypeStruct(blocks.map { (_, value) -> value.type })
+    val (tupleOps, result) = blocks.foldIndexed(Pair(listOf<CgOp>(), CgValue.undef(type))) { index, (ops, result), (_, value) ->
+        val op = CgOp.InsertValue(namer.toString(index), result, intArrayOf(index), value)
+        Pair(ops + op, op.result)
+    }
+
+    return Pair(listOf(CgOp.Fork(id)) + blockOps + CgOp.Join(id) + tupleOps, result)
+}
+
 private fun calculateDynamicArraySize(
     base: CgValue,
     klass: Declaration.Klass,
@@ -290,6 +318,24 @@ private fun calculateDynamicArraySize(
     val (arraySizeOps, arraySizeReg) = member.dynamicArraySize.toCgOps(namer+2, globals, newKlassLocals)
 
     return Pair(loaderOps.flatten() + arraySizeOps, arraySizeReg)
+}
+
+private fun Expression.RawPointer.toRawPointerCgOps(
+    namer: Namer,
+    globals: Globals,
+    locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
+): Pair<List<CgOp>, CgValue> {
+    val loadMember = field as Expression.LoadMember
+    val (baseOps, baseReg) = loadMember.base.toCgOps(namer + 1, globals, locals)
+    val klass = globals.type[(loadMember.base.typeRef as TypeRef.Named).id] as Declaration.Klass
+    val fieldIndex = klass.parameters.indexOfFirst { it.id == loadMember.id }
+    val field = klass.parameters[fieldIndex]
+    val result = CgValue.Register(namer.toString(0), CgTypePrimitive.POINTER)
+    val gepOp = if (field.arraySize != null)
+            CgOp.GetObjectFieldPtr(result, baseReg, globalTypeName(klass.name, klass.id), fieldIndex, CgValue.ZERO)
+        else
+            CgOp.GetObjectFieldPtr(result, baseReg, globalTypeName(klass.name, klass.id), fieldIndex)
+    return Pair(baseOps + gepOp, result)
 }
 
 private fun Expression.ArrayLookup.toArrayLookupCgOps(
@@ -486,6 +532,9 @@ private fun Expression.toCgOps(
         is Expression.Characters -> TODO()
         is Expression.Float -> TODO()
 
+        is Expression.RawPointer ->
+            toRawPointerCgOps(namer, globals, locals)
+
         is Expression.Let ->
             toLetCgOps(namer, globals, locals)
 
@@ -514,6 +563,9 @@ private fun Expression.toCgOps(
 
         is Expression.Call ->
             callToCgOps(namer, globals, locals)
+
+        is Expression.Parallel ->
+            parallelToCgOps(namer, globals, locals)
 
         is Expression.Llvmir -> {
             val result = CgValue.Register((namer + 1).toString(), typeRef.toCgType(globals))
@@ -601,7 +653,6 @@ private fun Declaration.Function.toIntermediateFunction(
         signature!!,
         type.result!!.toCgType(globals),
         locals.values.map { (_, value) -> value },
-        listOf(),
         ops + CgOp.Return(returnValue)
     ))
 }
@@ -625,24 +676,9 @@ private fun Declaration.Klass.findVTableEntries(globals: Globals): Map<String, S
 }
 
 private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals): List<CgThing> {
-    // Emit class definition with vtable, member implementations and deleter
+    // Emit class definition with vtable, member implementations and destructor
 
     val className = globalTypeName(name, id)
-
-//    val cleanUpId = namer + 1
-//    val cleanupCode = parameters.flatMapIndexed { index, param ->
-//        if (param.typeRef.toCgType(globals) == CgTypePrimitive.OBJECT) {
-//            val regName = cleanUpId.toString(index)
-//            // TODO: Handle nested structure fields as well
-//            val ptrReg = CgValue.Register("$regName.p", CgTypePointer(CgTypePrimitive.OBJECT))
-//            listOf(
-//                CgOp.GetObjectFieldPtr(ptrReg, CgValue.THIS, className, index),
-//                CgOp.Release(ptrReg)
-//            )
-//        } else {
-//            listOf()
-//        }
-//    }
 
     val arrayParam = parameters.lastOrNull()?.takeIf { it.arraySize != null }
     val fields = parameters.map { CgClassField(it.typeRef.toCgType(globals), it.arraySize != null) }
@@ -667,7 +703,6 @@ private fun Declaration.Klass.toIntermediateKlass(namer: Namer, globals: Globals
         "delete",
         CgTypePrimitive.VOID,
         listOf(CgValue.THIS),
-        listOf(),
         deleteOps
     )
 
@@ -707,7 +742,6 @@ private fun Declaration.Let.toIntermediateVariable(namer: Namer, globals: Global
                 "init",
                 type,
                 listOf(CgValue.THIS),
-                listOf(),
                 ops + CgOp.Return(result)
             )
         )
@@ -794,7 +828,6 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
         "",
         CgTypePrimitive.INT32,
         listOf(CgValue.THIS),
-        listOf(),
         initOps + retOps
     )
 

@@ -7,6 +7,8 @@ sealed class Expression {
     abstract val sourceRef: SourceRef
     abstract val typeRef: TypeRef?
 
+    data class RawPointer(override val sourceRef: SourceRef, override val typeRef: TypeRef.Primitive, val field: Expression) : Expression()
+
     data class Assert(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val value: Expression, val condition: Expression, val message: String) : Expression()
 
     data class ArrayLookup(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val array: Expression, val index: Expression) : Expression()
@@ -24,6 +26,8 @@ sealed class Expression {
     data class Tuple(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val fields: List<TupleExpressionField>): Expression()
 
     data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression.Tuple): Expression()
+
+    data class Parallel(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val parameter: Expression.Tuple): Expression()
 
     data class Llvmir(override val sourceRef: SourceRef, override val typeRef: TypeRef, val pattern: String, val inputs: List<Expression>) : Expression()
 

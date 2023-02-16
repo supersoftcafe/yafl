@@ -10,7 +10,10 @@ private fun findObjectFields(type: CgType): List<IntArray> {
     }
 }
 
-fun arcPhase(thing: CgThingFunction): CgThingFunction {
+fun phaseArc(thing: CgThing): List<CgThing> {
+    if (thing !is CgThingFunction)
+        return listOf(thing)
+
     // If there is a single return statement we can exclude the register it
     // references from ARC processing, IIF that register is set from a single
     // call to New/NewArray or Call. Quite specific, but also quite common.
@@ -39,16 +42,13 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
             null
     }.toSet()
 
-    if (thing.globalName == "d\$Test::main:():System::Int32\$a3b3")
-        println()
-
     // Declarations of ARC variables that hold references for later release
     val arcVars = thing.body.flatMap { op ->
         val objectFields = findObjectFields(op.result.type)
         if (op.result != registerToExclude && objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.NewArray|| op is CgOp.Call || op is CgOp.CallStatic || op is CgOp.CallVirtual)) {
             objectFields.map { fieldPath ->
                 val pathStr = fieldPath.joinToString("$")
-                CgThingVariable("${op.result.name}.arc$pathStr", CgTypePrimitive.OBJECT)
+                CgOp.Alloca("${op.result.name}.arc$pathStr", CgTypePrimitive.OBJECT)
             }
         } else {
             listOf()
@@ -121,7 +121,7 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
                 }
 
                 val releases = arcVars.map { arcVar ->
-                    CgOp.Release(CgValue.Register(arcVar.name, CgTypePointer(CgTypePrimitive.OBJECT)))
+                    CgOp.Release(arcVar.result)
                 }
 
                 acquires + releases + op
@@ -135,12 +135,11 @@ fun arcPhase(thing: CgThingFunction): CgThingFunction {
 
     // Insert the initialisation of ARC variables as the first operation of the function
     val zeroInits = arcVars.map { arcVar ->
-        CgOp.Store(CgTypePrimitive.OBJECT, CgValue.Register(arcVar.name, CgTypePointer(CgTypePrimitive.OBJECT)), CgValue.NULL)
+        CgOp.Store(CgTypePrimitive.OBJECT, arcVar.result, CgValue.NULL)
     }
 
-    return thing
-        .copy(body = modifiedBody)
-        .addPreamble(zeroInits)
-        .copy(variables = thing.variables + arcVars)
+    return listOf(thing
+        .copy(body = arcVars + modifiedBody)
+        .addPreamble(zeroInits))
 }
 

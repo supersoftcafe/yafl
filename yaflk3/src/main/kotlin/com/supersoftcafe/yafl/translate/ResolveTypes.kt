@@ -62,6 +62,11 @@ class ResolveTypes() {
             null, is Expression.Float, is Expression.Integer ->
                 this
 
+            is Expression.RawPointer -> {
+                val f = field.resolveTypes(findDeclarations)!!
+                copy(field = f)
+            }
+
             is Expression.Characters -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)!!
                 copy(typeRef = t)
@@ -96,6 +101,12 @@ class ResolveTypes() {
                 val c = callable.resolveTypes(findDeclarations)!!
                 val p = parameter.resolveTypes(findDeclarations)
                 copy(typeRef = t, callable = c, parameter = p as Expression.Tuple)
+            }
+
+            is Expression.Parallel -> {
+                val t = typeRef.resolveTypes(sourceRef, findDeclarations)
+                val p = parameter.resolveTypes(findDeclarations)
+                copy(typeRef = t, parameter = p as Expression.Tuple)
             }
 
             is Expression.Tuple -> {

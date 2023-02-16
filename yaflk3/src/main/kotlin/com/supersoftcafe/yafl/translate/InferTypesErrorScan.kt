@@ -53,6 +53,24 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
     override fun scan(self: Expression?, parent: Expression?): List<String> {
         return super.scan(self, parent).ifEmpty {
             when (self) {
+                is Expression.RawPointer ->
+                    if (self.field !is Expression.LoadMember) {
+                        listOf("${self.field.sourceRef} raw pointer must use a field access expression")
+
+                    } else {
+                        val typeRef = self.field.base.typeRef as? TypeRef.Named
+                        val klass = globals[typeRef?.id] as? Declaration.Klass
+                        val field = klass?.parameters?.firstOrNull { it.id == self.field.id }
+
+                        if (klass?.isInterface == true) {
+                            listOf("${self.sourceRef} raw pointer expression not allowed on interfaces")
+                        } else if (field == null) {
+                            listOf("${self.sourceRef} raw pointer expression does not refer to a class field")
+                        } else {
+                            listOf()
+                        }
+                    }
+
                 is Expression.Assert ->
                     if (self.condition.typeRef != TypeRef.Bool)
                         listOf("${self.condition.sourceRef} condition expression is not boolean")
@@ -99,6 +117,10 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                     }
                 }
 
+                is Expression.Parallel -> {
+                    scan(self.parameter, self)
+                }
+
                 is Expression.LoadMember -> {
                     val (klass, param, arraySize) = getKlassParam(self)
 
@@ -106,7 +128,7 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                         if (self.id != null) null
                         else "${self.sourceRef} member ${self.name} not found",
 
-                        if (parent is Expression.ArrayLookup || arraySize == null) null
+                        if (parent is Expression.ArrayLookup || parent is Expression.RawPointer || arraySize == null) null
                         else "${self.sourceRef} member is an array"
                     )
                 }

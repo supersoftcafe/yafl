@@ -50,7 +50,7 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
 
 
 fun main(args: Array<String>) {
-    val ast = yaflBuild("/system.yafl", "/string.yafl", "/io.yafl", "/array.yafl")
+    val ast = yaflBuild("/system.yafl", "/string.yafl", "/interop.yafl", "/io.yafl", "/array.yafl")
     // val ast = yaflBuild("/system.yafl", "/lambda.yafl")
     when (ast) {
         is Either.Some -> {

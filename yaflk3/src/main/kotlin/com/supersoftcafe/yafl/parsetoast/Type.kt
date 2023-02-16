@@ -24,6 +24,9 @@ private fun toPrimitiveTypeRef(name: String): TypeRef.Primitive {
         "int64"   -> TypeRef.Int64
         "float32" -> TypeRef.Float32
         "float64" -> TypeRef.Float64
+        "pointer" -> TypeRef.Pointer
+        "size"    -> TypeRef.Size
+        "int"     -> TypeRef.Int
         else -> throw IllegalArgumentException("Unknown primitive type $name")
     }
 }

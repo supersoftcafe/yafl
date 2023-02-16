@@ -1,8 +1,9 @@
 
+%int    = type i32
 %size_t = type i64
 
-declare dso_local noalias %object* @malloc(%size_t) "alloc-family"="malloc"
-declare dso_local void @free(%object*) "alloc-family"="malloc"
+declare dso_local noalias noundef ptr @malloc(%size_t noundef) local_unnamed_addr "alloc-family"="malloc"
+declare dso_local void @free(ptr allocptr nocapture noundef) local_unnamed_addr "alloc-family"="malloc"
 declare dso_local i32 @printf(i8* noalias nocapture, ...)
 declare dso_local void @abort()
 
@@ -14,46 +15,46 @@ declare dso_local void @abort()
 @formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
 @arrayerrorstr = private unnamed_addr constant [12 x i8] c"Array index\00", align 1
 
-@global_unit_vt = internal constant { { void(%object*)*, %size_t }, [ 0 x %funptr ] } { { void(%object*)*, %size_t } { void(%object*)* null, %size_t 0 }, [ 0 x %funptr ] [ ] }
-@global_unit = internal constant %object { %vtable* bitcast({ { void(%object*)*, %size_t }, [ 0 x %funptr ] }* @global_unit_vt to %vtable*), %size_t 0 }
+@global_unit_vt = internal constant %vtable { { %size_t, void(%object*)* } { %size_t 0, void(%object*)* null }, [ 0 x %funptr ] [ ] }
+@global_unit = internal constant %object { %vtable* @global_unit_vt, %size_t 0 }
 
 
 
 define dso_local i32 @main() {
-    %result = tail call tailcc i32 @synth_main(%object* @global_unit)
+    %result = tail call i32 @synth_main(%object* @global_unit)
     %param = getelementptr inbounds [11 x i8], [11 x i8]* @formatstr, i32 0, i32 0
     %count = load %size_t, %size_t* @memoryCounter
     %ignore = tail call i32 (i8*, ...) @printf(i8* %param, %size_t %count)
     ret i32 %result
 }
 
-define internal tailcc void @abortWithMessage(i8* %msg) noreturn noinline {
+define internal void @abortWithMessage(i8* %msg) noreturn noinline {
     %ignore = tail call i32 (i8*, ...) @printf(i8* %msg)
     call void @abort() noreturn
     ret void
 }
 
-define internal tailcc void @assertWithMessage(i1 %cond, i8* %msg) {
+define internal void @assertWithMessage(i1 %cond, i8* %msg) {
     br i1 %cond, label %cond_ok, label %cond_bad
 cond_bad:
-    call tailcc void @abortWithMessage(i8* %msg) noreturn
+    call void @abortWithMessage(i8* %msg) noreturn
     ret void
 cond_ok:
     ret void
 }
 
-define internal tailcc void @checkArrayAccess(i32 %index, i32 %size) {
+define internal void @checkArrayAccess(i32 %index, i32 %size) {
     %arrayCheck = icmp uge i32 %index, %size
     br i1 %arrayCheck, label %bounds_bad, label %bounds_ok
 bounds_bad:
     %param = getelementptr inbounds [12 x i8], [12 x i8]* @arrayerrorstr, i32 0, i32 0
-    call tailcc void @abortWithMessage(i8* %param) noreturn
+    call void @abortWithMessage(i8* %param) noreturn
     ret void
 bounds_ok:
     ret void
 }
 
-define internal tailcc %object* @newObject(%size_t %p0, %vtable* %p1) {
+define internal %object* @newObject(%size_t %p0, %vtable* %p1) noinline {
     %old = load %size_t, %size_t* @memoryCounter
     %new = add %size_t %old, %p0
     store %size_t %new, %size_t* @memoryCounter
@@ -66,7 +67,7 @@ define internal tailcc %object* @newObject(%size_t %p0, %vtable* %p1) {
     ret %object* %result
 }
 
-define internal tailcc void @deleteObject(%size_t %p0, %object* %p1) {
+define internal void @deleteObject(%size_t %p0, %object* %p1) {
     %old = load %size_t, %size_t* @memoryCounter
     %new = sub %size_t %old, %p0
     store %size_t %new, %size_t* @memoryCounter
@@ -77,16 +78,16 @@ define internal tailcc void @deleteObject(%size_t %p0, %object* %p1) {
 
 
 
-define internal tailcc void @releaseActual(%object* %p0) {
+define internal void @releaseActual(%object* %p0) {
     %dealloc_1 = getelementptr %object, %object* %p0, i32 0, i32 0
     %dealloc_2 = load %vtable*, %vtable** %dealloc_1
     %dealloc_3 = getelementptr %vtable, %vtable* %dealloc_2, i32 0, i32 0, i32 1
     %dealloc_4 = load void(%object*)*, void(%object*)** %dealloc_3
-    musttail call tailcc void %dealloc_4(%object* %p0)
+    musttail call void %dealloc_4(%object* %p0)
     ret void
 }
 
-define internal tailcc void @release(%object* %oref) noinline {
+define internal void @release(%object* %oref) noinline {
 check_count:
     %refcnt_ptr = getelementptr %object, %object* %oref, i32 0, i32 1
     %refcnt = load %size_t, %size_t* %refcnt_ptr
@@ -99,27 +100,27 @@ subtract:
     ret void
 dealloc:
 ; If the count is one, this object is to be released now
-    musttail call tailcc void @releaseActual(%object* %oref)
+    musttail call void @releaseActual(%object* %oref)
     ret void
 skip:
 ; If the reference is count is zero, skip the release
     ret void
 }
 
-define internal tailcc void @releaseRef(%object** %orefref) {
+define internal void @releaseRef(%object** %orefref) {
 entry:
     %oref = load %object*, %object** %orefref
     store %object* null, %object** %orefref
     %is_null = icmp eq %object* null, %oref
     br i1 %is_null, label %skip, label %check_count
 check_count:
-    musttail call tailcc void @release(%object* %oref)
+    musttail call void @release(%object* %oref)
     ret void
 skip:
     ret void
 }
 
-define internal tailcc void @acquire(%object* %p0) noinline {
+define internal void @acquire(%object* %p0) {
 entry:
     %refcnt_ptr = getelementptr %object, %object* %p0, i32 0, i32 1
     %refcnt = load %size_t, %size_t* %refcnt_ptr
@@ -134,7 +135,7 @@ skip:
     ret void
 }
 
-define internal tailcc %funptr @lookupVirtualMethod(%object* %obj_ptr, %size_t %id) {
+define internal %funptr @lookupVirtualMethod(%object* %obj_ptr, %size_t %id) {
 start:
     %vt_ptr_ptr = getelementptr %object, %object* %obj_ptr, i32 0, i32 0
     %vt_ptr = load %vtable*, %vtable** %vt_ptr_ptr

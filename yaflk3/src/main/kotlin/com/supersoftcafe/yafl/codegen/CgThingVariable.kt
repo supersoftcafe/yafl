@@ -6,7 +6,7 @@ class CgThingVariable(
 ) : CgThing {
 
     // Only if this is a global var. As a local this function should not be used.
-    fun toIr(context: CgContext): CgLlvmIr {
+    override fun toIr(context: CgContext): CgLlvmIr {
         return CgLlvmIr(declarations = "@\"$name\" = internal global $type zeroinitializer\n")
     }
 

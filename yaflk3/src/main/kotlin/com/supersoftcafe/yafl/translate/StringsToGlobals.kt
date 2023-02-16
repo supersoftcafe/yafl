@@ -44,10 +44,12 @@ private class StringReplacer(
                 this
             }
 
+        is Expression.RawPointer -> copy(field = field.replaceStrings())
         is Expression.Let -> copy(let = let.replaceStrings(), tail = tail.replaceStrings())
         is Expression.ArrayLookup -> copy(array = array.replaceStrings(), index = index.replaceStrings())
         is Expression.Assert -> copy(value = value.replaceStrings(), condition = condition.replaceStrings())
         is Expression.Call -> copy(callable = callable.replaceStrings(), parameter = parameter.replaceStrings())
+        is Expression.Parallel -> copy(parameter = parameter.replaceStrings())
         is Expression.If -> copy(condition = condition.replaceStrings(), ifTrue = ifTrue.replaceStrings(), ifFalse = ifFalse.replaceStrings())
         is Expression.Lambda -> copy(body = body.replaceStrings(), parameters = parameters.map { it.replaceStrings() })
         is Expression.Llvmir -> copy(inputs = inputs.map { it.replaceStrings() })

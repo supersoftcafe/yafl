@@ -138,6 +138,13 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitApplyExpr(YaflParser.ApplyExprContext ctx);
 	/**
+	 * Visit a parse tree produced by the {@code powerExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitPowerExpr(YaflParser.PowerExprContext ctx);
+	/**
 	 * Visit a parse tree produced by the {@code objectExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -186,6 +193,13 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitStringExpr(YaflParser.StringExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code parallelExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitParallelExpr(YaflParser.ParallelExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code unaryExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -270,6 +284,13 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitLlvmirExpr(YaflParser.LlvmirExprContext ctx);
+	/**
+	 * Visit a parse tree produced by the {@code rawPointerExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitRawPointerExpr(YaflParser.RawPointerExprContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code arrayLookupExpr}
 	 * labeled alternative in {@link YaflParser#expression}.

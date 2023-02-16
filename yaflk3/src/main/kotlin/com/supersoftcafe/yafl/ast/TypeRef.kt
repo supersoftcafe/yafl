@@ -46,5 +46,8 @@ sealed class TypeRef {
         val Int64 = TypeRef.Primitive(PrimitiveKind.Int64)
         val Float32 = TypeRef.Primitive(PrimitiveKind.Float32)
         val Float64 = TypeRef.Primitive(PrimitiveKind.Float64)
+        val Pointer = TypeRef.Primitive(PrimitiveKind.Pointer)
+        val Size = TypeRef.Primitive(PrimitiveKind.Size)
+        val Int = TypeRef.Primitive(PrimitiveKind.Int)
     }
 }

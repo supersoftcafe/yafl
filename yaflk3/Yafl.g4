@@ -3,6 +3,8 @@ grammar Yafl;
 LLVM_IR     : '__llvm_ir__';
 PRIMITIVE   : '__primitive__';
 ASSERT      : '__assert__';
+RAW_POINTER : '__raw_pointer__';
+PARALLEL    : '__parallel__';
 
 MODULE      : 'module';
 IMPORT      : 'import';
@@ -24,6 +26,7 @@ CMP_EQ      : '==';
 CMP_NE      : '!=';
 SHL         : '<<';
 SHR         : '>>';
+POW         : '**';
 
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z0-9_]*) ;
 INTEGER     : (('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*)|'0')([sSlL]|'i8'|'i16'|'i32'|'i64')? ;
@@ -60,12 +63,15 @@ function    : FUN attributes? (extensionType=typeRef '.' )? NAME unpackTuple? ( 
 
 expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
             | ASSERT '(' value=expression ',' condition=expression ',' message=STRING ')' # assertExpr
+            | RAW_POINTER '(' value=expression ')'                            # rawPointerExpr
             | left=expression operator='.' right=NAME                         # dotExpr
             | left=expression params=exprOfTuple                              # callExpr
+            | PARALLEL params=exprOfTuple                                     # parallelExpr
             | left=expression '[' right=expression ']'                        # arrayLookupExpr
             | left=expression operator=(PIPE_RIGHT | PIPE_MAYBE) right=expression params=exprOfTuple # applyExpr
 
             |                 operator=(          '+' | '-'          ) right=expression # unaryExpr
+            | left=expression operator=POW                             right=expression # powerExpr
             | left=expression operator=(          '*' | '/' | '%'    ) right=expression # productExpr
             | left=expression operator=(          '+' | '-'          ) right=expression # sumExpr
             | left=expression operator=( SHL                | SHR    ) right=expression # shiftExpr
@@ -86,6 +92,8 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
             | INTEGER                                                       # integerExpr
             | qualifiedName                                                 # nameExpr
             ;
+
+
 
 //classParam  : NAME ( '[' INTEGER ']' )? ( ':' type )? ( '=' expression )? ;
 //classParams : '(' ( classParam ',' )* classParam? ')' ;

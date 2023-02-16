@@ -1,8 +1,6 @@
 
 module System
 
-import Io
-
 
 class String(_size: Int32, _data[_size <= 1024]: Int8) {
   fun at(index: Int32): Int8 => _data[index]
@@ -19,12 +17,13 @@ fun charToString(utf: Int32): String =>
   utf <= 0x10ffff ? String(4, (i) => Int8(i==0 ? ((utf >> 18) & 0x07) | 0xf0 : i==1 ? ((utf >> 12) & 0x3f) | 0x80 : i==2 ? ((utf >>  6) & 0x3f) | 0x80 : (utf & 0x3f) | 0x80)) :
                     String(3, (i) => Int8(i==0 ? 0xef : i==1 ? 0xbf : 0xbd))
 
+
+fun countDigits(value: Int32): Int32 => value > 9 ? 1+countDigits(value/10) : 1
+
 fun int32ToString(value: Int32): String =>
-  value < 0 ? "-" + int32ToString(-value) : ((value > 9 ? int32ToString(value/10) : "") + charToString(48 + value%10))
+  let len = countDigits(value);
+  String(len, (index: Int32) => Int8((value / (10 ** (len-index-1)) % 10) + 48))
 
 
-
-fun print(value: String, index: Int32): Int32 => index < value.size() ? putchar(Int32(value.at(index))) + print(value, index + 1) : 0
-
-fun print(value: String): Int32 => print(value, 0)
+#  value < 0 ? "-" + int32ToString(-value) : ((value > 9 ? int32ToString(value/10) : "") + charToString(48 + value%10))
 

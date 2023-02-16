@@ -24,6 +24,7 @@ struct object {
     atomic_size_t  refcnt;
 };
 
+void heap_init();
 struct object* heap_alloc(struct vtable* vtable, size_t size);
 void heap_release(struct object*);
 void heap_acquire(struct object*);

@@ -135,6 +135,13 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(expression = eIn) to eOut
     }
 
+    open fun updateExpressionRawPointer(self: Expression.RawPointer, path: List<Any>): Pair<Expression, TOut> {
+        val path = path + self
+        val (tIn, tOut) = updateTypeRef(self.typeRef, path)
+        val (fIn, fOut) = updateExpression(self.field, path)
+        return self.copy(typeRef = tIn as TypeRef.Primitive, field = fIn) to tOut+fOut
+    }
+
     open fun updateExpressionLet(self: Expression.Let, path: List<Any>): Pair<Expression, TOut> {
         val path = path + self
         val (tIn, tOut) = self.typeRef?.let { updateTypeRef(it, path) } ?: Pair(null, emptyResult)
@@ -165,6 +172,13 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         val (cIn, cOut) = updateExpression(self.callable, path)
         val (pIn, pOut) = updateExpressionTuple(self.parameter, path)
         return self.copy(typeRef = tIn, callable = cIn, parameter = pIn) to tOut+cOut+pOut
+    }
+
+    open fun updateExpressionParallel(self: Expression.Parallel, path: List<Any>): Pair<Expression, TOut> {
+        val path = path + self
+        val (tIn, tOut) = self.typeRef?.let { updateTypeRef(it, path) } ?: Pair(null, emptyResult)
+        val (pIn, pOut) = updateExpressionTuple(self.parameter, path)
+        return self.copy(typeRef = tIn, parameter = pIn) to tOut+pOut
     }
 
     open fun updateExpressionCharacters(self: Expression.Characters, path: List<Any>): Pair<Expression, TOut> {
@@ -239,10 +253,12 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
 
     open fun updateExpression(self: Expression, path: List<Any>): Pair<Expression, TOut> {
         return when (self) {
+            is Expression.RawPointer -> updateExpressionRawPointer(self, path)
             is Expression.Let -> updateExpressionLet(self, path)
             is Expression.ArrayLookup -> updateExpressionArrayLookup(self, path)
             is Expression.Assert -> updateExpressionAssert(self, path)
             is Expression.Call -> updateExpressionCall(self, path)
+            is Expression.Parallel -> updateExpressionParallel(self, path)
             is Expression.Characters -> updateExpressionCharacters(self, path)
             is Expression.Float -> updateExpressionFloat(self, path)
             is Expression.If -> updateExpressionIf(self, path)
