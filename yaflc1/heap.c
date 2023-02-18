@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include <stdatomic.h>
 #include "blitz.h"
 #include "heap.h"
 
@@ -18,31 +19,19 @@ void heap_init() {
     atexit(heap_dump_status);
 }
 
-struct object* heap_alloc(struct vtable* vtable, size_t size) {
-    assert(size >= sizeof(struct object));
+__attribute__((noinline))
+void heap_free(size_t size, void* pointer) {
+    atomic_fetch_sub(&total_memory_usage, size);
+    free(pointer);
+}
 
-    struct object* object = malloc(size);
-    if (object == NULL)
+__attribute__((noinline, malloc))
+void* heap_alloc(size_t size) {
+    struct object* pointer = malloc(size);
+    if (pointer == NULL)
         ERROR("malloc");
 
     atomic_fetch_add(&total_memory_usage, size);
 
-    object->vtable = vtable;
-    object->refcnt = 1;
-
-    return object;
-}
-
-void heap_release(struct object* object) {
-    if (atomic_fetch_sub(&object->refcnt, 1) == 1)
-        object->vtable->head.delete(object);
-}
-
-void heap_acquire(struct object* object) {
-    atomic_fetch_add(&object->refcnt, 1);
-}
-
-void heap_free(struct object* object, size_t size) {
-    atomic_fetch_sub(&total_memory_usage, size);
-    free(object);
+    return pointer;
 }

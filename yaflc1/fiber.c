@@ -14,6 +14,7 @@
 #include "fiber.h"
 #include "blitz.h"
 
+__attribute__((noinline))
 void fiber_swap_context(void*** source_sp_ptr, void*** target_sp_ptr);
 
 #ifndef __STDC_NO_THREADS__
@@ -44,10 +45,6 @@ void fiber_swap_context(void*** source_sp_ptr, void*** target_sp_ptr);
 # endif
 #endif
 
-
-
-#define likely(x)       __builtin_expect((x),1)
-#define unlikely(x)     __builtin_expect((x),0)
 
 
 

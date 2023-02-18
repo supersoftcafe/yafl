@@ -24,5 +24,5 @@ noreturn void log_error_and_exit(char const* format, ...) {
     vfprintf(stderr, format, argp);
     va_end(argp);
 
-    exit(1);
+    abort();
 }

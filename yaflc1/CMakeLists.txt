@@ -4,4 +4,4 @@ project(yaflc1 C)
 set(CMAKE_C_STANDARD 11)
 SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fomit-frame-pointer")
 
-add_executable(yaflc1 main.c fiber.c fiber.h context.c queue.c context.h queue.h blitz.h blitz.c heap.c heap.h)
+add_executable(yaflc1 main.c fiber.c fiber.h context.c queue.c context.h queue.h blitz.h blitz.c heap.c heap.h object.c object.h)
