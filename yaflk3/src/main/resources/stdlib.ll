@@ -24,7 +24,7 @@ declare dso_local void @obj_acquire(ptr nocapture)
 declare dso_local void @obj_release(ptr nocapture)
 declare dso_local void @log_error(ptr nocapture)
 declare dso_local void @log_error_and_exit(ptr nocapture, ...) noreturn
-declare dso_local void @fiber_parallel(ptr nocapture, ptr nocapture, %size_t)
+declare dso_local void @fiber_parallel(ptr noundef, ptr noundef, %size_t noundef)
 
 
 

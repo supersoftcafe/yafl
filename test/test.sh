@@ -13,6 +13,6 @@ llc -O=3 build/opt.ll || exit 1
 
 # Compile and link with library
 # llc -filetype=obj -O=3 build/opt.ll || exit 1
-clang -O0 -g -o build/main build/raw.ll ../yaflc1/cmake-build-debug/libyaflc1.a
+clang -O3 -o build/main build/raw.ll ../yaflc1/cmake-build-debug/libyaflc1.a
 
 

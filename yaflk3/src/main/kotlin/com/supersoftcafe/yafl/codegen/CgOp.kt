@@ -362,7 +362,7 @@ sealed class CgOp {
             val slotId = context.slotNameToId(nameOfSlot)
             val funptr = "%\"${result.name}.funptr\""
             val tmp = "%\"${result.name}.tmp\""
-            return "  $funptr = tail call %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
+            return "  $funptr = call %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
                     "  $tmp = insertvalue ${CgTypeStruct.functionPointer} undef, %funptr $funptr, 0\n" +
                     "  $result = insertvalue ${CgTypeStruct.functionPointer} $tmp, %object* %pointer, 1\n"
         }
@@ -393,7 +393,7 @@ sealed class CgOp {
             return "  $tempResult1 = extractvalue ${CgTypeStruct.functionPointer} $methodReg, 0\n" +
                     "  $tempResult2 = extractvalue ${CgTypeStruct.functionPointer} $methodReg, 1\n" +
                     "  $tempResult3 = bitcast %size_t* $tempResult1 to ${result.type}(%object*$paramDecl)*\n" +
-                    "  ${prefix}tail call ${result.type} $tempResult3(%object* $tempResult2$paramStr)\n"
+                    "  ${prefix}call ${result.type} $tempResult3(%object* $tempResult2$paramStr)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -416,7 +416,7 @@ sealed class CgOp {
         override fun toIr(context: CgContext): String {
             val paramStr = params.joinToString("") { ", ${it.type} $it" }
             val prefix = if (result.type == CgTypePrimitive.VOID) "" else "$result = "
-            return "  ${prefix}tail call ${result.type} @\"$nameOfFunction\"(ptr $pointer$paramStr)\n"
+            return "  ${prefix}call ${result.type} @\"$nameOfFunction\"(ptr $pointer$paramStr)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -445,8 +445,8 @@ sealed class CgOp {
             val paramStr = params.joinToString("") { ", ${it.type} $it" }
             val prefix = if (result.type == CgTypePrimitive.VOID) "" else "$result = "
             val funptr = "%\"${result.name}.funptr\""
-            return "  $funptr = tail call %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
-                    "  ${prefix}tail call ${result.type} $funptr(%object* $pointer$paramStr)\n"
+            return "  $funptr = call %funptr @lookupVirtualMethod(%object* $pointer, %size_t $slotId)\n" +
+                    "  ${prefix}call ${result.type} $funptr(%object* $pointer$paramStr)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -489,7 +489,7 @@ sealed class CgOp {
     data class New(override val result: CgValue.Register, val className: String) : CgOp() {
         override fun toIr(context: CgContext): String {
             val classInfo = CgClassInfo(className)
-            return "  $result = tail call %object* @obj_create(%size_t ptrtoint(${classInfo.objectTypeName}* getelementptr (${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1) to %size_t), %vtable* bitcast(${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*))\n"
+            return "  $result = call %object* @obj_create(%size_t ptrtoint(${classInfo.objectTypeName}* getelementptr (${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1) to %size_t), %vtable* bitcast(${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*))\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -506,7 +506,7 @@ sealed class CgOp {
             val   objectSizeReg = CgValue.Register("${result.name}.size", CgTypePrimitive.INT32)
             return "  $objectEndPtrReg = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 0, i32 1, i32 $arrayField, ${arraySize.type} $arraySize\n" +
                    "  $objectSizeReg = ptrtoint $arrayFieldType* $objectEndPtrReg to %size_t\n" +
-                   "  $result = tail call %object* @obj_create(%size_t $objectSizeReg, %vtable* bitcast(${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*))\n"
+                   "  $result = call %object* @obj_create(%size_t $objectSizeReg, %vtable* bitcast(${classInfo.vtableTypeName}* ${classInfo.vtableDataName} to %vtable*))\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -521,8 +521,8 @@ sealed class CgOp {
 
         override fun toIr(context: CgContext): String {
             val classInfo = CgClassInfo(className)
-            return "  tail call void ${classInfo.deleteFuncName}(%object* $pointer)\n"
-//            return "  tail call void @deleteObject(%size_t ptrtoint(${classInfo.objectTypeName}* getelementptr (${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1) to %size_t), %object* $pointer)\n"
+            return "  call void ${classInfo.deleteFuncName}(%object* $pointer)\n"
+//            return "  call void @deleteObject(%size_t ptrtoint(${classInfo.objectTypeName}* getelementptr (${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 1) to %size_t), %object* $pointer)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -537,12 +537,12 @@ sealed class CgOp {
 
         override fun toIr(context: CgContext): String {
             val classInfo = CgClassInfo(className)
-            return "  tail call void ${classInfo.deleteFuncName}(%object* $pointer, i32 $arraySize)\n"
+            return "  call void ${classInfo.deleteFuncName}(%object* $pointer, i32 $arraySize)\n"
 //            val objectEndPtrReg = CgValue.Register("${pointer.name}.end", CgTypePointer(arrayFieldType))
 //            val   objectSizeReg = CgValue.Register("${pointer.name}.size", CgTypePrimitive.INT32)
 //            return "  $objectEndPtrReg = getelementptr ${classInfo.objectTypeName}, ${classInfo.objectTypeName}* null, i32 0, i32 1, i32 $arrayField, ${arraySize.type} $arraySize\n" +
 //                    "  $objectSizeReg = ptrtoint $arrayFieldType* $objectEndPtrReg to %size_t\n" +
-//                    "  tail call %object* @deleteObject(%size_t $objectSizeReg, %object* $pointer)\n"
+//                    "  call %object* @deleteObject(%size_t $objectSizeReg, %object* $pointer)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -556,7 +556,7 @@ sealed class CgOp {
         override val result: CgValue.Register get() = CgValue.VOID
 
         override fun toIr(context: CgContext): String {
-            return "  tail call void @obj_acquire(%object* $pointer)\n"
+            return "  call void @obj_acquire(%object* $pointer)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
@@ -570,7 +570,7 @@ sealed class CgOp {
         override val result: CgValue.Register get() = CgValue.VOID
 
         override fun toIr(context: CgContext): String {
-            return "  tail call void @obj_releaseRef(%object** $pointer)\n"
+            return "  call void @obj_releaseRef(%object** $pointer)\n"
         }
 
         override fun updateRegisters(registerMap: (String) -> String): CgOp {
