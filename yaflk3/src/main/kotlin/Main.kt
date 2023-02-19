@@ -8,10 +8,12 @@ import com.supersoftcafe.yafl.translate.*
 import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
 import org.antlr.v4.runtime.*
+import java.io.File
+import kotlin.system.exitProcess
 
 
 fun sourceToParseTree(contents: String, file: String): YaflParser.RootContext {
-    println("Reading file $file")
+    System.err.println("Reading file $file")
     val lexer = YaflLexer(CharStreams.fromString(contents))
     val tokenStream = CommonTokenStream(lexer)
     val parser = YaflParser(tokenStream)
@@ -23,7 +25,8 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
     val namer = Namer("a")
     val ast = files
             // Parse
-        .map { file -> Pair(file, Ast::class.java.getResource(file)!!.readText()) }
+//        .map { file -> Pair(file, Ast::class.java.getResource(file)!!.readText()) }
+        .map { file -> Pair(file, File(file).readText()) }
         .map { (file, contents) -> Pair(file, sourceToParseTree(contents, file)) }
         .mapIndexed { index, (file, tree) -> parseToAst(namer + index, file, tree) }
         .fold(Ast()) { acc, ast -> acc + ast }
@@ -40,8 +43,7 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
             // Emit
         .map { Either.some(convertToIntermediate(it)) }
         .map { generateLlvmIr(it.reversed()) }
-        .map { optimizeLlvmIr(it) }
-      //  .map { compileLlvmIr(it) }
+//        .map { optimizeLlvmIr(it) }
 
     return ast
 }
@@ -50,18 +52,19 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
 
 
 fun main(args: Array<String>) {
-    val ast = yaflBuild("/system.yafl", "/string.yafl", "/interop.yafl", "/io.yafl", "/array.yafl")
+    // val ast = yaflBuild("/system.yafl", "/string.yafl", "/interop.yafl", "/io.yafl", "/array.yafl")
     // val ast = yaflBuild("/system.yafl", "/lambda.yafl")
+    val ast = yaflBuild(*args)
     when (ast) {
         is Either.Some -> {
-            println("Success")
-            println(ast.value)
+            System.out.println(ast.value)
+            exitProcess(0)
         }
 
         is Either.Error -> {
-            println("Failure")
             for (e in ast.error)
-                println(e)
+                System.err.println(e)
+            exitProcess(1)
         }
     }
 }

@@ -13,8 +13,9 @@ data class CgThingFunction(
     constructor(globalName: String, nameOfSlot: String, result: CgType, params: List<CgValue.Register>, vararg body: CgOp) : this(globalName, nameOfSlot, result, params, body.toList())
 
     init {
-        if (params.firstOrNull()?.type != CgTypePrimitive.OBJECT)
-            throw IllegalArgumentException("First parameter must be OBJECT")
+        val paramType = params.firstOrNull()?.type
+        if (paramType != CgTypePrimitive.OBJECT && paramType !is CgTypePointer)
+            throw IllegalArgumentException("First parameter must be OBJECT or POINTER")
     }
 
     override fun iterator() = body.iterator()

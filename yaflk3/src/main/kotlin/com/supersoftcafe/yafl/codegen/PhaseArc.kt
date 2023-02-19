@@ -46,9 +46,11 @@ fun phaseArc(thing: CgThing): List<CgThing> {
     val arcVars = thing.body.flatMap { op ->
         val objectFields = findObjectFields(op.result.type)
         if (op.result != registerToExclude && objectFields.isNotEmpty() && (op is CgOp.New || op is CgOp.NewArray|| op is CgOp.Call || op is CgOp.CallStatic || op is CgOp.CallVirtual)) {
-            objectFields.map { fieldPath ->
+            objectFields.flatMap { fieldPath ->
                 val pathStr = fieldPath.joinToString("$")
-                CgOp.Alloca("${op.result.name}.arc$pathStr", CgTypePrimitive.OBJECT)
+                val alloca = CgOp.Alloca("${op.result.name}.arc$pathStr", CgTypePrimitive.OBJECT)
+                val store = CgOp.Store(CgTypePrimitive.OBJECT, alloca.result, CgValue.NULL)
+                listOf(alloca, store)
             }
         } else {
             listOf()
@@ -120,7 +122,7 @@ fun phaseArc(thing: CgThing): List<CgThing> {
                     listOf()
                 }
 
-                val releases = arcVars.map { arcVar ->
+                val releases = arcVars.filterIsInstance<CgOp.Alloca>().map { arcVar ->
                     CgOp.Release(arcVar.result)
                 }
 
@@ -133,13 +135,7 @@ fun phaseArc(thing: CgThing): List<CgThing> {
         }
     }
 
-    // Insert the initialisation of ARC variables as the first operation of the function
-    val zeroInits = arcVars.map { arcVar ->
-        CgOp.Store(CgTypePrimitive.OBJECT, arcVar.result, CgValue.NULL)
-    }
-
     return listOf(thing
-        .copy(body = arcVars + modifiedBody)
-        .addPreamble(zeroInits))
+        .copy(body = arcVars + modifiedBody))
 }
 

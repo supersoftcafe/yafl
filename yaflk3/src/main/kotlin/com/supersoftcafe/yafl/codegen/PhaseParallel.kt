@@ -50,7 +50,7 @@ fun phaseParallel(thing: CgThing): List<CgThing> {
             .map { (index, _) ->
                 val childBodyOps = innerOps.drop(index+1).takeWhile { it !is CgOp.ParallelBlock }
 
-                val childLoadOps = ops.allInputRegisters().intersect(inputRegisters)
+                val childLoadOps = childBodyOps.allInputRegisters().intersect(inputRegisters)
                     .flatMap {
                         val ptr = CgValue.Register("${it.name}.ptr", CgTypePointer(it.type))
                         listOf(
@@ -59,7 +59,7 @@ fun phaseParallel(thing: CgThing): List<CgThing> {
                         )
                     }
 
-                val childStoreOps = ops.allOutputRegisters().intersect(outputRegisters)
+                val childStoreOps = childBodyOps.allOutputRegisters().intersect(outputRegisters)
                     .flatMap {
                         val ptr = CgValue.Register("${it.name}.ptr", CgTypePointer(it.type))
                         listOf(
@@ -73,11 +73,11 @@ fun phaseParallel(thing: CgThing): List<CgThing> {
                     "",
                     CgTypePrimitive.VOID,
                     listOf(localsReg),
-                    childLoadOps + childBodyOps + childStoreOps)
+                    childLoadOps + childBodyOps + childStoreOps + CgOp.Return(CgValue.VOID))
             }
 
         // Generation the function call to fiber_parallel to execute the parallel blocks
-        val functionArrayType = CgTypeStruct(List(functionalBlocks.size) { CgTypePrimitive.FUNPTR })
+        val functionArrayType = CgTypePointer(CgTypeStruct(List(functionalBlocks.size) { CgTypePrimitive.FUNPTR }))
         val functionArrayReg = CgValue.Register("par.$id.blocks", functionArrayType)
         val parentBodyOps = listOf(CgOp.Alloca(functionArrayReg)) + functionalBlocks.flatMapIndexed { index, block ->
             val tmpReg = CgValue.Register("par.$id.f$index", CgTypePointer(CgTypePrimitive.FUNPTR))
@@ -86,7 +86,7 @@ fun phaseParallel(thing: CgThing): List<CgThing> {
                 CgOp.GetElementPtr(tmpReg, functionArrayReg, intArrayOf(index)),
                 CgOp.Store(CgTypePrimitive.FUNPTR, tmpReg, sourceFunction)
             )
-        } + CgOp.CallStatic(CgValue.VOID, localsReg, "_fiber_parallel",
+        } + CgOp.CallStatic(CgValue.VOID, localsReg, "fiber_parallel",
             listOf(functionArrayReg, CgValue.Immediate(functionalBlocks.size.toString(), CgTypePrimitive.SIZE)))
 
         // Store in(put) values to the transfer structure

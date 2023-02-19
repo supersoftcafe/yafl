@@ -1,6 +1,7 @@
 package com.supersoftcafe.yafl.codegen
 
 import com.supersoftcafe.yafl.utils.*
+import java.io.File
 
 fun generateLlvmIr(things: Iterable<CgThing>): Either<String,List<String>> {
     // Assign identities to virtual method names
@@ -14,7 +15,8 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String,List<String>> {
     val context = CgContext(slotIds, mapOf())
 
     val code = things.flatMap(::phaseArc).flatMap(::phaseParallel).fold(CgLlvmIr()) { acc, thing -> acc + thing.toIr(context) }
-    val stdlib = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
+    // val stdlib = CgLlvmIr(stdlib = CgOp::class.java.getResource("/stdlib.ll")!!.readText())
+    val stdlib = CgLlvmIr(stdlib = File("/Users/mbrown/Projects/yafl/yaflk3/src/main/resources/stdlib.ll").readText())
     val combined = stdlib + code
 
     return Either.Some(combined.toString())

@@ -1,4 +1,5 @@
 
+
 %int    = type i32
 %size_t = type i64
 
@@ -7,37 +8,30 @@ declare dso_local void @free(ptr allocptr nocapture noundef) local_unnamed_addr 
 declare dso_local i32 @printf(i8* noalias nocapture, ...)
 declare dso_local void @abort()
 
-%funptr = type %size_t*
-%vtable = type { { %size_t, void(%object*)* }, [ 0 x %funptr ] }
-%object = type { %vtable*, %size_t }
+%funptr = type ptr
+%vtable = type { { %size_t, ptr }, [ 0 x %funptr ] }
+%object = type { ptr, %size_t }
 
-@memoryCounter = internal global %size_t zeroinitializer
-@formatstr = private unnamed_addr constant [11 x i8] c"Mem=%lld!\0A\00", align 1
 @arrayerrorstr = private unnamed_addr constant [12 x i8] c"Array index\00", align 1
-
-@global_unit_vt = internal constant %vtable { { %size_t, void(%object*)* } { %size_t 0, void(%object*)* null }, [ 0 x %funptr ] [ ] }
-@global_unit = internal constant %object { %vtable* @global_unit_vt, %size_t 0 }
+@global_unit = external global %object, align 8
 
 
+declare dso_local i32 @runtime_main(ptr)
+declare dso_local ptr @heap_alloc(%size_t)
+declare dso_local void @heap_free(%size_t, ptr nocapture)
+declare dso_local ptr @obj_create(%size_t, %vtable*)
+declare dso_local void @obj_acquire(ptr nocapture)
+declare dso_local void @obj_release(ptr nocapture)
+declare dso_local void @log_error(ptr nocapture)
+declare dso_local void @log_error_and_exit(ptr nocapture, ...) noreturn
+declare dso_local void @fiber_parallel(ptr nocapture, ptr nocapture, %size_t)
 
-define dso_local i32 @main() {
-    %result = tail call i32 @synth_main(%object* @global_unit)
-    %param = getelementptr inbounds [11 x i8], [11 x i8]* @formatstr, i32 0, i32 0
-    %count = load %size_t, %size_t* @memoryCounter
-    %ignore = tail call i32 (i8*, ...) @printf(i8* %param, %size_t %count)
-    ret i32 %result
-}
 
-define internal void @abortWithMessage(i8* %msg) noreturn noinline {
-    %ignore = tail call i32 (i8*, ...) @printf(i8* %msg)
-    call void @abort() noreturn
-    ret void
-}
 
-define internal void @assertWithMessage(i1 %cond, i8* %msg) {
+define internal void @assertWithMessage(i1 %cond, ptr %msg) {
     br i1 %cond, label %cond_ok, label %cond_bad
 cond_bad:
-    call void @abortWithMessage(i8* %msg) noreturn
+    call void @log_error_and_exit(ptr %msg) noreturn
     ret void
 cond_ok:
     ret void
@@ -48,90 +42,22 @@ define internal void @checkArrayAccess(i32 %index, i32 %size) {
     br i1 %arrayCheck, label %bounds_bad, label %bounds_ok
 bounds_bad:
     %param = getelementptr inbounds [12 x i8], [12 x i8]* @arrayerrorstr, i32 0, i32 0
-    call void @abortWithMessage(i8* %param) noreturn
+    call void @log_error_and_exit(i8* %param) noreturn
     ret void
 bounds_ok:
     ret void
 }
 
-define internal %object* @newObject(%size_t %p0, %vtable* %p1) noinline {
-    %old = load %size_t, %size_t* @memoryCounter
-    %new = add %size_t %old, %p0
-    store %size_t %new, %size_t* @memoryCounter
-
-    %result = call %object* @malloc(%size_t %p0)
-    %vtable_ptr = getelementptr %object, %object* %result, i32 0, i32 0
-    store %vtable* %p1, %vtable** %vtable_ptr
-    %refcnt_ptr = getelementptr %object, %object* %result, i32 0, i32 1
-    store %size_t 1, %size_t* %refcnt_ptr
-    ret %object* %result
-}
-
-define internal void @deleteObject(%size_t %p0, %object* %p1) {
-    %old = load %size_t, %size_t* @memoryCounter
-    %new = sub %size_t %old, %p0
-    store %size_t %new, %size_t* @memoryCounter
-
-    call void @free(%object* %p1)
-    ret void
-}
-
-
-
-define internal void @releaseActual(%object* %p0) {
-    %dealloc_1 = getelementptr %object, %object* %p0, i32 0, i32 0
-    %dealloc_2 = load %vtable*, %vtable** %dealloc_1
-    %dealloc_3 = getelementptr %vtable, %vtable* %dealloc_2, i32 0, i32 0, i32 1
-    %dealloc_4 = load void(%object*)*, void(%object*)** %dealloc_3
-    musttail call void %dealloc_4(%object* %p0)
-    ret void
-}
-
-define internal void @release(%object* %oref) noinline {
-check_count:
-    %refcnt_ptr = getelementptr %object, %object* %oref, i32 0, i32 1
-    %refcnt = load %size_t, %size_t* %refcnt_ptr
-    switch %size_t %refcnt, label %subtract [ %size_t 0, label %skip
-                                              %size_t 1, label %dealloc ]
-subtract:
-; If count is greater than one, subject one
-    %newcnt = sub %size_t %refcnt, 1
-    store %size_t %newcnt, %size_t* %refcnt_ptr
-    ret void
-dealloc:
-; If the count is one, this object is to be released now
-    musttail call void @releaseActual(%object* %oref)
-    ret void
-skip:
-; If the reference is count is zero, skip the release
-    ret void
-}
-
-define internal void @releaseRef(%object** %orefref) {
+define internal void @obj_releaseRef(%object** %orefref) {
 entry:
     %oref = load %object*, %object** %orefref
-    store %object* null, %object** %orefref
     %is_null = icmp eq %object* null, %oref
     br i1 %is_null, label %skip, label %check_count
 check_count:
-    musttail call void @release(%object* %oref)
+    store %object* null, %object** %orefref
+    musttail call void @obj_release(%object* %oref)
     ret void
 skip:
-    ret void
-}
-
-define internal void @acquire(%object* %p0) {
-entry:
-    %refcnt_ptr = getelementptr %object, %object* %p0, i32 0, i32 1
-    %refcnt = load %size_t, %size_t* %refcnt_ptr
-    switch %size_t %refcnt, label %add [ %size_t 0, label %skip ]
-add:
-; If count is non zero, add one
-    %newcnt = add %size_t %refcnt, 1
-    store %size_t %newcnt, %size_t* %refcnt_ptr
-    ret void
-skip:
-; If the count is zero, this object can never be acquired
     ret void
 }
 
@@ -159,4 +85,14 @@ loop:
 
 finish:
     ret %funptr %method_ptr
+}
+
+define dso_local i32 @main2() {
+    %result = tail call i32 @synth_main(ptr @global_unit)
+    ret i32 %result
+}
+
+define dso_local i32 @main() {
+    %result = tail call i32 @runtime_main(ptr @main2)
+    ret i32 %result
 }

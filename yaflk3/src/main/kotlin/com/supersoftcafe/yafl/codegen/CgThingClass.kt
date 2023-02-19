@@ -70,7 +70,7 @@ data class CgThingClass(
                     listOf(
                         "  %field$nameSuffix = getelementptr ${classInfo.objectTypeName}, ptr %object_ptr, i32 0, i32 1, i32 $index$pathForGep",
                         "  %value$nameSuffix = load ptr, ptr %field$nameSuffix",
-                        "  tail call void @release(ptr %value$nameSuffix)")
+                        "  tail call void @obj_release(ptr %value$nameSuffix)")
                 }
 
             } else {
@@ -88,7 +88,7 @@ data class CgThingClass(
                     listOf(
                         "  %field$nameSuffix = getelementptr ${classInfo.objectTypeName}, ptr %object_ptr, i32 0, i32 1, i32 $index, i32 %index$pathForGep",
                         "  %value$nameSuffix = load ptr, ptr %field$nameSuffix",
-                        "  tail call void @release(ptr %value$nameSuffix)")
+                        "  tail call void @obj_release(ptr %value$nameSuffix)")
                 } + listOf(
                     "  %next_index = add %size_t %index, 1",
                     "  br label %loop"
@@ -104,9 +104,9 @@ data class CgThingClass(
             listOf(
                 "  %size_as_gep = getelementptr ${classInfo.objectTypeName}, ptr null, i32 1",
                 "  %size_as_int = ptrtoint ptr %size_as_gep to %size_t")
-        } + "  tail call void @deleteObject(%size_t %size_as_int, ptr %object_ptr)"
+        } + "  tail call void @heap_free(%size_t %size_as_int, ptr %object_ptr)"
 
-        val deleteDeclaration = (deleteHead + if (deleteTail.lastOrNull()?.contains("@release") == true) {
+        val deleteDeclaration = (deleteHead + if (deleteTail.lastOrNull()?.contains("@obj_release") == true) {
             // Re-arrange last few calls to benefit from a tail call
             deleteTail.dropLast(1) + deleteObject + deleteTail.takeLast(1)
         } else {

@@ -7,19 +7,17 @@
 #include "blitz.h"
 
 
-extern int32_t synth_main(struct object* self);
-
-static void first_func(void* nothing) {
-    int32_t result = synth_main(&global_unit);
+static void first_func(int(*func)()) {
+    int32_t result = func();
     exit(result);
 }
 
-int main() {
+int runtime_main(int(*func)()) {
     // sigset_t mask;
     // sigfillset(&mask);
     // assert(pthread_sigmask(SIG_BLOCK, &mask, NULL) == 0 && "failed to block signals");
 
-    fiber_init(first_func, NULL);
+    fiber_init((void(*)(void*))first_func, func);
     sleep(1000000); // Signal handling and some other stuff can happen in main thread
 
     return 0;

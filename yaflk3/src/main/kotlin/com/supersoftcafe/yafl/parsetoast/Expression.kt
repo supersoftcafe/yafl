@@ -196,6 +196,6 @@ fun YaflParser.ExpressionContext.toExpression(
         is YaflParser.IntegerExprContext -> toIntegerExpression(file)
 
 
-        else -> TODO()
+        else -> TODO("Operation ${this.javaClass.name} not implemented")
     }
 }
