@@ -17,14 +17,19 @@ declare dso_local void @abort()
 
 
 declare dso_local i32 @runtime_main(ptr)
-declare dso_local ptr @heap_alloc(%size_t)
-declare dso_local void @heap_free(%size_t, ptr nocapture)
+declare dso_local ptr @heap_alloc(%size_t) local_unnamed_addr "alloc-family"="yafl"
+declare dso_local void @heap_free(%size_t, ptr nocapture) local_unnamed_addr "alloc-family"="yafl"
 declare dso_local ptr @obj_create(%size_t, %vtable*)
-declare dso_local void @obj_acquire(ptr nocapture)
-declare dso_local void @obj_release(ptr nocapture)
+declare dso_local void @obj_acquire(ptr)
+declare dso_local void @obj_release(ptr)
 declare dso_local void @log_error(ptr nocapture)
 declare dso_local void @log_error_and_exit(ptr nocapture, ...) noreturn
 declare dso_local void @fiber_parallel(ptr noundef, ptr noundef, %size_t noundef)
+
+
+
+
+
 
 
 

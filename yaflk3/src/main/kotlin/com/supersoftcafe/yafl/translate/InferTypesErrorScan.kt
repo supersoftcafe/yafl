@@ -19,13 +19,7 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
             is TypeRef.Callable ->
                 scan(self.result, sourceRef) + scan(self.parameter, sourceRef)
 
-            is TypeRef.Named ->
-                listOf()
-
-            is TypeRef.Primitive ->
-                listOf()
-
-            TypeRef.Unit ->
+            is TypeRef.Klass, is TypeRef.Generic, is TypeRef.Primitive, TypeRef.Unit ->
                 listOf()
         }
     }
@@ -44,7 +38,7 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
     }
 
     private fun getKlassParam(self: Expression.LoadMember): Triple<Declaration.Klass, Declaration, Long?> {
-        val klass = globals[(self.base.typeRef as TypeRef.Named).id] as Declaration.Klass
+        val klass = globals[(self.base.typeRef as TypeRef.Klass).id] as Declaration.Klass
         val param = klass.parameters.firstOrNull { it.id == self.id } ?: klass.members.first { it.id == self.id }
         return Triple(klass, param, (param as? Declaration.Let)?.arraySize)
     }
@@ -58,7 +52,7 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
                         listOf("${self.field.sourceRef} raw pointer must use a field access expression")
 
                     } else {
-                        val typeRef = self.field.base.typeRef as? TypeRef.Named
+                        val typeRef = self.field.base.typeRef as? TypeRef.Klass
                         val klass = globals[typeRef?.id] as? Declaration.Klass
                         val field = klass?.parameters?.firstOrNull { it.id == self.field.id }
 
@@ -169,7 +163,7 @@ private class InferTypesErrorScan(val globals: Map<Namer, Declaration>, val hint
     override fun scanKlass(self: Declaration.Klass): List<String> {
         return super.scanKlass(self).ifEmpty {
             // If there have been no errors in the inherited interfaces, check for correct function overrides etc
-            if (self.extends.filterIsInstance<TypeRef.Named>().any { scan(globals[it.id]).isNotEmpty() }) {
+            if (self.extends.filterIsInstance<TypeRef.Klass>().any { scan(globals[it.id]).isNotEmpty() }) {
                 listOf()
             } else {
                 val members = self.flattenClassMembersBySignature { name, id -> globals[id]!! }

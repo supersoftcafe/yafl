@@ -16,7 +16,7 @@ fun Declaration.Klass.flattenClassMembersBySignature(
     findDeclaration: (String, Namer) -> Declaration
 ): Map<String, List<Declaration.Data>> {
     val inheritedMembersList = extends.map { typeRef ->
-        (findDeclaration((typeRef as TypeRef.Named).name, typeRef.id) as Declaration.Klass).flattenClassMembersBySignature(findDeclaration)
+        (findDeclaration((typeRef as TypeRef.Klass).name, typeRef.id) as Declaration.Klass).flattenClassMembersBySignature(findDeclaration)
     }
     val inheritedMembers = inheritedMembersList
         .flatMap { it.keys }.toSet()

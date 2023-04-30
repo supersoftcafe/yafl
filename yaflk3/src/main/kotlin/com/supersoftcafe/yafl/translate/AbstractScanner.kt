@@ -97,6 +97,10 @@ abstract class AbstractScanner<TResult> {
                 self.extends.flatMap { scan(it, self.sourceRef) }
     }
 
+    open fun scanGeneric(self: Declaration.Generic): List<TResult> {
+        return listOf()
+    }
+
     open fun scan(self: Declaration?): List<TResult> {
         return when (self) {
             null -> listOf()
@@ -104,6 +108,7 @@ abstract class AbstractScanner<TResult> {
             is Declaration.Let -> scanLet(self)
             is Declaration.Klass -> scanKlass(self)
             is Declaration.Alias -> scanAlias(self)
+            is Declaration.Generic -> scanGeneric(self)
         }
     }
 

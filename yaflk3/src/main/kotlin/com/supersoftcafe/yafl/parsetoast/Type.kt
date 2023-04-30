@@ -6,13 +6,16 @@ import com.supersoftcafe.yafl.ast.TupleTypeField
 import com.supersoftcafe.yafl.ast.TypeRef
 
 
+fun YaflParser.GenericParamsPassingContext?.toGenericParamsPassing(): List<TypeRef> {
+    return this?.type()?.map { typeContext -> typeContext.toTypeRef() } ?: listOf()
+}
+
 fun YaflParser.QualifiedNameContext.toName(): String {
     return NAME().joinToString("::")
 }
 
-
 fun YaflParser.TypeRefContext.toTypeRef(): TypeRef.Unresolved {
-    return TypeRef.Unresolved(qualifiedName().toName(), null)
+    return TypeRef.Unresolved(qualifiedName().toName(), null, genericParamsPassing().toGenericParamsPassing())
 }
 
 private fun toPrimitiveTypeRef(name: String): TypeRef.Primitive {
@@ -57,10 +60,10 @@ private fun YaflParser.TypeOfLambdaContext.toTypeRef(): TypeRef.Callable {
 
 fun YaflParser.TypeContext.toTypeRef(): TypeRef {
     return when (this) {
-        is YaflParser.NamedTypeContext -> typeRef().toTypeRef()
+        is YaflParser.NamedTypeContext     -> typeRef(      ).toTypeRef()
         is YaflParser.PrimitiveTypeContext -> typePrimitive().toTypeRef()
-        is YaflParser.TupleTypeContext -> typeOfTuple().toTypeRef()
-        is YaflParser.LambdaTypeContext -> typeOfLambda().toTypeRef()
+        is YaflParser.TupleTypeContext     -> typeOfTuple(  ).toTypeRef()
+        is YaflParser.LambdaTypeContext    -> typeOfLambda( ).toTypeRef()
         else -> throw IllegalArgumentException()
     }
 }

@@ -37,6 +37,7 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
         .map { inferTypes(it) }
 
             // Lowering
+        .map { Either.some(genericSpecialization(it)) } // Replace all generics with their specialized forms, so no more generics exists in the AST
         .map { Either.some(stringsToGlobals(it)) }
         .map { Either.some(lambdaToClass(it)) }
 

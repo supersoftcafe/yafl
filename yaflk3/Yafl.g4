@@ -12,6 +12,8 @@ ALIAS       : 'alias';
 FUN         : 'fun';
 LET         : 'let';
 INTERFACE   : 'interface';
+TRAIT       : 'trait';
+IMPL        : 'impl';
 CLASS       : 'class';
 OBJECT      : 'object';
 ENUM        : 'enum';
@@ -41,7 +43,10 @@ qualifiedName   : ( NAME NAMESPACE )* NAME ;
 exprOfTuplePart : ( NAME '=' )? expression ;
 exprOfTuple     : '(' ( exprOfTuplePart ',' )* exprOfTuplePart? ')' ;
 
-typeRef         : qualifiedName ;
+genericParamsPassing : '<' ( type ',' )* type? '>' ;
+genericParamsDeclare : '<' ( NAME ',' )* NAME? '>' ;
+
+typeRef         : qualifiedName genericParamsPassing? ;
 typePrimitive   : PRIMITIVE NAME ;
 typeOfTuplePart : ( NAME ':' )? type ;
 typeOfTuple     : '(' ( typeOfTuplePart ',' )* typeOfTuplePart? ')' ;
@@ -55,11 +60,9 @@ type            : typeRef               # namedType
 
 attributes      : '[' NAME* ']' ;
 
-unpackTuplePart : unpackTuple | ( NAME ( '[' ( expression CMP_LE )? INTEGER ']' )? ( ':' type )? ) ;
-unpackTuple     : '(' ( unpackTuplePart ',' )* unpackTuplePart? ')' ;
+valueParamsPart : valueParamsDeclare | ( NAME ( '[' ( expression CMP_LE )? INTEGER ']' )? ( ':' type )? ) ;
+valueParamsDeclare  : '(' ( valueParamsPart ',' )* valueParamsPart? ')' ;
 
-letWithExpr : LET ( unpackTuple | ( NAME ( ':' type )? ) ) '=' expression ';'? ;
-function    : FUN attributes? (extensionType=typeRef '.' )? NAME unpackTuple? ( ':' type )? ( LAMBDA expression )? ';'? ;
 
 expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
             | ASSERT '(' value=expression ',' condition=expression ',' message=STRING ')' # assertExpr
@@ -84,28 +87,28 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
             | condition=expression ( '?' left=expression ':' right=expression ) # ifExpr
             | exprOfTuple                                                   # tupleExpr
             | OBJECT ':' typeRef ( '|' typeRef )* ( '{' function* '}' )?    # objectExpr
-            | letWithExpr ';'? expression                                   # letExpr
+            | let ';'? expression                                           # letExpr
             | function ';'? expression                                      # functionExpr
-            | unpackTuple ( ':' type )? LAMBDA expression                   # lambdaExpr
+            | valueParamsDeclare ( ':' type )? LAMBDA expression            # lambdaExpr
             | '[' expression ( ',' expression )* ','? ']'                   # newArrayExpr
             | STRING                                                        # stringExpr
             | INTEGER                                                       # integerExpr
-            | qualifiedName                                                 # nameExpr
+            | qualifiedName genericParamsPassing?                           # nameExpr
             ;
 
 
+let         : LET NAME genericParamsDeclare? ( ':' type )? ( '=' expression )? ';'? ;
+function    : FUN attributes? (extensionType=typeRef '.' )? NAME genericParamsDeclare? valueParamsDeclare? ( ':' type )? ( LAMBDA expression )? ';'? ;
+interface   : INTERFACE NAME genericParamsDeclare? extends? ( '{' function* '}' )? ';'? ;
+class       : CLASS NAME genericParamsDeclare? valueParamsDeclare? extends? ( '{' classMember* '}' )? ';'? ;
+enum        : ENUM NAME genericParamsDeclare? ( '{' ( ( NAME valueParamsDeclare? ) | function )* '}' )? ';'? ;
+alias       : ALIAS NAME genericParamsDeclare? ':' type ';'? ;
 
-//classParam  : NAME ( '[' INTEGER ']' )? ( ':' type )? ( '=' expression )? ;
-//classParams : '(' ( classParam ',' )* classParam? ')' ;
 
 extends     : ':' typeRef ( ',' typeRef )* ;
 module      : MODULE typeRef ';'? ;
 import_     : IMPORT typeRef ';'? ;
-interface   : INTERFACE NAME extends? ( '{' function* '}' )? ';'? ;
-class       : CLASS NAME unpackTuple? extends? ( '{' classMember* '}' )? ';'? ;
-enum        : ENUM NAME ( '{' ( ( NAME unpackTuple? ) | function )* '}' )? ';'? ;
-alias       : ALIAS NAME ':' type ';'? ;
-declaration : letWithExpr | function | interface | class | enum | alias;
+declaration : let | function | interface | class | enum | alias;
 classMember : function ;
 
 root        : module import_* declaration* EOF ;

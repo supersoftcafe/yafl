@@ -29,6 +29,18 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitExprOfTuple(YaflParser.ExprOfTupleContext ctx);
 	/**
+	 * Visit a parse tree produced by {@link YaflParser#genericParamsPassing}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitGenericParamsPassing(YaflParser.GenericParamsPassingContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link YaflParser#genericParamsDeclare}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitGenericParamsDeclare(YaflParser.GenericParamsDeclareContext ctx);
+	/**
 	 * Visit a parse tree produced by {@link YaflParser#typeRef}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -93,29 +105,17 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitAttributes(YaflParser.AttributesContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link YaflParser#unpackTuplePart}.
+	 * Visit a parse tree produced by {@link YaflParser#valueParamsPart}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitUnpackTuplePart(YaflParser.UnpackTuplePartContext ctx);
+	T visitValueParamsPart(YaflParser.ValueParamsPartContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link YaflParser#unpackTuple}.
+	 * Visit a parse tree produced by {@link YaflParser#valueParamsDeclare}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitUnpackTuple(YaflParser.UnpackTupleContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link YaflParser#letWithExpr}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitLetWithExpr(YaflParser.LetWithExprContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link YaflParser#function}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitFunction(YaflParser.FunctionContext ctx);
+	T visitValueParamsDeclare(YaflParser.ValueParamsDeclareContext ctx);
 	/**
 	 * Visit a parse tree produced by the {@code assertExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -313,23 +313,17 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitEqualExpr(YaflParser.EqualExprContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link YaflParser#extends}.
+	 * Visit a parse tree produced by {@link YaflParser#let}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitExtends(YaflParser.ExtendsContext ctx);
+	T visitLet(YaflParser.LetContext ctx);
 	/**
-	 * Visit a parse tree produced by {@link YaflParser#module}.
+	 * Visit a parse tree produced by {@link YaflParser#function}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	T visitModule(YaflParser.ModuleContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link YaflParser#import_}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitImport_(YaflParser.Import_Context ctx);
+	T visitFunction(YaflParser.FunctionContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#interface}.
 	 * @param ctx the parse tree
@@ -354,6 +348,24 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitAlias(YaflParser.AliasContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link YaflParser#extends}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitExtends(YaflParser.ExtendsContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link YaflParser#module}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitModule(YaflParser.ModuleContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link YaflParser#import_}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitImport_(YaflParser.Import_Context ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#declaration}.
 	 * @param ctx the parse tree

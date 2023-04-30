@@ -5,37 +5,69 @@ import com.supersoftcafe.yafl.utils.Either
 
 class ResolveTypes() {
 
+    private fun Declaration.Alias.targetTypeRefWithModifiedGenerics(
+        genericParams: List<TypeRef>
+    ): TypeRef {
+        assert(genericDeclaration.size == genericParams.size)
+
+        val genericSubstitutionById = genericDeclaration.zip(genericParams)
+            .associate { (declaration, target) -> declaration.id to target }
+
+        fun TypeRef.updateWithGenerics(): TypeRef = when (this) {
+            is TypeRef.Callable -> copy(parameter?.updateWithGenerics() as? TypeRef.Tuple, result?.updateWithGenerics())
+            is TypeRef.Tuple -> copy(fields = fields.map { it.copy(typeRef = it.typeRef?.updateWithGenerics()) })
+            is TypeRef.Generic -> genericSubstitutionById[id] ?: this
+            is TypeRef.Klass, is TypeRef.Primitive, is TypeRef.Unresolved, TypeRef.Unit -> this
+        }
+
+        return typeRef.updateWithGenerics()
+    }
+
     private fun TypeRef?.resolveTypes(
         sourceRef: SourceRef,
         findDeclarations: (String) -> List<Declaration>
     ): TypeRef? {
         return when (this) {
             is TypeRef.Unresolved -> {
-                // Find anything that matches the name and is a type declaration
-                // If it's a user type, construct a reference to it
-                // If it's an alias, take a copy of its target, if the target is not an alias...  no jumping around
+                // Only proceed if generic params are resolved
+                val resolvedGenericParams = genericParameters.map { it.resolveTypes(sourceRef, findDeclarations) ?: it }
 
-                val found = findDeclarations(name)
-                    .filterIsInstance<Declaration.Type>()
-                    .filter { (id == null || id == it.id) }
+                if (resolvedGenericParams.any { !it.resolved }) {
+                    // Not all generic params are resolved yet
+                    copy(genericParameters = resolvedGenericParams)
 
-                val first = found.firstOrNull()
-                if (first == null || found.size > 1) {
-                    this
-                } else if (first is Declaration.Klass) {
-                    val extends = first.extends.filterIsInstance<TypeRef.Named>()
-                    if (extends.size != first.extends.size) {
-                        this
-                    } else {
-                        TypeRef.Named(first.name, first.id, extends)
-                    }
-                } else if (first is Declaration.Alias) {
-                    if (first.typeRef.resolved)
-                        first.typeRef
-                    else
-                        this
                 } else {
-                    throw IllegalStateException("${first.javaClass.name} is not a supported type declaration")
+                    // Find anything that matches the name and is a type declaration
+                    // If it's a user type, construct a reference to it
+                    // If it's an alias, take a copy of its target, if the target is not an alias...  no jumping around
+
+                    val found = findDeclarations(name)
+                        .filterIsInstance<Declaration.Type>()
+                        .filter { (id == null || id == it.id) && it.genericDeclaration.size == genericParameters.size }
+
+                    val declaration = found.singleOrNull()
+                    if (declaration == null) {
+                        copy(genericParameters = resolvedGenericParams)
+
+                    } else if (declaration is Declaration.Klass) {
+                        val extends = declaration.extends.filterIsInstance<TypeRef.Klass>()
+                        if (extends.size != declaration.extends.size)
+                            copy(genericParameters = resolvedGenericParams)
+                        else
+                            TypeRef.Klass(declaration.name, declaration.id, extends, resolvedGenericParams)
+
+                    } else if (declaration is Declaration.Alias) {
+                        if (declaration.typeRef.resolved)
+                            declaration.targetTypeRefWithModifiedGenerics(resolvedGenericParams)
+                        else
+                            copy(genericParameters = resolvedGenericParams)
+
+                    } else if (declaration is Declaration.Generic) {
+                        TypeRef.Klass(declaration.name, declaration.id, listOf(), listOf())
+
+                    } else {
+                        throw IllegalStateException("${declaration.javaClass.name} is not a supported type declaration")
+                    }
                 }
             }
 
@@ -50,7 +82,7 @@ class ResolveTypes() {
                 copy(parameter = p as TypeRef.Tuple, result = r)
             }
 
-            null, TypeRef.Unit, is TypeRef.Primitive, is TypeRef.Named ->
+            null, TypeRef.Unit, is TypeRef.Primitive, is TypeRef.Klass, is TypeRef.Generic ->
                 this
         }
     }
@@ -164,9 +196,17 @@ class ResolveTypes() {
     }
 
     private fun Declaration.resolveTypes(
-        findDeclarations: (String) -> List<Declaration>
+        findDeclarationsX: (String) -> List<Declaration>
     ): Declaration {
+        val findDeclarations: (String) -> List<Declaration> = { name ->
+            findDeclarationsX(name) + genericDeclaration.filter { it.name == name }
+        }
+
         return when (this) {
+            is Declaration.Generic -> {
+                this
+            }
+
             is Declaration.Alias -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
                 copy(typeRef = t!!)

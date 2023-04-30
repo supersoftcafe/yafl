@@ -20,7 +20,7 @@ fun TypeRef?.toSignature(): String? {
             else null
         }
 
-        is TypeRef.Named -> name
+        is TypeRef.Klass -> name
         is TypeRef.Primitive -> kind.fullyQualifiedName
         is TypeRef.Unresolved -> null
         TypeRef.Unit -> "System::Unit"

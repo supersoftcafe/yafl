@@ -2,6 +2,20 @@
 # Todo
 
 
+
+Generics
+- Type inference should only take hints against types that are visible at the target site.
+  However, alias types screw this up a bit, because the target of an alias may not be visible at the usage site.
+  Needs more thought.
+
+  Rename TypeRef.Named to TypeRef.Klass.
+  Add TypeRef.Generic.
+  A type hint for a target declaration can only be used if all TypeRef.Generic within (because it might be
+  a nested type ref) are visible at the target site.
+
+
+
+
 Add struct support.
 
 Index access to tuple using variable if all elements are of same type.

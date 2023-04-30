@@ -5,7 +5,17 @@ import com.supersoftcafe.yafl.utils.Namer
 import com.supersoftcafe.yafl.ast.*
 
 
-fun YaflParser.UnpackTupleContext?.toDeclarationLets(
+fun List<Declaration.Generic>.forwardGenericParams(): List<TypeRef> {
+    return map { genericType ->
+        TypeRef.Unresolved(
+            name = genericType.name,
+            id = genericType.id,
+            genericParameters = listOf()
+        )
+    }
+}
+
+fun YaflParser.ValueParamsDeclareContext?.toDeclarationLets(
     file: String,
     namer: Namer,
     scope: Scope
@@ -13,7 +23,7 @@ fun YaflParser.UnpackTupleContext?.toDeclarationLets(
     return if (this == null) {
         listOf()
     } else {
-        unpackTuplePart().mapIndexed { index, part ->
+        valueParamsPart().mapIndexed { index, part ->
             if (part.NAME() != null) {
                 val sourceRef = part.toSourceRef(file)
                 val id = namer + index
@@ -31,7 +41,9 @@ fun YaflParser.UnpackTupleContext?.toDeclarationLets(
                     body = null,
 
                     dynamicArraySize = part.expression()?.toExpression(file, id),
-                    arraySize = part.INTEGER()?.parseToInteger(sourceRef)?.value
+                    arraySize = part.INTEGER()?.parseToInteger(sourceRef)?.value,
+
+                    genericDeclaration = listOf()
                 )
             } else {
                 // It's an unpacking tuple
@@ -48,11 +60,13 @@ fun YaflParser.AliasContext.toDeclaration(
     prefix: String = ""
 ): List<Declaration.Alias> {
     return listOf(Declaration.Alias(
-        toSourceRef(file),
-        prefix + NAME().text,
-        id,
-        scope,
-        type().toTypeRef()))
+        sourceRef = toSourceRef(file),
+        name = prefix + NAME().text,
+        id = id,
+        scope = scope,
+        typeRef = type().toTypeRef(),
+        genericDeclaration = genericParamsDeclare().toGenericParamsDeclare(file, id + 6),
+    ))
 }
 
 
@@ -72,10 +86,15 @@ fun YaflParser.InterfaceContext.toDeclaration(
 ): List<Declaration> {
     val memberId = id + 1
     val interfaceId = id + 2
+    val genericsId = id + 6
+
+    val genericDeclaration = genericParamsDeclare().toGenericParamsDeclare(file, genericsId)
+    val genericForwardedParams = genericDeclaration.forwardGenericParams()
 
     val interfaceName = prefix + NAME().text
-    val interfaceType = TypeRef.Unresolved(interfaceName, interfaceId)
+    val interfaceType = TypeRef.Unresolved(interfaceName, interfaceId, genericForwardedParams)
     val scopeOfMembers = Scope.Member(interfaceId, if (scope is Scope.Member) scope.level + 1 else 0)
+
 
     val members = function().flatMapIndexed { index, function ->
         function.toDeclaration(file, memberId + index, scopeOfMembers, interfaceType)
@@ -83,17 +102,33 @@ fun YaflParser.InterfaceContext.toDeclaration(
 
     val sourceRef = toSourceRef(file)
     val declaration = Declaration.Klass(
-        sourceRef,
-        interfaceName,
-        interfaceId,
-        scope,
-        listOf(),
-        members,
-        extends_().toExtends(),
-        isInterface = true
+        sourceRef = sourceRef,
+        name = interfaceName,
+        id = interfaceId,
+        scope = scope,
+        parameters = listOf(),
+        members = members,
+        extends = extends_().toExtends(),
+        isInterface = true,
+        genericDeclaration = genericDeclaration
     )
 
     return listOf(declaration)
+}
+
+fun YaflParser.GenericParamsDeclareContext?.toGenericParamsDeclare(
+    file: String,
+    id: Namer,
+): List<Declaration.Generic> {
+    return this?.NAME()?.mapIndexed { index, terminalNode ->
+        val name = terminalNode.text
+        Declaration.Generic(
+            sourceRef = toSourceRef(file),
+            name = name,
+            id = id + index,
+            scope = Scope.Local,
+        )
+    } ?: listOf()
 }
 
 fun YaflParser.ClassContext.toDeclaration(
@@ -107,12 +142,16 @@ fun YaflParser.ClassContext.toDeclaration(
     val klassId = id + 3
     val constructorId = id + 4
     val thisId = id + 5
+    val genericsId = id + 6
+
+    val genericDeclaration = genericParamsDeclare().toGenericParamsDeclare(file, genericsId)
+    val genericForwardedParams = genericDeclaration.forwardGenericParams()
 
     val klassName = prefix + NAME().text
-    val klassType = TypeRef.Unresolved(klassName, klassId)
+    val klassType = TypeRef.Unresolved(klassName, klassId, genericForwardedParams)
     val scopeOfMembers = Scope.Member(klassId, if (scope is Scope.Member) scope.level + 1 else 0)
 
-    val parameters = unpackTuple().toDeclarationLets(file, parameterId, scopeOfMembers)
+    val parameters = valueParamsDeclare().toDeclarationLets(file, parameterId, scopeOfMembers)
     val members = classMember().flatMapIndexed { index, classMember ->
         classMember.function().toDeclaration(file, memberId + index, scopeOfMembers, klassType)
     }
@@ -126,11 +165,21 @@ fun YaflParser.ClassContext.toDeclaration(
         parameters.map { it.copy(body = null) }, // default value applies to constructor function
         members,
         extends_().toExtends(),
-        isInterface = false
+        isInterface = false,
+        genericDeclaration = genericDeclaration
     )
 
-    val constrSourceRef = unpackTuple()?.toSourceRef(file) ?: klassSourceRef
-    val thisDecl = Declaration.Let(constrSourceRef, "this", thisId, Scope.Local, TypeRef.Unit, TypeRef.Unit, null)
+    val constrSourceRef = valueParamsDeclare()?.toSourceRef(file) ?: klassSourceRef
+    val thisDecl = Declaration.Let(
+        sourceRef = constrSourceRef,
+        name = "this",
+        id = thisId,
+        scope = Scope.Local,
+        typeRef = TypeRef.Unit,
+        sourceTypeRef = TypeRef.Unit,
+        body = null,
+        genericDeclaration = listOf() // If 'this' is generic, its params are on the TypeRef
+    )
 
     // Constructor params need to have different ids and slight modifications for arrays
     val constrParams = parameters.mapIndexed { index, parameter ->
@@ -149,18 +198,36 @@ fun YaflParser.ClassContext.toDeclaration(
         TupleTypeField(parameter.sourceTypeRef, parameter.name)
     })
 
-    val constructor = Declaration.Function(constrSourceRef, klassName, constructorId, scope, thisDecl, constrParams, null, klassType,
-        Expression.NewKlass(constrSourceRef, klassType,
-            Expression.Tuple(constrSourceRef, paramType,
-                constrParams.map { constrParam ->
-                    TupleExpressionField(constrParam.name,
-                        Expression.LoadData(constrSourceRef, constrParam.sourceTypeRef,
-                            DataRef.Resolved(constrParam.name, constrParam.id, constrParam.scope),
-                        ),
+    val constructor = Declaration.Function(
+        sourceRef = constrSourceRef,
+        name = klassName,
+        id = constructorId,
+        scope = scope,
+        thisDeclaration = thisDecl,
+        parameters = constrParams,
+        returnType = null,
+        sourceReturnType = klassType,
+        body = Expression.NewKlass(
+            sourceRef = constrSourceRef,
+            typeRef = klassType,
+            parameter = Expression.Tuple(
+                sourceRef = constrSourceRef,
+                typeRef = paramType,
+                fields = constrParams.map { constrParam ->
+                    TupleExpressionField(
+                        name = constrParam.name,
+                        expression = Expression.LoadData(
+                            sourceRef = constrSourceRef,
+                            typeRef = constrParam.sourceTypeRef,
+                            dataRef = DataRef.Resolved(constrParam.name, constrParam.id, constrParam.scope),
+                            genericParameters = listOf()
+                        )
                     )
                 }
-            )
-        )
+            ),
+            genericParameters = genericForwardedParams
+        ),
+        genericDeclaration = genericDeclaration
     )
 
     return listOf(klass, constructor)
@@ -178,39 +245,46 @@ fun YaflParser.FunctionContext.toDeclaration(
     val thisType = if (thisType == TypeRef.Unit && extensionType != null) extensionType else thisType
 
     return listOf(Declaration.Function(
-        sourceRef,
-        prefix + NAME().text,
-        namer + 3,
-        scope,
-        Declaration.Let(sourceRef, "this", namer + 1, Scope.Local, thisType, thisType, null),
-        unpackTuple().toDeclarationLets(file, namer + 2, Scope.Local),
-        null,
-        type()?.toTypeRef(),
+        sourceRef = sourceRef,
+        name = prefix + NAME().text,
+        id = namer + 3,
+        scope = scope,
+        thisDeclaration = Declaration.Let(
+            sourceRef = sourceRef,
+            name = "this",
+            id = namer + 1,
+            scope = Scope.Local,
+            typeRef = thisType,
+            sourceTypeRef = thisType,
+            body = null,
+            genericDeclaration = listOf() // If 'this' is generic its type params are on the TypeRef
+        ),
+        parameters = valueParamsDeclare().toDeclarationLets(file, namer + 2, Scope.Local),
+        returnType = null,
+        sourceReturnType = type()?.toTypeRef(),
         body = expression()?.toExpression(file, namer + 4),
         attributes = attributes()?.NAME()?.map { it.text }?.toSet() ?: setOf(),
         extensionType = extensionType,
+        genericDeclaration = genericParamsDeclare().toGenericParamsDeclare(file, namer + 6),
     ))
 }
 
-fun YaflParser.LetWithExprContext.toDeclaration(
+fun YaflParser.LetContext.toDeclaration(
     file: String,
     namer: Namer,
     scope: Scope,
     prefix: String = ""
 ): Declaration.Let {
-    return when (val upt = unpackTuple()) {
-        null -> Declaration.Let(
-            toSourceRef(file),
-            prefix + NAME().text,
-            namer + 1,
-            scope,
-            null,
-            type()?.toTypeRef(),
-            expression().toExpression(file, namer + 2)
-        )
-
-        else -> throw UnsupportedOperationException()
-    }
+    return Declaration.Let(
+        sourceRef = toSourceRef(file),
+        name = prefix + NAME().text,
+        id = namer + 1,
+        scope = scope,
+        typeRef = null,
+        sourceTypeRef = type()?.toTypeRef(),
+        body = expression().toExpression(file, namer + 2),
+        genericDeclaration = genericParamsDeclare().toGenericParamsDeclare(file, namer + 6),
+    )
 }
 
 
@@ -224,6 +298,6 @@ fun YaflParser.DeclarationContext.toDeclaration(
         ?: class_()?.toDeclaration(file, id, scope, prefix)
         ?: interface_()?.toDeclaration(file, id, scope, prefix)
         ?: function()?.toDeclaration(file, id, scope, TypeRef.Unit, prefix)
-        ?: letWithExpr()?.toDeclaration(file, id, scope, prefix)?.let { listOf(it) }
+        ?: let()?.toDeclaration(file, id, scope, prefix)?.let { listOf(it) }
         ?: throw IllegalArgumentException()
 }

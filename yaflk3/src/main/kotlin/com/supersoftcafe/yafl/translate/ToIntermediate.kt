@@ -87,7 +87,7 @@ private fun TypeRef?.toCgType(globals: Globals): CgType {
         is TypeRef.Unresolved ->
             throw IllegalStateException("Dangling unresolved TypeRef")
 
-        is TypeRef.Named ->
+        is TypeRef.Klass ->
             (globals.type[id] ?: throw IllegalStateException("Type lookup failure")).toCgType(globals)
 
         is TypeRef.Callable ->
@@ -121,7 +121,7 @@ private fun Declaration.Klass.findMember(id: Namer, globals: Globals): Declarati
     return parameters.firstOrNull { it.id == id }
         ?: members.firstOrNull { it.id == id }
         ?: extends.firstNotNullOfOrNull {
-            (globals.type[(it as TypeRef.Named).id] as Declaration.Klass).findMember(id, globals)
+            (globals.type[(it as TypeRef.Klass).id] as Declaration.Klass).findMember(id, globals)
         }
 }
 
@@ -143,7 +143,7 @@ private fun Expression.LoadMember.loadMemberToCgOps(
 ): Pair<List<CgOp>, CgValue> {
     val (baseOps, baseReg) = base.toCgOps(namer + 1, globals, locals)
 
-    val result = when (val declaration = globals.type[(base.typeRef as TypeRef.Named).id]) {
+    val result = when (val declaration = globals.type[(base.typeRef as TypeRef.Klass).id]) {
         is Declaration.Klass -> {
             val member = declaration.findMember(id!!, globals)
                 ?: throw IllegalStateException("Member $id of ${declaration.name} not found")
@@ -223,7 +223,7 @@ private fun Expression.Call.callToCgOps(
 
     when (val callable = callable) {
         is Expression.LoadMember -> {
-            val declaration = globals.type[(callable.base.typeRef as TypeRef.Named).id]
+            val declaration = globals.type[(callable.base.typeRef as TypeRef.Klass).id]
             if (declaration is Declaration.Klass) {
                 val member = declaration.findMember(callable.id!!, globals)
                     ?: throw IllegalStateException("Member ${callable.id} of ${declaration.name} not found")
@@ -327,7 +327,7 @@ private fun Expression.RawPointer.toRawPointerCgOps(
 ): Pair<List<CgOp>, CgValue> {
     val loadMember = field as Expression.LoadMember
     val (baseOps, baseReg) = loadMember.base.toCgOps(namer + 1, globals, locals)
-    val klass = globals.type[(loadMember.base.typeRef as TypeRef.Named).id] as Declaration.Klass
+    val klass = globals.type[(loadMember.base.typeRef as TypeRef.Klass).id] as Declaration.Klass
     val fieldIndex = klass.parameters.indexOfFirst { it.id == loadMember.id }
     val field = klass.parameters[fieldIndex]
     val result = CgValue.Register(namer.toString(0), CgTypePrimitive.POINTER)
@@ -344,7 +344,7 @@ private fun Expression.ArrayLookup.toArrayLookupCgOps(
     locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
 ): Pair<List<CgOp>, CgValue> {
     return (array as Expression.LoadMember).loadMemberToCgOps(namer+2, globals, locals) { member, base ->
-        val klass = globals.type[(array.base.typeRef as TypeRef.Named).id] as Declaration.Klass
+        val klass = globals.type[(array.base.typeRef as TypeRef.Klass).id] as Declaration.Klass
 
         val (arraySizeOps, arraySizeReg) = if (member.dynamicArraySize != null) {
             calculateDynamicArraySize(base, klass, member, namer+3, globals)
@@ -366,7 +366,7 @@ private fun Expression.NewKlass.toNewKlassCgOps(
     globals: Globals,
     locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
 ): Pair<List<CgOp>, CgValue> {
-    val type = typeRef as TypeRef.Named
+    val type = typeRef as TypeRef.Klass
     val typeName = globalTypeName(type.name, type.id)
     val klass = globals.type[type.id] as Declaration.Klass
     val fieldNamer = namer + 9
@@ -670,7 +670,7 @@ private fun Declaration.Klass.findVTableEntries(globals: Globals): Map<String, S
         .filter { it.body != null }
         .associate { it.signature!! to it.globalDataName() }
     val allMembers = extends.fold(ourMembers) { acc, typeRef ->
-        acc + (globals.type[(typeRef as TypeRef.Named).id] as Declaration.Klass).findVTableEntries(globals)
+        acc + (globals.type[(typeRef as TypeRef.Klass).id] as Declaration.Klass).findVTableEntries(globals)
     }
     return allMembers
 }

@@ -97,7 +97,7 @@ private fun call(sourceRef: SourceRef, name: String, vararg params: Expression):
     return Expression.Call(
         sourceRef,
         null,
-        Expression.LoadData(sourceRef, null, DataRef.Unresolved(name)),
+        Expression.LoadData(sourceRef, null, DataRef.Unresolved(name), listOf()),
         Expression.Tuple(sourceRef, null, params.map { TupleExpressionField(null, it) })
     )
 }
@@ -163,7 +163,7 @@ fun YaflParser.ExpressionContext.toExpression(
 
         is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file, namer + 1), right.toExpression(file, namer + 2))
 
-        is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()))
+        is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()), genericParamsPassing().toGenericParamsPassing())
         is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file, namer), right.text)
 
         is YaflParser.RawPointerExprContext -> toRawPointerExpression(file, namer)
@@ -187,12 +187,12 @@ fun YaflParser.ExpressionContext.toExpression(
 
         is YaflParser.TupleExprContext -> exprOfTuple().toTupleExpression(file, namer)
         is YaflParser.ObjectExprContext -> TODO()
-        is YaflParser.LetExprContext -> Expression.Let(toSourceRef(file), null, letWithExpr().toDeclaration(file, namer + 1, Scope.Local), expression().toExpression(file, namer + 2))
+        is YaflParser.LetExprContext -> Expression.Let(toSourceRef(file), null, let().toDeclaration(file, namer + 1, Scope.Local), expression().toExpression(file, namer + 2))
         // is YaflParser.FunctionExprContext -> Expression.Function(null, function().toDeclaration(id, isGlobal = false), expression().toExpression())
 
-        is YaflParser.LambdaExprContext -> Expression.Lambda(toSourceRef(file), null, unpackTuple().toDeclarationLets(file, namer+1, Scope.Local), expression().toExpression(file, namer+2), namer+3)
+        is YaflParser.LambdaExprContext -> Expression.Lambda(toSourceRef(file), null, valueParamsDeclare().toDeclarationLets(file, namer+1, Scope.Local), expression().toExpression(file, namer+2), namer+3)
 
-        is YaflParser.StringExprContext -> Expression.Characters(toSourceRef(file), TypeRef.Unresolved("System::String", null), text.removeSurrounding("\""))
+        is YaflParser.StringExprContext -> Expression.Characters(toSourceRef(file), TypeRef.Unresolved("System::String", null, listOf()), text.removeSurrounding("\""))
         is YaflParser.IntegerExprContext -> toIntegerExpression(file)
 
 

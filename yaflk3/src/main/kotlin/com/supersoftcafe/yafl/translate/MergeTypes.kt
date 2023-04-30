@@ -13,8 +13,8 @@ fun TypeRef?.mightBeAssignableTo(receiver: TypeRef? ): Boolean {
         TypeRef.Unit ->
             receiver == this
 
-        is TypeRef.Named ->
-            (receiver as? TypeRef.Named)?.id == id || extends.any { it.mightBeAssignableTo(receiver) }
+        is TypeRef.Klass ->
+            (receiver as? TypeRef.Klass)?.id == id || extends.any { it.mightBeAssignableTo(receiver) }
 
         is TypeRef.Primitive ->
             (receiver as? TypeRef.Primitive)?.kind == kind
@@ -34,7 +34,7 @@ fun TypeRef?.mightBeAssignableTo(receiver: TypeRef? ): Boolean {
 }
 
 
-fun TypeRef.Named.allAncestors(depth: Int): Map<TypeRef.Named, Int> {
+fun TypeRef.Klass.allAncestors(depth: Int): Map<TypeRef.Klass, Int> {
     // Each ancestor is scored by its closest relationship to the root.
     return extends.fold(mapOf(this to depth)) { acc, parent ->
         (acc + parent.allAncestors(depth + 1)).mapValues { (key, value) ->
@@ -44,7 +44,7 @@ fun TypeRef.Named.allAncestors(depth: Int): Map<TypeRef.Named, Int> {
     }
 }
 
-fun List<TypeRef.Named>.commonLeastDerivedAncestor(): TypeRef.Named? {
+fun List<TypeRef.Klass>.commonLeastDerivedAncestor(): TypeRef.Klass? {
     // Find only the keys common between each ancestor map.
     val ancestors = map { it.allAncestors(0) }.reduce { map1, map2 ->
         map1.keys.intersect(map2.keys).associateWith { key ->
@@ -69,7 +69,7 @@ fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
     } else if (other is TypeRef.Tuple && other.fields.size == 1) {
         isAssignableFrom(other.fields[0].typeRef)
     } else when (this) {
-        is TypeRef.Named -> other is TypeRef.Named && (other.id == id || other.extends.any { isAssignableFrom(it) })
+        is TypeRef.Klass -> other is TypeRef.Klass && (other.id == id || other.extends.any { isAssignableFrom(it) })
         is TypeRef.Tuple -> other is TypeRef.Tuple && fields.size == other.fields.size && fields.zip(other.fields).all { (l, r) -> l.typeRef.isAssignableFrom(r.typeRef) }
         is TypeRef.Callable -> other is TypeRef.Callable && result.isAssignableFrom(other.result) && other.parameter.isAssignableFrom(parameter)
         is TypeRef.Primitive, TypeRef.Unit -> other == this
@@ -78,10 +78,10 @@ fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
 }
 
 fun TypeRef?.isAssignableFrom(other: Declaration.Klass): Boolean {
-    return this is TypeRef.Named && (id == other.id || other.extends.any { isAssignableFrom(it) })
+    return this is TypeRef.Klass && (id == other.id || other.extends.any { isAssignableFrom(it) })
 }
 
-fun List<TypeRef.Named>.mostSpecificType(): TypeRef.Named? {
+fun List<TypeRef.Klass>.mostSpecificType(): TypeRef.Klass? {
     return firstOrNull { source -> all { target -> target.isAssignableFrom(source) } }
 }
 
@@ -140,7 +140,7 @@ fun mergeTypes(
             }
 
         // All fully resolved types are unchanged if clearly specified by the original code.
-        TypeRef.Unit, is TypeRef.Named, is TypeRef.Primitive -> parsedType
+        TypeRef.Unit, is TypeRef.Klass, is TypeRef.Primitive -> parsedType
         is TypeRef.Unresolved -> throw IllegalStateException("Unresolved")
 
         // Full inference. What are we dealing with?
@@ -186,10 +186,10 @@ fun mergeTypes(
                     }
                 }
 
-                is TypeRef.Named ->
-                    if (checkEverythingIs { it is TypeRef.Named }) {
-                        outputTypes.filterIsInstance<TypeRef.Named>().mostSpecificType()
-                            ?: inputTypes.filterIsInstance<TypeRef.Named>().commonLeastDerivedAncestor()
+                is TypeRef.Klass ->
+                    if (checkEverythingIs { it is TypeRef.Klass }) {
+                        outputTypes.filterIsInstance<TypeRef.Klass>().mostSpecificType()
+                            ?: inputTypes.filterIsInstance<TypeRef.Klass>().commonLeastDerivedAncestor()
                     } else {
                         null
                     }

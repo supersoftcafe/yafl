@@ -7,7 +7,7 @@ import com.supersoftcafe.yafl.utils.Namer
 private class ResolveTypesErrorScan(val globals: Map<Namer, Declaration>, val hints: TypeHints) : AbstractScanner<String>() {
     override fun scanSource(self: TypeRef?, sourceRef: SourceRef): List<String> {
         return when (self) {
-            null, is TypeRef.Named, is TypeRef.Primitive, TypeRef.Unit ->
+            null, is TypeRef.Klass, is TypeRef.Generic, is TypeRef.Primitive, TypeRef.Unit ->
                 listOf()
 
             is TypeRef.Unresolved ->

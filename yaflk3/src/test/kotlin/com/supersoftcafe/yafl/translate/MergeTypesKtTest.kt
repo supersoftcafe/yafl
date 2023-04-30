@@ -97,6 +97,14 @@ internal class MergeTypesKtTest {
         assertEquals(TypeRef.Int8, bodyResult)
     }
 
+    @Test
+    fun `generic parameter works`() {
+        val ast = yaflBuild(
+                "fun first<X,Y>(x:X,y:Y):X => x\n" +
+                "fun main() => first<Int32,Int32>(1,7)\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
+        assertEquals(TypeRef.Int32, decl?.returnType)
+    }
 
 
 

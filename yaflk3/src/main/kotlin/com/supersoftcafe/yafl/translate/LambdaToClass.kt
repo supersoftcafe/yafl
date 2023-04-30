@@ -1,11 +1,8 @@
 package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
-import com.supersoftcafe.yafl.utils.Namer
 
 class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l+r }) {
-
-
 
 
     override fun updateExpressionLambda(
@@ -21,7 +18,6 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
         // a late stage in compilation and no more inference or validation will
         // happen.
 
-
         val owner = path.firstNotNullOf { it as? Declaration.Data }     // Which fun/let is the owner fo the containing expression
         val localLets = path.mapNotNull { (it as? Expression.Let)?.let }
         val localParams = path.firstNotNullOfOrNull { it as? Declaration.Function }?.let { it.parameters + it.thisDeclaration } ?: listOf()
@@ -29,8 +25,6 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
         val references = self.body.findLocalDataReferences().toSet()    // Which locals does the lambda reference
         val captures = locals.filterKeys { it in references }           // Which locals do we need to capture
         val lambdaName = "Lambda\$${owner.name}\$${self.id}"
-
-
 
         // If it captures nothing, convert the lambda to a global function
         if (captures.isEmpty()) {
@@ -51,7 +45,9 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                     scope = Scope.Local,
                     typeRef = TypeRef.Unit,
                     sourceTypeRef = null,
-                    body = null))
+                    body = null,
+                    genericDeclaration = listOf()),
+                genericDeclaration = listOf())
 
             val loadExpr = Expression.LoadData(
                 sourceRef = self.sourceRef,
@@ -59,13 +55,14 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                 dataRef = DataRef.Resolved(
                     name = globalFunc.name,
                     id = globalFunc.id,
-                    scope = globalFunc.scope))
+                    scope = globalFunc.scope),
+                genericParameters = listOf())
 
             return loadExpr to listOf(globalFunc)
         }
 
         // If it only needs to capture one local value, and it's a class/interface, convert the lambda to an extension function
-        else if (captures.values.singleOrNull()?.typeRef is TypeRef.Named) {
+        else if (captures.values.singleOrNull()?.typeRef is TypeRef.Klass) {
             val local = captures.values.single()
             val thisId = self.id + 1
 
@@ -88,7 +85,9 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                     scope = Scope.Local,
                     typeRef = local.typeRef,
                     sourceTypeRef = null,
-                    body = null))
+                    body = null,
+                    genericDeclaration = listOf()),
+                genericDeclaration = listOf())
 
             val loadExpr = Expression.LoadMember(
                 sourceRef = self.sourceRef,
@@ -98,7 +97,8 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                 base = Expression.LoadData(
                     sourceRef = self.sourceRef,
                     typeRef = local.typeRef,
-                    dataRef = DataRef.Resolved("this", thisId, Scope.Local)))
+                    dataRef = DataRef.Resolved("this", thisId, Scope.Local),
+                    genericParameters = listOf()))
 
             return loadExpr to listOf(globalFunc)
         }
@@ -118,13 +118,15 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                     scope = Scope.Member(klassId, 0),
                     typeRef = let.typeRef,
                     sourceTypeRef = null,
-                    body = null)
+                    body = null,
+                    genericDeclaration = listOf())
             }
 
-            val klassType = TypeRef.Named(
+            val klassType = TypeRef.Klass(
                 name = lambdaName,
                 id = klassId,
-                extends = listOf())
+                extends = listOf(),
+                genericParameters = listOf())
 
             val memberFunc = Declaration.Function(
                 sourceRef = self.sourceRef,
@@ -148,7 +150,8 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                                     dataRef = DataRef.Resolved(
                                         name = "this",
                                         id = memberThisId,
-                                        scope = Scope.Local)))
+                                        scope = Scope.Local),
+                                    genericParameters = listOf()))
                         }
                     } else {
                         null
@@ -161,7 +164,9 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                     scope = Scope.Local,
                     typeRef = klassType,
                     sourceTypeRef = null,
-                    body = null))
+                    body = null,
+                    genericDeclaration = listOf()),
+                genericDeclaration = listOf())
 
             val klass = Declaration.Klass(
                 sourceRef = self.sourceRef,
@@ -171,7 +176,8 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                 parameters = klassParameters.map { (s,t) -> t },
                 members = listOf(memberFunc),
                 extends = listOf(),
-                isInterface = false)
+                isInterface = false,
+                genericDeclaration = listOf())
 
             val loadExpr = Expression.LoadMember(
                 sourceRef = self.sourceRef,
@@ -192,12 +198,14 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                                     dataRef = DataRef.Resolved(
                                         name = s.name,
                                         id = s.id,
-                                        scope = s.scope))) },
+                                        scope = s.scope),
+                                    genericParameters = listOf())) },
                         typeRef = TypeRef.Tuple(
                             fields = klassParameters.map { (s,t) ->
                                 TupleTypeField(
                                     name = null,
-                                    typeRef = t.typeRef) }))))
+                                    typeRef = t.typeRef) })),
+                    genericParameters = listOf()))
 
             return loadExpr to listOf(klass)
         }

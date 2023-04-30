@@ -3,10 +3,43 @@ package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Either
-import com.supersoftcafe.yafl.utils.invert
 
 
 class InferTypes(private val typeHints: TypeHints) {
+
+
+
+    private fun TypeRef.isInCorrectGenericContext(
+        findDeclarations: (String) -> List<Declaration>
+    ): Boolean {
+        return complete && when (this) {
+            is TypeRef.Unresolved ->
+                throw IllegalArgumentException("Unresolved shouldn't be here")
+
+            is TypeRef.Klass ->
+                genericParameters.all { isInCorrectGenericContext(findDeclarations) }
+
+            is TypeRef.Primitive, TypeRef.Unit ->
+                true
+
+            is TypeRef.Generic -> // Check if the generic declaration is visible in the current context
+                findDeclarations(name).any { it.id == id }
+
+            is TypeRef.Callable ->
+                (result?.isInCorrectGenericContext(findDeclarations) ?: true) or (parameter?.isInCorrectGenericContext(findDeclarations) ?: true)
+
+            is TypeRef.Tuple ->
+                fields.all { it.typeRef?.isInCorrectGenericContext(findDeclarations) ?: true }
+        }
+    }
+
+    private fun List<TypeRef>.filterByGenericContext(
+        findDeclarations: (String) -> List<Declaration>
+    ): List<TypeRef> {
+        return filter { typeRef ->
+            typeRef.isInCorrectGenericContext(findDeclarations)
+        }
+    }
 
     private fun DataRef.resolveData(
         sourceRef: SourceRef,
@@ -15,16 +48,17 @@ class InferTypes(private val typeHints: TypeHints) {
     ): Pair<DataRef, Declaration.Data?> {
         return when (this) {
             is DataRef.Unresolved -> {
-                val foundMany = findDeclarations(name)
-                val found = foundMany
-                    .filterIsInstance<Declaration.Data>()
-                    .filter { it.typeRef.mightBeAssignableTo(receiver) }
-
-                val first = found.firstOrNull()
-                if (first == null || found.size > 1)
-                    Pair(this, null)
-                else
-                    Pair(DataRef.Resolved(first.name, first.id, first.scope), first)
+                throw IllegalArgumentException("unresolved shouldn't get this far")
+//                val foundMany = findDeclarations(name)
+//                val found = foundMany
+//                    .filterIsInstance<Declaration.Data>()
+//                    .filter { it.typeRef.mightBeAssignableTo(receiver) && it.genericDeclaration.size == genericParameters.size}
+//
+//                val first = found.singleOrNull()
+//                if (first == null)
+//                    Pair(this, null)
+//                else
+//                    Pair(DataRef.Resolved(first.name, first.id, first.scope), first)
             }
 
             is DataRef.Resolved -> {
@@ -36,13 +70,13 @@ class InferTypes(private val typeHints: TypeHints) {
         }
     }
 
-    private fun List<Expression>.inferTypesExpressions(
-        receiver: TypeRef?,
-        findDeclarations: (String) -> List<Declaration>
-    ): Pair<List<Expression>, TypeHints> {
-        val result = map { it.inferTypes(receiver, findDeclarations) }
-        return Pair(result.map { (e, _) -> e!! }, result.fold(emptyTypeHints()) { acc, (_, h) -> acc + h })
-    }
+//    private fun List<Expression>.inferTypesExpressions(
+//        receiver: TypeRef?,
+//        findDeclarations: (String) -> List<Declaration>
+//    ): Pair<List<Expression>, TypeHints> {
+//        val result = map { it.inferTypes(receiver, findDeclarations) }
+//        return Pair(result.map { (e, _) -> e!! }, result.fold(emptyTypeHints()) { acc, (_, h) -> acc + h })
+//    }
 
     private fun Expression?.inferTypes(
         receiver: TypeRef?,
@@ -78,7 +112,7 @@ class InferTypes(private val typeHints: TypeHints) {
                 Pair(this, emptyTypeHints())
 
             is Expression.NewKlass -> {
-                val typeRef = typeRef as TypeRef.Named
+                val typeRef = typeRef as TypeRef.Klass
 
                 val declaration = findDeclarations(typeRef.name).single { it.id == typeRef.id } as Declaration.Klass
 
@@ -117,7 +151,7 @@ class InferTypes(private val typeHints: TypeHints) {
                 val (base, baseHints) = base.inferTypes(null, findDeclarations)
 
                 when (val baseTypeRef = base?.typeRef) {
-                    is TypeRef.Named ->
+                    is TypeRef.Klass ->
                         when (val declaration = findDeclarations(baseTypeRef.name).single { it.id == baseTypeRef.id }) {
                             is Declaration.Klass -> {
 
@@ -167,12 +201,13 @@ class InferTypes(private val typeHints: TypeHints) {
             is Expression.LoadData -> {
                 val (newDataRef, declaration) = dataRef.resolveData(sourceRef, receiver, findDeclarations)
                 if (declaration != null && declaration.scope is Scope.Member) {
-                    // TODO: Support for nested classes
+                    assert(genericParameters.isEmpty()) // Load member cannot have generics. Resolve shouldn't even find a member.
                     Pair(Expression.LoadMember(
                         sourceRef, typeRef,
                         Expression.LoadData(
                             sourceRef, null,
                             DataRef.Unresolved("this"),
+                            listOf() // Implicitly 'this' never has generic params, as they're already on the type declaration if present
                         ),
                         declaration.name,
                         declaration.id,
@@ -300,14 +335,13 @@ class InferTypes(private val typeHints: TypeHints) {
         }
     }
 
-
     private fun Declaration.Let.inferTypesLet(
         findDeclarations: (String) -> List<Declaration>
     ): Pair<Declaration.Let, TypeHints> {
         val typeRefOfLet = mergeTypes(
             sourceTypeRef,
-            inputTypes  = typeHints.getInputTypeRefs( id) + listOfNotNull(body?.typeRef),
-            outputTypes = typeHints.getOutputTypeRefs(id),
+            inputTypes  = typeHints.getInputTypeRefs( id).filterByGenericContext(findDeclarations) + listOfNotNull(body?.typeRef),
+            outputTypes = typeHints.getOutputTypeRefs(id).filterByGenericContext(findDeclarations),
         )
 
         val (body, typeHints) = body.inferTypes(typeRefOfLet, findDeclarations)
@@ -327,15 +361,17 @@ class InferTypes(private val typeHints: TypeHints) {
         // Return type is derived from body only
         // Type hints can only impact parameters
 
-        val paramHints = typeHintsOf(typeHints.getOutputTypeRefs(id).flatMap { typeRef ->
-            (typeRef as? TypeRef.Callable)?.parameter?.fields?.mapIndexedNotNull { index, field ->
-                field.typeRef?.let { typeRef ->
-                    parameters.getOrNull(index)?.let { param ->
-                        param.id to TypeHint(inputTypeRef = typeRef)
+        val paramHints = typeHintsOf(typeHints
+            .getOutputTypeRefs(id).filterByGenericContext(findDeclarations)
+            .flatMap { typeRef ->
+                (typeRef as? TypeRef.Callable)?.parameter?.fields?.mapIndexedNotNull { index, field ->
+                    field.typeRef?.let { typeRef ->
+                        parameters.getOrNull(index)?.let { param ->
+                            param.id to TypeHint(inputTypeRef = typeRef)
+                        }
                     }
-                }
-            } ?: listOf()
-        })
+                } ?: listOf()
+            })
 
         val (bodyExpr, bodyHints) = body.inferTypes(sourceReturnType ?: returnType) { name ->
             (parameters + thisDeclaration).filter { it.name == name } + findDeclarations(name)
@@ -355,7 +391,7 @@ class InferTypes(private val typeHints: TypeHints) {
         findDeclarations: (String) -> List<Declaration>
     ): List<Declaration> {
         return ((parameters + members).filter { it.name == name } + extends.flatMap { typeRef ->
-            if (typeRef is TypeRef.Named)
+            if (typeRef is TypeRef.Klass)
                 (findDeclarations(typeRef.name).first { it.id == typeRef.id } as Declaration.Klass)
                     .findMembers(name, findDeclarations)
             else
@@ -417,8 +453,12 @@ class InferTypes(private val typeHints: TypeHints) {
     }
 
     private fun Declaration.inferTypes(
-        findDeclarations: (String) -> List<Declaration>
+        findDeclarationsX: (String) -> List<Declaration>
     ): Pair<Declaration, TypeHints> {
+        val findDeclarations: (String) -> List<Declaration> = { name ->
+            findDeclarationsX(name) + genericDeclaration.filter { it.name == name }
+        }
+
         return when (this) {
             is Declaration.Let ->
                 inferTypesLet(findDeclarations)

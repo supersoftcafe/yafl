@@ -2,7 +2,6 @@ package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Namer
-import java.lang.IllegalStateException
 
 private class StringScanner : AbstractScanner<String>() {
     override fun scan(self: Expression?, parent: Expression?): List<String> {
@@ -14,7 +13,7 @@ private class StringScanner : AbstractScanner<String>() {
 }
 
 private class StringReplacer(
-    val stringType: TypeRef.Named,
+    val stringType: TypeRef.Klass,
     val stringToDataRef: Map<String, DataRef.Resolved>,
     val globalIdToDataRef: Map<Namer, DataRef.Resolved>
 ) {
@@ -34,7 +33,8 @@ private class StringReplacer(
             Expression.LoadData(
                 sourceRef,
                 stringType,
-                stringToDataRef[value]!!
+                stringToDataRef[value]!!,
+                listOf()
             )
 
         is Expression.LoadData ->
@@ -74,11 +74,14 @@ private class StringReplacer(
         members = members.map { it.replaceStrings() },
     )
 
+    private fun Declaration.Generic.replaceStrings() = this
+
     fun replaceStrings(declaration: Declaration) = when (declaration) {
         is Declaration.Let -> declaration.replaceStrings()
         is Declaration.Function -> declaration.replaceStrings()
         is Declaration.Alias -> declaration
         is Declaration.Klass -> declaration.replaceStrings()
+        is Declaration.Generic -> declaration.replaceStrings()
     }
 }
 
@@ -89,10 +92,12 @@ fun stringsToGlobals(ast: Ast): Ast {
     val stringDeclaration = ast.declarations.mapNotNull { it.declaration as? Declaration.Klass } .first {
         it.name == "System::String"
     }
-    val stringType = TypeRef.Named(
-        stringDeclaration.name,
-        stringDeclaration.id,
-        stringDeclaration.extends.filterIsInstance<TypeRef.Named>())
+    val stringType = TypeRef.Klass(
+        name = stringDeclaration.name,
+        id = stringDeclaration.id,
+        extends = stringDeclaration.extends.filterIsInstance<TypeRef.Klass>(),
+        genericParameters = listOf()
+    )
 
     // Match anything that is declaration of an immediate string literal
     fun declarationToStringMatcher(root: Root): Boolean {
@@ -109,14 +114,15 @@ fun stringsToGlobals(ast: Ast): Ast {
         val id = namer + index
         val name = "\$globals::strings::$id"
         string to Declaration.Let(
-            SourceRef.EMPTY,
-            name,
-            id,
-            Scope.Global,
-            stringType,
-            stringType,
-            Expression.Characters(SourceRef.EMPTY, stringType, string),
-            signature = stringType.toSignature(name)
+            sourceRef = SourceRef.EMPTY,
+            name = name,
+            id = id,
+            scope = Scope.Global,
+            typeRef = stringType,
+            sourceTypeRef = stringType,
+            body = Expression.Characters(SourceRef.EMPTY, stringType, string),
+            signature = stringType.toSignature(name),
+            genericDeclaration = listOf()
         )
     }
     val stringToDataRef = newStringGlobals.associate { (string, declaration) ->
