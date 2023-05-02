@@ -5,6 +5,7 @@ import com.supersoftcafe.yafl.utils.Namer
 sealed class TypeRef {
     abstract val resolved: Boolean      // Type might be incomplete, but all known parts are resolved
     abstract val complete: Boolean      // Type might have unresolved parts, but we do have all parts
+    abstract val hasGenerics: Boolean
 
     data class Tuple(
         val fields: List<TupleTypeField>
@@ -13,6 +14,7 @@ sealed class TypeRef {
         override fun hashCode() = fields.hashCode()
         override val resolved = fields.all { it.typeRef?.resolved != false }
         override val complete = fields.all { it.typeRef?.complete == true }
+        override val hasGenerics = fields.any { it.typeRef?.hasGenerics == true }
     }
 
     data class Callable(
@@ -21,6 +23,7 @@ sealed class TypeRef {
     ) : TypeRef() {
         override val resolved = parameter?.resolved != false && result?.resolved != false
         override val complete = parameter?.complete == true && result?.complete == true
+        override val hasGenerics = parameter?.hasGenerics == true
     }
 
     data class Unresolved(
@@ -30,6 +33,7 @@ sealed class TypeRef {
     ) : TypeRef() {
         override val resolved = false
         override val complete = true
+        override val hasGenerics = false
     }
 
     data class Klass(
@@ -40,6 +44,7 @@ sealed class TypeRef {
     ) : TypeRef() {
         override val resolved = true
         override val complete = true
+        override val hasGenerics = genericParameters.isNotEmpty()
     }
 
     data class Generic(
@@ -48,16 +53,19 @@ sealed class TypeRef {
     ) : TypeRef() {
         override val resolved = true
         override val complete = true
+        override val hasGenerics = true
     }
 
     data class Primitive(val kind: PrimitiveKind) : TypeRef() {
         override val resolved = true
         override val complete = true
+        override val hasGenerics = false
     }
 
     object Unit : TypeRef() {
         override val resolved = true
         override val complete = true
+        override val hasGenerics = false
     }
 
     companion object {

@@ -21,6 +21,7 @@ fun TypeRef?.toSignature(): String? {
         }
 
         is TypeRef.Klass -> name
+        is TypeRef.Generic -> name
         is TypeRef.Primitive -> kind.fullyQualifiedName
         is TypeRef.Unresolved -> null
         TypeRef.Unit -> "System::Unit"

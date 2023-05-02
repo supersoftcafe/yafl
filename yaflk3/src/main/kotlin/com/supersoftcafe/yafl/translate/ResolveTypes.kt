@@ -23,6 +23,29 @@ class ResolveTypes() {
         return typeRef.updateWithGenerics()
     }
 
+    private fun DataRef?.resolveTypes(
+        sourceRef: SourceRef,
+        findDeclarations: (String) -> List<Declaration>
+    ): DataRef? {
+        return when (this) {
+            is DataRef.Unresolved -> {
+                copy(genericParameters = genericParameters.map {
+                    it.resolveTypes(sourceRef, findDeclarations)!!
+                })
+            }
+
+            is DataRef.Resolved -> {
+                copy(genericParameters = genericParameters.map {
+                    it.resolveTypes(sourceRef, findDeclarations)!!
+                })
+            }
+
+            null -> {
+                null
+            }
+        }
+    }
+
     private fun TypeRef?.resolveTypes(
         sourceRef: SourceRef,
         findDeclarations: (String) -> List<Declaration>
@@ -30,7 +53,9 @@ class ResolveTypes() {
         return when (this) {
             is TypeRef.Unresolved -> {
                 // Only proceed if generic params are resolved
-                val resolvedGenericParams = genericParameters.map { it.resolveTypes(sourceRef, findDeclarations) ?: it }
+                val resolvedGenericParams = genericParameters.map {
+                    it.resolveTypes(sourceRef, findDeclarations) ?: it
+                }
 
                 if (resolvedGenericParams.any { !it.resolved }) {
                     // Not all generic params are resolved yet
@@ -63,7 +88,7 @@ class ResolveTypes() {
                             copy(genericParameters = resolvedGenericParams)
 
                     } else if (declaration is Declaration.Generic) {
-                        TypeRef.Klass(declaration.name, declaration.id, listOf(), listOf())
+                        TypeRef.Generic(declaration.name, declaration.id)
 
                     } else {
                         throw IllegalStateException("${declaration.javaClass.name} is not a supported type declaration")
@@ -164,7 +189,8 @@ class ResolveTypes() {
 
             is Expression.LoadData -> {
                 val t = typeRef.resolveTypes(sourceRef, findDeclarations)
-                copy(typeRef = t)
+                val d = dataRef.resolveTypes(sourceRef, findDeclarations)!!
+                copy(typeRef = t, dataRef = d)
             }
 
             is Expression.Llvmir -> {

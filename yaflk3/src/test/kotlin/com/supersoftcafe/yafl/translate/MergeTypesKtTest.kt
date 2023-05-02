@@ -32,9 +32,9 @@ internal class MergeTypesKtTest {
     @Test
     fun `function is used with int, so parameter type becomes int`() {
         val ast = yaflBuild(
-                "fun value(a) => a\n" +
-                "fun main() => value(1)\n")
-        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value" }?.declaration as? Declaration.Function
+                "fun value87(a) => a\n" +
+                "fun main() => value87(87)\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value87" }?.declaration as? Declaration.Function
         val param_a = decl?.parameters?.firstOrNull { it.name == "a" }
         assertEquals(TypeRef.Int32, decl?.returnType)
         assertEquals(TypeRef.Int32, param_a?.typeRef)
@@ -98,10 +98,19 @@ internal class MergeTypesKtTest {
     }
 
     @Test
-    fun `generic parameter works`() {
+    fun `generic identity function with explicit type`() {
         val ast = yaflBuild(
-                "fun first<X,Y>(x:X,y:Y):X => x\n" +
-                "fun main() => first<Int32,Int32>(1,7)\n")
+                "fun genericIdentity<TValue>(value: TValue) => value\n" +
+                "fun main() => genericIdentity<Int32>(1)\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
+        assertEquals(TypeRef.Int32, decl?.returnType)
+    }
+
+    @Test
+    fun `generic identity function with implicit type`() {
+        val ast = yaflBuild(
+                "fun genericIdentity<T>(value: T) => value\n" +
+                "fun main() => genericIdentity(1)\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
         assertEquals(TypeRef.Int32, decl?.returnType)
     }
@@ -122,12 +131,15 @@ internal class MergeTypesKtTest {
     fun yaflBuild(test: String): Ast {
         val namer = Namer("a")
 
-        val ast = listOf(readFile("/system.yafl"), Pair("/test.yafl", "module Test\n\nimport System\n\n" + test + "\n"))
+        val ast = listOf(readFile("/system.yafl"), readFile("/string.yafl"), Pair("/test.yafl", "module Test\n\nimport System\n\n" + test + "\n"))
             .map { (file, contents) -> Pair(file, sourceToParseTree(contents)) }
             .mapIndexed { index, (file, tree) -> parseToAst(namer + index, file, tree) }
             .fold(Ast()) { acc, ast -> acc + ast }
             .let { resolveTypes(it) }
             .map { inferTypes(it) }
+//            .map { Either.some(genericSpecialization(it)) } // Replace all generics with their specialized forms, so no more generics exists in the AST
+//            .map { Either.some(stringsToGlobals(it)) }
+//            .map { Either.some(lambdaToClass(it)) }
 
         when (ast) {
             is Either.Some -> return ast.value

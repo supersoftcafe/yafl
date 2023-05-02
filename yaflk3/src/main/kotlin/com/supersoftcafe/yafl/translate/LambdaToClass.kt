@@ -55,8 +55,7 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                 dataRef = DataRef.Resolved(
                     name = globalFunc.name,
                     id = globalFunc.id,
-                    scope = globalFunc.scope),
-                genericParameters = listOf())
+                    scope = globalFunc.scope))
 
             return loadExpr to listOf(globalFunc)
         }
@@ -97,8 +96,7 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                 base = Expression.LoadData(
                     sourceRef = self.sourceRef,
                     typeRef = local.typeRef,
-                    dataRef = DataRef.Resolved("this", thisId, Scope.Local),
-                    genericParameters = listOf()))
+                    dataRef = DataRef.Resolved("this", thisId, Scope.Local)))
 
             return loadExpr to listOf(globalFunc)
         }
@@ -150,8 +148,7 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                                     dataRef = DataRef.Resolved(
                                         name = "this",
                                         id = memberThisId,
-                                        scope = Scope.Local),
-                                    genericParameters = listOf()))
+                                        scope = Scope.Local)))
                         }
                     } else {
                         null
@@ -198,14 +195,12 @@ class LambdaToClass : AbstractUpdater<List<Declaration>>(emptyList(), { l,r -> l
                                     dataRef = DataRef.Resolved(
                                         name = s.name,
                                         id = s.id,
-                                        scope = s.scope),
-                                    genericParameters = listOf())) },
+                                        scope = s.scope))) },
                         typeRef = TypeRef.Tuple(
                             fields = klassParameters.map { (s,t) ->
                                 TupleTypeField(
                                     name = null,
-                                    typeRef = t.typeRef) })),
-                    genericParameters = listOf()))
+                                    typeRef = t.typeRef) }))))
 
             return loadExpr to listOf(klass)
         }

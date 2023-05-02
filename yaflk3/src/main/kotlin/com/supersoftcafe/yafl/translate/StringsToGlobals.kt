@@ -33,9 +33,7 @@ private class StringReplacer(
             Expression.LoadData(
                 sourceRef,
                 stringType,
-                stringToDataRef[value]!!,
-                listOf()
-            )
+                stringToDataRef[value]!!)
 
         is Expression.LoadData ->
             if (dataRef is DataRef.Resolved && dataRef.id in globalIdToDataRef) {
@@ -89,7 +87,9 @@ fun stringsToGlobals(ast: Ast): Ast {
     val allStrings = StringScanner().scan(ast).toSet()
 
     // Find the string class in the ast. We need to reference it in the string literal declarations.
-    val stringDeclaration = ast.declarations.mapNotNull { it.declaration as? Declaration.Klass } .first {
+    val stringDeclaration = ast.declarations.mapNotNull {
+        it.declaration as? Declaration.Klass
+    } .first {
         it.name == "System::String"
     }
     val stringType = TypeRef.Klass(

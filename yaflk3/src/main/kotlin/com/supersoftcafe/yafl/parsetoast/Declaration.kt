@@ -220,12 +220,10 @@ fun YaflParser.ClassContext.toDeclaration(
                             sourceRef = constrSourceRef,
                             typeRef = constrParam.sourceTypeRef,
                             dataRef = DataRef.Resolved(constrParam.name, constrParam.id, constrParam.scope),
-                            genericParameters = listOf()
                         )
                     )
                 }
             ),
-            genericParameters = genericForwardedParams
         ),
         genericDeclaration = genericDeclaration
     )

@@ -97,7 +97,7 @@ private fun call(sourceRef: SourceRef, name: String, vararg params: Expression):
     return Expression.Call(
         sourceRef,
         null,
-        Expression.LoadData(sourceRef, null, DataRef.Unresolved(name), listOf()),
+        Expression.LoadData(sourceRef, null, DataRef.Unresolved(name)),
         Expression.Tuple(sourceRef, null, params.map { TupleExpressionField(null, it) })
     )
 }
@@ -163,8 +163,16 @@ fun YaflParser.ExpressionContext.toExpression(
 
         is YaflParser.ArrayLookupExprContext -> Expression.ArrayLookup(toSourceRef(file), null, left.toExpression(file, namer + 1), right.toExpression(file, namer + 2))
 
-        is YaflParser.NameExprContext -> Expression.LoadData(toSourceRef(file), null, DataRef.Unresolved(qualifiedName().toName()), genericParamsPassing().toGenericParamsPassing())
-        is YaflParser.DotExprContext -> Expression.LoadMember(toSourceRef(file), null, left.toExpression(file, namer), right.text)
+        is YaflParser.NameExprContext -> {
+            Expression.LoadData(
+                toSourceRef(file),
+                null,
+                DataRef.Unresolved(qualifiedName().toName(), genericParamsPassing().toGenericParamsPassing())
+            )
+        }
+
+        is YaflParser.DotExprContext ->
+            Expression.LoadMember(toSourceRef(file), null, left.toExpression(file, namer), right.text)
 
         is YaflParser.RawPointerExprContext -> toRawPointerExpression(file, namer)
         is YaflParser.LlvmirExprContext -> toLlvmirExpression(file, namer)

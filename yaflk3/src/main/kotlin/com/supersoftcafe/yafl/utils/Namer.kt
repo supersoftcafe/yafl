@@ -9,6 +9,10 @@ data class Namer(private val name: String) {
         return copy(name = "$name$suffix")
     }
 
+    operator fun div(tail: Namer): Namer {
+        return Namer(name + '/' + tail.name)
+    }
+
     fun toString(count: Int) = plus(count).toString()
     override fun toString() = name
 

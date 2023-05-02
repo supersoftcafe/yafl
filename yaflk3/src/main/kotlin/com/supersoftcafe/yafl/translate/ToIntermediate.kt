@@ -55,6 +55,7 @@ private fun DataRef?.toCgValue(type: CgType, globals: Globals, locals: Map<Namer
 
 private fun Declaration.Type.toCgType(globals: Globals) = when (this) {
     is Declaration.Alias  -> throw IllegalStateException("Dangling alias")
+    is Declaration.Generic -> throw IllegalStateException("Dangling generic")
 //    is Declaration.Struct -> toCgType(globals)
     is Declaration.Klass  -> CgTypePrimitive.OBJECT
 }
@@ -86,6 +87,9 @@ private fun TypeRef?.toCgType(globals: Globals): CgType {
 
         is TypeRef.Unresolved ->
             throw IllegalStateException("Dangling unresolved TypeRef")
+
+        is TypeRef.Generic ->
+            throw IllegalStateException("Dangling generic TypeRef")
 
         is TypeRef.Klass ->
             (globals.type[id] ?: throw IllegalStateException("Type lookup failure")).toCgType(globals)
@@ -766,6 +770,9 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
                     declaration.justGetTheMembers(namer, globals)
                 else
                     declaration.toIntermediateKlass(namer, globals)
+
+            is Declaration.Generic->
+                throw IllegalStateException("Dangling generic Declaration")
 
             is Declaration.Alias ->
                 listOf()

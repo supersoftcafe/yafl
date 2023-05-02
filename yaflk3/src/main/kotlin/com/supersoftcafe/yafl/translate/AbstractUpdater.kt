@@ -56,6 +56,10 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self to emptyResult
     }
 
+    open fun updateSourceTypeRefGeneric(self: TypeRef.Generic, path: List<Any>): Pair<TypeRef.Generic, TOut> {
+        return self to emptyResult
+    }
+
     open fun updateSourceTypeRef(self: TypeRef, path: List<Any>): Pair<TypeRef, TOut> {
         return when (self) {
             is TypeRef.Generic -> updateSourceTypeRefGeneric(self, path)
@@ -88,9 +92,9 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(result = rIn, parameter = pIn) to rOut+pOut
     }
 
-    open fun updateTypeRefNamed(self: TypeRef.Klass, path: List<Any>): Pair<TypeRef.Klass, TOut> {
+    open fun updateTypeRefKlass(self: TypeRef.Klass, path: List<Any>): Pair<TypeRef.Klass, TOut> {
         val path = path + self
-        val (eIn, eOut) = updateList(self.extends, path, ::updateTypeRefNamed)
+        val (eIn, eOut) = updateList(self.extends, path, ::updateTypeRefKlass)
         return self.copy(extends = eIn) to eOut
     }
 
@@ -102,12 +106,16 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self to emptyResult
     }
 
+    open fun updateTypeRefGeneric(self: TypeRef.Generic, path: List<Any>): Pair<TypeRef.Generic, TOut> {
+        return self to emptyResult
+    }
+
     open fun updateTypeRef(self: TypeRef, path: List<Any>): Pair<TypeRef, TOut> {
         return when (self) {
             is TypeRef.Generic -> updateTypeRefGeneric(self, path)
             is TypeRef.Tuple -> updateTypeRefTuple(self, path)
             is TypeRef.Callable -> updateTypeRefCallable(self, path)
-            is TypeRef.Klass -> updateTypeRefNamed(self, path)
+            is TypeRef.Klass -> updateTypeRefKlass(self, path)
             is TypeRef.Primitive -> updateTypeRefPrimitive(self, path)
             is TypeRef.Unresolved -> updateTypeRefUnresolved(self, path)
             TypeRef.Unit -> self to emptyResult
@@ -307,9 +315,13 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(typeRef = tIn) to tOut
     }
 
+    open fun updateDeclarationGeneric(self: Declaration.Generic, path: List<Any>): Pair<Declaration.Generic, TOut> {
+        return self to emptyResult
+    }
+
     open fun updateDeclaration(self: Declaration, path: List<Any>): Pair<Declaration, TOut> {
         return when (self) {
-            is Declaration.Generic -> updateGeneric(self, path)
+            is Declaration.Generic -> updateDeclarationGeneric(self, path)
             is Declaration.Let -> updateDeclarationLet(self, path)
             is Declaration.Function -> updateDeclarationFunction(self, path)
             is Declaration.Alias -> updateDeclarationAlias(self, path)

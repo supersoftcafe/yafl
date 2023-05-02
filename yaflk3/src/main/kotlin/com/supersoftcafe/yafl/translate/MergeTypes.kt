@@ -13,8 +13,11 @@ fun TypeRef?.mightBeAssignableTo(receiver: TypeRef? ): Boolean {
         TypeRef.Unit ->
             receiver == this
 
-        is TypeRef.Klass ->
-            (receiver as? TypeRef.Klass)?.id == id || extends.any { it.mightBeAssignableTo(receiver) }
+        is TypeRef.Generic -> // TODO: Apply generic constraints, so that we know that X is sub type of Y etc. For now exact match only
+            (receiver as? TypeRef.Generic)?.id == id
+
+        is TypeRef.Klass -> // TODO: Take account of in/out generics. For now exact match only
+            ((receiver as? TypeRef.Klass)?.id == id && receiver.genericParameters == genericParameters) || extends.any { it.mightBeAssignableTo(receiver) }
 
         is TypeRef.Primitive ->
             (receiver as? TypeRef.Primitive)?.kind == kind
@@ -69,7 +72,8 @@ fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
     } else if (other is TypeRef.Tuple && other.fields.size == 1) {
         isAssignableFrom(other.fields[0].typeRef)
     } else when (this) {
-        is TypeRef.Klass -> other is TypeRef.Klass && (other.id == id || other.extends.any { isAssignableFrom(it) })
+        is TypeRef.Generic -> other is TypeRef.Generic && other.id == id
+        is TypeRef.Klass -> other is TypeRef.Klass && ((other.id == id && other.genericParameters == genericParameters)|| other.extends.any { isAssignableFrom(it) })
         is TypeRef.Tuple -> other is TypeRef.Tuple && fields.size == other.fields.size && fields.zip(other.fields).all { (l, r) -> l.typeRef.isAssignableFrom(r.typeRef) }
         is TypeRef.Callable -> other is TypeRef.Callable && result.isAssignableFrom(other.result) && other.parameter.isAssignableFrom(parameter)
         is TypeRef.Primitive, TypeRef.Unit -> other == this
@@ -140,8 +144,11 @@ fun mergeTypes(
             }
 
         // All fully resolved types are unchanged if clearly specified by the original code.
-        TypeRef.Unit, is TypeRef.Klass, is TypeRef.Primitive -> parsedType
-        is TypeRef.Unresolved -> throw IllegalStateException("Unresolved")
+        TypeRef.Unit, is TypeRef.Klass, is TypeRef.Generic, is TypeRef.Primitive ->
+            parsedType
+
+        is TypeRef.Unresolved ->
+            throw IllegalStateException("Unresolved")
 
         // Full inference. What are we dealing with?
         null ->
@@ -194,7 +201,7 @@ fun mergeTypes(
                         null
                     }
 
-                is TypeRef.Primitive, TypeRef.Unit -> {
+                is TypeRef.Primitive, is TypeRef.Generic, TypeRef.Unit -> {
                     // There are no implicit conversions on primitives. Check that all input and output are the same
                     if (checkEverythingIs { it == candidateType }) {
                         candidateType

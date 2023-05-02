@@ -7,7 +7,9 @@ import com.supersoftcafe.yafl.ast.TypeRef
 
 
 fun YaflParser.GenericParamsPassingContext?.toGenericParamsPassing(): List<TypeRef> {
-    return this?.type()?.map { typeContext -> typeContext.toTypeRef() } ?: listOf()
+    return this?.type()?.map {
+            typeContext -> typeContext.toTypeRef()
+    } ?: listOf()
 }
 
 fun YaflParser.QualifiedNameContext.toName(): String {

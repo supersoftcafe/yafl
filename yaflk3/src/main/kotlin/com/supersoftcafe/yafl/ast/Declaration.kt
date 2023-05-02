@@ -36,7 +36,6 @@ sealed class Declaration {
         override val name: String,
         override val id: Namer,
         override val scope: Scope,
-        val specialization: TypeRef? = null,
         override val guidance: List<Guidance> = listOf(),
     ) : Type() {
         override val genericDeclaration = listOf<Declaration.Generic>()
