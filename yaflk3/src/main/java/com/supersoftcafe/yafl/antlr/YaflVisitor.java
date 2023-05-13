@@ -145,13 +145,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitPowerExpr(YaflParser.PowerExprContext ctx);
 	/**
-	 * Visit a parse tree produced by the {@code objectExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitObjectExpr(YaflParser.ObjectExprContext ctx);
-	/**
 	 * Visit a parse tree produced by the {@code integerExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -319,11 +312,23 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitLet(YaflParser.LetContext ctx);
 	/**
+	 * Visit a parse tree produced by {@link YaflParser#functionTail}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitFunctionTail(YaflParser.FunctionTailContext ctx);
+	/**
 	 * Visit a parse tree produced by {@link YaflParser#function}.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	T visitFunction(YaflParser.FunctionContext ctx);
+	/**
+	 * Visit a parse tree produced by {@link YaflParser#classMember}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitClassMember(YaflParser.ClassMemberContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#interface}.
 	 * @param ctx the parse tree
@@ -336,12 +341,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitClass(YaflParser.ClassContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link YaflParser#enum}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitEnum(YaflParser.EnumContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#alias}.
 	 * @param ctx the parse tree
@@ -372,12 +371,6 @@ public interface YaflVisitor<T> extends ParseTreeVisitor<T> {
 	 * @return the visitor result
 	 */
 	T visitDeclaration(YaflParser.DeclarationContext ctx);
-	/**
-	 * Visit a parse tree produced by {@link YaflParser#classMember}.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	T visitClassMember(YaflParser.ClassMemberContext ctx);
 	/**
 	 * Visit a parse tree produced by {@link YaflParser#root}.
 	 * @param ctx the parse tree

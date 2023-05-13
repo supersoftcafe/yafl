@@ -1,10 +1,9 @@
 
 module System
 
-class String(_size: Int32, _data[_size <= 1024]: Int8) {
+class String(_size: Int32, _data[_size <= 1024]: Int8)
   fun at(index: Int32): Int8 => _data[index]
   fun size(): Int32 => _size
-}
 
 fun `+`(l: String, r: String): String =>
   String(l.size() + r.size(), (index: Int32) => index < l.size() ? l.at(index) : r.at(index-l.size()))

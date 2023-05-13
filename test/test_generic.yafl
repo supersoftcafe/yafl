@@ -3,8 +3,10 @@ module Test
 
 import System
 
-fun genericIdentity<TValue>(genericValue: TValue): TValue => genericValue
 
-fun main() => genericIdentity<Int32>(1)
+class GenericContainer<TValue>(value: TValue)
+  fun getValue() => value
+
+fun main() => GenericContainer(1).getValue()
 
 

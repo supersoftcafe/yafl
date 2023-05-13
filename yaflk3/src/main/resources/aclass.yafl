@@ -4,9 +4,8 @@ module Test
 import Io
 import System
 
-class Thing(height, age) {
-    fun both(value) => height + age + value
-}
+class Thing(height, age)
+  fun both(value) => height + age + value
 
 fun doSomethingWith(value, getter) => print(getter(value))
 

@@ -95,7 +95,8 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
     open fun updateTypeRefKlass(self: TypeRef.Klass, path: List<Any>): Pair<TypeRef.Klass, TOut> {
         val path = path + self
         val (eIn, eOut) = updateList(self.extends, path, ::updateTypeRefKlass)
-        return self.copy(extends = eIn) to eOut
+        val (gIn, gOut) = updateList(self.genericParameters, path, ::updateTypeRef)
+        return self.copy(extends = eIn, genericParameters = gIn) to eOut+gOut
     }
 
     open fun updateTypeRefPrimitive(self: TypeRef.Primitive, path: List<Any>): Pair<TypeRef.Primitive, TOut> {

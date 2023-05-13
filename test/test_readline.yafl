@@ -1,0 +1,10 @@
+
+module Test
+
+import Io
+import System
+
+
+
+fun main() => print("Say something: ") + writeLine("You said " + readLine())
+

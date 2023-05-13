@@ -268,18 +268,6 @@ public class YaflBaseListener implements YaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
-	@Override public void enterObjectExpr(YaflParser.ObjectExprContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitObjectExpr(YaflParser.ObjectExprContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
 	@Override public void enterIntegerExpr(YaflParser.IntegerExprContext ctx) { }
 	/**
 	 * {@inheritDoc}
@@ -568,6 +556,18 @@ public class YaflBaseListener implements YaflListener {
 	 *
 	 * <p>The default implementation does nothing.</p>
 	 */
+	@Override public void enterFunctionTail(YaflParser.FunctionTailContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitFunctionTail(YaflParser.FunctionTailContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
 	@Override public void enterFunction(YaflParser.FunctionContext ctx) { }
 	/**
 	 * {@inheritDoc}
@@ -575,6 +575,18 @@ public class YaflBaseListener implements YaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitFunction(YaflParser.FunctionContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void enterClassMember(YaflParser.ClassMemberContext ctx) { }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation does nothing.</p>
+	 */
+	@Override public void exitClassMember(YaflParser.ClassMemberContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -599,18 +611,6 @@ public class YaflBaseListener implements YaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitClass(YaflParser.ClassContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterEnum(YaflParser.EnumContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitEnum(YaflParser.EnumContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -671,18 +671,6 @@ public class YaflBaseListener implements YaflListener {
 	 * <p>The default implementation does nothing.</p>
 	 */
 	@Override public void exitDeclaration(YaflParser.DeclarationContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void enterClassMember(YaflParser.ClassMemberContext ctx) { }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation does nothing.</p>
-	 */
-	@Override public void exitClassMember(YaflParser.ClassMemberContext ctx) { }
 	/**
 	 * {@inheritDoc}
 	 *

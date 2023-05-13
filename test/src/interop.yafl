@@ -11,6 +11,8 @@ alias Pointer: __primitive__ pointer
 
 fun [extern] putchar(char: Int): Int
 fun [extern] write(fd: Int, pointer: Pointer, size: Size): Size
+fun [extern] getchar(): Int
+fun [extern] read(fd: Int, pointer: Pointer, size: Size): Size
 
 
 
@@ -56,3 +58,4 @@ fun Int8 (r: System::Interop::Size): System::Int8  => __llvm_ir__<System::Int8 >
 fun Int16(r: System::Interop::Size): System::Int16 => __llvm_ir__<System::Int16>("${0} = trunc %size_t ${1} to i16", r)
 fun Int32(r: System::Interop::Size): System::Int32 => __llvm_ir__<System::Int32>("${0} = trunc %size_t ${1} to i32", r)
 fun Int64(r: System::Interop::Size): System::Int64 => __llvm_ir__<System::Int64>("${0} = bitcast %size_t ${1} to i64", r)
+

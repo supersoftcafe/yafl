@@ -164,13 +164,6 @@ public class YaflBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements Y
 	 * <p>The default implementation returns the result of calling
 	 * {@link #visitChildren} on {@code ctx}.</p>
 	 */
-	@Override public T visitObjectExpr(YaflParser.ObjectExprContext ctx) { return visitChildren(ctx); }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation returns the result of calling
-	 * {@link #visitChildren} on {@code ctx}.</p>
-	 */
 	@Override public T visitIntegerExpr(YaflParser.IntegerExprContext ctx) { return visitChildren(ctx); }
 	/**
 	 * {@inheritDoc}
@@ -339,7 +332,21 @@ public class YaflBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements Y
 	 * <p>The default implementation returns the result of calling
 	 * {@link #visitChildren} on {@code ctx}.</p>
 	 */
+	@Override public T visitFunctionTail(YaflParser.FunctionTailContext ctx) { return visitChildren(ctx); }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation returns the result of calling
+	 * {@link #visitChildren} on {@code ctx}.</p>
+	 */
 	@Override public T visitFunction(YaflParser.FunctionContext ctx) { return visitChildren(ctx); }
+	/**
+	 * {@inheritDoc}
+	 *
+	 * <p>The default implementation returns the result of calling
+	 * {@link #visitChildren} on {@code ctx}.</p>
+	 */
+	@Override public T visitClassMember(YaflParser.ClassMemberContext ctx) { return visitChildren(ctx); }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -354,13 +361,6 @@ public class YaflBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements Y
 	 * {@link #visitChildren} on {@code ctx}.</p>
 	 */
 	@Override public T visitClass(YaflParser.ClassContext ctx) { return visitChildren(ctx); }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation returns the result of calling
-	 * {@link #visitChildren} on {@code ctx}.</p>
-	 */
-	@Override public T visitEnum(YaflParser.EnumContext ctx) { return visitChildren(ctx); }
 	/**
 	 * {@inheritDoc}
 	 *
@@ -396,13 +396,6 @@ public class YaflBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements Y
 	 * {@link #visitChildren} on {@code ctx}.</p>
 	 */
 	@Override public T visitDeclaration(YaflParser.DeclarationContext ctx) { return visitChildren(ctx); }
-	/**
-	 * {@inheritDoc}
-	 *
-	 * <p>The default implementation returns the result of calling
-	 * {@link #visitChildren} on {@code ctx}.</p>
-	 */
-	@Override public T visitClassMember(YaflParser.ClassMemberContext ctx) { return visitChildren(ctx); }
 	/**
 	 * {@inheritDoc}
 	 *

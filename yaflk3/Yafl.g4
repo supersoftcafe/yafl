@@ -10,6 +10,7 @@ MODULE      : 'module';
 IMPORT      : 'import';
 ALIAS       : 'alias';
 FUN         : 'fun';
+MEMBER_FUN  : '^fun' ;
 LET         : 'let';
 INTERFACE   : 'interface';
 TRAIT       : 'trait';
@@ -86,7 +87,6 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
 
             | condition=expression ( '?' left=expression ':' right=expression ) # ifExpr
             | exprOfTuple                                                   # tupleExpr
-            | OBJECT ':' typeRef ( '|' typeRef )* ( '{' function* '}' )?    # objectExpr
             | let ';'? expression                                           # letExpr
             | function ';'? expression                                      # functionExpr
             | valueParamsDeclare ( ':' type )? LAMBDA expression            # lambdaExpr
@@ -98,18 +98,18 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
 
 
 let         : LET NAME genericParamsDeclare? ( ':' type )? ( '=' expression )? ';'? ;
-function    : FUN attributes? (extensionType=typeRef '.' )? NAME genericParamsDeclare? valueParamsDeclare? ( ':' type )? ( LAMBDA expression )? ';'? ;
-interface   : INTERFACE NAME genericParamsDeclare? extends? ( '{' function* '}' )? ';'? ;
-class       : CLASS NAME genericParamsDeclare? valueParamsDeclare? extends? ( '{' classMember* '}' )? ';'? ;
-enum        : ENUM NAME genericParamsDeclare? ( '{' ( ( NAME valueParamsDeclare? ) | function )* '}' )? ';'? ;
+functionTail: attributes? (extensionType=typeRef '.' )? NAME genericParamsDeclare? valueParamsDeclare? ( ':' type )? ( LAMBDA expression )? ';'? ;
+function    : FUN functionTail ;
+classMember : MEMBER_FUN functionTail ;
+interface   : INTERFACE NAME genericParamsDeclare? extends? classMember* ';'? ;
+class       : CLASS NAME genericParamsDeclare? valueParamsDeclare? extends? classMember* ';'? ;
 alias       : ALIAS NAME genericParamsDeclare? ':' type ';'? ;
 
 
 extends     : ':' typeRef ( ',' typeRef )* ;
 module      : MODULE typeRef ';'? ;
 import_     : IMPORT typeRef ';'? ;
-declaration : let | function | interface | class | enum | alias;
-classMember : function ;
+declaration : let | function | interface | class | alias;
 
 root        : module import_* declaration* EOF ;
 

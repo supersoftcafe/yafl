@@ -234,18 +234,6 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitPowerExpr(YaflParser.PowerExprContext ctx);
 	/**
-	 * Enter a parse tree produced by the {@code objectExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 */
-	void enterObjectExpr(YaflParser.ObjectExprContext ctx);
-	/**
-	 * Exit a parse tree produced by the {@code objectExpr}
-	 * labeled alternative in {@link YaflParser#expression}.
-	 * @param ctx the parse tree
-	 */
-	void exitObjectExpr(YaflParser.ObjectExprContext ctx);
-	/**
 	 * Enter a parse tree produced by the {@code integerExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -532,6 +520,16 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitLet(YaflParser.LetContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link YaflParser#functionTail}.
+	 * @param ctx the parse tree
+	 */
+	void enterFunctionTail(YaflParser.FunctionTailContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#functionTail}.
+	 * @param ctx the parse tree
+	 */
+	void exitFunctionTail(YaflParser.FunctionTailContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link YaflParser#function}.
 	 * @param ctx the parse tree
 	 */
@@ -541,6 +539,16 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitFunction(YaflParser.FunctionContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#classMember}.
+	 * @param ctx the parse tree
+	 */
+	void enterClassMember(YaflParser.ClassMemberContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#classMember}.
+	 * @param ctx the parse tree
+	 */
+	void exitClassMember(YaflParser.ClassMemberContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#interface}.
 	 * @param ctx the parse tree
@@ -561,16 +569,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitClass(YaflParser.ClassContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#enum}.
-	 * @param ctx the parse tree
-	 */
-	void enterEnum(YaflParser.EnumContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#enum}.
-	 * @param ctx the parse tree
-	 */
-	void exitEnum(YaflParser.EnumContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#alias}.
 	 * @param ctx the parse tree
@@ -621,16 +619,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitDeclaration(YaflParser.DeclarationContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#classMember}.
-	 * @param ctx the parse tree
-	 */
-	void enterClassMember(YaflParser.ClassMemberContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#classMember}.
-	 * @param ctx the parse tree
-	 */
-	void exitClassMember(YaflParser.ClassMemberContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#root}.
 	 * @param ctx the parse tree

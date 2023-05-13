@@ -91,8 +91,12 @@ private fun TypeRef?.toCgType(globals: Globals): CgType {
         is TypeRef.Generic ->
             throw IllegalStateException("Dangling generic TypeRef")
 
-        is TypeRef.Klass ->
-            (globals.type[id] ?: throw IllegalStateException("Type lookup failure")).toCgType(globals)
+        is TypeRef.Klass -> {
+            val x = globals.type[id]
+            if (x == null)
+                throw IllegalStateException("Type lookup failure")
+            x.toCgType(globals)
+        }
 
         is TypeRef.Callable ->
             CgTypeStruct.functionPointer
@@ -794,9 +798,11 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
     val userMainList = globals.data.values
         .filterIsInstance<Declaration.Function>()
         .filter {
-            (it.name == "main" || it.name.endsWith("::main")) && it.parameters.isEmpty() && it.body?.typeRef == TypeRef.Primitive(
-                PrimitiveKind.Int32
-            )
+            if (it.name == "main" || it.name.endsWith("::main")) {
+                it.parameters.isEmpty() && it.body?.typeRef == TypeRef.Primitive(PrimitiveKind.Int32)
+            } else {
+                false
+            }
         }
     val userMain = userMainList.firstOrNull()
 

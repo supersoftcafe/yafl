@@ -96,8 +96,8 @@ fun YaflParser.InterfaceContext.toDeclaration(
     val scopeOfMembers = Scope.Member(interfaceId, if (scope is Scope.Member) scope.level + 1 else 0)
 
 
-    val members = function().flatMapIndexed { index, function ->
-        function.toDeclaration(file, memberId + index, scopeOfMembers, interfaceType)
+    val members = classMember().flatMapIndexed { index, member ->
+        member.functionTail().toDeclaration(file, memberId + index, scopeOfMembers, interfaceType)
     }
 
     val sourceRef = toSourceRef(file)
@@ -159,7 +159,7 @@ fun YaflParser.ClassContext.toDeclaration(
 
     val parameters = valueParamsDeclare().toDeclarationLets(file, parameterId, scopeOfMembers)
     val members = classMember().flatMapIndexed { index, classMember ->
-        classMember.function().toDeclaration(file, memberId + index, scopeOfMembers, klassTypeForKlass)
+        classMember.functionTail().toDeclaration(file, memberId + index, scopeOfMembers, klassTypeForKlass)
     }
 
     val klassSourceRef = toSourceRef(file)
@@ -235,7 +235,7 @@ fun YaflParser.ClassContext.toDeclaration(
     return listOf(klass, constructor)
 }
 
-fun YaflParser.FunctionContext.toDeclaration(
+fun YaflParser.FunctionTailContext.toDeclaration(
     file: String,
     namer: Namer,
     scope: Scope,
@@ -299,7 +299,7 @@ fun YaflParser.DeclarationContext.toDeclaration(
     return alias()?.toDeclaration(file, id, scope, prefix)
         ?: class_()?.toDeclaration(file, id, scope, prefix)
         ?: interface_()?.toDeclaration(file, id, scope, prefix)
-        ?: function()?.toDeclaration(file, id, scope, TypeRef.Unit, prefix)
+        ?: function()?.functionTail()?.toDeclaration(file, id, scope, TypeRef.Unit, prefix)
         ?: let()?.toDeclaration(file, id, scope, prefix)?.let { listOf(it) }
         ?: throw IllegalArgumentException()
 }

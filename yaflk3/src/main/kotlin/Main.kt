@@ -1,24 +1,15 @@
 
-import com.supersoftcafe.yafl.antlr.*
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.codegen.generateLlvmIr
 import com.supersoftcafe.yafl.codegen.optimizeLlvmIr
 import com.supersoftcafe.yafl.parsetoast.parseToAst
+import com.supersoftcafe.yafl.parsetoast.sourceToParseTree
 import com.supersoftcafe.yafl.translate.*
 import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
-import org.antlr.v4.runtime.*
 import java.io.File
+import java.util.*
 import kotlin.system.exitProcess
-
-
-fun sourceToParseTree(contents: String, file: String): YaflParser.RootContext {
-    System.err.println("Reading file $file")
-    val lexer = YaflLexer(CharStreams.fromString(contents))
-    val tokenStream = CommonTokenStream(lexer)
-    val parser = YaflParser(tokenStream)
-    return parser.root()
-}
 
 
 fun expandFilesList(files: List<File>): List<File> {
@@ -39,7 +30,7 @@ fun yaflBuild(files: List<File>): Either<String, List<String>> {
             // Parse
 //        .map { file -> Pair(file, Ast::class.java.getResource(file)!!.readText()) }
         .map { file -> file.toString() to file.readText() }
-        .map { (file, contents) -> Pair(file, sourceToParseTree(contents, file)) }
+        .map { (file, contents) -> sourceToParseTree(contents, file) }
         .mapIndexed { index, (file, tree) -> parseToAst(namer + index, file, tree) }
         .fold(Ast()) { acc, ast -> acc + ast }
         .let { parseErrorScan(it) }
@@ -70,7 +61,8 @@ fun addCommonCode(it: String, llFiles: List<File>): String {
 fun main(args: Array<String>) {
     // val ast = yaflBuild("/system.yafl", "/string.yafl", "/interop.yafl", "/io.yafl", "/array.yafl")
     // val ast = yaflBuild("/system.yafl", "/string.yafl", "/test.yafl")
-    val ast = yaflBuild(expandFilesList(args.map { File(it) }))
+    val env = (System.getenv("YAFL_PATH")?.split(';') ?: Collections.emptyList())
+    val ast = yaflBuild(expandFilesList((env + args).map { File(it) }))
     when (ast) {
         is Either.Some -> {
             System.out.println(ast.value)

@@ -194,7 +194,6 @@ fun YaflParser.ExpressionContext.toExpression(
         is YaflParser.IfExprContext -> Expression.If(toSourceRef(file), null, condition.toExpression(file, namer + 1), left.toExpression(file, namer + 2), right.toExpression(file, namer + 3))
 
         is YaflParser.TupleExprContext -> exprOfTuple().toTupleExpression(file, namer)
-        is YaflParser.ObjectExprContext -> TODO()
         is YaflParser.LetExprContext -> Expression.Let(toSourceRef(file), null, let().toDeclaration(file, namer + 1, Scope.Local), expression().toExpression(file, namer + 2))
         // is YaflParser.FunctionExprContext -> Expression.Function(null, function().toDeclaration(id, isGlobal = false), expression().toExpression())
 
