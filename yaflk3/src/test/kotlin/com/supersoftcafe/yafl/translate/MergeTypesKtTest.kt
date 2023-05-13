@@ -100,7 +100,7 @@ internal class MergeTypesKtTest {
     @Test
     fun `generic identity function with explicit type`() {
         val ast = yaflBuild(
-                "fun genericIdentity<TValue>(value: TValue) => value\n" +
+                "fun genericIdentity<TValue>(genericValue: TValue): TValue => genericValue\n" +
                 "fun main() => genericIdentity<Int32>(1)\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
         assertEquals(TypeRef.Int32, decl?.returnType)
@@ -109,11 +109,22 @@ internal class MergeTypesKtTest {
     @Test
     fun `generic identity function with implicit type`() {
         val ast = yaflBuild(
-                "fun genericIdentity<T>(value: T) => value\n" +
+                "fun genericIdentity<TValue>(genericValue: TValue) => genericValue\n" +
                 "fun main() => genericIdentity(1)\n")
         val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
         assertEquals(TypeRef.Int32, decl?.returnType)
     }
+
+    @Test
+    fun `generic container`() {
+        val ast = yaflBuild(
+                "class GenericContainer<TValue>(genericValue: TValue) { }\n" +
+                "fun main() => GenericContainer(1).genericValue\n")
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::main" }?.declaration as? Declaration.Function
+        assertEquals(TypeRef.Int32, decl?.returnType)
+    }
+
+    // TODO: Test generics on interface and implemented on class with generic param
 
 
 

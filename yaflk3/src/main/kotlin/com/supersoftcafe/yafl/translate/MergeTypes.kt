@@ -3,10 +3,10 @@ package com.supersoftcafe.yafl.translate
 import com.supersoftcafe.yafl.ast.Declaration
 import com.supersoftcafe.yafl.ast.TupleTypeField
 import com.supersoftcafe.yafl.ast.TypeRef
+import com.supersoftcafe.yafl.utils.Namer
 
 
-
-fun TypeRef?.mightBeAssignableTo(receiver: TypeRef? ): Boolean {
+fun TypeRef?.mightBeAssignableTo(receiver: TypeRef?): Boolean {
     return if (receiver == null || this == null) {
         true
     } else when (this) {

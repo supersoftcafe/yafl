@@ -3,6 +3,8 @@ package com.supersoftcafe.yafl.translate
 
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.utils.Either
+import com.supersoftcafe.yafl.utils.Namer
+import com.supersoftcafe.yafl.utils.merge
 
 
 class InferTypes(private val typeHints: TypeHints) {
@@ -17,7 +19,7 @@ class InferTypes(private val typeHints: TypeHints) {
                 throw IllegalArgumentException("Unresolved shouldn't be here")
 
             is TypeRef.Klass ->
-                genericParameters.all { isInCorrectGenericContext(findDeclarations) }
+                genericParameters.all { it.isInCorrectGenericContext(findDeclarations) }
 
             is TypeRef.Primitive, TypeRef.Unit ->
                 true
@@ -41,6 +43,7 @@ class InferTypes(private val typeHints: TypeHints) {
         }
     }
 
+
     private fun DataRef.resolveData(
         sourceRef: SourceRef,
         receiver: TypeRef?,
@@ -51,7 +54,11 @@ class InferTypes(private val typeHints: TypeHints) {
                 val foundMany = findDeclarations(name)
                 val found = foundMany
                     .filterIsInstance<Declaration.Data>()
-                    .filter { it.typeRef.mightBeAssignableTo(receiver) && it.genericDeclaration.size == genericParameters.size}
+                    .filter {
+                        it.genericDeclaration.size >= genericParameters.size &&
+                                it.typeRef.replaceGenericRefs(it.genericDeclaration, genericParameters)
+                                    .mightBeAssignableTo(receiver)
+                    }
 
                 val first = found.singleOrNull()
                 if (first == null)
@@ -77,24 +84,60 @@ class InferTypes(private val typeHints: TypeHints) {
 //        return Pair(result.map { (e, _) -> e!! }, result.fold(emptyTypeHints()) { acc, (_, h) -> acc + h })
 //    }
 
-    private fun TypeRef.replaceGenericRefs(
+    private fun TypeRef?.replaceGenericRefs(
         genericDeclarations: List<Declaration.Generic>,
         actualDeclarations: List<TypeRef>
-    ): TypeRef {
-        fun TypeRef.loop(): TypeRef {
+    ): TypeRef? {
+        fun TypeRef?.loop(): TypeRef? {
             return when (this) {
-                is TypeRef.Primitive, TypeRef.Unit -> this
-                is TypeRef.Unresolved -> throw IllegalStateException("unresolved")
-                is TypeRef.Klass -> copy(genericParameters = genericParameters.map { it.loop() })
-                is TypeRef.Callable -> copy(result = result?.loop(), parameter = parameter?.loop() as TypeRef.Tuple?)
-                is TypeRef.Tuple -> copy(fields = fields.map { it.copy(typeRef = it.typeRef?.loop()) })
+                is TypeRef.Primitive, TypeRef.Unit, null ->
+                    this
+                is TypeRef.Unresolved ->
+                    throw IllegalStateException("unresolved")
+                is TypeRef.Klass ->
+                    copy(genericParameters = genericParameters.mapNotNull { it.loop() }.takeIf { it.size == genericParameters.size } ?: listOf())
+                is TypeRef.Callable ->
+                    copy(result = result?.loop(), parameter = parameter?.loop() as TypeRef.Tuple?)
+                is TypeRef.Tuple ->
+                    copy(fields = fields.map { it.copy(typeRef = it.typeRef?.loop()) })
                 is TypeRef.Generic -> {
                     val index = genericDeclarations.indexOfFirst { it.id == id }
-                    actualDeclarations.getOrNull(index) ?: this
+                    if (index < actualDeclarations.size)
+                         (actualDeclarations.getOrNull(index) ?: this) // Not found is -1, which means it's not one of our generics
+                    else null // No mapping yet
                 }
             }
         }
         return loop()
+    }
+
+    private fun extractGenericDefinitions(left: TypeRef?, right: TypeRef?): Map<Namer, Set<TypeRef>> {
+        return when (left) {
+            is TypeRef.Generic ->
+                if (right != null)
+                     mapOf(left.id to setOf(right))
+                else mapOf()
+
+            is TypeRef.Klass ->
+                if (right is TypeRef.Klass)
+                     left.genericParameters.zip(right.genericParameters).map { (x, y) -> extractGenericDefinitions(x, y) }.merge()
+                else mapOf()
+
+            is TypeRef.Callable ->
+                if (right is TypeRef.Callable)
+                     listOf(extractGenericDefinitions(left.result, right.result), extractGenericDefinitions(left.parameter, right.parameter)).merge()
+                else mapOf()
+
+            is TypeRef.Tuple ->
+                if (right is TypeRef.Tuple)
+                     left.fields.zip(right.fields).map { (x,y) -> extractGenericDefinitions(x.typeRef, y.typeRef) }.merge()
+                else mapOf()
+
+            is TypeRef.Unresolved ->
+                throw IllegalStateException("unresolved")
+            is TypeRef.Primitive, TypeRef.Unit, null ->
+                mapOf()
+        }
     }
 
     private fun Expression?.inferTypes(
@@ -137,12 +180,14 @@ class InferTypes(private val typeHints: TypeHints) {
                 val declaration = findDeclarations(typeRef.name).single { it.id == typeRef.id } as Declaration.Klass
 
                 val (parameter, paramHints) = parameter.inferTypes(TypeRef.Tuple(declaration.parameters.map {
+                    val paramTypeRef = it.typeRef.replaceGenericRefs(declaration.genericDeclaration, typeRef.genericParameters)
+
                     TupleTypeField(if (it.arraySize != null) {
                         // Array requires a lambda parameter
-                        TypeRef.Callable(TypeRef.Tuple(listOf(TupleTypeField(TypeRef.Int32, null))), it.typeRef)
+                        TypeRef.Callable(TypeRef.Tuple(listOf(TupleTypeField(TypeRef.Int32, null))), paramTypeRef)
                     } else {
                         // Otherwise just the value
-                        it.typeRef
+                        paramTypeRef
                     }, it.name)
                 }), findDeclarations)
 
@@ -187,19 +232,21 @@ class InferTypes(private val typeHints: TypeHints) {
                                 candidatesByName.singleOrNull {
                                     it.typeRef.mightBeAssignableTo(receiver)
                                 }?.let { entry ->
-
                                     val entryHint = if (receiver != null) {
                                         typeHintsOf(entry.id to TypeHint(outputTypeRef = receiver))
                                     } else {
                                         emptyTypeHints()
                                     }
 
+                                    val resultTypeRef = if (entry.typeRef?.complete == true)
+                                         entry.typeRef.replaceGenericRefs(declaration.genericDeclaration, baseTypeRef.genericParameters)
+                                    else typeRef
+
                                     Pair(copy(
                                         base = base,
-                                        typeRef = if (entry.typeRef?.complete == true) entry.typeRef else typeRef,
+                                        typeRef = resultTypeRef,
                                         id = entry.id
                                     ), baseHints + entryHint)
-
                                 }
                             }
 
@@ -221,6 +268,7 @@ class InferTypes(private val typeHints: TypeHints) {
             is Expression.LoadData -> {
                 val (newDataRef, declaration) = dataRef.resolveData(sourceRef, receiver, findDeclarations)
                 if (declaration != null && declaration.scope is Scope.Member) {
+                    // Member cannot be generic
                     Pair(Expression.LoadMember(
                         sourceRef, typeRef,
                         Expression.LoadData(
@@ -231,19 +279,36 @@ class InferTypes(private val typeHints: TypeHints) {
                         declaration.id,
                     ), emptyTypeHints())
                 } else {
-                    val newTypeRef = mergeTypes(
-                        declaration?.sourceTypeRef?.replaceGenericRefs(declaration.genericDeclaration, newDataRef.genericParameters),
-                        inputType = declaration?.typeRef?.replaceGenericRefs(declaration.genericDeclaration, newDataRef.genericParameters),
-                        outputType = receiver
-                    )
+                    val parsedType = declaration?.sourceTypeRef?.replaceGenericRefs(declaration.genericDeclaration, newDataRef.genericParameters)
+                    val inputType = declaration?.typeRef?.replaceGenericRefs(declaration.genericDeclaration, newDataRef.genericParameters)
+
+                    val newTypeRef = mergeTypes(parsedType, inputType, receiver)
 
                     val hints = if (declaration == null || newTypeRef == null) emptyTypeHints()
                     else typeHintsOf(declaration.id to TypeHint(outputTypeRef = newTypeRef))
 
-                    Pair(copy(
-                        dataRef = newDataRef,
-                        typeRef = newTypeRef
-                    ), hints)
+                    if (newDataRef is DataRef.Resolved) {
+                        // Infer any unknown generic parameters from newTypeRef
+                        val newGenerics = if (declaration != null) {
+                            val lookup = extractGenericDefinitions(declaration.typeRef, newTypeRef) + declaration.genericDeclaration.zip(newDataRef.genericParameters).associate { (x, y) -> x.id to setOf(y) }
+                            val result = declaration.genericDeclaration.mapNotNull { lookup.getOrDefault(it.id, setOf()).singleOrNull() }
+                            if (result.size != declaration.genericDeclaration.size)
+                                 newDataRef.genericParameters
+                            else result
+                        } else {
+                            newDataRef.genericParameters
+                        }
+
+                        Pair(copy(
+                            dataRef = newDataRef.copy(genericParameters = newGenerics),
+                            typeRef = newTypeRef
+                        ), hints)
+                    } else {
+                        Pair(copy(
+                            dataRef = newDataRef,
+                            typeRef = newTypeRef
+                        ), hints)
+                    }
                 }
             }
 
@@ -395,6 +460,7 @@ class InferTypes(private val typeHints: TypeHints) {
         val (bodyExpr, bodyHints) = body.inferTypes(sourceReturnType ?: returnType) { name ->
             (parameters + thisDeclaration).filter { it.name == name } + findDeclarations(name)
         }
+
         val (params, paramHints2) = parameters.inferTypesParameters(findDeclarations)
 
         return Pair(copy(

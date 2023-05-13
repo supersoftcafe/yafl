@@ -21,12 +21,24 @@ fun sourceToParseTree(contents: String, file: String): YaflParser.RootContext {
 }
 
 
-fun yaflBuild(vararg files: String): Either<String, List<String>> {
+fun expandFilesList(files: List<File>): List<File> {
+    return files.flatMap { file ->
+        if (file.isDirectory)
+             expandFilesList(file.listFiles().toList())
+        else listOf(file)
+    }
+}
+
+
+fun yaflBuild(files: List<File>): Either<String, List<String>> {
+    val yaflFiles = files.filter { it.extension == "yafl" }
+    val llFiles = files.filter { it.extension == "ll" }
+
     val namer = Namer("a")
-    val ast = files
+    val ast = yaflFiles
             // Parse
 //        .map { file -> Pair(file, Ast::class.java.getResource(file)!!.readText()) }
-        .map { file -> Pair(file, File(file).readText()) }
+        .map { file -> file.toString() to file.readText() }
         .map { (file, contents) -> Pair(file, sourceToParseTree(contents, file)) }
         .mapIndexed { index, (file, tree) -> parseToAst(namer + index, file, tree) }
         .fold(Ast()) { acc, ast -> acc + ast }
@@ -44,18 +56,21 @@ fun yaflBuild(vararg files: String): Either<String, List<String>> {
             // Emit
         .map { Either.some(convertToIntermediate(it)) }
         .map { generateLlvmIr(it.reversed()) }
+        .map { Either.some(addCommonCode(it, llFiles)) }
 //        .map { optimizeLlvmIr(it) }
 
     return ast
 }
 
-
+fun addCommonCode(it: String, llFiles: List<File>): String {
+    return llFiles.fold(it) { acc, file -> file.readText() + acc }
+}
 
 
 fun main(args: Array<String>) {
     // val ast = yaflBuild("/system.yafl", "/string.yafl", "/interop.yafl", "/io.yafl", "/array.yafl")
-    // val ast = yaflBuild("/system.yafl", "/lambda.yafl")
-    val ast = yaflBuild(*args)
+    // val ast = yaflBuild("/system.yafl", "/string.yafl", "/test.yafl")
+    val ast = yaflBuild(expandFilesList(args.map { File(it) }))
     when (ast) {
         is Either.Some -> {
             System.out.println(ast.value)

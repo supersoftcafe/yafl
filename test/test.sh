@@ -1,7 +1,7 @@
 
 mkdir -p build
 
-java -cp ../yaflk3/out/artifacts/yaflk3_jar/yaflk3.jar MainKt src/*.yafl >build/raw.ll || exit 1
+java -cp ../yaflk3/build/libs/yaflk3-1.0-SNAPSHOT-standalone.jar MainKt src/*.yafl $* >build/raw.ll || exit 1
 
 # Create optimized version
 # cp build/raw.ll build/opt.ll
@@ -13,6 +13,6 @@ llc -O=3 build/opt.ll || exit 1
 
 # Compile and link with library
 # llc -filetype=obj -O=3 build/opt.ll || exit 1
-clang -O3 -o build/main build/raw.ll ../yaflc1/cmake-build-debug/libyaflc1.a
+clang -O3 -o build/main build/raw.ll ../yaflc1/libyaflc1.a
 
 

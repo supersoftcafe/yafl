@@ -7,3 +7,4 @@ fun genericIdentity<TValue>(genericValue: TValue): TValue => genericValue
 
 fun main() => genericIdentity<Int32>(1)
 
+

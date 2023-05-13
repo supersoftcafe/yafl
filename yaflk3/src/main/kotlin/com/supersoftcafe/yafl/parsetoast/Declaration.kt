@@ -142,18 +142,24 @@ fun YaflParser.ClassContext.toDeclaration(
     val klassId = id + 3
     val constructorId = id + 4
     val thisId = id + 5
-    val genericsId = id + 6
-
-    val genericDeclaration = genericParamsDeclare().toGenericParamsDeclare(file, genericsId)
-    val genericForwardedParams = genericDeclaration.forwardGenericParams()
+    val genericsKlassId = id + 6
+    val genericsConstructorId = id + 7
 
     val klassName = prefix + NAME().text
-    val klassType = TypeRef.Unresolved(klassName, klassId, genericForwardedParams)
+
+    val genericDeclarationForKlass = genericParamsDeclare().toGenericParamsDeclare(file, genericsKlassId)
+    val genericForwardedParamsForKlass = genericDeclarationForKlass.forwardGenericParams()
+    val klassTypeForKlass = TypeRef.Unresolved(klassName, klassId, genericForwardedParamsForKlass)
+
+    val genericDeclarationForConstructor = genericParamsDeclare().toGenericParamsDeclare(file, genericsConstructorId)
+    val genericForwardedParamsForConstructor = genericDeclarationForConstructor.forwardGenericParams()
+    val klassTypeForConstructor = TypeRef.Unresolved(klassName, klassId, genericForwardedParamsForConstructor)
+
     val scopeOfMembers = Scope.Member(klassId, if (scope is Scope.Member) scope.level + 1 else 0)
 
     val parameters = valueParamsDeclare().toDeclarationLets(file, parameterId, scopeOfMembers)
     val members = classMember().flatMapIndexed { index, classMember ->
-        classMember.function().toDeclaration(file, memberId + index, scopeOfMembers, klassType)
+        classMember.function().toDeclaration(file, memberId + index, scopeOfMembers, klassTypeForKlass)
     }
 
     val klassSourceRef = toSourceRef(file)
@@ -166,7 +172,7 @@ fun YaflParser.ClassContext.toDeclaration(
         members,
         extends_().toExtends(),
         isInterface = false,
-        genericDeclaration = genericDeclaration
+        genericDeclaration = genericDeclarationForKlass
     )
 
     val constrSourceRef = valueParamsDeclare()?.toSourceRef(file) ?: klassSourceRef
@@ -194,10 +200,6 @@ fun YaflParser.ClassContext.toDeclaration(
         )
     }
 
-    val paramType = TypeRef.Tuple(constrParams.map { parameter ->
-        TupleTypeField(parameter.sourceTypeRef, parameter.name)
-    })
-
     val constructor = Declaration.Function(
         sourceRef = constrSourceRef,
         name = klassName,
@@ -206,13 +208,15 @@ fun YaflParser.ClassContext.toDeclaration(
         thisDeclaration = thisDecl,
         parameters = constrParams,
         returnType = null,
-        sourceReturnType = klassType,
+        sourceReturnType = klassTypeForConstructor,
         body = Expression.NewKlass(
             sourceRef = constrSourceRef,
-            typeRef = klassType,
+            typeRef = klassTypeForConstructor,
             parameter = Expression.Tuple(
                 sourceRef = constrSourceRef,
-                typeRef = paramType,
+                typeRef = TypeRef.Tuple(constrParams.map { parameter ->
+                    TupleTypeField(parameter.sourceTypeRef, parameter.name)
+                }),
                 fields = constrParams.map { constrParam ->
                     TupleExpressionField(
                         name = constrParam.name,
@@ -225,7 +229,7 @@ fun YaflParser.ClassContext.toDeclaration(
                 }
             ),
         ),
-        genericDeclaration = genericDeclaration
+        genericDeclaration = genericDeclarationForConstructor
     )
 
     return listOf(klass, constructor)
