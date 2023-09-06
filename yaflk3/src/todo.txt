@@ -1,5 +1,26 @@
 
+# Arrays, get rid of max size specifier.
+# Get rid of Declaration.Enum, replace it with a direct tagged value type instead like tuple.
+# e.g. fun egg() => |some(1)    # return tag |some with value 1
+#      fun bacon(cond) => cond ? |some(1) : |none  # left returns tagged some, right returns tagged none
+#                                                  # function returns |some(Int)|none
+# multiple tagged input types can be combined so |some(Int)|none can be passed to a function
+# that takes |some(Int)|error(String)|none just as well. But it can't take |some(String)|none.
+#
+# hopefully this avoids the need for generics for a while
+
+
+
+# more thoughts on lazy...  there are smart ways to do it, but should we?
+
+
+
+
+
+
 # Todo
+
+** Pre-calculate so called "transport types" of CgType into a Map<Named,CgType>.
 
 
 

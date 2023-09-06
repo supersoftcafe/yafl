@@ -1,74 +1,69 @@
 package com.supersoftcafe.yafl.utils
 
-sealed class Either<out TValue,TError> {
-    abstract fun <TResult> map(op: (TValue) -> Either<TResult,TError>): Either<TResult,TError>
+import java.io.File
 
-    abstract fun <TExtra> with(extra: TExtra): Either<Pair<TValue, TExtra>, TError>
+sealed class Either<out TValue> {
+    abstract fun <TResult> map(op: (TValue) -> Either<TResult>): Either<TResult>
+    abstract fun <TExtra> with(extra: TExtra): Either<Pair<TValue, TExtra>>
+}
 
-    data class Some<TValue,TError>(val value: TValue) : Either<TValue,TError>() {
-        override fun <TResult> map(op: (TValue) -> Either<TResult,TError>) = op(value)
-        override fun <TExtra> with(extra: TExtra) = some<Pair<TValue,TExtra>,TError>(Pair(value, extra))
+fun <TValue> some(value: TValue) : Either<TValue> = Some(value)
+data class Some<TValue>(val value: TValue) : Either<TValue>() {
+    override fun <TResult> map(op: (TValue) -> Either<TResult>) = op(value)
+    override fun <TExtra> with(extra: TExtra) = some(Pair(value, extra))
+}
+
+fun <TValue> error(errorInfo: Iterable<ErrorInfo>) : Either<TValue> = Error(errorInfo)
+fun <TValue> error(errorInfo: ErrorInfo) : Either<TValue> = error(listOf(errorInfo))
+fun <TValue> error(errorInfo: String) : Either<TValue> = error(ErrorInfo.StringErrorInfo(errorInfo))
+data class Error<TValue>(val error: Iterable<ErrorInfo>) : Either<TValue>() {
+    override fun <TResult> map(op: (TValue) -> Either<TResult>) = Error<TResult>(error)
+    override fun <TExtra> with(extra: TExtra) = error<Pair<TValue,TExtra>>(error)
+}
+
+fun <TResult, TVal1, TVal2> combine(
+    val1: Either<TVal1>, val2: Either<TVal2>,
+    op: (TVal1, TVal2) -> Either<TResult>
+): Either<TResult> {
+    return when (val1) {
+        is Error -> Error(val1.error)
+        is Some -> when (val2) {
+            is Error -> Error(val2.error)
+            is Some -> op(val1.value, val2.value)
+        }
     }
+}
 
-    data class Error<TValue,TError>(val error: TError) : Either<TValue,TError>() {
-        override fun <TResult> map(op: (TValue) -> Either<TResult,TError>) = Error<TResult,TError>(error)
-        override fun <TExtra> with(extra: TExtra) = error<Pair<TValue,TExtra>,TError>(error)
-    }
-
-    companion object {
-        fun <TValue,TError> some(value: TValue) : Either<TValue,TError> = Some(value)
-        fun <TValue,TError> error(error: TError) : Either<TValue,TError> = Error(error)
-
-        fun <TResult, TVal1, TVal2, TError> combine(
-            val1: Either<TVal1, TError>,
-            val2: Either<TVal2, TError>,
-            op: (TVal1, TVal2) -> Either<TResult, TError>
-        ): Either<TResult, TError> {
-            return when (val1) {
-                is Error -> Error(val1.error)
-                is Some -> when (val2) {
-                    is Error -> Error(val2.error)
-                    is Some -> op(val1.value, val2.value)
-                }
+fun <TResult, TVal1, TVal2, TVal3> combine(
+    val1: Either<TVal1>, val2: Either<TVal2>, val3: Either<TVal3>,
+    op: (TVal1, TVal2, TVal3) -> Either<TResult>
+): Either<TResult> {
+    return when (val1) {
+        is Error -> Error(val1.error)
+        is Some -> when (val2) {
+            is Error -> Error(val2.error)
+            is Some -> when (val3) {
+                is Error -> Error(val3.error)
+                is Some ->  op(val1.value, val2.value, val3.value)
             }
         }
+    }
+}
 
-        fun <TResult, TVal1, TVal2, TVal3, TError> combine(
-            val1: Either<TVal1, TError>,
-            val2: Either<TVal2, TError>,
-            val3: Either<TVal3, TError>,
-            op: (TVal1, TVal2, TVal3) -> Either<TResult, TError>
-        ): Either<TResult, TError> {
-            return when (val1) {
-                is Error -> Error(val1.error)
-                is Some -> when (val2) {
-                    is Error -> Error(val2.error)
-                    is Some -> when (val3) {
-                        is Error -> Error(val3.error)
-                        is Some ->  op(val1.value, val2.value, val3.value)
-                    }
-                }
-            }
-        }
-
-        fun <TResult, TVal1, TVal2, TVal3, TVal4, TError> combine(
-            val1: Either<TVal1, TError>,
-            val2: Either<TVal2, TError>,
-            val3: Either<TVal3, TError>,
-            val4: Either<TVal4, TError>,
-            op: (TVal1, TVal2, TVal3, TVal4) -> Either<TResult, TError>
-        ): Either<TResult, TError> {
-            return when (val1) {
-                is Error -> Error(val1.error)
-                is Some -> when (val2) {
-                    is Error -> Error(val2.error)
-                    is Some -> when (val3) {
-                        is Error -> Error(val3.error)
-                        is Some -> when (val4) {
-                            is Error -> Error(val4.error)
-                            is Some -> op(val1.value, val2.value, val3.value, val4.value)
-                        }
-                    }
+fun <TResult, TVal1, TVal2, TVal3, TVal4> combine(
+    val1: Either<TVal1>, val2: Either<TVal2>,
+    val3: Either<TVal3>, val4: Either<TVal4>,
+    op: (TVal1, TVal2, TVal3, TVal4) -> Either<TResult>
+): Either<TResult> {
+    return when (val1) {
+        is Error -> Error(val1.error)
+        is Some -> when (val2) {
+            is Error -> Error(val2.error)
+            is Some -> when (val3) {
+                is Error -> Error(val3.error)
+                is Some -> when (val4) {
+                    is Error -> Error(val4.error)
+                    is Some -> op(val1.value, val2.value, val3.value, val4.value)
                 }
             }
         }
@@ -76,48 +71,66 @@ sealed class Either<out TValue,TError> {
 }
 
 
-fun <TValue, TResult, TError> Either<List<TValue>, TError>.foldIndexed(
+fun <TValue, TResult> Either<List<TValue>>.foldIndexed(
     initial: TResult,
-    op: (Int, TResult, TValue) -> Either<TResult, TError>
-): Either<TResult, TError> {
+    op: (Int, TResult, TValue) -> Either<TResult>
+): Either<TResult> {
     return when (this) {
-        is Either.Error -> Either.error(error)
-        is Either.Some -> value.foldIndexed(Either.some(initial)) { index, acc, value ->
+        is Error -> error(error)
+        is Some -> value.foldIndexed(some(initial)) { index, acc, value ->
             when (acc) {
-                is Either.Error -> Either.error(acc.error)
-                is Either.Some -> op(index, acc.value, value)
+                is Error -> error(acc.error)
+                is Some -> op(index, acc.value, value)
             }
         }
     }
 }
 
-private fun <TValue, TResult, TResultContainer, TError> Either<List<TValue>, TError>.mapIndexed(
+fun <TValue, TResult> Either<List<TValue>>.mapList(
+    op: (TValue) -> Either<TResult>
+): Either<List<TResult>> {
+    when (this) {
+        is Error -> return error(error)
+        is Some -> {
+            val result = mutableListOf<TResult>()
+            for (item in value) {
+                when (val r = op(item)) {
+                    is Error -> return error(r.error)
+                    is Some -> result.add(r.value)
+                }
+            }
+            return some(result)
+        }
+    }
+}
+
+private fun <TValue, TResult, TResultContainer> Either<List<TValue>>.mapIndexed(
     mix: (List<TResult>, TResultContainer) -> List<TResult>,
-    op: (Int, TValue) -> Either<TResultContainer, TError>
-): Either<List<TResult>, TError> {
+    op: (Int, TValue) -> Either<TResultContainer>
+): Either<List<TResult>> {
     return foldIndexed(listOf()) { index, acc, value ->
         when (val result = op(index, value)) {
-            is Either.Error -> Either.error(result.error)
-            is Either.Some -> Either.some(mix(acc, result.value))
+            is Error -> error(result.error)
+            is Some -> some(mix(acc, result.value))
         }
     }
 }
 
-fun <TValue, TResult, TError> Either<List<TValue>, TError>.mapIndexed(
-    op: (Int, TValue) -> Either<TResult, TError>
-): Either<List<TResult>, TError> {
+fun <TValue, TResult> Either<List<TValue>>.mapIndexed(
+    op: (Int, TValue) -> Either<TResult>
+): Either<List<TResult>> {
     return mapIndexed({ list, result -> list + result }, op)
 }
 
-fun <TValue, TResult, TError> Either<List<TValue>, TError>.mapIndexedNotNull(
-    op: (Int, TValue) -> Either<TResult?, TError>
-): Either<List<TResult>, TError> {
+fun <TValue, TResult> Either<List<TValue>>.mapIndexedNotNull(
+    op: (Int, TValue) -> Either<TResult?>
+): Either<List<TResult>> {
     return mapIndexed({ list, result -> if (result != null) list + result else list }, op)
 }
 
-fun <TValue, TResult, TError> Either<List<TValue>, TError>.flatMapIndexed(
-    op: (Int, TValue) -> Either<List<TResult>, TError>
-): Either<List<TResult>, TError> {
+fun <TValue, TResult> Either<List<TValue>>.flatMapIndexed(
+    op: (Int, TValue) -> Either<List<TResult>>
+): Either<List<TResult>> {
     return mapIndexed({ list, result -> list + result }, op)
 }
 
@@ -125,32 +138,41 @@ fun <TValue, TResult, TError> Either<List<TValue>, TError>.flatMapIndexed(
 
 
 
-fun <TValue, TResult, TError> Iterable<Either<TValue, TError>>.foldEither(
-    initial: Either<TResult,TError>,
-    op: (TResult, TValue) -> Either<TResult, TError>
-): Either<TResult, TError> {
-    return fold<Either<TValue, TError>, Either<TResult, TError>>(initial) { previous, value ->
+fun <TValue, TResult> Iterable<Either<TValue>>.foldEither(
+    initial: Either<TResult>,
+    op: (TResult, TValue) -> Either<TResult>
+): Either<TResult> {
+    return fold<Either<TValue>, Either<TResult>>(initial) { previous, value ->
         when (previous) {
-            is Either.Error -> Either.Error(previous.error)
-            is Either.Some -> when (value) {
-                is Either.Error -> Either.Error(value.error)
-                is Either.Some -> op(previous.value, value.value)
+            is Error -> Error(previous.error)
+            is Some -> when (value) {
+                is Error -> Error(value.error)
+                is Some -> op(previous.value, value.value)
             }
         }
     }
 }
 
-fun <TValue, TResult, TError> Iterable<Either<TValue, TError>>.foldIndexedEither(
-    initial: Either<TResult,TError>,
-    op: (Int, TResult, TValue) -> Either<TResult, TError>
-): Either<TResult, TError> {
-    return foldIndexed<Either<TValue, TError>, Either<TResult, TError>>(initial) { index, previous, value ->
+fun <TValue, TResult> Iterable<Either<TValue>>.foldIndexedEither(
+    initial: Either<TResult>,
+    op: (Int, TResult, TValue) -> Either<TResult>
+): Either<TResult> {
+    return foldIndexed<Either<TValue>, Either<TResult>>(initial) { index, previous, value ->
         when (previous) {
-            is Either.Error -> Either.Error(previous.error)
-            is Either.Some -> when (value) {
-                is Either.Error -> Either.Error(value.error)
-                is Either.Some -> op(index, previous.value, value.value)
+            is Error -> Error(previous.error)
+            is Some -> when (value) {
+                is Error -> Error(value.error)
+                is Some -> op(index, previous.value, value.value)
             }
         }
+    }
+}
+
+
+fun readFile(file: File): Either<String> {
+    return try {
+        some(file.readText())
+    } catch (e: Exception) {
+        error(ErrorInfo.ParseExceptionInfo(file, e))
     }
 }

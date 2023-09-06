@@ -9,13 +9,20 @@ PARALLEL    : '__parallel__';
 MODULE      : 'module';
 IMPORT      : 'import';
 ALIAS       : 'alias';
+WHEN        : 'when';
+IS          : 'is';
+ELSE        : 'else';
+END         : 'end';
+TEMPLATE    : 'template';
 FUN         : 'fun';
-MEMBER_FUN  : '^fun' ;
+MEMBER_FUN  : [ \t]+ 'fun';
 LET         : 'let';
+MEMBER_LET  : [ \t]+ 'let';
 INTERFACE   : 'interface';
 TRAIT       : 'trait';
 IMPL        : 'impl';
 CLASS       : 'class';
+STRUCT      : 'struct';
 OBJECT      : 'object';
 ENUM        : 'enum';
 LAZY        : 'lazy';
@@ -44,26 +51,26 @@ qualifiedName   : ( NAME NAMESPACE )* NAME ;
 exprOfTuplePart : ( NAME '=' )? expression ;
 exprOfTuple     : '(' ( exprOfTuplePart ',' )* exprOfTuplePart? ')' ;
 
-genericParamsPassing : '<' ( type ',' )* type? '>' ;
-genericParamsDeclare : '<' ( NAME ',' )* NAME? '>' ;
-
-typeRef         : qualifiedName genericParamsPassing? ;
-typePrimitive   : PRIMITIVE NAME ;
+typeRef         : qualifiedName ;
 typeOfTuplePart : ( NAME ':' )? type ;
 typeOfTuple     : '(' ( typeOfTuplePart ',' )* typeOfTuplePart? ')' ;
+typePrimitive   : PRIMITIVE NAME ;
 typeOfLambda    : typeOfTuple ':' type ;
 
-type            : typeRef               # namedType
-                | typePrimitive         # primitiveType
-                | typeOfTuple           # tupleType
-                | typeOfLambda          # lambdaType
+type            : typeRef                  # namedType
+                | typePrimitive            # primitiveType
+                | typeOfTuple              # tupleType
+                | typeOfLambda             # lambdaType
                 ;
 
 attributes      : '[' NAME* ']' ;
 
-valueParamsPart : valueParamsDeclare | ( NAME ( '[' ( expression CMP_LE )? INTEGER ']' )? ( ':' type )? ) ;
+valueParamsBody : '=' expression ;
+valueParamsArray: '[' ( expression CMP_LE )? INTEGER ']' ;
+valueParamsPart : valueParamsDeclare | ( NAME valueParamsArray? ( ':' type )? valueParamsBody? ) ;
 valueParamsDeclare  : '(' ( valueParamsPart ',' )* valueParamsPart? ')' ;
 
+whenBranch  : ( ( IS NAME valueParamsDeclare? ) | ELSE ) LAMBDA expression ;
 
 expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # llvmirExpr
             | ASSERT '(' value=expression ',' condition=expression ',' message=STRING ')' # assertExpr
@@ -93,23 +100,25 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
             | '[' expression ( ',' expression )* ','? ']'                   # newArrayExpr
             | STRING                                                        # stringExpr
             | INTEGER                                                       # integerExpr
-            | qualifiedName genericParamsPassing?                           # nameExpr
+            | qualifiedName                                                 # nameExpr
+            | WHEN expression whenBranch+                                   # whenExpr
             ;
 
-
-let         : LET NAME genericParamsDeclare? ( ':' type )? ( '=' expression )? ';'? ;
-functionTail: attributes? (extensionType=typeRef '.' )? NAME genericParamsDeclare? valueParamsDeclare? ( ':' type )? ( LAMBDA expression )? ';'? ;
+let         : LET valueParamsPart ';'? ;
+functionTail: attributes? (extensionType=typeRef '.' )? NAME valueParamsDeclare? ( ':' type )? ( LAMBDA expression )? ';'? ;
 function    : FUN functionTail ;
 classMember : MEMBER_FUN functionTail ;
-interface   : INTERFACE NAME genericParamsDeclare? extends? classMember* ';'? ;
-class       : CLASS NAME genericParamsDeclare? valueParamsDeclare? extends? classMember* ';'? ;
-alias       : ALIAS NAME genericParamsDeclare? ':' type ';'? ;
-
+interface   : INTERFACE NAME extends? classMember* ';'? ;
+class       : CLASS NAME valueParamsDeclare? extends? classMember* ';'? ;
+alias       : ALIAS NAME ':' type ';'? ;
+enumMember  : NAME valueParamsDeclare? ';'? ;
+enum        : ENUM NAME enumMember* ';'? ;
+struct      : STRUCT NAME valueParamsDeclare? ';'? ;
 
 extends     : ':' typeRef ( ',' typeRef )* ;
 module      : MODULE typeRef ';'? ;
 import_     : IMPORT typeRef ';'? ;
-declaration : let | function | interface | class | alias;
+declaration : let | function | interface | class | enum | struct | alias ;
 
 root        : module import_* declaration* EOF ;
 

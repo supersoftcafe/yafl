@@ -108,3 +108,22 @@ let adder2:(Int,Int):Int = (x:Int,y:Int):Int = x + y
 fun callToString(o:Thing) = o.toString
 
 fun main = factorial(5)
+
+
+
+fun SomethingDangerous(in: String): Unit|String => in == "bad" ? Unit : in
+fun SomethingDangerous(in) => in == "bad" ? Unit : in
+
+# Unions need to upcast if they are a subset of the target, otherwise inference on nested conditionals won't work
+# Conditional where left/right answers are class with common parent will infer a return of the common parent
+# Conditional where left/right don't have a common parent, or are not class, will infer a return of the union of both types
+# Get rid of interfaces and have full mixin style inheritance
+
+
+
+
+
+
+
+
+

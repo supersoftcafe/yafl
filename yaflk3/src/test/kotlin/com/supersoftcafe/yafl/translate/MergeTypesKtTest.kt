@@ -1,14 +1,19 @@
 package com.supersoftcafe.yafl.translate
 
-import com.supersoftcafe.yafl.antlr.YaflLexer
-import com.supersoftcafe.yafl.antlr.YaflParser
 import com.supersoftcafe.yafl.ast.*
-import com.supersoftcafe.yafl.parsetoast.parseToAst
-import com.supersoftcafe.yafl.parsetoast.sourceToParseTree
+import com.supersoftcafe.yafl.models.ast.Ast
+import com.supersoftcafe.yafl.models.ast.Declaration
+import com.supersoftcafe.yafl.models.ast.TypeRef
+import com.supersoftcafe.yafl.passes.p1_parse.parseToAst
+import com.supersoftcafe.yafl.passes.p1_parse.sourceToParseTree
+import com.supersoftcafe.yafl.passes.p2_resolve.resolveTypes
+import com.supersoftcafe.yafl.passes.p3_infer.inferTypes
+import com.supersoftcafe.yafl.passes.p4_optimise.genericSpecialization
+import com.supersoftcafe.yafl.passes.p4_optimise.lambdaToClass
+import com.supersoftcafe.yafl.passes.p4_optimise.stringsToGlobals
+import com.supersoftcafe.yafl.passes.p5_generate.convertToIntermediate
 import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
-import org.antlr.v4.runtime.CharStreams
-import org.antlr.v4.runtime.CommonTokenStream
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
@@ -19,7 +24,7 @@ internal class MergeTypesKtTest {
         val ast = yaflBuild(
                 "let value = 1\n"+
                 "fun main(): Int32 => 1\n")
-        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value" }?.declaration as? Declaration.Let
+        val decl = ast.declarations.firstOrNull { it.declaration.name == "Test::value" }?.declaration as? Declaration.Value
         assertEquals(TypeRef.Int32, decl?.typeRef)
     }
 

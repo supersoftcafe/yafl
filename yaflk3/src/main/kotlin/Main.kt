@@ -1,12 +1,21 @@
 
+import com.supersoftcafe.yafl.antlr.YaflParser
 import com.supersoftcafe.yafl.ast.*
-import com.supersoftcafe.yafl.codegen.generateLlvmIr
-import com.supersoftcafe.yafl.codegen.optimizeLlvmIr
-import com.supersoftcafe.yafl.parsetoast.parseToAst
-import com.supersoftcafe.yafl.parsetoast.sourceToParseTree
-import com.supersoftcafe.yafl.translate.*
+import com.supersoftcafe.yafl.models.ast.Ast
+import com.supersoftcafe.yafl.passes.p5_generate.generateLlvmIr
+import com.supersoftcafe.yafl.passes.p1_parse.parseToAst
+import com.supersoftcafe.yafl.passes.p1_parse.sourceToParseTree
+import com.supersoftcafe.yafl.passes.p1_parse.parseErrorScan
+import com.supersoftcafe.yafl.passes.p2_resolve.resolveTypes
+import com.supersoftcafe.yafl.passes.p3_infer.inferTypes
+import com.supersoftcafe.yafl.passes.p4_optimise.genericSpecialization
+import com.supersoftcafe.yafl.passes.p4_optimise.lambdaToClass
+import com.supersoftcafe.yafl.passes.p4_optimise.stringsToGlobals
+import com.supersoftcafe.yafl.passes.p5_generate.convertToIntermediate
 import com.supersoftcafe.yafl.utils.Either
 import com.supersoftcafe.yafl.utils.Namer
+import com.supersoftcafe.yafl.utils.mapList
+import com.supersoftcafe.yafl.utils.some
 import java.io.File
 import java.util.*
 import kotlin.system.exitProcess
@@ -21,11 +30,29 @@ fun expandFilesList(files: List<File>): List<File> {
 }
 
 
+private fun parseFile(file: File, content: String): Either<Pair<File, YaflParser.RootContext>, List<String>> {
+
+}
+
+private fun convertToAst(file: File, parseTree: YaflParser.RootContext): Either<Ast, List<String>> {
+
+}
+
+
+
 fun yaflBuild(files: List<File>): Either<String, List<String>> {
     val yaflFiles = files.filter { it.extension == "yafl" }
     val llFiles = files.filter { it.extension == "ll" }
 
     val namer = Namer("a")
+
+    yaflFiles.foldIndexed(Either.some<Ast,List<String>>(Ast())) { index, acc, file ->
+        readFile(file)
+            .map { (file, content) -> parseFile(file, content) }
+            .map { (file, parseTree) -> convertToAst(file, parseTree) }
+    }
+
+
     val ast = yaflFiles
             // Parse
 //        .map { file -> Pair(file, Ast::class.java.getResource(file)!!.readText()) }
@@ -40,14 +67,13 @@ fun yaflBuild(files: List<File>): Either<String, List<String>> {
         .map { inferTypes(it) }
 
             // Lowering
-        .map { Either.some(genericSpecialization(it)) } // Replace all generics with their specialized forms, so no more generics exists in the AST
-        .map { Either.some(stringsToGlobals(it)) }
-        .map { Either.some(lambdaToClass(it)) }
+        .map { some(stringsToGlobals(it)) }
+        .map { some(lambdaToClass(it)) }
 
             // Emit
-        .map { Either.some(convertToIntermediate(it)) }
+        .map { some(convertToIntermediate(it)) }
         .map { generateLlvmIr(it.reversed()) }
-        .map { Either.some(addCommonCode(it, llFiles)) }
+        .map { some(addCommonCode(it, llFiles)) }
 //        .map { optimizeLlvmIr(it) }
 
     return ast

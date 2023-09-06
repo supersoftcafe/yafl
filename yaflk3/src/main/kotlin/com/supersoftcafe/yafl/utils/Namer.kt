@@ -1,6 +1,8 @@
 package com.supersoftcafe.yafl.utils
 
 data class Namer(private val name: String) {
+    fun fork() = tupleOf(this + 0, this + 1, this + 2, this + 3, this + 4, this + 5)
+
     operator fun plus(count: Int): Namer {
         val string = count.toString()
         val suffix = if (name.isEmpty() || name.last().isDigit())
@@ -18,5 +20,6 @@ data class Namer(private val name: String) {
 
     companion object {
         private const val TO_ALPHA = 'a' - '0'
+        val DEFAULT = Namer("a")
     }
 }

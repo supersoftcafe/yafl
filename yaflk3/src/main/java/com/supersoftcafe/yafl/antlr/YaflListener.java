@@ -1,4 +1,4 @@
-// Generated from /Users/mbrown/Projects/yafl/yaflk3/Yafl.g4 by ANTLR 4.10.1
+// Generated from /Users/mbrown/Projects/yafl/yaflk3/Yafl.g4 by ANTLR 4.12.0
 package com.supersoftcafe.yafl.antlr;
 import org.antlr.v4.runtime.tree.ParseTreeListener;
 
@@ -38,26 +38,6 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitExprOfTuple(YaflParser.ExprOfTupleContext ctx);
 	/**
-	 * Enter a parse tree produced by {@link YaflParser#genericParamsPassing}.
-	 * @param ctx the parse tree
-	 */
-	void enterGenericParamsPassing(YaflParser.GenericParamsPassingContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#genericParamsPassing}.
-	 * @param ctx the parse tree
-	 */
-	void exitGenericParamsPassing(YaflParser.GenericParamsPassingContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#genericParamsDeclare}.
-	 * @param ctx the parse tree
-	 */
-	void enterGenericParamsDeclare(YaflParser.GenericParamsDeclareContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#genericParamsDeclare}.
-	 * @param ctx the parse tree
-	 */
-	void exitGenericParamsDeclare(YaflParser.GenericParamsDeclareContext ctx);
-	/**
 	 * Enter a parse tree produced by {@link YaflParser#typeRef}.
 	 * @param ctx the parse tree
 	 */
@@ -67,16 +47,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitTypeRef(YaflParser.TypeRefContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#typePrimitive}.
-	 * @param ctx the parse tree
-	 */
-	void enterTypePrimitive(YaflParser.TypePrimitiveContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#typePrimitive}.
-	 * @param ctx the parse tree
-	 */
-	void exitTypePrimitive(YaflParser.TypePrimitiveContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#typeOfTuplePart}.
 	 * @param ctx the parse tree
@@ -97,6 +67,16 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitTypeOfTuple(YaflParser.TypeOfTupleContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#typePrimitive}.
+	 * @param ctx the parse tree
+	 */
+	void enterTypePrimitive(YaflParser.TypePrimitiveContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#typePrimitive}.
+	 * @param ctx the parse tree
+	 */
+	void exitTypePrimitive(YaflParser.TypePrimitiveContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#typeOfLambda}.
 	 * @param ctx the parse tree
@@ -166,6 +146,26 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitAttributes(YaflParser.AttributesContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link YaflParser#valueParamsBody}.
+	 * @param ctx the parse tree
+	 */
+	void enterValueParamsBody(YaflParser.ValueParamsBodyContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#valueParamsBody}.
+	 * @param ctx the parse tree
+	 */
+	void exitValueParamsBody(YaflParser.ValueParamsBodyContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#valueParamsArray}.
+	 * @param ctx the parse tree
+	 */
+	void enterValueParamsArray(YaflParser.ValueParamsArrayContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#valueParamsArray}.
+	 * @param ctx the parse tree
+	 */
+	void exitValueParamsArray(YaflParser.ValueParamsArrayContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link YaflParser#valueParamsPart}.
 	 * @param ctx the parse tree
 	 */
@@ -185,6 +185,16 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitValueParamsDeclare(YaflParser.ValueParamsDeclareContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#whenBranch}.
+	 * @param ctx the parse tree
+	 */
+	void enterWhenBranch(YaflParser.WhenBranchContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#whenBranch}.
+	 * @param ctx the parse tree
+	 */
+	void exitWhenBranch(YaflParser.WhenBranchContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code assertExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -450,6 +460,18 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitBitOrExpr(YaflParser.BitOrExprContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code whenExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterWhenExpr(YaflParser.WhenExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code whenExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitWhenExpr(YaflParser.WhenExprContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code llvmirExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
 	 * @param ctx the parse tree
@@ -579,6 +601,36 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitAlias(YaflParser.AliasContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#enumMember}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumMember(YaflParser.EnumMemberContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#enumMember}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumMember(YaflParser.EnumMemberContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#enum}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnum(YaflParser.EnumContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#enum}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnum(YaflParser.EnumContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#struct}.
+	 * @param ctx the parse tree
+	 */
+	void enterStruct(YaflParser.StructContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#struct}.
+	 * @param ctx the parse tree
+	 */
+	void exitStruct(YaflParser.StructContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#extends}.
 	 * @param ctx the parse tree
