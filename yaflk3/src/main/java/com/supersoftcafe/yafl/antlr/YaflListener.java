@@ -68,6 +68,26 @@ public interface YaflListener extends ParseTreeListener {
 	 */
 	void exitTypeOfTuple(YaflParser.TypeOfTupleContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link YaflParser#typeOfTagsPart}.
+	 * @param ctx the parse tree
+	 */
+	void enterTypeOfTagsPart(YaflParser.TypeOfTagsPartContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#typeOfTagsPart}.
+	 * @param ctx the parse tree
+	 */
+	void exitTypeOfTagsPart(YaflParser.TypeOfTagsPartContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link YaflParser#typeOfTags}.
+	 * @param ctx the parse tree
+	 */
+	void enterTypeOfTags(YaflParser.TypeOfTagsContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link YaflParser#typeOfTags}.
+	 * @param ctx the parse tree
+	 */
+	void exitTypeOfTags(YaflParser.TypeOfTagsContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link YaflParser#typePrimitive}.
 	 * @param ctx the parse tree
 	 */
@@ -123,6 +143,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitTupleType(YaflParser.TupleTypeContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code tagsType}
+	 * labeled alternative in {@link YaflParser#type}.
+	 * @param ctx the parse tree
+	 */
+	void enterTagsType(YaflParser.TagsTypeContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code tagsType}
+	 * labeled alternative in {@link YaflParser#type}.
+	 * @param ctx the parse tree
+	 */
+	void exitTagsType(YaflParser.TagsTypeContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code lambdaType}
 	 * labeled alternative in {@link YaflParser#type}.
@@ -255,6 +287,18 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitIntegerExpr(YaflParser.IntegerExprContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code tagExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void enterTagExpr(YaflParser.TagExprContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code tagExpr}
+	 * labeled alternative in {@link YaflParser#expression}.
+	 * @param ctx the parse tree
+	 */
+	void exitTagExpr(YaflParser.TagExprContext ctx);
 	/**
 	 * Enter a parse tree produced by the {@code letExpr}
 	 * labeled alternative in {@link YaflParser#expression}.
@@ -601,36 +645,6 @@ public interface YaflListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitAlias(YaflParser.AliasContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#enumMember}.
-	 * @param ctx the parse tree
-	 */
-	void enterEnumMember(YaflParser.EnumMemberContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#enumMember}.
-	 * @param ctx the parse tree
-	 */
-	void exitEnumMember(YaflParser.EnumMemberContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#enum}.
-	 * @param ctx the parse tree
-	 */
-	void enterEnum(YaflParser.EnumContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#enum}.
-	 * @param ctx the parse tree
-	 */
-	void exitEnum(YaflParser.EnumContext ctx);
-	/**
-	 * Enter a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 */
-	void enterStruct(YaflParser.StructContext ctx);
-	/**
-	 * Exit a parse tree produced by {@link YaflParser#struct}.
-	 * @param ctx the parse tree
-	 */
-	void exitStruct(YaflParser.StructContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link YaflParser#extends}.
 	 * @param ctx the parse tree

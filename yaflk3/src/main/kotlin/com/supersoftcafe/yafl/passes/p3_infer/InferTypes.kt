@@ -1,8 +1,6 @@
 package com.supersoftcafe.yafl.passes.p3_infer
 
 import com.supersoftcafe.yafl.models.ast.*
-import com.supersoftcafe.yafl.passes.p3_infer.mergeTypes
-import com.supersoftcafe.yafl.passes.p3_infer.mightBeAssignableTo
 import com.supersoftcafe.yafl.passes.p4_optimise.toSignature
 import com.supersoftcafe.yafl.utils.*
 
@@ -62,25 +60,24 @@ class InferTypes(private val typeHints: TypeHints) {
     private fun WhenBranch.inferTypes(
         receiver: TypeRef?,
         findDeclarations: (String) -> List<Declaration>,
-        enumDecl: Declaration.Enum?
+        tagsType: TypeRef.TaggedValues?
     ): Pair<WhenBranch, TypeHints> {
         return if (tag == null) {
             // Else branch
             val (expression, exprHints) = expression.inferTypes(receiver, findDeclarations)
             tupleOf(copy(expression = expression), exprHints)
         } else {
-            val fields = enumDecl?.members?.firstOrNull { it.name == tag }?.parameters
-            if (fields == null) {
+            val tagType = tagsType?.tags?.firstOrNull { it.name == tag }
+            if (tagType == null) {
                 // Unknown tag so can't do much
                 tupleOf(this, typeHintsOf())
             } else {
-                val tupleType = TypeRef.Tuple(fields = fields.map { TupleTypeField(it.typeRef, it.name) })
-                val (parameter, paramHints) = parameter.inferTypesLet(null, findDeclarations)
+                val (parameter, paramHints) = parameter.inferTypesLet(tagType.typeRef, findDeclarations)
                 val (expression, exprHints) = expression.inferTypes(receiver, findDeclarations)
                 tupleOf(copy(
                     parameter = parameter,
                     expression = expression
-                ), exprHints + paramHints + typeHintsOf(parameter.id, TypeHint(inputTypeRef = tupleType)))
+                ), exprHints + paramHints)
             }
         }
     }
@@ -88,9 +85,9 @@ class InferTypes(private val typeHints: TypeHints) {
     private fun List<WhenBranch>.inferTypes(
         receiver: TypeRef?,
         findDeclarations: (String) -> List<Declaration>,
-        enumDeclaration: Declaration.Enum?
+        tagsType: TypeRef.TaggedValues?
     ): Pair<List<WhenBranch>, TypeHints> {
-        val result = map { it.inferTypes(receiver, findDeclarations, enumDeclaration) }
+        val result = map { it.inferTypes(receiver, findDeclarations, tagsType) }
         return tupleOf(result.map { it.first }, result.fold(typeHintsOf()) { l, r -> l + r.second })
     }
 
@@ -98,23 +95,17 @@ class InferTypes(private val typeHints: TypeHints) {
         receiver: TypeRef?,
         findDeclarations: (String) -> List<Declaration>
     ): Pair<Expression.When, TypeHints> {
-        // Infer types for the expression that should give us an enum instance
-        val (enumExpr, enumHints) = enumExpression.inferTypes(null, findDeclarations)
-
-        // Try to locate the enum declaration
-        val enumDecl = (enumExpr.typeRef as? TypeRef.Enum)?.let { e ->
-            findDeclarations(e.name)
-                .filter { it.id == e.id }
-                .filterIsInstance<Declaration.Enum>().singleOrNull()
-        }
+        // Infer types for the expression that should give us a tagged instance
+        val (condition, enumHints) = condition.inferTypes(null, findDeclarations)
 
         // For each branch infer types
-        val (branches, branchesHints) = branches.inferTypes(receiver, findDeclarations, enumDecl)
+        val (branches, branchesHints) = branches.inferTypes(
+            receiver, findDeclarations, condition.typeRef as? TypeRef.TaggedValues)
 
         // Put it all back together and derive a return type from the branches
         return Pair(copy(
             typeRef = mergeTypes(null, inputTypes = branches.mapNotNull { it.expression.typeRef }),
-            enumExpression = enumExpr,
+            condition = condition,
             branches = branches
         ), enumHints + branchesHints)
     }
@@ -222,16 +213,28 @@ class InferTypes(private val typeHints: TypeHints) {
         ), paramHints + bodyHints)
     }
 
-    private fun Expression.NewEnum.inferTypes(
+    private fun Expression.Tag.inferTypes(
         receiver: TypeRef?,
         findDeclarations: (String) -> List<Declaration>
-    ): Pair<Expression.NewEnum, TypeHints> {
-        fun throwError(): Nothing = throw IllegalStateException("NewEnum must be resolved")
-        val typeRef = typeRef as? TypeRef.Enum ?: receiver as? TypeRef.Enum ?: throwError()
-        val enumDecl = findDeclarations(typeRef.name).firstOrNull { it.id == typeRef.id } as? Declaration.Enum ?: throwError()
-        val member = enumDecl.members.firstOrNull { it.name == tag } ?: throwError()
-        val (parameter, paramHints) = parameter.inferTypes(member.parameters.toTupleTypeRef(), findDeclarations)
-        return tupleOf(copy(typeRef = typeRef, parameter = parameter), paramHints)
+    ): Pair<Expression.Tag, TypeHints> {
+        val receiver = receiver as? TypeRef.TaggedValues
+        val tagRecvr = receiver?.tags?.firstOrNull { it.name == tag }
+        val (value, valueHints) = value.inferTypes(tagRecvr?.typeRef, findDeclarations)
+        val valueTypeRef = value.typeRef as? TypeRef.Tuple
+
+        val typeRef = if (valueTypeRef == null)
+            null
+        else if (receiver == null)
+            TypeRef.TaggedValues(tags = listOf(TagTypeField(valueTypeRef, tag)))
+        else if (tagRecvr == null)
+            receiver.copy(tags = (receiver.tags + TagTypeField(typeRef = valueTypeRef, tag)).sortedBy { it.name })
+        else
+            receiver.copy(tags = receiver.tags.map { if (it.name == tag) it.copy(typeRef = valueTypeRef) else it })
+
+        return tupleOf(copy(
+            typeRef = typeRef,
+            value = value
+        ), valueHints)
     }
 
     private fun Expression.NewKlass.inferTypes(
@@ -276,7 +279,7 @@ class InferTypes(private val typeHints: TypeHints) {
         ), hints?.fold(paramHints, TypeHints::plus) ?: paramHints)
     }
 
-    private fun Expression?.inferTypes(
+    private fun Expression?.inferTypesNullable(
         receiver: TypeRef?,
         findDeclarations: (String) -> List<Declaration>,
     ): Pair<Expression?, TypeHints> {
@@ -297,7 +300,7 @@ class InferTypes(private val typeHints: TypeHints) {
             is Expression.Let -> {
                 val (let, letHints) = let.inferTypesLet(receiver, findDeclarations)
                 val (tail, tailHints) = tail.inferTypes(receiver) { name ->
-                    findDeclarations(name) + if (let.name == name) listOf(let) else listOf()
+                    let.findByName(name) + findDeclarations(name)
                 }
                 Pair(copy(let = let, tail = tail, typeRef = tail.typeRef), letHints + tailHints)
             }
@@ -318,7 +321,7 @@ class InferTypes(private val typeHints: TypeHints) {
                 Pair(this, emptyTypeHints())
             }
 
-            is Expression.NewEnum -> inferTypes(receiver, findDeclarations)
+            is Expression.Tag -> inferTypes(receiver, findDeclarations)
 
             is Expression.NewKlass -> inferTypes(receiver, findDeclarations)
 
@@ -432,8 +435,8 @@ class InferTypes(private val typeHints: TypeHints) {
             outputTypes = typeHints.getOutputTypeRefs(id),
         )
 
-        val (body, typeHints) = body.inferTypes(typeRef, findDeclarations)
-        val (dynamicArraySize, dynamicArraySizeHints) = dynamicArraySize.inferTypes(TypeRef.Int32, findDeclarations)
+        val (body, typeHints) = body.inferTypesNullable(typeRef, findDeclarations)
+        val (dynamicArraySize, dynamicArraySizeHints) = dynamicArraySize.inferTypesNullable(TypeRef.Int32, findDeclarations)
         var (destructure, destrHints) = destructure.inferTypesLetList(
             (receiver as? TypeRef.Tuple)?.fields?.map { it.typeRef } ?: listOf(),
             findDeclarations)
@@ -478,7 +481,7 @@ class InferTypes(private val typeHints: TypeHints) {
             parameter.getPerParamTypeHints(typeRef.parameter)
         })
 
-        val (bodyExpr, bodyHints) = body.inferTypes(sourceReturnType ?: returnType) { name ->
+        val (bodyExpr, bodyHints) = body.inferTypesNullable(sourceReturnType ?: returnType) { name ->
             thisDeclaration.searchByName(name) + parameter.searchByName(name) + findDeclarations(name)
         }
 
@@ -526,19 +529,6 @@ class InferTypes(private val typeHints: TypeHints) {
         ), membersHints + parametersHints)
     }
 
-    private fun Declaration.Enum.inferTypesEnum(
-        findDeclarations: (String) -> List<Declaration>
-    ): Pair<Declaration.Enum, TypeHints> {
-        val newMembers = members.map {
-            val (newParams, hints) = it.parameters.inferTypesLetList(listOf(), findDeclarations)
-            it.copy(parameters = newParams) to hints
-        }
-
-        return Pair(copy(
-            members = newMembers.map { (members, _) -> members }
-        ), newMembers.fold(emptyTypeHints()) { l, (_,hints) -> l + hints } )
-    }
-
     private fun List<Declaration.Function>.inferTypesMembers(
         findDeclarations: (String) -> List<Declaration>
     ): Pair<List<Declaration.Function>, TypeHints> {
@@ -558,9 +548,6 @@ class InferTypes(private val typeHints: TypeHints) {
 
             is Declaration.Klass ->
                 inferTypesKlass(findDeclarations)
-
-            is Declaration.Enum ->
-                inferTypesEnum(findDeclarations)
 
             is Declaration.Alias ->
                 // In theory nothing references the alias declarations after the "resolveTypes" stage
@@ -585,20 +572,9 @@ class InferTypes(private val typeHints: TypeHints) {
     }
 }
 
-private fun inferTypes2(ast: Ast): Ast {
+fun inferTypes2(ast: Ast): Ast {
     val result = InferTypes(ast.typeHints).inferTypesInternal(ast)
     return if (ast != result)
          inferTypes2(result)
     else result
-}
-
-fun inferTypes(ast: Ast): Either<Ast> {
-    val result = inferTypes2(ast)
-    val errors = inferTypesErrorScan(result)
-
-    return if (errors.isEmpty()) {
-        some(result)
-    } else {
-        error(errors)
-    }
 }

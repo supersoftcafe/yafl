@@ -28,8 +28,8 @@ abstract class AbstractScanner<TResult> {
                 is Expression.ArrayLookup ->
                     scan(self.array, self) + scan(self.index, self)
 
-                is Expression.NewEnum ->
-                    scan(self.parameter, self)
+                is Expression.Tag ->
+                    scan(self.value, self)
 
                 is Expression.NewKlass ->
                     scan(self.parameter, self)
@@ -62,7 +62,7 @@ abstract class AbstractScanner<TResult> {
                             scan(self.ifFalse, self)
 
                 is Expression.When ->
-                    scan(self.enumExpression, self) +
+                    scan(self.condition, self) +
                             self.branches.flatMap {
                                 scan(it.expression, self) + scan(it.parameter)
                             }
@@ -103,16 +103,11 @@ abstract class AbstractScanner<TResult> {
                 self.extends.flatMap { scan(it, self.sourceRef) }
     }
 
-    open fun scanEnum(self: Declaration.Enum): List<TResult> {
-        return self.members.flatMap { it.parameters.flatMap { scanLet(it) } }
-    }
-
     open fun scan(self: Declaration?): List<TResult> {
         return when (self) {
             null -> listOf()
             is Declaration.Function -> scanFunction(self)
             is Declaration.Let -> scanLet(self)
-            is Declaration.Enum -> scanEnum(self)
             is Declaration.Klass -> scanKlass(self)
             is Declaration.Alias -> scanAlias(self)
         }

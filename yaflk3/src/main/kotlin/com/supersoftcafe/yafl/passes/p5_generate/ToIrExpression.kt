@@ -1,13 +1,12 @@
 package com.supersoftcafe.yafl.passes.p5_generate
 
-import com.supersoftcafe.yafl.ast.*
-import com.supersoftcafe.yafl.codegen.*
 import com.supersoftcafe.yafl.models.ast.*
 import com.supersoftcafe.yafl.models.llir.CgOp
 import com.supersoftcafe.yafl.models.llir.CgTypePrimitive
 import com.supersoftcafe.yafl.models.llir.CgTypeStruct
 import com.supersoftcafe.yafl.models.llir.CgValue
 import com.supersoftcafe.yafl.utils.Namer
+import com.supersoftcafe.yafl.utils.tupleOf
 
 
 private fun Expression.Let.toLetCgOps(
@@ -15,9 +14,16 @@ private fun Expression.Let.toLetCgOps(
     globals: Globals,
     locals: Map<Namer, Pair<Declaration.Data, CgValue>>,
 ): Pair<List<CgOp>, CgValue> {
+    assert(let.body != null)
+
     val (valueOps, valueReg) = let.body!!.toCgOps(namer + 1, globals, locals)
-    val (tailOps, tailReg) = tail.toCgOps(namer + 2, globals, locals + Pair(let.id, let to valueReg))
-    return (valueOps + tailOps) to tailReg
+    val destructured = let.destructureRecursively(namer + 3, globals, valueReg)
+    val newLocals = locals + destructured.map { (let, value, ops) -> let.id to tupleOf(let, value) }
+    val destructureOps = destructured.flatMap { (let, value, ops) -> ops }
+
+    val (tailOps, tailReg) = tail.toCgOps(namer + 2, globals, newLocals)
+
+    return (valueOps + destructureOps + tailOps) to tailReg
 }
 
 
@@ -188,8 +194,8 @@ fun Expression.toCgOps(
             Pair(listOf(), CgValue.Immediate(value.toString(), type))
         }
 
-        is Expression.NewEnum ->
-            toNewEnumCgOps(namer, globals, locals)
+        is Expression.Tag ->
+            createTaggedContainerCgOps(namer, globals, locals)
 
         is Expression.When ->
             toWhenCgOps(namer, globals, locals)

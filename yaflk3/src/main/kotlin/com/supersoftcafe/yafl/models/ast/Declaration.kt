@@ -31,17 +31,6 @@ sealed class Declaration {
         override fun toString() = "alias $name"
     }
 
-    data class Enum(
-        override val sourceRef: SourceRef,
-        override val name: String,
-        override val id: Namer,
-        override val scope: Scope,
-        val members: List<EnumEntry>,
-        override val guidance: List<Guidance> = listOf(),
-    ) : Type() {
-        override fun toString() = "enum $name"
-    }
-
     data class Klass(
         override val sourceRef: SourceRef,
         override val name: String,
@@ -73,11 +62,11 @@ sealed class Declaration {
     ) : Data() {
         override fun toString() = "let $name"
 
-        fun isEmpty() = name == "_" && typeRef == null && destructure.isEmpty()
+        fun isEmpty() = name == "" && typeRef == null && destructure.isEmpty()
         fun flatten(): List<Let> = if (destructure.isEmpty()) listOf(this) else destructure.flatMap { it.flatten() }
         fun map(op: (Let) -> Let): Let = if (destructure.isEmpty()) op(this) else copy(destructure = destructure.map(op))
-        fun unwrapSingleton(): Let = destructure.singleOrNull()?.unwrapSingleton() ?: this
-        fun findByName(name: String): List<Declaration.Let> = destructure.flatMap { it.findByName(name) } + listOfNotNull(takeIf { it.name == name })
+        fun findByName(name: String): List<Let> = destructure.flatMap { it.findByName(name) } + listOfNotNull(takeIf { it.name == name })
+        fun findByName(names: Iterable<String>): List<Let> = destructure.flatMap { it.findByName(name) } + listOfNotNull(takeIf { it.name in names })
 
         companion object {
             fun newThis(
@@ -108,7 +97,7 @@ sealed class Declaration {
             )
 
             val EMPTY = Declaration.Let(
-                SourceRef.EMPTY, "_", Namer.DEFAULT, Scope.Local, null, null, null)
+                SourceRef.EMPTY, "", Namer.DEFAULT, Scope.Local, null, null, null)
         }
     }
 

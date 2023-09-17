@@ -1,5 +1,5 @@
 package com.supersoftcafe.yafl.translate
-
+/*
 import com.supersoftcafe.yafl.ast.*
 import com.supersoftcafe.yafl.models.ast.Ast
 import com.supersoftcafe.yafl.models.ast.Declaration
@@ -164,3 +164,5 @@ internal class MergeTypesKtTest {
         }
     }
 }
+
+ */

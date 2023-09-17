@@ -38,6 +38,8 @@ SHL         : '<<';
 SHR         : '>>';
 POW         : '**';
 
+TAG         : '|'  NAME ;
+
 NAME        : ('`' ~'`'+ '`') | ([a-zA-Z_][a-zA-Z0-9_]*) ;
 INTEGER     : (('0b' [01]+)|('0o' [0-7]+)|('0x' [0-9a-fA-F]+)|([1-9][0-9]*)|'0')([sSlL]|'i8'|'i16'|'i32'|'i64')? ;
 STRING      : '"' .*? '"' ;
@@ -54,12 +56,15 @@ exprOfTuple     : '(' ( exprOfTuplePart ',' )* exprOfTuplePart? ')' ;
 typeRef         : qualifiedName ;
 typeOfTuplePart : ( NAME ':' )? type ;
 typeOfTuple     : '(' ( typeOfTuplePart ',' )* typeOfTuplePart? ')' ;
+typeOfTagsPart  : TAG typeOfTuple? ;
+typeOfTags      : typeOfTagsPart+ ;
 typePrimitive   : PRIMITIVE NAME ;
 typeOfLambda    : typeOfTuple ':' type ;
 
 type            : typeRef                  # namedType
                 | typePrimitive            # primitiveType
                 | typeOfTuple              # tupleType
+                | typeOfTags               # tagsType
                 | typeOfLambda             # lambdaType
                 ;
 
@@ -94,6 +99,7 @@ expression  : LLVM_IR '<' type '>' '(' pattern=STRING ( ',' expression )* ')' # 
 
             | condition=expression ( '?' left=expression ':' right=expression ) # ifExpr
             | exprOfTuple                                                   # tupleExpr
+            | TAG exprOfTuple?                                              # tagExpr
             | let ';'? expression                                           # letExpr
             | function ';'? expression                                      # functionExpr
             | valueParamsDeclare ( ':' type )? LAMBDA expression            # lambdaExpr
@@ -111,14 +117,11 @@ classMember : MEMBER_FUN functionTail ;
 interface   : INTERFACE NAME extends? classMember* ';'? ;
 class       : CLASS NAME valueParamsDeclare? extends? classMember* ';'? ;
 alias       : ALIAS NAME ':' type ';'? ;
-enumMember  : NAME valueParamsDeclare? ';'? ;
-enum        : ENUM NAME enumMember* ';'? ;
-struct      : STRUCT NAME valueParamsDeclare? ';'? ;
 
 extends     : ':' typeRef ( ',' typeRef )* ;
 module      : MODULE typeRef ';'? ;
 import_     : IMPORT typeRef ';'? ;
-declaration : let | function | interface | class | enum | struct | alias ;
+declaration : let | function | interface | class | alias ;
 
 root        : module import_* declaration* EOF ;
 

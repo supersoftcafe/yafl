@@ -4,7 +4,7 @@ import com.supersoftcafe.yafl.models.llir.*
 import com.supersoftcafe.yafl.utils.*
 import java.io.File
 
-fun generateLlvmIr(things: Iterable<CgThing>): Either<String> {
+fun generateLlvmIr(things: Iterable<CgThing>): String {
     // Assign identities to virtual method names
     val slotIds = things.asSequence()
         .filterIsInstance<CgThingFunction>().flatten()      // For all operations in all functions
@@ -20,7 +20,7 @@ fun generateLlvmIr(things: Iterable<CgThing>): Either<String> {
     val stdlib = CgLlvmIr(stdlib = File("/Users/mbrown/Projects/yafl/yaflk3/src/main/resources/stdlib.ll").readText())
     val combined = stdlib + code
 
-    return some(combined.toString())
+    return combined.toString()
 }
 
 fun optimizeLlvmIr(text: String): Either<String> {

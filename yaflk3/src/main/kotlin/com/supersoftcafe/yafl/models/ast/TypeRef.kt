@@ -15,6 +15,19 @@ sealed class TypeRef {
         override val complete = fields.all { it.typeRef?.complete == true }
     }
 
+    data class TaggedValues(
+        val tags: List<TagTypeField>
+    ) : TypeRef() {
+        init {
+            // Check that everything maintains tag ordering
+            assert(tags.map { it.name }.let { it == it.sorted() })
+        }
+        override fun equals(other: Any?) = other is TaggedValues && tags == other.tags
+        override fun hashCode() = tags.hashCode()
+        override val resolved = tags.all { it.typeRef.resolved != false }
+        override val complete = tags.all { it.typeRef.complete == true }
+    }
+
     data class Callable(
         val parameter: TypeRef?,
         val result: TypeRef?
@@ -31,14 +44,6 @@ sealed class TypeRef {
         override val complete = true
     }
 
-    data class Enum(
-        val name: String,
-        val id: Namer,
-    ) : TypeRef() {
-        override val resolved = true
-        override val complete = true
-    }
-
     data class Klass(
         val name: String,
         val id: Namer,
@@ -48,25 +53,18 @@ sealed class TypeRef {
         override val complete = true
     }
 
-//    data class Generic(
-//        val name: String,
-//        val id: Namer,
-//    ) : TypeRef() {
-//        override val resolved = true
-//        override val complete = true
-//    }
-
     data class Primitive(val kind: PrimitiveKind) : TypeRef() {
         override val resolved = true
         override val complete = true
     }
 
-    object Unit : TypeRef() {
-        override val resolved = true
-        override val complete = true
-    }
+//    object Unit : TypeRef() {
+//        override val resolved = true
+//        override val complete = true
+//    }
 
     companion object {
+        val Unit = Tuple(listOf())
         val Bool = Primitive(PrimitiveKind.Bool)
         val Int8 = Primitive(PrimitiveKind.Int8)
         val Int16 = Primitive(PrimitiveKind.Int16)

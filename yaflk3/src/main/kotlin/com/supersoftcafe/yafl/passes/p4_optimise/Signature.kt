@@ -13,6 +13,13 @@ fun TypeRef?.toSignature(): String? {
             else null
         }
 
+        is TypeRef.TaggedValues -> {
+            val types = tags.mapNotNull { tag -> tag.typeRef.toSignature()?.let { "|${tag.name}$it" } }
+            if (types.size == tags.size)
+                types.joinToString("")
+            else null
+        }
+
         is TypeRef.Tuple -> {
             val types = fields.mapNotNull { it.typeRef.toSignature() }
             if (types.size == fields.size)
@@ -20,11 +27,9 @@ fun TypeRef?.toSignature(): String? {
             else null
         }
 
-        is TypeRef.Enum -> name
         is TypeRef.Klass -> name
         is TypeRef.Primitive -> kind.fullyQualifiedName
         is TypeRef.Unresolved -> null
-        TypeRef.Unit -> "System::Unit"
         null -> null
     }
 }

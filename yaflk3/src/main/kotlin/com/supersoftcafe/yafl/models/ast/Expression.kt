@@ -19,9 +19,7 @@ sealed class Expression {
 
     data class NewKlass(override val sourceRef: SourceRef, override val typeRef: TypeRef, val parameter: Expression): Expression()
 
-    data class NewEnum(override val sourceRef: SourceRef, override val typeRef: TypeRef, val tag: String, val parameter: Expression): Expression()
-
-    data class When(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val enumExpression: Expression, val branches: List<WhenBranch>): Expression()
+    data class When(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val condition: Expression, val branches: List<WhenBranch>): Expression()
 
     data class If(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val condition: Expression, val ifTrue: Expression, val ifFalse: Expression): Expression()
 
@@ -29,9 +27,11 @@ sealed class Expression {
 
     data class Tuple(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val fields: List<TupleExpressionField>): Expression()
 
+    data class Tag(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val tag: String, val value: Expression): Expression()
+
     data class Call(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val callable: Expression, val parameter: Expression): Expression()
 
-    data class Parallel(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val parameter: Expression): Expression()
+    data class Parallel(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val parameter: Expression.Tuple): Expression()
 
     data class Llvmir(override val sourceRef: SourceRef, override val typeRef: TypeRef, val pattern: String, val inputs: List<Expression>) : Expression()
 
@@ -44,4 +44,8 @@ sealed class Expression {
     data class Let(override val sourceRef: SourceRef, override val typeRef: TypeRef?, val let: Declaration.Let, val tail: Expression): Expression()
 
     // data class Function(override val typeRef: TypeRef?, val function: Declaration.Function, val tail: Expression): Expression()
+
+    companion object {
+        val Unit = Tuple(SourceRef.EMPTY, TypeRef.Unit, listOf())
+    }
 }

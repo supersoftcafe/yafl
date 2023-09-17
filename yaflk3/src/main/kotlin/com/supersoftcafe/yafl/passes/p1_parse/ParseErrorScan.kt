@@ -85,5 +85,5 @@ fun parseErrorScan(ast: Ast): Either<Ast> {
 
     return if (errors.isEmpty())
          some(ast)
-    else error(errors)
+    else none(errors)
 }

@@ -35,3 +35,35 @@ fun Expression.evaluateAndExtractTupleFields(
         tupleOf(tupleOps + extractOps, extractOps.map { it.result })
     }
 }
+
+fun CgValue.extractAll(namer: Namer): List<Pair<CgValue.Register, List<CgOp>>> {
+    return when (val type = type) {
+        is CgTypeStruct ->
+            type.fields.mapIndexed { index, field ->
+                val result = CgOp.ExtractValue(namer.plus(index).toString(), this, intArrayOf(index))
+                result.result to listOf(result)
+            }
+        else ->
+            listOf()
+    }
+}
+
+fun Declaration.Let.destructureRecursively(
+    namer: Namer,
+    globals: Globals,
+    value: CgValue,
+): List<Triple<Declaration.Let, CgValue, List<CgOp>>> {
+    return if (destructure.isNotEmpty()) {
+        val results = value.extractAll(namer)
+        destructure.zip(results).flatMapIndexed { index, (let, x) ->
+            val (register, ops) = x
+            listOf(tupleOf(let, register, ops)) + let.destructureRecursively(namer + index, globals, register)
+        }
+
+    } else if (name != "") {
+        listOf(tupleOf(this, value, listOf()))
+
+    } else {
+        listOf()
+    }
+}

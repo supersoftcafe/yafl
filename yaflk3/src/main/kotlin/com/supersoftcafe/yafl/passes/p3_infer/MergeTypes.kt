@@ -1,6 +1,7 @@
 package com.supersoftcafe.yafl.passes.p3_infer
 
 import com.supersoftcafe.yafl.models.ast.Declaration
+import com.supersoftcafe.yafl.models.ast.TagTypeField
 import com.supersoftcafe.yafl.models.ast.TupleTypeField
 import com.supersoftcafe.yafl.models.ast.TypeRef
 
@@ -15,8 +16,9 @@ fun TypeRef?.mightBeAssignableTo(receiver: TypeRef?): Boolean {
         is TypeRef.Klass ->
             ((receiver as? TypeRef.Klass)?.id == id) || extends.any { it.mightBeAssignableTo(receiver) }
 
-        is TypeRef.Enum ->
-            (receiver as? TypeRef.Enum)?.id == id
+        is TypeRef.TaggedValues ->
+            (receiver as? TypeRef.TaggedValues)?.tags?.size == tags.size && tags.zip(receiver.tags)
+                .all { (l, r) -> l.name == r.name && l.typeRef.mightBeAssignableTo(r.typeRef) }
 
         is TypeRef.Primitive ->
             (receiver as? TypeRef.Primitive)?.kind == kind
@@ -46,6 +48,41 @@ fun TypeRef.Klass.allAncestors(depth: Int): Map<TypeRef.Klass, Int> {
     }
 }
 
+fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
+    return if (this is TypeRef.Tuple && fields.size == 1) {
+        fields[0].typeRef.isAssignableFrom(other)
+
+    } else if (other is TypeRef.Tuple && other.fields.size == 1) {
+        isAssignableFrom(other.fields[0].typeRef)
+
+    } else when (this) {
+        is TypeRef.Klass ->
+            other is TypeRef.Klass && ((other.id == id)|| other.extends.any { isAssignableFrom(it) })
+
+        is TypeRef.Tuple ->
+            // TODO: If dst.size >= src.size && src.size >= 1 (so no Unit) && all src[n] are assignable to a single unambiguous target slot, even if that means loosing positional information
+            other is TypeRef.Tuple && fields.size == other.fields.size &&
+                    fields.zip(other.fields).all { (l, r) -> l.typeRef.isAssignableFrom(r.typeRef) }
+
+        is TypeRef.TaggedValues ->
+            (other as? TypeRef.TaggedValues)?.tags?.size == tags.size && tags.zip(other.tags)
+                .all { (l, r) -> l.name == r.name && l.typeRef.isAssignableFrom(r.typeRef) }
+
+        is TypeRef.Callable ->
+            other is TypeRef.Callable && result.isAssignableFrom(other.result) && other.parameter.isAssignableFrom(parameter)
+
+        is TypeRef.Primitive ->
+            other == this
+
+        is TypeRef.Unresolved, null ->
+            false
+    }
+}
+
+fun TypeRef?.isAssignableFrom(other: Declaration.Klass): Boolean {
+    return this is TypeRef.Klass && (id == other.id || other.extends.any { isAssignableFrom(it) })
+}
+
 fun List<TypeRef.Klass>.commonLeastDerivedAncestor(): TypeRef.Klass? {
     // Find only the keys common between each ancestor map.
     val ancestors = map { it.allAncestors(0) }.reduce { map1, map2 ->
@@ -62,41 +99,6 @@ fun List<TypeRef.Klass>.commonLeastDerivedAncestor(): TypeRef.Klass? {
 
 fun TypeRef?.toArrayInitializer(dimensions: Int): TypeRef.Callable {
     return TypeRef.Callable(TypeRef.Tuple(List(dimensions) { TupleTypeField(TypeRef.Int32, null) }), this)
-}
-
-
-fun TypeRef?.isAssignableFrom(other: TypeRef?): Boolean {
-    return if (this is TypeRef.Tuple && fields.size == 1) {
-        fields[0].typeRef.isAssignableFrom(other)
-
-    } else if (other is TypeRef.Tuple && other.fields.size == 1) {
-        isAssignableFrom(other.fields[0].typeRef)
-
-    } else when (this) {
-        is TypeRef.Klass ->
-            other is TypeRef.Klass && ((other.id == id)|| other.extends.any { isAssignableFrom(it) })
-
-        is TypeRef.Enum ->
-            other is TypeRef.Enum && (other.id == id)
-
-        is TypeRef.Tuple ->
-            // TODO: If dst.size >= src.size && src.size >= 1 (so no Unit) && all src[n] are assignable to a single unambiguous target slot, even if that means loosing positional information
-            other is TypeRef.Tuple && fields.size == other.fields.size &&
-                    fields.zip(other.fields).all { (l, r) -> l.typeRef.isAssignableFrom(r.typeRef) }
-
-        is TypeRef.Callable ->
-            other is TypeRef.Callable && result.isAssignableFrom(other.result) && other.parameter.isAssignableFrom(parameter)
-
-        is TypeRef.Primitive, TypeRef.Unit ->
-            other == this
-
-        is TypeRef.Unresolved, null ->
-            false
-    }
-}
-
-fun TypeRef?.isAssignableFrom(other: Declaration.Klass): Boolean {
-    return this is TypeRef.Klass && (id == other.id || other.extends.any { isAssignableFrom(it) })
 }
 
 fun List<TypeRef.Klass>.mostSpecificType(): TypeRef.Klass? {
@@ -117,9 +119,30 @@ fun mergeTypes(
     inputTypes: List<TypeRef> = listOf(),
     outputTypes: List<TypeRef> = listOf()
 ): TypeRef? {
-    fun checkEverythingIs(predicate: (TypeRef)->Boolean) = inputTypes.all(predicate) && outputTypes.all(predicate)
+    fun checkEverythingIs(predicate: (TypeRef)->Boolean) =
+        inputTypes.all(predicate) && outputTypes.all(predicate)
+    fun List<TypeRef>.getTagFieldTypes(name: String) =
+        mapNotNull { (it as? TypeRef.TaggedValues)?.tags?.firstOrNull { it.name == name }?.typeRef }
+    fun List<TypeRef>.getTagFieldNames() =
+        flatMap { (it as? TypeRef.TaggedValues)?.tags?.map { it.name } ?: listOf() }.toSet()
 
     return when (parsedType) {
+        is TypeRef.TaggedValues -> {
+            if (checkEverythingIs { it is TypeRef.TaggedValues }) {
+                parsedType.copy(tags = parsedType.tags.map { tag ->
+                    tag.copy(
+                        typeRef = mergeTypes(
+                            tag.typeRef,
+                            inputTypes .getTagFieldTypes(tag.name),
+                            outputTypes.getTagFieldTypes(tag.name)
+                        ) as? TypeRef.Tuple ?: tag.typeRef
+                    )
+                })
+            } else {
+                parsedType
+            }
+        }
+
         // If the original code specifies a tuple, we need to see what parts are well-defined and keep those.
         // However, the parts that are not well-defined can be inferred.
         is TypeRef.Tuple ->
@@ -158,7 +181,7 @@ fun mergeTypes(
             }
 
         // All fully resolved types are unchanged if clearly specified by the original code.
-        TypeRef.Unit, is TypeRef.Klass, is TypeRef.Enum, is TypeRef.Primitive ->
+        is TypeRef.Klass, is TypeRef.Primitive ->
             parsedType
 
         is TypeRef.Unresolved ->
@@ -167,6 +190,23 @@ fun mergeTypes(
         // Full inference. What are we dealing with?
         null ->
             when (val candidateType = inputTypes.firstOrNull() ?: outputTypes.firstOrNull()) {
+                is TypeRef.TaggedValues -> {
+                    if (checkEverythingIs { it is TypeRef.Tuple }) {
+                        val names = inputTypes.getTagFieldNames() + outputTypes.getTagFieldNames()
+                        TypeRef.TaggedValues(tags = names.mapNotNull { name ->
+                            (mergeTypes(
+                                null,
+                                inputTypes .getTagFieldTypes(name),
+                                outputTypes.getTagFieldTypes(name)
+                            ) as? TypeRef.Tuple)?.let {
+                                TagTypeField(it, name)
+                            }
+                        }.sortedBy { it.name })
+                    } else {
+                        null
+                    }
+                }
+
                 is TypeRef.Tuple -> {
                     if (checkEverythingIs { it is TypeRef.Tuple && it.fields.size == candidateType.fields.size }) {
                         TypeRef.Tuple(
@@ -215,14 +255,7 @@ fun mergeTypes(
                         null
                     }
 
-                is TypeRef.Enum ->
-                    if (checkEverythingIs { it is TypeRef.Enum && it.id == candidateType.id }) {
-                        candidateType
-                    } else {
-                        null
-                    }
-
-                is TypeRef.Primitive, TypeRef.Unit -> {
+                is TypeRef.Primitive -> {
                     // There are no implicit conversions on primitives. Check that all input and output are the same
                     if (checkEverythingIs { it == candidateType }) {
                         candidateType

@@ -1,6 +1,7 @@
 package com.supersoftcafe.yafl.passes.p1_parse
 
 import com.supersoftcafe.yafl.antlr.YaflParser
+import com.supersoftcafe.yafl.models.ast.TagTypeField
 import com.supersoftcafe.yafl.models.ast.TupleTypeField
 import com.supersoftcafe.yafl.models.ast.TypeRef
 
@@ -35,24 +36,20 @@ private fun YaflParser.TypePrimitiveContext.toTypeRef(): TypeRef.Primitive {
 }
 
 
-fun YaflParser.TypeOfTupleContext.toTypeRef(): TypeRef {
-    val type = TypeRef.Tuple(typeOfTuplePart().map {
+fun YaflParser.TypeOfTupleContext.toTypeRef(): TypeRef.Tuple {
+    return TypeRef.Tuple(typeOfTuplePart().map {
         TupleTypeField(it.type().toTypeRef(), it.NAME()?.text)
     })
+}
 
-    return if (type.fields.size == 1 && type.fields[0].name == null) {
-        type.fields[0].typeRef!!
-    } else {
-        type
-    }
+fun YaflParser.TypeOfTagsContext.toTypeRef(): TypeRef.TaggedValues {
+    return TypeRef.TaggedValues(typeOfTagsPart().map {
+        TagTypeField(it.typeOfTuple()?.toTypeRef() ?: TypeRef.Unit, it.TAG().text)
+    })
 }
 
 private fun YaflParser.TypeOfLambdaContext.toTypeRef(): TypeRef.Callable {
-    val param = typeOfTuple().toTypeRef()
-    return TypeRef.Callable(
-        if (param is TypeRef.Tuple) param else TypeRef.Tuple(listOf(TupleTypeField(param, null))),
-        type().toTypeRef()
-    )
+    return TypeRef.Callable(typeOfTuple().toTypeRef(), type().toTypeRef())
 }
 
 fun YaflParser.TypeContext.toTypeRef(): TypeRef {
@@ -60,6 +57,7 @@ fun YaflParser.TypeContext.toTypeRef(): TypeRef {
         is YaflParser.NamedTypeContext     -> typeRef(      ).toTypeRef()
         is YaflParser.PrimitiveTypeContext -> typePrimitive().toTypeRef()
         is YaflParser.TupleTypeContext     -> typeOfTuple(  ).toTypeRef()
+        is YaflParser.TagsTypeContext      -> typeOfTags(   ).toTypeRef()
         is YaflParser.LambdaTypeContext    -> typeOfLambda( ).toTypeRef()
         else -> throw IllegalArgumentException()
     }

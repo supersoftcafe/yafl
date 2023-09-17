@@ -13,12 +13,12 @@ data class Some<TValue>(val value: TValue) : Either<TValue>() {
     override fun <TExtra> with(extra: TExtra) = some(Pair(value, extra))
 }
 
-fun <TValue> error(errorInfo: Iterable<ErrorInfo>) : Either<TValue> = Error(errorInfo)
-fun <TValue> error(errorInfo: ErrorInfo) : Either<TValue> = error(listOf(errorInfo))
-fun <TValue> error(errorInfo: String) : Either<TValue> = error(ErrorInfo.StringErrorInfo(errorInfo))
-data class Error<TValue>(val error: Iterable<ErrorInfo>) : Either<TValue>() {
-    override fun <TResult> map(op: (TValue) -> Either<TResult>) = Error<TResult>(error)
-    override fun <TExtra> with(extra: TExtra) = error<Pair<TValue,TExtra>>(error)
+fun <TValue> none(errorInfo: Iterable<ErrorInfo>) : Either<TValue> = None(errorInfo)
+fun <TValue> none(errorInfo: ErrorInfo) : Either<TValue> = none(listOf(errorInfo))
+fun <TValue> none(errorInfo: String) : Either<TValue> = none(ErrorInfo.StringErrorInfo(errorInfo))
+data class None<TValue>(val error: Iterable<ErrorInfo>) : Either<TValue>() {
+    override fun <TResult> map(op: (TValue) -> Either<TResult>) = None<TResult>(error)
+    override fun <TExtra> with(extra: TExtra) = none<Pair<TValue,TExtra>>(error)
 }
 
 fun <TResult, TVal1, TVal2> combine(
@@ -26,9 +26,9 @@ fun <TResult, TVal1, TVal2> combine(
     op: (TVal1, TVal2) -> Either<TResult>
 ): Either<TResult> {
     return when (val1) {
-        is Error -> Error(val1.error)
+        is None -> None(val1.error)
         is Some -> when (val2) {
-            is Error -> Error(val2.error)
+            is None -> None(val2.error)
             is Some -> op(val1.value, val2.value)
         }
     }
@@ -39,11 +39,11 @@ fun <TResult, TVal1, TVal2, TVal3> combine(
     op: (TVal1, TVal2, TVal3) -> Either<TResult>
 ): Either<TResult> {
     return when (val1) {
-        is Error -> Error(val1.error)
+        is None -> None(val1.error)
         is Some -> when (val2) {
-            is Error -> Error(val2.error)
+            is None -> None(val2.error)
             is Some -> when (val3) {
-                is Error -> Error(val3.error)
+                is None -> None(val3.error)
                 is Some ->  op(val1.value, val2.value, val3.value)
             }
         }
@@ -56,13 +56,13 @@ fun <TResult, TVal1, TVal2, TVal3, TVal4> combine(
     op: (TVal1, TVal2, TVal3, TVal4) -> Either<TResult>
 ): Either<TResult> {
     return when (val1) {
-        is Error -> Error(val1.error)
+        is None -> None(val1.error)
         is Some -> when (val2) {
-            is Error -> Error(val2.error)
+            is None -> None(val2.error)
             is Some -> when (val3) {
-                is Error -> Error(val3.error)
+                is None -> None(val3.error)
                 is Some -> when (val4) {
-                    is Error -> Error(val4.error)
+                    is None -> None(val4.error)
                     is Some -> op(val1.value, val2.value, val3.value, val4.value)
                 }
             }
@@ -76,10 +76,10 @@ fun <TValue, TResult> Either<List<TValue>>.foldIndexed(
     op: (Int, TResult, TValue) -> Either<TResult>
 ): Either<TResult> {
     return when (this) {
-        is Error -> error(error)
+        is None -> none(error)
         is Some -> value.foldIndexed(some(initial)) { index, acc, value ->
             when (acc) {
-                is Error -> error(acc.error)
+                is None -> none(acc.error)
                 is Some -> op(index, acc.value, value)
             }
         }
@@ -90,12 +90,12 @@ fun <TValue, TResult> Either<List<TValue>>.mapList(
     op: (TValue) -> Either<TResult>
 ): Either<List<TResult>> {
     when (this) {
-        is Error -> return error(error)
+        is None -> return none(error)
         is Some -> {
             val result = mutableListOf<TResult>()
             for (item in value) {
                 when (val r = op(item)) {
-                    is Error -> return error(r.error)
+                    is None -> return none(r.error)
                     is Some -> result.add(r.value)
                 }
             }
@@ -110,7 +110,7 @@ private fun <TValue, TResult, TResultContainer> Either<List<TValue>>.mapIndexed(
 ): Either<List<TResult>> {
     return foldIndexed(listOf()) { index, acc, value ->
         when (val result = op(index, value)) {
-            is Error -> error(result.error)
+            is None -> none(result.error)
             is Some -> some(mix(acc, result.value))
         }
     }
@@ -144,9 +144,9 @@ fun <TValue, TResult> Iterable<Either<TValue>>.foldEither(
 ): Either<TResult> {
     return fold<Either<TValue>, Either<TResult>>(initial) { previous, value ->
         when (previous) {
-            is Error -> Error(previous.error)
+            is None -> None(previous.error)
             is Some -> when (value) {
-                is Error -> Error(value.error)
+                is None -> None(value.error)
                 is Some -> op(previous.value, value.value)
             }
         }
@@ -159,9 +159,9 @@ fun <TValue, TResult> Iterable<Either<TValue>>.foldIndexedEither(
 ): Either<TResult> {
     return foldIndexed<Either<TValue>, Either<TResult>>(initial) { index, previous, value ->
         when (previous) {
-            is Error -> Error(previous.error)
+            is None -> None(previous.error)
             is Some -> when (value) {
-                is Error -> Error(value.error)
+                is None -> None(value.error)
                 is Some -> op(index, previous.value, value.value)
             }
         }
@@ -169,10 +169,18 @@ fun <TValue, TResult> Iterable<Either<TValue>>.foldIndexedEither(
 }
 
 
+fun <TValue> Iterable<Either<TValue>>.allOrNothing(): Either<List<TValue>> {
+    val result = mapNotNull { (it as? Some)?.value }
+    return if (result.size != count())
+        none(flatMap { (it as? None)?.error ?: listOf() })
+    else some(result)
+}
+
+
 fun readFile(file: File): Either<String> {
     return try {
         some(file.readText())
     } catch (e: Exception) {
-        error(ErrorInfo.ParseExceptionInfo(file, e))
+        none(ErrorInfo.ParseExceptionInfo(file, e))
     }
 }

@@ -10,11 +10,7 @@ import com.supersoftcafe.yafl.utils.*
 class Globals(
     val type: Map<Namer, Declaration.Type>,
     val data: Map<Namer, Declaration.Data>,
-) {
-    val enumInfo: Map<Namer, Lazy<EnumRuntimeInfo>> = type.values
-        .filterIsInstance<Declaration.Enum>()
-        .associate { it.id to lazy { createEnumInfo(it, this) } }
-}
+)
 
 
 fun DataRef?.toCgValue(
@@ -61,20 +57,6 @@ fun DataRef?.toCgValue(
 
 
 
-fun CgValue.extractAll(namer: Namer): Pair<List<CgOp>, List<CgValue>> {
-    return when (val type = type) {
-        is CgTypeStruct -> {
-            val ops = type.fields.mapIndexed { index, field ->
-                CgOp.ExtractValue(namer.plus(index).toString(), this, intArrayOf(index))
-            }
-            val values = ops.map { it.result }
-            Pair(ops, values)
-        }
-        else ->
-            Pair(listOf(), listOf(this))
-    }
-}
-
 fun Declaration.Klass.findMember(id: Namer, globals: Globals): Declaration.Data? {
     return parameters.firstOrNull { it.id == id }
         ?: members.firstOrNull { it.id == id }
@@ -83,38 +65,51 @@ fun Declaration.Klass.findMember(id: Namer, globals: Globals): Declaration.Data?
         }
 }
 
+private fun getDeclarationInitPriority(d: Declaration) = when (d) {
+    is Declaration.Let ->
+        // Simple literals come first. This is hacky, and will have issues, so must fix in the future.
+        // TODO: mix static dependency analysis and lazy init to correctly init globals.
+        when (d.body) {
+            is Expression.Characters -> 0
+            is Expression.Integer -> 0
+            is Expression.Float -> 0
+            else -> 1
+        }
+    else -> 2
+}
+
 /* There should be no nested lambdas remaining, so all variable references are either
  * global, parameter or immediate local, with no nested functions.
  */
 fun convertToIntermediate(ast: Ast): List<CgThing> {
+    val allDeclarationsAtTopLevel = ast.declarations.flatMap { it.declarations }
     val globals = Globals(
-        ast.declarations.flatMap { it.declarations.filterIsInstance<Declaration.Type>() }.associateBy { it.id },
-        ast.declarations.flatMap { it.declarations.filterIsInstance<Declaration.Data>() }.associateBy { it.id })
+        allDeclarationsAtTopLevel.filterIsInstance<Declaration.Type>().associateBy { it.id },
+        allDeclarationsAtTopLevel.filterIsInstance<Declaration.Data>().flatMap {
+            // Extract the destructured globals
+            if (it is Declaration.Let) it.flatten() else listOf(it)
+        }.associateBy { it.id })
 
     val namer = Namer("r")
-    val things = (globals.type.values + globals.data.values).flatMapIndexed { index, declaration ->
-        val namer = namer + index
+    val things = allDeclarationsAtTopLevel
+        .sortedBy(::getDeclarationInitPriority)
+        .flatMapIndexed { index, declaration ->
+            val namer = namer + index
 
-        when (declaration) {
-            is Declaration.Enum ->
-                declaration.enumToIntermediate(namer, globals)
+            when (declaration) {
+                is Declaration.Klass ->
+                    declaration.klassToIntermediate(namer, globals)
 
-            is Declaration.Klass ->
-                declaration.klassToIntermediate(namer, globals)
+                is Declaration.Let ->
+                    declaration.letToIntermediate(namer, globals)
 
-            is Declaration.Let ->
-                declaration.letToIntermediate(namer, globals)
+                is Declaration.Function ->
+                    declaration.functionToIntermediate(namer, globals)
 
-            is Declaration.Function ->
-                declaration.functionToIntermediate(namer, globals)
-
-            is Declaration.Alias ->
-                listOf()
+                is Declaration.Alias ->
+                    listOf()
+            }
         }
-    }
-
-    val functions = things.filterIsInstance<CgThingFunction>().associateBy { it.globalName }
-    val variables = things.filterIsInstance<CgThingVariable>().associateBy { it.name }
 
     // Create main function and append it
     val userMainList = globals.data.values
@@ -128,31 +123,18 @@ fun convertToIntermediate(ast: Ast): List<CgThing> {
         }
     val userMain = userMainList.firstOrNull()
 
-    if (userMain == null) {
+    if (userMain == null)
         throw IllegalStateException("No main function found")
-    } else if (userMainList.size > 1) {
+    else if (userMainList.size > 1)
         throw IllegalStateException("Too many user main functions found")
+
+    val initOps = things.mapNotNull { thing ->
+        if (thing is CgThingFunction && thing.globalName.startsWith("init\$"))
+             CgOp.CallStatic(CgValue.VOID, CgValue.UNIT, thing.globalName, listOf())
+        else null
     }
 
-    val globalVars = functions.filterKeys { it.startsWith("init\$") }.map { (_, initFunc) ->
-        Pair(variables[initFunc.globalName.drop(5)]!!, initFunc)
-    }
-
-    val initNamer = Namer("i")
-    val initOps = globalVars.flatMapIndexed { index, (thing, initFunc) ->
-        val namerBase = initNamer + index
-
-        val methodReg = CgValue.Register(namerBase.plus(0).toString(), CgTypeStruct.functionPointer)
-        val resultReg = CgValue.Register(namerBase.plus(1).toString(), thing.type)
-        listOf(
-            CgOp.CallStatic(resultReg, CgValue.UNIT, initFunc.globalName, listOf()),
-            CgOp.Store(thing.type, CgValue.Global(thing.name, thing.type), resultReg)
-        )
-    }
-
-    val mainNamer = initNamer + globalVars.size
-    val mainMethodReg = CgValue.Register(mainNamer.plus(0).toString(), CgTypeStruct.functionPointer)
-    val mainResultReg = CgValue.Register(mainNamer.plus(1).toString(), CgTypePrimitive.INT32)
+    val mainResultReg = CgValue.Register("main_result", CgTypePrimitive.INT32)
     val retOps = listOf(
         CgOp.CallStatic(mainResultReg, CgValue.UNIT, userMain.globalDataName(), listOf()),
         CgOp.Return(mainResultReg)

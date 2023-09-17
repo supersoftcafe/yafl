@@ -15,56 +15,78 @@ class ResolveTypes() {
         return this
     }
 
+    private fun TypeRef.Unresolved.resolveTypes(
+        sourceRef: SourceRef,
+        findDeclarations: (String) -> List<Declaration>
+    ): TypeRef {
+        // Find anything that matches the name and is a type declaration
+        // If it's a user type, construct a reference to it
+        // If it's an alias, take a copy of its target, if the target is not an alias...  no jumping around
+
+        val found = findDeclarations(name)
+            .filterIsInstance<Declaration.Type>()
+            .filter { id == null || id == it.id }
+
+        val declaration = found.singleOrNull()
+        return if (declaration == null) {
+            this
+
+        } else if (declaration is Declaration.Klass) {
+            val extends = declaration.extends.filterIsInstance<TypeRef.Klass>()
+            if (extends.size != declaration.extends.size)
+                this
+            else
+                TypeRef.Klass(declaration.name, declaration.id, extends)
+
+        } else if (declaration is Declaration.Alias) {
+            if (declaration.typeRef.resolved)
+                declaration.typeRef
+            else
+                this
+
+        } else {
+            throw IllegalStateException("${declaration.javaClass.name} is not a supported type declaration")
+        }
+    }
+
+    private fun TypeRef.Tuple.resolveTypes(
+        sourceRef: SourceRef,
+        findDeclarations: (String) -> List<Declaration>
+    ): TypeRef.Tuple {
+        return copy(fields = fields.map { field ->
+            field.copy(typeRef = field.typeRef?.resolveTypes(sourceRef, findDeclarations) ?: field.typeRef)
+        })
+    }
+
+    private fun TypeRef.TaggedValues.resolveTypes(
+        sourceRef: SourceRef,
+        findDeclarations: (String) -> List<Declaration>
+    ): TypeRef.TaggedValues {
+        return copy(tags = tags.map { tag ->
+            tag.copy(typeRef = tag.typeRef.resolveTypes(sourceRef, findDeclarations))
+        })
+    }
+
+    private fun TypeRef.Callable.resolveTypes(
+        sourceRef: SourceRef,
+        findDeclarations: (String) -> List<Declaration>
+    ): TypeRef.Callable {
+        return copy(
+            parameter = parameter?.resolveTypes(sourceRef, findDeclarations),
+            result = result?.resolveTypes(sourceRef, findDeclarations)
+        )
+    }
+
     private fun TypeRef.resolveTypes(
         sourceRef: SourceRef,
         findDeclarations: (String) -> List<Declaration>
     ): TypeRef {
         return when (this) {
-            is TypeRef.Unresolved -> {
-                    // Find anything that matches the name and is a type declaration
-                    // If it's a user type, construct a reference to it
-                    // If it's an alias, take a copy of its target, if the target is not an alias...  no jumping around
-
-                    val found = findDeclarations(name)
-                        .filterIsInstance<Declaration.Type>()
-                        .filter { id == null || id == it.id }
-
-                    val declaration = found.singleOrNull()
-                    if (declaration == null) {
-                        this
-
-                    } else if (declaration is Declaration.Klass) {
-                        val extends = declaration.extends.filterIsInstance<TypeRef.Klass>()
-                        if (extends.size != declaration.extends.size)
-                            this
-                        else
-                            TypeRef.Klass(declaration.name, declaration.id, extends)
-
-                    } else if (declaration is Declaration.Alias) {
-                        if (declaration.typeRef.resolved)
-                            declaration.typeRef
-                        else
-                            this
-
-                    } else {
-                        throw IllegalStateException("${declaration.javaClass.name} is not a supported type declaration")
-                    }
-            }
-
-            is TypeRef.Tuple ->
-                copy(fields = fields.map { field ->
-                    field.copy(typeRef = field.typeRef?.resolveTypes(sourceRef, findDeclarations) ?: field.typeRef)
-                })
-
-            is TypeRef.Callable -> {
-                copy(
-                    parameter = parameter?.resolveTypes(sourceRef, findDeclarations),
-                    result = result?.resolveTypes(sourceRef, findDeclarations)
-                )
-            }
-
-            TypeRef.Unit, is TypeRef.Primitive, is TypeRef.Klass, is TypeRef.Enum ->
-                this
+            is TypeRef.Unresolved   -> resolveTypes(sourceRef, findDeclarations)
+            is TypeRef.Tuple        -> resolveTypes(sourceRef, findDeclarations)
+            is TypeRef.TaggedValues -> resolveTypes(sourceRef, findDeclarations)
+            is TypeRef.Callable     -> resolveTypes(sourceRef, findDeclarations)
+            is TypeRef.Primitive, is TypeRef.Klass -> this
         }
     }
 
@@ -74,6 +96,17 @@ class ResolveTypes() {
         return copy(
             parameter = parameter.resolveTypes(findDeclarations),
             expression = expression.resolveTypes(findDeclarations)
+        )
+    }
+
+    private fun Expression.Tuple.resolveTypes(
+        findDeclarations: (String) -> List<Declaration>
+    ): Expression.Tuple {
+        return copy(
+            typeRef = typeRef?.resolveTypes(sourceRef, findDeclarations),
+            fields = fields.map { field ->
+                field.copy(expression = field.expression.resolveTypes(findDeclarations))
+            }
         )
     }
 
@@ -99,7 +132,9 @@ class ResolveTypes() {
             is Expression.Let -> {
                 copy(
                     let = let.resolveTypes(findDeclarations),
-                    tail = tail.resolveTypes(findDeclarations)
+                    tail = tail.resolveTypes { name ->
+                        let.findByName(name) + findDeclarations(name)
+                    }
                 )
             }
 
@@ -124,10 +159,10 @@ class ResolveTypes() {
                 )
             }
 
-            is Expression.NewEnum -> {
+            is Expression.Tag -> {
                 copy(
-                    typeRef = typeRef.resolveTypes(sourceRef, findDeclarations),
-                    parameter = parameter.resolveTypes(findDeclarations)
+                    typeRef = typeRef?.resolveTypes(sourceRef, findDeclarations),
+                    value = value.resolveTypes(findDeclarations)
                 )
             }
 
@@ -146,15 +181,7 @@ class ResolveTypes() {
                 )
             }
 
-            is Expression.Tuple -> {
-                val fields = fields.map { field ->
-                    field.copy(expression = field.expression.resolveTypes(findDeclarations))
-                }
-                copy(
-                    typeRef = typeRef?.resolveTypes(sourceRef, findDeclarations),
-                    fields = fields
-                )
-            }
+            is Expression.Tuple -> resolveTypes(findDeclarations)
 
             is Expression.If -> {
                 copy(
@@ -167,9 +194,8 @@ class ResolveTypes() {
             is Expression.When -> {
                 copy(
                     typeRef = typeRef?.resolveTypes(sourceRef, findDeclarations),
-                    enumExpression = enumExpression.resolveTypes(findDeclarations),
+                    condition = condition.resolveTypes(findDeclarations),
                     branches = branches.map { it.resolveTypes(findDeclarations) },
-                    elseBranch = elseBranch?.resolveTypes(findDeclarations)
                 )
             }
 
@@ -242,22 +268,6 @@ class ResolveTypes() {
         )
     }
 
-    private fun EnumEntry.resolveTypes(
-        findDeclarations: (String) -> List<Declaration>
-    ): EnumEntry {
-        return copy(
-            parameters = parameters.map { it.resolveTypes(findDeclarations) }
-        )
-    }
-
-    private fun Declaration.Enum.resolveTypes(
-        findDeclarations: (String) -> List<Declaration>
-    ): Declaration.Enum {
-        return copy(
-            members = members.map { it.resolveTypes(findDeclarations) }
-        )
-    }
-
     private fun Declaration.Let.resolveTypes(
         findDeclarations: (String) -> List<Declaration>
     ): Declaration.Let {
@@ -290,7 +300,6 @@ class ResolveTypes() {
             is Declaration.Klass   -> resolveTypes(findDeclarations)
             is Declaration.Let     -> resolveTypes(findDeclarations)
             is Declaration.Function-> resolveTypes(findDeclarations)
-            is Declaration.Enum    -> resolveTypes(findDeclarations)
         }
     }
 
@@ -311,13 +320,4 @@ class ResolveTypes() {
              resolveTypes(result)
         else result
     }
-}
-
-fun resolveTypes(ast: Ast): Either<Ast> {
-    val result = ResolveTypes().resolveTypes(ast)
-    val errors = resolveTypesErrorScan(result)
-
-    return if (errors.isEmpty())
-         some(result)
-    else error(errors)
 }

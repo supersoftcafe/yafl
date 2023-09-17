@@ -9,9 +9,10 @@ import org.antlr.v4.runtime.*
 import org.antlr.v4.runtime.atn.ATNConfigSet
 import org.antlr.v4.runtime.dfa.DFA
 import java.io.File
+import java.net.URI
 import java.util.*
 
-fun sourceToParseTree(file: File, contents: String): Either<YaflParser.RootContext> {
+fun sourceToParseTree(location: URI, contents: String): Either<YaflParser.RootContext> {
     return try {
         val lexer = YaflLexer(CharStreams.fromString(contents))
         val tokenStream = CommonTokenStream(lexer)
@@ -21,7 +22,7 @@ fun sourceToParseTree(file: File, contents: String): Either<YaflParser.RootConte
         parser.addErrorListener(object: ANTLRErrorListener {
             override fun syntaxError(recognizer: Recognizer<*, *>?, offendingSymbol: Any?,
                 line: Int, charPositionInLine: Int, msg: String?, e: RecognitionException?) {
-                errors.add(ErrorInfo.FileOffsetInfo(file, line, charPositionInLine, msg))
+                errors.add(ErrorInfo.FileOffsetInfo(location, line, charPositionInLine, msg))
             }
 
             override fun reportAmbiguity(recognizer: Parser?, dfa: DFA?,
@@ -42,6 +43,6 @@ fun sourceToParseTree(file: File, contents: String): Either<YaflParser.RootConte
         }
 
     } catch (e: Exception) {
-        error(ErrorInfo.ParseExceptionInfo(file, e))
+        error(ErrorInfo.ParseExceptionInfo(location, e))
     }
 }

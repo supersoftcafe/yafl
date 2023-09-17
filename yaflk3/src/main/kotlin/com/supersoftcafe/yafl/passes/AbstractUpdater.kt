@@ -1,3 +1,5 @@
+@file:Suppress("NAME_SHADOWING")
+
 package com.supersoftcafe.yafl.passes
 
 import com.supersoftcafe.yafl.models.ast.*
@@ -35,15 +37,23 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(fields = fIn) to fOut
     }
 
+    open fun updateSourceTagTypeField(self: TagTypeField, path: List<Any>): Pair<TagTypeField, TOut> {
+        val path = path + self
+        val (tIn, tOut) = updateTypeRefTuple(self.typeRef, path)
+        return self.copy(typeRef = tIn) to tOut
+    }
+
+    open fun updateSourceTypeRefTags(self: TypeRef.TaggedValues, path: List<Any>): Pair<TypeRef.TaggedValues, TOut> {
+        val path = path + self
+        val (tIn, tOut) = updateList(self.tags, path, ::updateSourceTagTypeField)
+        return self.copy(tags = tIn) to tOut
+    }
+
     open fun updateSourceTypeRefCallable(self: TypeRef.Callable, path: List<Any>): Pair<TypeRef.Callable, TOut> {
         val path = path + self
         val (rIn, rOut) = updateNullable(self.result, path, ::updateSourceTypeRef)
         val (pIn, pOut) = updateNullable(self.parameter, path, ::updateSourceTypeRef)
         return self.copy(result = rIn, parameter = pIn) to rOut+pOut
-    }
-
-    open fun updateSourceTypeRefEnum(self: TypeRef.Enum, path: List<Any>): Pair<TypeRef.Enum, TOut> {
-        return self to emptyResult
     }
 
     open fun updateSourceTypeRefKlass(self: TypeRef.Klass, path: List<Any>): Pair<TypeRef.Klass, TOut> {
@@ -62,13 +72,12 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
 
     open fun updateSourceTypeRef(self: TypeRef, path: List<Any>): Pair<TypeRef, TOut> {
         return when (self) {
-            is TypeRef.Tuple      -> updateSourceTypeRefTuple(     self, path)
-            is TypeRef.Callable   -> updateSourceTypeRefCallable(  self, path)
-            is TypeRef.Enum       -> updateSourceTypeRefEnum(      self, path)
-            is TypeRef.Klass      -> updateSourceTypeRefKlass(     self, path)
-            is TypeRef.Primitive  -> updateSourceTypeRefPrimitive( self, path)
-            is TypeRef.Unresolved -> updateSourceTypeRefUnresolved(self, path)
-            TypeRef.Unit -> self to emptyResult
+            is TypeRef.Tuple        -> updateSourceTypeRefTuple(     self, path)
+            is TypeRef.TaggedValues -> updateSourceTypeRefTags(      self, path)
+            is TypeRef.Callable     -> updateSourceTypeRefCallable(  self, path)
+            is TypeRef.Klass        -> updateSourceTypeRefKlass(     self, path)
+            is TypeRef.Primitive    -> updateSourceTypeRefPrimitive( self, path)
+            is TypeRef.Unresolved   -> updateSourceTypeRefUnresolved(self, path)
         }
     }
 
@@ -85,15 +94,23 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(fields = fIn) to fOut
     }
 
+    open fun updateTagTypeField(self: TagTypeField, path: List<Any>): Pair<TagTypeField, TOut> {
+        val path = path + self
+        val (tIn, tOut) = updateTypeRefTuple(self.typeRef, path)
+        return self.copy(typeRef = tIn) to tOut
+    }
+
+    open fun updateTypeRefTags(self: TypeRef.TaggedValues, path: List<Any>): Pair<TypeRef.TaggedValues, TOut> {
+        val path = path + self
+        val (tIn, tOut) = updateList(self.tags, path, ::updateTagTypeField)
+        return self.copy(tags = tIn) to tOut
+    }
+
     open fun updateTypeRefCallable(self: TypeRef.Callable, path: List<Any>): Pair<TypeRef.Callable, TOut> {
         val path = path + self
         val (rIn, rOut) = updateNullable(self.result, path, ::updateTypeRef)
         val (pIn, pOut) = updateNullable(self.parameter, path, ::updateTypeRef)
         return self.copy(result = rIn, parameter = pIn) to rOut+pOut
-    }
-
-    open fun updateTypeRefEnum(self: TypeRef.Enum, path: List<Any>): Pair<TypeRef.Enum, TOut> {
-        return self to emptyResult
     }
 
     open fun updateTypeRefKlass(self: TypeRef.Klass, path: List<Any>): Pair<TypeRef.Klass, TOut> {
@@ -112,13 +129,12 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
 
     open fun updateTypeRef(self: TypeRef, path: List<Any>): Pair<TypeRef, TOut> {
         return when (self) {
-            is TypeRef.Tuple      -> updateTypeRefTuple(self, path)
-            is TypeRef.Callable   -> updateTypeRefCallable(self, path)
-            is TypeRef.Enum       -> updateTypeRefEnum(self, path)
-            is TypeRef.Klass      -> updateTypeRefKlass(self, path)
-            is TypeRef.Primitive  -> updateTypeRefPrimitive(self, path)
-            is TypeRef.Unresolved -> updateTypeRefUnresolved(self, path)
-            TypeRef.Unit -> self to emptyResult
+            is TypeRef.Tuple        -> updateTypeRefTuple(self, path)
+            is TypeRef.TaggedValues -> updateTypeRefTags(self, path)
+            is TypeRef.Callable     -> updateTypeRefCallable(self, path)
+            is TypeRef.Klass        -> updateTypeRefKlass(self, path)
+            is TypeRef.Primitive    -> updateTypeRefPrimitive(self, path)
+            is TypeRef.Unresolved   -> updateTypeRefUnresolved(self, path)
         }
     }
 
@@ -138,12 +154,6 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         }
     }
 
-
-    open fun updateTupleExpressionField(self: TupleExpressionField, path: List<Any>): Pair<TupleExpressionField, TOut> {
-        val path = path + self
-        val (eIn, eOut) = updateExpression(self.expression, path)
-        return self.copy(expression = eIn) to eOut
-    }
 
     open fun updateExpressionRawPointer(self: Expression.RawPointer, path: List<Any>): Pair<Expression, TOut> {
         val path = path + self
@@ -187,7 +197,7 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
     open fun updateExpressionParallel(self: Expression.Parallel, path: List<Any>): Pair<Expression, TOut> {
         val path = path + self
         val (tIn, tOut) = self.typeRef?.let { updateTypeRef(it, path) } ?: Pair(null, emptyResult)
-        val (pIn, pOut) = updateExpression(self.parameter, path)
+        val (pIn, pOut) = updateExpressionTuple(self.parameter, path)
         return self.copy(typeRef = tIn, parameter = pIn) to tOut+pOut
     }
 
@@ -203,16 +213,18 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(typeRef = tIn) to tOut
     }
 
+    open fun updateExpresionWhenBranch(self: WhenBranch, path: List<Any>): Pair<WhenBranch, TOut> {
+        val (xIn, xOut) = updateExpression(self.expression, path)
+        val (yIn, yOut) = updateDeclarationLet(self.parameter, path)
+        return self.copy(expression = xIn, parameter = yIn) to xOut+yOut
+    }
+
     open fun updateExpressionWhen(self: Expression.When, path: List<Any>): Pair<Expression, TOut> {
         val path = path + self
         val (tIn, tOut) = self.typeRef?.let { updateTypeRef(it, path) } ?: Pair(null, emptyResult)
-        val (cIn, cOut) = updateExpression(self.enumExpression, path)
-        val (eIn, eOut) = updateList(self.branches, path) { branch, path ->
-            val (xIn, xOut) = updateExpression(branch.expression, path)
-            val (yIn, yOut) = updateDeclarationLet(branch.parameter, path)
-            branch.copy(expression = xIn, parameter = yIn) to xOut+yOut
-        }
-        return self.copy(typeRef = tIn, enumExpression = cIn, branches = eIn) to tOut+cOut+eOut
+        val (cIn, cOut) = updateExpression(self.condition, path)
+        val (eIn, eOut) = updateList(self.branches, path, ::updateExpresionWhenBranch)
+        return self.copy(typeRef = tIn, condition = cIn, branches = eIn) to tOut+cOut+eOut
     }
 
     open fun updateExpressionIf(self: Expression.If, path: List<Any>): Pair<Expression, TOut> {
@@ -259,13 +271,6 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(typeRef = tIn, base = bIn) to tOut+bOut
     }
 
-    open fun updateExpressionNewEnum(self: Expression.NewEnum, path: List<Any>): Pair<Expression, TOut> {
-        val path = path + self
-        val (tIn, tOut) = updateTypeRef(self.typeRef, path)
-        val (pIn, pOut) = updateExpression(self.parameter, path)
-        return self.copy(typeRef = tIn, parameter = pIn) to tOut+pOut
-    }
-
     open fun updateExpressionNewKlass(self: Expression.NewKlass, path: List<Any>): Pair<Expression, TOut> {
         val path = path + self
         val (tIn, tOut) = updateTypeRef(self.typeRef, path)
@@ -273,11 +278,24 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(typeRef = tIn, parameter = pIn) to tOut+pOut
     }
 
+    open fun updateTupleExpressionField(self: TupleExpressionField, path: List<Any>): Pair<TupleExpressionField, TOut> {
+        val path = path + self
+        val (eIn, eOut) = updateExpression(self.expression, path)
+        return self.copy(expression = eIn) to eOut
+    }
+
     open fun updateExpressionTuple(self: Expression.Tuple, path: List<Any>): Pair<Expression.Tuple, TOut> {
         val path = path + self
         val (tIn, tOut) = self.typeRef?.let { updateTypeRef(it, path) } ?: Pair(null, emptyResult)
         val (fIn, fOut) = updateList(self.fields, path, ::updateTupleExpressionField)
         return self.copy(typeRef = tIn, fields = fIn) to tOut+fOut
+    }
+
+    open fun updateExpressionTag(self: Expression.Tag, path: List<Any>): Pair<Expression.Tag, TOut> {
+        val path = path + self
+        val (tIn, tOut) = self.typeRef?.let { updateTypeRef(it, path) } ?: Pair(null, emptyResult)
+        val (vIn, vOut) = updateExpression(self.value, path)
+        return self.copy(typeRef = tIn, value = vIn) to tOut+vOut
     }
 
     open fun updateExpression(self: Expression, path: List<Any>): Pair<Expression, TOut> {
@@ -298,7 +316,7 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
             is Expression.LoadData -> updateExpressionLoadData(self, path)
             is Expression.LoadMember -> updateExpressionLoadMember(self, path)
             is Expression.NewKlass -> updateExpressionNewKlass(self, path)
-            is Expression.NewEnum -> updateExpressionNewEnum(self, path)
+            is Expression.Tag -> updateExpressionTag(self, path)
             is Expression.Tuple -> updateExpressionTuple(self, path)
         }
     }
@@ -336,17 +354,6 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
         return self.copy(members = mIn, parameters = pIn, extends = eIn) to mOut+pOut+eOut
     }
 
-    open fun updateEnumEntry(self: EnumEntry, path: List<Any>): Pair<EnumEntry, TOut> {
-        val (pIn, pOut) = updateList(self.parameters, path, ::updateDeclarationLet)
-        return self.copy(parameters = pIn) to pOut
-    }
-
-    open fun updateDeclarationEnum(self: Declaration.Enum, path: List<Any>): Pair<Declaration.Enum, TOut> {
-        val path = path + self
-        val (mIn, mOut) = updateList(self.members, path, ::updateEnumEntry)
-        return self.copy(members = mIn) to mOut
-    }
-
     open fun updateDeclarationAlias(self: Declaration.Alias, path: List<Any>): Pair<Declaration.Alias, TOut> {
         val path = path + self
         val (tIn, tOut) = updateTypeRef(self.typeRef, path)
@@ -359,7 +366,6 @@ abstract class AbstractUpdater<TOut>(private val emptyResult: TOut, private val 
             is Declaration.Function -> updateDeclarationFunction(self, path)
             is Declaration.Alias    -> updateDeclarationAlias(self, path)
             is Declaration.Klass    -> updateDeclarationKlass(self, path)
-            is Declaration.Enum     -> updateDeclarationEnum(self, path)
         }
     }
 
