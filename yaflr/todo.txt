@@ -1,0 +1,24 @@
+
+Remember this is all predicated on the language being pure functional with no lazy thunks. All heap
+allocation is local.
+
+If some sort of caching is needed, it'll be on its own fiber, and will have a well-defined scope.
+
+TODO:
+* ++ Integrate heap with fiber library, and make fiber_parallel create new heaps and merge them when done.
+
+* Add #ifdef blocks for supported platforms.
+
+* Move stack initialisation of new fiber into platform.c.
+
+* ++ Change thread pool to be a cyclic list.
+
+* ++ Implement work stealing algo.
+
+* ++ Change work stealing to go to next thread in list each time.
+
+* Add a parallel test that works it hard enough to actually use up all cores.
+  Generate arrays of pseudo random numbers and add them up.
+  Result is total of all of them.
+  Should exercise heap and fibers.
+
