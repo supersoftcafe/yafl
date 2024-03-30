@@ -4,6 +4,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include "../src/blitz.h"
 #include "../src/mmap.h"
 #include "../src/object.h"
 #include "../src/fiber.h"
@@ -56,7 +57,7 @@ struct some_objects {
 
 static struct {
     layout_t l;
-    uint32_t o[4];
+    field_offset_t o[4];
 } some_objects_layout = {
         .l = {
                 .size = sizeof(struct some_objects),
@@ -71,7 +72,7 @@ static struct {
 };
 
 static vtable_t some_objects_vtable = {
-        .object_layout = &some_objects_layout,
+        .object_layout = &some_objects_layout.l,
         .array_layout = NULL,
         .array_len_offset = 0,
         .functions_mask = 0
@@ -133,14 +134,32 @@ static object_t *massively_parallel_worker(int depth) {
     }
 }
 
-static void massively_parallel() {
-    massively_parallel_worker(1);
-}
 
+
+
+static void do_nothing(void* _) {
+}
+static void loop_and_bounce(void* _) {
+    func_t do_nothing_ptr = do_nothing;
+    for (int index = 1000000; --index >= 0; ) {
+        fiber_parallel(NULL, &do_nothing_ptr, 1);
+    }
+}
+static func_t loops[] = {
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce,
+        (func_t) loop_and_bounce
+};
 
 static void start(void* _) {
     simple_parallel();
-    // massively_parallel();
+    fiber_parallel(NULL, loops, sizeof(loops) / sizeof(func_t));
+    massively_parallel_worker(12);
     exit(0);
 }
 

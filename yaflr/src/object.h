@@ -26,19 +26,21 @@ struct vtable_entry {
 };
 typedef struct vtable_entry vtable_entry_t;
 
+typedef uint16_t field_offset_t;
+
 struct layout {
-    uint32_t size;
-    uint32_t pointer_count;
-    uint32_t pointer_offsets[0];    // Byte offsets of each pointer
+    field_offset_t size;
+    field_offset_t pointer_count;
+    field_offset_t pointer_offsets[0];    // Byte offsets of each pointer
 };
 typedef struct layout layout_t;
 
 struct vtable {
-    layout_t*   object_layout;      // Required, layout of fields in the object
-    layout_t*    array_layout;      // Optional, layout of array elements
-    uint32_t array_len_offset;      // Byte offset of uint32_t array length field
-    uint32_t  functions_mask;      // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
-    vtable_entry_t  functions[0];   // Each function has a prefix that is the ID
+    layout_t*         object_layout;      // Required, layout of fields in the object
+    layout_t*          array_layout;      // Optional, layout of array elements
+    field_offset_t array_len_offset;      // Byte offset of uint32_t array length field
+    field_offset_t   functions_mask;      // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
+    vtable_entry_t        functions[0];   // Each function has a prefix that is the ID
 };
 typedef struct vtable vtable_t;
 

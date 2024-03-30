@@ -28,7 +28,7 @@ struct test_layout ;
 
 static struct {
     layout_t l;
-    uint32_t p[0];
+    field_offset_t p[0];
 } test_layout = {
         .l = {
                 .size = sizeof(test_object_t),
@@ -39,7 +39,7 @@ static struct {
 
 static struct {
     layout_t l;
-    uint32_t p[1];
+    field_offset_t p[1];
 } test_array_layout = {
         .l = {
                 .size = sizeof(test_array_t),

@@ -33,11 +33,6 @@ __asm__(
 "    ret\n"
 );
 
-void testit() {
-    void*** a;
-    void*** b;
-    fiber_swap_context(a, b);
-}
 
 /*
 // IMPORTANT COMPILER NOTICE

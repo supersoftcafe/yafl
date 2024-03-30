@@ -3,11 +3,13 @@
 //
 
 #include <threads.h>
+
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <assert.h>
 
+#include "lists.h"
 #include "settings.h"
 #include "fiber.h"
 #include "blitz.h"
@@ -25,23 +27,24 @@ typedef struct thread thread_t;
 
 static const int32_t MAGIC = 0x745ba28f;
 
+
 struct fiber {
+    list_node_t l;
+
     int32_t magic;
     int use_count;
 
     uint_fast32_t join_count;     // Number of fibers to complete before scheduling this fiber again.
-    struct fiber* exit_listener;  // Pointer to fiber that is waiting for a set of other fibers.
+    struct fiber *exit_listener;  // Pointer to fiber that is waiting for a set of other fibers.
 
-    heap_t    heap;
+    heap_t heap;
 
-    void**  source;
-    void**  target;
-
-    struct fiber* next;
+    void **source;
+    void **target;
 } __attribute__((aligned(16)));
 
 struct thread {
-    thread_t* next_thread;
+    list_node_t l;
 
     atomic_flag lock;
     fiber_t* free_fibers;
@@ -52,18 +55,20 @@ struct thread {
 };
 
 
-static inline void mutex_init(atomic_flag* lock_ptr) {
+static void mutex_init(atomic_flag *lock_ptr) {
     atomic_flag_clear(lock_ptr);
 }
-static inline void mutex_lock(atomic_flag* lock_ptr) {
+static void mutex_lock(atomic_flag *lock_ptr) {
     while (atomic_flag_test_and_set(lock_ptr));
 }
-static inline void mutex_release(atomic_flag* lock_ptr) {
+static void mutex_release(atomic_flag *lock_ptr) {
     atomic_flag_clear(lock_ptr);
 }
 
 
 
+
+static atomic_flag threads_lock;
 static thread_t* threads;
 
 
@@ -71,7 +76,7 @@ static thread_t* threads;
 
 
 
-enum { trim_count = 10000 };
+enum { trim_count = 10000000 };
 thread_local thread_t* thread_context = NULL;
 
 
@@ -102,28 +107,24 @@ void fiber_schedule(fiber_t* fiber) {
     }
 
     mutex_lock(&thread->lock);
-    fiber->next = thread->work_fibers;
-    thread->work_fibers = fiber;
+    lists_push((list_node_t **) &thread->work_fibers, &fiber->l);
     mutex_release(&thread->lock);
 }
 
 static void fiber_free(struct fiber* fiber) {
-    DEBUG("Deleting %lx\n", (intptr_t)fiber);
-
     fiber->use_count ++;
     fiber->source = fiber->target = NULL; // Crap on it so any attempt to use it crashes
+    fiber->magic = 0; // If we accidentally re-use this memory elsewhere, don't allow it to look like a fiber
+
     object_heap_destroy(&fiber->heap);
 
-    if (unlikely(fiber->use_count >= trim_count)) {
+    if (fiber->use_count >= trim_count) {
         char* start = (char*)fiber + sizeof(struct fiber) - FIBER_SIZE;
         mmap_release(FIBER_SIZE, start);
     } else {
-        fiber->magic = 0; // If we accidentally re-use this memory elsewhere, don't allow it to look like a fiber
-
         thread_t* thread = thread_context;
         mutex_lock(&thread->lock);
-        fiber->next = thread->free_fibers;
-        thread->free_fibers = fiber;
+        lists_push((list_node_t **) &thread->free_fibers, &fiber->l);
         mutex_release(&thread->lock);
     }
 }
@@ -143,7 +144,7 @@ static void fiber_init_struct(struct fiber* fiber, void(*exit_func)(void), void(
     fiber->magic = MAGIC;
     fiber->use_count = 0;
     fiber->source = NULL;          // No saved source exists yet
-    fiber->target = (void**)fiber; // Word after top of stack so next push brings RSP into actual stack space
+    fiber->target = (void**)fiber; // Word after top of stack so next lists_push brings RSP into actual stack space
 
     void** target = fiber->target -= 11;
     target[10] = NULL;
@@ -179,14 +180,15 @@ static fiber_t* fiber_create(void(*func)(void*), void* param, void(*on_exit)(voi
         ERROR("fiber_create must only be called from fiber contexts\n");
 #endif
 
-    fiber_t* fiber = thread->free_fibers;
-    if (unlikely(fiber == NULL)) {
+    mutex_lock(&thread->lock);
+    fiber_t *fiber = (fiber_t*) lists_pop_oldest((list_node_t **) &thread->free_fibers);
+    mutex_release(&thread->lock);
+
+    if (fiber == NULL)
         fiber = fiber_create_from_mmap_heap();
-    } else {
-        thread->free_fibers = fiber->next;
-    }
 
     fiber_init_struct(fiber, on_exit, func, param);
+
     return fiber;
 }
 
@@ -201,48 +203,42 @@ static void initialise_and_register_thread(thread_t* thread, fiber_t* initial_fi
 #endif
 
     // Initialise our thread struct
-    thread->next_thread = NULL;
-    thread->work_fibers = initial_fiber;
+    thread->work_fibers = NULL;
     thread->free_fibers = NULL;
     thread->thread_handle = pthread_self();
-    atomic_flag_clear(&thread->lock);
+    mutex_init(&thread->lock);
+
+    if (initial_fiber)
+        lists_push((list_node_t**)&thread->work_fibers, &initial_fiber->l);
 
     // Add it to the circular list of threads
-    thread_t* existing;
-    do {
-        existing = threads;
-        if (existing == NULL) {
-            thread->next_thread = thread;
-        } else {
-            thread->next_thread = existing;
-        }
-    } while (atomic_compare_exchange_weak(&threads, &existing, thread));
+    mutex_lock(&threads_lock);
+    lists_push((list_node_t **) &threads, &thread->l);
+    mutex_release(&threads_lock);
 
     // Store a thread local reference to the struct
     thread_context = thread;
 }
 
-static fiber_t* find_work(thread_t* thread) {
-    // Hopefully our local thread has some jobs, but if not we'll scour the neighbouring threads for jobs.
-    for (thread_t* start = thread; thread->work_fibers == NULL && start != (thread = thread->next_thread); );
 
-    // The situation might have changed by the time we get here, but it doesn't matter, since we'll just try again later.
-    mutex_lock(&thread->lock);
-    fiber_t* fiber = thread->work_fibers;
-    if (fiber != NULL)
-        thread->work_fibers = fiber->next;
-    mutex_release(&thread->lock);
-
-    return fiber;
-}
-
-_Noreturn __attribute__((noinline))
+_Noreturn
 static void* fiber_scheduler(fiber_t* initial_fiber) {
     thread_t thread;
     initialise_and_register_thread(&thread, initial_fiber);
 
+    thread_t *mark = &thread;
     for (;;) {
-        fiber_t* fiber = find_work(&thread);
+        // Take the newest job
+        mutex_lock(&thread.lock);
+        fiber_t* fiber = (fiber_t*) lists_pop_newest((list_node_t **) &thread.work_fibers);
+        mutex_release(&thread.lock);
+
+        if (fiber == NULL && (mark = (thread_t*)mark->l.next) != &thread) {
+            // Steal the oldest job
+            mutex_lock(&mark->lock);
+            fiber = (fiber_t*) lists_pop_oldest((list_node_t **) &mark->work_fibers);
+            mutex_release(&mark->lock);
+        }
 
         if (fiber != NULL) {
             fiber_swap_context(&fiber->source, &fiber->target);
@@ -253,10 +249,13 @@ static void* fiber_scheduler(fiber_t* initial_fiber) {
 }
 
 void fiber_start(void(*init_func)(void*), void* init_param) {
+    mutex_init(&threads_lock);
+
     int thread_count = atoi(getenv("THREAD_COUNT") ?: "") ?: sysconf(_SC_NPROCESSORS_ONLN);
     if (thread_count <= 0)
         ERROR("sysconf(_SC_NPROCESSORS_ONLN)");
     DEBUG("THREAD_COUNT=%d\n", thread_count);
+//    thread_count = 4;
 
     // Cannot use fiber_create as it must be called from fiber contexts. This isn't one.
     fiber_t* first_fiber = fiber_create_from_mmap_heap();
@@ -275,7 +274,6 @@ void fiber_start(void(*init_func)(void*), void* init_param) {
     }
 }
 
-__attribute__((noinline))
 fiber_t* fiber_self() {
     intptr_t mask = FIBER_SIZE - 1;
     fiber_t* fiber = (struct fiber*)((((intptr_t)&mask) & ~mask) + FIBER_SIZE - sizeof(struct fiber));

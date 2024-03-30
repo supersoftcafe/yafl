@@ -5,6 +5,7 @@
 #include <string.h>
 #include <assert.h>
 
+#include "blitz.h"
 #include "object.h"
 #include "mmap.h"
 #include "threads.h"
@@ -46,6 +47,9 @@ struct heap_node {
     heap_node_t* next;
     heap_t* owner;
     uint32_t next_object_index; // Subtract object size (as count of min unit) to get next index
+
+    uint32_t usage_after_sweep;     // After a sweep this should reflect the actual number of bytes allocated.
+    uint8_t compaction_candidate;   // During compaction is this node a candidate. If not, don't corrupt objects and don't copy.
 
     struct heap_entry start[0];
 };
@@ -92,6 +96,24 @@ static void object_create_new_page(heap_t* heap) {
     heap->node_count += 1;
 
     assert(new_node->recycle_count == 0);
+    assert(new_node->compaction_candidate == 0);
+}
+
+__attribute__((noinline))
+static void object_release_old_page(heap_node_t* node) {
+    if (++node->recycle_count >= RECYCLE_COUNT) {
+        mmap_release(ALLOCATION_UNIT_SIZE, node);
+    } else {
+        // Only zero the used portion, as nothing else has changed from original zero.
+        heap_entry_t *start = &node->start[node->next_object_index];
+        memset(start, 0, sizeof(heap_entry_t) * (MAX_OBJECT_COUNT - node->next_object_index));
+        node->compaction_candidate = 0;
+        node->recycle_count = 0;
+
+        // Add to the thread local free list
+        node->next = free_list;
+        free_list = node;
+    }
 }
 
 object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size) {
@@ -156,21 +178,9 @@ void object_heap_destroy(heap_t* heap) {
     heap->node_count = 0;
 
     while (heap->current_head != NULL) {
-        heap_node_t *ptr = heap->current_head;
-        heap->current_head = ptr->next;
-
-        if (++ptr->recycle_count >= RECYCLE_COUNT) {
-            mmap_release(ALLOCATION_UNIT_SIZE, ptr);
-        } else {
-            // Only zero the used portion, as nothing else has changed from original zero.
-            heap_entry_t *start = &ptr->start[ptr->next_object_index];
-            memset(start, 0, sizeof(heap_entry_t) * (MAX_OBJECT_COUNT - ptr->next_object_index));
-
-            // Add to the thread local free list
-            ptr->next = free_list;
-            ptr->recycle_count = 0;
-            free_list = ptr;
-        }
+        heap_node_t *node = heap->current_head;
+        heap->current_head = node->next;
+        object_release_old_page(node);
     }
 }
 
@@ -186,10 +196,16 @@ void object_heap_append(heap_t* heap, heap_t* sub_heap) {
     }
     sub_tail->owner = heap;
     sub_tail->next = heap->current_head;
+
     heap->current_head = sub_head;
     heap->object_count += sub_heap->object_count;
     heap->node_count += sub_heap->node_count;
     heap->used_space += sub_heap->used_space;
+
+    sub_heap->current_head = NULL;
+    sub_heap->object_count = 0;
+    sub_heap->used_space = 0;
+    sub_heap->node_count = 0;
 }
 
 
@@ -263,8 +279,9 @@ void fix_pointer(__attribute__((unused)) heap_t *heap, object_t **object_ptr) {
     object_t* old_object = *object_ptr;
     if (old_object != NULL) {
         heap_node_t *node = get_heap_node(old_object);
-        if (node->owner == heap) {
-            *object_ptr = (object_t *) (old_object->vtable);
+        if (node->owner == heap && node->compaction_candidate) {
+            object_t *new_ptr = (object_t *) (old_object->vtable);
+            *object_ptr = new_ptr;
         }
     }
 }
@@ -274,11 +291,21 @@ void fix_pointers(heap_t *heap, object_t* object) {
     visit_each_pointer(heap, object, (void(*)(void*,void*))fix_pointer);
 }
 
+static inline
+size_t size_of_object(object_t *object) {
+    vtable_t *vtable = object->vtable;
+    size_t size = vtable->object_layout->size;
+    if (vtable->array_layout != NULL)
+        size += vtable->array_layout->size * *ref_array_length(object);
+    return size;
+}
+
 static __attribute__((noinline))
 void mark_sweep(heap_t *heap) {
     for (size_t loop_flags = 1; loop_flags; ) {
         loop_flags = 0;
         for (heap_node_t *node = heap->current_head; node; node = node->next) {
+
             for (size_t index = 0; index < BIT_ARRAY_SIZE; ++index) {
                 for (size_t to_scan; (to_scan = node->bits.seen[index] & ~node->bits.scanned[index]) != 0;) {
                     if (to_scan) {
@@ -287,10 +314,13 @@ void mark_sweep(heap_t *heap) {
                         size_t entry = index * total_bits(size_t) + shift;
 
                         object_t *object = (object_t *) &node->start[entry];
+                        node->usage_after_sweep += size_of_object(object);
                         scan_object(heap, object);
                     }
                 }
             }
+
+            node->compaction_candidate = node->usage_after_sweep < ALLOCATION_UNIT_SIZE/2;
         }
     }
 }
@@ -298,26 +328,23 @@ void mark_sweep(heap_t *heap) {
 static __attribute__((noinline))
 void copy_to_new_heap(heap_t *heap, heap_t *new_heap) {
     for (heap_node_t *node = heap->current_head; node; node = node->next) {
-        for (size_t index = 0; index < BIT_ARRAY_SIZE; ++index) {
+        if (node->compaction_candidate) {
+            for (size_t index = 0; index < BIT_ARRAY_SIZE; ++index) {
 
-            size_t seen = node->bits.seen[index];
-            while (seen != 0) {
-                size_t shift = index_of_lowest_bit(seen);
-                size_t entry = index * total_bits(size_t) + shift;
-                seen ^= ((size_t)1) << shift;
+                size_t seen = node->bits.seen[index];
+                while (seen != 0) {
+                    size_t shift = index_of_lowest_bit(seen);
+                    size_t entry = index * total_bits(size_t) + shift;
+                    seen ^= ((size_t) 1) << shift;
 
-                object_t *old_object = (object_t *) &node->start[entry];
-                vtable_t *vtable = old_object->vtable;
-                layout_t *array_layout = vtable->array_layout;
-                size_t size = vtable->object_layout->size;
-                if (array_layout != NULL)
-                    size += array_layout->size * *ref_array_length(old_object);
+                    object_t *old_object = (object_t *) &node->start[entry];
+                    size_t size = size_of_object(old_object);
+                    object_t *new_object = object_create_internal(new_heap, old_object->vtable, size);
+                    memcpy(new_object, old_object, size);
 
-                object_t *new_object = object_create_internal(new_heap, vtable, size);
-                memcpy(new_object, old_object, size);
-
-                // Write redirect pointer into old object for later lookup
-                old_object->vtable = (vtable_t *) new_object;
+                    // Write redirect pointer into old object for later lookup
+                    old_object->vtable = (vtable_t *) new_object;
+                }
             }
         }
     }
@@ -326,17 +353,19 @@ void copy_to_new_heap(heap_t *heap, heap_t *new_heap) {
 static __attribute__((noinline))
 void fix_object_references(heap_t *old_heap) {
     for (heap_node_t *node = old_heap->current_head; node; node = node->next) {
-        for (size_t index = 0; index < BIT_ARRAY_SIZE; ++index) {
+        if (node->compaction_candidate) {
+            for (size_t index = 0; index < BIT_ARRAY_SIZE; ++index) {
 
-            size_t seen = node->bits.seen[index];
-            while (seen != 0) {
-                size_t shift = index_of_lowest_bit(seen);
-                size_t entry = index * total_bits(size_t) + shift;
-                seen ^= ((size_t)1) << shift;
+                size_t seen = node->bits.seen[index];
+                while (seen != 0) {
+                    size_t shift = index_of_lowest_bit(seen);
+                    size_t entry = index * total_bits(size_t) + shift;
+                    seen ^= ((size_t) 1) << shift;
 
-                object_t *old_object = (object_t *) &node->start[entry];
-                object_t *new_object = (object_t *) old_object->vtable;
-                fix_pointers(old_heap, new_object);
+                    object_t *old_object = (object_t *) &node->start[entry];
+                    object_t *new_object = (object_t *) old_object->vtable;
+                    fix_pointers(old_heap, new_object);
+                }
             }
         }
     }
@@ -344,10 +373,16 @@ void fix_object_references(heap_t *old_heap) {
 
 __attribute__((noinline))
 void object_heap_compact(heap_t *heap, int root_count, object_t **roots) {
+    // Early return for heaps that can't be compacted
+//    if (heap->current_head == NULL || heap->current_head->next == NULL)
+//        return;
 
     // 1. Clear all seen/scanned bits
-    for (heap_node_t *node = heap->current_head; node; node = node->next)
+    for (heap_node_t *node = heap->current_head; node; node = node->next) {
+        node->usage_after_sweep = 0;
+        node->compaction_candidate = 0;
         memset(&node->bits, 0, sizeof(node->bits));
+    }
 
     // 2. Mark each root object as seen
     for (int index = 0; index < root_count; ++index)
@@ -374,8 +409,24 @@ void object_heap_compact(heap_t *heap, int root_count, object_t **roots) {
     for (int index = root_count; --index >= 0; )
         fix_pointer(heap, &roots[index]);
 
-    // 8. Destroy the old heap
+    // 8. Destroy the old heap, but retain nodes that aren't compaction candidates
+    for (heap_node_t **node_ptr = &heap->current_head; *node_ptr; ) {
+        heap_node_t *node = *node_ptr;
+        if (node->compaction_candidate == 0) {
+            // Unlink it from the old heap
+            *node_ptr = node->next;
+            // Link into the new heap
+            node->next = new_heap.current_head;
+            new_heap.current_head = node;
+        } else {
+            node_ptr = &node->next;
+        }
+    }
     object_heap_destroy(heap);
+
+    // 9. Change owner to be correct
+    for (heap_node_t *node = new_heap.current_head; node; node = node->next)
+        node->owner = heap;
 
     *heap = new_heap;
 }

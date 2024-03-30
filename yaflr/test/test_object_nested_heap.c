@@ -17,7 +17,10 @@ struct test_object{
     test_object_t* pointer;
 };
 
-static struct { layout_t l; uint32_t o[1]; } test_layout = {
+static struct {
+    layout_t l;
+    field_offset_t o[1];
+} test_layout = {
         .l = {
                 .size = sizeof(test_object_t),
                 .pointer_count = 1

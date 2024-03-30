@@ -23,7 +23,7 @@ struct test_layout ;
 
 static struct {
     layout_t l;
-    uint32_t p[3];
+    field_offset_t p[3];
 } test_layout = {
         .l = {
                 .size = sizeof(test_object_t),
@@ -89,10 +89,7 @@ static void test_tree(test_object_t *obj) {
     assert(obj->value == next_id);
 }
 
-void test_object_heap_compact() {
-    mmap_init();
-    object_init();
-
+static void complex_compation() {
     object_heap_create(&heap);
 
     test_object_t* root1 = create_tree(5);
@@ -115,4 +112,41 @@ void test_object_heap_compact() {
     test_tree(roots[0]);
     test_tree(roots[1]);
     test_tree(roots[2]);
+}
+
+static void simple_compaction() {
+    object_heap_create(&heap);
+
+    test_object_t* ptr3 = (test_object_t*)object_create(&heap, &test_vtable.v);
+    ptr3->p1 = NULL;
+    ptr3->p2 = NULL;
+    ptr3->value = 33;
+    ptr3->p3 = NULL;
+
+    test_object_t* ptr2 = (test_object_t*)object_create(&heap, &test_vtable.v);
+    ptr2->p1 = NULL;
+    ptr2->p2 = NULL;
+    ptr2->value = 22;
+    ptr2->p3 = ptr3;
+
+    test_object_t* ptr1 = (test_object_t*)object_create(&heap, &test_vtable.v);
+    ptr1->p1 = NULL;
+    ptr1->p2 = ptr2;
+    ptr1->value = 11;
+    ptr1->p3 = ptr3;
+
+    object_heap_compact(&heap, 1, (object_t **)&ptr1);
+
+    assert(ptr1->value == 11);
+    assert(ptr1->p2->value == 22);
+    assert(ptr1->p3->value == 33);
+    assert(ptr1->p2->p3 == ptr1->p3);
+}
+
+void test_object_heap_compact() {
+    mmap_init();
+    object_init();
+
+    simple_compaction();
+    complex_compation();
 }
