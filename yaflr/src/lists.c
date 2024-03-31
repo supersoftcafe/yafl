@@ -3,82 +3,85 @@
 //
 
 #include "lists.h"
+#include "blitz.h"
 #include <stdlib.h>
 #include <assert.h>
 
-#define MAGIC 0x883a7fe
+static const intptr_t MAGIC_HEAD = 0x30fe3a2;
+static const intptr_t MAGIC_NODE = 0x883a7fe;
 
-void lists_push(list_node_t **head_ptr, list_node_t *node) {
-    node->magic = MAGIC;
-    if (*head_ptr) {
-        // There is a circular list already here that we can insert into
-        node->next = *head_ptr;
-        node->prev = node->next->prev;
-        node->next->prev = node;
-        node->prev->next = node;
-    } else {
-        // No list yet so initialise it with this element looped on itself
-        node->next = node;
-        node->prev = node;
-        *head_ptr = node;
-    }
+void lists_init(list_head_t *head) {
+#ifndef NDEBUG
+    head->l.magic = MAGIC_HEAD;
+#endif
+    head->l.next = &head->l;
+    head->l.prev = &head->l;
 }
 
-list_node_t *lists_pop_newest(list_node_t **head_ptr) {
-    list_node_t *node = *head_ptr;
-    if ( node == NULL ) {
-        // List is empty
-    } else if ( node->prev == node ) {
-        // This was the last node, so we need to reset the head
-        assert(node->magic == MAGIC);
-        *head_ptr = NULL;
+list_node_t *lists_get_next(list_head_t *head, list_node_t *node) {
+    return node->next == &head->l ? node->next->next : node->next;
+}
 
+list_node_t *lists_get_head(list_head_t *head) {
+    return head->l.next == &head->l ? NULL : head->l.next;
+}
+
+void lists_push(list_head_t *head, list_node_t *node) {
+    assert(head->l.magic == MAGIC_HEAD);
+    assert(node->magic != MAGIC_NODE);
+    assert(node->magic != MAGIC_HEAD);
+
+#ifndef NDEBUG
+    node->magic = MAGIC_NODE;
+#endif
+
+    node->next = &head->l;
+    node->prev = head->l.prev;
+    node->prev->next = node;
+    head->l.prev = node;
+}
+
+list_node_t *lists_pop_newest(list_head_t *head) {
+    assert(head->l.magic == MAGIC_HEAD);
+
+    list_node_t *node = head->l.prev;
+
+    list_node_t *prev = node->prev;
+    list_node_t *next = &head->l;
+
+    prev->next = next;
+    next->prev = prev;
+
+    node = node == &head->l ? NULL : node;
+
+    assert(node == NULL || node->magic == MAGIC_NODE);
+#ifndef NDEBUG
+    if (node != NULL)
         node->magic = 0;
-        node->next = NULL;
-        node->prev = NULL;
-    } else {
-        // Newest is 'prev' to head node
-        node = node->prev;
-        assert(node->magic == MAGIC);
+#endif
 
-        // Unlink it
-        list_node_t *p = node->prev;
-        list_node_t *n = node->next;
-        n->prev = p; p->next = n;
-
-        node->magic = 0;
-        node->next = NULL;
-        node->prev = NULL;
-    }
     return node;
 }
 
-list_node_t *lists_pop_oldest(list_node_t **head_ptr) {
-    list_node_t *node = *head_ptr;
-    if ( node == NULL ) {
-        // List is empty
-    } else if ( node->next == node ) {
-        // This was the last node, so we need to reset the head
-        assert(node->magic == MAGIC);
-        *head_ptr = NULL;
+list_node_t *lists_pop_oldest(list_head_t *head) {
+    assert(head->l.magic == MAGIC_HEAD);
 
+    list_node_t *node = head->l.next;
+
+    list_node_t *prev = &head->l;
+    list_node_t *next = node->next;
+
+    prev->next = next;
+    next->prev = prev;
+
+    node = node == &head->l ? NULL : node;
+
+    assert(node == NULL || node->magic == MAGIC_NODE);
+#ifndef NDEBUG
+    if (node != NULL)
         node->magic = 0;
-        node->next = NULL;
-        node->prev = NULL;
-    } else {
-        // Newest is the head so move the head
-        assert(node->magic == MAGIC);
-        *head_ptr = node->next;
+#endif
 
-        // Unlink it
-        list_node_t *p = node->prev;
-        list_node_t *n = node->next;
-        n->prev = p; p->next = n;
-
-        node->magic = 0;
-        node->next = NULL;
-        node->prev = NULL;
-    }
     return node;
 }
 

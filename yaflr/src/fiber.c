@@ -47,8 +47,8 @@ struct thread {
     list_node_t l;
 
     atomic_flag lock;
-    fiber_t* free_fibers;
-    fiber_t* work_fibers;
+    list_head_t free_fibers;
+    list_head_t work_fibers;
 
     pthread_t thread_handle;
     // Local queues will go here
@@ -69,7 +69,7 @@ static void mutex_release(atomic_flag *lock_ptr) {
 
 
 static atomic_flag threads_lock;
-static thread_t* threads;
+static list_head_t threads;
 
 
 
@@ -103,11 +103,11 @@ void fiber_schedule(fiber_t* fiber) {
     thread_t* thread = thread_context;
     if (thread == NULL) {
         // Probably called from a non-managed thread. Pick a random thread and schedule to that.
-        thread = threads; // Technically, the first thread is random...  ahem...
+        thread = (thread_t*) lists_get_head(&threads); // Technically, the first thread is random.
     }
 
     mutex_lock(&thread->lock);
-    lists_push((list_node_t **) &thread->work_fibers, &fiber->l);
+    lists_push(&thread->work_fibers, &fiber->l);
     mutex_release(&thread->lock);
 }
 
@@ -124,7 +124,7 @@ static void fiber_free(struct fiber* fiber) {
     } else {
         thread_t* thread = thread_context;
         mutex_lock(&thread->lock);
-        lists_push((list_node_t **) &thread->free_fibers, &fiber->l);
+        lists_push(&thread->free_fibers, &fiber->l);
         mutex_release(&thread->lock);
     }
 }
@@ -135,7 +135,7 @@ static void fiber_terminate(void) {
 }
 
 static void fiber_donothing(void) {
-    // It's only purpose is to call 'ret' and pop one more item off of the stack
+    // Its only purpose is to call 'ret' and pop one more item off of the stack
 }
 
 static void fiber_init_struct(struct fiber* fiber, void(*exit_func)(void), void(*func)(void*), void* param) {
@@ -181,7 +181,7 @@ static fiber_t* fiber_create(void(*func)(void*), void* param, void(*on_exit)(voi
 #endif
 
     mutex_lock(&thread->lock);
-    fiber_t *fiber = (fiber_t*) lists_pop_oldest((list_node_t **) &thread->free_fibers);
+    fiber_t *fiber = (fiber_t*) lists_pop_oldest(&thread->free_fibers);
     mutex_release(&thread->lock);
 
     if (fiber == NULL)
@@ -203,17 +203,17 @@ static void initialise_and_register_thread(thread_t* thread, fiber_t* initial_fi
 #endif
 
     // Initialise our thread struct
-    thread->work_fibers = NULL;
-    thread->free_fibers = NULL;
+    lists_init(&thread->work_fibers);
+    lists_init(&thread->free_fibers);
     thread->thread_handle = pthread_self();
     mutex_init(&thread->lock);
 
     if (initial_fiber)
-        lists_push((list_node_t**)&thread->work_fibers, &initial_fiber->l);
+        lists_push(&thread->work_fibers, &initial_fiber->l);
 
     // Add it to the circular list of threads
     mutex_lock(&threads_lock);
-    lists_push((list_node_t **) &threads, &thread->l);
+    lists_push(&threads, &thread->l);
     mutex_release(&threads_lock);
 
     // Store a thread local reference to the struct
@@ -230,13 +230,13 @@ static void* fiber_scheduler(fiber_t* initial_fiber) {
     for (;;) {
         // Take the newest job
         mutex_lock(&thread.lock);
-        fiber_t* fiber = (fiber_t*) lists_pop_newest((list_node_t **) &thread.work_fibers);
+        fiber_t* fiber = (fiber_t*) lists_pop_newest(&thread.work_fibers);
         mutex_release(&thread.lock);
 
-        if (fiber == NULL && (mark = (thread_t*)mark->l.next) != &thread) {
+        if (fiber == NULL && (mark = (thread_t*) lists_get_next(&threads, &mark->l)) != &thread) {
             // Steal the oldest job
             mutex_lock(&mark->lock);
-            fiber = (fiber_t*) lists_pop_oldest((list_node_t **) &mark->work_fibers);
+            fiber = (fiber_t*) lists_pop_oldest(&mark->work_fibers);
             mutex_release(&mark->lock);
         }
 
@@ -250,6 +250,7 @@ static void* fiber_scheduler(fiber_t* initial_fiber) {
 
 void fiber_start(void(*init_func)(void*), void* init_param) {
     mutex_init(&threads_lock);
+    lists_init(&threads);
 
     int thread_count = atoi(getenv("THREAD_COUNT") ?: "") ?: sysconf(_SC_NPROCESSORS_ONLN);
     if (thread_count <= 0)
