@@ -5,6 +5,5 @@ allocation is local.
 If some sort of caching is needed, it'll be on its own fiber, and will have a well-defined scope.
 
 TODO:
-* Add #ifdef blocks for supported platforms.
 
-* Move stack initialisation of new fiber into platform.c.
+* Object with fiber behaviour...  How to clean up?   How to trigger behaviour and transfer result?

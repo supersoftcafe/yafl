@@ -10,6 +10,14 @@
 struct heap_node;
 typedef struct heap_node heap_node_t;
 
+typedef struct shadow_stack_layout {
+
+} shadow_stack_layout_t;
+
+typedef struct shadow_stack {
+
+} shadow_stack_t;
+
 struct heap {
     heap_node_t* current_head;
     size_t object_count;

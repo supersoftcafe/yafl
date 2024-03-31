@@ -29,6 +29,7 @@ static const int32_t MAGIC = 0x745ba28f;
 
 
 struct fiber {
+    __attribute__((aligned(16)))
     list_node_t l;
 
     int32_t magic;
@@ -41,7 +42,7 @@ struct fiber {
 
     void **source;
     void **target;
-} __attribute__((aligned(16)));
+};
 
 struct thread {
     list_node_t l;
@@ -134,30 +135,15 @@ static void fiber_terminate(void) {
     exit(0);
 }
 
-static void fiber_donothing(void) {
-    // Its only purpose is to call 'ret' and pop one more item off of the stack
-}
-
 static void fiber_init_struct(struct fiber* fiber, void(*exit_func)(void), void(*func)(void*), void* param) {
     object_heap_create(&fiber->heap);
 
     fiber->magic = MAGIC;
     fiber->use_count = 0;
     fiber->source = NULL;          // No saved source exists yet
-    fiber->target = (void**)fiber; // Word after top of stack so next lists_push brings RSP into actual stack space
+    fiber->target = (void**)fiber; // Word after top of stack so next push brings RSP into actual stack space
 
-    void** target = fiber->target -= 11;
-    target[10] = NULL;
-    target[9] = exit_func; // When entry function exits, it'll automatically branch to the exit function. Neat!
-    target[8] = fiber_donothing;    // Filler. It pops the next item, that's all.
-    target[7] = func;
-    target[6] = param;
-    target[5] = NULL;
-    target[4] = NULL;
-    target[3] = NULL;
-    target[2] = NULL;
-    target[1] = NULL;
-    target[0] = NULL;
+    fiber_init_stack(&fiber->target, exit_func, func, param);
 }
 
 /**
@@ -192,6 +178,7 @@ static fiber_t* fiber_create(void(*func)(void*), void* param, void(*on_exit)(voi
     return fiber;
 }
 
+__attribute__((noinline))
 static void initialise_and_register_thread(thread_t* thread, fiber_t* initial_fiber) {
     // Don't permit signal delivery to this thread.
     sigset_t mask;
@@ -220,20 +207,16 @@ static void initialise_and_register_thread(thread_t* thread, fiber_t* initial_fi
     thread_context = thread;
 }
 
-
-_Noreturn
-static void* fiber_scheduler(fiber_t* initial_fiber) {
-    thread_t thread;
-    initialise_and_register_thread(&thread, initial_fiber);
-
-    thread_t *mark = &thread;
+_Noreturn __attribute__((noinline))
+static void* fiber_scheduler2(thread_t *thread) {
+    thread_t *mark = thread;
     for (;;) {
         // Take the newest job
-        mutex_lock(&thread.lock);
-        fiber_t* fiber = (fiber_t*) lists_pop_newest(&thread.work_fibers);
-        mutex_release(&thread.lock);
+        mutex_lock(&thread->lock);
+        fiber_t* fiber = (fiber_t*) lists_pop_newest(&thread->work_fibers);
+        mutex_release(&thread->lock);
 
-        if (fiber == NULL && (mark = (thread_t*) lists_get_next(&threads, &mark->l)) != &thread) {
+        if (fiber == NULL && (mark = (thread_t*) lists_get_next(&threads, &mark->l)) != thread) {
             // Steal the oldest job
             mutex_lock(&mark->lock);
             fiber = (fiber_t*) lists_pop_oldest(&mark->work_fibers);
@@ -246,6 +229,13 @@ static void* fiber_scheduler(fiber_t* initial_fiber) {
             usleep(100000);
         }
     }
+}
+
+_Noreturn
+static void* fiber_scheduler(fiber_t* initial_fiber) {
+    thread_t thread;
+    initialise_and_register_thread(&thread, initial_fiber);
+    fiber_scheduler2(&thread);
 }
 
 void fiber_start(void(*init_func)(void*), void* init_param) {

@@ -2,37 +2,38 @@
 // Created by mbrown on 30/03/24.
 //
 
-#include "lists.h"
-#include "blitz.h"
 #include <stdlib.h>
 #include <assert.h>
 
-static const intptr_t MAGIC_HEAD = 0x30fe3a2;
-static const intptr_t MAGIC_NODE = 0x883a7fe;
+#include "lists.h"
 
-void lists_init(list_head_t *head) {
+
+#define LISTS_MAGIC_HEAD 0x30fe3a2
+#define LISTS_MAGIC_NODE 0x883a7fe
+
+inline void lists_init(list_head_t *head) {
 #ifndef NDEBUG
-    head->l.magic = MAGIC_HEAD;
+    head->l.magic = LISTS_MAGIC_HEAD;
 #endif
     head->l.next = &head->l;
     head->l.prev = &head->l;
 }
 
-list_node_t *lists_get_next(list_head_t *head, list_node_t *node) {
+inline list_node_t *lists_get_next(list_head_t *head, list_node_t *node) {
     return node->next == &head->l ? node->next->next : node->next;
 }
 
-list_node_t *lists_get_head(list_head_t *head) {
+inline list_node_t *lists_get_head(list_head_t *head) {
     return head->l.next == &head->l ? NULL : head->l.next;
 }
 
-void lists_push(list_head_t *head, list_node_t *node) {
-    assert(head->l.magic == MAGIC_HEAD);
-    assert(node->magic != MAGIC_NODE);
-    assert(node->magic != MAGIC_HEAD);
+inline void lists_push(list_head_t *head, list_node_t *node) {
+    assert(head->l.magic == LISTS_MAGIC_HEAD);
+    assert(node->magic != LISTS_MAGIC_NODE);
+    assert(node->magic != LISTS_MAGIC_HEAD);
 
 #ifndef NDEBUG
-    node->magic = MAGIC_NODE;
+    node->magic = LISTS_MAGIC_NODE;
 #endif
 
     node->next = &head->l;
@@ -41,8 +42,8 @@ void lists_push(list_head_t *head, list_node_t *node) {
     head->l.prev = node;
 }
 
-list_node_t *lists_pop_newest(list_head_t *head) {
-    assert(head->l.magic == MAGIC_HEAD);
+inline list_node_t *lists_pop_newest(list_head_t *head) {
+    assert(head->l.magic == LISTS_MAGIC_HEAD);
 
     list_node_t *node = head->l.prev;
 
@@ -54,7 +55,7 @@ list_node_t *lists_pop_newest(list_head_t *head) {
 
     node = node == &head->l ? NULL : node;
 
-    assert(node == NULL || node->magic == MAGIC_NODE);
+    assert(node == NULL || node->magic == LISTS_MAGIC_NODE);
 #ifndef NDEBUG
     if (node != NULL)
         node->magic = 0;
@@ -63,8 +64,8 @@ list_node_t *lists_pop_newest(list_head_t *head) {
     return node;
 }
 
-list_node_t *lists_pop_oldest(list_head_t *head) {
-    assert(head->l.magic == MAGIC_HEAD);
+inline list_node_t *lists_pop_oldest(list_head_t *head) {
+    assert(head->l.magic == LISTS_MAGIC_HEAD);
 
     list_node_t *node = head->l.next;
 
@@ -76,7 +77,7 @@ list_node_t *lists_pop_oldest(list_head_t *head) {
 
     node = node == &head->l ? NULL : node;
 
-    assert(node == NULL || node->magic == MAGIC_NODE);
+    assert(node == NULL || node->magic == LISTS_MAGIC_NODE);
 #ifndef NDEBUG
     if (node != NULL)
         node->magic = 0;
@@ -84,5 +85,4 @@ list_node_t *lists_pop_oldest(list_head_t *head) {
 
     return node;
 }
-
 
