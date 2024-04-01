@@ -33,7 +33,7 @@ static void function3(test_object_t *o) {
 static layout_t layout = {
         .size = sizeof(test_object_t),
         .pointer_count = 0,
-        .pointer_offsets = { }
+        .pointer_indexes = { }
 };
 
 enum {
@@ -49,7 +49,7 @@ static struct {
         .v = {
                 .object_layout = &layout,
                 .array_layout = NULL,
-                .array_len_offset = 0,
+                .array_len_index = 0,
                 .functions_mask = 0, // Because this isn't a proper hash map, always start at index 0
         },
         .e = {
@@ -64,7 +64,7 @@ static struct {
 
 void test_object_virtual_function() {
     mmap_init();
-    object_init();
+    object_init(0);
 
     heap_t heap;
     object_heap_create(&heap);

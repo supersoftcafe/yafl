@@ -91,8 +91,12 @@ object_t* fiber_object_create_array(vtable_t* vtable, uint32_t length) {
     return object_create_array(&fiber_self()->heap, vtable, length);
 }
 
-void fiber_object_heap_compact(int root_count, object_t** roots) {
-    object_heap_compact(&fiber_self()->heap, root_count, roots);
+void fiber_object_heap_compact2(shadow_stack_t *shadow_stack) {
+    object_heap_compact2(&fiber_self()->heap, shadow_stack);
+}
+
+void fiber_object_heap_compact(int count, object_t **array) {
+    object_heap_compact(&fiber_self()->heap, count, array);
 }
 
 

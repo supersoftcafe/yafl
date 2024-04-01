@@ -46,7 +46,7 @@ static layout_t some_integers_layout = {
 static vtable_t some_integers_vtable = {
         .object_layout = &some_integers_layout,
         .array_layout = NULL,
-        .array_len_offset = 0,
+        .array_len_index = 0,
         .functions_mask = 0
 };
 
@@ -57,24 +57,24 @@ struct some_objects {
 
 static struct {
     layout_t l;
-    field_offset_t o[4];
+    field_index_t o[4];
 } some_objects_layout = {
         .l = {
                 .size = sizeof(struct some_objects),
                 .pointer_count = 4
         },
         .o = {
-                offsetof(struct some_objects, o1),
-                offsetof(struct some_objects, o2),
-                offsetof(struct some_objects, o3),
-                offsetof(struct some_objects, o4)
+                indexof(struct some_objects, o1),
+                indexof(struct some_objects, o2),
+                indexof(struct some_objects, o3),
+                indexof(struct some_objects, o4)
         }
 };
 
 static vtable_t some_objects_vtable = {
         .object_layout = &some_objects_layout.l,
         .array_layout = NULL,
-        .array_len_offset = 0,
+        .array_len_index = 0,
         .functions_mask = 0
 };
 
@@ -106,12 +106,14 @@ static void massively_parallel_enter4(struct parameter_container *p) {
     fiber_object_heap_compact(1, &p->o4);
 }
 
+
 static func_t massively_parallel_functions[4] = {
         (func_t)massively_parallel_enter1,
         (func_t)massively_parallel_enter2,
         (func_t)massively_parallel_enter3,
         (func_t)massively_parallel_enter4
 };
+
 
 static object_t *massively_parallel_worker(int depth) {
     if (depth <= 0) {
@@ -165,7 +167,7 @@ static void start(void* _) {
 
 void test_fiber_parallel() {
     mmap_init();
-    object_init();
+    object_init(0);
     fiber_start(start, NULL);
     sleep(1000000);
 }

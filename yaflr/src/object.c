@@ -4,6 +4,7 @@
 
 #include <string.h>
 #include <assert.h>
+#include <alloca.h>
 
 #include "blitz.h"
 #include "object.h"
@@ -14,6 +15,7 @@
 
 thread_local struct heap_node* free_list;
 static size_t RECYCLE_COUNT = 0;
+static int AGGRESSIVE_COMPACTION = 0;
 
 enum { ALLOCATION_UNIT_SIZE_SHIFT = 16 };
 enum { ALLOCATION_UNIT_SIZE = 1 << ALLOCATION_UNIT_SIZE_SHIFT };
@@ -58,14 +60,15 @@ enum { MAX_OBJECT_COUNT = (ALLOCATION_UNIT_SIZE - sizeof(struct heap_node)) / SM
 
 
 
-void object_init() {
-    RECYCLE_COUNT = 10;
+void object_init(int aggressive_compaction) {
+    RECYCLE_COUNT = 1000;
+    AGGRESSIVE_COMPACTION = aggressive_compaction;
 }
 
 
 static inline
 uint32_t *ref_array_length(object_t *object) {
-    return (uint32_t*)&((char*)object)[object->vtable->array_len_offset];
+    return &((uint32_t*)object)[object->vtable->array_len_index];
 }
 
 
@@ -83,10 +86,10 @@ __attribute__((noinline))
 static void object_create_new_page(heap_t* heap) {
     // Allocate a new page
     heap_node_t* new_node = free_list;
-    if (new_node != NULL) {
-        free_list = new_node->next;
-    } else {
+    if (unlikely(new_node == NULL)) {
         new_node = mmap_alloc(ALLOCATION_UNIT_SIZE, ALLOCATION_UNIT_SIZE_SHIFT);
+    } else {
+        free_list = new_node->next;
     }
 
     new_node->next_object_index = MAX_OBJECT_COUNT;
@@ -116,21 +119,18 @@ static void object_release_old_page(heap_node_t* node) {
     }
 }
 
-object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size) {
-    assert(size > 0 && size <= LARGEST_ALLOCATION);
+object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size_in_units) {
+    assert(size_in_units > 0 && size_in_units <= LARGEST_ALLOCATION/SMALLEST_ALLOCATION);
 
-    // Convert to count of smallest allocation units
-    size = (size + SMALLEST_ALLOCATION - 1) / SMALLEST_ALLOCATION;
-
-    if (heap->current_head == NULL || size > heap->current_head->next_object_index)
+    if (unlikely(heap->current_head == NULL || size_in_units > heap->current_head->next_object_index))
         object_create_new_page(heap);
     heap_node_t *node = heap->current_head;
 
-    assert(node != NULL && size <= node->next_object_index);
+    assert(node != NULL && size_in_units <= node->next_object_index);
 
     heap->object_count += 1;
-    heap->used_space += size * SMALLEST_ALLOCATION;
-    node->next_object_index -= (uint32_t)size;
+    heap->used_space += size_in_units * SMALLEST_ALLOCATION;
+    node->next_object_index -= (uint32_t)size_in_units;
 
     object_t* object = (object_t*)&node->start[node->next_object_index];
     object->vtable = vtable;
@@ -141,10 +141,10 @@ object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size) 
 object_t* object_create_array(heap_t* heap, vtable_t* vtable, uint32_t length) {
     assert(vtable->object_layout != NULL);
     assert(vtable->array_layout != NULL);
-    assert(vtable->array_len_offset >= sizeof(vtable_t*));
+    assert(vtable->array_len_index >= 1);
 
     uint64_t size = vtable->array_layout->size * (uint64_t)length + vtable->object_layout->size;
-    object_t* object = object_create_internal(heap, vtable, size);
+    object_t* object = object_create_internal(heap, vtable, (size + (SMALLEST_ALLOCATION-1)) / SMALLEST_ALLOCATION);
     *ref_array_length(object) = length;
 
     return object;
@@ -153,10 +153,10 @@ object_t* object_create_array(heap_t* heap, vtable_t* vtable, uint32_t length) {
 object_t* object_create(heap_t* heap, vtable_t* vtable) {
     assert(vtable->object_layout != NULL);
     assert(vtable->array_layout == NULL);
-    assert(vtable->array_len_offset == 0);
+    assert(vtable->array_len_index == 0);
 
     uint64_t size = vtable->object_layout->size;
-    object_t* object = object_create_internal(heap, vtable, size);
+    object_t* object = object_create_internal(heap, vtable, (size + (SMALLEST_ALLOCATION-1)) / SMALLEST_ALLOCATION);
 
     return object;
 }
@@ -246,37 +246,32 @@ void mark_scanned(object_t* object) {
 }
 
 static inline
-void visit_each_pointer2(heap_t* heap, char* base_pointer, layout_t *layout, void(*visitor)(void*,void*)) {
-    for (uint32_t index = 0; index < layout->pointer_count; ++index) {
-        uint32_t offset = layout->pointer_offsets[index];
-        visitor(heap, base_pointer + offset);
+void visit_each_pointer2(heap_t* heap, void** base_pointer, layout_t *layout, void(*visitor)(void*,void*)) {
+    for (field_index_t index = 0; index < layout->pointer_count; ++index) {
+        visitor(heap, &base_pointer[layout->pointer_indexes[index]]);
     }
 }
 
 static inline
-void visit_each_pointer(heap_t* heap, object_t* object, void(*visitor)(void*,void*)) {
+void visit_each_pointer(heap_t *heap, object_t *object, void(*visitor)(void*,void*)) {
     layout_t *object_layout = object->vtable->object_layout;
     layout_t * array_layout = object->vtable->array_layout;
 
-    visit_each_pointer2(heap, (char*)object, object_layout, visitor);
+    visit_each_pointer2(heap, (void**)object, object_layout, visitor);
 
     if (array_layout != NULL && array_layout->pointer_count > 0) {
-        char* base_pointer = ((char*)object) + object_layout->size;
+        field_index_t el_size = array_layout->size;
         uint32_t array_length = *ref_array_length(object);
-        for (uint32_t index = 0; index < array_length; ++index, base_pointer += array_layout->size)
-            visit_each_pointer2(heap, base_pointer, array_layout, visitor);
+        char *base_pointer = ((char*)object) + object_layout->size;
+        for (uint32_t index = 0; index < array_length; ++index, base_pointer += el_size) {
+            visit_each_pointer2(heap, (void **) base_pointer, array_layout, visitor);
+        }
     }
-}
-
-static inline
-void scan_object(heap_t* heap, object_t* object) {
-    mark_scanned(object);
-    visit_each_pointer(heap, object, (void(*)(void*,void*))mark_seen);
 }
 
 static inline
 void fix_pointer(__attribute__((unused)) heap_t *heap, object_t **object_ptr) {
-    object_t* old_object = *object_ptr;
+    object_t *old_object = *object_ptr;
     if (old_object != NULL) {
         heap_node_t *node = get_heap_node(old_object);
         if (node->owner == heap && node->compaction_candidate) {
@@ -298,6 +293,12 @@ size_t size_of_object(object_t *object) {
     if (vtable->array_layout != NULL)
         size += vtable->array_layout->size * *ref_array_length(object);
     return size;
+}
+
+static inline
+void scan_object(heap_t* heap, object_t* object) {
+    mark_scanned(object);
+    visit_each_pointer(heap, object, (void(*)(void*,void*))mark_seen);
 }
 
 static __attribute__((noinline))
@@ -337,13 +338,17 @@ void copy_to_new_heap(heap_t *heap, heap_t *new_heap) {
                     size_t entry = index * total_bits(size_t) + shift;
                     seen ^= ((size_t) 1) << shift;
 
-                    object_t *old_object = (object_t *) &node->start[entry];
-                    size_t size = size_of_object(old_object);
-                    object_t *new_object = object_create_internal(new_heap, old_object->vtable, size);
-                    memcpy(new_object, old_object, size);
+                    heap_entry_t *old_object = (heap_entry_t *) &node->start[entry];
+                    size_t size_in_units = (size_of_object((object_t*)old_object) + (SMALLEST_ALLOCATION-1)) / SMALLEST_ALLOCATION;
+                    heap_entry_t *new_object = (heap_entry_t*)object_create_internal(new_heap, ((object_t*)old_object)->vtable, size_in_units);
+
+                    size_t copy_index = 0;
+                    do {
+                        new_object[copy_index] = old_object[copy_index];
+                    } while (++copy_index < size_in_units);
 
                     // Write redirect pointer into old object for later lookup
-                    old_object->vtable = (vtable_t *) new_object;
+                    ((object_t*)old_object)->vtable = (vtable_t *) new_object;
                 }
             }
         }
@@ -371,22 +376,96 @@ void fix_object_references(heap_t *old_heap) {
     }
 }
 
-__attribute__((noinline))
-void object_heap_compact(heap_t *heap, int root_count, object_t **roots) {
-    // Early return for heaps that can't be compacted
-//    if (heap->current_head == NULL || heap->current_head->next == NULL)
-//        return;
 
-    // 1. Clear all seen/scanned bits
+static inline
+void walk_shadow_stack(heap_t *heap, shadow_stack_t *shadow_stack, void(*visitor)(heap_t*,object_t**)) {
+    for (; shadow_stack != NULL; shadow_stack = shadow_stack->next) {
+        shadow_stack_layout_t *layout = shadow_stack->layout;
+        for (field_index_t index = 0; index < layout->pointer_count; ++index) {
+            visitor(heap, &((object_t**)shadow_stack)[layout->pointer_indexes[index]]);
+        }
+    }
+}
+
+
+
+static __attribute__((noinline))
+void mark_each_root_object_as_seen(heap_t *heap, shadow_stack_t *shadow_stack) {
+    walk_shadow_stack(heap, shadow_stack, mark_seen);
+}
+
+static __attribute__((noinline))
+void fixup_the_roots(heap_t *old_heap, shadow_stack_t *shadow_stack) {
+    walk_shadow_stack(old_heap, shadow_stack, fix_pointer);
+}
+
+static __attribute__((noinline))
+void clear_all_seen_scanned_bits(heap_t *heap) {
     for (heap_node_t *node = heap->current_head; node; node = node->next) {
         node->usage_after_sweep = 0;
         node->compaction_candidate = 0;
         memset(&node->bits, 0, sizeof(node->bits));
     }
+}
+
+static __attribute__((noinline))
+void destroy_the_old_heap(heap_t *heap, heap_t *new_heap) {
+    for (heap_node_t **node_ptr = &heap->current_head; *node_ptr; ) {
+        heap_node_t *node = *node_ptr;
+        if (node->compaction_candidate == 0) {
+            // Unlink it from the old heap
+            *node_ptr = node->next;
+            // Link into the new heap
+            node->next = new_heap->current_head;
+            new_heap->current_head = node;
+        } else {
+            node_ptr = &node->next;
+        }
+    }
+    object_heap_destroy(heap);
+}
+
+
+
+
+
+typedef struct simple_shadow_stack {
+    shadow_stack_t s;
+    object_t *array[0];
+} simple_shadow_stack_t;
+
+__attribute__((noinline))
+void object_heap_compact(heap_t* heap, int count, object_t **array) {
+    simple_shadow_stack_t *shadow_stack = alloca(offsetof(simple_shadow_stack_t, array[count]));
+    shadow_stack_layout_t *layout = alloca(offsetof(shadow_stack_layout_t, pointer_indexes[count]));
+
+    shadow_stack->s.layout = layout;
+    shadow_stack->s.next = NULL;
+    layout->pointer_count = count;
+
+    for (int index = 0; index < count; ++index) {
+        shadow_stack->array[index] = array[index];
+        layout->pointer_indexes[index] = indexof(simple_shadow_stack_t, array[index]);
+    }
+
+    object_heap_compact2(heap, &shadow_stack->s);
+
+    for (int index = 0; index < count; ++index) {
+        array[index] = shadow_stack->array[index];
+    }
+}
+
+__attribute__((noinline))
+void object_heap_compact2(heap_t *heap, shadow_stack_t *shadow_stack) {
+    // Early return for heaps that can't be compacted
+    if (heap->current_head == NULL || (heap->current_head->next == NULL && !AGGRESSIVE_COMPACTION))
+        return;
+
+    // 1. Clear all seen/scanned bits
+    clear_all_seen_scanned_bits(heap);
 
     // 2. Mark each root object as seen
-    for (int index = 0; index < root_count; ++index)
-        mark_seen(heap, &roots[index]);
+    mark_each_root_object_as_seen(heap, shadow_stack);
 
     // 3. Walk all heap objects, and scan for seen but not scanned entries
     //    For each one, scan it and mark referenced objects as seen
@@ -406,23 +485,10 @@ void object_heap_compact(heap_t *heap, int root_count, object_t **roots) {
     fix_object_references(heap);
 
     // 7. Fix up the 'roots' list by overwriting with the new location of each object
-    for (int index = root_count; --index >= 0; )
-        fix_pointer(heap, &roots[index]);
+    fixup_the_roots(heap, shadow_stack);
 
     // 8. Destroy the old heap, but retain nodes that aren't compaction candidates
-    for (heap_node_t **node_ptr = &heap->current_head; *node_ptr; ) {
-        heap_node_t *node = *node_ptr;
-        if (node->compaction_candidate == 0) {
-            // Unlink it from the old heap
-            *node_ptr = node->next;
-            // Link into the new heap
-            node->next = new_heap.current_head;
-            new_heap.current_head = node;
-        } else {
-            node_ptr = &node->next;
-        }
-    }
-    object_heap_destroy(heap);
+    destroy_the_old_heap(heap, &new_heap);
 
     // 9. Change owner to be correct
     for (heap_node_t *node = new_heap.current_head; node; node = node->next)

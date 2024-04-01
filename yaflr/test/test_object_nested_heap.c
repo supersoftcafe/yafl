@@ -5,6 +5,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include "../src/blitz.h"
 #include "../src/mmap.h"
 #include "../src/object.h"
 
@@ -19,19 +20,21 @@ struct test_object{
 
 static struct {
     layout_t l;
-    field_offset_t o[1];
+    field_index_t o[1];
 } test_layout = {
         .l = {
                 .size = sizeof(test_object_t),
                 .pointer_count = 1
         },
-        .o = { offsetof(test_object_t, pointer) }
+        .o = {
+                indexof(test_object_t, pointer)
+        }
 };
 
 static vtable_t test_vtable = {
         .object_layout = &test_layout.l,
         .array_layout = NULL,
-        .array_len_offset = 0,
+        .array_len_index = 0,
         .functions_mask = 0,
         .functions = {  } };
 
@@ -45,7 +48,7 @@ static void create_objects(heap_t* heap, int count) {
 
 void test_object_nested_heap() {
     mmap_init();
-    object_init();
+    object_init(1);
 
     heap_t heap1;
     object_heap_create(&heap1);

@@ -21,14 +21,14 @@ static layout_t test_layout = {
 static vtable_t test_vtable = {
         .object_layout = &test_layout,
         .array_layout = NULL,
-        .array_len_offset = 0,
+        .array_len_index = 0,
         .functions_mask = 0,
         .functions = {  } };
 
 
 void test_object_create() {
     mmap_init();
-    object_init();
+    object_init(0);
 
     heap_t heap;
 

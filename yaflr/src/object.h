@@ -10,12 +10,27 @@
 struct heap_node;
 typedef struct heap_node heap_node_t;
 
-typedef struct shadow_stack_layout {
+typedef uint16_t field_index_t;
 
+
+typedef struct shadow_stack_layout {
+    field_index_t pointer_count;
+    field_index_t pointer_indexes[0];    // Pointer index of each pointer
 } shadow_stack_layout_t;
 
-typedef struct shadow_stack {
+typedef struct shadow_stack_layout1 {
+    shadow_stack_layout_t l;
+    field_index_t pointer_indexes[1];    // Pointer index of each pointer
+} shadow_stack_layout1_t;
 
+typedef struct shadow_stack_layout2 {
+    shadow_stack_layout_t l;
+    field_index_t pointer_indexes[2];    // Pointer index of each pointer
+} shadow_stack_layout2_t;
+
+typedef struct shadow_stack {
+    shadow_stack_layout_t *layout;
+    struct shadow_stack   *next;
 } shadow_stack_t;
 
 struct heap {
@@ -34,20 +49,18 @@ struct vtable_entry {
 };
 typedef struct vtable_entry vtable_entry_t;
 
-typedef uint16_t field_offset_t;
-
 struct layout {
-    field_offset_t size;
-    field_offset_t pointer_count;
-    field_offset_t pointer_offsets[0];    // Byte offsets of each pointer
+    field_index_t size;
+    field_index_t pointer_count;
+    field_index_t pointer_indexes[0];    // Pointer index of each pointer
 };
 typedef struct layout layout_t;
 
 struct vtable {
     layout_t*         object_layout;      // Required, layout of fields in the object
     layout_t*          array_layout;      // Optional, layout of array elements
-    field_offset_t array_len_offset;      // Byte offset of uint32_t array length field
-    field_offset_t   functions_mask;      // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
+    field_index_t  array_len_index;      // Pointer index of uint32_t array length field
+    field_index_t   functions_mask;      // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
     vtable_entry_t        functions[0];   // Each function has a prefix that is the ID
 };
 typedef struct vtable vtable_t;
@@ -64,7 +77,7 @@ object_t* object_create_array(heap_t* heap, vtable_t* vtable, uint32_t length);
 
 
 
-void object_init();
+void object_init(int aggressive_compaction);
 
 __attribute__((noinline))
 void object_heap_create(heap_t* heap);
@@ -73,7 +86,10 @@ __attribute__((noinline))
 void object_heap_destroy(heap_t* heap);
 
 __attribute__((noinline))
-void object_heap_compact(heap_t* heap, int root_count, object_t** roots);
+void object_heap_compact2(heap_t* heap, shadow_stack_t *shadow_stack);
+
+__attribute__((noinline))
+void object_heap_compact(heap_t* heap, int count, object_t **array);
 
 __attribute__((noinline))
 void object_heap_append(heap_t* heap, heap_t* sub_heap);

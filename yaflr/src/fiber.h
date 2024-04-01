@@ -49,7 +49,8 @@ object_t* fiber_object_create_array(vtable_t* vtable, uint32_t length);
 
 /* Wrapper for the object library method that uses the fiber local heap.
  */
-void fiber_object_heap_compact(int root_count, object_t** roots);
+void fiber_object_heap_compact2(shadow_stack_t *shadow_stack);
+void fiber_object_heap_compact(int count, object_t **array);
 
 
 #endif //YAFLC1_FIBER_H

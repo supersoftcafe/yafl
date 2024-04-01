@@ -4,6 +4,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include "../src/blitz.h"
 #include "../src/mmap.h"
 #include "../src/object.h"
 
@@ -28,7 +29,7 @@ struct test_layout ;
 
 static struct {
     layout_t l;
-    field_offset_t p[0];
+    field_index_t p[0];
 } test_layout = {
         .l = {
                 .size = sizeof(test_object_t),
@@ -39,13 +40,15 @@ static struct {
 
 static struct {
     layout_t l;
-    field_offset_t p[1];
+    field_index_t p[1];
 } test_array_layout = {
         .l = {
                 .size = sizeof(test_array_t),
                 .pointer_count = 1,
         },
-        .p = { offsetof(test_array_t, p) }
+        .p = {
+                indexof(test_array_t, p)
+        }
 };
 
 
@@ -56,7 +59,7 @@ static struct {
         .v = {
                 .object_layout = &test_layout.l,
                 .array_layout = &test_array_layout.l,
-                .array_len_offset = offsetof(test_object_t, length),
+                .array_len_index = indexof(test_object_t, length),
                 .functions_mask = 0x3,
         },
         .f = { NULL, NULL, NULL, NULL }
@@ -86,7 +89,7 @@ static test_object_t *create_child(uint32_t value) {
 
 void test_object_arrays() {
     mmap_init();
-    object_init();
+    object_init(0);
 
     object_heap_create(&heap);
 

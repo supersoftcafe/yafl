@@ -4,6 +4,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include "../src/blitz.h"
 #include "../src/mmap.h"
 #include "../src/object.h"
 
@@ -23,13 +24,17 @@ struct test_layout ;
 
 static struct {
     layout_t l;
-    field_offset_t p[3];
+    field_index_t p[3];
 } test_layout = {
         .l = {
                 .size = sizeof(test_object_t),
                 .pointer_count = 3,
         },
-        .p = {offsetof(test_object_t, p1), offsetof(test_object_t, p2), offsetof(test_object_t, p3)}
+        .p = {
+                indexof(test_object_t, p1),
+                indexof(test_object_t, p2),
+                indexof(test_object_t, p3)
+        }
 };
 
 static struct {
@@ -39,7 +44,7 @@ static struct {
         .v = {
                 .object_layout = &test_layout.l,
                 .array_layout = NULL,
-                .array_len_offset = 0,
+                .array_len_index = 0,
                 .functions_mask = 0x3,
         },
         .f = { NULL, NULL, NULL, NULL }
@@ -145,7 +150,7 @@ static void simple_compaction() {
 
 void test_object_heap_compact() {
     mmap_init();
-    object_init();
+    object_init(0);
 
     simple_compaction();
     complex_compation();
