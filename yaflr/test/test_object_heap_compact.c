@@ -55,14 +55,14 @@ static heap_t heap;
 static test_object_t* create(test_object_t* p1, test_object_t* p2, int value, test_object_t* p3) {
     // Create a bunch of orphaned objects
     for (int count = 0; count < 50; ++count) {
-        test_object_t* ptr = (test_object_t*)object_create(&heap, &test_vtable.v);
+        test_object_t* ptr = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
         ptr->p1 = NULL;
         ptr->p2 = NULL;
         ptr->value = 0;
         ptr->p3 = NULL;
     }
 
-    test_object_t* ptr = (test_object_t*)object_create(&heap, &test_vtable.v);
+    test_object_t* ptr = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
     ptr->p1 = p1;
     ptr->p2 = p2;
     ptr->value = value;
@@ -122,19 +122,19 @@ static void complex_compation() {
 static void simple_compaction() {
     object_heap_create(&heap);
 
-    test_object_t* ptr3 = (test_object_t*)object_create(&heap, &test_vtable.v);
+    test_object_t* ptr3 = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
     ptr3->p1 = NULL;
     ptr3->p2 = NULL;
     ptr3->value = 33;
     ptr3->p3 = NULL;
 
-    test_object_t* ptr2 = (test_object_t*)object_create(&heap, &test_vtable.v);
+    test_object_t* ptr2 = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
     ptr2->p1 = NULL;
     ptr2->p2 = NULL;
     ptr2->value = 22;
     ptr2->p3 = ptr3;
 
-    test_object_t* ptr1 = (test_object_t*)object_create(&heap, &test_vtable.v);
+    test_object_t* ptr1 = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
     ptr1->p1 = NULL;
     ptr1->p2 = ptr2;
     ptr1->value = 11;

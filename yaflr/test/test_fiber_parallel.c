@@ -117,7 +117,7 @@ static func_t massively_parallel_functions[4] = {
 
 static object_t *massively_parallel_worker(int depth) {
     if (depth <= 0) {
-        struct some_integers *r = (struct some_integers *)fiber_object_create(&some_integers_vtable);
+        struct some_integers *r = (struct some_integers *)fiber_object_create(NULL, &some_integers_vtable);
         r->i1 = 1;
         r->i2 = 2;
         r->i3 = 3;
@@ -127,7 +127,7 @@ static object_t *massively_parallel_worker(int depth) {
         struct parameter_container p = { .depth = depth-1 };
         fiber_parallel(&p, massively_parallel_functions, 4);
 
-        struct some_objects *r = (struct some_objects *)fiber_object_create(&some_objects_vtable);
+        struct some_objects *r = (struct some_objects *)fiber_object_create(NULL, &some_objects_vtable);
         r->o1 = p.o1;
         r->o2 = p.o2;
         r->o3 = p.o3;

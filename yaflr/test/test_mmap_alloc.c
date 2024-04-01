@@ -23,7 +23,7 @@ static char* test_alloc(size_t size, int bits, int offset) {
     return ptr;
 }
 
-static void test_content(size_t size, char* ptr, int offset) {
+static void test_content(size_t size, const char* ptr, int offset) {
     for (size_t index = 0; index < size; ++index) {
         char value = ptr[index];
         char expected = (char)(index + offset);

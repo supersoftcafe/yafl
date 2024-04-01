@@ -41,11 +41,11 @@ void fiber_parallel(void* param, void(**funcs)(void*), int count);
 
 /* Wrapper for the object library method that uses the fiber local heap.
  */
-object_t* fiber_object_create(vtable_t* vtable);
+object_t* fiber_object_create(shadow_stack_t *shadow_stack, vtable_t* vtable);
 
 /* Wrapper for the object library method that uses the fiber local heap.
  */
-object_t* fiber_object_create_array(vtable_t* vtable, uint32_t length);
+object_t* fiber_object_create_array(shadow_stack_t *shadow_stack, vtable_t* vtable, uint32_t length);
 
 /* Wrapper for the object library method that uses the fiber local heap.
  */

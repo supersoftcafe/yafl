@@ -83,12 +83,12 @@ thread_local thread_t* thread_context = NULL;
 
 
 
-object_t* fiber_object_create(vtable_t* vtable) {
-    return object_create(&fiber_self()->heap, vtable);
+object_t* fiber_object_create(shadow_stack_t *shadow_stack, vtable_t* vtable) {
+    return object_create(&fiber_self()->heap, shadow_stack, vtable);
 }
 
-object_t* fiber_object_create_array(vtable_t* vtable, uint32_t length) {
-    return object_create_array(&fiber_self()->heap, vtable, length);
+object_t* fiber_object_create_array(shadow_stack_t *shadow_stack, vtable_t* vtable, uint32_t length) {
+    return object_create_array(&fiber_self()->heap, shadow_stack, vtable, length);
 }
 
 void fiber_object_heap_compact2(shadow_stack_t *shadow_stack) {

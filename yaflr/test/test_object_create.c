@@ -33,7 +33,7 @@ void test_object_create() {
     heap_t heap;
 
     object_heap_create(&heap);
-    test_object_t* obj = (test_object_t*)object_create(&heap, &test_vtable);
+    test_object_t* obj = (test_object_t*)object_create(&heap, NULL, &test_vtable);
     obj->value = 123456;
     object_heap_compact(&heap, 1, (object_t**)&obj);
     assert(obj->value == 123456);

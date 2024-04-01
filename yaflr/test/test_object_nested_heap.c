@@ -41,7 +41,7 @@ static vtable_t test_vtable = {
 
 static void create_objects(heap_t* heap, int count) {
     while (--count >= 0) {
-        test_object_t *o = (test_object_t*)object_create(heap, &test_vtable);
+        test_object_t *o = (test_object_t*)object_create(heap, NULL, &test_vtable);
         o->pointer = NULL;
     }
 }
@@ -53,14 +53,14 @@ void test_object_nested_heap() {
     heap_t heap1;
     object_heap_create(&heap1);
     create_objects(&heap1, 50);
-    test_object_t *object1 = (test_object_t*) object_create(&heap1, &test_vtable);
+    test_object_t *object1 = (test_object_t*) object_create(&heap1, NULL, &test_vtable);
     object1->pointer = NULL;
     create_objects(&heap1, 50);
 
     heap_t heap2;
     object_heap_create(&heap2);
     create_objects(&heap2, 50);
-    test_object_t *object2 = (test_object_t*) object_create(&heap2, &test_vtable);
+    test_object_t *object2 = (test_object_t*) object_create(&heap2, NULL, &test_vtable);
     object2->pointer = object1;
     create_objects(&heap2, 50);
 

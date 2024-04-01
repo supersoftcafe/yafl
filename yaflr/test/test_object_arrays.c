@@ -72,11 +72,11 @@ static heap_t heap;
 static test_object_t *create_child(uint32_t value) {
     // Create some garbage
     for (int index = 0; index < 100; ++index)
-        object_create_array(&heap, &test_vtable.v, 0);
+        object_create_array(&heap, NULL, &test_vtable.v, 0);
 
     // Then create the one we want to return
     // It has elements, but they are NULL
-    test_object_t * obj = (test_object_t*)object_create_array(&heap, &test_vtable.v, 2);
+    test_object_t * obj = (test_object_t*)object_create_array(&heap, NULL, &test_vtable.v, 2);
     assert(obj->length == 2);
     assert(obj->array[0].p == NULL);
     assert(obj->array[1].p == NULL);
@@ -94,7 +94,7 @@ void test_object_arrays() {
     object_heap_create(&heap);
 
     uint32_t length = 10;
-    test_object_t *obj = (test_object_t*)object_create_array(&heap, &test_vtable.v, length);
+    test_object_t *obj = (test_object_t*)object_create_array(&heap, NULL, &test_vtable.v, length);
     assert(length == obj->length);
     for (int index = 0; index < obj->length; ++index)
         obj->array[index].p = create_child(index);

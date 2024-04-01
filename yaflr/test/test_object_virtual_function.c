@@ -68,7 +68,7 @@ void test_object_virtual_function() {
 
     heap_t heap;
     object_heap_create(&heap);
-    test_object_t *obj = (test_object_t*) object_create(&heap, &vtable.v);
+    test_object_t *obj = (test_object_t*) object_create(&heap, NULL, &vtable.v);
 
     func_t func1 = object_function_lookup(&obj->parent, FUNC1_ID);
     func_t func2 = object_function_lookup(&obj->parent, FUNC2_ID);

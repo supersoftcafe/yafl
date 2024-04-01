@@ -82,8 +82,8 @@ func_t object_function_lookup(object_t* object, uintptr_t function_id) {
 }
 
 
-__attribute__((noinline))
-static void object_create_new_page(heap_t* heap) {
+static __attribute__((noinline))
+void object_create_new_page(heap_t* heap) {
     // Allocate a new page
     heap_node_t* new_node = free_list;
     if (unlikely(new_node == NULL)) {
@@ -102,9 +102,9 @@ static void object_create_new_page(heap_t* heap) {
     assert(new_node->compaction_candidate == 0);
 }
 
-__attribute__((noinline))
-static void object_release_old_page(heap_node_t* node) {
-    if (++node->recycle_count >= RECYCLE_COUNT) {
+static __attribute__((noinline))
+void object_release_old_page(heap_node_t* node) {
+    if (unlikely(++node->recycle_count >= RECYCLE_COUNT)) {
         mmap_release(ALLOCATION_UNIT_SIZE, node);
     } else {
         // Only zero the used portion, as nothing else has changed from original zero.
@@ -119,6 +119,15 @@ static void object_release_old_page(heap_node_t* node) {
     }
 }
 
+static inline
+void object_heap_safepoint(heap_t *heap, shadow_stack_t *shadow_stack) {
+    if (unlikely(shadow_stack != NULL && heap->countdown == 0))
+        object_heap_compact2(heap, shadow_stack);
+    else
+        heap->countdown -= 1;
+}
+
+static
 object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size_in_units) {
     assert(size_in_units > 0 && size_in_units <= LARGEST_ALLOCATION/SMALLEST_ALLOCATION);
 
@@ -138,10 +147,12 @@ object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size_i
     return object;
 }
 
-object_t* object_create_array(heap_t* heap, vtable_t* vtable, uint32_t length) {
+object_t* object_create_array(heap_t* heap, shadow_stack_t *shadow_stack, vtable_t* vtable, uint32_t length) {
     assert(vtable->object_layout != NULL);
     assert(vtable->array_layout != NULL);
     assert(vtable->array_len_index >= 1);
+
+    object_heap_safepoint(heap, shadow_stack);
 
     uint64_t size = vtable->array_layout->size * (uint64_t)length + vtable->object_layout->size;
     object_t* object = object_create_internal(heap, vtable, (size + (SMALLEST_ALLOCATION-1)) / SMALLEST_ALLOCATION);
@@ -150,10 +161,12 @@ object_t* object_create_array(heap_t* heap, vtable_t* vtable, uint32_t length) {
     return object;
 }
 
-object_t* object_create(heap_t* heap, vtable_t* vtable) {
+object_t* object_create(heap_t* heap, shadow_stack_t *shadow_stack, vtable_t* vtable) {
     assert(vtable->object_layout != NULL);
     assert(vtable->array_layout == NULL);
     assert(vtable->array_len_index == 0);
+
+    object_heap_safepoint(heap, shadow_stack);
 
     uint64_t size = vtable->object_layout->size;
     object_t* object = object_create_internal(heap, vtable, (size + (SMALLEST_ALLOCATION-1)) / SMALLEST_ALLOCATION);
@@ -457,6 +470,8 @@ void object_heap_compact(heap_t* heap, int count, object_t **array) {
 
 __attribute__((noinline))
 void object_heap_compact2(heap_t *heap, shadow_stack_t *shadow_stack) {
+    heap->countdown = heap->object_count;
+
     // Early return for heaps that can't be compacted
     if (heap->current_head == NULL || (heap->current_head->next == NULL && !AGGRESSIVE_COMPACTION))
         return;

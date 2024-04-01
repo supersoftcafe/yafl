@@ -38,6 +38,7 @@ struct heap {
     size_t object_count;
     size_t used_space;
     size_t node_count;
+    size_t countdown;
 };
 typedef struct heap heap_t;
 
@@ -71,28 +72,28 @@ struct object {
 typedef struct object object_t;
 
 
-object_t* object_create(heap_t* heap, vtable_t* vtable);
+object_t* object_create(heap_t *heap, shadow_stack_t *shadow_stack, vtable_t* vtable);
 
-object_t* object_create_array(heap_t* heap, vtable_t* vtable, uint32_t length);
+object_t* object_create_array(heap_t *heap, shadow_stack_t *shadow_stack, vtable_t* vtable, uint32_t length);
 
 
 
 void object_init(int aggressive_compaction);
 
 __attribute__((noinline))
-void object_heap_create(heap_t* heap);
+void object_heap_create(heap_t *heap);
 
 __attribute__((noinline))
-void object_heap_destroy(heap_t* heap);
+void object_heap_destroy(heap_t *heap);
 
 __attribute__((noinline))
-void object_heap_compact2(heap_t* heap, shadow_stack_t *shadow_stack);
+void object_heap_compact2(heap_t *heap, shadow_stack_t *shadow_stack);
 
 __attribute__((noinline))
-void object_heap_compact(heap_t* heap, int count, object_t **array);
+void object_heap_compact(heap_t *heap, int count, object_t **array);
 
 __attribute__((noinline))
-void object_heap_append(heap_t* heap, heap_t* sub_heap);
+void object_heap_append(heap_t *heap, heap_t* sub_heap);
 
 func_t object_function_lookup(object_t* object, uintptr_t function_id);
 
