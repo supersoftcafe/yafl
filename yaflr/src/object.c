@@ -121,7 +121,7 @@ void object_release_old_page(heap_node_t* node) {
 
 static inline
 void object_heap_safepoint(heap_t *heap, shadow_stack_t *shadow_stack) {
-    if (unlikely(shadow_stack != NULL && heap->countdown == 0))
+    if (unlikely(shadow_stack != NULL && heap->node_count > 4 && heap->countdown == 0))
         object_heap_compact2(heap, shadow_stack);
     else
         heap->countdown -= 1;

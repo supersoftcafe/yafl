@@ -52,17 +52,17 @@ static struct {
 
 static heap_t heap;
 
-static test_object_t* create(test_object_t* p1, test_object_t* p2, int value, test_object_t* p3) {
+static test_object_t* create(shadow_stack_t *pss, test_object_t* p1, test_object_t* p2, int value, test_object_t* p3) {
     // Create a bunch of orphaned objects
     for (int count = 0; count < 50; ++count) {
-        test_object_t* ptr = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
+        test_object_t* ptr = (test_object_t*)object_create(&heap, pss, &test_vtable.v);
         ptr->p1 = NULL;
         ptr->p2 = NULL;
         ptr->value = 0;
         ptr->p3 = NULL;
     }
 
-    test_object_t* ptr = (test_object_t*)object_create(&heap, NULL, &test_vtable.v);
+    test_object_t* ptr = (test_object_t*)object_create(&heap, pss, &test_vtable.v);
     ptr->p1 = p1;
     ptr->p2 = p2;
     ptr->value = value;
@@ -71,52 +71,121 @@ static test_object_t* create(test_object_t* p1, test_object_t* p2, int value, te
 }
 
 static int next_id = 0;
-static test_object_t* create_tree(int depth) {
+
+
+struct ss__create_tree {
+    shadow_stack_t s;
+    test_object_t *p1;
+    test_object_t *p2;
+    test_object_t *p3;
+};
+
+static struct {
+    shadow_stack_layout_t l;
+    field_index_t roots[3];
+} ssl__create_tree = {
+        .l = {
+                .pointer_count = 3
+        },
+        .roots = {
+                indexof(struct ss__create_tree, p1),
+                indexof(struct ss__create_tree, p2),
+                indexof(struct ss__create_tree, p3),
+        }
+};
+
+
+
+static test_object_t* create_tree(shadow_stack_t *pss, int depth) {
+    struct ss__create_tree ss = {
+            .s = {
+                    .next = pss,
+                    .layout = &ssl__create_tree.l
+            },
+            .p1 = NULL,
+            .p2 = NULL,
+            .p3 = NULL
+    };
+
     if (depth <= 0)
         return NULL;
 
     // Create a branch of the tree
-    test_object_t *p1 = create_tree(depth-1);
-    test_object_t *p2 = create_tree(depth-2);
-    test_object_t *p3 = create_tree(depth-1);
-    return create(p1, p2, ++next_id, p3);
+    ss.p1 = create_tree(&ss.s, depth-1);
+    ss.p2 = create_tree(&ss.s, depth-2);
+    ss.p3 = create_tree(&ss.s, depth-1);
+
+    return create(&ss.s, ss.p1, ss.p2, ++next_id, ss.p3);
 }
 
-static void test_tree(test_object_t *obj) {
+static void test_tree(shadow_stack_t *pss, test_object_t *obj) {
     if (obj == NULL)
         return;
 
-    test_tree(obj->p1);
-    test_tree(obj->p2);
-    test_tree(obj->p3);
+    test_tree(pss, obj->p1);
+    test_tree(pss, obj->p2);
+    test_tree(pss, obj->p3);
 
     next_id++;
     assert(obj->value == next_id);
 }
 
-static void complex_compation() {
+
+
+struct ss__complex_compaction {
+    shadow_stack_t s;
+    test_object_t *root1;
+    test_object_t *root2;
+    test_object_t *root3;
+};
+
+static struct {
+    shadow_stack_layout_t l;
+    field_index_t roots[3];
+} ssl__complex_compaction = {
+        .l = {
+                .pointer_count = 3
+        },
+        .roots = {
+                indexof(struct ss__complex_compaction, root1),
+                indexof(struct ss__complex_compaction, root2),
+                indexof(struct ss__complex_compaction, root3),
+        }
+};
+
+static void complex_compaction() {
     object_heap_create(&heap);
 
-    test_object_t* root1 = create_tree(5);
-    test_object_t* root2 = create_tree(7);
-    test_object_t* root3 = create_tree(3);
+    struct ss__complex_compaction ss = {
+        .s = {
+                .next = NULL,
+                .layout = &ssl__complex_compaction.l
+        },
+        .root1 = NULL,
+        .root2 = NULL,
+        .root3 = NULL
+    };
 
-    test_object_t *roots[3] = { root1, root2, root3 };
-    int root_ids[3] = { root1->value, root2->value, root3->value };
-    object_heap_compact(&heap, 3, (object_t**)roots);
+    ss.root1 = create_tree(&ss.s, 5);
+    ss.root2 = create_tree(&ss.s, 7);
+    ss.root3 = create_tree(&ss.s, 3);
 
-    assert(root1 != roots[0]);
-    assert(root2 != roots[1]);
-    assert(root3 != roots[2]);
+    test_object_t *stale_copy_of_roots[3] = {ss.root1, ss.root2, ss.root3 };
+    int stale_copy_of_root_ids[3] = {ss.root1->value, ss.root2->value, ss.root3->value };
+    object_heap_compact2(&heap, &ss.s);
 
-    assert(roots[0]->value == root_ids[0]);
-    assert(roots[1]->value == root_ids[1]);
-    assert(roots[2]->value == root_ids[2]);
+    assert(ss.root1 != stale_copy_of_roots[0]);
+    assert(ss.root2 != stale_copy_of_roots[1]);
+    assert(ss.root3 != stale_copy_of_roots[2]);
+
+    assert(ss.root1->value == stale_copy_of_root_ids[0]);
+    assert(ss.root2->value == stale_copy_of_root_ids[1]);
+    assert(ss.root3->value == stale_copy_of_root_ids[2]);
 
     next_id = 0;
-    test_tree(roots[0]);
-    test_tree(roots[1]);
-    test_tree(roots[2]);
+    test_tree(&ss.s, ss.root1);
+    test_tree(&ss.s, ss.root2);
+    test_tree(&ss.s, ss.root3);
 }
 
 static void simple_compaction() {
@@ -153,5 +222,5 @@ void test_object_heap_compact() {
     object_init(0);
 
     simple_compaction();
-    complex_compation();
+    complex_compaction();
 }
