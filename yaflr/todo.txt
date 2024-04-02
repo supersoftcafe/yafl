@@ -2,8 +2,13 @@
 Remember this is all predicated on the language being pure functional with no lazy thunks. All heap
 allocation is local.
 
-If some sort of caching is needed, it'll be on its own fiber, and will have a well-defined scope.
-
 TODO:
 
+* Macros to help with defining classes in C for testing and library implementations.
+
+* Re-visit Yafl compiler to generate C instead of LLVM-IR. Can work with any C11 compliant compiler.
+
 * Object with fiber behaviour...  How to clean up?   How to trigger behaviour and transfer result?
+
+* IO
+
