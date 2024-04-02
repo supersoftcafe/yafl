@@ -34,7 +34,8 @@ typedef struct shadow_stack {
 } shadow_stack_t;
 
 struct heap {
-    heap_node_t* current_head;
+    heap_node_t *current_head;
+    heap_node_t *second_attempt;
     size_t object_count;
     size_t used_space;
     size_t node_count;

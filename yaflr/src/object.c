@@ -23,9 +23,6 @@ enum { ALLOCATION_UNIT_SIZE = 1 << ALLOCATION_UNIT_SIZE_SHIFT };
 enum { SMALLEST_ALLOCATION_SHIFT = 4 };
 enum { SMALLEST_ALLOCATION = 1 << SMALLEST_ALLOCATION_SHIFT };
 
-enum { LARGEST_ALLOCATION_SHIFT = 14 };
-enum { LARGEST_ALLOCATION = 1 << LARGEST_ALLOCATION_SHIFT };
-
 enum { MAX_THEORY_OBJECT_COUNT_SHIFT = ALLOCATION_UNIT_SIZE_SHIFT - SMALLEST_ALLOCATION_SHIFT };
 enum { MAX_THEORY_OBJECT_COUNT = 1 << MAX_THEORY_OBJECT_COUNT_SHIFT };
 
@@ -43,16 +40,16 @@ struct heap_node_bits {
 };
 
 struct heap_node {
-    _Alignas(SMALLEST_ALLOCATION)
+    heap_node_t *next;
+    heap_t *owner;
+
+    uint_fast32_t recycle_count;
+    uint_fast32_t next_object_index;    // Subtract object size (as count of min unit) to get next index
+    uint_fast32_t usage_after_sweep;    // After a sweep this should reflect the actual number of bytes allocated.
+    uint_fast8_t  compaction_candidate; // During compaction is this node a candidate. If not, don't corrupt objects and don't copy.
+    uint_fast8_t  huge_object;          // This header is for a huge object. mmap to allocate and release
+
     struct heap_node_bits bits;
-    size_t recycle_count;
-    heap_node_t* next;
-    heap_t* owner;
-    uint32_t next_object_index; // Subtract object size (as count of min unit) to get next index
-
-    uint32_t usage_after_sweep;     // After a sweep this should reflect the actual number of bytes allocated.
-    uint8_t compaction_candidate;   // During compaction is this node a candidate. If not, don't corrupt objects and don't copy.
-
     struct heap_entry start[0];
 };
 
@@ -83,7 +80,7 @@ func_t object_function_lookup(object_t* object, uintptr_t function_id) {
 
 
 static __attribute__((noinline))
-void object_create_new_page(heap_t* heap) {
+heap_node_t *object_create_new_page(heap_t* heap) {
     // Allocate a new page
     heap_node_t* new_node = free_list;
     if (unlikely(new_node == NULL)) {
@@ -95,11 +92,19 @@ void object_create_new_page(heap_t* heap) {
     new_node->next_object_index = MAX_OBJECT_COUNT;
     new_node->next = heap->current_head;
     new_node->owner = heap;
+
+    heap_node_t *old_head = heap->current_head;
     heap->current_head = new_node;
     heap->node_count += 1;
 
+    if (heap->second_attempt == NULL || old_head->next_object_index > heap->second_attempt->next_object_index)
+        heap->second_attempt = old_head;
+
     assert(new_node->recycle_count == 0);
     assert(new_node->compaction_candidate == 0);
+    assert(new_node->huge_object == 0);
+
+    return new_node;
 }
 
 static __attribute__((noinline))
@@ -127,13 +132,18 @@ void object_heap_safepoint(heap_t *heap, shadow_stack_t *shadow_stack) {
         heap->countdown -= 1;
 }
 
-static
+static __attribute__((noinline))
 object_t* object_create_internal(heap_t* heap, vtable_t* vtable, uint64_t size_in_units) {
-    assert(size_in_units > 0 && size_in_units <= LARGEST_ALLOCATION/SMALLEST_ALLOCATION);
+    assert(size_in_units > 0 && size_in_units <= MAX_OBJECT_COUNT);
 
-    if (unlikely(heap->current_head == NULL || size_in_units > heap->current_head->next_object_index))
-        object_create_new_page(heap);
-    heap_node_t *node = heap->current_head;
+    heap_node_t *node;
+
+    if (heap->second_attempt != NULL && heap->second_attempt->next_object_index >= size_in_units)
+        node = heap->second_attempt;
+    else if (heap->current_head != NULL && heap->current_head->next_object_index >= size_in_units)
+        node = heap->current_head;
+    else
+        node = object_create_new_page(heap);
 
     assert(node != NULL && size_in_units <= node->next_object_index);
 
@@ -179,16 +189,20 @@ object_t* object_create(heap_t* heap, shadow_stack_t *shadow_stack, vtable_t* vt
 __attribute__((noinline))
 void object_heap_create(heap_t* heap) {
     heap->current_head = NULL;
+    heap->second_attempt = NULL;
     heap->object_count = 0;
     heap->used_space = 0;
     heap->node_count = 0;
+    heap->countdown = 0;
 }
 
 __attribute__((noinline))
 void object_heap_destroy(heap_t* heap) {
+    heap->second_attempt = NULL;
     heap->object_count = 0;
     heap->used_space = 0;
     heap->node_count = 0;
+    heap->countdown = 0;
 
     while (heap->current_head != NULL) {
         heap_node_t *node = heap->current_head;

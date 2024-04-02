@@ -34,6 +34,34 @@ requires extra store and load operations, and complicates the act of
 writing any function as you must remember to unlink the shadow stack.
 By passing it as the first parameter, it naturally unlinks on return.
 
+One important thing to note is that an object pointer must always point
+to the base of the object. Nothing else is acceptable, and will corrupt
+the heap, so no pointer arithmetic, at least not on any pointer visible
+to the garbage collector.
+
+## Heap layout
+
+Small to medium size objects are allocated out of 64K pages using a
+bump pointer. It's very fast. Every page is 64K aligned.
+
+At the start of the 64K page is a header, some bitmaps used by the 
+garbage collector, next/prev list pointers and a pointer to the 
+owning heap object. All pages belong to groups under a single heap 
+object.
+
+All of this makes garbage collection very easy, as any reference to
+an object can be bit manipulated to find the start of page pointer.
+
+Heaps can be merged, by walking the list of 64K pages, moving the to
+the new heap, and changing the heap pointer.
+
+During GC references that fall outside of the current heap are easily
+detected, and those objects won't be marked.
+
+Large objects are allocated directly from the system using mmap. The
+start of the object will look like a 64K page header, and be 64K aligned,
+but is marked to indicate that it is actually a large object.
+
 ## Virtual method invocation
 
 All method signatures, a combination of name and parameters, are assigned

@@ -19,6 +19,9 @@ yaflk3/build/**
 
 
 cmake-build-debug
+cmake-build-release
+._.DS_Store
+.idea
 
 # Compiled class file
 *.class
