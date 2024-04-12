@@ -1,0 +1,47 @@
+
+module fred
+
+
+# These declarations are all equivalent
+let addOne = (a: Int32) => a + 1
+let addOne(a: Int32) => a + 1
+let addOne(a) => a + 1
+
+# These overloaded declarations are all equivalent too
+let addOne = (a: Float32) => a + 1f
+let addOne(a: Float32) => a + 1f
+let addOne(a) => a + 1f
+
+# Note the way that the lambda declaration above allows two identically named globals
+
+
+
+# Something with a body.
+let addOne(a) =>
+  let b = a + 1
+  b
+
+
+# A class with one of the overloads provided by the constructor
+class AClass(billy: (a:Int32):Int32)
+  let bolly = 27
+  let billy(a: Float32) => a + 1f
+
+
+# Some abstract fields
+class AClass
+  abstract bolly:Int32
+
+class BClass : AClass
+  override bolly = 100
+
+
+
+# Sometimes indentation matters. Which 'when' does the 'else' belong to. It's obvious from indentation.
+let doit(a:Int32,b:Int32):Int32
+  when a
+    27 => 127
+    37..100 => when b
+      100 => a+200
+    else => -1
+
