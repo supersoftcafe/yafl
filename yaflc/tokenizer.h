@@ -7,6 +7,7 @@
 
 #include <vector>
 #include <string_view>
+#include "error.h"
 
 namespace tk {
     using namespace std;
@@ -20,14 +21,23 @@ namespace tk {
         EQUALS,
         IDENTIFIER,
         COMMENT,
+        DOT,
+        INTEGER,
+        STRING,
     };
 
     struct Token {
         Kind kind;
-        size_t line;
-        size_t offset;
-        size_t line_indent;
+        LineRef line;
+        size_t indent;
         string_view text;
+
+        Token(Kind kind, LineRef line, size_t indent, string_view text) : kind(kind), line(line), indent(indent), text(text) { }
+
+        // Delete copy constructor and assignment operator
+        Token(const Token&) = delete;
+        Token& operator=(const Token&) = delete;
+        Token(Token&&) = default;
     };
 
     vector<Token> tokenize(string_view text);

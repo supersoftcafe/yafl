@@ -15,7 +15,10 @@ yaflk2/build/**
 yaflk3/.gradle/**
 yaflk3/.idea/**
 yaflk3/build/**
+yaflc/build/**
+yaflc/yaflc.kdev4
 
+.kdev4
 
 
 cmake-build-debug

@@ -15,23 +15,28 @@ namespace tk {
             { IMPORT, regex {R"(import)"} },
             { LET, regex {R"(let)"} },
             { EQUALS, regex {R"(=)"} },
-            { IDENTIFIER, regex {R"rx([a-zA-Z_][a-zA-Z_0-9]*)rx"} },
             { COMMENT, regex {R"rx(#.*)rx"} },
+            { DOT, regex {R"rx(\.)rx"} },
+
+            { IDENTIFIER, regex {R"rx([a-zA-Z_]\w*)rx"} },
+            { INTEGER, regex {R"rx(\d\w*)rx"} },
+            { STRING, regex {R"rx(\"([^"\\]|\\[\s\S])*[\\|\"]?)rx"} },
     };
 
     static void tokenize_line(string_view line, size_t line_no, vector<Token>& result) {
         size_t first_indent = line.find_first_not_of(' ');
         if (first_indent == string_view::npos)
             first_indent = line.size();
-        size_t current_indent = first_indent;
+        first_indent ++; // Columns start at 1
+
+        LineRef line_ref { line_no, first_indent };
 
         while (!line.empty()) {
             size_t size = 0;
             Kind kind = UNEXPECTED;
 
-            size_t unmatch_count = -1;
+            size_t unmatch_count = 0;
             do {
-                unmatch_count += 1;
                 for (auto &[rule_kind, rule_rx]: rules) {
                     match_results<std::string_view::const_iterator> match;
                     if (regex_search(line.cbegin() + unmatch_count, line.cend(), match, rule_rx, regex_constants::match_continuous)) {
@@ -42,39 +47,27 @@ namespace tk {
                         }
                     }
                 }
-            } while (size == 0 && !line.empty());
+            } while (size == 0 && !empty(line.substr(++unmatch_count)));
 
             if (unmatch_count > 0) {
-                result.push_back({
-                    .kind = UNEXPECTED,
-                    .line = line_no,
-                    .offset = current_indent,
-                    .line_indent = first_indent,
-                    .text = line.substr(0, unmatch_count)
-                });
-                unmatch_count = 0;
-                current_indent += unmatch_count;
+                result.emplace_back(UNEXPECTED, line_ref, first_indent, line.substr(0, unmatch_count));
+                line_ref.offset += unmatch_count;
                 line = line.substr(unmatch_count);
+                unmatch_count = 0;
             }
 
             if (size > 0) {
                 if (kind != WHITESPACE) {
-                    result.push_back({
-                        .kind = kind,
-                        .line = line_no,
-                        .offset = current_indent,
-                        .line_indent = first_indent,
-                        .text = line.substr(0, size)
-                    });
+                    result.emplace_back(kind, line_ref, first_indent, line.substr(0, size));
                 }
-                current_indent += size;
+                line_ref.offset += size;
                 line = line.substr(size);
             }
         }
     }
 
     vector<Token> tokenize(string_view text) {
-        vector<Token> result { text.size() / 6 };
+        vector<Token> result;
         size_t line_no = 0;
 
         while (!text.empty()) {

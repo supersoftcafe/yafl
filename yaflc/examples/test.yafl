@@ -4,8 +4,11 @@ module test
 import system
 
 
-let main = (y) => let x = y + 1 x
+let main = (y) => let x = y + 1; x
 
-fun test(y)
+fun main(y) => let x = y + 1; x
+
+fun main(y)
   let x = y + 1
   return x
+
