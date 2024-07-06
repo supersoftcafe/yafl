@@ -7,6 +7,8 @@
 
 #include <list>
 #include <span>
+#include <memory>
+#include <any>
 #include "tokenizer.h"
 #include "error.h"
 
@@ -14,25 +16,15 @@ namespace ps {
 
     using namespace std;
 
-    enum Kind {
-        UNEXPECTED,
-        IDENTIFIER,
-        IMPORT,
-        MODULE,
-    };
-
-
     struct Node {
-        Kind kind;
-        LineRef line;
-        string error;
-        string_view text;
+        tk::Kind kind;
+        SourceRef line;
+        string value;
         list<Node> nodes;
 
-        Node(Kind kind, LineRef line, string&& error) : kind(kind), line(line), error(std::move(error)) { }
-        Node(Kind kind, LineRef line, string&& error, string_view text) : kind(kind), line(line), error(std::move(error)), text(text) { }
-        Node(Kind kind, LineRef line, string&& error, list<Node>&& nodes) : kind(kind), line(line), error(std::move(error)), nodes(std::move(nodes)) { }
-        Node(Kind kind, LineRef line, string&& error, string_view text, list<Node>&& nodes) : kind(kind), line(line), error(std::move(error)), text(text), nodes(std::move(nodes)) { }
+        Node(tk::Kind kind, SourceRef line) : kind(kind), line(line) { }
+        Node(tk::Kind kind, SourceRef line, string&& value) : kind(kind), line(line), value(std::move(value)) { }
+        Node(tk::Kind kind, SourceRef line, string&& value, list<Node>&& nodes) : kind(kind), line(line), value(std::move(value)), nodes(std::move(nodes)) { }
 
         // Delete copy constructor and assignment operator
         Node(const Node&) = delete;
@@ -40,7 +32,11 @@ namespace ps {
         Node(Node&&) = default;
     };
 
-    list<Node> parse(span<tk::Token const> tokens);
+
+    tuple<list<Node>, list<ErrorMessage>> parse(span<tk::Token const> tokens);
 };
 
 #endif //YAFLC_PARSER_H
+
+
+

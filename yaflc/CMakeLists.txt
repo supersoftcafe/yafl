@@ -5,9 +5,7 @@ set(CMAKE_CXX_STANDARD 23)
 
 add_executable(yaflc main.cpp
     examples/test.yafl examples/tryone.yafl
-        tokenizer.cpp
-        tokenizer.h
-        parser.cpp
-        parser.h
+        parse2.cpp
+        parse2.h
         error.cpp
         error.h)

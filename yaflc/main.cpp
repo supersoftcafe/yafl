@@ -13,39 +13,37 @@
 #include <tuple>
 #include <span>
 
-#include "tokenizer.h"
-#include "parser.h"
+#include "parse2.h"
 
 using namespace std;
 
 
 
 
-
+/*
 string read_file(const filesystem::path& filename) {
     ifstream stream { filename };
     return {istreambuf_iterator<char>(stream), istreambuf_iterator<char>()};
 }
 
-void print_errors(list<ps::Node>::iterator head, list<ps::Node>::iterator tail) {
-    for (; head != tail; ++head) {
-        if (!std::empty(head->error)) {
-            cout << "line " << head->line.line << " column " << head->line.offset << endl
-                 << head->error << endl
-                 << endl;
-        }
+void print_errors(list<Error>& errors) {
+    for (auto& e : errors) {
+        cout << "line " << e.line.line << " column " << e.line.offset << endl
+                << e.message << endl
+                << endl;
     }
-}
+}*/
 
 int main() {
+    yafl::run_tests();
+/*
     auto path = filesystem::current_path();
-
     cout << path << endl;
 
     auto text = read_file("../examples/test.yafl");
     auto tokens = tk::tokenize(text);
-    auto nodes = ps::parse(tokens);
-    print_errors(begin(nodes), end(nodes));
+    auto [nodes, errors] = ps::parse(tokens);
+    print_errors(errors);*/
 
     return 0;
 }

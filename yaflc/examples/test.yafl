@@ -1,14 +1,14 @@
 
-module test
+module Test
 
-import system
+import System
+
+let one = 1
+
+fun one()
+  return 1
 
 
-let main = (y) => let x = y + 1; x
-
-fun main(y) => let x = y + 1; x
-
-fun main(y)
-  let x = y + 1
-  return x
+fun one(y)
+  return y
 
