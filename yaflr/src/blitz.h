@@ -11,7 +11,7 @@
 
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
-#define indexof(type, field)     (offsetof(type, field) / sizeof(typeof(((type*)NULL)->field)))
+#define indexof(type, field)     (offsetof(type, field) / sizeof(((type*)NULL)->field))
 
 void log_error(char const* format, ...) __attribute__ ((format (printf, 1, 2)));
 noreturn void log_error_and_exit(char const* format, ...) __attribute__ ((format (printf, 1, 2)));

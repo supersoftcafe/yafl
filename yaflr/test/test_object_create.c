@@ -14,28 +14,31 @@ typedef struct {
     uint32_t value;
 } test_object_t;
 
-static layout_t test_layout = {
-        .size = sizeof(test_object_t),
-        .pointer_count = 0 };
-
 static vtable_t test_vtable = {
-        .object_layout = &test_layout,
-        .array_layout = NULL,
-        .array_len_index = 0,
-        .functions_mask = 0,
-        .functions = {  } };
+    .object_size = sizeof(test_object_t),
+    .array_el_size = 0,
+    .object_pointer_locations = 0,
+    .array_el_pointer_locations = 0,
+    .array_len_index = 0,
+    .functions_mask = 0,
+    .functions = {  } };
 
 
 void test_object_create() {
     mmap_init();
-    object_init(0);
+    object_init();
 
     heap_t heap;
 
     object_heap_create(&heap);
-    test_object_t* obj = (test_object_t*)object_create(&heap, NULL, &test_vtable);
+    object_heap_select(&heap);
+
+    test_object_t* obj = object_create(test_object_t);
+    obj->vtable = &test_vtable;
     obj->value = 123456;
+
     object_heap_compact(&heap, 1, (object_t**)&obj);
     assert(obj->value == 123456);
+
     object_heap_destroy(&heap);
 }

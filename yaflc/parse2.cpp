@@ -104,6 +104,18 @@ namespace {
 
 
 
+    template <typename X>
+    auto constexpr tuple_unwrap(X x) {
+        if constexpr (std::tuple_size<decltype(x)>() == 1)
+            return get<0>(std::move(x));
+        else
+            return x;
+    }
+    static_assert(tuple_unwrap( tuple<int, int>{1, 2} ) == tuple<int,int>{1, 2});
+    static_assert(tuple_unwrap( tuple<int>{1} ) == 1);
+
+
+
     constexpr bool ckd_add(uint64_t* result, uint64_t a, uint64_t b) {
         if (std::numeric_limits<uint64_t>::max() - a < b)
             return true;
@@ -254,7 +266,7 @@ namespace {
             auto [ result, error, remainder ] = invoke(parser, source);
             if (!empty(error))
                 return { { }, std::move(error), remainder };
-            return { { result }, std::move(error), remainder };
+            return { { std::move(result) }, std::move(error), remainder };
         };
     }
 
@@ -301,7 +313,7 @@ namespace {
     auto constexpr operator & (P1 parser1, P2 parser2) {
         using R1 = Parser_value_t<P1>;
         using R2 = Parser_value_t<P2>;
-        using Tup = typeof(tuple_cat(to_tuple(R1 { }), to_tuple(R2 { })));
+        using Tup = typeof(tuple_unwrap(tuple_cat(to_tuple(R1 { }), to_tuple(R2 { }))));
         return [=](Source source) -> Parsed<Tup> {
             auto r1 = invoke(parser1, source);
             if (!r1.value)
@@ -312,7 +324,7 @@ namespace {
             if (!r2.value)
                 return { { }, std::move(r1.errors), source };
 
-            return { { tuple_cat(to_tuple(std::move(*r1.value)), to_tuple(std::move(*r2.value))) }, { }, r2.source };
+            return { { tuple_unwrap(tuple_cat(to_tuple(std::move(*r1.value)), to_tuple(std::move(*r2.value)))) }, { }, r2.source };
         };
     }
     static_assert((if_char("abc") & if_char("xyz"))("ttt")
@@ -379,13 +391,6 @@ namespace {
 
 #define DISCARD     [](auto v,auto s)->Parsed<tuple<>>{return {tuple<>{},{},s};}
 
-
-    auto constexpr         WS  =   maybe(while_char(is_space))                                       | DISCARD;
-    auto constexpr REQUIRE_EOL = require(maybe(while_char(" \f\t\v\r")) & require(while_char('\n'))) | DISCARD;
-
-    static_assert(REQUIRE_EOL("\n") == Parsed<tuple<>> { tuple<>{}, { }, {"", 2, 1}} );
-    static_assert(REQUIRE_EOL("  \t\n") == Parsed<tuple<>> { tuple<>{}, { }, {"", 2, 1}} );
-    static_assert(REQUIRE_EOL("  \t") == Parsed<tuple<>> { optional<tuple<>>{}, { { 1, 4}, "unexpected characters" }, "  \t"} );
 
 
     /* Get a line plus all following lines that are indented further.
@@ -555,6 +560,23 @@ namespace {
         };
     }
 
+
+
+    auto constexpr  WS =   maybe(while_char(is_space))                                       | DISCARD;
+    auto constexpr EOL = require(maybe(while_char(" \f\t\v\r")) & require(while_char('\n'))) | DISCARD;
+    auto constexpr C(char c) { return if_char(c) | DISCARD; }
+    auto constexpr C(string_view c) { return if_char(c) | DISCARD; }
+    auto constexpr LET = keyword("let");
+    auto constexpr FUN = keyword("fun");
+    auto constexpr RET = keyword("ret");
+    auto constexpr IDENTIFIER = parse_identifier;
+
+    static_assert(EOL("\n")     == Parsed<tuple<>> {          tuple<> {}, { }, {"", 2, 1}} );
+    static_assert(EOL("  \t\n") == Parsed<tuple<>> {          tuple<> {}, { }, {"", 2, 1}} );
+    static_assert(EOL("  \t")   == Parsed<tuple<>> { optional<tuple<>>{}, { { 1, 4}, "unexpected characters" }, "  \t"} );
+
+
+
     template <typename P> requires invocable<P, Source>
     constexpr auto block(P parser) {
         return [=](Source source) -> Parsed<Parser_value_t<P>> {
@@ -570,8 +592,8 @@ namespace {
     }
 
 
-    constexpr auto ast_integer = maybe(if_char(is_sign)) & maybe(WS) & parse_numeric_string | [](auto values, Source src) -> Parsed<Expression::ptr> {
-        auto [sign_char, white_space, str] = values;
+    constexpr auto ast_integer = maybe(if_char(is_sign)) & WS & parse_numeric_string | [](auto values, Source src) -> Parsed<Expression::ptr> {
+        auto [sign_char, str] = values;
 
         auto [base, triml]
             = str.starts_with("0x") ? tuple { 16, 2} :
@@ -644,22 +666,84 @@ namespace {
     ));
 
 
+    constexpr Parsed<TypeSpec::ptr> ast_typespec(Source source);
+    constexpr Parsed<Expression::ptr> ast_expression(Source source);
+    constexpr Parsed<vector<Declaration::ptr>> ast_declarations(Source source);
+
+
+
+    constexpr Parsed<vector<Declaration::ptr>> ast_param_decl(Source source) {
+        auto param_to_value = [](auto value, Source source) -> Parsed<Declaration::ptr> {
+            auto& [ identifier, expression ] = value;
+            auto e = expression ? std::move(*expression) : Nothing::create();
+            return { Value::create(string(identifier), std::move(e)), { }, source };
+        };
+
+        auto params_to_values = [](auto value, Source source) -> Parsed<vector<Declaration::ptr>> {
+            auto& [ params, extra_param ] = value;
+            if (extra_param)
+                params.emplace_back(std::move(*extra_param));
+            return { { std::move(params)}, {}, source };
+        };
+
+        auto param = WS & IDENTIFIER & maybe(WS & C('=') & WS & ast_expression)              |  param_to_value;
+        auto params = C('(') & many(param & WS & C(',')) & maybe(WS & param) & WS & C(')')   | params_to_values;
+
+        return params(source);
+    }
+
+
+
+    constexpr Parsed<TypeSpec::ptr> ast_typespec(Source source) {
+        auto to_namedspec;
+        auto to_scopedspec;
+        auto to_tuplespec;
+        auto to_functionspec;
+
+
+        auto tuple_ = C('(');
+        auto named = IDENTIFIER   | to_namedspec;
+        auto terminal = named ^ tuple_;
+        auto scoped = named & many(WS & C('.') & WS & named)   | to_scopedspec;
+        auto function = many(tuple_ & WS & C(':') & WS) & scoped   | to_functionspec;
+
+        return function(source);
+    }
+
 
     constexpr Parsed<Expression::ptr> ast_expression(Source source) {
-        auto fold_operators = [](auto e, auto s) -> Parsed<Expression::ptr> {
+        auto to_binaryop = [](auto e, auto s) -> Parsed<Expression::ptr> {
             return {{ranges::fold_left(get<1>(e), std::move(get<0>(e)), [](auto&&l, auto&&r){
                 return BinaryOp::create(std::move(l), get<0>(r), std::move(get<1>(r)));
             })},{},s};
         };
-        auto remove_brackets = [](auto e, auto s) -> Parsed<Expression::ptr> {
-            return {{std::move(get<1>(e))},{},s};
+        auto to_tuple = [](auto v, auto s) -> Parsed<Expression::ptr> {
+            auto& [ values, extra_value ] = v;
+            if (extra_value)
+                values.emplace_back(std::move(*extra_value));
+            if (size(values) == 1)
+                return { { std::move(values[0]) }, { }, s};
+            return { { Tuple::create(std::move(values)) }, { }, s};
+        };
+        auto to_invoke = [](auto e, auto s) -> Parsed<Expression::ptr> {
+            return {{ranges::fold_left(get<1>(e), std::move(get<0>(e)), [](auto&&l, auto&&r){
+                return BinaryOp::create(std::move(l), BinaryOp::INVOKE, std::move(r));
+            })},{},s};
+        };
+        auto to_named = [](auto e, auto s) -> Parsed<Expression::ptr> {
+            return { { Named::create(string(e)) }, { }, s };
         };
 
-        auto terminal = ast_integer ^ ast_string;
-        auto brackets = if_char('(') & WS & ast_expression & WS & if_char(')')  | remove_brackets;
-        auto factor   = terminal ^ brackets;
-        auto term     = factor & many( WS & if_char("*/%") & WS & factor )      | fold_operators;
-        auto expr     = term   & many( WS & if_char("+-" ) & WS & term   )      | fold_operators;
+        // TODO: Add lambda, but needs type parsing for the parameter spec
+
+        auto tuple_   = C('(') & many(WS & ast_expression & C(',')) & maybe(WS & ast_expression) & WS & C(')')    | to_tuple;
+        auto name     = IDENTIFIER                                                                                | to_named;
+        auto terminal = ast_integer ^ ast_string ^ name ^ tuple_;
+
+        auto dot      = terminal & many( WS & if_char(".") & WS & terminal )                                      | to_binaryop;
+        auto invoke   = dot & many( WS & tuple_ )                                                                 | to_invoke;
+        auto term     = invoke & many( WS & if_char("*/%") & WS & invoke )                                        | to_binaryop;
+        auto expr     = term   & many( WS & if_char("+-" ) & WS & term   )                                        | to_binaryop;
 
         return expr(source);
     }
@@ -726,11 +810,17 @@ namespace {
         auto fun_to_value = [](auto value, Source source) -> Parsed<Declaration::ptr> {
             return {{Value::create(string(get<1>(value)), Lambda::create(std::move(get<2>(value))))}, {}, source};
         };
+        auto to_return = [](auto value, Source source) -> Parsed<Declaration::ptr> {
+            return { { Return::create(std::move(get<1>(value))) }, { }, source };
+        };
 
-        auto let = block(WS & keyword("let") & WS & parse_identifier & WS & if_char('=') & WS & ast_expression & REQUIRE_EOL) | let_to_value;
-        auto fun = block(WS & keyword("fun") & WS & parse_identifier & REQUIRE_EOL & ast_declarations)                        | fun_to_value;
+        // TODO: Lambda style function e.g. fun arrggg() => expression
+        // TODO: Parameter declaration.
+        auto let = block(WS & LET & WS & IDENTIFIER & WS & if_char('=') & WS & ast_expression & EOL) | let_to_value;
+        auto fun = block(WS & FUN & WS & IDENTIFIER & EOL & ast_declarations)                        | fun_to_value;
+        auto ret = block(WS & RET & WS & ast_expression & EOL)                                       | to_return;
 
-        auto declaration  = let ^ fun;
+        auto declaration  = let ^ fun ^ ret;
         auto declarations = many(declaration);
 
         return declarations(source);

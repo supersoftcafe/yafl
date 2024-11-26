@@ -3,8 +3,7 @@ project(yaflr C)
 
 set(CMAKE_C_STANDARD 17)
 
-add_library(yaflr STATIC src/library.c
-        src/fiber.c
+add_library(yaflr STATIC
         src/mmap.h
         src/mmap.c
         src/blitz.c
@@ -12,8 +11,10 @@ add_library(yaflr STATIC src/library.c
         src/object.h
         src/object.c
         src/threads.h
-        src/platform.c
-        src/platform.h
+        src/integer.c
+        src/integer.h
+        src/string.c
+        src/string.h
         src/lists.c
         src/lists.h
 )
@@ -26,8 +27,9 @@ add_executable(yaflr_test test/test.c
         test/test_object_arrays.c
         test/test_object_nested_heap.c
         test/test_object_virtual_function.c
-        test/test_fiber_parallel.c
-        test/test_lists.c)
+        test/test_lists.c
+        test/test_string.c
+        test/test_integer.c)
 target_link_libraries(yaflr_test PRIVATE yaflr)
 
 enable_testing()
@@ -39,5 +41,6 @@ add_test(NAME test_object_heap_compact COMMAND $<TARGET_FILE:yaflr_test> object_
 add_test(NAME test_object_arrays COMMAND $<TARGET_FILE:yaflr_test> object_arrays)
 add_test(NAME test_object_nested_heap COMMAND $<TARGET_FILE:yaflr_test> object_nested_heap)
 add_test(NAME test_object_virtual_function COMMAND $<TARGET_FILE:yaflr_test> object_virtual_function)
-add_test(NAME test_fiber_parallel COMMAND $<TARGET_FILE:yaflr_test> fiber_parallel)
+add_test(NAME test_integer COMMAND $<TARGET_FILE:yaflr_test> integer)
+add_test(NAME test_string COMMAND $<TARGET_FILE:yaflr_test> string)
 add_test(NAME test_lists COMMAND $<TARGET_FILE:yaflr_test> lists)

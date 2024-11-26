@@ -3,6 +3,7 @@
 //
 
 #include <string.h>
+#include <stdio.h>
 
 void test_mmap_alloc();
 void test_mmap_protect();
@@ -12,10 +13,15 @@ void test_object_arrays();
 void test_object_nested_heap();
 void test_object_virtual_function();
 void test_fiber_parallel();
+void test_integer();
+void test_string();
 void test_lists();
 
 int main(int argc, char** argv) {
-    if (strcmp(argv[1], "mmap_alloc") == 0)
+    if (argc < 2)
+        printf("Missing test parameter");
+
+    else if (strcmp(argv[1], "mmap_alloc") == 0)
         test_mmap_alloc();
 
     else if (strcmp(argv[1], "mmap_protect") == 0)
@@ -36,8 +42,11 @@ int main(int argc, char** argv) {
     else if (strcmp(argv[1], "object_virtual_function") == 0)
         test_object_virtual_function();
 
-    else if (strcmp(argv[1], "fiber_parallel") == 0)
-        test_fiber_parallel();
+    else if (strcmp(argv[1], "integer") == 0)
+        test_integer();
+
+    else if (strcmp(argv[1], "string") == 0)
+        test_string();
 
     else if (strcmp(argv[1], "lists") == 0)
         test_lists();

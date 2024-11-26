@@ -42,9 +42,20 @@ static int fix_align(int align_log2) {
     return align_log2;
 }
 
+__attribute__((noinline))
+void* mmap_alloc(size_t size) {
+    size = fix_size(size);
+
+    char* ptr = mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON|MAP_NORESERVE, -1, 0);
+
+    if (ptr == MAP_FAILED)
+        ERROR("mmap");
+
+    return ptr;
+}
 
 __attribute__((noinline))
-void* mmap_alloc(size_t size, int align_log2) {
+void* mmap_alloc_aligned(size_t size, int align_log2) {
     size = fix_size(size);
     align_log2 = fix_align(align_log2);
 
@@ -94,4 +105,13 @@ void mmap_protect(size_t size, void* ptr) {
 
     if (result == -1)
         ERROR("mprotect");
+}
+
+void mmap_dontneed(size_t size, void* ptr) {
+    size = fix_size(size);
+
+    int result = madvise(ptr, size, MADV_FREE);
+
+    if (result == -1)
+        ERROR("madvise");
 }

@@ -12,9 +12,11 @@
 
 extern size_t PAGE_SIZE;
 
-void* mmap_alloc(size_t size, int align_log2);
+void* mmap_alloc(size_t size);
+void* mmap_alloc_aligned(size_t size, int align_log2);
 void mmap_release(size_t size, void* ptr);
 void mmap_protect(size_t size, void* ptr);
+void mmap_dontneed(size_t size, void* ptr);
 void mmap_init();
 
 #endif //YAFLR_MMAP_H

@@ -9,7 +9,7 @@
 
 static char* test_alloc(size_t size, int bits, int offset) {
     size_t mask = (((size_t)1) << bits) - 1;
-    char* ptr = mmap_alloc(size, bits);
+    char* ptr = mmap_alloc_aligned(size, bits);
 
     assert( ptr != NULL );
     assert( (mask & (size_t)ptr) == 0 );

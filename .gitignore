@@ -2,6 +2,8 @@ compiler/build/**
 compiler/gen/**
 compiler/.gradle/**
 
+**/__pycache__
+
 build-*
 .DS_Store
 CMakeLists.txt.user

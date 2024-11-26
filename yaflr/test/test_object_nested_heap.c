@@ -18,70 +18,55 @@ struct test_object{
     test_object_t* pointer;
 };
 
-static struct {
-    layout_t l;
-    field_index_t o[1];
-} test_layout = {
-        .l = {
-                .size = sizeof(test_object_t),
-                .pointer_count = 1
-        },
-        .o = {
-                indexof(test_object_t, pointer)
-        }
+static vtable_t test_vtable = {
+    .object_size = sizeof(test_object_t),
+    .array_el_size = sizeof(test_object_t*),
+    .object_pointer_locations = 1<<indexof(test_object_t, pointer),
+    .array_el_pointer_locations = 0,
+    .array_len_index = 0,
+    .functions_mask = 0,
+    .functions = {  }
 };
 
-static vtable_t test_vtable = {
-        .object_layout = &test_layout.l,
-        .array_layout = NULL,
-        .array_len_index = 0,
-        .functions_mask = 0,
-        .functions = {  } };
+static test_object_t* create(test_object_t* pointer) {
+    test_object_t *o = object_create(test_object_t);
+    o->vtable = &test_vtable;
+    o->pointer = pointer;
+    return o;
+}
 
-
-static void create_objects(heap_t* heap, int count) {
+static void create_objects(int count) {
     while (--count >= 0) {
-        test_object_t *o = (test_object_t*)object_create(heap, NULL, &test_vtable);
-        o->pointer = NULL;
+        create(NULL);
     }
 }
 
 void test_object_nested_heap() {
     mmap_init();
-    object_init(1);
+    object_init();
 
     heap_t heap1;
     object_heap_create(&heap1);
-    create_objects(&heap1, 50);
-    test_object_t *object1 = (test_object_t*) object_create(&heap1, NULL, &test_vtable);
-    object1->pointer = NULL;
-    create_objects(&heap1, 50);
+    object_heap_select(&heap1);
+    create_objects(50);
+    test_object_t *object1 = create(NULL);
+    create_objects(50);
 
     heap_t heap2;
     object_heap_create(&heap2);
-    create_objects(&heap2, 50);
-    test_object_t *object2 = (test_object_t*) object_create(&heap2, NULL, &test_vtable);
+    object_heap_select(&heap2);
+    create_objects(50);
+    test_object_t *object2 = create(object1);
     object2->pointer = object1;
-    create_objects(&heap2, 50);
+    create_objects(50);
 
-    assert(heap1.object_count == 101);
-    assert(heap2.object_count == 101);
+    object_heap_compact(&heap2, &object2, NULL);
 
-    object_heap_compact(&heap2, 1, (object_t**)&object2);
-
-    assert(heap1.object_count == 101);      // heap1 is untouched
-    assert(heap2.object_count == 1);        // heap2 is compacted
     assert(object2->pointer == object1);    // object1 hasn't moved...  check this
 
     object_heap_append(&heap1, &heap2);
 
-    assert(heap1.object_count == 102);      // heap1 has grown
+    object_heap_compact(&heap1, &object1, &object2, NULL);
 
-    object_t *roots[2] = { (object_t*)object1, (object_t*)object2 };
-    object_heap_compact(&heap1, 2, roots);
-    object1 = (test_object_t*)roots[0];
-    object2 = (test_object_t*)roots[1];
-
-    assert(heap1.object_count == 2);        // heap1 is compacted
     assert(object2->pointer == object1);    // still pointing at object1, which has probably moved
 }

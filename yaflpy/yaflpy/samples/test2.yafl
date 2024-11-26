@@ -1,0 +1,8 @@
+
+fun `+`(a: System::Int32, b: System::Int32): System.Int32
+    ret __native_invoke__(_OP_ADD_I32, a, b)
+
+let x = something.R::ExtensionFunction(params)
+
+fun main(): System.Int32
+    ret 1

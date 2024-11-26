@@ -22,9 +22,13 @@ namespace yafl {
     struct Integer;
     struct BinaryOp;
     struct Lambda;
+    struct Nothing;
+    struct Tuple;
+    struct Invoke;
+    struct Named;
     struct Expression {
         using ptr = unique_ptr<Expression>;
-        using var = variant<String const*,Integer const*,BinaryOp const*,Lambda const*>;
+        using var = variant<String const*,Integer const*,BinaryOp const*,Lambda const*,Nothing const*,Tuple const*,Invoke const*,Named const*>;
         constexpr virtual ~Expression() { }
         constexpr virtual var as_variant() const = 0;
         constexpr virtual bool is_equal(const Expression*) const = 0;
@@ -35,8 +39,64 @@ namespace yafl {
         return (!a && !b) || (a && b && a->is_equal(b.get()));
     }
 
+    constexpr bool is_equal(const vector<Expression::ptr>& a, const vector<Expression::ptr>& b) {
+        if (std::size(a) != std::size(b)) return false;
+        for (size_t index = 0; index < std::size(a); ++index)
+            if (!is_equal(a[index], b[index]))
+                return false;
+        return true;
+    }
+
     inline ostream& operator << (ostream& o, const Expression::ptr& p) {
         p->print(o);
+        return o;
+    }
+
+    inline ostream& operator << (ostream& o, const vector<Expression::ptr>& declarations) {
+        o << "vector<Expression::ptr> {";
+        for (const auto& p : declarations)
+            o << p << ", ";
+        o << "}";
+        return o;
+    }
+
+
+
+    struct NamedSpec;
+    struct ScopedSpec;
+    struct TupleSpec;
+    struct FunctionSpec;
+    struct TypeSpec {
+        using ptr = unique_ptr<TypeSpec>;
+        using var = variant<NamedSpec const*, ScopedSpec const*, TupleSpec const*, FunctionSpec const*>;
+        constexpr virtual ~TypeSpec() { }
+        constexpr virtual var as_variant() const = 0;
+        constexpr virtual bool is_equal(const TypeSpec*) const = 0;
+        virtual void print(ostream&) const = 0;
+    };
+
+    constexpr bool is_equal(const TypeSpec::ptr& a, const TypeSpec::ptr& b) {
+        return (!a && !b) || (a && b && a->is_equal(b.get()));
+    }
+
+    constexpr bool is_equal(const vector<TypeSpec::ptr>& a, const vector<TypeSpec::ptr>& b) {
+        if (std::size(a) != std::size(b)) return false;
+        for (size_t index = 0; index < std::size(a); ++index)
+            if (!is_equal(a[index], b[index]))
+                return false;
+        return true;
+    }
+
+    inline ostream& operator << (ostream& o, const TypeSpec::ptr& p) {
+        p->print(o);
+        return o;
+    }
+
+    inline ostream& operator << (ostream& o, const vector<TypeSpec::ptr>& declarations) {
+        o << "vector<TypeSpec::ptr> {";
+        for (const auto& p : declarations)
+            o << p << ", ";
+        o << "}";
         return o;
     }
 
@@ -46,9 +106,10 @@ namespace yafl {
     struct Alias;
     struct Import;
     struct Namespace;
+    struct Return;
     struct Declaration {
         using ptr = unique_ptr<Declaration>;
-        using var = variant<Value const*,Alias const*,Import const*,Namespace const*>;
+        using var = variant<Value const*,Alias const*,Import const*,Namespace const*,Return const*>;
         constexpr virtual ~Declaration() { }
         constexpr virtual var as_variant() const = 0;
         constexpr virtual bool is_equal(const Declaration*) const = 0;
@@ -81,6 +142,24 @@ namespace yafl {
     }
 
 
+
+    struct Named : Expression {
+        explicit constexpr Named(string value) : value(value) { }
+        static constexpr Expression::ptr create(string value){return make_unique<Named>(value);}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const Expression* o) const {
+            auto v = o->as_variant();
+            if (Named const** pval = std::get_if<Named const*>(&v)) {
+                return value == (*pval)->value;
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "Named(\"" << value << "\")";
+        }
+        const string value;
+    };
 
     struct String : Expression {
         explicit constexpr String(string value) : value(value) { }
@@ -120,7 +199,7 @@ namespace yafl {
     };
 
     struct BinaryOp : Expression {
-        enum Op : char { MUL='*', DIV='/', REM='%', ADD='+', SUB='-' };
+        enum Op : char { MUL='*', DIV='/', REM='%', ADD='+', SUB='-', SCOPE='.', INVOKE='I' };
         explicit constexpr BinaryOp(Expression::ptr&&l,char op,Expression::ptr&&r) : left(std::move(l)),right(std::move(r)),op(op) { }
         static constexpr Expression::ptr create(Expression::ptr&&l,char op,Expression::ptr&&r){return make_unique<BinaryOp>(std::move(l),op,std::move(r));}
         constexpr var as_variant() const {return this;}
@@ -157,6 +236,119 @@ namespace yafl {
         }
         const vector<Declaration::ptr> declarations;
     };
+
+    struct Nothing : Expression { // Filler so we can return incomplete expressions for error reporting
+        constexpr Nothing() { }
+        static constexpr Expression::ptr create(){return make_unique<Nothing>();}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const Expression* o) const {
+            auto v = o->as_variant();
+            if (Lambda const** pval = std::get_if<Lambda const*>(&v)) {
+                return yafl::is_equal(declarations, (*pval)->declarations);
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "Nothing()";
+        }
+        const vector<Declaration::ptr> declarations;
+    };
+
+    struct Tuple : Expression {
+        constexpr Tuple(vector<Expression::ptr>&& expressions) : expressions { std::move(expressions) } { }
+        static constexpr Expression::ptr create(vector<Expression::ptr>&& expressions){return make_unique<Tuple>(std::move(expressions));}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const Expression* o) const {
+            auto v = o->as_variant();
+            if (Tuple const** pval = std::get_if<Tuple const*>(&v)) {
+                return yafl::is_equal(expressions, (*pval)->expressions);
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "Lambda(" << expressions << ")";
+        }
+        const vector<Expression::ptr> expressions;
+    };
+
+
+
+
+    struct NamedSpec : TypeSpec {
+        constexpr NamedSpec(string&& name) : name { std::move(name) } { }
+        static constexpr TypeSpec::ptr create(string&& name){return make_unique<NamedSpec>(std::move(name));}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const TypeSpec* o) const {
+            auto v = o->as_variant();
+            if (NamedSpec const** pval = std::get_if<NamedSpec const*>(&v)) {
+                return name == (*pval)->name;
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "NamedSpec(" << name << ")";
+        }
+        const string name;
+    };
+
+    struct ScopedSpec : TypeSpec {
+        constexpr ScopedSpec(vector<TypeSpec::ptr>&& path) : path { std::move(path) } { }
+        static constexpr TypeSpec::ptr create(vector<TypeSpec::ptr>&& path){return make_unique<ScopedSpec>(std::move(path));}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const TypeSpec* o) const {
+            auto v = o->as_variant();
+            if (ScopedSpec const** pval = std::get_if<ScopedSpec const*>(&v)) {
+                return yafl::is_equal(path, (*pval)->path);
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "ScopedSpec(" << path << ")";
+        }
+        const vector<TypeSpec::ptr> path;
+    };
+
+    struct TupleSpec : TypeSpec {
+        constexpr TupleSpec(vector<TypeSpec::ptr>&& types) : types { std::move(types) } { }
+        static constexpr TypeSpec::ptr create(vector<TypeSpec::ptr>&& types){return make_unique<TupleSpec>(std::move(types));}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const TypeSpec* o) const {
+            auto v = o->as_variant();
+            if (TupleSpec const** pval = std::get_if<TupleSpec const*>(&v)) {
+                return yafl::is_equal(types, (*pval)->types);
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "TupleSpec(" << types << ")";
+        }
+        const vector<TypeSpec::ptr> types;
+    };
+
+    struct FunctionSpec : TypeSpec {
+        constexpr FunctionSpec(TypeSpec::ptr&& result, TypeSpec::ptr&& params) : result { std::move(result) }, params { std::move(params) } { }
+        static constexpr TypeSpec::ptr create(TypeSpec::ptr&& result, TypeSpec::ptr&& params){return make_unique<FunctionSpec>(std::move(result), std::move(params));}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const TypeSpec* o) const {
+            auto v = o->as_variant();
+            if (FunctionSpec const** pval = std::get_if<FunctionSpec const*>(&v)) {
+                return yafl::is_equal(result, (*pval)->result) && yafl::is_equal(params, (*pval)->params);
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "FunctionSpec(" << result << ", " << params << ")";
+        }
+        const TypeSpec::ptr result;
+        const TypeSpec::ptr params;
+    };
+
 
 
 
@@ -238,6 +430,24 @@ namespace yafl {
             o << "})";
         }
         const vector<string> name;
+    };
+
+    struct Return : Declaration {
+        constexpr Return(Expression::ptr&& value) : value { std::move(value) } { }
+        static constexpr Declaration::ptr create(Expression::ptr&& value){return make_unique<Return>(std::move(value));}
+        constexpr var as_variant() const {return this;}
+        constexpr bool is_equal(const Declaration* o) const {
+            auto v = o->as_variant();
+            if (Return const** pval = std::get_if<Return const*>(&v)) {
+                return is_equal(value, (*pval)->value);
+            } else {
+                return false;
+            }
+        }
+        void print(ostream& o) const {
+            o << "Return(" << value << ")";
+        }
+        const Expression::ptr value;
     };
 
 

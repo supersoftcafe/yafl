@@ -1,0 +1,104 @@
+[
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr.dir/src/mmap.c.o -c /home/mbrown/Projects/my/yafl/yaflr/src/mmap.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/src/mmap.c",
+  "output": "CMakeFiles/yaflr.dir/src/mmap.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr.dir/src/blitz.c.o -c /home/mbrown/Projects/my/yafl/yaflr/src/blitz.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/src/blitz.c",
+  "output": "CMakeFiles/yaflr.dir/src/blitz.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr.dir/src/object.c.o -c /home/mbrown/Projects/my/yafl/yaflr/src/object.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/src/object.c",
+  "output": "CMakeFiles/yaflr.dir/src/object.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr.dir/src/integer.c.o -c /home/mbrown/Projects/my/yafl/yaflr/src/integer.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/src/integer.c",
+  "output": "CMakeFiles/yaflr.dir/src/integer.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr.dir/src/string.c.o -c /home/mbrown/Projects/my/yafl/yaflr/src/string.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/src/string.c",
+  "output": "CMakeFiles/yaflr.dir/src/string.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr.dir/src/lists.c.o -c /home/mbrown/Projects/my/yafl/yaflr/src/lists.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/src/lists.c",
+  "output": "CMakeFiles/yaflr.dir/src/lists.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_mmap_alloc.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_mmap_alloc.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_mmap_alloc.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_mmap_alloc.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_mmap_protect.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_mmap_protect.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_mmap_protect.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_mmap_protect.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_object_create.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_object_create.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_object_create.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_object_create.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_object_heap_compact.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_object_heap_compact.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_object_heap_compact.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_object_heap_compact.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_object_arrays.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_object_arrays.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_object_arrays.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_object_arrays.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_object_nested_heap.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_object_nested_heap.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_object_nested_heap.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_object_nested_heap.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_object_virtual_function.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_object_virtual_function.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_object_virtual_function.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_object_virtual_function.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_lists.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_lists.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_lists.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_lists.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_string.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_string.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_string.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_string.c.o"
+},
+{
+  "directory": "/home/mbrown/Projects/my/yafl/yaflr/build",
+  "command": "/usr/bin/cc -g -o CMakeFiles/yaflr_test.dir/test/test_integer.c.o -c /home/mbrown/Projects/my/yafl/yaflr/test/test_integer.c",
+  "file": "/home/mbrown/Projects/my/yafl/yaflr/test/test_integer.c",
+  "output": "CMakeFiles/yaflr_test.dir/test/test_integer.c.o"
+}
+]

@@ -9,14 +9,14 @@
 #include "../src/mmap.h"
 
 
-static void handle_segfault(int) {
+static void handle_segfault(int x) {
     exit(0); // Success
 }
 
 void test_mmap_protect() {
     mmap_init();
 
-    char* ptr = mmap_alloc(0x10000, 16);
+    char* ptr = mmap_alloc_aligned(0x10000, 16);
     mmap_protect(PAGE_SIZE, ptr);
 
     signal(SIGSEGV, handle_segfault);
