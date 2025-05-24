@@ -1,0 +1,5 @@
+namespace System
+
+
+fun print(str: System::String): System::Int32
+    ret __builtin_op__<int32>("print", str)

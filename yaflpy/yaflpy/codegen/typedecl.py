@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import chain
 from collections.abc import Mapping
 from abc import ABC, abstractmethod, abstractproperty
 from dataclasses import dataclass, field
@@ -17,6 +18,14 @@ class Type(ABC):
         pass
 
     @property
+    def has_pointers(self) -> bool:
+        return False
+
+    @property
+    def _dont_cache(self) -> bool:
+        return False
+
+    @property
     def alignment(self) -> int:
         return self.size
 
@@ -32,14 +41,16 @@ class Type(ABC):
         raise NotImplementedError()
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
-        if self not in type_cache:
+        if self._dont_cache:
+            declaration = self._declare_struct(type_cache, "    ")
+        elif self not in type_cache:
             type_str = f"typedef {self._declare_struct(type_cache, "    ")}"
-            name = f"struct_anon_{len(type_cache)}_t"
-            type_cache[self] = name, f"{type_str} {name};"
+            declaration = f"struct_anon_{len(type_cache)}_t"
+            type_cache[self] = declaration, f"{type_str} {declaration};\n"
         else:
             value = type_cache[self]
-            name, _ = value
-        return name
+            declaration, _ = value
+        return declaration
 
     def initialise(self, type_cache: Dict[Type, (str, str)], data: Any) -> str:
         return self._initialise(type_cache, data, "    ")
@@ -47,9 +58,28 @@ class Type(ABC):
     def declare(self, type_cache: Dict[Type, (str, str)]) -> str:
         return self._declare(type_cache, "    ")
 
-    def get_pointer_paths(self, path: str) -> List[str]:
-        return []
+    def get_pointer_paths(self, path: str) -> set[str]:
+        return set()
 
+
+_str_escape_table = str.maketrans({f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))})
+
+@dataclass(frozen=True)
+class Str(Type):
+    @property
+    def size(self) -> int:
+        return word_size
+
+    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+        if not isinstance(data, str):
+            raise ValueError("data must be of type str")
+        return f"STR(\"{data.translate(_str_escape_table)}\")"
+
+    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+        return "object_t*"
+
+    def get_pointer_paths(self, path: str) -> set[str]:
+        return {path}
 
 @dataclass(frozen=True)
 class Int(Type):
@@ -60,10 +90,15 @@ class Int(Type):
         return self.precision // 8 if self.precision != 0 else word_size
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
-        return f"{data}"
+        return f"((int{self.precision}_t){data})"
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+        if not self.precision:
+            raise ValueError("Big integer not supported yet")
         return f"int{self.precision}_t" if self.precision != 0 else "void*"
+
+    def get_pointer_paths(self, path: str) -> set[str]:
+        return {path} if self.precision == 0 else {}
 
 
 @dataclass(frozen=True)
@@ -85,11 +120,15 @@ class DataPointer(Type):
     def size(self) -> int:
         return word_size
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
-        return "void*"
+    @property
+    def has_pointers(self) -> bool:
+        return True
 
-    def get_pointer_paths(self, path: str) -> List[str]:
-        return [path]
+    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+        return "object_t*"
+
+    def get_pointer_paths(self, path: str) -> set[str]:
+        return {path}
 
 
 @dataclass(frozen=True)
@@ -97,6 +136,10 @@ class FuncPointer(Type):
     @property
     def size(self) -> int:
         return word_size * 2
+
+    @property
+    def has_pointers(self) -> bool:
+        return True
 
     @property
     def alignment(self) -> int:
@@ -118,13 +161,17 @@ class FuncPointer(Type):
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return "fun_t"
 
-    def get_pointer_paths(self, path: str) -> List[str]:
-        return [f"{path}.o"]
+    def get_pointer_paths(self, path: str) -> set[str]:
+        return {f"{path}.o"}
 
 
 @dataclass(frozen=True)
 class Struct(Type):
     fields: Tuple[Tuple[str, Type], ...]
+
+    @property
+    def _dont_cache(self) -> bool:
+        return False
 
     @property
     def size(self) -> int:
@@ -134,6 +181,10 @@ class Struct(Type):
             sz = (sz + a - 1) // a * a + field_type.size # Bring up to alignment requirement and then add size
             al = max(al, a)
         return (sz + al - 1) // al * al if al else 0 # Round up to alignment size
+
+    @property
+    def has_pointers(self) -> bool:
+        return any(1 for x, y in self.fields if y.has_pointers)
 
     @property
     def alignment(self) -> int:
@@ -170,6 +221,31 @@ class Struct(Type):
                 field_type.get_pointer_paths(f"{path}.{mangle_name(name)}")]
 
 
+
+@dataclass(frozen=True)
+class Void(Type):
+    @property
+    def size(self) -> int:
+        return 0
+
+    @property
+    def has_pointers(self) -> bool:
+        return False
+
+    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+        return "void"
+
+    def get_pointer_paths(self, path: str) -> set[str]:
+        return set()
+
+
+@dataclass(frozen=True)
+class ImmediateStruct(Struct):
+    @property
+    def _dont_cache(self) -> bool:
+        return True
+
+
 @dataclass(frozen=True)
 class Array(Type):
     type: Type
@@ -178,6 +254,10 @@ class Array(Type):
     @property
     def size(self) -> int:
         return self.type.size * self.length
+
+    @property
+    def has_pointers(self) -> bool:
+        return self.type.has_pointers
 
     @property
     def alignment(self) -> int:

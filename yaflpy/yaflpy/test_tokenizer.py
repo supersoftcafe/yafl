@@ -43,3 +43,12 @@ class Test(TestCase):
         self.assertEqual(2, len(tokens))
         self.assertEqual(TokenKind.STRING, tokens[0].kind)
         self.assertEqual("\"fred\"", tokens[0].value)
+
+    def test_simple_interface(self):
+        tokens = tokenize("interface Simple", "file")
+        self.assertEqual(3, len(tokens))
+        self.assertEqual(TokenKind.SYMBOLS, tokens[0].kind)
+        self.assertEqual("interface", tokens[0].value)
+        self.assertEqual(TokenKind.IDENTIFIER, tokens[1].kind)
+        self.assertEqual("Simple", tokens[1].value)
+        self.assertEqual(TokenKind.EOF, tokens[2].kind)

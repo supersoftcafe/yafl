@@ -1,23 +1,33 @@
 from __future__ import annotations
 
+import lowering.strings
+import lowering.lambdas
+import lowering.linear_to_cps
+
 import pyast.statement as s
+import pyast.expression as e
 
 from collections import defaultdict
 
 from codegen.typedecl import DataPointer, Struct, Int
 from codegen.things import Function
-import codegen.param as e
-import codegen.ops as o
+import codegen.param as cg_p
+import codegen.ops as cg_o
 
 from codegen.gen import Application
-import pyast.globalcontext as g
+import pyast.resolver as g
 import pyast.typespec as t
 from dataclasses import dataclass, fields
 
+from langtools import cast
+from lowering.linear_to_cps import convert_application_to_cps
 from pyast.statement import ImportGroup
-from tokenizer import tokenize
+from tokenizer import tokenize, LineRef
 from parselib import Error
 from parser import parse
+from pathlib import Path
+
+
 
 
 @dataclass
@@ -26,65 +36,116 @@ class Input:
     filename: str
 
 
-def __create_entry_point() -> Function:
+_stdlib_code_path = Path(__file__).parent / "stdlib"
+
+def _read_source(path: Path) -> Input:
+    with open(path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    return Input(''.join(lines), path.name)
+
+def _read_stdlib_code(use_stdlib: bool) -> list[Input]:
+    if not use_stdlib: return []
+    libs = [_read_source(x) for x in _stdlib_code_path.glob(f"*.yafl")]
+    return libs
+
+
+def __create_entry_point(main: s.FunctionStatement) -> Function:
+    sv = cg_p.StackVar(Int(32), "result")
     return Function(
         name="__entrypoint__",
         params=Struct(fields=(("this", DataPointer()),)),
         result=Int(32),
         stack_vars=Struct(fields=(("result", Int(32)),)),
         ops=(
-            o.Call(
-                function=e.GlobalFunction("Main::main"),
-                parameters=(),
-                register="result"
+            cg_o.Call(
+                function=cg_p.GlobalFunction(main.name),
+                parameters=cg_p.NewStruct(()),
+                register=sv
             ),
-            o.Return(e.StackVar("result"))
+            cg_o.Return(sv)
         )
     )
 
 
 
-def __create_c_code(statements: list[s.Statement], just_testing = False) -> str:
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False) -> str:
     a = Application()
-    glb = g.GlobalRoot(statements)
+    resolver = g.ResolverRoot(statements)
     for stmt in statements:
-        glb2 = g.AddScopeResolution(glb, stmt.imports)
         match stmt:
             case s.FunctionStatement() as f:
-                a.functions[f.name] = f.global_codegen(glb2)
+                resolver2 = g.AddScopeResolution(resolver, f.imports)
+                a.functions[f.name] = f.global_codegen(resolver2)
             case s.LetStatement() as l:
-                a.globals[l.name] = l.global_codegen(glb)
+                resolver2 = g.AddScopeResolution(resolver, l.imports)
+                global_var = l.global_codegen(resolver2)
+                if not global_var.init:
+                    raise ValueError("Only literal global variables are supported so far. Dynamic initialisation is tbd.")
+                a.globals[l.name] = global_var
+            case s.ClassStatement() as c:
+                resolver2 = g.AddScopeResolution(resolver, c.imports)
+                xclass, functions = c.global_codegen(resolver2)
+                a.objects[c.name] = xclass
+                for function in functions:
+                    a.functions[function.name] = function
             case s.TypeAliasStatement() as t:
                 pass
             case _:
                 raise ValueError(f"Unexpected type {type(stmt)}")
-    a.functions["__entrypoint__"] = __create_entry_point()
+    a.functions["__entrypoint__"] = __create_entry_point(main)
+    a = convert_application_to_cps(a)
     return a.gen(just_testing=just_testing)
 
 
-def __compile(stmt: s.Statement, glb: g.Global, expected_type: t.TypeSpec|None) -> list:
+def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
     if isinstance(stmt, s.NamedStatement):
         glb = g.AddScopeResolution(glb, stmt.imports)
-    result, extras, errors = stmt.compile(glb, expected_type)
-    return [result] + extras + errors
+    result, extras = stmt.compile(glb, expected_type)
+    result = [result] + extras
+    if not isinstance(result, list):
+        raise ValueError()
+    if any(1 for x in result if isinstance(x, list)):
+        raise ValueError()
+    for x in result:
+        if isinstance(x, list):
+            raise ValueError()
+    return result
+
+
+def __is_main_function(stmt: s.FunctionStatement) -> bool:
+    if ("::main@" not in stmt.name or
+        not isinstance(stmt.return_type, t.BuiltinSpec) or
+        not stmt.return_type.type_name == "int32"):
+        return False
+    params_type = stmt.parameters.get_type()
+    if not isinstance(params_type, t.TupleSpec):
+        return False
+    return len(params_type.entries) == 0
 
 
 def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 1, just_testing = False) -> str|list[Error]:
-    glb = g.GlobalRoot(statements)
+    resolver = g.ResolverRoot(statements)
 
-    statements_and_errors = [o for stmt in statements for o in __compile(stmt, glb, None)]
-    new_statements = [o for o in statements_and_errors if isinstance(o, s.Statement)]
-    new_errors = [o for o in statements_and_errors if isinstance(o, Error)]
+    new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
+    new_errors = [x for stmt in new_statements for x in stmt.check(resolver, None)]
+    mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
-    if not new_errors:
-        # All ok so let's create some C code
-        return __create_c_code(new_statements, just_testing=just_testing)
-    elif new_statements != statements:
+    if not mains:
+        new_errors += [Error(LineRef("none", 0, 0), "No main function found")]
+    elif len(mains) > 1:
+        new_errors += [Error(LineRef("none", 0, 0), "Too many main functions defined")]
+
+    if new_statements != statements:
         # More work to do
         return __iterate_and_compile(new_statements, iteration_count + 1)
-    else:
+    elif new_errors:
         # Nothing more to do, just errors
         return new_errors
+    else:
+        # All ok so let's create some C code
+        new_statements = lowering.strings.fix_global_strings(new_statements)
+        new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
+        return __create_c_code(new_statements, mains[0], just_testing=just_testing)
 
 
 def __tokenize_and_parse(source: list[Input]) -> (list[s.Statement], list[Error]):
@@ -110,11 +171,13 @@ def __print_errors(errors: list[Error]) -> str:
     return ""
 
 
-def compile(source: list[Input], just_testing = False) -> str:
-    statements, errors = __tokenize_and_parse(source)
+def compile(source: list[Input], use_stdlib = False, just_testing = False) -> str:
+    # Tokenize input
+    statements, errors = __tokenize_and_parse(_read_stdlib_code(use_stdlib) + source)
     if errors:
         return __print_errors(errors)
 
+    # Compile and find errors
     compiled_result = __iterate_and_compile(statements, just_testing=just_testing)
     if isinstance(compiled_result, list):
         return __print_errors(compiled_result)

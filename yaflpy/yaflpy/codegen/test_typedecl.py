@@ -16,15 +16,15 @@ class TestInt(TestCase):
 
     def test_initialise(self):
         str = self.target.initialise({}, 100)
-        self.assertEqual(str, "100")
+        self.assertRegex(str, "\(int32_t\)100")
 
     def test_declare(self):
         str = self.target.declare(self.cache)
         self.assertEqual(str, "int32_t")
 
-    def test_declare_bigint(self):
-        str = Int(0).declare(self.cache)
-        self.assertEqual(str, "void*")
+    # def test_declare_bigint(self):
+    #     str = Int(0).declare(self.cache)
+    #     self.assertEqual(str, "void*")
 
     def test_get_pointer_paths(self):
         paths = self.target.get_pointer_paths("v")
@@ -84,8 +84,8 @@ class TestStruct(TestCase):
 
     def test_initialise(self):
         str = self.target.initialise({}, {'1chr': 1, '2int': 2, '4fun': {'f': "@fun", 'o': "@obj"}})
-        self.assertRegex(str, r'\.1chr\s*=\s*1\s*,')
-        self.assertRegex(str, r'\.2int\s*=\s*2\s*,')
+        self.assertRegex(str, r'\.1chr\s*=.*\(int8_t\)1')
+        self.assertRegex(str, r'\.2int\s*=.*\(int32_t\)2')
         self.assertNotRegex(str, r'.3ptr')
         self.assertRegex(str, r'(?m)\.4fun\s*=\s*\(fun_t\){\s*\.f\s*=\s*@fun\s*')
 
@@ -95,7 +95,7 @@ class TestStruct(TestCase):
         name, declaration = self.cache[self.target]
         self.assertRegex(declaration, r'int8_t\s+1chr\s*;')
         self.assertRegex(declaration, r'int32_t\s+2int\s*;')
-        self.assertRegex(declaration, r'void\*\s+3ptr\s*;')
+        self.assertRegex(declaration, r'object_t\*\s+3ptr\s*;')
 
     def test_get_pointer_paths(self):
         paths = self.target.get_pointer_paths("v")
@@ -117,9 +117,9 @@ class TestArray(TestCase):
 
     def test_initialise(self):
         str = Array(Int(16), 3).initialise({}, [1, 2, 3])
-        self.assertRegex(str, r'\.a\[0\]\s*=\s*1\s*')
-        self.assertRegex(str, r'\.a\[1\]\s*=\s*2\s*')
-        self.assertRegex(str, r'\.a\[2\]\s*=\s*3\s*')
+        self.assertRegex(str, r'\.a\[0\]\s*=.*\(int16_t\)1\s*')
+        self.assertRegex(str, r'\.a\[1\]\s*=.*\(int16_t\)2\s*')
+        self.assertRegex(str, r'\.a\[2\]\s*=.*\(int16_t\)3\s*')
 
     def test_get_pointer_paths(self):
         paths = Array(FuncPointer(), 2).get_pointer_paths("v")

@@ -61,8 +61,6 @@ def create_perfect_lookups(vtables: dict[str, list[str]]) -> tuple[dict[str, int
                     conflict_graph[slots[index]].add(method)
 
         if collision_found:
-            print(f"Iteration {iteration}: {len(collision_methods)} collisions found.")
-
             # Approximate minimal vertex cover using a greedy algorithm
             cover = set()
             edges = set((min(m1, m2), max(m1, m2)) for m1, neighbors in conflict_graph.items() for m2 in neighbors)
@@ -82,6 +80,7 @@ def create_perfect_lookups(vtables: dict[str, list[str]]) -> tuple[dict[str, int
             for method in cover:
                 method_ids[method] = next_method_id()
 
-    print(f"All collisions resolved after {iteration} iterations.")
+        print(f"Iteration {iteration}: {len(collision_methods)} collisions found.")
+
     return method_ids, vtable_sizes
 

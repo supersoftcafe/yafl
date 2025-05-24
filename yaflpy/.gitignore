@@ -1,0 +1,3 @@
+yaflpy/lowlevel/build/**
+*.o
+

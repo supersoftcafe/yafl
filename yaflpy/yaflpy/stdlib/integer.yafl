@@ -1,0 +1,8 @@
+namespace System
+
+typealias Int32 : __builtin_type__<int32>
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("add", left, right)
+

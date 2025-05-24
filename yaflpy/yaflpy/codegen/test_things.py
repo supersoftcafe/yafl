@@ -5,7 +5,7 @@ from unittest import TestCase
 from codegen.param import StackVar
 from codegen.ops import Return
 from codegen.things import Function, Object
-from codegen.typedecl import Struct, Int, DataPointer, FuncPointer, Array
+from codegen.typedecl import ImmediateStruct, Struct, Int, DataPointer, FuncPointer, Array
 
 
 class TestFunction(TestCase):
@@ -27,7 +27,7 @@ class TestFunction(TestCase):
 
     def test_to_c(self):
         type_cache = {}
-        lr = StackVar("something")
+        lr = StackVar(FuncPointer(), "something")
         function = Function("testfun", Struct( (("this", DataPointer()), ("something", FuncPointer())) ), Int(32), Struct(()), (Return(lr),))
 
         str = function.to_c_prototype(type_cache)
@@ -43,7 +43,7 @@ class TestObject(TestCase):
         name="test",
         extends=(),
         functions=(),
-        fields=Struct((("type", DataPointer()), ("ref", FuncPointer()), ("length", Int(32)), ("array", Array(Int(16), 0)))),
+        fields=ImmediateStruct((("type", DataPointer()), ("ref", FuncPointer()), ("length", Int(32)), ("array", Array(Int(16), 0)))),
         length_field="length")
 
     def construct_with_fields(self, fields: Struct):

@@ -1,0 +1,6 @@
+namespace System
+
+typealias String : __builtin_type__<str>
+
+fun `+`(left: System::String, right: System::String): System::String
+    ret __builtin_op__<str>("append", left, right)

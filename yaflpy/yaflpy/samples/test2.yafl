@@ -1,8 +1,33 @@
 
-fun `+`(a: System::Int32, b: System::Int32): System.Int32
-    ret __native_invoke__(_OP_ADD_I32, a, b)
 
-let x = something.R::ExtensionFunction(params)
+class @Array String(length: System::Int32, array: System::Int8)
 
-fun main(): System.Int32
-    ret 1
+
+
+fun numDecimalDigits(i: System::Int32, result: System::Int32 = 1): System::Int32
+    return result if i >= -9 else numDigits(i/10, result+1)
+
+fun toDecimalString(number: System::Int32): System::String
+    let signed = number < 0
+    let negNum = number if signed else (0-number) # We work on -ve because it has larger range
+    let digits = numDecimalDigits(nugNum) - (0 if signed else 1)
+    return String(digits, (index: System::Int32) => System::Int8('-' if signed & index == 0 else '0' - negNum / (10 ** (digits - index)) % 10))
+
+
+# Interface is pure functions
+# Some can be implemented
+# Don't need to implement interfaces just yet
+interface Something1: # No parameters
+    fun get_x(): Int32 # Only functions
+    fun calculate_y(z: Int32): Int32 # More like a module
+
+# Class is a group of fun/let just like a module, but has some additional parameters
+# There is no class inheritance at all. Can inherit interfaces.
+class JustAClass(x: Int32): # More like a parameterized module than a Java/C# class
+    let other = x + 20
+    fun get_x(): Int32 # Only functions
+    fun calculate_y(z: Int32): Int32 # More like a module
+
+# Where possible, and efficient to do so, the compiler could decide to lower
+# a class to a tuple. There is no language feature to define a struct directly.
+# All classes that have no interface are clear candidates for lowering to tuple.
