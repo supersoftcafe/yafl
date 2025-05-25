@@ -22,7 +22,7 @@ def __integer() -> p.Parser[e.Expression]:
                 starts = lambda x: value.startswith(x)
                 ends = lambda x: value.endswith(x)
                 radix, triml = (2, 2) if starts("0b") else (8, 2) if starts("0o") else (16, 2) if starts("0x") else (10, 0)
-                size, trimr = (8, 2) if ends("i8") else (16, 3) if ends("i16") else (32, 3) if ends("i32") else (64, 3) if ends("i64") else (32, 0)
+                size, trimr = (8, 2) if ends("i8") else (16, 3) if ends("i16") else (32, 3) if ends("i32") else (64, 3) if ends("i64") else (0, 0)
                 value = value[ triml : len(value)-triml-trimr ].replace("_", "")
                 try:
                     return p.Result.ok(e.IntegerExpression(head.line_ref, int(value, radix), size), tail, head.line_ref)
@@ -112,6 +112,21 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
                 ]))
     left_expr, right_list = result.value
     expr = reduce(accumulate, right_list, left_expr)
+    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+
+
+def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    def get_right_expr(condition: e.Expression, expressions: list[tuple[e.Expression, e.Expression]]) -> e.Expression:
+        if not expressions:
+            return condition
+        true_expr, false_expr = expressions[0]
+        if len(expressions) == 1:
+            return e.TerneryExpression(condition.line_ref, condition, true_expr, false_expr)
+        else:
+            false_expr = get_right_expr(false_expr, expressions[1:])
+            return e.TerneryExpression(condition.line_ref, condition, true_expr, false_expr)
+    left_expr, right_list = result.value
+    expr = get_right_expr(left_expr, right_list)
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
@@ -231,7 +246,7 @@ __parse_type = p.Parser(parse_type)
 
 
 def parse_expression(tokens: list[p.Token]) -> p.Result[e.Expression]:
-    return __parse_addsub(tokens) # Real function allows recursion
+    return __parse_ternery(tokens) # Real function allows recursion
 __parse_expression = p.Parser(parse_expression)
 
 
@@ -275,10 +290,12 @@ __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __name
 
 __parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_named_fully_qualified | __parse_lambda | __parse_expr_tuple
 
-__parse_dot_path=(__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
-__parse_invoke = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
-__parse_divmul = (__parse_invoke   & p.many(p.sym(["*", "/", "%"]) & __parse_invoke    )) >> __to_call_operators
-__parse_addsub = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
+__parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
+__parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
+__parse_divmul  = (__parse_invoke   & p.many(p.sym(["*", "/", "%"]) & __parse_invoke    )) >> __to_call_operators
+__parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
+__parse_compare = (__parse_addsub   & p.many(p.sym(["<", "=", ">"]) & __parse_addsub    )) >> __to_call_operators
+__parse_ternery = (__parse_compare  & p.many(p.discard_sym("?") & __parse_compare & p.discard_sym(":") & __parse_compare )) >> __to_ternery
 
 
 #############

@@ -2,7 +2,20 @@ namespace System
 
 typealias Int32 : __builtin_type__<int32>
 typealias Int : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
 
 fun `+`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("add", left, right)
+
+fun `-`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("sub", left, right)
+
+fun `>`(left: System::Int, right: System::Int): System::Bool
+    ret __builtin_op__<bool>("int_gt", left, right)
+
+fun `=`(left: System::Int, right: System::Int): System::Bool
+    ret __builtin_op__<bool>("int_eq", left, right)
+
+fun `<`(left: System::Int, right: System::Int): System::Bool
+    ret __builtin_op__<bool>("int_lt", left, right)
 

@@ -44,7 +44,7 @@ object_t* integer_create_from_intptr(intptr_t value) {
 }
 
 EXPORT decl_cold
-object_t* integer_add_full(object_t* self, object_t* data) {
+object_t* integer_addsub_full(object_t* self, object_t* data, intptr_t(*operation)(intptr_t,intptr_t,uintptr_t,uintptr_t*)) {
     integer_t* a = (integer_t*)self;
     integer_t* b = (integer_t*)data;
 
@@ -72,7 +72,7 @@ object_t* integer_add_full(object_t* self, object_t* data) {
     // Adding loop
     uintptr_t carry = 0;
     for (uint32_t index = 0; index < r->length; ++index) {
-        r->array[index] = __builtin_addcl(
+        r->array[index] = operation(
             index < a->length ? a->array[index] : sign_a,
             index < b->length ? b->array[index] : sign_b,
             carry, &carry);
@@ -91,6 +91,11 @@ object_t* integer_add_full(object_t* self, object_t* data) {
     return (object_t*)r;
 }
 
+
+static intptr_t __operation_add__(intptr_t a, intptr_t b, uintptr_t carry_in, uintptr_t* carry_out) {
+    return __builtin_addcl(a, b, carry_in, carry_out);
+}
+
 EXPORT decl_func
 object_t* integer_add(object_t* self, object_t* data) {
     if (likely(((intptr_t)self & (intptr_t)data & 1) != 0)) {
@@ -99,8 +104,25 @@ object_t* integer_add(object_t* self, object_t* data) {
             return (object_t*)(result * 2 + 1);
         }
     }
-    return integer_add_full(self, data);
+    return integer_addsub_full(self, data, __operation_add__);
 }
+
+static intptr_t __operation_sub__(intptr_t a, intptr_t b, uintptr_t carry_in, uintptr_t* carry_out) {
+    return __builtin_subcl(a, b, carry_in, carry_out);
+}
+
+
+EXPORT decl_func
+object_t* integer_sub(object_t* self, object_t* data) {
+    if (likely(((intptr_t)self & (intptr_t)data & 1) != 0)) {
+        intptr_t result = (intptr_t)self / 2 + (intptr_t)data / 2;
+        if (likely(result >= INTPTR_MIN/2 && result <= INTPTR_MAX/2)) {
+            return (object_t*)(result * 2 + 1);
+        }
+    }
+    return integer_addsub_full(self, data, __operation_sub__);
+}
+
 
 EXPORT decl_func
 object_t* integer_add_intptr(object_t* self, intptr_t value) {
@@ -119,7 +141,7 @@ object_t* integer_add_intptr(object_t* self, intptr_t value) {
     tmp->array[0] = value;
     tmp->length = 1;
 
-    return integer_add_full(self, (object_t*)tmp);
+    return integer_addsub_full(self, (object_t*)tmp, __operation_add__);
 }
 
 EXPORT decl_cold
@@ -224,4 +246,30 @@ int32_t integer_to_int32(object_t* self, int* overflow) {
 
     return result;
 }
+
+EXPORT decl_func
+object_t* __OP_add_bigint__(object_t* self, object_t* data) {
+    return integer_add(self, data);
+}
+
+EXPORT decl_func
+object_t* __OP_sub_bigint__(object_t* self, object_t* data) {
+    return integer_sub(self, data);
+}
+
+EXPORT decl_func
+int8_t __OP_int_gt_bool__(object_t* self, object_t* data) {
+    return integer_cmp(self, data) > 0;
+}
+
+EXPORT decl_func
+int8_t __OP_int_eq_bool__(object_t* self, object_t* data) {
+    return integer_cmp(self, data) == 0;
+}
+
+EXPORT decl_func
+int8_t __OP_int_lt_bool__(object_t* self, object_t* data) {
+    return integer_cmp(self, data) < 0;
+}
+
 

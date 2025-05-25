@@ -147,10 +147,23 @@ class Test(TestCase):
         self.assertNotEqual("", result)
         print(result)
 
+    def test_ternery(self):
+        content = ("namespace System\n"
+                   "typealias Bool : __builtin_type__<bool>\n"
+                   "typealias Int32 : __builtin_type__<int32>\n"
+                   "fun `>`(left: System::Int32, right: System::Int32): System::Bool\n"
+                   "    ret __builtin_op__<bool>(\"int32_gt\", left, right)\n"
+                   "fun main(): System::Int32\n"
+                   "    ret 0 > 0 ? 1 : 2\n")
+
+        result = compile([Input(content, "file.yafl")], just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)
+
     def test_stdlib(self):
         content = ("import System\n"
                    "\n"
-                   "fun main(): System::Int32\n"
+                   "fun main(): System::Int\n"
                    "    System::print(\"fred and bill\" + \", bert\")\n"
                    "    ret 0\n")
 

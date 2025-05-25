@@ -121,6 +121,8 @@ class BuiltinSpec(TypeSpec):
                 return cg_t.Int(64)
             case "bigint":
                 return cg_t.Int()
+            case "bool":
+                return cg_t.Int(8)
             case _:
                 return None
 
@@ -146,6 +148,10 @@ class BuiltinSpec(TypeSpec):
 
     def as_unique_id_str(self) -> str|None:
         return self.type_name
+
+
+def Bool() -> BuiltinSpec:
+    return BuiltinSpec(LineRef("none", 0, 0), "bool")
 
 
 @dataclass(frozen=True)

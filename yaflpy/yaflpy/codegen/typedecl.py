@@ -93,8 +93,6 @@ class Int(Type):
         return f"((int{self.precision}_t){data})"
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
-        if not self.precision:
-            raise ValueError("Big integer not supported yet")
         return f"int{self.precision}_t" if self.precision != 0 else "void*"
 
     def get_pointer_paths(self, path: str) -> set[str]:

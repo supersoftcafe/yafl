@@ -186,3 +186,33 @@ object_t* __OP_append_str__(object_t* self, object_t* data) {
     return string_append(self, data);
 }
 
+EXPORT decl_func
+object_t* __OP_char_str__(object_t* integer) {
+    uint8_t utf8[4];
+    int overflow = 0;
+    int32_t codepoint = integer_to_int32(integer, &overflow);
+    if (codepoint >= 0 && !overflow) {
+        if (codepoint <= 0x7F) {
+            utf8[0] = (uint8_t)codepoint;
+            return string_create_from_bytes(utf8, 1);
+        } else if (codepoint <= 0x7FF) {
+            utf8[0] = 0xC0 | (uint8_t)(codepoint >> 6);
+            utf8[1] = 0x80 | (uint8_t)(codepoint & 0x3F);
+            return string_create_from_bytes(utf8, 2);
+        } else if (codepoint <= 0xFFFF) {
+            utf8[0] = 0xE0 | (uint8_t)(codepoint >> 12);
+            utf8[1] = 0x80 | (uint8_t)((codepoint >> 6) & 0x3F);
+            utf8[2] = 0x80 | (uint8_t)(codepoint & 0x3F);
+            return string_create_from_bytes(utf8, 3);
+        } else if (codepoint <= 0x10FFFF) {
+            utf8[0] = 0xF0 | (uint8_t)(codepoint >> 18);
+            utf8[1] = 0x80 | (uint8_t)((codepoint >> 12) & 0x3F);
+            utf8[2] = 0x80 | (uint8_t)((codepoint >> 6) & 0x3F);
+            utf8[3] = 0x80 | (uint8_t)(codepoint & 0x3F);
+            return string_create_from_bytes(utf8, 4);
+        }
+    }
+    __abort_on_overflow();
+    __builtin_unreachable();
+}
+

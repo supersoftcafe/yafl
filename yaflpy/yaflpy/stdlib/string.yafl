@@ -4,3 +4,13 @@ typealias String : __builtin_type__<str>
 
 fun `+`(left: System::String, right: System::String): System::String
     ret __builtin_op__<str>("append", left, right)
+
+fun Char(int: System::Int): System::String
+    ret __builtin_op__<str>("char", int)
+
+fun String(int: System::Int): System::String
+    ret int = 0 ? "-" + String(0-int) : "+"
+
+#      : int = 0 ? "0"
+#      : int = 9 ? String(int / 10) + Char(48 + int % 10)
+#      :           Char(48 + int)

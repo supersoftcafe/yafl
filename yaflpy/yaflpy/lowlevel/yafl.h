@@ -311,6 +311,10 @@ void thread_start();
  *****************************
  **********************************************************/
 
+
+EXTERN decl_no_inline
+void __abort_on_overflow();
+
 #undef DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK
 #define DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(type, operation)\
         EXTERN decl_func\
@@ -342,6 +346,10 @@ DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int32, int64)
 DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int8 )
 DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int16)
 DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int32)
+
+EXTERN decl_func int8_t __OP_int32_gt_bool__(int32_t self, int32_t data);
+EXTERN decl_func int8_t __OP_int32_eq_bool__(int32_t self, int32_t data);
+EXTERN decl_func int8_t __OP_int32_lt_bool__(int32_t self, int32_t data);
 
 
 /**********************************************************
@@ -392,6 +400,9 @@ EXTERN decl_func
 object_t* integer_add(object_t* self, object_t* data);
 
 EXTERN decl_func
+object_t* integer_sub(object_t* self, object_t* data);
+
+EXTERN decl_func
 object_t* integer_add_intptr(object_t* self, intptr_t value);
 
 EXTERN decl_func
@@ -402,6 +413,15 @@ int integer_cmp(object_t* self, object_t* data);
 
 EXTERN decl_func
 int32_t integer_to_int32(object_t* self, int* overflow);
+
+
+EXTERN decl_func object_t* __OP_add_bigint__(object_t* self, object_t* data);
+EXTERN decl_func object_t* __OP_sub_bigint__(object_t* self, object_t* data);
+
+EXTERN decl_func int8_t __OP_int_gt_bool__(object_t* self, object_t* data);
+EXTERN decl_func int8_t __OP_int_eq_bool__(object_t* self, object_t* data);
+EXTERN decl_func int8_t __OP_int_lt_bool__(object_t* self, object_t* data);
+
 
 
 /**********************************************************
@@ -493,6 +513,9 @@ object_t* STRING_EMPTY;
                 char a[sizeof(contents)]; \
             }){STRING_VTABLE, STRING_LEN(contents), contents})
 
+
+EXTERN decl_func object_t* __OP_append_str__(object_t* self, object_t* data);
+EXTERN decl_func object_t* __OP_char_str__(object_t* integer);
 
 
 EXTERN decl_func

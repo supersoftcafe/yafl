@@ -177,7 +177,7 @@ def __create_launchpad_func(fn: Function, heap_object_name: str, basic_blocks: l
 
 def __create_continuation_funcs(fn: Function, basic_blocks: list[BasicBlock]) -> list[Function]:
     vars_to_fields = {var: field for bb in basic_blocks for var, field in bb.live.items()}
-    all_ops = [op for bb in basic_blocks for op in bb.ops]
+    all_ops = [(op if not isinstance(op, Call) or op.musttail else dataclasses.replace(op, musttail=True)) for bb in basic_blocks for op in bb.ops]
     # Convert all function calls to continuation tail calls
     # Append all operations together into a complete list
 

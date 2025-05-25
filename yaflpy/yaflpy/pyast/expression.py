@@ -534,3 +534,56 @@ class TupleExpression(Expression):
         return dataclasses.replace(self, expressions=self.expressions[amount:])
 
 
+@dataclass
+class TerneryExpression(Expression):
+    condition: Expression
+    trueResult: Expression
+    falseResult: Expression
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            condition=self.condition.search_and_replace(resolver, replace),
+            trueResult=self.trueResult.search_and_replace(resolver, replace),
+            falseResult=self.falseResult.search_and_replace(resolver, replace))))
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        trueType = self.trueResult.get_type(resolver)
+        falseType = self.falseResult.get_type(resolver)
+        if not trueType: return falseType
+        if not falseType: return trueType
+        return falseType if falseType.trivially_assignable_from(resolver, trueType) else trueType
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+        condition, conditionStatements = self.condition.compile(resolver, t.Bool())
+        trueResult, trueStatements = self.trueResult.compile(resolver, self.falseResult.get_type(resolver))
+        falseResult, falseStatements = self.falseResult.compile(resolver, self.trueResult.get_type(resolver))
+        return (dataclasses.replace(self, condition=condition, trueResult=trueResult, falseResult=falseResult),
+                conditionStatements + trueStatements + falseStatements)
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        cond_err = self.condition.check(resolver, t.Bool())
+        true_err = self.trueResult.check(resolver, expected_type)
+        false_err = self.falseResult.check(resolver, expected_type)
+        self_err = [] if self.get_type(resolver) else [Error(self.line_ref, "Failed to resolve type of ternery expression")]
+        return cond_err + true_err + false_err + self_err
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        result_var = cg_p.StackVar(self.get_type(resolver).generate(), "result")
+
+        cond_bundle = self.condition.generate(resolver)
+        cond_bundle_suffix = g.OperationBundle(
+            operations=(cg_o.JumpIf("on_true", cond_bundle.result_var),))
+
+        false_bundle = self.falseResult.generate(resolver)
+        false_bundle_suffix = g.OperationBundle(
+            operations=(cg_o.Move(result_var, false_bundle.result_var), cg_o.Jump("end"), cg_o.Label("on_true")))
+
+        true_bundle = self.trueResult.generate(resolver)
+        true_bundle_suffix = g.OperationBundle(
+            stack_vars=(result_var,),
+            operations=(cg_o.Move(result_var, true_bundle.result_var), cg_o.Label("end")),
+            result_var=result_var)
+
+        result = (cond_bundle + cond_bundle_suffix + false_bundle + false_bundle_suffix + true_bundle + true_bundle_suffix)
+
+        return result.rename_vars()

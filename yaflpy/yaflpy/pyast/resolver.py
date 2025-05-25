@@ -46,23 +46,39 @@ class OperationBundle:
         operations = tuple(op.rename_vars(renames) for op in self.operations)
         return OperationBundle(stack_vars, operations)
 
-    def append(self, other: OperationBundle) -> OperationBundle:
-        # If a var is referenced, or a jump target is used, that does not exist in the local stack
-        # or as a local label, it must reference something external, and so remains untouched. We
-        # only rename the things that are internal to this bundle.
+    # def append(self, other: OperationBundle) -> OperationBundle:
+    #     # If a var is referenced, or a jump target is used, that does not exist in the local stack
+    #     # or as a local label, it must reference something external, and so remains untouched. We
+    #     # only rename the things that are internal to this bundle.
+    #
+    #     vars1 = self.__get_new_vars(0)
+    #     labels1 = self.__get_new_labels(0)
+    #     bundle1 = self.__rename_labels_and_vars(labels1 | vars1)
+    #
+    #     vars2 = other.__get_new_vars(len(vars1))
+    #     labels2 = other.__get_new_labels(len(labels1))
+    #     bundle2 = other.__rename_labels_and_vars(labels2 | vars2)
+    #
+    #     return OperationBundle(
+    #         bundle1.stack_vars + bundle2.stack_vars,
+    #         bundle1.operations + bundle2.operations,
+    #         other.result_var and other.result_var.rename_vars(vars1 | vars2))
 
-        vars1 = self.__get_new_vars(0)
-        labels1 = self.__get_new_labels(0)
-        bundle1 = self.__rename_labels_and_vars(labels1 | vars1)
+    def rename_vars(self) -> OperationBundle:
+        renames = self.__get_new_vars(0) | self.__get_new_labels(0)
+        new_stack_vars = tuple(sv.rename_vars(renames) for sv in self.stack_vars)
+        new_result_var = self.result_var and self.result_var.rename_vars(renames)
+        new_operations = tuple(op.rename_vars(renames) for op in self.operations)
+        return OperationBundle(new_stack_vars, new_operations, new_result_var)
 
-        vars2 = other.__get_new_vars(len(vars1))
-        labels2 = other.__get_new_labels(len(labels1))
-        bundle2 = other.__rename_labels_and_vars(labels2 | vars2)
-
+    def __add__(self, other: OperationBundle) -> OperationBundle:
         return OperationBundle(
-            bundle1.stack_vars + bundle2.stack_vars,
-            bundle1.operations + bundle2.operations,
-            other.result_var and other.result_var.rename_vars(vars1 | vars2))
+            self.stack_vars + other.stack_vars,
+            self.operations + other.operations,
+            other.result_var)
+
+    def append(self, other: OperationBundle) -> OperationBundle:
+        return (self + other).rename_vars()
 
 
 class ResolvedScope(Enum):

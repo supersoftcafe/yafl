@@ -3,3 +3,6 @@ namespace System
 
 fun print(str: System::String): System::Int32
     ret __builtin_op__<int32>("print", str)
+
+fun print(int: System::Int): System::Int32
+    ret print(String(int))

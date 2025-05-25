@@ -50,3 +50,7 @@ DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int8 )
 DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int16)
 DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int32)
 
+
+EXPORT decl_func int8_t __OP_int32_gt_bool__(int32_t self, int32_t data) { return self  > data; }
+EXPORT decl_func int8_t __OP_int32_eq_bool__(int32_t self, int32_t data) { return self == data; }
+EXPORT decl_func int8_t __OP_int32_lt_bool__(int32_t self, int32_t data) { return self  < data; }
