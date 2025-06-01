@@ -35,11 +35,11 @@ class OperationBundle:
     operations: tuple[cg_o.Op, ...] = ()
     result_var: cg_p.RParam|None = None
 
-    def __get_new_labels(self, base_index: int) -> dict[str, str]:
-        return dict((name, f"ulabel_{index}") for index, name in enumerate((l.name for l in self.operations if isinstance(l, cg_o.Label)), base_index))
+    def __get_new_labels(self, prefix: str, base_index: int) -> dict[str, str]:
+        return dict((name, f"ulabel_{prefix}{index}") for index, name in enumerate((l.name for l in self.operations if isinstance(l, cg_o.Label)), base_index))
 
-    def __get_new_vars(self, base_index: int) -> dict[str, str]:
-        return dict( (sv.name, f"uvar_{index}") for index, sv in enumerate(self.stack_vars, base_index) if '@' not in sv.name and sv.name != "this" )
+    def __get_new_vars(self, prefix: str, base_index: int) -> dict[str, str]:
+        return dict( (sv.name, f"uvar_{prefix}{index}") for index, sv in enumerate(self.stack_vars, base_index) if '@' not in sv.name and sv.name != "this" )
 
     def __rename_labels_and_vars(self, renames: dict[str, str]) -> OperationBundle:
         stack_vars = tuple(sv.rename_vars(renames) for sv in self.stack_vars)
@@ -64,8 +64,10 @@ class OperationBundle:
     #         bundle1.operations + bundle2.operations,
     #         other.result_var and other.result_var.rename_vars(vars1 | vars2))
 
-    def rename_vars(self) -> OperationBundle:
-        renames = self.__get_new_vars(0) | self.__get_new_labels(0)
+    def rename_vars(self, prefix: str|int) -> OperationBundle:
+        if isinstance(prefix, int):
+            prefix = f"{prefix}_"
+        renames = self.__get_new_vars(prefix, 0) | self.__get_new_labels(prefix, 0)
         new_stack_vars = tuple(sv.rename_vars(renames) for sv in self.stack_vars)
         new_result_var = self.result_var and self.result_var.rename_vars(renames)
         new_operations = tuple(op.rename_vars(renames) for op in self.operations)
@@ -78,7 +80,7 @@ class OperationBundle:
             other.result_var)
 
     def append(self, other: OperationBundle) -> OperationBundle:
-        return (self + other).rename_vars()
+        raise NotImplementedError()
 
 
 class ResolvedScope(Enum):

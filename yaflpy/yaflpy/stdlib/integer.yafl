@@ -10,6 +10,12 @@ fun `+`(left: System::Int, right: System::Int): System::Int
 fun `-`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("sub", left, right)
 
+fun `/`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("div", left, right)
+
+fun `%`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("rem", left, right)
+
 fun `>`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("int_gt", left, right)
 

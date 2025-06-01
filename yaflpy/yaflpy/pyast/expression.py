@@ -97,7 +97,7 @@ class NewExpression(Expression):
             raise AssertionError(f"Failed to resolve {ctype.name}")
         fields = cast(s.ClassStatement, found[0].statement).get_fields(resolver)
 
-        params_bundle = self.parameter.generate(resolver)
+        params_bundle = self.parameter.generate(resolver).rename_vars(1)
 
         params_var = cg_p.StackVar(xtype.generate(), "params")
         result_var = cg_p.StackVar(ctype.generate(), "result")
@@ -114,7 +114,7 @@ class NewExpression(Expression):
             result_var=result_var,
         )
 
-        return params_bundle.append(constructor_bundle)
+        return params_bundle + constructor_bundle
 
 
 @dataclass
@@ -166,17 +166,17 @@ class CallExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         xtype = cast(t.CallableSpec, self.function.get_type(resolver))
 
-        fun_op_bundle = self.function.generate(resolver)
-        prm_op_bundle = self.parameter.generate(resolver)
-        sv = cg_p.StackVar(xtype.result.generate(), "result")
+        fun_op_bundle = self.function.generate(resolver).rename_vars(1)
+        prm_op_bundle = self.parameter.generate(resolver).rename_vars(2)
+
+        result_var = cg_p.StackVar(xtype.result.generate(), "result")
         call_bundle = g.OperationBundle(
-            ( sv, ),
-            (  cg_o.Call(fun_op_bundle.result_var, prm_op_bundle.result_var, sv), ),
-            sv
+            (result_var,),
+            (  cg_o.Call(fun_op_bundle.result_var, prm_op_bundle.result_var, result_var),),
+            result_var
         )
 
-        total_bundle = fun_op_bundle.append(prm_op_bundle).append(call_bundle)
-        return total_bundle
+        return fun_op_bundle + prm_op_bundle + call_bundle
 
 
 @dataclass
@@ -266,7 +266,7 @@ class DotExpression(Expression):
                 else:
                     result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var)
 
-                return base_bundle.append(g.OperationBundle(stack_vars=(), operations=(), result_var=result_var))
+                return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
         raise ValueError("Could not generate dot expression")
 
@@ -363,7 +363,7 @@ class IntegerExpression(Expression):
     precision: int = 0
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        return t.BuiltinSpec(self.line_ref, f"int{self.precision}" if self.precision else "int")
+        return t.BuiltinSpec(self.line_ref, f"int{self.precision}" if self.precision else "bigint")
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
         return self, []
@@ -404,11 +404,12 @@ class BuiltinOpExpression(Expression):
         ptype = params_bundle.result_var.get_type()
         if not isinstance(ptype, cg_t.Struct):
             raise ValueError("BuiltinOpExpression parameters must be tuple")
-        xtype = self.type.generate()
 
+        xtype = self.type.generate()
         xexpr = cg_p.Invoke(f"__OP_{self.op.value}_{self.type.type_name}__", params_bundle.result_var, xtype)
         final_bundle = g.OperationBundle( (), (), xexpr )
-        return params_bundle.append(final_bundle)
+
+        return params_bundle + final_bundle
 
 
 @dataclass
@@ -523,11 +524,11 @@ class TupleExpression(Expression):
         return errors or []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        param_bundles = [x.generate(resolver) for x in self.expressions]
+        param_bundles = [expr.generate(resolver).rename_vars(f"{index}_") for index, expr in enumerate(self.expressions)]
         # xtype = self.get_type(resolver).generate()
         value = cg_p.NewStruct(tuple(((f"_{idx}", x.result_var) for idx, x in enumerate(param_bundles))))
         final_bundle = g.OperationBundle((), (), value)
-        total_bundle = reduce(lambda x, y: y.append(x), reversed(param_bundles), final_bundle)
+        total_bundle = reduce(lambda x, y: y + x, reversed(param_bundles), final_bundle)
         return total_bundle
 
     def trim_left(self, amount: int) -> TupleExpression:
@@ -570,15 +571,15 @@ class TerneryExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         result_var = cg_p.StackVar(self.get_type(resolver).generate(), "result")
 
-        cond_bundle = self.condition.generate(resolver)
+        cond_bundle = self.condition.generate(resolver).rename_vars("a")
         cond_bundle_suffix = g.OperationBundle(
             operations=(cg_o.JumpIf("on_true", cond_bundle.result_var),))
 
-        false_bundle = self.falseResult.generate(resolver)
+        false_bundle = self.falseResult.generate(resolver).rename_vars("b")
         false_bundle_suffix = g.OperationBundle(
             operations=(cg_o.Move(result_var, false_bundle.result_var), cg_o.Jump("end"), cg_o.Label("on_true")))
 
-        true_bundle = self.trueResult.generate(resolver)
+        true_bundle = self.trueResult.generate(resolver).rename_vars("c")
         true_bundle_suffix = g.OperationBundle(
             stack_vars=(result_var,),
             operations=(cg_o.Move(result_var, true_bundle.result_var), cg_o.Label("end")),
@@ -586,4 +587,4 @@ class TerneryExpression(Expression):
 
         result = (cond_bundle + cond_bundle_suffix + false_bundle + false_bundle_suffix + true_bundle + true_bundle_suffix)
 
-        return result.rename_vars()
+        return result.rename_vars("")

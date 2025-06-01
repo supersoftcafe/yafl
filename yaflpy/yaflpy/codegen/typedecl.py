@@ -8,6 +8,9 @@ from typing import Optional, Callable, List, Dict, OrderedDict, Any, Tuple, Unio
 from codegen.tools import mangle_name
 
 word_size = 8
+max_int = (1 << (word_size * 8 - 1)) - 1
+min_int = 0 - max_int - 1
+mask_int = (1 << (word_size * 8)) - 1
 
 
 @dataclass(frozen=True)
@@ -90,10 +93,20 @@ class Int(Type):
         return self.precision // 8 if self.precision != 0 else word_size
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
-        return f"((int{self.precision}_t){data})"
+        if not isinstance(data, int):
+            raise ValueError()
+        if self.precision != 0:
+            return f"((int{self.precision}_t){data})"
+        array: list[int] = []
+        while data != -1 and data != 0:
+            array.append(data & mask_int)
+            data = data >> (word_size * 8)
+        if len(array) == 0 or (data == -1 and array[-1] >= 0) or (data == 0 and array[-1] < 0):
+            array.append(data)
+        return f"INTEGER_SMALL((intptr_t){array[0]})" if len(array) == 1 else f"INTEGER_BIG({len(array)}, {{ {', '.join(f'(intptr_t)x' for x in array)} }})"
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
-        return f"int{self.precision}_t" if self.precision != 0 else "void*"
+        return f"int{self.precision}_t" if self.precision != 0 else "object_t*"
 
     def get_pointer_paths(self, path: str) -> set[str]:
         return {path} if self.precision == 0 else {}

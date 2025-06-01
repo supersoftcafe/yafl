@@ -35,7 +35,7 @@ integer_t* _integer_allocate_(uint32_t length) {
 
 EXPORT decl_func
 object_t* integer_create_from_intptr(intptr_t value) {
-    if (value < INTPTR_MIN/2 && value > INTPTR_MAX/2) {
+    if (value < INTPTR_MIN/2 || value > INTPTR_MAX/2) {
         integer_t* integer = _integer_allocate_(1);
         integer->array[0] = value;
         return (object_t*)integer;
@@ -121,6 +121,29 @@ object_t* integer_sub(object_t* self, object_t* data) {
         }
     }
     return integer_addsub_full(self, data, __operation_sub__);
+}
+
+
+
+EXPORT decl_func
+object_t* integer_div(object_t* self, object_t* data) {
+    if (likely(((intptr_t)self & (intptr_t)data & 1) != 0)) {
+        intptr_t result = ((intptr_t)self / 2) / ((intptr_t)data / 2);
+        return (object_t*)(result * 2 + 1);
+    }
+    __abort_on_overflow(); // TODO: Implement long division
+    __builtin_unreachable();
+}
+
+
+EXPORT decl_func
+object_t* integer_rem(object_t* self, object_t* data) {
+    if (likely(((intptr_t)self & (intptr_t)data & 1) != 0)) {
+        intptr_t result = ((intptr_t)self / 2) % ((intptr_t)data / 2);
+        return (object_t*)(result * 2 + 1);
+    }
+    __abort_on_overflow(); // TODO: Implement long division
+    __builtin_unreachable();
 }
 
 
@@ -255,6 +278,16 @@ object_t* __OP_add_bigint__(object_t* self, object_t* data) {
 EXPORT decl_func
 object_t* __OP_sub_bigint__(object_t* self, object_t* data) {
     return integer_sub(self, data);
+}
+
+EXPORT decl_func
+object_t* __OP_div_bigint__(object_t* self, object_t* data) {
+    return integer_div(self, data);
+}
+
+EXPORT decl_func
+object_t* __OP_rem_bigint__(object_t* self, object_t* data) {
+    return integer_rem(self, data);
 }
 
 EXPORT decl_func

@@ -292,7 +292,7 @@ __parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | _
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
-__parse_divmul  = (__parse_invoke   & p.many(p.sym(["*", "/", "%"]) & __parse_invoke    )) >> __to_call_operators
+__parse_divmul  = (__parse_invoke   & p.many(p.sym(["%", "/", "*"]) & __parse_invoke    )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
 __parse_compare = (__parse_addsub   & p.many(p.sym(["<", "=", ">"]) & __parse_addsub    )) >> __to_call_operators
 __parse_ternery = (__parse_compare  & p.many(p.discard_sym("?") & __parse_compare & p.discard_sym(":") & __parse_compare )) >> __to_ternery

@@ -393,6 +393,16 @@ vtable_t* const INTEGER_VTABLE;
 #define INTEGER_DECLARE_END() }\
         };
 
+#define INTEGER_SMALL(int_value)\
+        ( int_value < INTPTR_MIN/2 || int_value > INTPTR_MAX/2 ? INTEGER_BIG(1, {int_value}) : (object_t*)((intptr_t)int_value * 2 + 1) )
+#define INTEGER_BIG(int32_count, int_array)\
+        ( (object_t*)&( \
+            struct { \
+                vtable_t* v; \
+                uint32_t l; \
+                intptr_t a[int32_count]; \
+            }){(vtable_t*)0,int32_count,int_array} )
+
 EXTERN decl_func
 object_t* integer_create_from_intptr(intptr_t value);
 
@@ -401,6 +411,12 @@ object_t* integer_add(object_t* self, object_t* data);
 
 EXTERN decl_func
 object_t* integer_sub(object_t* self, object_t* data);
+
+EXTERN decl_func
+object_t* integer_div(object_t* self, object_t* data);
+
+EXTERN decl_func
+object_t* integer_rem(object_t* self, object_t* data);
 
 EXTERN decl_func
 object_t* integer_add_intptr(object_t* self, intptr_t value);
@@ -417,6 +433,8 @@ int32_t integer_to_int32(object_t* self, int* overflow);
 
 EXTERN decl_func object_t* __OP_add_bigint__(object_t* self, object_t* data);
 EXTERN decl_func object_t* __OP_sub_bigint__(object_t* self, object_t* data);
+EXTERN decl_func object_t* __OP_div_bigint__(object_t* self, object_t* data);
+EXTERN decl_func object_t* __OP_rem_bigint__(object_t* self, object_t* data);
 
 EXTERN decl_func int8_t __OP_int_gt_bool__(object_t* self, object_t* data);
 EXTERN decl_func int8_t __OP_int_eq_bool__(object_t* self, object_t* data);
@@ -511,11 +529,12 @@ object_t* STRING_EMPTY;
                 vtable_t* v; \
                 uint32_t l; \
                 char a[sizeof(contents)]; \
-            }){STRING_VTABLE, STRING_LEN(contents), contents})
+            }){(vtable_t*)0, STRING_LEN(contents), contents})
 
 
 EXTERN decl_func object_t* __OP_append_str__(object_t* self, object_t* data);
 EXTERN decl_func object_t* __OP_char_str__(object_t* integer);
+EXTERN decl_no_inline object_t* __OP_print_bigint__(object_t* self);
 
 
 EXTERN decl_func

@@ -5,7 +5,7 @@ from typing import Optional, Callable, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
 from codegen.tools import mangle_name
 
-from codegen.ops import Op
+from codegen.ops import Op, Jump, JumpIf, Return, Label
 
 import codegen.typedecl as t
 import codegen.param as p
@@ -54,6 +54,30 @@ class Function:
 
     def replace_params(self, replacer: Callable[[p.RParam], p.RParam]) -> Function:
         return dataclasses.replace(self, ops=tuple(op.replace_params(replacer) for op in self.ops))
+
+    def strip_unused_operations(self) -> Function:
+        labels: dict[str, int] = {op.name: index for index, op in enumerate(self.ops) if isinstance(op, Label)}
+        seen_indexes: set[int] = set()
+        to_see_indexes: set[int] = {0}
+        while to_see_indexes:
+            seen_indexes.update(to_see_indexes)
+            to_see = to_see_indexes
+            to_see_indexes = set()
+            for index in to_see:
+                op = self.ops[index]
+                if isinstance(op, Jump):
+                    to_see_indexes.add(labels[op.name])
+                elif isinstance(op, JumpIf):
+                    to_see_indexes.add(labels[op.label])
+                    if index+1 < len(self.ops):
+                        to_see_indexes.add(index+1)
+                elif isinstance(op, Return):
+                    pass
+                else:
+                    if index+1 < len(self.ops):
+                        to_see_indexes.add(index+1)
+        ops = tuple(op for index, op in enumerate(self.ops) if index in seen_indexes)
+        return dataclasses.replace(self, ops=ops)
 
 
 @dataclass(frozen=True)

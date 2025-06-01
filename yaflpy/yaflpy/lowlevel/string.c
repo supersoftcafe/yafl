@@ -100,9 +100,7 @@ object_t* _string_append2_(char* cstr1, int32_t len1, char* cstr2, int32_t len2)
     if (length < sizeof(uintptr_t)) {
         uintptr_t test = 1;
         string = (string_t*)(uintptr_t)length;
-        uint8_t* ptr = (uint8_t*)&string + (1==*(uint8_t*)&test ? 1 : 0);
-        memcpy(ptr, cstr1, len1);
-        memcpy(ptr+len1, cstr2, len2);
+        ptr = (uint8_t*)&string + (1==*(uint8_t*)&test ? 1 : 0);
     } else {
         string = _string_allocate_(length);
         ptr = string->array;
@@ -113,7 +111,7 @@ object_t* _string_append2_(char* cstr1, int32_t len1, char* cstr2, int32_t len2)
     return (object_t*)string;
 }
 
-EXPORT decl_func
+EXPORT decl_no_inline
 object_t* string_append(object_t* self, object_t* data) {
     intptr_t buf1; int32_t len1;
     char* cstr1 = string_to_cstr(self, &buf1, &len1);
@@ -175,10 +173,11 @@ int string_compare(object_t* self, object_t* data) {
 }
 
 EXPORT decl_no_inline
-int32_t __OP_print_int32__(object_t* self) {
+object_t* __OP_print_bigint__(object_t* self) {
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(self, &buf, &len);
-    return (int32_t)fwrite(cstr, 1, len, stdout);
+    int32_t result = (int32_t)fwrite(cstr, 1, len, stdout);
+    return integer_create_from_intptr(result);
 }
 
 EXPORT decl_func

@@ -47,6 +47,7 @@ class Application:
 
 
     def __gen_function(self, name: str, f: Function):
+        f = f.strip_unused_operations()
         self.__forwards.append(f.to_c_prototype(self.__type_cache))
         self.__functions.append(f.to_c_implement(self.__type_cache))
 

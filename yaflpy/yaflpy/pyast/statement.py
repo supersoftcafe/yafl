@@ -112,12 +112,12 @@ class FunctionStatement(DataStatement):
         resolver = g.ResolverData(resolver, self.__find_locals)
 
         bundle = g.OperationBundle()
-        for parameter in self.parameters.targets:
-            bundle = bundle.append(parameter.to_c_destructure(None))
-        for statement in self.statements:
-            bundle = bundle.append(statement.generate(resolver, None))
+        for index, parameter in enumerate(self.parameters.targets):
+            bundle = bundle + parameter.to_c_destructure(None).rename_vars(f"p{index}_")
+        for index, statement in enumerate(self.statements):
+            bundle = bundle + statement.generate(resolver, None).rename_vars(f"s{index}_")
 
-        params = [("this", cg_t.DataPointer())]
+        params: list[tuple[str, cg_t.Type]] = [("this", cg_t.DataPointer())]
         for prm in self.parameters.targets:
             xname = str(prm.name)
             xtype = prm.declared_type.generate()
@@ -327,7 +327,7 @@ class LetStatement(DataStatement):
         return err1 + err2
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        expr_bundle = self.default_value.generate(resolver)
+        expr_bundle = self.default_value.generate(resolver).rename_vars(1)
         sv = cg_p.StackVar(self.declared_type.generate(), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
@@ -335,7 +335,7 @@ class LetStatement(DataStatement):
             result_var=None
         )
         unpack_bundle = self.to_c_destructure(None)
-        return expr_bundle.append(init_bundle).append(unpack_bundle)
+        return (expr_bundle + init_bundle).rename_vars(1) + unpack_bundle.rename_vars(2)
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Global:
         rparam = None
@@ -370,7 +370,8 @@ class DestructureStatement(LetStatement):
             root = cg_p.StackVar(self.get_type().generate(), self.name)
         result = g.OperationBundle()
         for index, target in enumerate(self.targets):
-            result = result.append(target.to_c_destructure(cg_p.StructField(root, f"_{index}")))
+            destr = target.to_c_destructure(cg_p.StructField(root, f"_{index}"))
+            result = result.rename_vars(1) + destr.rename_vars(2)
         return result
 
     def add_namespace(self, path: str):
@@ -418,7 +419,7 @@ class ReturnStatement(Statement):
         xtype = self.value.get_type(resolver)
         op_bundle = self.value.generate(resolver)
         ret_bundle = g.OperationBundle( (), ( cg_o.Return(op_bundle.result_var), ) )
-        return op_bundle.append(ret_bundle)
+        return op_bundle + ret_bundle
 
 
 @dataclass

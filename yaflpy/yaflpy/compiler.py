@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import lowering.integers
 import lowering.strings
 import lowering.lambdas
 import lowering.linear_to_cps
@@ -115,7 +116,7 @@ def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | No
 def __is_main_function(stmt: s.FunctionStatement) -> bool:
     if ("::main@" not in stmt.name or
         not isinstance(stmt.return_type, t.BuiltinSpec) or
-        not stmt.return_type.type_name == "int32"):
+        not stmt.return_type.type_name == "bigint"):
         return False
     params_type = stmt.parameters.get_type()
     if not isinstance(params_type, t.TupleSpec):
@@ -144,6 +145,7 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
     else:
         # All ok so let's create some C code
         new_statements = lowering.strings.fix_global_strings(new_statements)
+        new_statements = lowering.integers.fix_global_integers(new_statements)
         new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
         return __create_c_code(new_statements, mains[0], just_testing=just_testing)
 

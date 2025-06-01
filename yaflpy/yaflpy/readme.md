@@ -4,13 +4,16 @@ YAFL
 High priority
 -------------
 
-* Reserve and use a bit to mark non-gc managed objects
+* Use index based continuations
+* Move function pointer into heap frame
 * Command line to build with option to generate assembly
-* Standard library
+* Change continuation functions to use index and switch approach instead of distinct methods
+* Use better and more readable names for things in the C output
 
 Medium priority
 ---------------
 
+* Reserve and use a bit to mark non-gc managed objects
 * Async
 * Automatic insertion of forks into tuple generation
 * IO using a standard thread based AIO library for simplicity

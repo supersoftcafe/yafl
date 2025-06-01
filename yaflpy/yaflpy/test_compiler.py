@@ -164,8 +164,7 @@ class Test(TestCase):
         content = ("import System\n"
                    "\n"
                    "fun main(): System::Int\n"
-                   "    System::print(\"fred and bill\" + \", bert\")\n"
-                   "    ret 0\n")
+                   "    ret System::print(System::Char(48) + System::Char(49))\n")
 
         result = compile([Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
