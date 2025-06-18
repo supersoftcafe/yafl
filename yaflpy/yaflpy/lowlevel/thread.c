@@ -1,5 +1,6 @@
+
+#include "common.h"
 #include "yafl.h"
-#line 3 "thread.c"
 #include <pthread.h>
 
 
@@ -9,8 +10,8 @@ typedef struct worker_node {
     fun_t action;
 } worker_node_t;
 
-EXPORT decl_variable
-vtable_t* worker_node_vt = VTABLE_DECLARE(0){
+
+HIDDEN vtable_t* _worker_node_vt = VTABLE_DECLARE(0){
     .object_size = sizeof(worker_node_t),
     .array_el_size = 0,
     .object_pointer_locations = maskof(worker_node_t, .next) | maskof(worker_node_t, .action.o),
@@ -38,8 +39,8 @@ typedef struct worker_queues {
     worker_queue_t array[1];
 } worker_queues_t;
 
-EXPORT decl_variable
-vtable_t* worker_queues_vt = VTABLE_DECLARE(0){
+
+HIDDEN vtable_t* _worker_queues_vt = VTABLE_DECLARE(0){
     .object_size = offsetof(worker_queues_t, array[0]),
     .array_el_size = sizeof(worker_queue_t),
     .object_pointer_locations = 0,
@@ -49,40 +50,37 @@ vtable_t* worker_queues_vt = VTABLE_DECLARE(0){
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
-EXPORT decl_variable void(*_thread_worker_hook)();
-EXPORT decl_variable worker_queues_t* _queues;
-thread_local bool thread_is_worker;
+
+HIDDEN void(*_thread_worker_hook)();
+
+HIDDEN worker_queues_t* _queues;
+
 thread_local struct {
     worker_node_t* local_queue_tail;
     worker_node_t* sideload_queue_head;
 } _locals;
 
 
-EXPORT decl_func
-void declare_roots_thread(void(*declare)(object_t**)) {
+EXPORT void declare_roots_thread(void(*declare)(object_t**)) {
     declare((object_t**)&_queues);
 }
 
-EXPORT decl_func
-void declare_local_roots_thread(void(*declare)(object_t**)) {
+EXPORT void declare_local_roots_thread(void(*declare)(object_t**)) {
     declare((object_t**)&_locals.local_queue_tail);
     declare((object_t**)&_locals.sideload_queue_head);
 }
 
-EXPORT decl_no_inline
-void _thread_wake(worker_queue_t* queue) {
+EXPORT void _thread_wake(worker_queue_t* queue) {
     pthread_mutex_lock(&queue->lock);
     pthread_cond_signal(&queue->cond);
     pthread_mutex_unlock(&queue->lock);
 }
 
-EXPORT decl_func
-void _thread_wait(worker_queue_t* queue) {
+HIDDEN void _thread_wait(worker_queue_t* queue) {
     // TODO: pthread code to wait for condition signal
 }
 
-EXPORT decl_func
-void thread_set_hook(void (*hook)()) {
+EXPORT void thread_set_hook(void (*hook)()) {
     _thread_worker_hook = hook;
     for (intptr_t index = 0; index < _queues->length; ++index) {
         _thread_wake(&_queues->array[index]);
@@ -90,16 +88,14 @@ void thread_set_hook(void (*hook)()) {
 }
 
 
-EXPORT decl_func
-worker_node_t* _thread_create_node() {
-    worker_node_t* node = (worker_node_t*)object_create(worker_node_vt);
+HIDDEN worker_node_t* _thread_create_node() {
+    worker_node_t* node = (worker_node_t*)object_create(_worker_node_vt);
     node->action = (fun_t){.f = NULL, .o = NULL};
     node->next = NULL;
     return node;
 }
 
-EXPORT decl_func
-worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
+HIDDEN worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
     worker_node_t* head = atomic_load(&queue->local_queue_head);
     worker_node_t* node = atomic_load(&head->next);
     if (node == NULL) {
@@ -115,24 +111,19 @@ worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
     return node;
 }
 
-EXPORT decl_func
-void _thread_work_invoke(worker_node_t* node) {
+HIDDEN void _thread_work_invoke(worker_node_t* node) {
     void(*fn)(void*) = (void(*)(void*))node->action.f;
     fn(node->action.o);
 }
 
-EXPORT decl_no_inline
-noreturn void __exit__(object_t* self, object_t* int_status) {
+HIDDEN noreturn void __exit__(object_t* self, object_t* int_status) {
     int overflow;
     int32_t value = integer_to_int32(int_status, &overflow);
     exit(value);
     __builtin_unreachable();
 }
 
-EXPORT decl_no_inline
-void* _thread_main_loop(void* param) {
-    thread_is_worker = true;
-
+HIDDEN void* _thread_main_loop(void* param) {
     intptr_t thread_id = (intptr_t)param;
     worker_queue_t* queue = &_queues->array[thread_id];
     worker_queue_t* pre_queue = &_queues->array[(thread_id + _queues->length - 1) % _queues->length];
@@ -191,15 +182,13 @@ void* _thread_main_loop(void* param) {
 }
 
 
-EXTERN decl_no_inline
-object_t* thread_work_prepare(fun_t action) {
+EXTERN object_t* thread_work_prepare(fun_t action) {
     worker_node_t* node = _thread_create_node();
     node->action = action;
     return &node->parent;
 }
 
-EXPORT decl_func
-void thread_work_post_fast(object_t* work) {
+EXPORT void thread_work_post_fast(object_t* work) {
     // This is only ever called from the local thread, which means that we are in
     // an event currently. Therefore there is never a need to wake up the consumer.
     // It's already awake.
@@ -208,8 +197,7 @@ void thread_work_post_fast(object_t* work) {
     _locals.local_queue_tail = node;
 }
 
-EXTERN decl_no_inline
-void thread_work_post_io(object_t* work) {
+EXTERN void thread_work_post_io(object_t* work) {
     // This could be called from anywhere, but it's really designed for use from
     // interrupt contexts or IO threads, where we don't have a work queue. Instead
     // we post this to one of the existing sideload queues on a worker thread, and
@@ -223,12 +211,10 @@ void thread_work_post_io(object_t* work) {
     }
 }
 
-EXPORT decl_no_inline
-void thread_start() {
+EXPORT void thread_start() {
     intptr_t thread_count = 4;
 
-    thread_is_worker = true;
-    _queues = array_create(worker_queues_vt, thread_count);
+    _queues = array_create(_worker_queues_vt, thread_count);
 
     // Initialise the queues
     for (intptr_t index = 0; index < thread_count; ++index) {

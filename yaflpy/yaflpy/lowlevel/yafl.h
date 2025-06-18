@@ -1,185 +1,99 @@
 #pragma once
-#line 3 "yafl.h"
 
 
-/**********************************************************
- *****************************
- *************
- *****
- **
- *            Common and useful definitions
- **
- *****
- *************
- *****************************
- **********************************************************/
-
+#include <stdnoreturn.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stddef.h>
+#include <assert.h>
 
 
-#define likely(x) __builtin_expect((x),1)
-#define unlikely(x) __builtin_expect((x),0)
+#if defined(_WIN32) || defined(__CYGWIN__)
+#  define EXTERN __declspec(dllimport)
+#  define EXPORT __declspec(dllexport)
+#  define HIDDEN
+#elif __GNUC__ >= 4
+#  define EXTERN
+#  define EXPORT __attribute__((visibility("default")))
+#  define HIDDEN __attribute__((visibility("hidden")))
+#endif
+
+
+#if defined(_MSC_VER)
+#  define INLINE static __forceinline
+#  define NOINLINE      __declspec(noinline)
+#  define NORETURN      __declspec(noreturn)
+#  define COLD          __declspec(code_seg(".text$cold"))
+#elif defined(__GNUC__)
+#  define INLINE static __attribute__((always_inline))
+#  define NOINLINE      __attribute__((noinline))
+#  define NORETURN      __attribute__((noreturn))
+#  define COLD          __attribute__((cold))
+#else
+#  define INLINE
+#  define NOINLINE
+#  define NORETURN
+#  define COLD
+#endif
+
+
 #define indexof(type, field) (offsetof(type, field) / sizeof(((type*)NULL)->field))
 #define total_bits(type) (sizeof(type) * 8)
 
 
-#ifndef EXTERN
-#define EXTERN extern
-#endif
-
-#ifndef EXPORT
-#define EXPORT
-#endif
-
-
-#ifdef NDEBUG
-#define decl_cold __attribute__((cold,noinline))
-#define decl_no_inline __attribute__((noinline))
-#define decl_func
-#define decl_variable
-#else
-#define decl_cold __attribute__((noinline))
-#define decl_no_inline __attribute__((noinline))
-#define decl_func __attribute__((noinline))
-#define decl_variable
-#endif
-
-
-#define index_of_lowest_bit(value)               \
+#if defined(__GNUC__)
+#  define index_of_lowest_bit(value)             \
         _Generic( (value),                       \
             unsigned long long: __builtin_ctzll, \
             unsigned long: __builtin_ctzl,       \
             unsigned int: __builtin_ctz          \
         )(value)
+#else
+#  error "No implementation for index_of_lowest_bit"
+#endif
 
 
 #if UINTPTR_MAX == 0xFFFFFFFF
-#define WORD_SIZE 32
+#  define WORD_SIZE 32
 #elif UINTPTR_MAX == 0xFFFFFFFFFFFFFFFF
-#define WORD_SIZE 64
+#  define WORD_SIZE 64
 #else
-#error "Unknown pointer size or unsupported platform."
+#  error "Unknown pointer size or unsupported platform."
 #endif
 
 
 #define ALIGNED     __attribute__((aligned(32)))
 
 
-// Helper macro to determine if we're on a little-endian system
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define IS_LITTLE_ENDIAN 1
+#  define IS_LITTLE_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-#define IS_LITTLE_ENDIAN 0
+#  define IS_LITTLE_ENDIAN 0
 #elif defined(_WIN32)
-#define IS_LITTLE_ENDIAN 1
+#  define IS_LITTLE_ENDIAN 1
 #else
-#error "Cannot determine endianness"
+#  error "Cannot determine endianness"
 #endif
 
 
 #if defined(__aarch64__) && defined(__APPLE__)
-    #define CACHE_LINE_SIZE 128
+#  define CACHE_LINE_SIZE 128
 #elif defined(__x86_64__) || defined(_M_X64)
-    #define CACHE_LINE_SIZE 64
+#  define CACHE_LINE_SIZE 64
 #else
-    #define CACHE_LINE_SIZE 64 // fallback
+#  define CACHE_LINE_SIZE 64
 #endif
 
 
-
-/**********************************************************
- *****************************
- *************
- *****
- **
- *                   Debug tools
- **
- *****
- *************
- *****************************
- **********************************************************/
-
-#include <stdnoreturn.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <stdlib.h>
-#include <errno.h>
-
-EXTERN decl_func
-void log_error(char const* format, ...);
-
-EXTERN decl_func
-noreturn void log_error_and_exit(char const* format, ...);
-
+EXTERN void log_error(char const* format, ...);
+EXTERN noreturn void log_error_and_exit(char const* format, ...);
 #define ERROR(...)  log_error_and_exit(__VA_ARGS__)
-
 #ifndef NDEBUG
-#define DEBUG(...)  log_error(__VA_ARGS__)
+#  define DEBUG(...)  log_error(__VA_ARGS__)
 #else
-#define DEBUG(...)
+#  define DEBUG(...)
 #endif
-
-#define ZZ  DEBUG("%s: %d\n", __FILE__, __LINE__);
-
-
-/**********************************************************
- *****************************
- *************
- *****
- **
- *                   Threading
- **
- *****
- *************
- *****************************
- **********************************************************/
-
-#include <pthread.h>
-
-#ifndef __STDC_NO_THREADS__
-#include <threads.h>
-#endif
-
-#ifndef __STDC_NO_ATOMICS__
-#include <stdatomic.h>
-#endif
-
-#ifndef thread_local
-# if __STDC_VERSION__ >= 201112 && !defined __STDC_NO_THREADS__
-#  define thread_local _Thread_local
-# elif defined _WIN32 && ( \
-       defined _MSC_VER || \
-       defined __ICL || \
-       defined __DMC__ || \
-       defined __BORLANDC__ )
-#  define thread_local __declspec(thread)
-/* note that ICC (linux) and Clang are covered by __GNUC__ */
-# elif defined __GNUC__ || \
-       defined __SUNPRO_C || \
-       defined __xlC__
-#  define thread_local __thread
-# else
-#  error "Cannot define thread_local"
-# endif
-#endif
-
-
-/**********************************************************
- *****************************
- *************
- *****
- **
- *                   Objects
- **
- *****
- *************
- *****************************
- **********************************************************/
-
-#include <stddef.h>
-#include <assert.h>
 
 
 #define maskof(type, field)\
@@ -228,41 +142,22 @@ typedef struct {
     vtable_t* vtable;
 } object_t;
 
-extern thread_local bool thread_is_worker;
 
 // This calculation needs to work with positive signed 32 bit numbers
 #define rotate_function_id(id)\
         ((id * sizeof(intptr_t) * 2) | (id / (134217728 / sizeof(intptr_t) * 8)))
 
-EXTERN decl_func
-vtable_t* object_get_vtable(void* object);
 
-EXTERN decl_func
-object_t* object_mutation(object_t* ptr);
+INLINE vtable_t* object_get_vtable(void* object) {
+    return (vtable_t*)((intptr_t)((object_t*)object)->vtable & ~3);
+}
 
-EXTERN decl_func
-fun_t vtable_lookup(void* object, intptr_t id);
+EXTERN object_t* object_mutation(object_t* ptr);
+EXTERN fun_t vtable_lookup(void* object, intptr_t id);
+EXTERN void* object_create(vtable_t* vtable);
+EXTERN void* array_create(vtable_t* vtable, int32_t length);
+EXTERN void object_allocator_init(); // Initialise thread local stuff on this thread for allocator
 
-EXTERN decl_func
-fun_t vtable_fast_lookup(void* object, intptr_t id);
-
-EXTERN decl_func
-void* object_create(vtable_t* vtable);
-
-EXTERN decl_func
-void* array_create(vtable_t* vtable, int32_t length);
-
-EXTERN decl_func
-void __abort_on_vtable_lookup();
-
-EXTERN decl_func
-void __abort_on_out_of_memory();
-
-EXTERN decl_func
-void __abort_on_too_large_object();
-
-EXTERN decl_func
-void __abort_on_heap_allocation_on_non_worker_thread();
 
 /**********************************************************
  *****************************
@@ -276,26 +171,13 @@ void __abort_on_heap_allocation_on_non_worker_thread();
  *****************************
  **********************************************************/
 
-EXTERN decl_func
-void thread_set_hook(void(*)());
-
-EXTERN decl_func
-void declare_roots_thread(void(*)(object_t**));
-
-EXTERN decl_func
-void declare_local_roots_thread(void(*)(object_t**));
-
-EXTERN decl_no_inline
-object_t* thread_work_prepare(fun_t action);
-
-EXTERN decl_no_inline
-void thread_work_post_io(object_t* work);
-
-EXTERN decl_func
-void thread_work_post_fast(object_t* work);
-
-EXTERN decl_no_inline
-void thread_start();
+EXTERN void thread_set_hook(void(*)());
+EXTERN void declare_roots_thread(void(*)(object_t**));
+EXTERN void declare_local_roots_thread(void(*)(object_t**));
+EXTERN object_t* thread_work_prepare(fun_t action);
+EXTERN void thread_work_post_io(object_t* work);
+EXTERN void thread_work_post_fast(object_t* work);
+EXTERN void thread_start();
 
 
 
@@ -312,44 +194,12 @@ void thread_start();
  **********************************************************/
 
 
-EXTERN decl_no_inline
-void __abort_on_overflow();
+EXTERN void __abort_on_overflow();
 
-#undef DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK
-#define DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(type, operation)\
-        EXTERN decl_func\
-        type ## _t __OP_ ## operation ## _ ## type ## __(type ## _t a, type ## _t b);
 
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int8 , add)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int16, add)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int32, add)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int64, add)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int8 , sub)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int16, sub)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int32, sub)
-DECLARE_OP_MATH_INT_WITH_OVERFLOW_CHECK(int64, sub)
-
-#undef DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK
-#define DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(from_type, to_type)\
-        EXTERN decl_func\
-        to_type ## _t __OP_convert_ ## from_type ## _to_ ## to_type ## __(from_type ## _t a);
-
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int8 , int16)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int8 , int32)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int8 , int64)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int16, int8 )
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int16, int32)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int16, int64)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int32, int8 )
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int32, int16)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int32, int64)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int8 )
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int16)
-DECLARE_OP_CONVERT_INT_WITH_OVERFLOW_CHECK(int64, int32)
-
-EXTERN decl_func int8_t __OP_int32_gt_bool__(int32_t self, int32_t data);
-EXTERN decl_func int8_t __OP_int32_eq_bool__(int32_t self, int32_t data);
-EXTERN decl_func int8_t __OP_int32_lt_bool__(int32_t self, int32_t data);
+INLINE bool test_gt_int32(int32_t self, int32_t data) { return self  > data; }
+INLINE bool test_eq_int32(int32_t self, int32_t data) { return self == data; }
+INLINE bool test_lt_int32(int32_t self, int32_t data) { return self  < data; }
 
 
 /**********************************************************
@@ -371,74 +221,38 @@ typedef struct integer {
     intptr_t array[0];
 } ALIGNED integer_t;
 
-EXTERN decl_variable
-vtable_t* const INTEGER_VTABLE;
+struct integer_vtable;
+EXTERN struct integer_vtable INTEGER_VTABLE;
 
-#define literal_integer_small_value(value) ((object_t*)((value)<<1)|1)
-#define INTEGER_DECLARE_BEGIN(global_name, int32_count)\
-        EXPORT struct {\
-            vtable_t* vtable;\
-            uint32_t length;\
-            intptr_t array[WORD_SIZE == 64 ? (int32_count+1)/2 : int32_count];\
-        } global_name = {\
-            .vtable = INTEGER_VTABLE,\
-            .length = WORD_SIZE == 64 ? (int32_count+1)/2 : int32_count,\
-            .array = {
-#define INTEGER_DECLARE_SINGLE(a)   (intptr_t)(a),
+
+#define INTEGER_LITERAL_N(count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,array}
 #if WORD_SIZE == 64
-#define INTEGER_DECLARE_PAIR(a, b)  (((intptr_t)(b) << 32) | ((intptr_t)(a) & 0xffffffffull)),
+#define INTEGER_LITERAL_N_1(value1) ((intptr_t)(value1))
+#define INTEGER_LITERAL_N_2(value1, value2) (((intptr_t)(value1)&0xffffffffull)|(intptr_t)(value2))
+#define INTEGER_LITERAL_1(value1) (value1<INTPTR_MIN/2||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(1,{value1}):(object_t*)((intptr_t)value1*2+1))
+#define INTEGER_LITERAL_2(value1, value2) INTEGER_LITERAL_N(2, {value1, value2})
 #else
-#define INTEGER_DECLARE_PAIR(a, b)  (a),(b),
+#define INTEGER_LITERAL_N_1(value1) value1
+#define INTEGER_LITERAL_N_2(value1, value2) value1, value2
+#define INTEGER_LITERAL_1(value1) (value1<INTPTR_MIN/2||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(1,{value1}):(object_t*)((intptr_t)value1*2+1))
+#define INTEGER_LITERAL_2(value1, value2) INTEGER_LITERAL_N(2, {value1, value2})
 #endif
-#define INTEGER_DECLARE_END() }\
-        };
-
-#define INTEGER_SMALL(int_value)\
-        ( int_value < INTPTR_MIN/2 || int_value > INTPTR_MAX/2 ? INTEGER_BIG(1, {int_value}) : (object_t*)((intptr_t)int_value * 2 + 1) )
-#define INTEGER_BIG(int32_count, int_array)\
-        ( (object_t*)&( \
-            struct { \
-                vtable_t* v; \
-                uint32_t l; \
-                intptr_t a[int32_count]; \
-            }){(vtable_t*)0,int32_count,int_array} )
-
-EXTERN decl_func
-object_t* integer_create_from_intptr(intptr_t value);
-
-EXTERN decl_func
-object_t* integer_add(object_t* self, object_t* data);
-
-EXTERN decl_func
-object_t* integer_sub(object_t* self, object_t* data);
-
-EXTERN decl_func
-object_t* integer_div(object_t* self, object_t* data);
-
-EXTERN decl_func
-object_t* integer_rem(object_t* self, object_t* data);
-
-EXTERN decl_func
-object_t* integer_add_intptr(object_t* self, intptr_t value);
-
-EXTERN decl_func
-int integer_cmp_intptr(object_t* self, intptr_t value);
-
-EXTERN decl_func
-int integer_cmp(object_t* self, object_t* data);
-
-EXTERN decl_func
-int32_t integer_to_int32(object_t* self, int* overflow);
 
 
-EXTERN decl_func object_t* __OP_add_bigint__(object_t* self, object_t* data);
-EXTERN decl_func object_t* __OP_sub_bigint__(object_t* self, object_t* data);
-EXTERN decl_func object_t* __OP_div_bigint__(object_t* self, object_t* data);
-EXTERN decl_func object_t* __OP_rem_bigint__(object_t* self, object_t* data);
+EXTERN object_t* integer_add(object_t* self, object_t* data);
+EXTERN object_t* integer_sub(object_t* self, object_t* data);
+EXTERN object_t* integer_div(object_t* self, object_t* data);
+EXTERN object_t* integer_rem(object_t* self, object_t* data);
+EXTERN int32_t   integer_cmp(object_t* self, object_t* data);
 
-EXTERN decl_func int8_t __OP_int_gt_bool__(object_t* self, object_t* data);
-EXTERN decl_func int8_t __OP_int_eq_bool__(object_t* self, object_t* data);
-EXTERN decl_func int8_t __OP_int_lt_bool__(object_t* self, object_t* data);
+EXTERN object_t* integer_add_int32(object_t* self, int32_t value);
+EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);
+EXTERN int32_t   integer_to_int32(object_t* self, int* overflow);
+EXTERN object_t* integer_create_from_int32(int32_t value);
+
+INLINE bool integer_test_gt(object_t* self, object_t* data) { return integer_cmp(self, data) >  0; }
+INLINE bool integer_test_eq(object_t* self, object_t* data) { return integer_cmp(self, data) == 0; }
+INLINE bool integer_test_lt(object_t* self, object_t* data) { return integer_cmp(self, data) <  0; }
 
 
 
@@ -460,11 +274,12 @@ typedef struct string {
     uint8_t array[0];
 } ALIGNED string_t;
 
-EXTERN decl_variable
-vtable_t* const STRING_VTABLE;
 
-EXTERN decl_variable
-object_t* STRING_EMPTY;
+struct string_vtable;
+EXTERN struct string_vtable STRING_VTABLE;
+
+struct string_empty;
+EXTERN struct string_empty STRING_EMPTY;
 
 
 // Helper macro to compute string length at compile time
@@ -529,18 +344,19 @@ object_t* STRING_EMPTY;
                 vtable_t* v; \
                 uint32_t l; \
                 char a[sizeof(contents)]; \
-            }){(vtable_t*)0, STRING_LEN(contents), contents})
+            }){(vtable_t*)&STRING_VTABLE, STRING_LEN(contents), contents})
 
 
-EXTERN decl_func object_t* __OP_append_str__(object_t* self, object_t* data);
-EXTERN decl_func object_t* __OP_char_str__(object_t* integer);
-EXTERN decl_no_inline object_t* __OP_print_bigint__(object_t* self);
+INLINE int32_t string_length(object_t* self) {
+    return ((string_t*)self)->length;
+}
+
+EXTERN object_t* wchar_to_string(object_t* integer);
+EXTERN object_t* print_string(object_t* self);
 
 
-EXTERN decl_func
-void __entrypoint__(object_t* self, fun_t continuation);
 
-EXTERN decl_func
-void declare_roots_yafl(void(*)(object_t**));
+static void __entrypoint__(object_t* self, fun_t continuation);
+static void declare_roots_yafl(void(*)(object_t**));
 
 

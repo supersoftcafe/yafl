@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from codegen.typedecl import Int, FuncPointer, word_size, Struct, DataPointer, Array
+from codegen.typedecl import Int, FuncPointer, Struct, DataPointer, Array
 
 
 class TestInt(TestCase):
@@ -10,9 +10,9 @@ class TestInt(TestCase):
         self.target = Int(32)
         self.cache = {}
 
-    def test_size(self):
-        size = self.target.size
-        self.assertEqual(size, 4)
+    # def test_size(self):
+    #     size = self.target.size
+    #     self.assertEqual(size, 4)
 
     def test_initialise(self):
         str = self.target.initialise({}, 100)
@@ -36,15 +36,15 @@ class TestFuncPointer(TestCase):
         self.target = FuncPointer()
         self.cache = {}
 
-    def test_size(self):
-        size = self.target.size
-        self.assertEqual(word_size * 2, size)
-
-    def test_offsetof(self):
-        offset = self.target.offsetof(0)
-        self.assertEqual(0, offset)
-        offset = self.target.offsetof(1)
-        self.assertEqual(word_size, offset)
+    # def test_size(self):
+    #     size = self.target.size
+    #     self.assertEqual(word_size * 2, size)
+    #
+    # def test_offsetof(self):
+    #     offset = self.target.offsetof(0)
+    #     self.assertEqual(0, offset)
+    #     offset = self.target.offsetof(1)
+    #     self.assertEqual(word_size, offset)
 
     def test_initialise(self):
         str = self.target.initialise({}, "@globalfunction")
@@ -66,21 +66,21 @@ class TestStruct(TestCase):
         self.target = Struct((('1chr', Int(8)), ('2int', Int(32)), ('3ptr', DataPointer()), ('4fun', FuncPointer())))
         self.cache = {}
 
-    def test_size(self):
-        size = self.target.size
-        self.assertEqual(8 + (word_size * 3), size)
-
-    def test_alignment(self):
-        alignment = self.target.alignment
-        self.assertEqual(word_size, alignment)
-
-    def test_offsetof(self):
-        offset = self.target.offsetof(1)
-        self.assertEqual(4, offset)
-        offset = self.target.offsetof(3, 0)
-        self.assertEqual(8 + word_size, offset)
-        offset = self.target.offsetof(3, 1)
-        self.assertEqual(8 + (word_size * 2), offset)
+    # def test_size(self):
+    #     size = self.target.size
+    #     self.assertEqual(8 + (word_size * 3), size)
+    #
+    # def test_alignment(self):
+    #     alignment = self.target.alignment
+    #     self.assertEqual(word_size, alignment)
+    #
+    # def test_offsetof(self):
+    #     offset = self.target.offsetof(1)
+    #     self.assertEqual(4, offset)
+    #     offset = self.target.offsetof(3, 0)
+    #     self.assertEqual(8 + word_size, offset)
+    #     offset = self.target.offsetof(3, 1)
+    #     self.assertEqual(8 + (word_size * 2), offset)
 
     def test_initialise(self):
         str = self.target.initialise({}, {'1chr': 1, '2int': 2, '4fun': {'f': "@fun", 'o': "@obj"}})
@@ -107,13 +107,13 @@ class TestArray(TestCase):
         self.target = Array(Int(16), 0)
         self.cache = {}
 
-    def test_size(self):
-        size = self.target.size
-        self.assertEqual(0, size)
+    # def test_size(self):
+    #     size = self.target.size
+    #     self.assertEqual(0, size)
 
-    def test_offsetof(self):
-        offset = self.target.offsetof(6)
-        self.assertEqual(12, offset)
+    # def test_offsetof(self):
+    #     offset = self.target.offsetof(6)
+    #     self.assertEqual(12, offset)
 
     def test_initialise(self):
         str = Array(Int(16), 3).initialise({}, [1, 2, 3])

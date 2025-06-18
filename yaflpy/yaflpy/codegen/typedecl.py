@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import groupby
 from itertools import chain
 from collections.abc import Mapping
 from abc import ABC, abstractmethod, abstractproperty
@@ -7,18 +8,18 @@ from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Dict, OrderedDict, Any, Tuple, Union
 from codegen.tools import mangle_name
 
-word_size = 8
-max_int = (1 << (word_size * 8 - 1)) - 1
+# word_size = 8
+max_int = (1 << 31) - 1
 min_int = 0 - max_int - 1
-mask_int = (1 << (word_size * 8)) - 1
+mask_int = (1 << 32) - 1
 
 
 @dataclass(frozen=True)
 class Type(ABC):
-    @property
-    @abstractmethod
-    def size(self) -> int:
-        pass
+    # @property
+    # @abstractmethod
+    # def size(self) -> int:
+    #     pass
 
     @property
     def has_pointers(self) -> bool:
@@ -28,14 +29,14 @@ class Type(ABC):
     def _dont_cache(self) -> bool:
         return False
 
-    @property
-    def alignment(self) -> int:
-        return self.size
+    # @property
+    # def alignment(self) -> int:
+    #     return self.size
 
-    def offsetof(self, *args) -> int:
-        if args:
-            raise ValueError()
-        return 0
+    # def offsetof(self, *args) -> int:
+    #     if args:
+    #         raise ValueError()
+    #     return 0
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         return f"{data}"
@@ -69,9 +70,9 @@ _str_escape_table = str.maketrans({f'{chr(c)}': f'\\x{c:02x}' for c in chain(ran
 
 @dataclass(frozen=True)
 class Str(Type):
-    @property
-    def size(self) -> int:
-        return word_size
+    # @property
+    # def size(self) -> int:
+    #     return word_size
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         if not isinstance(data, str):
@@ -88,22 +89,31 @@ class Str(Type):
 class Int(Type):
     precision: int = 0 # Bit precision
 
-    @property
-    def size(self) -> int:
-        return self.precision // 8 if self.precision != 0 else word_size
+    # @property
+    # def size(self) -> int:
+    #     return self.precision // 8 if self.precision != 0 else word_size
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         if not isinstance(data, int):
             raise ValueError()
         if self.precision != 0:
             return f"((int{self.precision}_t){data})"
+
         array: list[int] = []
         while data != -1 and data != 0:
             array.append(data & mask_int)
-            data = data >> (word_size * 8)
+            data = data >> 32
+
         if len(array) == 0 or (data == -1 and array[-1] >= 0) or (data == 0 and array[-1] < 0):
             array.append(data)
-        return f"INTEGER_SMALL((intptr_t){array[0]})" if len(array) == 1 else f"INTEGER_BIG({len(array)}, {{ {', '.join(f'(intptr_t)x' for x in array)} }})"
+
+        if len(array) <= 1:
+            return f"INTEGER_LITERAL_1({array[0]})"
+        elif len(array) == 2:
+            return f"INTEGER_LITERAL_2({array[1]})"
+        groups = [[x for _, x in group] for _, group in groupby(enumerate(array), key=lambda x: x[0] // 2)]
+        values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
+        return f"INTEGER_LITERAL_N({', '.join(values)})"
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return f"int{self.precision}_t" if self.precision != 0 else "object_t*"
@@ -114,9 +124,9 @@ class Int(Type):
 
 @dataclass(frozen=True)
 class IntPtr(Type):
-    @property
-    def size(self) -> int:
-        return word_size
+    # @property
+    # def size(self) -> int:
+    #     return word_size
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         return f"{data}"
@@ -127,9 +137,9 @@ class IntPtr(Type):
 
 @dataclass(frozen=True)
 class DataPointer(Type):
-    @property
-    def size(self) -> int:
-        return word_size
+    # @property
+    # def size(self) -> int:
+    #     return word_size
 
     @property
     def has_pointers(self) -> bool:
@@ -144,26 +154,26 @@ class DataPointer(Type):
 
 @dataclass(frozen=True)
 class FuncPointer(Type):
-    @property
-    def size(self) -> int:
-        return word_size * 2
+    # @property
+    # def size(self) -> int:
+    #     return word_size * 2
 
     @property
     def has_pointers(self) -> bool:
         return True
 
-    @property
-    def alignment(self) -> int:
-        return word_size
+    # @property
+    # def alignment(self) -> int:
+    #     return word_size
 
-    def offsetof(self, *args):
-        match args:
-            case [0] | []:
-                return 0
-            case [1]:
-                return word_size
-            case _:
-                raise ValueError()
+    # def offsetof(self, *args):
+    #     match args:
+    #         case [0] | []:
+    #             return 0
+    #         case [1]:
+    #             return word_size
+    #         case _:
+    #             raise ValueError()
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         fun, obj = (data['f'], data['o'] or "NULL") if isinstance(data, Mapping) else (str(data), "NULL")
@@ -184,32 +194,32 @@ class Struct(Type):
     def _dont_cache(self) -> bool:
         return False
 
-    @property
-    def size(self) -> int:
-        sz, al = 0, 0
-        for name, field_type in self.fields:
-            a = field_type.alignment
-            sz = (sz + a - 1) // a * a + field_type.size # Bring up to alignment requirement and then add size
-            al = max(al, a)
-        return (sz + al - 1) // al * al if al else 0 # Round up to alignment size
+    # @property
+    # def size(self) -> int:
+    #     sz, al = 0, 0
+    #     for name, field_type in self.fields:
+    #         a = field_type.alignment
+    #         sz = (sz + a - 1) // a * a + field_type.size # Bring up to alignment requirement and then add size
+    #         al = max(al, a)
+    #     return (sz + al - 1) // al * al if al else 0 # Round up to alignment size
 
     @property
     def has_pointers(self) -> bool:
         return any(1 for x, y in self.fields if y.has_pointers)
 
-    @property
-    def alignment(self) -> int:
-        return max(field_type.alignment for name, field_type in self.fields)
+    # @property
+    # def alignment(self) -> int:
+    #     return max(field_type.alignment for name, field_type in self.fields)
 
-    def offsetof(self, *args):
-        match args:
-            case [index, *rest]:
-                if isinstance(index, str):
-                    index = next((i for i, x in enumerate(self.fields) if x[0] == str), -1)
-                last = self.fields[index][1]
-                return Struct(self.fields[:index+1]).size - last.size + last.offsetof(*rest)
-            case _:
-                raise ValueError()
+    # def offsetof(self, *args):
+    #     match args:
+    #         case [index, *rest]:
+    #             if isinstance(index, str):
+    #                 index = next((i for i, x in enumerate(self.fields) if x[0] == str), -1)
+    #             last = self.fields[index][1]
+    #             return Struct(self.fields[:index+1]).size - last.size + last.offsetof(*rest)
+    #         case _:
+    #             raise ValueError()
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         all_names = [name for name, type in self.fields]
@@ -235,9 +245,9 @@ class Struct(Type):
 
 @dataclass(frozen=True)
 class Void(Type):
-    @property
-    def size(self) -> int:
-        return 0
+    # @property
+    # def size(self) -> int:
+    #     return 0
 
     @property
     def has_pointers(self) -> bool:
@@ -262,24 +272,24 @@ class Array(Type):
     type: Type
     length: int
 
-    @property
-    def size(self) -> int:
-        return self.type.size * self.length
+    # @property
+    # def size(self) -> int:
+    #     return self.type.size * self.length
 
     @property
     def has_pointers(self) -> bool:
         return self.type.has_pointers
 
-    @property
-    def alignment(self) -> int:
-        return self.type.alignment
+    # @property
+    # def alignment(self) -> int:
+    #     return self.type.alignment
 
-    def offsetof(self, *args):
-        match args:
-            case [index, *rest]:
-                return self.type.size * index + self.type.offsetof(*rest)
-            case _:
-                raise ValueError()
+    # def offsetof(self, *args):
+    #     match args:
+    #         case [index, *rest]:
+    #             return self.type.size * index + self.type.offsetof(*rest)
+    #         case _:
+    #             raise ValueError()
 
     def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
         new_indent = field_indent + "    "

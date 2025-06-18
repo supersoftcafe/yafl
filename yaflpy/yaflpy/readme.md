@@ -4,11 +4,12 @@ YAFL
 High priority
 -------------
 
-* Use index based continuations
-* Move function pointer into heap frame
 * Command line to build with option to generate assembly
-* Change continuation functions to use index and switch approach instead of distinct methods
-* Use better and more readable names for things in the C output
+* Remove all word size knowledge from python
+* Build YAFL lib as library with proper header
+* Use better and more readable names for things in the C and ASM output
+* Add async support through libuv (or self build, idk). First example is 'sleep'
+* Compiler does linking as well
 
 Medium priority
 ---------------
@@ -18,6 +19,18 @@ Medium priority
 * Automatic insertion of forks into tuple generation
 * IO using a standard thread based AIO library for simplicity
 * Implement full parallel garbage collector
+* Optimisations
+  * Remove dead statements
+    * Interface or class definitions that aren't used
+    * Unused functions
+  * Inline small functions
+    * Order all functions by complexity
+    * Starting at most complex, iteratively try to inline small functions
+    * Class virtual calls can be inlined just as nicely as global functions
+      * Iface too, if not overridden
+  * Remove dead statements again
+  * Do CPS conversion
+  * De-duplicate classes, because CPS will create some duplicates
 
 Low priority
 ------------

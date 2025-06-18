@@ -296,8 +296,6 @@ class NamedExpression(Expression):
         return datas[0].statement.get_type() if len(datas) == 1 else None
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
-        if '`+`' in self.name:
-            print("break here")
         if '@' in self.name:
             return self, [] # Early exit because we previously succeeded
         datas_full_list = resolver.find_data({self.name})
@@ -406,7 +404,7 @@ class BuiltinOpExpression(Expression):
             raise ValueError("BuiltinOpExpression parameters must be tuple")
 
         xtype = self.type.generate()
-        xexpr = cg_p.Invoke(f"__OP_{self.op.value}_{self.type.type_name}__", params_bundle.result_var, xtype)
+        xexpr = cg_p.Invoke(self.op.value, params_bundle.result_var, xtype)
         final_bundle = g.OperationBundle( (), (), xexpr )
 
         return params_bundle + final_bundle

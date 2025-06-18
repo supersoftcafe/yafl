@@ -1,60 +1,23 @@
+
+#include "common.h"
 #include "yafl.h"
-#line 3 "object.c"
 #include <malloc.h>
 
 
-
-
-EXPORT decl_func
-void __abort_on_vtable_lookup() {
+HIDDEN void __abort_on_vtable_lookup() {
     log_error_and_exit("Aborting due to vtable lookup issue", stderr);
 }
 
-EXPORT decl_func
-void __abort_on_out_of_memory() {
+HIDDEN void __abort_on_out_of_memory() {
     fputs("Aborting due to memory allocation failure", stderr);
 }
 
-EXPORT decl_func
-void __abort_on_too_large_object() {
+HIDDEN void __abort_on_too_large_object() {
     fputs("Aborting due to unsupported object size failure", stderr);
 }
 
-EXPORT decl_func
-void __abort_on_heap_allocation_on_non_worker_thread() {
-    fputs("Aborting due to unsupported object size failure", stderr);
-}
-
-
-EXPORT decl_func
-vtable_t* object_get_vtable(void* object) {
-    return (vtable_t*)((intptr_t)((object_t*)object)->vtable & ~3);
-}
-
-EXPORT decl_func
-fun_t vtable_lookup(void* object, intptr_t id) {
-    vtable_t* vtable = object_get_vtable(object);
-    intptr_t index = id & vtable->functions_mask;
-    vtable_entry_t* entry = (vtable_entry_t*)(((char*)&(vtable->lookup[-1])) + index);
-    do {entry++;
-        // It's important that we use signed arithmatic here.
-        // Blank entries have -1 as the id, which will cause this
-        //    loop to exit and call the abort function (from the vtable)
-        //    It's a safety feature that costs us nothing.
-    } while ((entry->i ^ id) > 0);
-    return (fun_t){.f=entry->f, .o=object};
-}
-
-EXPORT decl_func
-fun_t vtable_fast_lookup(void* object, intptr_t id) {
-    vtable_t* vtable = object_get_vtable(object);
-    intptr_t index = id & vtable->functions_mask;
-    vtable_entry_t* entry = (vtable_entry_t*)(((char*)vtable->lookup) + index);
-#ifndef NDEBUG
-    if (entry->i != id)
-        __abort_on_vtable_lookup();
-#endif
-    return (fun_t){.f=entry->f, .o=object};
+HIDDEN void __abort_on_heap_allocation_on_non_worker_thread() {
+    fputs("Aborting due to attempted allocation on uninitialised thread", stderr);
 }
 
 
@@ -76,7 +39,7 @@ enum { MAX_OBJECT_SIZE = sizeof(gc_page_t) - offsetof(gc_page_t, slots[0]) };
 
 
 
-EXPORT decl_variable _Bool _marking_in_progress = 0;
+HIDDEN bool _marking_in_progress = false;
 
 thread_local struct {
     char* bump_pointer; // -size to get next object reference
@@ -84,46 +47,23 @@ thread_local struct {
     gc_page_t* new_page_pool_ptr; // a block of many pages available to this thread
     ptrdiff_t new_page_pool_count; // how many pages remain in the block
     gc_page_t* all_pages; // all pages created by this thread, not owned by this thread
+    bool initialised;
 } allocator_struct;
 
 
-EXTERN decl_func
-void _object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
+EXTERN void _object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
     *page_out = (gc_page_t*)((intptr_t)ptr & ~(sizeof(gc_page_t)-1));
     *slot_out = (gc_page_slot_t*)ptr - (*page_out)->slots;
 }
 
-EXTERN decl_func
-bool _object_is_on_heap(object_t* ptr) {
-
-    return ((intptr_t)ptr & 3) == 0             // Avoid data packed into the pointer, like small integers and strings.
-        && ((intptr_t)ptr->vtable & 3) != 0;    // Avoid static declared objects, because they don't have a heap header.
-}
-
-EXTERN decl_func
-void object_mark_as_seen(object_t* ptr) {
-    if (ptr != NULL && _object_is_on_heap(ptr)) {
-        gc_page_t* page; ptrdiff_t slot;
-        _object_get_page_and_slot(ptr, &page, &slot);
-        page->marks[slot] |= 1;
-    }
-}
-
-EXTERN decl_func
-void _object_mark_as_seen2(object_t** ptrptr) {
-    object_mark_as_seen(*ptrptr);
-}
-
-EXPORT decl_func
-void _object_declare_roots(void(*declare)(object_t**)) {
+HIDDEN void _object_declare_roots(void(*declare)(object_t**)) {
     declare_roots_thread(declare);
     declare_roots_yafl(declare);
     // Any other roots functions need to be called here
 }
 
-EXPORT decl_no_inline
-void _object_bulk_alloc_new_pages() {
-    if (!thread_is_worker) {
+HIDDEN void _object_bulk_alloc_new_pages() {
+    if (!allocator_struct.initialised) {
         __abort_on_heap_allocation_on_non_worker_thread();
     }
 
@@ -138,8 +78,7 @@ void _object_bulk_alloc_new_pages() {
     allocator_struct.new_page_pool_count = count;
 }
 
-EXPORT decl_cold
-void* _object_alloc2(size_t size) {
+HIDDEN void* _object_alloc2(size_t size) {
     if (size > MAX_OBJECT_SIZE) {
         // TODO: Support larger objects as multiples of page size
         __abort_on_too_large_object();
@@ -168,8 +107,7 @@ void* _object_alloc2(size_t size) {
     }
 }
 
-EXPORT decl_func
-void* _object_alloc(size_t size) {
+HIDDEN void* _object_alloc(size_t size) {
     size_t actual_size = (size + sizeof(gc_page_slot_t) - 1) / sizeof(gc_page_slot_t) * sizeof(gc_page_slot_t);
 
     // size_t remainder = (sizeof(gc_page_t)-1) & (intptr_t)allocator_struct.bump_pointer;
@@ -182,26 +120,24 @@ void* _object_alloc(size_t size) {
     char* new_pointer = allocator_struct.bump_pointer - actual_size;
     allocator_struct.bump_pointer = new_pointer;
     ptrdiff_t remainder = new_pointer - allocator_struct.base_pointer;
-    if (likely(remainder >= 0)) {
+    if (LIKELY(remainder >= 0)) {
         return new_pointer;
     } else {
         return _object_alloc2(size);
     }
 }
 
-EXPORT decl_no_inline
-void _object_scan(object_t* ptr) {
+HIDDEN void _object_scan(object_t* ptr) {
     // TODO: Add scanning code
     gc_page_t* page; ptrdiff_t slot;
     _object_get_page_and_slot(ptr, &page, &slot);
     page->marks[slot] = 3;
 }
 
-EXTERN decl_func
-bool _object_page_scan(gc_page_t* page) {
+HIDDEN bool _object_page_scan(gc_page_t* page) {
     bool result = false;
     for (int slot = 0; slot < sizeof(page->marks); ++slot) {
-        if (unlikely(page->marks[slot] == 1)) {
+        if (UNLIKELY(page->marks[slot] == 1)) {
             _object_scan((object_t*)&page->slots[slot]);
             result = true;
         }
@@ -209,10 +145,36 @@ bool _object_page_scan(gc_page_t* page) {
     return result;
 }
 
-EXPORT decl_func
-object_t* object_mutation(object_t* ptr) {
+INLINE bool _object_is_on_heap(object_t* ptr) {
+    return ((intptr_t)ptr & 3) == 0             // Avoid data packed into the pointer, like small integers and strings.
+        && ((intptr_t)ptr->vtable & 3) != 0;    // Avoid static declared objects, because they don't have a heap header.
+}
+
+INLINE void _object_mark_as_seen(object_t* ptr) {
+    if (ptr != NULL && _object_is_on_heap(ptr)) {
+        gc_page_t* page; ptrdiff_t slot;
+        _object_get_page_and_slot(ptr, &page, &slot);
+        page->marks[slot] |= 1;
+    }
+}
+
+HIDDEN void _object_mark_as_seen2(object_t** ptrptr) {
+    _object_mark_as_seen(*ptrptr);
+}
+
+
+
+
+
+EXTERN void object_allocator_init() {
+    allocator_struct.initialised = true;
+}
+
+EXPORT object_t* object_mutation(object_t* ptr) {
+    // Scanning not implemented yet...  Kept this in so as to not loose
+    // the concept and partial implementation of "riding the wave front".
     if (_marking_in_progress && _object_is_on_heap(ptr)) {
-        if (likely(_object_is_on_heap(ptr))) {
+        if (LIKELY(_object_is_on_heap(ptr))) {
             gc_page_t* page; ptrdiff_t slot;
             _object_get_page_and_slot(ptr, &page, &slot);
             if (page->marks[(gc_page_slot_t*)ptr - page->slots] != 3) {
@@ -223,8 +185,7 @@ object_t* object_mutation(object_t* ptr) {
     return ptr;
 }
 
-EXPORT decl_func
-void* object_create(vtable_t* vtable) {
+EXPORT void* object_create(vtable_t* vtable) {
     assert(vtable->array_el_size == 0);
     void* object = _object_alloc(vtable->object_size);
     assert(object != NULL);
@@ -232,8 +193,7 @@ void* object_create(vtable_t* vtable) {
     return object;
 }
 
-EXPORT decl_func
-void* array_create(vtable_t* vtable, int32_t length) {
+EXPORT void* array_create(vtable_t* vtable, int32_t length) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
     void* object = _object_alloc(vtable->object_size + vtable->array_el_size*length);
@@ -243,5 +203,17 @@ void* array_create(vtable_t* vtable, int32_t length) {
     return object;
 }
 
+EXPORT fun_t vtable_lookup(void* object, intptr_t id) {
+    vtable_t* vtable = object_get_vtable(object);
+    intptr_t index = id & vtable->functions_mask;
+    vtable_entry_t* entry = (vtable_entry_t*)(((char*)&(vtable->lookup[-1])) + index);
+    do {entry++;
+        // It's important that we use signed arithmatic here.
+        // Blank entries have -1 as the id, which will cause this
+        //    loop to exit and call the abort function (from the vtable)
+        //    It's a safety feature that costs us nothing.
+    } while ((entry->i ^ id) > 0);
+    return (fun_t){.f=entry->f, .o=object};
+}
 
 

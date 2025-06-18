@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Convert the linear calling convention to continuation passing style
 import dataclasses
 from dataclasses import dataclass
@@ -99,7 +101,7 @@ def __create_simple_continuation_function(fn: Function) -> Function:
 
 def __calculate_saved_vars(fn: Function) -> Function:
     # Input is the simple continuation function
-    # Output is the same function with Call.saved_vars properly populated\
+    # Output is the same function with Call.saved_vars properly populated
 
     labels = {op.name: index for index, op in enumerate(fn.ops) if isinstance(op, Label)}
     def do_a_pass(ops: tuple[Op, ...]) -> tuple[Op, ...]:
