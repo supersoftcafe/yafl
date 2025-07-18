@@ -1,3 +1,0 @@
-
-fun first<X,Y>(x:X,y:Y):X => x
-fun main() => first<Int32,Int32>(1,7)

@@ -1,45 +1,50 @@
+# Prelude
+
+Where am I?
+
+It has been many years since I entered this domain.
+
+Wandering, blindly taking wrong turns, I am sure.
+
+Is that light I see, in the distance.
+
 # Yet Another Functional Language (YAFL)
 
-Like many before me, I have issues with the current crop of programming languages. So I am going to create my own. Crazy yes?
+YAFL is my attempt at a language that is:
+1. Safe, like those languages with managed runtimes.
+2. Compact, the way that most modern languages are going.
+3. Implicitly parallel, so that all of the CPU threads are used.
+4. Scalable, so that you can write for micro controllers and super computers alike.
+5. Easy to use.
 
-Actually, I have been working on it for some time. Maybe half a year, or more. I have lost count.
+For these I take inspiration from other languages, to varying degrees.
 
-So, here it is. YAFL. The design goals are as follows:
+It's mostly functional, with some opt outs. That's not a design goal, but is a very good paradigm to follow in order to enable the parallelism design goal.
 
-1. Highly scalable both in terms of memory and compute. For this I mean that it should be a highly capable language for targeting small embedded systems with a single slow core and memory measured in Kbytes up to 96 core 128 Tbyte beasts, and be highly effective at using all of the resources available.
-2. No threads and no locking, at least not explicitly. Just write the logic of your program, and the compiler takes care of the rest.
-3. Concise, but not too concise. Haskell is bloody concise, and as a result is unreadable. Java is overtly obtuse, and as a result is unmaintainable. Kotlin does well, but doesn't go far enough. There is a happy sweet spot that I hope to achieve.
-4. Remove anti-patterns. There is heated debate on what is an anti-patttern, so for the sake of argument just assume that my word is law and I know best. I'll not be having class hierarchies for example.
-5. No null. Just doesn't exist. Get over it.
+It compiles to C first, then uses the local C compiler to produce binary output. The C output is messy, because it is CPS (Continuation Passing Style), but don't worry, YAFL isn't. We just convert to CPS.
 
-Functional is not a design goal, but is a useful paradigm to achieve these goals. It helps to simplify both the automatic memory management and auto parallelism. Pure functional isn't a goal either, and I don't intend to go that far, but balancing mutable vs immutable will be interesting. I am thinking of having islands of mutability.
-
-To keep things simple, nearly all operators are functions. "1 + 2" will always compile to "`+`(1, 2)", which is a function call to `+`. We will rely on the LLVM optimiser to remove the extra bloat, but what we get is super simple operator overloading.
-
-Overloads are a thing. Even Rust that eschews overloads actually does have them, just by another mechanism. Just imagine having a 'println' method that can't take a variety of input types. What a pain. In my world overloading is simple, just define multiple variants of a function with slightly different signatures.
-
-Type inference is a big thing. You can write a program almost never having to provide type information, despite this being a strongly typed language.
+String and int (it's a big int under the covers) are built in types, primitive in language terms, despite being heap allocated. That was a tough decision, but it makes so much other stuff simpler.
 
 # Progress
 
-Currently the compiler works. It's a big manual, but really it does useful stuff and generates beautiful LLVM IR that when compiled does work. Automatic heap management is mostly working. Type inference mostly works. It's a beautiful language!
-
-No io, strings or generics yet. This is a big problem, and made bigger because I have to do them in a particular order that means that we won't get string support until relatively late.
-
-This program builds, and works. It produces a shit-tonne of LLVM IR, and it's beautiful.
+Hardly anything works, but the following program does compile and run. It's really interesting to look at the intermediate C code.
 
 ```
-module Test
-
-import Io
 import System
 
-class Thing(height, age) {
-    fun both(value) => height + age + value
-}
-
-fun doSomethingWith(value, getter: (Int32) : Int32) => print(getter(value))
-
-fun main() => doSomethingWith(27, Thing(180, 48).both)
+fun main(): System::Int
+    ret System::print("Hi there\n")
 ```
+
+# Build and use
+
+
+# TODO
+
+* Write build and use instructions in readme
+* Tidy up command line for compiler and install script for libs
+* Generics
+* Type inference
+* Tagged unions
+
 

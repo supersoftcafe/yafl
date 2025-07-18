@@ -1,8 +1,0 @@
-namespace System
-
-
-fun print(str: System::String): System::Int
-    ret __builtin_op__<bigint>("print", str)
-
-fun print(int: System::Int): System::Int
-    ret print(String(int))

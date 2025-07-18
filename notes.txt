@@ -1,9 +1,0 @@
-cd yaflc1
-cmake .
-make
-cd ../yaflk3
-gradle build
-cd ../test
-./test.sh
-
-

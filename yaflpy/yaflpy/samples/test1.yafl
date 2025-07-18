@@ -1,3 +1,0 @@
-
-fun main(): Int32
-    ret 1i32

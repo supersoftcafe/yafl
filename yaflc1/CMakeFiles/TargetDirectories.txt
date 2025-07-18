@@ -1,3 +1,0 @@
-/Users/mbrown/Projects/yafl/yaflc1/CMakeFiles/yaflc1.dir
-/Users/mbrown/Projects/yafl/yaflc1/CMakeFiles/edit_cache.dir
-/Users/mbrown/Projects/yafl/yaflc1/CMakeFiles/rebuild_cache.dir

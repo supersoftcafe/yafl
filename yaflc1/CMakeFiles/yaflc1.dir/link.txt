@@ -1,2 +1,0 @@
-/Library/Developer/CommandLineTools/usr/bin/ar qc libyaflc1.a CMakeFiles/yaflc1.dir/main.c.o CMakeFiles/yaflc1.dir/fiber.c.o CMakeFiles/yaflc1.dir/context.c.o CMakeFiles/yaflc1.dir/queue.c.o CMakeFiles/yaflc1.dir/blitz.c.o CMakeFiles/yaflc1.dir/heap.c.o CMakeFiles/yaflc1.dir/object.c.o
-/Library/Developer/CommandLineTools/usr/bin/ranlib libyaflc1.a
