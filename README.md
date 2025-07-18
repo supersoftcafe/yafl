@@ -11,6 +11,7 @@ Is that light I see, in the distance.
 # Yet Another Functional Language (YAFL)
 
 YAFL is my attempt at a language that is:
+
 1. Safe, like those languages with managed runtimes.
 2. Compact, the way that most modern languages are going.
 3. Implicitly parallel, so that all of the CPU threads are used.
@@ -36,13 +37,41 @@ fun main(): System::Int
     ret System::print("Hi there\n")
 ```
 
+# Requirements
+
+* Python 3
+* PyInstaller
+* CMake
+* A C compiler like gcc, clang or msvc
+
 # Build and use
 
+Building the compiler
+```
+cd compiler
+mkdir build
+cd build
+cmake ..
+cmake --build .
+```
+
+Building the library
+```
+cd yafllib
+mkdir build
+cd build
+cmake ..
+cmake --build .
+```
+
+You'll need to ensure that the header and library are findable before using the compiler. Copy the above example to "test.yafl" and run the compiler to see the options.
 
 # TODO
 
 * Write build and use instructions in readme
 * Tidy up command line for compiler and install script for libs
+* Add proper statements with if/else etc
+* If a function call takes exactly one parameter, don't require parentheses.
 * Generics
 * Type inference
 * Tagged unions
