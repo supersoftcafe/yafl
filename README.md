@@ -36,16 +36,7 @@ fun main(): System::Int
 
 # Build and use
 
-Building the compiler
-```
-cd compiler
-mkdir build
-cd build
-cmake ..
-cmake --build .
-```
-
-Building the library.
+Building the 'compiler' and 'yafllib'. It's the same commands in each folder.
 ```
 Unix like OSs                           |   Microsoft Windows
 --------------------------------------------------------------------------------
