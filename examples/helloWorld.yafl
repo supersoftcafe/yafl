@@ -1,0 +1,6 @@
+
+import System
+
+fun main(): System::Int
+    ret System::print("Hi there\n")
+

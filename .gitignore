@@ -1,6 +1,13 @@
+yafllib/build/**
+yafllib/dist/**
+
 compiler/build/**
+compiler/dist/**
 compiler/gen/**
 compiler/.gradle/**
+build/**
+
+**/__pycache__
 
 build-*
 .DS_Store
@@ -15,10 +22,16 @@ yaflk2/build/**
 yaflk3/.gradle/**
 yaflk3/.idea/**
 yaflk3/build/**
+yaflc/build/**
+yaflc/yaflc.kdev4
 
-
+.kdev4
+compiler/*.spec
 
 cmake-build-debug
+cmake-build-release
+._.DS_Store
+.idea
 
 # Compiled class file
 *.class

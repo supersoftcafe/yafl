@@ -1,9 +1,0 @@
-
-module Io
-
-import System
-
-fun print(value: Int64): Int32 => value < 0i64 ? putchar(45) + print(-value) : ((value < 10i64 ? 0 : print(value/10i64)) + putchar(48 + int32(value%10i64)))
-fun print(value: Int32): Int32 => print(int64(value))
-fun print(value: Int16): Int32 => print(int64(value))
-fun print(value: Int8 ): Int32 => print(int64(value))

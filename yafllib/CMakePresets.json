@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19
+  },
+  "configurePresets": [
+    {
+      "name": "debug-unix",
+      "displayName": "Debug (Unix Makefiles)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/debug-unix",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "debug-windows",
+      "displayName": "Debug (Visual Studio)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/debug-windows",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug-unix",
+      "configurePreset": "debug-unix"
+    },
+    {
+      "name": "debug-windows",
+      "configurePreset": "debug-windows",
+      "configuration": "Debug"
+    }
+  ]
+}
+
