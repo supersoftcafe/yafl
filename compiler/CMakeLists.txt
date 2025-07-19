@@ -1,13 +1,14 @@
-cmake_minimum_required(VERSION 3.15)
-project(MyPythonApp)
 
-# Set your main Python script here
-set(MAIN_SCRIPT main.py)
+cmake_minimum_required(VERSION 3.19)
+project(yafl)
 
-# Set output name
-set(EXECUTABLE_NAME my_python_app)
+# Main Python script
+set(MAIN_SCRIPT ${CMAKE_SOURCE_DIR}/main.py)
+message(STATUS "PyInstaller script path: ${MAIN_SCRIPT}")
 
-# Add a custom target to run PyInstaller
+# Output executable name directly 'yafl'
+set(EXECUTABLE_NAME yafl)
+
 add_custom_target(build_executable ALL
     COMMAND ${CMAKE_COMMAND} -E env
         pyinstaller --onefile --name ${EXECUTABLE_NAME} ${MAIN_SCRIPT}
@@ -15,6 +16,9 @@ add_custom_target(build_executable ALL
     COMMENT "Building standalone executable using PyInstaller"
 )
 
-# Optional: clean up PyInstaller build directories on 'make clean'
-set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "build;dist;__pycache__;${EXECUTABLE_NAME}.spec")
+install(PROGRAMS ${CMAKE_SOURCE_DIR}/dist/${EXECUTABLE_NAME}
+        DESTINATION bin)
+
+set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES
+    "build;dist;__pycache__;${EXECUTABLE_NAME}.spec")
 

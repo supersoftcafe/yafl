@@ -1,6 +1,11 @@
+yafllib/build/**
+yafllib/dist/**
+
 compiler/build/**
+compiler/dist/**
 compiler/gen/**
 compiler/.gradle/**
+build/**
 
 **/__pycache__
 

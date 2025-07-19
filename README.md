@@ -55,13 +55,13 @@ cmake ..
 cmake --build .
 ```
 
-Building the library
+Building the library.
 ```
-cd yafllib
-mkdir build
-cd build
-cmake ..
-cmake --build .
+Unix like OSs                           |   Microsoft Windows
+--------------------------------------------------------------------------------
+cmake --preset debug-unix               |   cmake --preset debug-windows
+cmake --build --preset debug-unix       |   cmake --build --preset debug-windows
+sudo cmake --install build/debug-unix   |   cmake --install build\debug-windows
 ```
 
 You'll need to ensure that the header and library are findable before using the compiler. Copy the above example to "test.yafl" and run the compiler to see the options.
