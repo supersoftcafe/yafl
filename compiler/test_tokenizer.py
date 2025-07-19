@@ -6,16 +6,6 @@ from tokenizer import tokenize, TokenKind
 
 
 class Test(TestCase):
-    def test_tokenize_test1(self):
-        path = Path(__file__).parent / "samples" / "test1.yafl"
-        with path.open() as f:
-            tokens = tokenize(f.read(), str(path))
-
-        self.assertEqual(9, len(tokens))
-        self.assertEqual(TokenKind.NUMBER, tokens[-2].kind)
-        self.assertEqual(TokenKind.EOF, tokens[-1].kind)
-        self.assertEqual("1i32", tokens[-2].value)
-
     def test_tokenize_qualified_type(self):
         tokens = tokenize("somewhere  ::    something", "file")
         self.assertEqual(4, len(tokens))

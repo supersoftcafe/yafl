@@ -59,7 +59,7 @@ def main():
 
         if args.a:
             asm_result = subprocess.run(
-                ["clang", "-x", "c", "-", f"-O{args.O}", "-I", c._lowlevel_code_path, "-L", c._lowlevel_code_path / "build" / "lib", "-l", "yaflcore", "-S", "-o", args.a],
+                ["clang", "-x", "c", "-", f"-O{args.O}", "-l", "yafl", "-S", "-o", args.a],
                 input=c_code, text=True,
                 capture_output=True
             )
@@ -70,7 +70,7 @@ def main():
 
         if args.o:
             bin_result = subprocess.run(
-                ["clang", "-x", "c", "-", "-s", f"-O{args.O}", "-I", c._lowlevel_code_path, "-L", c._lowlevel_code_path / "build" / "lib", "-l", "yaflcore", "-o", args.o],
+                ["clang", "-x", "c", "-", "-s", f"-O{args.O}", "-l", "yafl", "-o", args.o],
                 input=c_code, text=True,
                 capture_output=True
             )

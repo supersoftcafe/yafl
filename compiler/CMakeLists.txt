@@ -11,7 +11,7 @@ set(EXECUTABLE_NAME yafl)
 
 add_custom_target(build_executable ALL
     COMMAND ${CMAKE_COMMAND} -E env
-        pyinstaller --onefile --name ${EXECUTABLE_NAME} ${MAIN_SCRIPT}
+        pyinstaller --add-data "stdlib:stdlib" --onefile --name ${EXECUTABLE_NAME} ${MAIN_SCRIPT}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building standalone executable using PyInstaller"
 )

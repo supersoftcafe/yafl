@@ -64,7 +64,25 @@ cmake --build --preset debug-unix       |   cmake --build --preset debug-windows
 sudo cmake --install build/debug-unix   |   cmake --install build\debug-windows
 ```
 
-You'll need to ensure that the header and library are findable before using the compiler. Copy the above example to "test.yafl" and run the compiler to see the options.
+On Unix like OSs you may have to set the library path in order to run the resulting executables like so:
+```
+export LD_LIBRARY_PATH=/usr/local/lib
+```
+
+You can test that the compiler is installed and working like so:
+```
+cd examples
+yafl -o test hellowWorld.yafl
+./test
+```
+
+If you like, you can examine the intermediate C code like so:
+```
+cd examples
+yafl -c test.c hellowWorld.yafl
+more test.c
+```
+
 
 # TODO
 

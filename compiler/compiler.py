@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import lowering.integers
 import lowering.strings
 import lowering.lambdas
@@ -33,8 +35,15 @@ class Input:
     filename: str
 
 
-_stdlib_code_path = Path(__file__).parent / "stdlib"
-_lowlevel_code_path = Path(__file__).parent / "lowlevel"
+if getattr(sys, 'frozen', False):
+    # Running inside PyInstaller bundle
+    __base_path = Path(sys._MEIPASS)
+else:
+    # Running normally
+    __base_path = Path(__file__).parent
+_stdlib_code_path = __base_path / "stdlib"
+
+
 
 def _read_source(path: Path) -> Input:
     with open(path, 'r', encoding='utf-8') as f:
