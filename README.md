@@ -1,13 +1,3 @@
-# Prelude
-
-Where am I?
-
-It has been many years since I entered this domain.
-
-Wandering, blindly taking wrong turns, I am sure.
-
-Is that light I see, in the distance.
-
 # Yet Another Functional Language (YAFL)
 
 YAFL is my attempt at a language that is:
