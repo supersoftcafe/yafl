@@ -36,7 +36,7 @@ fun main(): System::Int
 
 # Build and use
 
-Building the 'compiler' and 'yafllib'. It's the same commands in each folder.
+Building 'compiler' and 'yafllib'. It's the same commands in each folder.
 ```
 Unix like OSs                           |   Microsoft Windows
 --------------------------------------------------------------------------------
@@ -70,7 +70,7 @@ more test.c
 * Tidy up command line for compiler and install script for libs
 * Add proper statements with if/else etc
 * If a function call takes exactly one parameter, don't require parentheses.
-* Generics
+* Generics based on trait systems like in Rust, or like classes in Haskel
 * Type inference
 * Tagged unions
 
