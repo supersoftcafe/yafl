@@ -25,7 +25,7 @@ yaflk3/build/**
 yaflc/build/**
 yaflc/yaflc.kdev4
 
-.kdev4
+**/*.kdev4
 compiler/*.spec
 
 cmake-build-debug

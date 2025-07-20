@@ -83,4 +83,7 @@ more test.c
 * Type inference
 * Tagged unions
 
+# Links
+
+* [Architecture](docs/architecture.md)
 
