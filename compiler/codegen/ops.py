@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Dict, Any, Tuple, Union
-from codegen.param import RParam, LParam, StackVar, NewStruct
+from codegen.param import RParam, LParam, StackVar, NewStruct, GlobalFunction
 import codegen.typedecl as t
 from codegen.tools import mangle_name
 
@@ -11,6 +11,9 @@ from codegen.tools import mangle_name
 @dataclass(frozen=True)
 class Op:
     saved_vars: frozenset[StackVar] = field(default=frozenset(), kw_only=True) # Which locals need to persist across this call
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return False
 
     def rename_vars(self, renames: dict[str, str]) -> Op:
         return self
@@ -41,6 +44,9 @@ class Move(Op):
     target: LParam
     source: RParam
 
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.target) or predicate(self.source)
+
     def rename_vars(self, renames: dict[str, str]) -> Move:
         return dataclasses.replace(self, target=self.target.rename_vars(renames), source=self.source.rename_vars(renames))
 
@@ -70,6 +76,9 @@ class Jump(Op):
 class JumpIf(Op):
     label: str
     condition: RParam
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.condition)
 
     def rename_vars(self, renames: dict[str, str]) -> JumpIf:
         return dataclasses.replace(self, condition=self.condition.rename_vars(renames), label=renames.get(self.label, self.label))
@@ -120,6 +129,12 @@ class Call(Op):
     parameters: RParam # Must evaluate to a struct
     register: LParam|None = None # Target of operation result, unless musttail == True
     musttail: bool = False # Current function will end here and the return value is the return of this call
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.function) or predicate(self.parameters) or (self.register and predicate(self.register))
+
+    def is_direct_call(self) -> bool:
+        return isinstance(self.function, GlobalFunction)
 
     def rename_vars(self, renames: dict[str, str]) -> Call:
         return dataclasses.replace(self,
@@ -175,6 +190,9 @@ class Return(Op):
     def __post_init__(self):
         if self.value is None:
             raise ValueError()
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.value)
 
     def rename_vars(self, renames: dict[str, str]) -> Return:
         return dataclasses.replace(self, value=self.value.rename_vars(renames))

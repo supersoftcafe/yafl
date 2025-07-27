@@ -17,7 +17,7 @@ def cast[_T](the_type: type[_T], the_object: object|None) -> _T:
 def unique(lst):
     return list(dict.fromkeys(lst))
 
-def group_by_key[_T, _K](objects: Iterable[_T], key_func: Callable[[_T], _K]) -> dict[_K, list[_T]]:
+def group_by_key[_T, _K, _V](objects: Iterable[_T], key_func: Callable[[_T], _K], value_func: Callable[[list[_T]], _V] = lambda t: t) -> dict[_K, _V]:
     sorted_objects = sorted(objects, key=key_func)  # Sorting is required
     result = {key: list(group) for key, group in groupby(sorted_objects, key=key_func)}
     return result

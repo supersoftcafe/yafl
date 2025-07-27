@@ -219,6 +219,29 @@ def __convert_function_to_cps(fn: Function) -> tuple[dict[str, Function], dict[s
     return functions, objects
 
 
+# def __convert_func_to_static(fn: Function, async_func_set: set[str]) -> tuple[dict[str, Function], dict[str, Object]]:
+#     # Keep existing function and create an async variant
+#     def replace_call(op: Call) -> Call:
+#         f = op.function
+#         if op.musttail or not isinstance(f, GlobalFunction) or f.name in async_func_set: return op
+#         return dataclasses.replace(op, function=dataclasses.replace(f, name=f"{f.name}$original"))
+#     def rename_static_calls(fn: Function) -> Function:
+#         ops = tuple((replace_call(op) if isinstance(op, Call) else op) for op in fn.ops)
+#         return dataclasses.replace(fn, ops=ops)
+#     stack_fn = rename_static_calls(dataclasses.replace(fn, name=f"{fn.name}$original"))
+#     async_fn = rename_static_calls(__create_simple_continuation_function(fn, async_func_set))
+#     return {stack_fn.name: stack_fn, async_fn.name: async_fn}, dict()
+# 
+# 
+# def __find_async_functions(app: Application, prev_async_set: set[str]) -> set[str]:
+#     def __does_not_ref_static_func(op: Call) -> bool:
+#         return not isinstance(op.function, GlobalFunction) or op.function.name in prev_async_set
+#     def __does_func_reference_async(function: Function) -> bool:
+#         return any(1 for op in function.ops if isinstance(op, Call) and __does_not_ref_static_func(op))
+#     full_async_set = prev_async_set | {func.name for func in app.functions.values() if __does_func_reference_async(func)}
+#     return __find_async_functions(app, full_async_set) if len(prev_async_set) < len(full_async_set) else full_async_set
+
+
 def convert_application_to_cps(app: Application) -> Application:
     cps_result = [__convert_function_to_cps(fn) for _, fn in app.functions.items()]
     result = Application()

@@ -253,6 +253,8 @@ EXTERN object_t* integer_sub(object_t* self, object_t* data);
 EXTERN object_t* integer_div(object_t* self, object_t* data);
 EXTERN object_t* integer_rem(object_t* self, object_t* data);
 EXTERN int32_t   integer_cmp(object_t* self, object_t* data);
+EXTERN object_t* integer_shl(object_t* self, object_t* amount);
+EXTERN object_t* integer_shr(object_t* self, object_t* amount);
 
 EXTERN object_t* integer_add_int32(object_t* self, int32_t value);
 EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);

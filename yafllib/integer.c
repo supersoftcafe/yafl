@@ -126,25 +126,36 @@ EXPORT object_t* integer_sub(object_t* self, object_t* data) {
 
 
 
-EXPORT object_t* integer_div(object_t* self, object_t* data) {
-    if (LIKELY(((intptr_t)self & (intptr_t)data & 1) != 0)) {
-        intptr_t result = ((intptr_t)self / 2) / ((intptr_t)data / 2);
-        return (object_t*)(result * 2 + 1);
-    }
+struct object_pair {
+    object_t* first;
+    object_t* second;
+};
+
+HIDDEN struct object_pair _integer_long_division(object_t* self, object_t* data) {
+
     __abort_on_overflow(); // TODO: Implement long division
     __builtin_unreachable();
 }
 
+HIDDEN struct object_pair _integer_division(object_t* self, object_t* data) {
+    if (LIKELY(((intptr_t)self & (intptr_t)data & 1) != 0)) {
+        return (struct object_pair) {
+            .first  = (object_t*)(((intptr_t)self / 2) / ((intptr_t)data / 2) * 2 + 1),
+            .second = (object_t*)(((intptr_t)self / 2) % ((intptr_t)data / 2) * 2 + 1)
+        };
+    } else {
+        return _integer_long_division(self, data);
+    }
+}
+
+
+EXPORT object_t* integer_div(object_t* self, object_t* data) {
+    return _integer_division(self, data).first;
+}
 
 EXPORT object_t* integer_rem(object_t* self, object_t* data) {
-    if (LIKELY(((intptr_t)self & (intptr_t)data & 1) != 0)) {
-        intptr_t result = ((intptr_t)self / 2) % ((intptr_t)data / 2);
-        return (object_t*)(result * 2 + 1);
-    }
-    __abort_on_overflow(); // TODO: Implement long division
-    __builtin_unreachable();
+    return _integer_division(self, data).second;
 }
-
 
 EXPORT object_t* integer_add_intptr(object_t* self, intptr_t value) {
     integer_t* a = (integer_t*)self;
@@ -208,26 +219,18 @@ EXPORT COLD int integer_cmp_full(object_t* self, object_t* data) {
 }
 
 
-EXPORT int integer_cmp_intptr(object_t* self, intptr_t value) {
-    integer_t* a = (integer_t*)self;
-
-    intptr_t avalue;
-    if (((intptr_t)a & 1) != 0) {
-        avalue = (intptr_t)a / 2;
+EXPORT int integer_cmp_int32(object_t* self, int32_t value) {
+    if (((intptr_t)self & 1) != 0) {
+        intptr_t avalue = (intptr_t)self / 2;
         if (avalue < value) return -1;
         if (avalue > value) return 1;
         return 0;
     } else {
-        value = 0;
-        avalue = a->array[a->length-1];
-        if (a->length != 1)
-            value = 0;
+        integer_t* tmp = (integer_t*)alloca(offsetof(integer_t, array[1]));
+        tmp->array[0] = value;
+        tmp->length = 1;
+        return integer_cmp_full(self, (object_t*)tmp);
     }
-    if (avalue < value)
-        return -1;
-    if (avalue > value)
-        return 1;
-    return 0;
 }
 
 

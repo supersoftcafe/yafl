@@ -9,6 +9,7 @@ class Test(TestCase):
                    "\n"
                    "typealias Int16 : __builtin_type__<int16>\n"
                    "typealias Int32 : __builtin_type__<int32>\n"
+                   "typealias Int : __builtin_type__<bigint>\n"
                    "\n"
                    "fun `+`(left: System::Int16, right: System::Int16): System::Int16\n"
                    "    ret __builtin_op__<int16>(\"add\", left, right)\n"
@@ -18,8 +19,8 @@ class Test(TestCase):
                    "\n"
                    "namespace System\n"
                    "\n"
-                   "fun main(): System::Int32\n"
-                   "    ret 1i32 + 2i32 # Resolve correct plus method\n")
+                   "fun main(): System::Int\n"
+                   "    ret 1 + 2 # Resolve correct plus method\n")
 
         result = compile([Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)

@@ -4,7 +4,9 @@ import sys
 
 import lowering.integers
 import lowering.strings
+import lowering.globalfuncs
 import lowering.lambdas
+import lowering.inlining
 import lowering.cps
 import lowering.trim
 
@@ -101,7 +103,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 raise ValueError(f"Unexpected type {type(stmt)}")
     a.functions["__entrypoint__"] = __create_entry_point(main)
     a = lowering.trim.removed_unused_stuff(a)
+    a = lowering.globalfuncs.discover_global_function_calls(a)
+    a = lowering.inlining.inline_small_functions(a)            # TODO: Call->GlobalFunction is the indicator
     a = lowering.cps.convert_application_to_cps(a)
+    a = lowering.trim.removed_unused_stuff(a) # Again
     return a.gen(just_testing=just_testing)
 
 

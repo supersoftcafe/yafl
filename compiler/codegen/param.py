@@ -13,6 +13,9 @@ import codegen.typedecl as t
 
 @dataclass(frozen=True)
 class RParam:
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self)
+
     def get_type(self) -> t.Type:
         raise ValueError()
 
@@ -34,6 +37,9 @@ class InitArray(RParam): # Only for static initialisation of array types
     member_type: t.Type
     values: tuple[RParam, ...]
 
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or any(1 for v in self.values if v.test(predicate))
+
     def rename_vars(self, renames: dict[str, str]) -> RParam:
         return dataclasses.replace(self, values = tuple(x.rename_vars(renames) for x in self.values))
 
@@ -50,6 +56,9 @@ class InitArray(RParam): # Only for static initialisation of array types
 @dataclass(frozen=True)
 class NewStruct(RParam): # Create a new blank instance of the defined struct
     values: tuple[tuple[str, RParam], ...]
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or any(1 for _, p in self.values if p.test(predicate))
 
     def get_type(self) -> t.Struct:
         return t.Struct(tuple((name, rparam.get_type()) for name, rparam in self.values))
@@ -79,6 +88,9 @@ class Invoke(RParam):
     parameters: RParam
     type: t.Type
 
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.parameters.test(predicate)
+
     def get_type(self) -> t.Type:
         return self.type
 
@@ -106,6 +118,9 @@ class Invoke(RParam):
 class StructField(RParam):
     struct: RParam
     field: str
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.struct.test(predicate)
 
     def get_type(self) -> t.Type:
         xtype = self.struct.get_type()
@@ -157,6 +172,9 @@ class GlobalFunction(RParam):
     name: str
     object: RParam|None = None
 
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or (self.object and self.object.test(predicate))
+
     def get_type(self) -> t.FuncPointer:
         return t.FuncPointer()
 
@@ -178,6 +196,9 @@ class VirtualFunction(RParam):
     name: str
     object: RParam
     fast_lookup: bool = False
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.object.test(predicate)
 
     def get_type(self) -> t.FuncPointer:
         return t.FuncPointer()
@@ -249,6 +270,9 @@ class ObjectField(LParam):
     object_name: str         # Which object type
     field: str               # Which named field
     index: RParam|None       # If 'field' is an array, this is required
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.pointer.test(predicate) or (self.index and self.index.test(predicate))
 
     def rename_vars(self, renames: dict[str, str]) -> ObjectField:
         return dataclasses.replace(self, pointer = self.pointer.rename_vars(renames), index = self.index and self.index.rename_vars(renames))
