@@ -258,7 +258,8 @@ EXTERN object_t* integer_shr(object_t* self, object_t* amount);
 
 EXTERN object_t* integer_add_int32(object_t* self, int32_t value);
 EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);
-EXTERN int32_t   integer_to_int32(object_t* self, int* overflow);
+EXTERN int32_t   integer_to_int32_with_overflow(object_t* self, int* overflow);
+EXTERN int32_t   integer_to_int32(object_t* self);
 EXTERN object_t* integer_create_from_int32(int32_t value);
 
 INLINE bool integer_test_gt(object_t* self, object_t* data) { return integer_cmp(self, data) >  0; }

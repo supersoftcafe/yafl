@@ -137,8 +137,8 @@ EXPORT object_t* string_slice_int32(object_t* self, int32_t start, int32_t end) 
 
 EXPORT object_t* string_slice(object_t* self, object_t* start_int, object_t* end_int) {
     int start_overflow, end_overflow;
-    int32_t start_int32 = integer_to_int32(start_int, &start_overflow);
-    int32_t end_int32 = integer_to_int32(end_int, &end_overflow);
+    int32_t start_int32 = integer_to_int32_with_overflow(start_int, &start_overflow);
+    int32_t end_int32 = integer_to_int32_with_overflow(end_int, &end_overflow);
     return string_slice_int32(self, start_int32, end_int32);
 }
 
@@ -171,7 +171,7 @@ EXPORT object_t* print_string(object_t* self) {
 EXPORT object_t* wchar_to_string(object_t* integer) {
     uint8_t utf8[4];
     int overflow = 0;
-    int32_t codepoint = integer_to_int32(integer, &overflow);
+    int32_t codepoint = integer_to_int32_with_overflow(integer, &overflow);
     if (codepoint >= 0 && !overflow) {
         if (codepoint <= 0x7F) {
             utf8[0] = (uint8_t)codepoint;

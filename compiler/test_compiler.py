@@ -170,3 +170,13 @@ class Test(TestCase):
         result = compile([Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
+
+    def test_stdlib2(self):
+        content = ("import System\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "    ret System::print(\"Hello\")\n")
+
+        result = compile([Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)

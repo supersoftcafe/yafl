@@ -245,7 +245,7 @@ EXPORT int32_t integer_cmp(object_t* self, object_t* data) {
 }
 
 
-EXPORT int32_t integer_to_int32(object_t* self, int* overflow) {
+EXPORT int32_t integer_to_int32_with_overflow(object_t* self, int* overflow) {
     intptr_t result;
     if (((intptr_t)self & 1) != 0) {
         result = (intptr_t)self / 2;
@@ -269,6 +269,12 @@ EXPORT int32_t integer_to_int32(object_t* self, int* overflow) {
     }
 
     return result;
+}
+
+
+EXPORT int32_t integer_to_int32(object_t* self) {
+    int overflow;
+    return integer_to_int32_with_overflow(self, &overflow);
 }
 
 

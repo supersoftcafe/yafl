@@ -59,19 +59,19 @@ def _read_stdlib_code(use_stdlib: bool) -> list[Input]:
 
 
 def __create_entry_point(main: s.FunctionStatement) -> Function:
-    sv = cg_p.StackVar(Int(32), "result")
+    sv = cg_p.StackVar(Int(0), "result")
     return Function(
         name="__entrypoint__",
         params=Struct(fields=(("this", DataPointer()),)),
         result=Int(32),
-        stack_vars=Struct(fields=(("result", Int(32)),)),
+        stack_vars=Struct(fields=(("result", Int(0)),)),
         ops=(
             cg_o.Call(
                 function=cg_p.GlobalFunction(main.name),
                 parameters=cg_p.NewStruct(()),
                 register=sv
             ),
-            cg_o.Return(sv)
+            cg_o.Return(cg_p.Invoke("integer_to_int32", cg_p.NewStruct((("p0",sv),)), Int(32)))
         )
     )
 
@@ -104,9 +104,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     a.functions["__entrypoint__"] = __create_entry_point(main)
     a = lowering.trim.removed_unused_stuff(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
-    a = lowering.inlining.inline_small_functions(a)            # TODO: Call->GlobalFunction is the indicator
-    a = lowering.cps.convert_application_to_cps(a)
-    a = lowering.trim.removed_unused_stuff(a) # Again
+    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+    a = lowering.trim.removed_unused_stuff(lowering.cps.convert_application_to_cps(a))
     return a.gen(just_testing=just_testing)
 
 
