@@ -99,21 +99,26 @@ class Int(Type):
         if self.precision != 0:
             return f"((int{self.precision}_t){data})"
 
+        sign = 0
+        if data < 0:
+            sign = -1
+            data = -data
+
         array: list[int] = []
-        while data != -1 and data != 0:
+        while data != 0:
             array.append(data & mask_int)
             data = data >> 32
 
-        if len(array) == 0 or (data == -1 and array[-1] >= 0) or (data == 0 and array[-1] < 0):
-            array.append(data)
-
-        if len(array) <= 1:
-            return f"INTEGER_LITERAL_1({array[0]})"
+        if not array:
+            return f"INTEGER_LITERAL_1(0, 0)"
+        elif len(array) <= 1:
+            return f"INTEGER_LITERAL_1({sign}, {array[0]})"
         elif len(array) == 2:
-            return f"INTEGER_LITERAL_2({array[1]})"
-        groups = [[x for _, x in group] for _, group in groupby(enumerate(array), key=lambda x: x[0] // 2)]
-        values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
-        return f"INTEGER_LITERAL_N({', '.join(values)})"
+            return f"INTEGER_LITERAL_2({sign}, {array[1]})"
+        else:
+            groups = [[x for _, x in group] for _, group in groupby(enumerate(array), key=lambda x: x[0] // 2)]
+            values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
+            return f"INTEGER_LITERAL_N({sign}, {', '.join(values)})"
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return f"int{self.precision}_t" if self.precision != 0 else "object_t*"

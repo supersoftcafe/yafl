@@ -136,9 +136,8 @@ EXPORT object_t* string_slice_int32(object_t* self, int32_t start, int32_t end) 
 
 
 EXPORT object_t* string_slice(object_t* self, object_t* start_int, object_t* end_int) {
-    int start_overflow, end_overflow;
-    int32_t start_int32 = integer_to_int32_with_overflow(start_int, &start_overflow);
-    int32_t end_int32 = integer_to_int32_with_overflow(end_int, &end_overflow);
+    int32_t start_int32 = integer_to_int32(start_int);
+    int32_t end_int32 = integer_to_int32(end_int);
     return string_slice_int32(self, start_int32, end_int32);
 }
 

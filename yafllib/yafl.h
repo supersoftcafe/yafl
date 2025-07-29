@@ -163,6 +163,7 @@ EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
 EXTERN void object_allocator_init(); // Initialise thread local stuff on this thread for allocator
 
+EXTERN void abort_on_maths_error();
 EXTERN void abort_on_vtable_lookup();
 EXTERN void abort_on_out_of_memory();
 EXTERN void abort_on_too_large_object();
@@ -227,24 +228,25 @@ INLINE bool test_lt_int32(int32_t self, int32_t data) { return self  < data; }
 typedef struct integer {
     vtable_t* vtable;
     uint32_t length;
-    intptr_t array[0];
+    int32_t sign;
+    uintptr_t array[];
 } ALIGNED integer_t;
 
 struct integer_vtable;
 EXTERN struct integer_vtable INTEGER_VTABLE;
 
 
-#define INTEGER_LITERAL_N(count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,array})
+#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,array})
 #if WORD_SIZE == 64
 #define INTEGER_LITERAL_N_1(value1) ((intptr_t)(value1))
 #define INTEGER_LITERAL_N_2(value1, value2) (((intptr_t)(value1)&0xffffffffull)|(intptr_t)(value2))
-#define INTEGER_LITERAL_1(value1) (value1<INTPTR_MIN/2||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(1,{value1}):(object_t*)((intptr_t)value1*2+1))
-#define INTEGER_LITERAL_2(value1, value2) INTEGER_LITERAL_N(2, {value1, value2})
+#define INTEGER_LITERAL_1(sign, value1) ((sign&&value1>INTPTR_MIN/2+1)||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_2(sign, value1, value2) ((sign&&value2>INT32_MAX/2+1)||value2>INT32_MAX/2?INTEGER_LITERAL_N(sign,2,{value1,value2}):(object_t*)((((intptr_t)value2<<32)+value1)*(sign?-1:1)*2+1))
 #else
 #define INTEGER_LITERAL_N_1(value1) value1
 #define INTEGER_LITERAL_N_2(value1, value2) value1, value2
-#define INTEGER_LITERAL_1(value1) (value1<INTPTR_MIN/2||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(1,{value1}):(object_t*)((intptr_t)value1*2+1))
-#define INTEGER_LITERAL_2(value1, value2) INTEGER_LITERAL_N(2, {value1, value2})
+#define INTEGER_LITERAL_1(sign, value1) ((sign&&value1>INTPTR_MAX/2+1)||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_2(sign, value1, value2) INTEGER_LITERAL_N(sign, 2, {value1, value2})
 #endif
 
 
