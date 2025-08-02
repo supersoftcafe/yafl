@@ -73,6 +73,11 @@ TEST(tag_literals)
 TEST_END()
 
 
+TEST(conversions)
+    int32_t x = integer_to_int32(INTEGER_LITERAL_1(0, 0));
+TEST_END()
+
+
 TEST(addition)
     TEST_ADD(L(21), L(20), L(1))
     TEST_ADD(BL3(0, 0,0,2), BL3(0, 0,0,1), BL3(0, 0,0,1))
@@ -112,6 +117,7 @@ static void entrypoint(object_t* self, fun_t continuation) {
     struct test_results results = {0, 0};
 
     TEST_RUN(tag_literals)
+    TEST_RUN(conversions)
     TEST_RUN(addition)
     TEST_RUN(subtraction)
     TEST_RUN(multiplication)

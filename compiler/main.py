@@ -70,7 +70,7 @@ def main():
 
         if args.o:
             bin_result = subprocess.run(
-                ["clang", "-x", "c", "-", f"-O{args.O}", "-l", "yafl", "-o", args.o],
+                ["clang", "-g", "-x", "c", "-", f"-O{args.O}", "-l", "yafl", "-o", args.o],
                 input=c_code, text=True,
                 capture_output=True
             )

@@ -66,8 +66,6 @@ more test.c
 
 # TODO
 
-* Write build and use instructions in readme
-* Tidy up command line for compiler and install script for libs
 * Add proper statements with if/else etc
 * If a function call takes exactly one parameter, don't require parentheses.
 * Generics based on trait systems like in Rust, or like classes in Haskel
@@ -77,4 +75,5 @@ more test.c
 # Links
 
 * [Architecture](docs/architecture.md)
+* [Heap and GC](docs/heap_and_gc.md)
 

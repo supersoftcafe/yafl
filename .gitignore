@@ -1,3 +1,4 @@
+yafllib/build2/**
 yafllib/build/**
 yafllib/dist/**
 
@@ -9,6 +10,11 @@ build/**
 
 **/__pycache__
 **/.*.swp
+examples/test
+examples/*.c
+examples/*.asm
+examples/*.a
+examples/*.s
 
 build-*
 .DS_Store

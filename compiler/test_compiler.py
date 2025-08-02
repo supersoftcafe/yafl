@@ -177,3 +177,4 @@ class Test(TestCase):
         result = compile([Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
+        

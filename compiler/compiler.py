@@ -63,7 +63,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
     return Function(
         name="__entrypoint__",
         params=Struct(fields=(("this", DataPointer()),)),
-        result=Int(32),
+        result=Int(0),
         stack_vars=Struct(fields=(("result", Int(0)),)),
         ops=(
             cg_o.Call(
@@ -71,7 +71,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
                 parameters=cg_p.NewStruct(()),
                 register=sv
             ),
-            cg_o.Return(cg_p.Invoke("integer_to_int32", cg_p.NewStruct((("p0",sv),)), Int(32)))
+            cg_o.Return(sv)
         )
     )
 
