@@ -111,14 +111,14 @@ class Int(Type):
 
         if not array:
             return f"INTEGER_LITERAL_1(0, 0)"
-        elif len(array) <= 1:
+        elif len(array) == 1:
             return f"INTEGER_LITERAL_1({sign}, {array[0]})"
         elif len(array) == 2:
-            return f"INTEGER_LITERAL_2({sign}, {array[1]})"
+            return f"INTEGER_LITERAL_2({sign}, {array[0]}, {array[1]})"
         else:
             groups = [[x for _, x in group] for _, group in groupby(enumerate(array), key=lambda x: x[0] // 2)]
             values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
-            return f"INTEGER_LITERAL_N({sign}, {', '.join(values)})"
+            return f"INTEGER_LITERAL_N({sign}, {len(array)}, {' INTEGER_LITERAL_SEP '.join(values)})"
 
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return f"int{self.precision}_t" if self.precision != 0 else "object_t*"
@@ -232,7 +232,7 @@ class Struct(Type):
         if any(missing_names):
             raise ValueError(f"Fields {missing_names} are not present in the struct for initialisation")
         new_indent = field_indent + "    "
-        strings = ",".join(f"\n{new_indent}.{mangle_name(name)} = {field_type._initialise(type_cache, data[name], new_indent)}" for name, field_type in self.fields if name in data)
+        strings = ",".join(f"\n{new_indent}.{mangle_name(name)} = {data[name]}" for name, field_type in self.fields if name in data)
         return f"{{ {strings} \n{field_indent}}}"
 
     def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:

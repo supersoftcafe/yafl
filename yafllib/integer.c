@@ -64,11 +64,12 @@ static inline uintptr_t _abs_val(intptr_t x) {
 
 #define _PROMOTE_LITERAL(name, literal)\
         integer_t* name;\
-        if (_IS_LITERAL(literal)) {\
+        if (!_IS_LITERAL(literal)) {\
             name = (integer_t*)literal;\
         } else {\
             name = alloca(offsetof(integer_t, array[1]));\
             name->sign = _sign_of(_UNTAG_LITERAL(literal));\
+            name->length = 1;\
             name->array[0] = _abs_val(_UNTAG_LITERAL(literal));\
         }
 
@@ -213,7 +214,7 @@ static integer_t* _subtract_abs(integer_t* a, integer_t* b, int32_t sign_result)
     return _normalize_integer(result);
 }
 
-object_t* integer_add(object_t* oa, object_t* ob) {
+object_t* integer_add_full(object_t* oa, object_t* ob) {
     if (_IS_LITERAL(oa) && _IS_LITERAL(ob)) {
         intptr_t sum = _UNTAG_LITERAL(oa) + _UNTAG_LITERAL(ob);
         return (object_t*)_integer_from_intptr(sum);
@@ -236,9 +237,11 @@ object_t* integer_add(object_t* oa, object_t* ob) {
     }
 }
 
-object_t* integer_subtract(object_t* oa, object_t* ob) {
+object_t* integer_sub_full(object_t* oa, object_t* ob) {
     if (_IS_LITERAL(oa) && _IS_LITERAL(ob)) {
-        intptr_t sum = _UNTAG_LITERAL(oa) + _UNTAG_LITERAL(ob);
+        intptr_t av = _UNTAG_LITERAL(oa);
+        intptr_t bv = _UNTAG_LITERAL(ob);
+        intptr_t sum = av - bv;
         return (object_t*)_integer_from_intptr(sum);
     }
 
@@ -287,14 +290,14 @@ static integer_t* _multiply_abs(integer_t* a, integer_t* b, int32_t sign_result)
     return result;
 }
 
-integer_t* integer_multiply(integer_t* oa, integer_t* ob) {
+object_t* integer_mul(object_t* oa, object_t* ob) {
     if (_IS_LITERAL(oa) && _IS_LITERAL(ob)) {
         // Both are literals: unpack and multiply directly
         intptr_t av = _UNTAG_LITERAL(oa);
         intptr_t bv = _UNTAG_LITERAL(ob);
         dword_t rv = (dword_t)av * (dword_t)bv;
         if (rv >= INTPTR_MIN/2 && rv <= INTPTR_MAX/2) {
-            return _TAG_LITERAL((intptr_t)rv);
+            return (object_t*)_TAG_LITERAL((intptr_t)rv);
         } else {
             integer_t* result = _integer_allocate(2);
             result->sign = rv < 0 ? -1 : 0;
@@ -304,20 +307,20 @@ integer_t* integer_multiply(integer_t* oa, integer_t* ob) {
             if (result->array[1] == 0) {
                 result->length = 1;
             }
-            return result;
+            return (object_t*)result;
         }
     }
 
     // If one is a literal 0 or 1, handle quickly
     if (_IS_LITERAL(oa)) {
         intptr_t av = _UNTAG_LITERAL(oa);
-        if (av == 0) return _TAG_LITERAL(0);
+        if (av == 0) return (object_t*)_TAG_LITERAL(0);
         if (av == 1) return ob;
     }
 
     if (_IS_LITERAL(ob)) {
         intptr_t bv = _UNTAG_LITERAL(ob);
-        if (bv == 0) return _TAG_LITERAL(0);
+        if (bv == 0) return (object_t*)_TAG_LITERAL(0);
         if (bv == 1) return oa;
     }
 
@@ -327,7 +330,7 @@ integer_t* integer_multiply(integer_t* oa, integer_t* ob) {
 
     // Perform full multiplication
     integer_t* r = _multiply_abs(ha, hb, ha->sign ^ hb->sign);
-    return r;
+    return (object_t*)r;
 }
 
 // Helper function to shift left by one bit (multiply by 2)
@@ -550,12 +553,12 @@ static void _divide_abs(integer_t* dividend, integer_t* divisor, int32_t sign_re
     }
 
     // Check if results can be converted to literals
-    *quotient = _normalize_integer(q);
-    *remainder = _normalize_integer(r);
+    *quotient = q;
+    *remainder = r;
 }
 
 // Public division function
-EXPORT object_t* integer_divide(object_t* oa, object_t* ob) {
+EXPORT object_t* integer_div(object_t* oa, object_t* ob) {
     // Handle literal remainder for common cases
     if (_IS_LITERAL(ob)) {
         intptr_t bv = _UNTAG_LITERAL(ob);
@@ -586,7 +589,7 @@ EXPORT object_t* integer_divide(object_t* oa, object_t* ob) {
 }
 
 // Public remainder function
-EXPORT object_t* integer_remainder(object_t* oa, object_t* ob) {
+EXPORT object_t* integer_rem(object_t* oa, object_t* ob) {
     // Handle literal remainder for common cases
     if (_IS_LITERAL(ob)) {
         intptr_t bv = _UNTAG_LITERAL(ob);

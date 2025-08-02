@@ -27,7 +27,7 @@ def __optimize_function_calls(func: Function, slots: dict[str, list[str]]) -> Fu
 # - If the slot only ever has one implementing function
 def discover_global_function_calls(app: Application) -> Application:
     all_slots: list[tuple[str, str]] = [(slot_name, func_name) for obj in app.objects.values() for slot_name, func_name in obj.functions]
-    slot_funcs: dict[str, list[str]] = group_by_key(all_slots, lambda s: s[0], lambda s: s[1])
+    slot_funcs: dict[str, list[str]] = group_by_key(all_slots, lambda s: s[0], lambda s: [x for _,x in s])
     new_functions = {name: __optimize_function_calls(func, slot_funcs) for name, func in app.functions.items()}
 
     new_app = Application()

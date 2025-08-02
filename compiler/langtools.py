@@ -19,7 +19,7 @@ def unique(lst):
 
 def group_by_key[_T, _K, _V](objects: Iterable[_T], key_func: Callable[[_T], _K], value_func: Callable[[list[_T]], _V] = lambda t: t) -> dict[_K, _V]:
     sorted_objects = sorted(objects, key=key_func)  # Sorting is required
-    result = {key: list(group) for key, group in groupby(sorted_objects, key=key_func)}
+    result = {key: value_func(list(group)) for key, group in groupby(sorted_objects, key=key_func)}
     return result
 
 def partition[_T](items: Iterable[_T], predicate: Callable[[_T], bool]) -> list[list[_T]]:

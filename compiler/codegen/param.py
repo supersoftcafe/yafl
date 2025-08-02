@@ -72,7 +72,7 @@ class NewStruct(RParam): # Create a new blank instance of the defined struct
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         xtype = self.get_type()
         type_name = xtype.declare(type_cache)
-        init_values = dict((name, expr.to_c(type_cache)) for name, expr in self.values)
+        init_values = {name: expr.to_c(type_cache) for name, expr in self.values}
         return f"({type_name}){xtype.initialise(type_cache, init_values)}"
 
     def get_live_vars(self) -> frozenset[StackVar]:
@@ -171,6 +171,10 @@ class Integer(RParam):
 class GlobalFunction(RParam):
     name: str
     object: RParam|None = None
+
+    def __post_init__(self):
+        if not isinstance(self.name, str):
+            raise ValueError()
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or (self.object and self.object.test(predicate))

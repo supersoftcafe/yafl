@@ -38,6 +38,15 @@
 #endif
 
 
+#if defined(__GNUC__)
+  #define LIKELY(x)   __builtin_expect(!!(x), 1)
+  #define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+  #define LIKELY(x)   (x)
+  #define UNLIKELY(x) (x)
+#endif
+
+
 #define indexof(type, field) (offsetof(type, field) / sizeof(((type*)NULL)->field))
 #define total_bits(type) (sizeof(type) * 8)
 
@@ -229,30 +238,53 @@ typedef struct integer {
     vtable_t* vtable;
     uint32_t length;
     int32_t sign;
-    uintptr_t array[];
+    uintptr_t array[
+#ifndef NDEBUG
+        4
+#endif
+    ];
 } ALIGNED integer_t;
 
 struct integer_vtable;
 EXTERN struct integer_vtable INTEGER_VTABLE;
 
 
-#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,array})
 #if WORD_SIZE == 64
+#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,((count)+1)/2,sign,array})
 #define INTEGER_LITERAL_N_1(value1) ((intptr_t)(value1))
-#define INTEGER_LITERAL_N_2(value1, value2) (((intptr_t)(value1)&0xffffffffull)|(intptr_t)(value2))
-#define INTEGER_LITERAL_1(sign, value1) ((sign&&value1>INTPTR_MIN/2+1)||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
-#define INTEGER_LITERAL_2(sign, value1, value2) ((sign&&value2>INT32_MAX/2+1)||value2>INT32_MAX/2?INTEGER_LITERAL_N(sign,2,{value1,value2}):(object_t*)((((intptr_t)value2<<32)+value1)*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_N_2(value1, value2) (((intptr_t)(value1)&0xffffffffull)|((intptr_t)(value2)<<32))
+#define INTEGER_LITERAL_1(sign, value1) (((!sign)&&(value1>INT32_MAX/2))||(value1>INT32_MAX/2+1)?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_2(sign, value1, value2) (((!sign)&&(value2>INT32_MAX/2))||(value2>INT32_MAX/2+1)?INTEGER_LITERAL_N(sign,2,{INTEGER_LITERAL_N_2(value1, value2)}):(object_t*)((((intptr_t)value2<<32)+value1)*(sign?-1:1)*2+1))
 #else
+#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,sign,array})
 #define INTEGER_LITERAL_N_1(value1) value1
 #define INTEGER_LITERAL_N_2(value1, value2) value1, value2
-#define INTEGER_LITERAL_1(sign, value1) ((sign&&value1>INTPTR_MAX/2+1)||value1>INTPTR_MAX/2?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
-#define INTEGER_LITERAL_2(sign, value1, value2) INTEGER_LITERAL_N(sign, 2, {value1, value2})
+#define INTEGER_LITERAL_1(sign, value1) (((!sign)&&value1>INT32_MAX/2)||(value1>INT32_MAX/2+1)?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_2(sign, value1, value2) INTEGER_LITERAL_N(sign, 2, {INTEGER_LITERAL_N_2(value1, value2)})
 #endif
+#define INTEGER_LITERAL_SEP ,
 
 
-EXTERN object_t* integer_add(object_t* self, object_t* data);
-EXTERN object_t* integer_sub(object_t* self, object_t* data);
+EXTERN object_t* integer_add_full(object_t* self, object_t* data);
+INLINE object_t* integer_add(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data, vc;
+    if (LIKELY(va&vb&1 && !__builtin_add_overflow(va, vb^1, &vc))) {
+        return (object_t*)vc;
+    }
+    return integer_add_full(self, data);
+}
+
+EXTERN object_t* integer_sub_full(object_t* self, object_t* data);
+INLINE object_t* integer_sub(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data, vc;
+    if (LIKELY(va&vb&1 && !__builtin_sub_overflow(va, vb^1, &vc))) {
+        return (object_t*)vc;
+    }
+    return integer_add_full(self, data);
+}
+
 EXTERN object_t* integer_div(object_t* self, object_t* data);
+EXTERN object_t* integer_mul(object_t* self, object_t* data);
 EXTERN object_t* integer_rem(object_t* self, object_t* data);
 EXTERN int32_t   integer_cmp(object_t* self, object_t* data);
 EXTERN object_t* integer_shl(object_t* self, object_t* amount);
@@ -264,9 +296,26 @@ EXTERN int32_t   integer_to_int32_with_overflow(object_t* self, int* overflow);
 EXTERN int32_t   integer_to_int32(object_t* self);
 EXTERN object_t* integer_create_from_int32(int32_t value);
 
-INLINE bool integer_test_gt(object_t* self, object_t* data) { return integer_cmp(self, data) >  0; }
-INLINE bool integer_test_eq(object_t* self, object_t* data) { return integer_cmp(self, data) == 0; }
-INLINE bool integer_test_lt(object_t* self, object_t* data) { return integer_cmp(self, data) <  0; }
+INLINE bool integer_test_gt(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data;
+    return LIKELY(va&vb&1 && va>vb) || integer_cmp(self, data) > 0;
+}
+INLINE bool integer_test_ge(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data;
+    return LIKELY(va&vb&1 && va>=vb) || integer_cmp(self, data) >= 0;
+}
+INLINE bool integer_test_eq(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data;
+    return LIKELY(va&vb&1 && va==vb) || integer_cmp(self, data) == 0;
+}
+INLINE bool integer_test_lt(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data;
+    return LIKELY(va&vb&1 && va<vb) || integer_cmp(self, data) < 0;
+}
+INLINE bool integer_test_le(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data;
+    return LIKELY(va&vb&1 && va<=vb) || integer_cmp(self, data) <= 0;
+}
 
 
 
