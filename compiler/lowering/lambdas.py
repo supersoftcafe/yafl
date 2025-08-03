@@ -95,6 +95,7 @@ def __scan_function_and_export_lambdas(statement: s.Statement) -> (s.Statement, 
 
         if cls:
             exported_statements.append(cls)
+        exported_statements.append(fnc)
         return result
 
     statement = statement.search_and_replace(g.ResolverRoot([]), export_if_lambda)

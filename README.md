@@ -67,6 +67,7 @@ more test.c
 # TODO
 
 * Add proper statements with if/else etc
+* Type inference
 * If a function call takes exactly one parameter, don't require parentheses.
 * Generics based on trait systems like in Rust, or like classes in Haskel
 * Type inference

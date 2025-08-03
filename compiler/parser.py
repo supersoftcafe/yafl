@@ -100,6 +100,18 @@ def __to_invokes(result: p.Result[tuple[e.Expression, list[e.Expression]]], toke
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
+def __to_pipeline(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    def accumulate(last_result: e.Expression, function: e.Expression) -> e.Expression:
+        # Wrap last result in a tuple, just-in-case it isn't a tuple already.
+        parameter = last_result if isinstance(last_result, e.TupleExpression)\
+            else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression(None, last_result)])
+        call = e.CallExpression(function.line_ref, function, parameter)
+        return call
+    left_expr, right_list = result.value
+    expr = reduce(accumulate, right_list, left_expr)
+    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+
+
 def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
         op, right = entry
@@ -292,7 +304,8 @@ __parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | _
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
-__parse_divmul  = (__parse_invoke   & p.many(p.sym(["%", "/", "*"]) & __parse_invoke    )) >> __to_call_operators
+__parse_pipeline= (__parse_invoke   & p.many(p.discard_sym("|>")    & __parse_invoke    )) >> __to_pipeline
+__parse_divmul  = (__parse_pipeline & p.many(p.sym(["%", "/", "*"]) & __parse_pipeline  )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
 __parse_compare = (__parse_addsub   & p.many(p.sym(["<", "=", ">"]) & __parse_addsub    )) >> __to_call_operators
 __parse_ternery = (__parse_compare  & p.many(p.discard_sym("?") & __parse_compare & p.discard_sym(":") & __parse_compare )) >> __to_ternery

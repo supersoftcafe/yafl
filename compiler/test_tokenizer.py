@@ -42,3 +42,14 @@ class Test(TestCase):
         self.assertEqual(TokenKind.IDENTIFIER, tokens[1].kind)
         self.assertEqual("Simple", tokens[1].value)
         self.assertEqual(TokenKind.EOF, tokens[2].kind)
+
+    def test_pipeline_operator(self):
+        tokens = tokenize("fred\n  |>bill", "file")
+        self.assertEqual(4, len(tokens))
+        self.assertEqual(TokenKind.IDENTIFIER, tokens[0].kind)
+        self.assertEqual("fred", tokens[0].value)
+        self.assertEqual(TokenKind.SYMBOLS, tokens[1].kind)
+        self.assertEqual("|>", tokens[1].value)
+        self.assertEqual(TokenKind.IDENTIFIER, tokens[2].kind)
+        self.assertEqual("bill", tokens[2].value)
+        self.assertEqual(TokenKind.EOF, tokens[3].kind)

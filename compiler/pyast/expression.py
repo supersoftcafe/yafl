@@ -287,6 +287,10 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
 class NamedExpression(Expression):
     name: str
 
+    def __post_init__(self):
+        if self.name == '$lambdas::lambda@p7Phul':
+            pass
+
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         # If the name resolves to just one statement we have a known type
         # The name might actually resolve to just one, or we might have gone

@@ -64,7 +64,7 @@ __kinds = [
     (re.compile(r"#.*"), None),  # Line comment
     (re.compile(r"\"([^\"]|(\\\\)|(\\\"))*\"?"), TokenKind.STRING),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
-    (re.compile(r"(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
+    (re.compile(r"(\|>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
     (re.compile(r"\d[\w_]*((\.[a-df-zA-DF-Z\d_]*)?([eE][+-][\w_]*)|(\.[\w_]*))?"), TokenKind.NUMBER),
     (re.compile(r"."), TokenKind.CRAP)
 ]
