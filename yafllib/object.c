@@ -51,6 +51,10 @@ thread_local struct {
 } allocator_struct;
 
 
+
+
+
+
 EXTERN void _object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
     *page_out = (gc_page_t*)((intptr_t)ptr & ~(sizeof(gc_page_t)-1));
     *slot_out = (gc_page_slot_t*)ptr - (*page_out)->slots;
@@ -70,6 +74,37 @@ HIDDEN void _object_declare_roots(void(*declare)(object_t**)) {
     _declare_roots_yafl(declare);
 }
 
+
+
+
+
+
+
+
+
+
+/*
+ * 1. Simplify main loop
+ * 2. Add state machine to page allocator
+ *    Uses worker head pointer from each thread to check for advancement. Null doesn't need advancement.
+ * .. If I ever want stack scanning, 'object_mutation' is a good point to add the extra hook.
+ */
+
+
+HIDDEN void _check_and_advance_fsa() {
+    // TODO: Move GC specific stuff to "gc.c"
+}
+
+
+
+
+
+
+
+
+
+
+
 HIDDEN void _object_bulk_alloc_new_pages() {
     if (!allocator_struct.initialised) {
         abort_on_heap_allocation_on_non_worker_thread();
@@ -87,6 +122,8 @@ HIDDEN void _object_bulk_alloc_new_pages() {
 }
 
 HIDDEN void* _object_alloc2(size_t size) {
+    _check_and_advance_fsa();
+
     if (size > MAX_OBJECT_SIZE) {
         // TODO: Support larger objects as multiples of page size
         abort_on_too_large_object();
@@ -158,19 +195,13 @@ INLINE bool _object_is_on_heap(object_t* ptr) {
         && ((intptr_t)ptr->vtable & 3) != 0;    // Avoid static declared objects, because they don't have a heap header.
 }
 
-INLINE void _object_mark_as_seen(object_t* ptr) {
+EXPORT void object_mark_as_seen(object_t* ptr) {
     if (ptr != NULL && _object_is_on_heap(ptr)) {
         gc_page_t* page; ptrdiff_t slot;
         _object_get_page_and_slot(ptr, &page, &slot);
         page->marks[slot] |= 1;
     }
 }
-
-HIDDEN void _object_mark_as_seen2(object_t** ptrptr) {
-    _object_mark_as_seen(*ptrptr);
-}
-
-
 
 
 
@@ -179,6 +210,7 @@ EXTERN void object_allocator_init() {
 }
 
 EXPORT object_t* object_mutation(object_t* ptr) {
+    _check_and_advance_fsa();
     // Scanning not implemented yet...  Kept this in so as to not loose
     // the concept and partial implementation of "riding the wave front".
     if (_marking_in_progress && _object_is_on_heap(ptr)) {

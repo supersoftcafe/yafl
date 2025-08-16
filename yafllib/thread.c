@@ -3,15 +3,7 @@
 #include "yafl.h"
 #include <pthread.h>
 
-
-typedef struct worker_node {
-    object_t parent;
-    _Atomic(struct worker_node*) next;
-    fun_t action;
-} worker_node_t;
-
-
-HIDDEN vtable_t* _worker_node_vt = VTABLE_DECLARE(0){
+EXPORT vtable_t* _worker_node_vt = VTABLE_DECLARE(0){
     .object_size = sizeof(worker_node_t),
     .array_el_size = 0,
     .object_pointer_locations = maskof(worker_node_t, .next) | maskof(worker_node_t, .action.o),
@@ -213,13 +205,14 @@ static void _thread_init() {
 }
 
 
-EXTERN object_t* thread_work_prepare(fun_t action) {
-    worker_node_t* node = _thread_create_node();
+EXPORT worker_node_t* thread_work_prepare(fun_t action) {
+    worker_node_t* node = (worker_node_t*)object_create(_worker_node_vt);
+    node->next = (worker_node_t*)NULL;
     node->action = action;
-    return &node->parent;
+    return node;
 }
 
-EXPORT void thread_work_post_fast(object_t* work) {
+EXPORT void thread_work_post_fast(worker_node_t* work) {
     // This is only ever called from the local thread, which means that we are in
     // an event currently. Therefore there is never a need to wake up the consumer.
     // It's already awake.
@@ -228,7 +221,7 @@ EXPORT void thread_work_post_fast(object_t* work) {
     _locals.local_queue_tail = node;
 }
 
-EXTERN void thread_work_post_io(object_t* work) {
+EXTERN void thread_work_post_io(worker_node_t* work) {
     // This could be called from anywhere, but it's really designed for use from
     // interrupt contexts or IO threads, where we don't have a work queue. Instead
     // we post this to one of the existing sideload queues on a worker thread, and

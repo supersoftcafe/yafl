@@ -10,7 +10,6 @@ static void declare_roots(void(*declare)(object_t**)) {
 }
 
 
-
 struct test_results {
     int passed;
     int failed;

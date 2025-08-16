@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include <stdatomic.h>
 #include <stdnoreturn.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -167,6 +168,7 @@ INLINE vtable_t* object_get_vtable(void* object) {
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
 EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t);
 EXTERN object_t* object_mutation(object_t* ptr);
+EXTERN void object_mark_as_seen(object_t* ptr);
 EXTERN fun_t vtable_lookup(void* object, intptr_t id);
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
@@ -190,14 +192,39 @@ EXTERN void abort_on_heap_allocation_on_non_worker_thread();
  *****************************
  **********************************************************/
 
+
 EXTERN void thread_set_hook(void(*)());
 EXTERN void declare_roots_thread(void(*)(object_t**));
 EXTERN void declare_local_roots_thread(void(*)(object_t**));
-EXTERN object_t* thread_work_prepare(fun_t action);
-EXTERN void thread_work_post_io(object_t* work);
-EXTERN void thread_work_post_fast(object_t* work);
 EXTERN void thread_start(void(*entrypoint)(object_t*, fun_t));
 
+typedef struct worker_node {
+    object_t parent;
+    _Atomic(struct worker_node*) next;
+    fun_t action;
+} worker_node_t;
+
+EXTERN worker_node_t* thread_work_prepare(fun_t action);
+EXTERN void thread_work_post_io(worker_node_t* work);
+EXTERN void thread_work_post_fast(worker_node_t* work);
+
+
+/**********************************************************
+ *****************************
+ *************
+ *****
+ **
+ *                   Lazy initialisation
+ **
+ *****
+ *************
+ *****************************
+ **********************************************************/
+
+
+#define LAZY_GLOBAL_FLAG(name) _Atomic(worker_node_t*) name = (worker_node_t*)0;
+INLINE bool lazy_global_init_required(_Atomic(worker_node_t*)* flag_ptr) {return 1!=(intptr_t)*flag_ptr;}
+EXPORT void lazy_global_init(_Atomic(worker_node_t*)* flag_ptr, fun_t init, fun_t callback);
 
 
 /**********************************************************
@@ -280,7 +307,7 @@ INLINE object_t* integer_sub(object_t* self, object_t* data) {
     if (LIKELY(va&vb&1 && !__builtin_sub_overflow(va, vb^1, &vc))) {
         return (object_t*)vc;
     }
-    return integer_add_full(self, data);
+    return integer_sub_full(self, data);
 }
 
 EXTERN object_t* integer_div(object_t* self, object_t* data);
