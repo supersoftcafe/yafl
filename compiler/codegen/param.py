@@ -4,8 +4,6 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Callable
 
-from xdg.Mime import get_type
-
 import langtools
 from codegen.tools import mangle_name
 import codegen.typedecl as t
@@ -13,6 +11,9 @@ import codegen.typedecl as t
 
 @dataclass(frozen=True)
 class RParam:
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self]
+
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self)
 
@@ -37,6 +38,9 @@ class InitArray(RParam): # Only for static initialisation of array types
     member_type: t.Type
     values: tuple[RParam, ...]
 
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + [param.flatten() for param in self.values]
+
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or any(1 for v in self.values if v.test(predicate))
 
@@ -56,6 +60,9 @@ class InitArray(RParam): # Only for static initialisation of array types
 @dataclass(frozen=True)
 class NewStruct(RParam): # Create a new blank instance of the defined struct
     values: tuple[tuple[str, RParam], ...]
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + [param.flatten() for name, param in self.values]
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or any(1 for _, p in self.values if p.test(predicate))
@@ -88,6 +95,9 @@ class Invoke(RParam):
     parameters: RParam
     type: t.Type
 
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + self.parameters.flatten()
+
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or self.parameters.test(predicate)
 
@@ -118,6 +128,9 @@ class Invoke(RParam):
 class StructField(RParam):
     struct: RParam
     field: str
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + self.struct.flatten()
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or self.struct.test(predicate)
@@ -171,10 +184,14 @@ class Integer(RParam):
 class GlobalFunction(RParam):
     name: str
     object: RParam|None = None
+    external: bool = False
 
     def __post_init__(self):
         if not isinstance(self.name, str):
             raise ValueError()
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + (self.object.flatten() if self.object else [])
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or (self.object and self.object.test(predicate))
@@ -200,6 +217,9 @@ class VirtualFunction(RParam):
     name: str
     object: RParam
     fast_lookup: bool = False
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + self.object.flatten()
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or self.object.test(predicate)
@@ -227,8 +247,37 @@ class VirtualFunction(RParam):
 
 
 @dataclass(frozen=True)
+class PointerTo(RParam):
+    value: LParam
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] + self.value.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.value.test(predicate)
+
+    def get_type(self) -> t.DataPointer:
+        return t.DataPointer()
+
+    def rename_vars(self, renames: dict[str, str]) -> PointerTo:
+        return dataclasses.replace(self, value = self.value.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, value=self.value.replace_params(replacer)))
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"(object_t*)&{self.value.to_c(type_cache)}"
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.value.get_live_vars()
+
+
+@dataclass(frozen=True)
 class LParam(RParam):
     type: t.Type
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return [self] if is_reader else []
 
     def get_type(self) -> t.Type:
         return self.type
@@ -274,6 +323,9 @@ class ObjectField(LParam):
     object_name: str         # Which object type
     field: str               # Which named field
     index: RParam|None       # If 'field' is an array, this is required
+
+    def flatten(self, is_reader:bool=True) -> list[RParam]:
+        return ([self] if is_reader else []) + self.pointer.flatten() + (self.index.flatten() if self.index else [])
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or self.pointer.test(predicate) or (self.index and self.index.test(predicate))

@@ -133,14 +133,15 @@ def __create_basic_blocks(fn: Function, heap_object_name: str) -> list[BasicBloc
     partitions = langtools.partition(lifetime.ops, lambda op: isinstance(op, Call) and not op.musttail)
     def create_basic_block(index: int, ops: list[Op]) -> BasicBlock:
         name = f"cont${index}"
-        def convert_to_tailcall(op: Op) -> Op:
-            if not isinstance(op, Call) or op.musttail: return op
-            parameters = __append_to_struct(op.parameters, __continuation_param_var.name,
-                                            GlobalFunction(f"{fn.name}${name}", StackVar(DataPointer(), __frame_param_var.name)))
-            return dataclasses.replace(op, parameters=parameters, register=None)
+        # def convert_to_tailcall(op: Op) -> Op:
+        #     if not isinstance(op, Call) or op.musttail: return op
+        #     parameters = __append_to_struct(op.parameters, __continuation_param_var.name,
+        #                                     GlobalFunction(f"{fn.name}${name}", StackVar(DataPointer(), __frame_param_var.name)))
+        #     return dataclasses.replace(op, parameters=parameters, register=None)
         last_op = ops[-1]
         result = last_op.register if isinstance(last_op, Call) else None
-        ops = [convert_to_tailcall(op) for op in ops] + ([Label(name)] if isinstance(last_op, Call) and not last_op.musttail else [])
+        # ops = [convert_to_tailcall(op) for op in ops] + ([Label(name)] if isinstance(last_op, Call) and not last_op.musttail else [])
+        ops = ops + ([Label(name)] if isinstance(last_op, Call) and not last_op.musttail else [])
         live_vars = __vars_to_heap_fields(last_op.saved_vars, heap_object_name)
         return BasicBlock(name, ops, live_vars, result)
     top_and_tail = [create_basic_block(index, ops) for index, ops in enumerate(partitions)]
@@ -167,7 +168,7 @@ def __create_launchpad_func(fn: Function, heap_object_name: str, basic_blocks: l
             constructor = NewObject(heap_object_name, __frame_param_var)
             save_vars = [Move(field, var) for var, field in basic_block.live.items()]
             # TODO: Might want to default init other members
-            parameters = __append_to_struct(op.parameters, __continuation_param_var.name, GlobalFunction(f"{fn.name}${basic_block.name}"))
+            parameters = __append_to_struct(op.parameters, __continuation_param_var.name, GlobalFunction(f"{fn.name}${basic_block.name}", __frame_param_var))
             tailcall = dataclasses.replace(op, musttail=True, parameters=parameters)
             return [constructor] + save_vars + [tailcall]
         return [op2 for op1 in basic_block.ops for op2 in transform_op(op1)]

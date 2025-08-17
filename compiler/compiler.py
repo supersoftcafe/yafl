@@ -5,6 +5,7 @@ import sys
 import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
+import lowering.globalinit
 import lowering.lambdas
 import lowering.inlining
 import lowering.cps
@@ -87,10 +88,13 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 a.functions[f.name] = f.global_codegen(resolver2)
             case s.LetStatement() as l:
                 resolver2 = g.AddScopeResolution(resolver, l.imports)
-                global_var = l.global_codegen(resolver2)
-                if not global_var.init:
-                    raise ValueError("Only literal global variables are supported so far. Dynamic initialisation is tbd.")
-                a.globals[l.name] = global_var
+                global_vars, init_funcs = l.global_codegen(resolver2)
+                # if not global_var.init:
+                #     raise ValueError("Only literal global variables are supported so far. Dynamic initialisation is tbd.")
+                for gv in global_vars:
+                    a.globals[gv.name] = gv
+                for fn in init_funcs:
+                    a.functions[fn.name] = fn
             case s.ClassStatement() as c:
                 resolver2 = g.AddScopeResolution(resolver, c.imports)
                 xclass, functions = c.global_codegen(resolver2)
@@ -101,13 +105,21 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 pass
             case _:
                 raise ValueError(f"Unexpected type {type(stmt)}")
+
     a.functions["__entrypoint__"] = __create_entry_point(main)
+
     a = lowering.trim.removed_unused_stuff(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
+
+    # Inlining with trimming is done iteratively
     a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
     a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
     a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
     a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+
+    # Lazy initialisation must be after inlining, and before CPS conversion.
+    a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
+
     a = lowering.trim.removed_unused_stuff(lowering.cps.convert_application_to_cps(a))
     return a.gen(just_testing=just_testing)
 

@@ -302,7 +302,7 @@ class LetStatement(DataStatement):
         return self.declared_type
 
     def add_namespace(self, path: str):
-        return self if self.name == '_' else super(self).add_namespace(path)
+        return self if self.name == '_' else super().add_namespace(path)
 
     def to_c_destructure(self, root: cg_p.RParam | None) -> g.OperationBundle:
         if root:
@@ -338,13 +338,39 @@ class LetStatement(DataStatement):
         unpack_bundle = self.to_c_destructure(None)
         return (expr_bundle + init_bundle).rename_vars(1) + unpack_bundle.rename_vars(2)
 
-    def global_codegen(self, resolver: g.Resolver) -> cg_x.Global:
-        rparam = None
+    def global_codegen(self, resolver: g.Resolver) -> tuple[list[cg_x.Global], list[cg_x.Function]]:
+        init_funcs: list[cg_x.Function] = []
+        global_vars: list[cg_x.Global] = []
+
+        init_func_name: str|None = None
+        init_flag_name: str|None = None
+        rparam: cg_p.RParam|None = None
+        xtype = self.get_type().generate()
         if self.default_value:
             init = self.default_value.generate(resolver)
             if not init.operations and not init.stack_vars and init.result_var:
                 rparam = init.result_var
-        return cg_x.Global(self.name, self.get_type().generate(), rparam)
+            else:
+                init_func_name = f"{self.name}$lazy$init"
+                init_flag_name = f"{self.name}$lazy$flag"
+                set_value = cg_o.Move(cg_p.GlobalVar(xtype, self.name), init.result_var)
+                return_zero = cg_o.Return(cg_p.Integer(0, 32))
+                init_funcs.append(cg_x.Function(
+                    init_func_name,
+                    cg_t.Struct( (("this", cg_t.DataPointer()),) ),
+                    cg_t.Int(32),
+                    cg_t.Struct(tuple((sv.name, sv.type) for sv in init.stack_vars)),
+                    init.operations + (set_value,return_zero)  ))
+                global_vars.append(cg_x.Global(
+                    init_flag_name,
+                    cg_t.DataPointer()  ))
+        global_vars.append(cg_x.Global(
+            self.name,
+            xtype,
+            rparam,
+            lazy_init_function=init_func_name,
+            lazy_init_flag=init_flag_name  ))
+        return global_vars, init_funcs
 
     def flatten_to(self, path_to_thing, path):
         return [path_to_thing(path + [self])]

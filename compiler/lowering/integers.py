@@ -14,7 +14,7 @@ def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:
     # Find all integer literals
     def find_all_integer_literals(statements: list[s.Statement]) -> set[int]:
         all_integer_literals: set[int] = set()
-        def find_integer_literal(resolver: g.Resolver, thing: any) -> any:
+        def find_integer_literal(resolver: g.Resolver, thing: Any) -> Any:
             if isinstance(thing, e.IntegerExpression) and thing.precision == 0:
                 all_integer_literals.add(thing.value)
             return thing

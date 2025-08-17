@@ -157,7 +157,7 @@ HIDDEN void* _thread_main_loop(void* param) {
         if (node) {
             _locals.sideload_queue_head = node;
             _thread_work_invoke(node);
-            break;
+            continue;
         }
 
         // Is there something on the local work queue
@@ -166,14 +166,14 @@ HIDDEN void* _thread_main_loop(void* param) {
             // If our neighbour is starved, wake it up
             _thread_wake(pre_queue);
             _thread_work_invoke(node);
-            break;
+            continue;
         }
 
         // Can we steal from a neighbour
         node = _thread_local_queue_try_steal(post_queue);
         if (node) {
             _thread_work_invoke(node);
-            break;
+            continue;
         }
 
         // TODO: This is all a bit dodgy... need to think through the logic to see if this won't deadlock
@@ -184,7 +184,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 }
 
 static void _thread_init() {
-    intptr_t thread_count = 4;
+    intptr_t thread_count = 1;
 
     // Allocation is only allowed on worker threads. The launch thread is a worker thread.
     _queues = array_create(_worker_queues_vt, thread_count);
@@ -216,9 +216,10 @@ EXPORT void thread_work_post_fast(worker_node_t* work) {
     // This is only ever called from the local thread, which means that we are in
     // an event currently. Therefore there is never a need to wake up the consumer.
     // It's already awake.
-    worker_node_t* node = (worker_node_t*)work;
-    node->next = _locals.local_queue_tail;
-    _locals.local_queue_tail = node;
+
+    work->next = (worker_node_t*)0;
+    _locals.local_queue_tail->next = work;
+    _locals.local_queue_tail = work;
 }
 
 EXTERN void thread_work_post_io(worker_node_t* work) {

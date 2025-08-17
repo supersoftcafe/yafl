@@ -261,3 +261,28 @@ class Test(TestCase):
         result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
+
+    def test_complex_init(self):
+        content = ("namespace System\n"
+                   "\n"
+                   "typealias String : __builtin_type__<str>\n"
+                   "typealias Int : __builtin_type__<bigint>\n"
+                   "\n"
+                   "fun `+`(left: System::Int, right: System::Int): System::Int\n"
+                   "    ret __builtin_op__<bigint>(\"add\", left, right)\n"
+                   "\n"
+                   "fun `+`(left: System::String, right: System::String): System::String\n"
+                   "    ret __builtin_op__<str>(\"append\", left, right)\n"
+                   "\n"
+                   "fun print(str: System::String): System::Int\n"
+                   "    ret __builtin_op__<bigint>(\"print\", str)\n"
+                   "\n"
+                   "fun append(a: System::String, b: System::String):System::String\n"
+                   "    ret a + b\n"
+                   "let x: System::String = append(\"one\", \"two\")\n"
+                   "fun main(): System::Int\n"
+                   "    ret System::print(x)\n")
+
+        result = compile([Input(content, "file.yafl")], just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)

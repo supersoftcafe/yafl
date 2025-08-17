@@ -165,6 +165,8 @@ class Global:
     type: t.Type
     init: p.RParam|None = None    # How to initialise it. If DataPointer, this is NewStruct
     object_name: str|None = None  # Which object type
+    lazy_init_function: str|None = None # If initialisation is more complex, the function that will do it
+    lazy_init_flag: str|None = None
 
     def to_c_name(self) -> str:
         return mangle_name(self.name)

@@ -222,9 +222,8 @@ EXTERN void thread_work_post_fast(worker_node_t* work);
  **********************************************************/
 
 
-#define LAZY_GLOBAL_FLAG(name) _Atomic(worker_node_t*) name = (worker_node_t*)0;
-INLINE bool lazy_global_init_required(_Atomic(worker_node_t*)* flag_ptr) {return 1!=(intptr_t)*flag_ptr;}
-EXPORT void lazy_global_init(_Atomic(worker_node_t*)* flag_ptr, fun_t init, fun_t callback);
+INLINE bool lazy_global_init_complete(object_t* flag_ptr) {return 1==(intptr_t)flag_ptr;}
+EXPORT void lazy_global_init(object_t** self, object_t* flag_ptr, fun_t init, fun_t callback);
 
 
 /**********************************************************

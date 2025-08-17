@@ -27,6 +27,9 @@ class Op:
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return frozenset(), frozenset()
 
+    def all_params(self) -> list[RParam]:
+        return []
+
 
 @dataclass(frozen=True)
 class Label(Op):
@@ -43,6 +46,9 @@ class Label(Op):
 class Move(Op):
     target: LParam
     source: RParam
+
+    def all_params(self) -> list[RParam]:
+        return self.target.flatten(is_reader=False) + self.source.flatten()
 
     def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self.target) or predicate(self.source)
@@ -77,6 +83,9 @@ class JumpIf(Op):
     label: str
     condition: RParam
 
+    def all_params(self) -> list[RParam]:
+        return self.condition.flatten()
+
     def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self.condition)
 
@@ -98,6 +107,9 @@ class NewObject(Op): # Create a new blank instance of the named object
     name: str
     register: LParam
     size: RParam|None = None
+
+    def all_params(self) -> list[RParam]:
+        return self.register.flatten(is_reader=False) + (self.size.flatten() if self.size else [])
 
     def get_type(self) -> t.DataPointer:
         return t.DataPointer()
@@ -129,6 +141,9 @@ class Call(Op):
     parameters: RParam # Must evaluate to a struct
     register: LParam|None = None # Target of operation result, unless musttail == True
     musttail: bool = False # Current function will end here and the return value is the return of this call
+
+    def all_params(self) -> list[RParam]:
+        return self.function.flatten() + self.parameters.flatten() + (self.register.flatten(is_reader=False) if self.register else [])
 
     def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self.function) or predicate(self.parameters) or (self.register and predicate(self.register))
@@ -190,6 +205,9 @@ class Return(Op):
     def __post_init__(self):
         if self.value is None:
             raise ValueError()
+
+    def all_params(self) -> list[RParam]:
+        return self.value.flatten()
 
     def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self.value)
