@@ -20,10 +20,12 @@ typedef struct worker_queue {
     _Atomic(worker_node_t*) local_queue_head;
     _Atomic(worker_node_t*) sideload_queue_tail;
     _Atomic(bool) consumer_waiting_flag;
+    bool iteration_mark;
+
     pthread_mutex_t lock;
     pthread_cond_t cond;
 
-} __attribute__((aligned(CACHE_LINE_SIZE))) worker_queue_t;
+} __attribute__((aligned(CACHE_LINE_SIZE * 2))) worker_queue_t;
 
 typedef struct worker_queues {
     object_t parent;
@@ -98,12 +100,12 @@ HIDDEN worker_node_t* _thread_create_node() {
 HIDDEN worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
     worker_node_t* head = atomic_load(&queue->local_queue_head);
     worker_node_t* node = atomic_load(&head->next);
-    if (node == NULL) {
+    if (UNLIKELY(node == NULL)) {
         // Empty queue
         return NULL;
     }
 
-    if (!atomic_compare_exchange_strong(&queue->local_queue_head, &head, node)) {
+    if (UNLIKELY(!atomic_compare_exchange_strong(&queue->local_queue_head, &head, node))) {
         // Another thread got there before us
         return NULL;
     }
@@ -145,6 +147,8 @@ HIDDEN void* _thread_main_loop(void* param) {
     }
 
     for (;;) {
+        queue->iteration_mark = true;
+
         // TODO: Check the compiled codegen to see that all paths are fast fail
         void(*hook)() = _thread_worker_hook;
         if (hook) {
@@ -204,6 +208,21 @@ static void _thread_init() {
     }
 }
 
+EXTERN void _thread_reset_iter() {
+    for (int32_t count = 0; count < _queues->length; ++count) {
+        _queues->array[count].iteration_mark = false;
+    }
+}
+
+EXTERN bool _thread_test_iter() {
+    for (int32_t count = 0; count < _queues->length; ++count) {
+        worker_queue_t* queue = &_queues->array[count];
+        if (!queue->consumer_waiting_flag && !queue->iteration_mark) {
+            return false;
+        }
+    }
+    return true;
+}
 
 EXPORT worker_node_t* thread_work_prepare(fun_t action) {
     worker_node_t* node = (worker_node_t*)object_create(_worker_node_vt);

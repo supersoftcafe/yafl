@@ -96,6 +96,11 @@ HIDDEN object_t* _string_append2(char* cstr1, int32_t len1, char* cstr2, int32_t
 }
 
 
+EXPORT object_t* string_allocate(int32_t length) {
+    return (object_t*)_string_allocate(length);
+}
+
+
 EXPORT object_t* string_append(object_t* self, object_t* data) {
     intptr_t buf1; int32_t len1;
     char* cstr1 = _string_to_cstr(self, &buf1, &len1);

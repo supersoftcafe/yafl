@@ -111,21 +111,71 @@ TEST(remainder)
     TEST_REM(L(10), BL3(0, 10,0,1), BL3(0, 0,0,1))
 TEST_END()
 
+
+
+
+struct test_gc_allocations_o {
+    object_t parent;
+    fun_t continuation;
+    object_t* something;
+    int32_t count;
+};
+
+static vtable_t test_gc_allocations_v = {
+    .object_size = sizeof(struct test_gc_allocations_o),
+    .array_el_size = 0,
+    .object_pointer_locations = maskof(struct test_gc_allocations_o, .continuation.o),
+    .array_el_pointer_locations = 0,
+    .functions_mask = 0,
+    .array_len_offset = offsetof(integer_t, length),
+    .implements_array = VTABLE_IMPLEMENTS(0),
+};
+
+static void test_gc_allocations_1(struct test_gc_allocations_o* heap) {
+    fun_t next;
+    if (--heap->count < 0) {
+        next = heap->continuation;
+    } else {
+        for (int count2 = 1000; --count2 >= 0; ) {
+            heap = (struct test_gc_allocations_o*)object_mutation((object_t*)heap);
+            heap->something = string_allocate(100);
+        }
+
+        next = (fun_t){.f=test_gc_allocations_1, .o=heap};
+    }
+
+    worker_node_t* work = thread_work_prepare(next);
+    thread_work_post_fast(work);
+}
+
+static void test_gc_allocations(object_t* self, fun_t continuation) {
+    struct test_gc_allocations_o* heap = object_create((vtable_t*)&test_gc_allocations_v);
+    heap->continuation = continuation;
+    heap->something = NULL;
+    heap->count = 1000000;
+
+    worker_node_t* work = thread_work_prepare((fun_t){.f=test_gc_allocations_1, .o=heap});
+    thread_work_post_fast(work);
+}
+
+
+
+
+
+
 static fun_t cheating_continuation;
-
-
 static void otherthing(object_t* self)
 {
     fun_t continuation = cheating_continuation;
     ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, INTEGER_LITERAL_1(0, 0));
 }
-
 static void init_thing(object_t* self, fun_t continuation)
 {
     ((void(*)(object_t*))continuation.f)(continuation.o);
 }
-
 static object_t* lazy_flag;
+
+
 
 static void entrypoint(object_t* self, fun_t continuation) {
     struct test_results results = {0, 0};
@@ -138,10 +188,12 @@ static void entrypoint(object_t* self, fun_t continuation) {
     TEST_RUN(division)
     TEST_RUN(remainder)
 
-    cheating_continuation = continuation;
-    worker_node_t* node = thread_work_prepare((fun_t){.f=otherthing,.o=NULL});
-    lazy_global_init(NULL, (object_t*)&lazy_flag, (fun_t){.f=init_thing,.o=NULL}, (fun_t){.f=otherthing, .o=NULL});
-    // thread_work_post_fast(node);
+
+    test_gc_allocations(NULL, continuation);
+
+    // cheating_continuation = continuation;
+    // worker_node_t* node = thread_work_prepare((fun_t){.f=otherthing,.o=NULL});
+    // lazy_global_init(NULL, (object_t*)&lazy_flag, (fun_t){.f=init_thing,.o=NULL}, (fun_t){.f=otherthing, .o=NULL});
 }
 
 

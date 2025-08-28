@@ -198,6 +198,9 @@ EXTERN void declare_roots_thread(void(*)(object_t**));
 EXTERN void declare_local_roots_thread(void(*)(object_t**));
 EXTERN void thread_start(void(*entrypoint)(object_t*, fun_t));
 
+EXTERN void _thread_reset_iter();
+EXTERN bool _thread_test_iter();
+
 typedef struct worker_node {
     object_t parent;
     _Atomic(struct worker_node*) next;
@@ -439,6 +442,7 @@ INLINE int32_t string_length(object_t* self) {
     return ((string_t*)self)->length;
 }
 
+EXTERN object_t* string_allocate(int32_t length);
 EXTERN object_t* string_append(object_t* self, object_t* data);
 EXTERN object_t* wchar_to_string(object_t* integer);
 EXTERN object_t* print_string(object_t* self);
