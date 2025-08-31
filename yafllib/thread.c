@@ -20,7 +20,6 @@ typedef struct worker_queue {
     _Atomic(worker_node_t*) local_queue_head;
     _Atomic(worker_node_t*) sideload_queue_tail;
     _Atomic(bool) consumer_waiting_flag;
-    bool iteration_mark;
 
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -44,8 +43,6 @@ HIDDEN vtable_t* _worker_queues_vt = VTABLE_DECLARE(0){
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
-
-HIDDEN void(*_thread_worker_hook)();
 
 HIDDEN worker_queues_t* _queues;
 
@@ -73,6 +70,8 @@ HIDDEN void _thread_wake(worker_queue_t* queue) {
 }
 
 HIDDEN void _thread_wait(worker_queue_t* queue) {
+    object_gc_io_begin();
+
     atomic_store(&queue->consumer_waiting_flag, true);
     pthread_mutex_lock(&queue->lock);
     if (atomic_load(&queue->local_queue_head)->next == NULL) {
@@ -80,13 +79,8 @@ HIDDEN void _thread_wait(worker_queue_t* queue) {
     }
     pthread_mutex_unlock(&queue->lock);
     atomic_store(&queue->consumer_waiting_flag, false);
-}
 
-EXPORT void thread_set_hook(void (*hook)()) {
-    _thread_worker_hook = hook;
-    for (intptr_t index = 0; index < _queues->length; ++index) {
-        _thread_wake(&_queues->array[index]);
-    }
+    object_gc_io_end();
 }
 
 
@@ -129,7 +123,7 @@ static void _thread_init();
 
 static void(*__entrypoint__)(object_t*, fun_t);
 HIDDEN void* _thread_main_loop(void* param) {
-    object_allocator_init();
+    object_gc_declare_thread();
 
     if (param == NULL) {
         _thread_init();
@@ -147,14 +141,6 @@ HIDDEN void* _thread_main_loop(void* param) {
     }
 
     for (;;) {
-        queue->iteration_mark = true;
-
-        // TODO: Check the compiled codegen to see that all paths are fast fail
-        void(*hook)() = _thread_worker_hook;
-        if (hook) {
-            hook();
-        }
-
         // Is there something on the IO queue
         worker_node_t* head = _locals.sideload_queue_head;
         worker_node_t* node = head->next;
@@ -206,22 +192,6 @@ static void _thread_init() {
         pthread_t thread;
         pthread_create(&thread, NULL, _thread_main_loop, (void*)index);
     }
-}
-
-EXTERN void _thread_reset_iter() {
-    for (int32_t count = 0; count < _queues->length; ++count) {
-        _queues->array[count].iteration_mark = false;
-    }
-}
-
-EXTERN bool _thread_test_iter() {
-    for (int32_t count = 0; count < _queues->length; ++count) {
-        worker_queue_t* queue = &_queues->array[count];
-        if (!queue->consumer_waiting_flag && !queue->iteration_mark) {
-            return false;
-        }
-    }
-    return true;
 }
 
 EXPORT worker_node_t* thread_work_prepare(fun_t action) {

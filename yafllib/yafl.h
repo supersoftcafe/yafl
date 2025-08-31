@@ -167,12 +167,16 @@ INLINE vtable_t* object_get_vtable(void* object) {
 
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
 EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t);
-EXTERN object_t* object_mutation(object_t* ptr);
-EXTERN void object_mark_as_seen(object_t* ptr);
+EXTERN object_t* object_gc_mutation(object_t* ptr);
+EXTERN void object_gc_mark_as_seen(object_t* ptr);
+EXTERN void object_gc_safe_point(); // Arbitary safe point for GC magic to happen
+EXTERN void object_gc_io_begin();   // Start of potentially thread pausing IO
+EXTERN void object_gc_io_end();     // End of potentially thread pausing IO
+EXTERN void object_gc_declare_thread(); // Any thread that can do allocation must call this early on
+
 EXTERN fun_t vtable_lookup(void* object, intptr_t id);
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
-EXTERN void object_allocator_init(); // Initialise thread local stuff on this thread for allocator
 
 EXTERN void abort_on_maths_error();
 EXTERN void abort_on_vtable_lookup();
@@ -193,13 +197,9 @@ EXTERN void abort_on_heap_allocation_on_non_worker_thread();
  **********************************************************/
 
 
-EXTERN void thread_set_hook(void(*)());
 EXTERN void declare_roots_thread(void(*)(object_t**));
 EXTERN void declare_local_roots_thread(void(*)(object_t**));
 EXTERN void thread_start(void(*entrypoint)(object_t*, fun_t));
-
-EXTERN void _thread_reset_iter();
-EXTERN bool _thread_test_iter();
 
 typedef struct worker_node {
     object_t parent;

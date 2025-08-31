@@ -37,6 +37,7 @@
 #endif
 
 
+#define STACK_GROWTH_DIRECTION    -1
 
 
 
