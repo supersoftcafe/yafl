@@ -36,6 +36,8 @@
 #  endif
 #endif
 
+enum { GC_PAGE_SIZE = 16384 };
+
 
 #define STACK_GROWTH_DIRECTION    -1
 

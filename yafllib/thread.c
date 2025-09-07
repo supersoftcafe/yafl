@@ -29,7 +29,7 @@ typedef struct worker_queue {
 typedef struct worker_queues {
     object_t parent;
     int32_t  length;
-    worker_queue_t array[1];
+    worker_queue_t array[16];
 } worker_queues_t;
 
 
@@ -92,6 +92,8 @@ HIDDEN worker_node_t* _thread_create_node() {
 }
 
 HIDDEN worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
+    worker_queues_t* queues = _queues;
+
     worker_node_t* head = atomic_load(&queue->local_queue_head);
     worker_node_t* node = atomic_load(&head->next);
     if (UNLIKELY(node == NULL)) {
@@ -131,8 +133,6 @@ HIDDEN void* _thread_main_loop(void* param) {
 
     intptr_t thread_id = (intptr_t)param;
     worker_queue_t* queue = &_queues->array[thread_id];
-    worker_queue_t* pre_queue = &_queues->array[(thread_id + _queues->length - 1) % _queues->length];
-    worker_queue_t* post_queue = &_queues->array[(thread_id + 1) % _queues->length];
     _locals.local_queue_tail = queue->local_queue_head;
     _locals.sideload_queue_head = queue->sideload_queue_tail;
 
@@ -146,6 +146,7 @@ HIDDEN void* _thread_main_loop(void* param) {
         worker_node_t* node = head->next;
         if (node) {
             _locals.sideload_queue_head = node;
+            fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
             _thread_work_invoke(node);
             continue;
         }
@@ -154,14 +155,19 @@ HIDDEN void* _thread_main_loop(void* param) {
         node = _thread_local_queue_try_steal(queue);
         if (node) {
             // If our neighbour is starved, wake it up
-            _thread_wake(pre_queue);
+            _thread_wake(&_queues->array[(thread_id + 1) % _queues->length]);
+            // fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
             _thread_work_invoke(node);
             continue;
         }
 
         // Can we steal from a neighbour
-        node = _thread_local_queue_try_steal(post_queue);
+        for (intptr_t index = (thread_id+1) % _queues->length
+            ;index != thread_id && !(node = _thread_local_queue_try_steal(&_queues->array[index]))
+            ;index = (index+1) % _queues->length);
         if (node) {
+            _thread_wake(&_queues->array[(thread_id + 1) % _queues->length]);
+            // fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
             _thread_work_invoke(node);
             continue;
         }

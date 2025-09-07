@@ -13,6 +13,7 @@ set(SRC_FILES
     thread.c
     yafl.c
     lazy.c
+    mmap.c
 )
 
 # Create shared library

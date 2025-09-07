@@ -9,10 +9,6 @@ EXPORT void abort_on_vtable_lookup() {
     log_error_and_exit("Aborting due to vtable lookup issue", stderr);
 }
 
-EXPORT void abort_on_out_of_memory() {
-    log_error_and_exit("Aborting due to memory allocation failure", stderr);
-}
-
 EXPORT void abort_on_too_large_object() {
     log_error_and_exit("Aborting due to unsupported object size failure", stderr);
 }
@@ -26,11 +22,10 @@ EXPORT void abort_on_heap_allocation_on_non_worker_thread() {
 
 typedef uintptr_t gc_mask_bits_t;
 enum { GC_MASK_SIZE = sizeof(gc_mask_bits_t) * 8 };
-enum { GC_PAGE_SIZE = 16384 };
 enum { GC_SLOT_SIZE = 32 };
 
 typedef struct gc_bitmap {
-    _Atomic(gc_mask_bits_t) a[GC_PAGE_SIZE / GC_SLOT_SIZE / 8 / sizeof(gc_mask_bits_t)];
+    gc_mask_bits_t a[GC_PAGE_SIZE / GC_SLOT_SIZE / 8 / sizeof(gc_mask_bits_t)];
 } __attribute__((aligned(GC_PAGE_SIZE / GC_SLOT_SIZE / 8))) gc_bitmap_t;
 
 typedef struct gc_slot {
@@ -87,7 +82,7 @@ HIDDEN bool _bitmap_test(gc_bitmap_t* bitmap, ptrdiff_t bit) {
 }
 
 HIDDEN void _bitmap_set(gc_bitmap_t* bitmap, ptrdiff_t bit) {
-    atomic_fetch_or(&bitmap->a[bit / GC_MASK_SIZE], ((gc_mask_bits_t)1) << (bit % GC_MASK_SIZE));
+    atomic_fetch_or((_Atomic(gc_mask_bits_t)*)&bitmap->a[bit / GC_MASK_SIZE], ((gc_mask_bits_t)1) << (bit % GC_MASK_SIZE));
 }
 
 HIDDEN void _gc_fsa();
@@ -138,7 +133,7 @@ static void _fillmem(uint32_t* memory, uint32_t value, size_t count) {
 
 
 HIDDEN gc_page_t* _gc_page_alloc(size_t page_count) {
-    gc_page_t* page = aligned_alloc(GC_PAGE_SIZE, GC_PAGE_SIZE * page_count);
+    gc_page_t* page = memory_pages_alloc(page_count);
     if (page == NULL)
         abort_on_out_of_memory();
 
@@ -162,7 +157,7 @@ HIDDEN void _gc_page_free(gc_page_t** page_ptr) {
     page->head.released = true;
     atomic_fetch_sub(&_gc_page_count, page->head.page_count);
     *page_ptr = page->head.next;
-    free(page);
+    memory_pages_free(page, page->head.page_count);
 }
 
 EXTERN void _object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
@@ -328,15 +323,13 @@ static _Atomic(struct _thread_info*) _threads = ATOMIC_VAR_INIT(NULL);
 
 
 HIDDEN bool _gc_pointer_is_into_heap(gc_slot_t* ptr) {
-    if (ptr != NULL && ((intptr_t)ptr & (GC_SLOT_SIZE-1)) == 0) {
-        for (gc_page_t* page = _all_pages; page != NULL; page = page->head.next) {
-            ptrdiff_t slot = ptr - page->slots;
-            if (slot >= 0 && slot < GC_SLOTS_PER_PAGE && _bitmap_test(&page->head.object_heads, slot)) {
-                return true;
-            }
-        }
-    }
-    return false;
+    return ptr != NULL && ((intptr_t)ptr & (GC_SLOT_SIZE-1)) == 0 && memory_pages_is_heap(ptr);
+        // for (gc_page_t* page = _all_pages; page != NULL; page = page->head.next) {
+        //     ptrdiff_t slot = ptr - page->slots;
+        //     if (slot >= 0 && slot < GC_SLOTS_PER_PAGE && _bitmap_test(&page->head.object_heads, slot)) {
+        //         return true;
+        //     }
+        // }
 }
 
 HIDDEN void _gc_scan_range(object_t** stack_ptr, object_t** stack_base) {
@@ -414,11 +407,12 @@ EXTERN void object_gc_io_begin() {
 // End of potentially thread pausing IO
 EXTERN void object_gc_io_end() {
     enum io_action_flag expected;
-    do {assert(atomic_load(&_thread_info.io_action_flag) == IO_ACTION_ACTIVE
-            || atomic_load(&_thread_info.io_action_flag) == IO_ACTION_EXTERNAL_SCAN);
+    struct _thread_info* thread = &_thread_info;
+    do {assert(atomic_load(&thread->io_action_flag) == IO_ACTION_ACTIVE
+            || atomic_load(&thread->io_action_flag) == IO_ACTION_EXTERNAL_SCAN);
 
         expected = IO_ACTION_ACTIVE;
-    } while (atomic_compare_exchange_weak(&_thread_info.io_action_flag, &expected, IO_ACTION_NONE));
+    } while (!atomic_compare_exchange_weak(&thread->io_action_flag, &expected, IO_ACTION_NONE));
 }
 
 HIDDEN NOINLINE void _gc_scan_this_threads_stack() {
@@ -432,12 +426,10 @@ HIDDEN NOINLINE void _gc_scan_this_threads_stack() {
 
 // Arbitary safe point for GC magic to happen
 EXTERN void object_gc_safe_point() {
-    if (atomic_load(&_thread_info.io_action_flag) == IO_ACTION_SCAN_REQUEST) {
-        enum io_action_flag expected = IO_ACTION_SCAN_REQUEST;
-        if (atomic_compare_exchange_strong(&_thread_info.io_action_flag, &expected, IO_ACTION_SCANNING)) {
-            _gc_scan_this_threads_stack();
-            atomic_store(&_thread_info.io_action_flag, IO_ACTION_NONE);
-        }
+    enum io_action_flag expected = IO_ACTION_SCAN_REQUEST;
+    if (atomic_compare_exchange_strong(&_thread_info.io_action_flag, &expected, IO_ACTION_SCANNING)) {
+        _gc_scan_this_threads_stack();
+        atomic_store(&_thread_info.io_action_flag, IO_ACTION_NONE);
     }
 }
 
@@ -464,8 +456,6 @@ HIDDEN bool _gc_complete_thread_scanning() {
         if (atomic_load(&thread->scan_complete) == false) {
 
             enum io_action_flag flag = thread->io_action_flag;
-            assert(flag == IO_ACTION_NONE || flag == IO_ACTION_ACTIVE);
-
             switch (flag) {
                 case IO_ACTION_NONE: { // Ask the thread to scan its own stack
                     enum io_action_flag expected = IO_ACTION_NONE;

@@ -174,6 +174,8 @@ EXTERN void object_gc_io_begin();   // Start of potentially thread pausing IO
 EXTERN void object_gc_io_end();     // End of potentially thread pausing IO
 EXTERN void object_gc_declare_thread(); // Any thread that can do allocation must call this early on
 
+EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
+
 EXTERN fun_t vtable_lookup(void* object, intptr_t id);
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
@@ -183,6 +185,11 @@ EXTERN void abort_on_vtable_lookup();
 EXTERN void abort_on_out_of_memory();
 EXTERN void abort_on_too_large_object();
 EXTERN void abort_on_heap_allocation_on_non_worker_thread();
+
+EXTERN void* memory_pages_alloc(size_t page_count);
+EXTERN void memory_pages_free(void* ptr, size_t page_count);
+EXTERN bool memory_pages_is_heap(void*ptr);
+
 
 /**********************************************************
  *****************************

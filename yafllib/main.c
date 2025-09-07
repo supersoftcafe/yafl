@@ -113,50 +113,52 @@ TEST_END()
 
 
 
-
 struct test_gc_allocations_o {
     object_t parent;
-    string_t* str1;
-    string_t* str2;
-    string_t* str3;
+    int32_t length;
+    _Atomic(int32_t) result_counter;
+    fun_t continuation;
+    string_t* results[0];
 };
 
 static vtable_t test_gc_allocations_v = {
-    .object_size = sizeof(struct test_gc_allocations_o),
-    .array_el_size = 0,
-    .object_pointer_locations = maskof(struct test_gc_allocations_o, .str1) | maskof(struct test_gc_allocations_o, .str2) | maskof(struct test_gc_allocations_o, .str3),
-    .array_el_pointer_locations = 0,
+    .object_size = offsetof(struct test_gc_allocations_o, results[0]),
+    .array_el_size = sizeof(string_t*),
+    .object_pointer_locations = maskof(struct test_gc_allocations_o, .continuation.o),
+    .array_el_pointer_locations = maskof(string_t*, ),
     .functions_mask = 0,
     .array_len_offset = offsetof(integer_t, length),
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
 
-
 static object_t* left_str = STR("Fred and bill went on a ride ");
 static object_t* right_str = STR("together in the jeep.");
 static const char* test_str = "Fred and bill went on a ride together in the jeep.";
 
-TEST(allocations)
-    object_t* array[10] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
 
-    for (int count = 0; count < 1000000; ++count) {
-        struct test_gc_allocations_o* obj = (struct test_gc_allocations_o*)object_create((vtable_t*)&test_gc_allocations_v);
-        obj->str1 = NULL;
-        obj->str2 = NULL;
-        obj->str3 = NULL;
-        array[count%10] = (object_t*)obj;
+static void complete_allocation_test(struct test_gc_allocations_o* self, string_t* result) {
+    int32_t count = atomic_fetch_sub(&self->result_counter, 1) - 1;
+    self->results[count] = result;
+    if (count == 0) {
+        fun_t continuation = self->continuation;
+        ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, INTEGER_LITERAL_1(0, 0));
+    }
+}
+
+static void do_allocation_test(struct test_gc_allocations_o* self) {
+    struct test_gc_allocations_o* array[10] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
+
+    for (int count = 0; count < 1000; ++count) {
+        struct test_gc_allocations_o* obj = (struct test_gc_allocations_o*)array_create((vtable_t*)&test_gc_allocations_v, 3);
+        array[count%10] = obj;
 
         for (int count2 = 0; count2 < 1000; ++count2) {
             string_t* str = (string_t*)string_append(left_str, right_str);
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
-                switch (i) {
-                    case 0: ((struct test_gc_allocations_o*)object_gc_mutation((object_t*)obj))->str1 = str; break;
-                    case 1: ((struct test_gc_allocations_o*)object_gc_mutation((object_t*)obj))->str2 = str; break;
-                    case 2: ((struct test_gc_allocations_o*)object_gc_mutation((object_t*)obj))->str3 = str; break;
-                }
+                ((struct test_gc_allocations_o*)object_gc_mutation((object_t*)obj))->results[i] = str;
             }
         }
 
@@ -164,29 +166,33 @@ TEST(allocations)
             obj = (struct test_gc_allocations_o*)array[index];
 
             if (obj != NULL) {
-                TEST_ASSERT(obj->str1 == NULL || strcmp((char*)obj->str1->array, test_str) == 0);
-                TEST_ASSERT(obj->str2 == NULL || strcmp((char*)obj->str2->array, test_str) == 0);
-                TEST_ASSERT(obj->str3 == NULL || strcmp((char*)obj->str3->array, test_str) == 0);
+                assert(obj->results[0] == NULL || strcmp((char*)obj->results[0]->array, test_str) == 0);
+                assert(obj->results[1] == NULL || strcmp((char*)obj->results[1]->array, test_str) == 0);
+                assert(obj->results[2] == NULL || strcmp((char*)obj->results[0]->array, test_str) == 0);
             }
         }
     }
-TEST_END()
 
+    complete_allocation_test(self, array[3]->results[0]);
 
-
-
-
-static fun_t cheating_continuation;
-static void otherthing(object_t* self)
-{
-    fun_t continuation = cheating_continuation;
-    ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, INTEGER_LITERAL_1(0, 0));
+    // TODO: Add an object name to the vtable header using a YAFL string
+    //       Prints only the objects that survived the last GC, otherwise it could get quite noisy in the console
+    // object_gc_print_heap();
 }
-static void init_thing(object_t* self, fun_t continuation)
-{
-    ((void(*)(object_t*))continuation.f)(continuation.o);
+
+void setup_allocation_test(object_t* _, fun_t continuation) {
+    int32_t count = 1000;
+
+    struct test_gc_allocations_o* o = (struct test_gc_allocations_o*)array_create(&test_gc_allocations_v, count);
+    o->continuation = continuation;
+    o->result_counter = count;
+
+    while (--count >= 0) {
+        worker_node_t* node = thread_work_prepare((fun_t){.f=do_allocation_test,.o=(object_t*)o});
+        thread_work_post_fast(node);
+    }
 }
-static object_t* lazy_flag;
+
 
 
 
@@ -200,11 +206,12 @@ static void entrypoint(object_t* self, fun_t continuation) {
     TEST_RUN(multiplication)
     TEST_RUN(division)
     TEST_RUN(remainder)
-    TEST_RUN(allocations)
+
+    setup_allocation_test(NULL, continuation);
 
 
 
-    ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, INTEGER_LITERAL_1(0, 0));
+    // ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, INTEGER_LITERAL_1(0, 0));
 
 
     // cheating_continuation = continuation;
