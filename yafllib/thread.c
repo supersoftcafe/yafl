@@ -46,7 +46,7 @@ HIDDEN vtable_t* _worker_queues_vt = VTABLE_DECLARE(0){
 
 HIDDEN worker_queues_t* _queues;
 
-thread_local struct {
+thread_local struct _locals {
     worker_node_t* local_queue_tail;
     worker_node_t* sideload_queue_head;
 } _locals;
@@ -56,9 +56,9 @@ EXPORT void declare_roots_thread(void(*declare)(object_t**)) {
     declare((object_t**)&_queues);
 }
 
-EXPORT void declare_local_roots_thread(void(*declare)(object_t**)) {
-    declare((object_t**)&_locals.local_queue_tail);
-    declare((object_t**)&_locals.sideload_queue_head);
+static void declare_local_roots_thread(struct _locals* locals, void(*declare)(object_t**)) {
+    declare((object_t**)&locals->local_queue_tail);
+    declare((object_t**)&locals->sideload_queue_head);
 }
 
 HIDDEN void _thread_wake(worker_queue_t* queue) {
@@ -125,7 +125,7 @@ static void _thread_init();
 
 static void(*__entrypoint__)(object_t*, fun_t);
 HIDDEN void* _thread_main_loop(void* param) {
-    object_gc_declare_thread();
+    object_gc_declare_thread((void*)declare_local_roots_thread, &_locals);
 
     if (param == NULL) {
         _thread_init();
@@ -180,7 +180,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 }
 
 static void _thread_init() {
-    intptr_t thread_count = 1;
+    intptr_t thread_count = 2;
 
     // Allocation is only allowed on worker threads. The launch thread is a worker thread.
     _queues = array_create(_worker_queues_vt, thread_count);

@@ -25,7 +25,7 @@ static pthread_once_t pages_once = ONCE_FLAG_INIT;
 static _pages_info_t* pages_info = NULL;
 
 static void init2() {
-    size_t count = 1*1024*1024*1024 / GC_PAGE_SIZE;
+    size_t count = 16ULL*1024*1024*1024 / GC_PAGE_SIZE;
     size_t size = sizeof(_pages_info_t) + count + (count * GC_PAGE_SIZE) + GC_PAGE_SIZE;
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if (ptr == MAP_FAILED) {
@@ -52,6 +52,9 @@ static _pages_info_t* init() {
     return pages_info;
 }
 
+static _Atomic(size_t) alloc_count = 0;
+static _Atomic(size_t) free_count = 0;
+
 EXPORT void* memory_pages_alloc(size_t page_count) {
     assert(page_count == 1);
 
@@ -64,6 +67,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
         _Atomic(uint8_t) *cptr = (_Atomic(uint8_t)*)&p->table[index];
         if (atomic_compare_exchange_strong(cptr, &expected, 1)) {
             char *ptr = p->start + (index*GC_PAGE_SIZE);
+            atomic_fetch_add(&alloc_count, 1);
             return ptr;
         }
     }
@@ -83,6 +87,7 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
     assert(index < p->size);
     assert(p->table[index] == 1);
 
+    atomic_fetch_add(&free_count, 1);
     madvise(ptr, GC_PAGE_SIZE, MADV_DONTNEED);
     atomic_store(&p->table[index], 0);
 }

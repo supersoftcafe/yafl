@@ -39,7 +39,7 @@
 enum { GC_PAGE_SIZE = 16384 };
 
 
-#define STACK_GROWTH_DIRECTION    -1
+#define STACK_GROWS_DOWN    1
 
 
 

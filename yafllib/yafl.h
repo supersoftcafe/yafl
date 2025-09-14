@@ -166,13 +166,15 @@ INLINE vtable_t* object_get_vtable(void* object) {
 }
 
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
+typedef void(*thread_roots_declaration_func_t)(void*,void(*)(object_t**));
+
 EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t);
 EXTERN object_t* object_gc_mutation(object_t* ptr);
 EXTERN void object_gc_mark_as_seen(object_t* ptr);
 EXTERN void object_gc_safe_point(); // Arbitary safe point for GC magic to happen
 EXTERN void object_gc_io_begin();   // Start of potentially thread pausing IO
 EXTERN void object_gc_io_end();     // End of potentially thread pausing IO
-EXTERN void object_gc_declare_thread(); // Any thread that can do allocation must call this early on
+EXTERN void object_gc_declare_thread(thread_roots_declaration_func_t,void*); // Any thread that can do allocation must call this early on
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 
@@ -205,7 +207,6 @@ EXTERN bool memory_pages_is_heap(void*ptr);
 
 
 EXTERN void declare_roots_thread(void(*)(object_t**));
-EXTERN void declare_local_roots_thread(void(*)(object_t**));
 EXTERN void thread_start(void(*entrypoint)(object_t*, fun_t));
 
 typedef struct worker_node {
@@ -370,7 +371,7 @@ INLINE bool integer_test_le(object_t* self, object_t* data) {
 typedef struct string {
     vtable_t* vtable;
     uint32_t length;
-    uint8_t array[0];
+    uint8_t array[16];
 } ALIGNED string_t;
 
 struct string_vtable;

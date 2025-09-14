@@ -118,7 +118,7 @@ struct test_gc_allocations_o {
     int32_t length;
     _Atomic(int32_t) result_counter;
     fun_t continuation;
-    string_t* results[0];
+    string_t* results[16];
 };
 
 static vtable_t test_gc_allocations_v = {
