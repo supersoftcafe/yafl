@@ -169,6 +169,7 @@ typedef void(*roots_declaration_func_t)(void(*)(object_t**));
 typedef void(*thread_roots_declaration_func_t)(void*,void(*)(object_t**));
 
 EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t);
+EXTERN void object_gc_init();
 EXTERN object_t* object_gc_mutation(object_t* ptr);
 EXTERN void object_gc_mark_as_seen(object_t* ptr);
 EXTERN void object_gc_safe_point(); // Arbitary safe point for GC magic to happen
