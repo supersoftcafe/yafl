@@ -29,7 +29,7 @@ EXPORT struct string_empty STRING_EMPTY = {
 
 
 HIDDEN string_t* _string_allocate(int32_t length) {
-    string_t* string = (string_t*)array_create((vtable_t*)&STRING_VTABLE, length);
+    string_t* string = (string_t*)array_create((vtable_t*)&STRING_VTABLE, length+1);
     string->array[length] = 0; // Zero terminate all strings as a convenience for OS calls
     return string;
 }

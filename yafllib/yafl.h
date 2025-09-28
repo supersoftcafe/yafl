@@ -126,6 +126,7 @@ typedef struct vtable {
     uint32_t array_el_pointer_locations;
     uint32_t functions_mask;     // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
     uint16_t array_len_offset;   // Offset of uint32_t array length field
+    uint16_t is_mutable:1;
     struct vtable** implements_array; // Array of all classes that this class extends
 #ifdef NDEBUG
     vtable_entry_t lookup[0];
@@ -142,6 +143,7 @@ typedef struct vtable {
             uint32_t array_el_pointer_locations;\
             uint32_t functions_mask;\
             uint16_t array_len_offset;\
+            uint16_t is_mutable:1;\
             struct vtable** implements_array;\
             vtable_entry_t lookup[LOOKUP_COUNT];\
         }
@@ -160,9 +162,18 @@ typedef struct {
 #define rotate_function_id(id)\
         ((id * sizeof(intptr_t) * 2) | (id / (134217728 / sizeof(intptr_t) * 8)))
 
+enum {
+    VTABLE_FLAG_HEAP = 0x1,     // Heap allocated object, not a static defined object
+    VTABLE_FLAG_FORWARD = 0x2,  // VTable is really a forwarding pointer
+};
 
-INLINE vtable_t* object_get_vtable(void* object) {
-    return (vtable_t*)((intptr_t)((object_t*)object)->vtable & ~3);
+INLINE vtable_t *object_get_vtable(object_t *object) {
+    vtable_t *vt = object->vtable;
+    while (UNLIKELY((uintptr_t)vt & VTABLE_FLAG_FORWARD)) {
+        object = (object_t*)((uintptr_t)vt & ~3);
+        vt = object->vtable;
+    }
+    return (vtable_t*)((intptr_t)vt & ~3);
 }
 
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
@@ -170,8 +181,6 @@ typedef void(*thread_roots_declaration_func_t)(void*,void(*)(object_t**));
 
 EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t);
 EXTERN void object_gc_init();
-EXTERN object_t* object_gc_mutation(object_t* ptr);
-EXTERN void object_gc_mark_as_seen(object_t* ptr);
 EXTERN void object_gc_safe_point(); // Arbitary safe point for GC magic to happen
 EXTERN void object_gc_io_begin();   // Start of potentially thread pausing IO
 EXTERN void object_gc_io_end();     // End of potentially thread pausing IO
@@ -179,7 +188,9 @@ EXTERN void object_gc_declare_thread(thread_roots_declaration_func_t,void*); // 
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 
-EXTERN fun_t vtable_lookup(void* object, intptr_t id);
+EXTERN void object_mutate(object_t *object);
+EXTERN void object_set_reference(object_t **field, object_t *value);
+EXTERN fun_t vtable_lookup(object_t *object, intptr_t id);
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
 

@@ -29,7 +29,7 @@ class ImportGroup:
 class Statement:
     line_ref: LineRef
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         raise NotImplementedError()
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
@@ -89,7 +89,7 @@ class FunctionStatement(DataStatement):
         # s = [g.Resolved(self.local_this.name, self.local_this, g.ResolvedScope.LOCAL)] if self.local_this and self.local_this.name in names else []
         return p + l # + s
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (FunctionStatement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement]]:
         rettype, rettype_glb = self.return_type.compile(resolver) if self.return_type else (None, [])
         prms, prms_glb = self.parameters.compile(resolver, None)
 
@@ -206,7 +206,7 @@ class ClassStatement(TypeStatement):
             statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements])))
 
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         # Resolve each of the inherited types and update the implements list
         unpacked_implements = [y for x in self.implements for y in (x.types if isinstance(x, t.CombinationSpec) else [x])]
         resolved_inheritance = c.find_classes_or_error(unpacked_implements, resolver)
@@ -263,7 +263,7 @@ class ClassStatement(TypeStatement):
         return prm_err + stm_err + impl_err + cls_type_err + bad_slots_err + empty_slots_err
 
 
-    def global_codegen(self, resolver: g.Resolver) -> (cg_x.Object, list[cg_x.Function]):
+    def global_codegen(self, resolver: g.Resolver) -> tuple[cg_x.Object, list[cg_x.Function]]:
         resolver = g.ResolverData(resolver, lambda names: self.__find_locals(resolver, names))
         ast_functions = [fnc for fnc in self.statements if isinstance(fnc, FunctionStatement)]
         gen_functions = [fnc.global_codegen(resolver) for fnc in ast_functions]
@@ -316,7 +316,7 @@ class LetStatement(DataStatement):
             # Just a value, no work, caller does it
             return g.OperationBundle()
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
@@ -405,7 +405,7 @@ class DestructureStatement(LetStatement):
         x: DestructureStatement = cast(DestructureStatement, super(self).add_namespace(path))
         return dataclasses.replace(x, targets=[l.add_namespace(path) for l in self.targets])
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (DestructureStatement, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DestructureStatement, list[Statement]]:
         stmt, stmt_glb = super().compile(resolver, func_ret_type)
         results = [x.compile(resolver, None) for x in stmt.targets]
         tgts = [x[0] for x in results]
@@ -432,7 +432,7 @@ class ReturnStatement(Statement):
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             value=self.value.search_and_replace(resolver, replace))))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement], list[Error]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         new_value, stmts = self.value.compile(resolver, func_ret_type)
         return dataclasses.replace(self, value = new_value),[]
 
@@ -453,7 +453,7 @@ class ReturnStatement(Statement):
 class ImportStatement(Statement):
     path: str
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         return self, []
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
@@ -464,7 +464,7 @@ class ImportStatement(Statement):
 class NamespaceStatement(Statement):
     path: str
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         return self, []
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
@@ -478,7 +478,7 @@ class TypeAliasStatement(TypeStatement):
     def get_type(self) -> t.TypeSpec|None:
         return self.type if self.type.is_concrete() else None
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         new_type, new_statements = self.type.compile(resolver)
         return dataclasses.replace(self, type=new_type), new_statements
 
@@ -493,7 +493,7 @@ class ActionStatement(Statement):
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             action=self.action.search_and_replace(resolver, replace))))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> (Statement | None, list[Statement]):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         new_action, stmts = self.action.compile(resolver, func_ret_type)
         return dataclasses.replace(self, action = new_action), stmts
 
@@ -502,4 +502,10 @@ class ActionStatement(Statement):
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         return self.action.generate(resolver)
+
+@dataclass
+class IfStatement(Statement):
+    condition: e.Expression
+    if_true: Statement
+    if_false: Statement
 

@@ -19,12 +19,12 @@ HIDDEN void _lazy_global_init_continue(object_t* self, int32_t ignore) {
         initial = expected;
     } while (atomic_compare_exchange_weak(flag_ptr, &expected, (worker_node_t*)1));
 
-    object_gc_mark_as_seen((object_t*)initial); // Because we're mutating, we need to be GC aware
+    // object_gc_mark_as_seen((object_t*)initial); // Because we're mutating, we need to be GC aware
 
     // Notify all listeners
     while (initial != NULL) {
         worker_node_t* next = initial->next;
-        object_gc_mark_as_seen((object_t*)next); // Because we're mutating, we need to be GC aware
+        // object_gc_mark_as_seen((object_t*)next); // Because we're mutating, we need to be GC aware
         initial->next = (worker_node_t*)0;
 
         thread_work_post_fast(initial);

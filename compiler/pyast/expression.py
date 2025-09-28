@@ -26,7 +26,7 @@ class Expression:
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         raise NotImplementedError()
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         raise NotImplementedError()
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
@@ -51,7 +51,7 @@ class NewExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         xtype = self.parameter.get_type(resolver)
         if not isinstance(xtype, t.TupleSpec):
             return self, []
@@ -131,7 +131,7 @@ class CallExpression(Expression):
         func_type = self.function.get_type(resolver)
         return func_type.result if isinstance(func_type, t.CallableSpec) else None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
         func_type = self.function.get_type(resolver)
         prtr_type = self.parameter.get_type(resolver)
 
@@ -206,7 +206,7 @@ class DotExpression(Expression):
         return None
 
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  (DotExpression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[DotExpression, list[s.Statement]]:
         base, new_statements = self.base.compile(resolver, None)
         name = self.name
 
@@ -299,7 +299,7 @@ class NamedExpression(Expression):
         datas = resolver.find_data({self.name})
         return datas[0].statement.get_type() if len(datas) == 1 else None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         if '@' in self.name:
             return self, [] # Early exit because we previously succeeded
         datas_full_list = resolver.find_data({self.name})
@@ -348,7 +348,7 @@ class StringExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return t.BuiltinSpec(self.line_ref, "str")
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         return self, []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
@@ -367,7 +367,7 @@ class IntegerExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return t.BuiltinSpec(self.line_ref, f"int{self.precision}" if self.precision else "bigint")
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         return self, []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
@@ -391,7 +391,7 @@ class BuiltinOpExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
         new_params, new_statements = self.params.compile(resolver, None)
         expr = dataclasses.replace(self, params=new_params)
         return expr, list(new_statements)
@@ -436,7 +436,7 @@ class LambdaExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.CallableSpec | None:
         return self.return_type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         # Include parameters in data resolution hierarchy
         resolver = g.ResolverData(resolver, self.__find_locals)
 
@@ -490,7 +490,7 @@ class TupleEntryExpression:
     def get_type(self, resolver: g.Resolver) -> t.TupleSpec | None:
         return self.value.get_type(resolver)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (TupleEntryExpression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[TupleEntryExpression, list[s.Statement]]:
         new_value, new_statements = self.value.compile(resolver, expected_type)
         return dataclasses.replace(self, value = new_value), new_statements
 
@@ -513,7 +513,7 @@ class TupleExpression(Expression):
         entries = [t.TupleEntrySpec(x.name, x.get_type(resolver)) for x in self.expressions]
         return t.TupleSpec(self.line_ref, entries = entries)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         # TODO: Split the expected type, if tuple, and pass it through
         p = [x.compile(resolver, None) for x in self.expressions]
         new_expressions, new_statements_lists = zip(*p) if p else ([], [])
@@ -556,7 +556,7 @@ class TerneryExpression(Expression):
         if not falseType: return trueType
         return falseType if falseType.trivially_assignable_from(resolver, trueType) else trueType
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> (Expression, list[s.Statement]):
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         condition, conditionStatements = self.condition.compile(resolver, t.Bool())
         trueResult, trueStatements = self.trueResult.compile(resolver, self.falseResult.get_type(resolver))
         falseResult, falseStatements = self.falseResult.compile(resolver, self.trueResult.get_type(resolver))

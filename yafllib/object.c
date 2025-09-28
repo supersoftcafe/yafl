@@ -5,6 +5,26 @@
 #include <setjmp.h>
 
 
+/*
+ * Add extra bit to vtable pointer to mark it as a forwarding pointer. Preserve any other existing bits.
+ * Anything that gets the vtable pointer must also allow the object reference to be updated.
+ *
+ * During prune, pages with < 33% capacity have their contents copied away, and a forwarding pointer set up.
+ * Pages have a "copied" flag. Pages never have contents copied twice.
+ *
+ * Allocator differentiates between mutable and immutable pages for allocating.
+ * Vtable needs to have a flag to indicate immutable.
+ *
+ * Scanner updates pointers after following forwarding pointer of target object.
+ *
+ * If an object is referenced from the stack, mark the page as not-moveable.
+ * Clear that mark on next zero pass. Don't copy from a not-moveable page.
+ * Doesn't matter if we make mistakes, but this will reduce the amount of pages where we accidentaly leave something hanging.
+ *
+ * Don't try to prevent double copying. It should by mega rare.
+ */
+
+
 EXPORT void abort_on_vtable_lookup() {
     log_error_and_exit("Aborting due to vtable lookup issue", stderr);
 }
@@ -37,10 +57,16 @@ typedef struct gc_page_head {
     size_t         page_count;
     bool             released;
     bool    gc_scan_candidate;
+    bool   should_not_compact;
+    bool    mutable_container;
+    _Atomic(bool) previously_compacted;
     gc_bitmap_t  object_heads; // Bits to mark the starting index of each object
     gc_bitmap_t    marks_seen;
     gc_bitmap_t marks_scanned;
+    uint32_t     magic_number;
 } __attribute__((aligned(GC_SLOT_SIZE))) gc_page_head_t;
+
+enum { PAGE_MAGIC_NUMBER = 0x71ea05c3 };
 
 enum { GC_SLOTS_PER_PAGE = (GC_PAGE_SIZE - sizeof(gc_page_head_t)) / sizeof(gc_slot_t) };
 
@@ -60,20 +86,27 @@ static void _bitmap_reset_all(gc_bitmap_t* bitmap) {
 }
 
 static void _bitmap_and(gc_bitmap_t* target, gc_bitmap_t* source) {
-    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(uintptr_t); ++index)
+    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index)
         target->a[index] &= source->a[index];
 }
 
 static void _bitmap_andnot(gc_bitmap_t* target, gc_bitmap_t* source) {
-    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(uintptr_t); ++index)
+    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index)
         target->a[index] &= ~source->a[index];
 }
 
 static bool _bitmap_test_any(gc_bitmap_t* bitmap) {
-    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(uintptr_t); ++index)
+    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index)
         if (bitmap->a[index])
             return true;
     return false;
+}
+
+static int _bitmap_count(gc_bitmap_t *bitmap) {
+    int total = 0;
+    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index)
+        total += __builtin_popcount(bitmap->a[index]);
+    return total;
 }
 
 static bool _bitmap_test(gc_bitmap_t* bitmap, ptrdiff_t bit) {
@@ -124,12 +157,17 @@ HIDDEN _Atomic(gc_page_t*)  _gc_all_pages_head; // All pages that exist, includi
 HIDDEN _Atomic(gc_page_t*)* _gc_all_pages_tail = &_gc_all_pages_head;
 
 
+typedef struct bump_pointers {
+    char*      bump_pointer; // -size to get next object reference
+    char*      base_pointer; // until <base_pointer, then we need to ask for more
+} bump_pointers_t;
+
 thread_local struct _thread_info {
     struct _thread_info* next;
     bool initialised;
 
-    char*      bump_pointer; // -size to get next object reference
-    char*      base_pointer; // until <base_pointer, then we need to ask for more
+    bump_pointers_t region_mutable;
+    bump_pointers_t region_immutable;
     gc_page_t* current_page;
     gc_page_t* current_tail;
 
@@ -166,42 +204,80 @@ HIDDEN gc_page_t* _gc_page_alloc(size_t page_count) {
     page->head.page_count = page_count;
     page->head.released = false;
     page->head.gc_scan_candidate = false;
+    page->head.magic_number = PAGE_MAGIC_NUMBER;
 
     return page;
 }
 
 HIDDEN void _gc_page_free(gc_page_t* page) {
     assert(page->head.released == false);
+    assert(page->head.magic_number == PAGE_MAGIC_NUMBER);
     page->head.released = true;
     memory_pages_free(page, page->head.page_count);
 }
 
-EXTERN void _object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
+EXPORT void _object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
     *page_out = (gc_page_t*)((intptr_t)ptr & ~(sizeof(gc_page_t)-1));
     *slot_out = (gc_slot_t*)ptr - (*page_out)->slots;
+    assert( (*page_out)->head.magic_number == PAGE_MAGIC_NUMBER );
+    assert( (*slot_out) >= 0 && (*slot_out) < GC_SLOTS_PER_PAGE );
 }
 
 
 static void default_roots_declaration_func() { }
 HIDDEN roots_declaration_func_t _declare_roots_yafl = default_roots_declaration_func;
-EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t f) {
+EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t f) {
     roots_declaration_func_t previous = _declare_roots_yafl;
     _declare_roots_yafl = f;
     return previous;
 }
 
-HIDDEN void _object_declare_root(object_t** object_ptr) {
-    object_gc_mark_as_seen(*object_ptr);
+
+
+
+static bool _object_is_on_heap(object_t *ptr) {
+    return ptr != NULL
+        && ((intptr_t)ptr & 3) == 0             // Avoid data packed into the pointer, like small integers and strings.
+        && ((intptr_t)ptr->vtable & 3) != 0;    // Avoid static declared objects, because they don't have a heap header.
+}
+
+static void _mark_as_seen(object_t *object) {
+    gc_page_t* page; ptrdiff_t slot;
+    _object_get_page_and_slot(object, &page, &slot);
+    assert (_bitmap_test(&page->head.object_heads, slot));
+    _bitmap_set(&page->head.marks_seen, slot);
+}
+
+HIDDEN void _object_gc_seen_by_field(object_t **field_ptr) {
+    object_t *object = *field_ptr;
+    if (_object_is_on_heap(object)) {
+        _mark_as_seen(object);
+        while (UNLIKELY((uintptr_t)(object = (object_t*)object->vtable) & VTABLE_FLAG_FORWARD)) {
+            *field_ptr = object;
+            _mark_as_seen(object);
+        }
+    }
+}
+
+HIDDEN void _object_gc_seen_by_value_maybe(object_t *object) {
+    if (_object_is_on_heap(object) && memory_pages_is_heap(object)) {
+        gc_page_t* page; ptrdiff_t slot;
+        _object_get_page_and_slot(object, &page, &slot);
+        if (_bitmap_test(&page->head.object_heads, slot)) {
+            _bitmap_set(&page->head.marks_seen, slot);
+            page->head.should_not_compact = 1;
+        }
+    }
 }
 
 HIDDEN void _object_declare_roots() {
-    declare_roots_thread(_object_declare_root);
-    _declare_roots_yafl(_object_declare_root);
+    declare_roots_thread(_object_gc_seen_by_field);
+    _declare_roots_yafl( _object_gc_seen_by_field);
 }
 
 
 
-HIDDEN size_t _object_size(object_t* ptr) {
+static size_t _object_size(object_t* ptr) {
     size_t size;
     vtable_t* vt = object_get_vtable(ptr);
     if (vt->array_len_offset) {
@@ -214,7 +290,7 @@ HIDDEN size_t _object_size(object_t* ptr) {
     return actual_size;
 }
 
-HIDDEN void* _object_alloc(size_t size) {
+static void* _object_alloc(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(gc_slot_t) - 1) / sizeof(gc_slot_t) * sizeof(gc_slot_t);
 
     if (actual_size > MAX_OBJECT_SIZE) {
@@ -225,11 +301,16 @@ HIDDEN void* _object_alloc(size_t size) {
         abort_on_too_large_object();
     }
 
-    if (_thread_info.bump_pointer - _thread_info.base_pointer < actual_size) {
-        gc_page_t* new_page = _gc_page_alloc(1);
+    struct bump_pointers *bp = is_mutable
+        ? &_thread_info.region_mutable
+        : &_thread_info.region_immutable;
 
-        _thread_info.base_pointer = (char*)(new_page->slots);
-        _thread_info.bump_pointer = (char*)(new_page->slots + GC_SLOTS_PER_PAGE);
+    if (UNLIKELY(bp->bump_pointer - bp->base_pointer < actual_size)) {
+        gc_page_t* new_page = _gc_page_alloc(1);
+        new_page->head.mutable_container = is_mutable;
+
+        bp->base_pointer = (char*)(new_page->slots);
+        bp->bump_pointer = (char*)(new_page->slots + GC_SLOTS_PER_PAGE);
 
         new_page->head.next = NULL;
         if (_thread_info.current_tail) {
@@ -242,49 +323,49 @@ HIDDEN void* _object_alloc(size_t size) {
 
     }
 
-    gc_page_t* page = _thread_info.current_tail;
-    gc_slot_t*  ptr = (gc_slot_t*)(_thread_info.bump_pointer -= actual_size);
-    ptrdiff_t  slot = ptr - page->slots;
+    object_t* object = (object_t*)(bp->bump_pointer -= actual_size);
+    gc_page_t* page ; ptrdiff_t slot ;
+    _object_get_page_and_slot(object, &page, &slot);
     _bitmap_set(&page->head.object_heads, slot);
 
-    return ptr;
-}
-
-INLINE bool _object_is_on_heap(object_t* ptr) {
-    return ptr != NULL
-        && ((intptr_t)ptr & 3) == 0             // Avoid data packed into the pointer, like small integers and strings.
-        && ((intptr_t)ptr->vtable & 3) != 0;    // Avoid static declared objects, because they don't have a heap header.
+    return object;
 }
 
 
 
 
 
-static void _gc_scan_elements(object_t** ptr, uint32_t pointer_locations) {
+static void _gc_scan_elements(object_t **ptr, uint32_t pointer_locations) {
     for (int index = 0; index < 32; ++index) {
         if (pointer_locations & (1 << index)) {
-            object_gc_mark_as_seen(ptr[index]);
+            _object_gc_seen_by_field(&ptr[index]);
         }
     }
 }
 
-HIDDEN void _gc_scan_object_meat(object_t* ptr) {
-    vtable_t* vt = object_get_vtable(ptr);
+static void _gc_scan_object_meat(object_t *object) {
+    vtable_t *vt = object->vtable;
+    for (object_t *ptr = object; UNLIKELY((uintptr_t)vt & VTABLE_FLAG_FORWARD); ) {
+        ptr = (object_t*)((uintptr_t)vt &~ 3);
+        _mark_as_seen(ptr);
+        vt = ptr->vtable;
+    }
+    vt = (vtable_t*)((uintptr_t)vt &~ 3);
 
     if (vt->object_pointer_locations) {
-        _gc_scan_elements((object_t**)ptr, vt->object_pointer_locations);
+        _gc_scan_elements((object_t**)object, vt->object_pointer_locations);
     }
 
     if (vt->array_el_pointer_locations) {
-        uint32_t len = *(uint32_t*)&((char*)ptr)[vt->array_len_offset];
-        char*  array = ((char*)ptr) + vt->object_size;
+        uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
+        char*  array = ((char*)object) + vt->object_size;
         for (; len-- > 0; array += vt->array_el_size) {
             _gc_scan_elements((object_t**)array, vt->array_el_pointer_locations);
         }
     }
 }
 
-HIDDEN void _gc_scan_object_shallow(object_t* ptr) {
+HIDDEN void _gc_scan_object_shallow(object_t *ptr) {
     if (!_object_is_on_heap(ptr)) {
         return;
     }
@@ -299,29 +380,26 @@ HIDDEN void _gc_scan_object_shallow(object_t* ptr) {
 
     _gc_scan_object_meat(ptr);
 
-    // This must only be set after scanning is complete, otherwise a call to object_gc_mutation
-    // from another thread can possibly fail to scan and mutate the pointer before this scan
-    // completes.
     _bitmap_set(&page->head.marks_scanned, slot);
 }
 
 EXPORT void* object_create(vtable_t* vtable) {
     assert(vtable->array_el_size == 0);
-    void* object = _object_alloc(vtable->object_size);
-    *(char**)&((object_t*)object)->vtable = ((char*)vtable)+1;
+    object_t *object = _object_alloc(vtable->object_size, vtable->is_mutable);
+    object->vtable = (vtable_t*)((uintptr_t)vtable | VTABLE_FLAG_HEAP);
     return object;
 }
 
-EXPORT void* array_create(vtable_t* vtable, int32_t length) {
+EXPORT void* array_create(vtable_t *vtable, int32_t length) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
-    void* object = _object_alloc(vtable->object_size + vtable->array_el_size*length);
+    object_t *object = _object_alloc(vtable->object_size + vtable->array_el_size*length, vtable->is_mutable);
+    object->vtable = (vtable_t*)((uintptr_t)vtable | VTABLE_FLAG_HEAP);
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
-    *(char**)&((object_t*)object)->vtable = ((char*)vtable)+1;
     return object;
 }
 
-EXPORT fun_t vtable_lookup(void* object, intptr_t id) {
+EXPORT fun_t vtable_lookup(object_t *object, intptr_t id) {
     vtable_t* vtable = object_get_vtable(object);
     intptr_t index = id & vtable->functions_mask;
     vtable_entry_t* entry = (vtable_entry_t*)(((char*)&(vtable->lookup[-1])) + index);
@@ -359,7 +437,7 @@ HIDDEN void _gc_scan_range(object_t** range_ptr, object_t** range_end) {
     for (; range_ptr != range_end; range_ptr++) {
         object_t* ptr = *range_ptr;
         if (_gc_pointer_is_into_heap((gc_slot_t*)ptr)) {
-            object_gc_mark_as_seen(ptr);
+            _object_gc_seen_by_value_maybe(ptr);
         }
     }
 }
@@ -387,42 +465,35 @@ HIDDEN void _gc_scan_stack(struct _thread_info* thread) {
     }
 
     thread->current_page = thread->current_tail = NULL;
-    thread->base_pointer = thread->bump_pointer = NULL;
+    thread->region_immutable.base_pointer = thread->region_mutable.base_pointer = NULL;
+    thread->region_immutable.bump_pointer = thread->region_mutable.bump_pointer = NULL;
 
     // Thread library has some stuff
-    thread->thread_roots_declaration_func(thread->thread_roots_context, _object_declare_root);
+    thread->thread_roots_declaration_func(thread->thread_roots_context, _object_gc_seen_by_field);
 
     atomic_store(&thread->scan_complete, true);
-}
-
-EXPORT void object_gc_mark_as_seen(object_t* ptr) {
-    if (ptr != NULL && _object_is_on_heap(ptr)) {
-        gc_page_t* page; ptrdiff_t slot;
-        _object_get_page_and_slot(ptr, &page, &slot);
-        assert(_bitmap_test(&page->head.object_heads, slot));
-        _bitmap_set(&page->head.marks_seen, slot);
-    }
 }
 
 static void donothing() {
 
 }
 
-EXPORT object_t* object_gc_mutation(object_t* ptr) {
-    if (_gc_in_progress) {
-        _gc_scan_object_meat(ptr);
-        // gc_page_t* page; ptrdiff_t slot;
-        // _object_get_page_and_slot(ptr, &page, &slot);
-        // if (page->head.gc_scan_candidate && !_bitmap_test(&page->head.marks_scanned, slot)) {
-        //     object_gc_mark_as_seen(ptr);
-        //     _gc_scan_object_shallow(ptr);
-        // }
-    }
-    return ptr;
+
+EXPORT void object_mutate(object_t *object) {
+    _gc_scan_object_meat(object);
+}
+
+EXPORT void object_set_reference(object_t **field, object_t *value) {
+    object_t *old_value = *field;
+    if (_object_is_on_heap(old_value))
+        _mark_as_seen(old_value);
+    if (_object_is_on_heap(value))
+        _mark_as_seen(value);
+    *field = value;
 }
 
 // Start of potentially thread pausing IO
-EXTERN void object_gc_io_begin() {
+EXPORT void object_gc_io_begin() {
     for (;;) {
         assert(atomic_load(&_thread_info.action_flag) == IO_ACTION_NONE
             || atomic_load(&_thread_info.action_flag) == IO_ACTION_SCAN_REQUEST);
@@ -453,7 +524,7 @@ EXTERN void object_gc_io_begin() {
 }
 
 // End of potentially thread pausing IO
-EXTERN void object_gc_io_end() {
+EXPORT void object_gc_io_end() {
     enum action_flag expected;
     struct _thread_info* thread = &_thread_info;
     do {assert(atomic_load(&thread->action_flag) == IO_ACTION_ACTIVE
@@ -478,7 +549,7 @@ HIDDEN NOINLINE void _gc_scan_this_threads_stack() {
 }
 
 // Arbitary safe point for GC magic to happen
-EXTERN void object_gc_safe_point() {
+EXPORT void object_gc_safe_point() {
     if (_set_action_flag(&_thread_info, IO_ACTION_SCAN_REQUEST, IO_ACTION_SCANNING)) {
         _gc_scan_this_threads_stack();
         atomic_store(&_thread_info.action_flag, IO_ACTION_NONE);
@@ -486,7 +557,7 @@ EXTERN void object_gc_safe_point() {
 }
 
 // Any thread that can do allocation must call this early on
-EXTERN void object_gc_declare_thread(thread_roots_declaration_func_t thread_roots_declaration_func, void*thread_roots_context) {
+EXPORT void object_gc_declare_thread(thread_roots_declaration_func_t thread_roots_declaration_func, void*thread_roots_context) {
     object_t* some_random_var = NULL;
 #ifdef STACK_GROWS_DOWN
     _thread_info.stack_upper_pointer = &some_random_var;
@@ -598,6 +669,10 @@ static _Atomic(size_t) _gc_count_of_pages_at_end_of_scan = 0;
 static _Atomic(_Atomic(gc_page_t*)*) _gc_prune_progress;
 static _Atomic(size_t) _gc_prune_count_of_used_slots;
 
+static size_t _gc_page_usage(gc_page_t *page) {
+
+}
+
 HIDDEN bool _gc_prune_heap() {
     for (;;) {
         _Atomic(gc_page_t*) *prev_ptr = atomic_load(&_gc_prune_progress);
@@ -617,11 +692,39 @@ HIDDEN bool _gc_prune_heap() {
             // Some other thread is in the process of removing this page. This thread needs to go around again.
             // So...  do nothing
 
-        } else if (_bitmap_test_any(&page->head.marks_seen)) {
+        } else if (!_bitmap_test_any(&page->head.marks_seen)) {
+
+            gc_page_t *expected = page;
+            gc_page_t *requested = (gc_page_t*)((uintptr_t)page | 1);
+
+            // Mark the pointer so that no other thread will attempt to access this page
+            if (atomic_compare_exchange_strong(prev_ptr, &expected, requested)) {
+                // If this is the last node, skip it, as releasing it means having to update the tail pointer
+                // which, when you really really think about it, ends up being very complicated.
+                if (page->head.next == NULL) {
+                    // Untag the pointer, move along and let the loop swing around
+                    atomic_store(prev_ptr, page);
+                    atomic_store(&_gc_prune_progress, &page->head.next);
+
+                } else {
+                    // Unlink this node. Marked pointer ensures that we aren't contending with other threads.
+                    atomic_store(prev_ptr, page->head.next);
+    #ifndef NDEBUG
+                    // We're about to release this page. Just in-case some pointer still exists, fill it with rubbish, to cause a crash.
+                    _fillmem((uint32_t*)page->slots, 0xcafebabe, GC_SLOTS_PER_PAGE * sizeof(gc_slot_t) / sizeof(uint32_t));
+    #endif
+                    _gc_page_free(page);
+                    return false; // Not the final call
+                }
+            }
+
+        } else {
+
             // Attempt to move pointer. Extra work is done if we are the thread that succeeds.
             if (atomic_compare_exchange_strong(&_gc_prune_progress, &prev_ptr, &page->head.next)) {
                 // We need to keep a count of pages
                 atomic_fetch_add(&_gc_count_of_pages_at_end_of_scan, 1);
+
 #ifndef NDEBUG
                 gc_bitmap_t test = page->head.marks_seen;
                 _bitmap_andnot(&test, &page->head.object_heads);
@@ -647,31 +750,60 @@ HIDDEN bool _gc_prune_heap() {
                 }
                 atomic_fetch_add(&_gc_prune_count_of_used_slots, used_slots / sizeof(gc_slot_t));
 #endif
-            }
 
-        } else {
-            // Mark the pointer so that no other thread will attempt to access this page
-            gc_page_t *expected = page;
-            gc_page_t *requested = (gc_page_t*)((uintptr_t)page | 1);
-            if (atomic_compare_exchange_strong(prev_ptr, &expected, requested)) {
-                // If this is the last node, skip it, as releasing it means having to update the tail pointer
-                // which, when you really really think about it, ends up being very complicated.
-                if (page->head.next == NULL) {
-                    // Untag the pointer, move along and let the loop swing around
-                    atomic_store(prev_ptr, page);
-                    atomic_store(&_gc_prune_progress, &page->head.next);
+                // TODO: Compaction
+                //      If !mutable_container && !should_not_compact && usage < 33% && !previously_compacted
+                //          Copy all objects elsewhere and setup forwarding pointers
+                //          previously_compacted = true
 
-                } else {
-                    // Unlink this node. Marked pointer ensures that we aren't contending with other threads.
-                    atomic_store(prev_ptr, page->head.next);
-    #ifndef NDEBUG
-                    // We're about to release this page. Just in-case some pointer still exists, fill it with rubbish, to cause a crash.
-                    _fillmem((uint32_t*)page->slots, 0xdeadbeef, GC_SLOTS_PER_PAGE * sizeof(gc_slot_t) / sizeof(uint32_t));
-    #endif
-                    _gc_page_free(page);
-                    return false; // Not the final call
+                if (page->head.mutable_container || page->head.should_not_compact || page->head.previously_compacted) {
+                    return false; // Not for compaction or previously done
+                }
+
+                if (_bitmap_count(&page->head.object_heads) > GC_SLOTS_PER_PAGE/3) {
+                    return false; // Too big for compaction, don't even need to add up object sizes.
+                }
+
+                size_t object_count = 0;
+                struct obj_and_sze { object_t *o; size_t s; };
+                struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * (GC_SLOTS_PER_PAGE / 3));
+
+                size_t total = 0;
+                gc_slot_t *slots = page->slots;
+                for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index) {
+                    gc_mask_bits_t bits = page->head.object_heads.a[index];
+                    while (bits) {
+                        int bit = __builtin_ctzll(bits);
+                        bits ^= 1ULL << bit;
+
+                        object_t *object = (object_t*)&slots[bit];
+                        size_t size = _object_size(object);
+                        objects[object_count++] = (struct obj_and_sze){ .o = object, .s = size };
+
+                        total += size;
+                        if (total > GC_SLOTS_PER_PAGE*sizeof(gc_slot_t)/3) {
+                            return false; // Too big for compaction
+                        }
+                    }
+                    slots += sizeof(gc_mask_bits_t)*8;
+                }
+
+                bool expects_false = false;
+                if (!atomic_compare_exchange_strong(&page->head.previously_compacted, &expects_false, true)) {
+                    return false; // Another thread got there first
+                }
+
+                while (object_count-- > 0) {
+                    object_t *object = objects[object_count].o;
+                    size_t      size = objects[object_count].s;
+
+                    object_t *target = _object_alloc(size, false);                         // Allocate new object
+                    memcpy(target, object, size);                                          // Copy contents across
+                    object->vtable = (vtable_t*)((uintptr_t)target | VTABLE_FLAG_FORWARD); // Set forwarding pointer
                 }
             }
+
+            return false;
         }
     }
 }
@@ -680,6 +812,7 @@ HIDDEN bool _gc_prune_heap() {
 HIDDEN void _gc_zero_all_flags() {
     _gc_count_of_pages_at_start_of_scan = 0;
     for (gc_page_t* page = _gc_all_pages_head; page != NULL; page = page->head.next) {
+        page->head.should_not_compact = false;
         _bitmap_reset_all(&page->head.marks_seen);
         _bitmap_reset_all(&page->head.marks_scanned);
         _gc_count_of_pages_at_start_of_scan += 1;

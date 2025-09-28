@@ -128,6 +128,7 @@ static vtable_t test_gc_allocations_v = {
     .array_el_pointer_locations = maskof(string_t*, ),
     .functions_mask = 0,
     .array_len_offset = offsetof(integer_t, length),
+    .is_mutable = 1,
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
@@ -158,7 +159,8 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
-                ((struct test_gc_allocations_o*)object_gc_mutation((object_t*)obj))->results[i] = str;
+                // object_mutate((object_t*)obj);
+                object_set_reference((object_t**)&obj->results[i], (object_t*)str);
             }
         }
 
