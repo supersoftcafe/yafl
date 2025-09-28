@@ -29,6 +29,7 @@ EXPORT struct integer_vtable INTEGER_VTABLE = {
     .array_el_pointer_locations = 0,
     .functions_mask = 0,
     .array_len_offset = offsetof(integer_t, length),
+    .name = "integer",
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 

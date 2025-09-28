@@ -12,6 +12,7 @@ EXPORT struct string_vtable STRING_VTABLE = {
     .array_el_pointer_locations = 0,
     .functions_mask = 0,
     .array_len_offset = offsetof(string_t, length),
+    .name = "string",
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 

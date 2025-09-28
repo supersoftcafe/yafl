@@ -129,6 +129,7 @@ static vtable_t test_gc_allocations_v = {
     .functions_mask = 0,
     .array_len_offset = offsetof(integer_t, length),
     .is_mutable = 1,
+    .name = "test_gc_allocations",
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
@@ -150,9 +151,13 @@ static void complete_allocation_test(struct test_gc_allocations_o* self, string_
 static void do_allocation_test(struct test_gc_allocations_o* self) {
     struct test_gc_allocations_o* array[10] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
 
-    for (int count = 0; count < 1000; ++count) {
+    for (int count = 0; count < 10; ++count) {
         struct test_gc_allocations_o* obj = (struct test_gc_allocations_o*)array_create((vtable_t*)&test_gc_allocations_v, 3);
         array[count%10] = obj;
+    }
+
+    for (int count = 0; count < 1000; ++count) {
+        struct test_gc_allocations_o* obj;
 
         for (int count2 = 0; count2 < 1000; ++count2) {
             string_t* str = (string_t*)string_append(left_str, right_str);
@@ -169,7 +174,7 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
             if (obj != NULL) {
                 assert(obj->results[0] == NULL || strcmp((char*)obj->results[0]->array, test_str) == 0);
                 assert(obj->results[1] == NULL || strcmp((char*)obj->results[1]->array, test_str) == 0);
-                assert(obj->results[2] == NULL || strcmp((char*)obj->results[0]->array, test_str) == 0);
+                assert(obj->results[2] == NULL || strcmp((char*)obj->results[2]->array, test_str) == 0);
             }
         }
     }

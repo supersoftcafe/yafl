@@ -11,6 +11,7 @@ EXPORT vtable_t* _worker_node_vt = VTABLE_DECLARE(0){
     .functions_mask = 0,
     .array_len_offset = 0,
     .is_mutable = 1,
+    .name = "worker_node",
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
@@ -42,6 +43,7 @@ HIDDEN vtable_t* _worker_queues_vt = VTABLE_DECLARE(0){
     .functions_mask = 0,
     .array_len_offset = offsetof(worker_queues_t, length),
     .is_mutable = 1,
+    .name = "worker_queues",
     .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
@@ -182,7 +184,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 }
 
 static void _thread_init() {
-    intptr_t thread_count = 1;
+    intptr_t thread_count = 2;
 
     object_gc_init(); // Initialise the GC system
 

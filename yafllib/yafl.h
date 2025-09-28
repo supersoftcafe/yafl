@@ -127,6 +127,7 @@ typedef struct vtable {
     uint32_t functions_mask;     // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
     uint16_t array_len_offset;   // Offset of uint32_t array length field
     uint16_t is_mutable:1;
+    const char *name;
     struct vtable** implements_array; // Array of all classes that this class extends
 #ifdef NDEBUG
     vtable_entry_t lookup[0];
@@ -144,6 +145,7 @@ typedef struct vtable {
             uint32_t functions_mask;\
             uint16_t array_len_offset;\
             uint16_t is_mutable:1;\
+            const char* name;\
             struct vtable** implements_array;\
             vtable_entry_t lookup[LOOKUP_COUNT];\
         }

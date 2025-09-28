@@ -5,7 +5,8 @@
 #include <setjmp.h>
 
 #undef DISABLE_HEAP_COMPACTION
-#define COMPACT_THRESHOLD_PERCENT   20
+#define COMPACT_THRESHOLD_PERCENT   33
+#define PAGES_SCANNED_PER_ALLOC     12
 
 
 /*
@@ -195,8 +196,6 @@ static void _fillmem(uint32_t* memory, uint32_t value, size_t count) {
 }
 
 HIDDEN gc_page_t* _gc_page_alloc(size_t page_count) {
-    _gc_fsa();
-
     gc_page_t* page = memory_pages_alloc(page_count);
     if (page == NULL)
         abort_on_out_of_memory();
@@ -265,6 +264,9 @@ HIDDEN void _object_gc_seen_by_value_maybe(object_t *object) {
         gc_page_t* page; ptrdiff_t slot;
         _object_get_page_and_slot(object, &page, &slot);
         if (_bitmap_test(&page->head.object_heads, slot)) {
+            vtable_t *vt = object_get_vtable(object);
+            const char *name = vt->name;
+
             _bitmap_set(&page->head.marks_seen, slot);
             page->head.should_not_compact = 1;
         }
@@ -291,7 +293,7 @@ static size_t _object_size(object_t* ptr) {
     return actual_size;
 }
 
-static void* _object_alloc(size_t size, bool is_mutable) {
+static void* _object_alloc(size_t size, bool is_mutable, bool allow_gc) {
     size_t actual_size = (size + sizeof(gc_slot_t) - 1) / sizeof(gc_slot_t) * sizeof(gc_slot_t);
 
     if (actual_size > MAX_OBJECT_SIZE) {
@@ -307,6 +309,10 @@ static void* _object_alloc(size_t size, bool is_mutable) {
         : &_thread_info.region_immutable;
 
     if (UNLIKELY(bp->bump_pointer - bp->base_pointer < actual_size)) {
+        if (allow_gc) {
+            _gc_fsa();
+        }
+
         gc_page_t* new_page = _gc_page_alloc(1);
         new_page->head.mutable_container = is_mutable;
 
@@ -386,7 +392,7 @@ HIDDEN void _gc_scan_object_shallow(object_t *ptr) {
 
 EXPORT void* object_create(vtable_t* vtable) {
     assert(vtable->array_el_size == 0);
-    object_t *object = _object_alloc(vtable->object_size, vtable->is_mutable);
+    object_t *object = _object_alloc(vtable->object_size, vtable->is_mutable, true);
     object->vtable = VT_TAG_SET(vtable, VT_TAG_MANAGED);
     return object;
 }
@@ -394,7 +400,7 @@ EXPORT void* object_create(vtable_t* vtable) {
 EXPORT void* array_create(vtable_t *vtable, int32_t length) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
-    object_t *object = _object_alloc(vtable->object_size + vtable->array_el_size*length, vtable->is_mutable);
+    object_t *object = _object_alloc(vtable->object_size + vtable->array_el_size*length, vtable->is_mutable, true);
     object->vtable = VT_TAG_SET(vtable, VT_TAG_MANAGED);
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
     return object;
@@ -465,14 +471,15 @@ HIDDEN void _gc_scan_range(object_t** range_ptr, object_t** range_end) {
     }
 }
 
-static size_t _gc_count_of_pages_at_start_of_scan;
+static void _gc_zero_page_flags(gc_page_t* page) {
+    page->head.should_not_compact = false;
+    _bitmap_reset_all(&page->head.marks_seen);
+    _bitmap_reset_all(&page->head.marks_scanned);
+}
+
 HIDDEN void _gc_scan_stack(struct _thread_info* thread) {
     // This is either called from the owning thread, or from a context where we guarentee that the
     // target thread is suspended, so we are free to mess around with the stack and thread locals.
-
-    // Scan stack and registers
-    _gc_scan_range(thread->stack_lower_pointer, thread->stack_upper_pointer);
-    _gc_scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);
 
     // Any current thread private pages are moved into the global heap for GC processing
     for (gc_page_t *next = thread->current_page, *page; (page = next) != NULL; ) {
@@ -484,8 +491,13 @@ HIDDEN void _gc_scan_stack(struct _thread_info* thread) {
         do {expected = NULL;
         } while (!atomic_compare_exchange_strong(_gc_all_pages_tail, &expected, page));
         _gc_all_pages_tail = &page->head.next;
-        _gc_count_of_pages_at_start_of_scan += 1;
+
+        _gc_zero_page_flags(page);
     }
+
+    // Scan stack and registers
+    _gc_scan_range(thread->stack_lower_pointer, thread->stack_upper_pointer);
+    _gc_scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);
 
     thread->current_page = thread->current_tail = NULL;
     thread->region_immutable.base_pointer = thread->region_mutable.base_pointer = NULL;
@@ -654,31 +666,81 @@ HIDDEN bool _gc_scan_page(gc_page_t* page) {
 }
 
 
-static _Atomic(size_t) _gc_scan_heap_countdown;
 static _Atomic(gc_page_t*) _gc_scan_heap_progress;
 static _Atomic(bool) _gc_scan_heap_did_some_work;
 
 static size_t _gc_scan_heap_repeats = 0;
 
+static _Atomic(size_t) _gc_count_of_pages_tick_tock;
+static _Atomic(size_t) _gc_count_of_pages_scanning;
+
 HIDDEN bool _gc_scan_heap() {
-    gc_page_t *page = _gc_scan_heap_progress;
+    gc_page_t *page, *next;
 
     do {
-        if (page == NULL)
+        page = _gc_scan_heap_progress;
+        if (page == NULL) {
             return false;
-    } while (!atomic_compare_exchange_weak(&_gc_scan_heap_progress, &page, page->head.next));
+        }
+        next = page->head.next;
+    } while (!atomic_compare_exchange_weak(&_gc_scan_heap_progress, &page, next));
+
+    atomic_fetch_add(&_gc_count_of_pages_scanning, 1);
+    atomic_fetch_add(&_gc_count_of_pages_tick_tock, 1);
 
     if (_gc_scan_page(page))
         _gc_scan_heap_did_some_work = true;
 
-    return atomic_fetch_sub(&_gc_scan_heap_countdown, 1) == 1;
+    if (next == NULL) {
+        atomic_fetch_sub(&_gc_count_of_pages_tick_tock, 1);
+    }
+
+    return atomic_fetch_sub(&_gc_count_of_pages_tick_tock, 1) == 1;
 }
 
 static _Atomic(size_t) _gc_count_of_pages_at_end_of_scan = 0;
 static _Atomic(_Atomic(gc_page_t*)*) _gc_prune_progress;
-static _Atomic(size_t) _gc_prune_count_of_used_slots;
+static _Atomic(size_t) _gc_prune_count_of_used_bytes;
 static _Atomic(size_t) _gc_prune_count_of_copied_pages;
 
+
+static struct size_by_name {
+    const char* name;
+    size_t      size;
+    size_t     count;
+} size_by_name[10];
+
+
+static int _compare_entry(const struct size_by_name* a, const struct size_by_name* b) {
+    if (a->name == b->name) {
+        return 0;
+    } else if (b->name == NULL) {
+        return 1;
+    } else if (a->name == NULL) {
+        return -1;
+    } else {
+        return strcmp(a->name, b->name);
+    }
+}
+
+static void _add_size(const char* name, size_t size) {
+    if (name == NULL) {
+        name = "null";
+    }
+    for (int index = 0; index < 10; ++index) {
+        struct size_by_name *e = &size_by_name[index];
+        if (e->name == name) {
+            e->size += size;
+            e->count ++;
+            return;
+        } else if (e->name == NULL) {
+            e->name = name;
+            e->size = size;
+            e->count = 1;
+            return;
+        }
+    }
+}
 
 HIDDEN bool _gc_prune_heap() {
     for (;;) {
@@ -725,95 +787,99 @@ HIDDEN bool _gc_prune_heap() {
                 }
             }
 
-        } else {
-
             // Attempt to move pointer. Extra work is done if we are the thread that succeeds.
-            if (atomic_compare_exchange_strong(&_gc_prune_progress, &prev_ptr, &page->head.next)) {
-                // We need to keep a count of pages
-                atomic_fetch_add(&_gc_count_of_pages_at_end_of_scan, 1);
+        } else if (atomic_compare_exchange_strong(&_gc_prune_progress, &prev_ptr, &page->head.next)) {
+
+            // We need to keep a count of pages
+            atomic_fetch_add(&_gc_count_of_pages_at_end_of_scan, 1);
 
 #ifndef NDEBUG
-                gc_bitmap_t test = page->head.marks_seen;
-                _bitmap_andnot(&test, &page->head.object_heads);
-                assert(!_bitmap_test_any(&test));
+            gc_bitmap_t test = page->head.marks_seen;
+            _bitmap_andnot(&test, &page->head.object_heads);
+            assert(!_bitmap_test_any(&test));
 #endif
-                // Un-mark objects that no longer exist
-                _bitmap_and(&page->head.object_heads, &page->head.marks_seen);
+            // Un-mark objects that no longer exist
+            _bitmap_and(&page->head.object_heads, &page->head.marks_seen);
+
 #ifndef NDEBUG
-                ptrdiff_t counter = 0;
-                size_t used_slots = 0;
-                for (ptrdiff_t slot = 0; slot < GC_SLOTS_PER_PAGE; ++slot) {
-                    if (_bitmap_test(&page->head.object_heads, slot)) {
-                        object_t* obj = (object_t*)&page->slots[slot];
-                        size_t size = _object_size(obj);
-                        used_slots += size;
-                        counter = size / sizeof(gc_slot_t);
-                        assert(counter > 0);
-                    }
-                    if (--counter < 0) {
-                        // Fill unused space to cause crashes if GC gets it wrong
-                        _fillmem((uint32_t*)&page->slots[slot], 0xdeadbeef, sizeof(gc_slot_t) / sizeof(uint32_t));
-                    }
+            ptrdiff_t counter = 0;
+            size_t used_bytes = 0;
+            for (ptrdiff_t slot = 0; slot < GC_SLOTS_PER_PAGE; ++slot) {
+                if (_bitmap_test(&page->head.object_heads, slot)) {
+                    object_t* obj = (object_t*)&page->slots[slot];
+                    size_t size = _object_size(obj);
+                    used_bytes += size;
+                    _add_size(object_get_vtable(obj)->name, size);
+                    counter = size / sizeof(gc_slot_t);
+                    assert(counter > 0);
                 }
-                atomic_fetch_add(&_gc_prune_count_of_used_slots, used_slots / sizeof(gc_slot_t));
+                if (--counter < 0) {
+                    // Fill unused space to cause crashes if GC gets it wrong
+                    _fillmem((uint32_t*)&page->slots[slot], 0xdeadbeef, sizeof(gc_slot_t) / sizeof(uint32_t));
+                }
+            }
+            atomic_fetch_add(&_gc_prune_count_of_used_bytes, used_bytes);
 #endif
 
 
 #ifndef DISABLE_HEAP_COMPACTION
-                size_t slots_threshold = GC_SLOTS_PER_PAGE * COMPACT_THRESHOLD_PERCENT / 100;
+            size_t slots_threshold = GC_SLOTS_PER_PAGE * COMPACT_THRESHOLD_PERCENT / 100;
 
-                if (page->head.previously_compacted) {
-                    atomic_fetch_add(&_gc_prune_count_of_copied_pages, 1);
-                    return false; // Compacted on previous prune. We count these to track overhead stats.
-                }
-
-                if (page->head.mutable_container || page->head.should_not_compact || page->head.page_count > 1) {
-                    return false; // Not for compaction
-                }
-
-                if (_bitmap_count(&page->head.object_heads) > slots_threshold) {
-                    return false; // Too big for compaction, don't even need to add up object sizes.
-                }
-
-                size_t object_count = 0;
-                struct obj_and_sze { object_t *o; size_t s; };
-                struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * slots_threshold);
-
-                size_t total = 0;
-                gc_slot_t *slots = page->slots;
-                for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index) {
-                    gc_mask_bits_t bits = page->head.object_heads.a[index];
-                    while (bits) {
-                        int bit = __builtin_ctzll(bits);
-                        bits ^= 1ULL << bit;
-
-                        object_t *object = (object_t*)&slots[bit];
-                        size_t size = _object_size(object);
-                        objects[object_count++] = (struct obj_and_sze){ .o = object, .s = size };
-
-                        total += size;
-                        if (total > GC_SLOTS_PER_PAGE*sizeof(gc_slot_t)/3) {
-                            return false; // Too big for compaction
-                        }
-                    }
-                    slots += sizeof(gc_mask_bits_t)*8;
-                }
-
-                bool expects_false = false;
-                if (!atomic_compare_exchange_strong(&page->head.previously_compacted, &expects_false, true)) {
-                    return false; // Another thread got there first
-                }
-
-                while (object_count-- > 0) {
-                    object_t *object = objects[object_count].o;
-                    size_t      size = objects[object_count].s;
-
-                    object_t *target = _object_alloc(size, false);       // Allocate new object
-                    memcpy(target, object, size);                        // Copy contents across
-                    object->vtable = VT_TAG_SET(target, VT_TAG_FORWARD); // Set forwarding pointer
-                }
-#endif
+            if (page->head.previously_compacted) {
+                atomic_fetch_add(&_gc_prune_count_of_copied_pages, 1);
+                goto end; // Compacted on previous prune. We count these to track overhead stats.
             }
+
+            if (page->head.mutable_container || page->head.should_not_compact || page->head.page_count > 1) {
+                goto end; // Not for compaction
+            }
+
+            if (_bitmap_count(&page->head.object_heads) > slots_threshold) {
+                goto end; // Too big for compaction, don't even need to add up object sizes.
+            }
+
+            size_t object_count = 0;
+            struct obj_and_sze { object_t *o; size_t s; };
+            struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * slots_threshold);
+
+            size_t total = 0;
+            gc_slot_t *slots = page->slots;
+            for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index) {
+                gc_mask_bits_t bits = page->head.object_heads.a[index];
+                while (bits) {
+                    int bit = __builtin_ctzll(bits);
+                    bits ^= 1ULL << bit;
+
+                    object_t *object = (object_t*)&slots[bit];
+                    size_t size = _object_size(object);
+                    objects[object_count++] = (struct obj_and_sze){ .o = object, .s = size };
+
+                    total += size;
+                    if (total > GC_SLOTS_PER_PAGE*sizeof(gc_slot_t)/3) {
+                        goto end; // Too big for compaction
+                    }
+                }
+                slots += sizeof(gc_mask_bits_t)*8;
+            }
+
+            bool expects_false = false;
+            if (!atomic_compare_exchange_strong(&page->head.previously_compacted, &expects_false, true)) {
+                goto end; // Another thread got there first
+            }
+
+            while (object_count-- > 0) {
+                object_t *object = objects[object_count].o;
+                size_t      size = objects[object_count].s;
+
+                object_t *target = _object_alloc(size, false, false);// Allocate new object
+                memcpy(target, object, size);                        // Copy contents across
+                object->vtable = VT_TAG_SET(target, VT_TAG_FORWARD); // Set forwarding pointer
+            }
+#endif
+
+end:
+            // Reset mark/sweep bits
+            _gc_zero_page_flags(page);
 
             return false;
         }
@@ -821,15 +887,15 @@ HIDDEN bool _gc_prune_heap() {
 }
 
 
-HIDDEN void _gc_zero_all_flags() {
-    _gc_count_of_pages_at_start_of_scan = 0;
-    for (gc_page_t* page = _gc_all_pages_head; page != NULL; page = page->head.next) {
-        page->head.should_not_compact = false;
-        _bitmap_reset_all(&page->head.marks_seen);
-        _bitmap_reset_all(&page->head.marks_scanned);
-        _gc_count_of_pages_at_start_of_scan += 1;
-    }
-}
+// HIDDEN void _gc_zero_all_flags() {
+//     _gc_count_of_pages_scanning = 0;
+//     for (gc_page_t* page = _gc_all_pages_head; page != NULL; page = page->head.next) {
+//         page->head.should_not_compact = false;
+//         _bitmap_reset_all(&page->head.marks_seen);
+//         _bitmap_reset_all(&page->head.marks_scanned);
+//         _gc_count_of_pages_scanning += 1;
+//     }
+// }
 
 #define _FSA_LOCKED(original_state)\
     case original_state:{\
@@ -873,7 +939,7 @@ HIDDEN void _gc_fsa() {
 
         _FSA_LOCKED(_FSA_ZERO_FLAGS)
             _gc_scan_heap_repeats = 0;
-            _gc_zero_all_flags(); // Clear all page flags
+            // _gc_zero_all_flags();
             atomic_store(&_gc_in_progress, true);
             _gc_start_thread_scanning();
             atomic_store(&_gc_stage, _FSA_MARK_ROOTS);
@@ -892,8 +958,9 @@ HIDDEN void _gc_fsa() {
 
         _FSA_LOCKED(_FSA_SCAN_HEAP)
             if (_gc_all_pages_head && _gc_scan_heap_did_some_work) {
+                _gc_count_of_pages_scanning = 0;
+                _gc_count_of_pages_tick_tock = 1;
                 _gc_scan_heap_repeats += 1;
-                _gc_scan_heap_countdown = _gc_count_of_pages_at_start_of_scan;
                 _gc_scan_heap_progress = _gc_all_pages_head;
                 _gc_scan_heap_did_some_work = false;
                 atomic_store(&_gc_stage, _FSA_SCAN_IN_PROGRESS);
@@ -903,7 +970,7 @@ HIDDEN void _gc_fsa() {
         _FSA_LOCKED_END()
 
         case _FSA_SCAN_IN_PROGRESS:
-            for (size_t count = 8 * _gc_scan_heap_repeats; count != 0; --count) {
+            for (size_t count = PAGES_SCANNED_PER_ALLOC * _gc_scan_heap_repeats; count != 0; --count) {
                 if (_gc_scan_heap()) {
                     // Was the final one, so we need to do something
                     atomic_store(&_gc_stage, _FSA_SCAN_HEAP);
@@ -915,23 +982,37 @@ HIDDEN void _gc_fsa() {
         _FSA_LOCKED(_FSA_PRUNE_HEAP)
             _gc_prune_progress = &_gc_all_pages_head;
             _gc_count_of_pages_at_end_of_scan = 0;
-            _gc_prune_count_of_used_slots = 0;
+            _gc_prune_count_of_used_bytes = 0;
             _gc_prune_count_of_copied_pages = 0;
+            memset(size_by_name, 0, sizeof(size_by_name));
             atomic_store(&_gc_stage, _FSA_PRUNE_IN_PROGRESS); // Wait for the next GC trigger
         _FSA_LOCKED_END()
 
         case _FSA_PRUNE_IN_PROGRESS:
-            for (size_t count = 8 * _gc_scan_heap_repeats; count != 0; --count) {
+            for (size_t count = PAGES_SCANNED_PER_ALLOC * _gc_scan_heap_repeats; count != 0; --count) {
                 if (_gc_prune_heap()) {
                     // Was the final one, so we need to do something
 #ifndef NDEBUG
-                    double used_percent = _gc_prune_count_of_used_slots * 100.0 / (_gc_count_of_pages_at_end_of_scan * GC_SLOTS_PER_PAGE);
+
+                    double used_percent = (_gc_prune_count_of_used_bytes * 100.0)
+                        / (_gc_count_of_pages_at_end_of_scan * GC_SLOTS_PER_PAGE * sizeof(gc_slot_t));
                     fprintf(stderr,
-                            "Scanned heap %ld times, locked_count_zero = %ld, locked_count_mark = %ld, locked_count_prune = %ld, "
-                            "duplicated_pages = %ld, heap_count = %ld / %ld, used_percent = %.2f%%\n",
+                            "Scanned %ld times, lock zero = %ld, lock mark = %ld, lock prune = %ld, "
+                            "dup pages = %ld, heap count = %ld / %ld, actual heap = %ld, used_percent = %.2f%%\n",
                             _gc_scan_heap_repeats, locked_count_zero, locked_count_mark, locked_count_prune,
                             _gc_prune_count_of_copied_pages,
-                            _gc_count_of_pages_at_end_of_scan, _gc_count_of_pages_at_start_of_scan, used_percent);
+                            _gc_count_of_pages_at_end_of_scan, _gc_count_of_pages_scanning,
+                            _gc_prune_count_of_used_bytes, used_percent);
+
+/*
+                    qsort(size_by_name, 10, sizeof(struct size_by_name), (int(*)(const void*,const void*))_compare_entry);
+                    for (int index = 0; index < 10; ++index) {
+                        struct size_by_name *e = &size_by_name[index];
+                        if (e->size > 0) {
+                            fprintf(stderr, "%s=%ld/%ld, ", e->name, e->size, e->count);
+                        }
+                    }
+                    fprintf(stderr, "\n");*/
 #endif
                     atomic_store(&_gc_in_progress, false);
                     atomic_store(&_gc_stage, _FSA_START);
@@ -943,6 +1024,11 @@ HIDDEN void _gc_fsa() {
 }
 
 EXPORT void object_gc_init() {
+    gc_page_t *page = _gc_page_alloc(1);
+    _gc_zero_page_flags(page);
+
+    _gc_all_pages_head = page;
+    _gc_all_pages_tail = &page->head.next;
 }
 
 
