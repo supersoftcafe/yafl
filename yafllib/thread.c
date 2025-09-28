@@ -182,7 +182,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 }
 
 static void _thread_init() {
-    intptr_t thread_count = 2;
+    intptr_t thread_count = 1;
 
     object_gc_init(); // Initialise the GC system
 

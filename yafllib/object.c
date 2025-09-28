@@ -4,6 +4,9 @@
 #include <malloc.h>
 #include <setjmp.h>
 
+#undef DISABLE_HEAP_COMPACTION
+#define COMPACT_THRESHOLD_PERCENT   20
+
 
 /*
  * Add extra bit to vtable pointer to mark it as a forwarding pointer. Preserve any other existing bits.
@@ -102,9 +105,9 @@ static bool _bitmap_test_any(gc_bitmap_t* bitmap) {
     return false;
 }
 
-static int _bitmap_count(gc_bitmap_t *bitmap) {
-    int total = 0;
-    for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index)
+static size_t _bitmap_count(gc_bitmap_t *bitmap) {
+    size_t total = 0;
+    for (size_t index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index)
         total += __builtin_popcount(bitmap->a[index]);
     return total;
 }
@@ -185,8 +188,6 @@ thread_local struct _thread_info {
 static _Atomic(struct _thread_info*) _threads = ATOMIC_VAR_INIT(NULL);
 
 
-
-
 static void _fillmem(uint32_t* memory, uint32_t value, size_t count) {
     for (size_t index = 0; index < count; ++index) {
         memory[index] = value;
@@ -252,8 +253,8 @@ HIDDEN void _object_gc_seen_by_field(object_t **field_ptr) {
     object_t *object = *field_ptr;
     if (_object_is_on_heap(object)) {
         _mark_as_seen(object);
-        while (UNLIKELY((uintptr_t)(object = (object_t*)object->vtable) & VTABLE_FLAG_FORWARD)) {
-            *field_ptr = object;
+        for (vtable_t *vt; UNLIKELY(VT_TAG_GET(vt = object->vtable) == VT_TAG_FORWARD); ) {
+            *field_ptr = object = (object_t*)VT_TAG_UNSET(vt);
             _mark_as_seen(object);
         }
     }
@@ -345,7 +346,7 @@ static void _gc_scan_elements(object_t **ptr, uint32_t pointer_locations) {
 
 static void _gc_scan_object_meat(object_t *object) {
     vtable_t *vt = object->vtable;
-    for (object_t *ptr = object; UNLIKELY((uintptr_t)vt & VTABLE_FLAG_FORWARD); ) {
+    for (object_t *ptr = object; UNLIKELY(VT_TAG_GET(vt) == VT_TAG_FORWARD); ) {
         ptr = (object_t*)((uintptr_t)vt &~ 3);
         _mark_as_seen(ptr);
         vt = ptr->vtable;
@@ -386,7 +387,7 @@ HIDDEN void _gc_scan_object_shallow(object_t *ptr) {
 EXPORT void* object_create(vtable_t* vtable) {
     assert(vtable->array_el_size == 0);
     object_t *object = _object_alloc(vtable->object_size, vtable->is_mutable);
-    object->vtable = (vtable_t*)((uintptr_t)vtable | VTABLE_FLAG_HEAP);
+    object->vtable = VT_TAG_SET(vtable, VT_TAG_MANAGED);
     return object;
 }
 
@@ -394,9 +395,21 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
     object_t *object = _object_alloc(vtable->object_size + vtable->array_el_size*length, vtable->is_mutable);
-    object->vtable = (vtable_t*)((uintptr_t)vtable | VTABLE_FLAG_HEAP);
+    object->vtable = VT_TAG_SET(vtable, VT_TAG_MANAGED);
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
     return object;
+}
+
+
+
+
+EXPORT vtable_t *object_get_vtable(object_t *object) {
+    vtable_t *vt = object->vtable;
+    while (UNLIKELY(VT_TAG_GET(vt) == VT_TAG_FORWARD)) {
+        object = (object_t*)((uintptr_t)vt & ~3);
+        vt = object->vtable;
+    }
+    return VT_TAG_UNSET(vt);
 }
 
 EXPORT fun_t vtable_lookup(object_t *object, intptr_t id) {
@@ -410,6 +423,16 @@ EXPORT fun_t vtable_lookup(object_t *object, intptr_t id) {
         //    It's a safety feature that costs us nothing.
     } while ((entry->i ^ id) > 0);
     return (fun_t){.f=entry->f, .o=object};
+}
+
+EXPORT void object_set_reference(object_t *object, size_t field_offset, object_t *value) {
+    object_t **field = (object_t**)&((char*)object)[field_offset];
+    object_t *old_value = *field;
+    if (_object_is_on_heap(old_value))
+        _mark_as_seen(old_value);
+    if (_object_is_on_heap(value))
+        _mark_as_seen(value);
+    *field = value;
 }
 
 
@@ -476,20 +499,6 @@ HIDDEN void _gc_scan_stack(struct _thread_info* thread) {
 
 static void donothing() {
 
-}
-
-
-EXPORT void object_mutate(object_t *object) {
-    _gc_scan_object_meat(object);
-}
-
-EXPORT void object_set_reference(object_t **field, object_t *value) {
-    object_t *old_value = *field;
-    if (_object_is_on_heap(old_value))
-        _mark_as_seen(old_value);
-    if (_object_is_on_heap(value))
-        _mark_as_seen(value);
-    *field = value;
 }
 
 // Start of potentially thread pausing IO
@@ -668,10 +677,8 @@ HIDDEN bool _gc_scan_heap() {
 static _Atomic(size_t) _gc_count_of_pages_at_end_of_scan = 0;
 static _Atomic(_Atomic(gc_page_t*)*) _gc_prune_progress;
 static _Atomic(size_t) _gc_prune_count_of_used_slots;
+static _Atomic(size_t) _gc_prune_count_of_copied_pages;
 
-static size_t _gc_page_usage(gc_page_t *page) {
-
-}
 
 HIDDEN bool _gc_prune_heap() {
     for (;;) {
@@ -751,22 +758,26 @@ HIDDEN bool _gc_prune_heap() {
                 atomic_fetch_add(&_gc_prune_count_of_used_slots, used_slots / sizeof(gc_slot_t));
 #endif
 
-                // TODO: Compaction
-                //      If !mutable_container && !should_not_compact && usage < 33% && !previously_compacted
-                //          Copy all objects elsewhere and setup forwarding pointers
-                //          previously_compacted = true
 
-                if (page->head.mutable_container || page->head.should_not_compact || page->head.previously_compacted) {
-                    return false; // Not for compaction or previously done
+#ifndef DISABLE_HEAP_COMPACTION
+                size_t slots_threshold = GC_SLOTS_PER_PAGE * COMPACT_THRESHOLD_PERCENT / 100;
+
+                if (page->head.previously_compacted) {
+                    atomic_fetch_add(&_gc_prune_count_of_copied_pages, 1);
+                    return false; // Compacted on previous prune. We count these to track overhead stats.
                 }
 
-                if (_bitmap_count(&page->head.object_heads) > GC_SLOTS_PER_PAGE/3) {
+                if (page->head.mutable_container || page->head.should_not_compact || page->head.page_count > 1) {
+                    return false; // Not for compaction
+                }
+
+                if (_bitmap_count(&page->head.object_heads) > slots_threshold) {
                     return false; // Too big for compaction, don't even need to add up object sizes.
                 }
 
                 size_t object_count = 0;
                 struct obj_and_sze { object_t *o; size_t s; };
-                struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * (GC_SLOTS_PER_PAGE / 3));
+                struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * slots_threshold);
 
                 size_t total = 0;
                 gc_slot_t *slots = page->slots;
@@ -797,10 +808,11 @@ HIDDEN bool _gc_prune_heap() {
                     object_t *object = objects[object_count].o;
                     size_t      size = objects[object_count].s;
 
-                    object_t *target = _object_alloc(size, false);                         // Allocate new object
-                    memcpy(target, object, size);                                          // Copy contents across
-                    object->vtable = (vtable_t*)((uintptr_t)target | VTABLE_FLAG_FORWARD); // Set forwarding pointer
+                    object_t *target = _object_alloc(size, false);       // Allocate new object
+                    memcpy(target, object, size);                        // Copy contents across
+                    object->vtable = VT_TAG_SET(target, VT_TAG_FORWARD); // Set forwarding pointer
                 }
+#endif
             }
 
             return false;
@@ -856,7 +868,6 @@ HIDDEN void _gc_fsa() {
             locked_count_zero = 0;
             locked_count_mark = 0;
             locked_count_prune = 0;
-            // TODO: Add some start condition here
             atomic_store(&_gc_stage, _FSA_ZERO_FLAGS);
         _FSA_LOCKED_END()
 
@@ -905,6 +916,7 @@ HIDDEN void _gc_fsa() {
             _gc_prune_progress = &_gc_all_pages_head;
             _gc_count_of_pages_at_end_of_scan = 0;
             _gc_prune_count_of_used_slots = 0;
+            _gc_prune_count_of_copied_pages = 0;
             atomic_store(&_gc_stage, _FSA_PRUNE_IN_PROGRESS); // Wait for the next GC trigger
         _FSA_LOCKED_END()
 
@@ -916,8 +928,9 @@ HIDDEN void _gc_fsa() {
                     double used_percent = _gc_prune_count_of_used_slots * 100.0 / (_gc_count_of_pages_at_end_of_scan * GC_SLOTS_PER_PAGE);
                     fprintf(stderr,
                             "Scanned heap %ld times, locked_count_zero = %ld, locked_count_mark = %ld, locked_count_prune = %ld, "
-                            "heap_count = %ld / %ld, used_percent = %.2f%%\n",
+                            "duplicated_pages = %ld, heap_count = %ld / %ld, used_percent = %.2f%%\n",
                             _gc_scan_heap_repeats, locked_count_zero, locked_count_mark, locked_count_prune,
+                            _gc_prune_count_of_copied_pages,
                             _gc_count_of_pages_at_end_of_scan, _gc_count_of_pages_at_start_of_scan, used_percent);
 #endif
                     atomic_store(&_gc_in_progress, false);

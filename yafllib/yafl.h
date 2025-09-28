@@ -163,18 +163,22 @@ typedef struct {
         ((id * sizeof(intptr_t) * 2) | (id / (134217728 / sizeof(intptr_t) * 8)))
 
 enum {
-    VTABLE_FLAG_HEAP = 0x1,     // Heap allocated object, not a static defined object
-    VTABLE_FLAG_FORWARD = 0x2,  // VTable is really a forwarding pointer
+    VT_TAG_UNMANAGED = 0x0,    // Out of managed heap
+    VT_TAG_MANAGED   = 0x1,    // Heap allocated object, not a static defined object
+    VT_TAG_FORWARD   = 0x2,    // VTable is really a forwarding pointer
+    VT_TAG_UNUSED    = 0x3,    // Unused
+    VT_TAG_MASK      = 0x3
 };
 
-INLINE vtable_t *object_get_vtable(object_t *object) {
-    vtable_t *vt = object->vtable;
-    while (UNLIKELY((uintptr_t)vt & VTABLE_FLAG_FORWARD)) {
-        object = (object_t*)((uintptr_t)vt & ~3);
-        vt = object->vtable;
-    }
-    return (vtable_t*)((intptr_t)vt & ~3);
-}
+#define VT_TAG_GET(vt)      ((uintptr_t)(vt) & VT_TAG_MASK)
+#define VT_TAG_UNSET(vt)    ((vtable_t*)((uintptr_t)(vt) & ~(uintptr_t)VT_TAG_MASK))
+#define VT_TAG_SET(vt, tag) ((vtable_t*)((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK) | tag))
+
+
+EXTERN vtable_t *object_get_vtable(object_t *object);
+EXTERN void object_set_reference(object_t *object, size_t field_offset, object_t *value);
+EXTERN fun_t vtable_lookup(object_t *object, intptr_t id);
+
 
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
 typedef void(*thread_roots_declaration_func_t)(void*,void(*)(object_t**));
@@ -188,9 +192,6 @@ EXTERN void object_gc_declare_thread(thread_roots_declaration_func_t,void*); // 
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 
-EXTERN void object_mutate(object_t *object);
-EXTERN void object_set_reference(object_t **field, object_t *value);
-EXTERN fun_t vtable_lookup(object_t *object, intptr_t id);
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
 
@@ -203,6 +204,7 @@ EXTERN void abort_on_heap_allocation_on_non_worker_thread();
 EXTERN void* memory_pages_alloc(size_t page_count);
 EXTERN void memory_pages_free(void* ptr, size_t page_count);
 EXTERN bool memory_pages_is_heap(void*ptr);
+EXTERN size_t memory_count();
 
 
 /**********************************************************

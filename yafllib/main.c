@@ -159,8 +159,7 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
-                // object_mutate((object_t*)obj);
-                object_set_reference((object_t**)&obj->results[i], (object_t*)str);
+                object_set_reference((object_t*)obj, offsetof(struct test_gc_allocations_o, results[i]), (object_t*)str);
             }
         }
 

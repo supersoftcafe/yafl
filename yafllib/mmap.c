@@ -53,7 +53,7 @@ static _pages_info_t* init() {
 }
 
 static _Atomic(size_t) alloc_count = 0;
-static _Atomic(size_t) free_count = 0;
+
 
 EXPORT void* memory_pages_alloc(size_t page_count) {
     assert(page_count == 1);
@@ -67,7 +67,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
         _Atomic(uint8_t) *cptr = (_Atomic(uint8_t)*)&p->table[index];
         if (atomic_compare_exchange_strong(cptr, &expected, 1)) {
             char *ptr = p->start + (index*GC_PAGE_SIZE);
-            atomic_fetch_add(&alloc_count, 1);
+            atomic_fetch_add(&alloc_count, page_count);
             return ptr;
         }
     }
@@ -87,7 +87,7 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
     assert(index < p->size);
     assert(p->table[index] == 1);
 
-    atomic_fetch_add(&free_count, 1);
+    atomic_fetch_sub(&alloc_count, page_count);
     madvise(ptr, GC_PAGE_SIZE, MADV_DONTNEED);
     atomic_store(&p->table[index], 0);
 }
@@ -96,6 +96,10 @@ EXPORT bool memory_pages_is_heap(void* ptr) {
     _pages_info_t* p = pages_info;
     ptrdiff_t offset = (char*)ptr - p->start;
     return offset >= 0 && offset < ((size_t)p->size * GC_PAGE_SIZE);
+}
+
+EXPORT size_t memory_count() {
+    return alloc_count;
 }
 
 
