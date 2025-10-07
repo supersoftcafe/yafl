@@ -4,7 +4,7 @@
 #include <malloc.h>
 #include <setjmp.h>
 
-#undef DISABLE_HEAP_COMPACTION
+#define DISABLE_HEAP_COMPACTION
 #define COMPACT_THRESHOLD_PERCENT   33
 #define PAGES_SCANNED_PER_ALLOC     12
 
@@ -412,8 +412,8 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
 EXPORT vtable_t *object_get_vtable(object_t *object) {
     vtable_t *vt = object->vtable;
     while (UNLIKELY(VT_TAG_GET(vt) == VT_TAG_FORWARD)) {
-        object = (object_t*)((uintptr_t)vt & ~3);
-        vt = object->vtable;
+        object_t *next_object = (object_t*)VT_TAG_UNSET(vt);
+        vt = next_object->vtable;
     }
     return VT_TAG_UNSET(vt);
 }
@@ -742,7 +742,76 @@ static void _add_size(const char* name, size_t size) {
     }
 }
 
-HIDDEN bool _gc_prune_heap() {
+static NOINLINE void _gc_clear_unused_space(gc_page_t *page) {
+    ptrdiff_t counter = 0;
+    size_t used_bytes = 0;
+    for (ptrdiff_t slot = 0; slot < GC_SLOTS_PER_PAGE; ++slot) {
+        if (_bitmap_test(&page->head.object_heads, slot)) {
+            object_t* obj = (object_t*)&page->slots[slot];
+            size_t size = _object_size(obj);
+            used_bytes += size;
+            _add_size(object_get_vtable(obj)->name, size);
+            counter = size / sizeof(gc_slot_t);
+            assert(counter > 0);
+        }
+        if (--counter < 0) {
+            // Fill unused space to cause crashes if GC gets it wrong
+            _fillmem((uint32_t*)&page->slots[slot], 0xdeadbeef, sizeof(gc_slot_t) / sizeof(uint32_t));
+        }
+    }
+    atomic_fetch_add(&_gc_prune_count_of_used_bytes, used_bytes);
+}
+
+static NOINLINE void _gc_compact_page(gc_page_t *page) {
+    size_t slots_threshold = GC_SLOTS_PER_PAGE * COMPACT_THRESHOLD_PERCENT / 100;
+
+    if (page->head.previously_compacted) {
+        atomic_fetch_add(&_gc_prune_count_of_copied_pages, 1);
+        return; // Compacted on previous prune. We count these to track overhead stats.
+    }
+
+    if (page->head.mutable_container || page->head.should_not_compact || page->head.page_count > 1) {
+        return; // Not for compaction
+    }
+
+    if (_bitmap_count(&page->head.object_heads) > slots_threshold) {
+        return; // Too big for compaction, don't even need to add up object sizes.
+    }
+
+    size_t object_count = 0;
+    struct obj_and_sze { object_t *o; size_t s; };
+    struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * slots_threshold);
+
+    size_t total = 0;
+    for (ptrdiff_t slot = GC_SLOTS_PER_PAGE; --slot >= 0; ) {
+        if (_bitmap_test(&page->head.object_heads, slot)) {
+            object_t *object = (object_t*)&page->slots[slot];
+            size_t size = _object_size(object);
+            objects[object_count++] = (struct obj_and_sze){ .o = object, .s = size };
+
+            total += size;
+            if (total > GC_SLOTS_PER_PAGE*sizeof(gc_slot_t)/3) {
+                return; // Too big for compaction
+            }
+        }
+    }
+
+    bool expects_false = false;
+    if (!atomic_compare_exchange_strong(&page->head.previously_compacted, &expects_false, true)) {
+        return; // Another thread got there first
+    }
+
+    while (object_count-- > 0) {
+        object_t *object = objects[object_count].o;
+        size_t      size = objects[object_count].s;
+
+        object_t *target = _object_alloc(size, false, false);// Allocate new object
+        memcpy(target, object, size);                        // Copy contents across
+        object->vtable = VT_TAG_SET(target, VT_TAG_FORWARD); // Set forwarding pointer
+    }
+}
+
+static bool _gc_prune_heap() {
     for (;;) {
         _Atomic(gc_page_t*) *prev_ptr = atomic_load(&_gc_prune_progress);
         if (prev_ptr == NULL) {
@@ -794,6 +863,7 @@ HIDDEN bool _gc_prune_heap() {
             atomic_fetch_add(&_gc_count_of_pages_at_end_of_scan, 1);
 
 #ifndef NDEBUG
+            // If something is seen, but didn't exist, it's really bad.
             gc_bitmap_t test = page->head.marks_seen;
             _bitmap_andnot(&test, &page->head.object_heads);
             assert(!_bitmap_test_any(&test));
@@ -802,82 +872,13 @@ HIDDEN bool _gc_prune_heap() {
             _bitmap_and(&page->head.object_heads, &page->head.marks_seen);
 
 #ifndef NDEBUG
-            ptrdiff_t counter = 0;
-            size_t used_bytes = 0;
-            for (ptrdiff_t slot = 0; slot < GC_SLOTS_PER_PAGE; ++slot) {
-                if (_bitmap_test(&page->head.object_heads, slot)) {
-                    object_t* obj = (object_t*)&page->slots[slot];
-                    size_t size = _object_size(obj);
-                    used_bytes += size;
-                    _add_size(object_get_vtable(obj)->name, size);
-                    counter = size / sizeof(gc_slot_t);
-                    assert(counter > 0);
-                }
-                if (--counter < 0) {
-                    // Fill unused space to cause crashes if GC gets it wrong
-                    _fillmem((uint32_t*)&page->slots[slot], 0xdeadbeef, sizeof(gc_slot_t) / sizeof(uint32_t));
-                }
-            }
-            atomic_fetch_add(&_gc_prune_count_of_used_bytes, used_bytes);
+            _gc_clear_unused_space(page);
 #endif
 
 
 #ifndef DISABLE_HEAP_COMPACTION
-            size_t slots_threshold = GC_SLOTS_PER_PAGE * COMPACT_THRESHOLD_PERCENT / 100;
-
-            if (page->head.previously_compacted) {
-                atomic_fetch_add(&_gc_prune_count_of_copied_pages, 1);
-                goto end; // Compacted on previous prune. We count these to track overhead stats.
-            }
-
-            if (page->head.mutable_container || page->head.should_not_compact || page->head.page_count > 1) {
-                goto end; // Not for compaction
-            }
-
-            if (_bitmap_count(&page->head.object_heads) > slots_threshold) {
-                goto end; // Too big for compaction, don't even need to add up object sizes.
-            }
-
-            size_t object_count = 0;
-            struct obj_and_sze { object_t *o; size_t s; };
-            struct obj_and_sze *objects = alloca(sizeof(struct obj_and_sze) * slots_threshold);
-
-            size_t total = 0;
-            gc_slot_t *slots = page->slots;
-            for (int index = 0; index < sizeof(gc_bitmap_t)/sizeof(gc_mask_bits_t); ++index) {
-                gc_mask_bits_t bits = page->head.object_heads.a[index];
-                while (bits) {
-                    int bit = __builtin_ctzll(bits);
-                    bits ^= 1ULL << bit;
-
-                    object_t *object = (object_t*)&slots[bit];
-                    size_t size = _object_size(object);
-                    objects[object_count++] = (struct obj_and_sze){ .o = object, .s = size };
-
-                    total += size;
-                    if (total > GC_SLOTS_PER_PAGE*sizeof(gc_slot_t)/3) {
-                        goto end; // Too big for compaction
-                    }
-                }
-                slots += sizeof(gc_mask_bits_t)*8;
-            }
-
-            bool expects_false = false;
-            if (!atomic_compare_exchange_strong(&page->head.previously_compacted, &expects_false, true)) {
-                goto end; // Another thread got there first
-            }
-
-            while (object_count-- > 0) {
-                object_t *object = objects[object_count].o;
-                size_t      size = objects[object_count].s;
-
-                object_t *target = _object_alloc(size, false, false);// Allocate new object
-                memcpy(target, object, size);                        // Copy contents across
-                object->vtable = VT_TAG_SET(target, VT_TAG_FORWARD); // Set forwarding pointer
-            }
+            _gc_compact_page(page);
 #endif
-
-end:
             // Reset mark/sweep bits
             _gc_zero_page_flags(page);
 

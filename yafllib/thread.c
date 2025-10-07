@@ -145,6 +145,8 @@ HIDDEN void* _thread_main_loop(void* param) {
     }
 
     for (;;) {
+        assert(queue->local_queue_head);
+
         // Is there something on the IO queue
         worker_node_t* head = _locals.sideload_queue_head;
         worker_node_t* node = head->next;

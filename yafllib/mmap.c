@@ -88,14 +88,14 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
     assert(p->table[index] == 1);
 
     atomic_fetch_sub(&alloc_count, page_count);
-    madvise(ptr, GC_PAGE_SIZE, MADV_DONTNEED);
+    // madvise(ptr, GC_PAGE_SIZE, MADV_DONTNEED);
     atomic_store(&p->table[index], 0);
 }
 
-EXPORT bool memory_pages_is_heap(void* ptr) {
-    _pages_info_t* p = pages_info;
+EXPORT bool memory_pages_is_heap(void *ptr) {
+    _pages_info_t *p = pages_info;
     ptrdiff_t offset = (char*)ptr - p->start;
-    return offset >= 0 && offset < ((size_t)p->size * GC_PAGE_SIZE);
+    return offset >= 0 && offset < ((size_t)p->size * GC_PAGE_SIZE) && p->table[offset / GC_PAGE_SIZE];
 }
 
 EXPORT size_t memory_count() {
