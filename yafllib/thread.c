@@ -61,7 +61,7 @@ EXPORT void declare_roots_thread(void(*declare)(object_t**)) {
 }
 
 static void declare_local_roots_thread(struct _locals* locals, void(*declare)(object_t**)) {
-    declare((object_t**)&locals->local_queue_tail);
+    declare((object_t**)&locals->local_queue_tail); // Not required, but kept for now as it is hilighting bugs
     declare((object_t**)&locals->sideload_queue_head);
 }
 
@@ -105,6 +105,7 @@ HIDDEN worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
         return NULL;
     }
 
+    object_mark_as_seen((object_t*)head);
     if (UNLIKELY(!atomic_compare_exchange_strong(&queue->local_queue_head, &head, node))) {
         // Another thread got there before us
         return NULL;
@@ -127,6 +128,8 @@ HIDDEN noreturn void __exit__(object_t* self, object_t* int_status) {
 
 static void _thread_init();
 
+static atomic_intptr_t _thread_countdown_to_gc_start;
+
 static void(*__entrypoint__)(object_t*, fun_t);
 HIDDEN void* _thread_main_loop(void* param) {
     object_gc_declare_thread((void*)declare_local_roots_thread, &_locals);
@@ -144,6 +147,10 @@ HIDDEN void* _thread_main_loop(void* param) {
         __entrypoint__(NULL, (fun_t){ .f=__exit__, .o=NULL });
     }
 
+    if (atomic_fetch_sub(&_thread_countdown_to_gc_start, 1) == 1) {
+        gc_enabled = true;
+    }
+
     for (;;) {
         assert(queue->local_queue_head);
 
@@ -151,6 +158,7 @@ HIDDEN void* _thread_main_loop(void* param) {
         worker_node_t* head = _locals.sideload_queue_head;
         worker_node_t* node = head->next;
         if (node) {
+            object_mark_as_seen((object_t*)head);
             _locals.sideload_queue_head = node;
             fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
             _thread_work_invoke(node);
@@ -187,6 +195,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 
 static void _thread_init() {
     intptr_t thread_count = 2;
+    _thread_countdown_to_gc_start = thread_count;
 
     object_gc_init(); // Initialise the GC system
 

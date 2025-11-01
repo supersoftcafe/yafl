@@ -95,6 +95,12 @@
 #  define CACHE_LINE_SIZE 64
 #endif
 
+enum log_level {
+    ULTRA, TRACE, DEBUG, INFO, WARN, ERROR, FATAL
+};
+
+EXTERN enum log_level LOG_LEVEL;
+EXTERN void LOG(enum log_level level, char const* format, ...);
 
 EXTERN void log_error(char const* format, ...);
 EXTERN noreturn void log_error_and_exit(char const* format, ...);
@@ -176,9 +182,11 @@ enum {
 #define VT_TAG_UNSET(vt)    ((vtable_t*)((uintptr_t)(vt) & ~(uintptr_t)VT_TAG_MASK))
 #define VT_TAG_SET(vt, tag) ((vtable_t*)((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK) | tag))
 
+EXTERN bool gc_enabled;
 
 EXTERN vtable_t *object_get_vtable(object_t *object);
 EXTERN void object_set_reference(object_t *object, size_t field_offset, object_t *value);
+EXTERN void object_mark_as_seen(object_t *object);
 EXTERN fun_t vtable_lookup(object_t *object, intptr_t id);
 
 

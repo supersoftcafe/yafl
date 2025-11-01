@@ -88,7 +88,7 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
     assert(p->table[index] == 1);
 
     atomic_fetch_sub(&alloc_count, page_count);
-    // madvise(ptr, GC_PAGE_SIZE, MADV_DONTNEED);
+    madvise(ptr, GC_PAGE_SIZE, MADV_DONTNEED);
     atomic_store(&p->table[index], 0);
 }
 
