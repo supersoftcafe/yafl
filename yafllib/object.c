@@ -5,8 +5,8 @@
 #include <setjmp.h>
 
 #define COMPACT_THRESHOLD_PERCENT   33
-#define PAGES_SCANNED_PER_ALLOC     12
-#define PAGES_PRUNED_PER_ALLOC      12
+#define PAGES_SCANNED_PER_ALLOC     14
+#define PAGES_PRUNED_PER_ALLOC      256
 #define COUNT_TO_FSA                1024
 
 #undef DISABLE_HEAP_COMPACTION
@@ -493,6 +493,8 @@ static NOINLINE void update_stack_address_and_registers() {
 
 // Start of potentially thread pausing IO
 EXPORT void object_gc_io_begin() {
+    LOG(TRACE, "io_begin");
+
     object_gc_safe_point();
 
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
@@ -503,6 +505,8 @@ EXPORT void object_gc_io_begin() {
 
 // End of potentially thread pausing IO
 EXPORT void object_gc_io_end() {
+    LOG(TRACE, "io_end");
+
     do {
         assert(gc_thread_info.thread_state == THREAD_STATE_SUSPENDED || gc_thread_info.thread_state == THREAD_STATE_SUSPENDED_SCAN);
     } while (!change_thread_state(&gc_thread_info, THREAD_STATE_SUSPENDED, THREAD_STATE_RUNNING));
@@ -689,7 +693,6 @@ static void gc_release_global_lock() {
 
 
 static void snapshot_scan_pages(struct gc_thread_info *thread_info) {
-    assert(thread_info->thread_state == THREAD_STATE_RUNNING);
     assert(thread_info->gc_stage == GC_STAGE_SCAN_ROOTS);
 
     // Capture pages ready for mark sweep
@@ -839,9 +842,12 @@ static void gc_fsa_scan_thread_local_roots(struct gc_thread_info *thread_info) {
     thread_info->gc_stage = GC_STAGE_SCAN_ROOTS_COMPLETE;
 }
 
+static atomic_size_t mark_sweep_iterations;
+
 static enum gc_stage gc_fsa_scan_roots_complete$action() {
     declare_roots_thread(object_gc_seen_by_field);
     declare_roots_yafl(object_gc_seen_by_field);
+    mark_sweep_iterations = 0;
     return GC_STAGE_MARK_SWEEP;
 }
 static void gc_fsa_scan_roots_complete() {
@@ -850,7 +856,7 @@ static void gc_fsa_scan_roots_complete() {
 
         // Try to scan other threads
         for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-            if (thread_info->gc_stage == GC_STAGE_SCAN_ROOTS && change_thread_state(thread_info, THREAD_STATE_SUSPENDED, THREAD_STATE_SUSPENDED_SCAN)) {
+            if (change_thread_state(thread_info, THREAD_STATE_SUSPENDED, THREAD_STATE_SUSPENDED_SCAN)) {
 
                 // We've now locked access to the thread structure, but stage could have changed, so check again
                 if (thread_info->gc_stage == GC_STAGE_SCAN_ROOTS) {
@@ -859,6 +865,8 @@ static void gc_fsa_scan_roots_complete() {
                     // It is doing IO so it's safe, and it can't exit the IO block now that we have the lock
                     gc_fsa_scan_thread_local_roots(thread_info);
                 }
+
+                atomic_store(&thread_info->thread_state, THREAD_STATE_SUSPENDED);
             }
         }
     }
@@ -890,6 +898,7 @@ static void gc_fsa_mark_sweep() {
 
 static enum gc_stage gc_fsa_mark_sweep_complete$action() {
     enum gc_stage to_stage = GC_STAGE_PRUNE;
+    atomic_fetch_add(&mark_sweep_iterations, 1);
     for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
 
         // Reset ready for next scan, or for pruning. It's all the same.
@@ -900,6 +909,9 @@ static enum gc_stage gc_fsa_mark_sweep_complete$action() {
             thread_info->scanned_something_of_interest = false;
             to_stage = GC_STAGE_MARK_SWEEP;
         }
+    }
+    if (to_stage == GC_STAGE_PRUNE) {
+        LOG(DEBUG, "Mark sweep iterations %ld", mark_sweep_iterations);
     }
     return to_stage;
 }
@@ -974,12 +986,9 @@ EXPORT void object_gc_safe_point() {
 static void gc_fsa(bool real_work) {
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
 
-    static size_t iteration_count = 0;
-
     switch (gc_thread_info.gc_stage) {
         case GC_STAGE_IDLE:
             LOG(TRACE, "IDLE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            iteration_count = 0;
             gc_fsa_idle();
             break;
 
@@ -996,14 +1005,13 @@ static void gc_fsa(bool real_work) {
 
         case GC_STAGE_MARK_SWEEP:
             if (real_work) {
-                LOG(TRACE, "MARK_SWEEP {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter, iteration_count);
+                LOG(TRACE, "MARK_SWEEP {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
                 gc_fsa_mark_sweep();
             }
             break;
 
         case GC_STAGE_MARK_SWEEP_COMPLETE:
-            LOG(TRACE, "MARK_SWEEP_COMPLETE {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter, iteration_count);
-            iteration_count ++;
+            LOG(TRACE, "MARK_SWEEP_COMPLETE {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
             gc_fsa_mark_sweep_complete();
             break;
 

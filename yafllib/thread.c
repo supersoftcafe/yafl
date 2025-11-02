@@ -134,7 +134,7 @@ static void(*__entrypoint__)(object_t*, fun_t);
 HIDDEN void* _thread_main_loop(void* param) {
     object_gc_declare_thread((void*)declare_local_roots_thread, &_locals);
 
-    if (param == NULL) {
+    if (param == (void*)0) {
         _thread_init();
     }
 
@@ -194,7 +194,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 }
 
 static void _thread_init() {
-    intptr_t thread_count = 2;
+    intptr_t thread_count = 12;
     _thread_countdown_to_gc_start = thread_count;
 
     object_gc_init(); // Initialise the GC system
