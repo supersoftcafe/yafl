@@ -3,17 +3,20 @@
 #include "yafl.h"
 #include <malloc.h>
 #include <setjmp.h>
+#include <pthread.h>
 
 #define COMPACT_THRESHOLD_PERCENT   33
-#define PAGES_SCANNED_PER_ALLOC     14
+#define OBJECTS_SCANNED_PER_ALLOC   4
+// #define PAGES_SCANNED_PER_ALLOC     14
 #define PAGES_PRUNED_PER_ALLOC      256
 #define COUNT_TO_FSA                1024
 
-#undef DISABLE_HEAP_COMPACTION
+// #undef DISABLE_HEAP_COMPACTION
 
 
 
 EXPORT bool gc_enabled = false; // Thread controller will prevent GC until all threads are active and registered
+EXPORT volatile bool gc_safe_point_requested = false;
 
 EXPORT void abort_on_vtable_lookup() {
     log_error_and_exit("Aborting due to vtable lookup issue", stderr);
@@ -54,7 +57,6 @@ typedef struct page_head {
     bool   should_not_compact;  // If some pinned reference is found, we'll not compact this page.
     bool    mutable_container;  // Contains mutable objects.
     bool previously_compacted;  // Don't compact again.
-    bool collection_candidate;
 
 } __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
 
@@ -117,27 +119,18 @@ static void gc_fsa(bool real_work);
 
 
 
+enum work_result {
+    FAILED_TO_WORK = 0,
+    DONE_SOME_WORK = 0x1,
+    NO_MORE_WORK   = 0x2,
+    DONE_SOME_AND_NO_MORE_WORK = 0x3
+};
+
 enum gc_stage {
-    GC_STAGE_IDLE,                    // Nothing happening, waiting for GC to start
-    GC_STAGE_SCAN_ROOTS,              // Trying to scan stack. Globals scanned as we exited idle.
-    GC_STAGE_SCAN_ROOTS_COMPLETE,     //
-    GC_STAGE_MARK_SWEEP,              // Walk the graph, mark things as seen and scan as we go
-    GC_STAGE_MARK_SWEEP_COMPLETE,     // Per thread, thinks that scan is complete after stealing etc
-    GC_STAGE_PRUNE,    // Releasing unused pages and wiping bits on others ready for next scan
-    GC_STAGE_PRUNE_COMPLETE,          // Per thread, thinks that prune is complete after checking other threads too
-
-    // Used to safely move between stages. Consider the MARK_SWEEP_COMPLETE to MARK_SWEEP transition. It is done across
-    // all threads at once, but before we've finished one of threads might notice the change, and see that all the others
-    // are still in MARK_SWEEP_COMPLETE stage. It might trigger further stage movement. To avoid this we first set all
-    // thread stages to STAGE_TEMP, then we move to MARK_SWEEP.
-    GC_STAGE_TEMP,
-
-    // During a batch of page scanning or pruning the stage will be set to WORKING so that no two threads
-    // accidentaly do a transition at the same time. This is due to contention from the work stealing that
-    // is going on, and the need to stop a thread from doing work thinking that the target is at stage
-    // MARK_SWEEP (or PRUNING_AND_CLEANING) but it transitions due to a work stealing thread before this
-    // thread does some work. It can result in corruption, and nasty bugs.
-    GC_STAGE_WORKING,
+    GC_STAGE_IDLE,       // Nothing happening, waiting for GC to start
+    GC_STAGE_SCAN_ROOTS, // Trying to scan stack. Globals scanned as we exited idle.
+    GC_STAGE_MARK_SWEEP, // Walk the graph, mark things as seen and scan as we go
+    GC_STAGE_PRUNE       // Releasing unused pages and wiping bits on others ready for next scan
 };
 
 enum thread_state {
@@ -159,17 +152,18 @@ thread_local struct gc_thread_info {
     thread_roots_declaration_func_t thread_roots_declaration_func;
     void* thread_roots_context;
 
-    _Atomic(enum gc_stage)     gc_stage;
+    atomic_bool stage_complete; // As each thread completes work, it marks this as true and decrements the global counter
+    bool roots_scanned;
+
     _Atomic(enum thread_state) thread_state;
 
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
 
-    _Atomic(gc_page_t*) alloc_head;
-    _Atomic(gc_page_t*) scan_head;
-    _Atomic(gc_page_t*) scan_result;
+    _Atomic(gc_page_t*) alloc_head; // Head of list of full pages waiting for next GC
+    _Atomic(gc_page_t*) pages_todo; //
+    _Atomic(gc_page_t*) pages_done; //
 
-    bool scanned_something_of_interest; // Never set by different threads, but might be reset by another thread...
     size_t prune_count_of_used_space;
     size_t prune_count_of_copied_pages;
 
@@ -183,13 +177,50 @@ thread_local struct gc_thread_info {
         size_t     count;
     } size_by_name[10];
 
-    size_t count_to_fsa;
+    struct counters {
+        size_t consensus_failed_lock;
+        size_t consensus_failed_check;
+        size_t consensus_success;
+        size_t stage_temp;
+        size_t stage_working;
 
+    } counters;
 } gc_thread_info;
 
-static _Atomic(struct gc_thread_info*) threads = NULL;
-static atomic_bool global_lock = false;
 
+static atomic_size_t thread_count = 0;
+static _Atomic(struct gc_thread_info*) threads = NULL;
+static _Atomic(enum gc_stage) stage = GC_STAGE_IDLE;
+static atomic_size_t stage_progress_countdown = 1;
+static atomic_bool   scanned_something_of_interest = false;
+static atomic_size_t global_iteration_count = 0;
+
+
+
+static void swap_source_target_lists() {
+    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
+        gc_page_t *todo = atomic_load(&thread->pages_todo);
+        gc_page_t *done = atomic_load(&thread->pages_done);
+
+        assert(todo == NULL);
+
+        gc_page_t *swapped_todo = atomic_exchange(&thread->pages_todo, done);
+        gc_page_t *swapped_done = atomic_exchange(&thread->pages_done, todo);
+
+        assert(swapped_todo == todo);
+        assert(swapped_done == done);
+    }
+}
+
+static void debug_source_target_lists() {
+#ifndef NDEBUG
+    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
+        gc_page_t *page0 = thread->pages_todo;
+        gc_page_t *page1 = thread->pages_done;
+        assert(page0 == NULL || page1 == NULL);
+    }
+#endif
+}
 
 static void fillmem(uint32_t* memory, uint32_t value, size_t count) {
     for (size_t index = 0; index < count; ++index) {
@@ -252,14 +283,13 @@ static bool object_is_on_heap(object_t *ptr) {
 EXTERN void object_mark_as_seen(object_t *object) {
     gc_page_t* page; ptrdiff_t slot;
     object_get_page_and_slot(object, &page, &slot);
-    if (page->head.collection_candidate) {
-        vtable_t* vt = VT_TAG_UNSET(object->vtable);
-        if (vt->is_mutable)
-            LOG(ULTRA, "SEEN(0x%lx) -> %s", (uintptr_t)object, vt->name);
 
-        assert(bitmap_test(&page->head.object_heads, slot));
-        bitmap_set(&page->head.marks_seen, slot);
-    }
+    vtable_t* vt = VT_TAG_UNSET(object->vtable);
+    if (vt->is_mutable)
+        LOG(ULTRA, "SEEN(0x%lx, %ld) -> %s", (uintptr_t)object, global_iteration_count, vt->name);
+
+    assert(bitmap_test(&page->head.object_heads, slot));
+    bitmap_set(&page->head.marks_seen, slot);
 }
 
 static void object_gc_seen_by_field(object_t **field_ptr) {
@@ -278,10 +308,7 @@ static void object_gc_seen_by_value_maybe(object_t *object) {
         gc_page_t* page; ptrdiff_t slot;
         object_get_page_and_slot(object, &page, &slot);
         if (bitmap_test(&page->head.object_heads, slot)) {
-            vtable_t *vt = object_get_vtable(object);
-            const char *name = vt->name;
-
-            bitmap_set(&page->head.marks_seen, slot);
+            object_mark_as_seen(object);
             page->head.should_not_compact = 1;
         }
     }
@@ -321,13 +348,13 @@ static void* _object_alloc(size_t size, bool is_mutable, bool allow_gc) {
         }
 
         gc_page_t* new_page = gc_page_alloc(1);
-        new_page->head.mutable_container = is_mutable;
 
+        new_page->head.mutable_container = is_mutable;
         bp->base_pointer = (char*)(new_page->slots);
         bp->bump_pointer = (char*)(new_page->slots + SLOTS_PER_PAGE);
 
         new_page->head.next = gc_thread_info.alloc_head;
-        gc_thread_info.alloc_head = new_page;
+        while (!atomic_compare_exchange_weak(&gc_thread_info.alloc_head, &new_page->head.next, new_page));
     }
 
     object_t *object = (object_t*)(bp->bump_pointer -= actual_size);
@@ -477,6 +504,11 @@ static void donothing() {
 
 }
 
+
+
+
+
+
 static bool change_thread_state(struct gc_thread_info *thread_info, enum thread_state expected, enum thread_state desired) {
   return atomic_compare_exchange_strong(&thread_info->thread_state, &expected, desired);
 }
@@ -495,7 +527,7 @@ static NOINLINE void update_stack_address_and_registers() {
 EXPORT void object_gc_io_begin() {
     LOG(TRACE, "io_begin");
 
-    object_gc_safe_point();
+    // Don't call object_gc_safe_point(), because things then get recursive
 
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
 
@@ -514,6 +546,8 @@ EXPORT void object_gc_io_end() {
 
 // Any thread that can do allocation must call this early on
 EXPORT void object_gc_declare_thread(thread_roots_declaration_func_t thread_roots_declaration_func, void*thread_roots_context) {
+    atomic_fetch_add(&thread_count, 1);
+
     object_t* some_random_var = NULL;
 #ifdef STACK_GROWS_DOWN
     gc_thread_info.stack_upper_pointer = &some_random_var;
@@ -531,7 +565,8 @@ EXPORT void object_gc_declare_thread(thread_roots_declaration_func_t thread_root
 }
 
 static NOINLINE bool gc_scan_page(gc_page_t* page) {
-    bool didSome = false;
+    size_t scanned_count = 0;
+
     for (ptrdiff_t index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
         assert( (page->head.marks_scanned.a[index] &~ page->head.marks_seen.a[index]) == 0 );
         assert( (page->head.marks_seen.a[index] &~ page->head.object_heads.a[index]) == 0 );
@@ -543,14 +578,15 @@ static NOINLINE bool gc_scan_page(gc_page_t* page) {
 
             assert(bitmap_test(&page->head.object_heads, slot));
 
-            gc_thread_info.scanned_something_of_interest = true;
+            scanned_something_of_interest = true;
             gc_scan_object_shallow((object_t*)&page->slots[slot]);
 
-            didSome = true;
+            scanned_count += 1;
             index = -1; // Loop increment will bring it to 0
         }
     }
-    return didSome;
+
+    return scanned_count;
 }
 
 static int _compare_entry(const struct size_by_name* a, const struct size_by_name* b) {
@@ -670,54 +706,32 @@ static NOINLINE void gc_compact_page(gc_page_t *page) {
 }
 
 
-static bool gc_acquire_global_lock() {
-    bool expected = false;
-    // We are ok with a few false negatives, so cas_weak might be
-    // better here, for a little extra performance on non x86 systems
-    return atomic_compare_exchange_strong(&global_lock, &expected, true);
-}
-
-static void gc_release_global_lock() {
-#ifndef NDEBUG
-    bool expected = true;
-    bool success = atomic_compare_exchange_strong(&global_lock, &expected, false);
-    assert(success);
-#else
-    atomic_store(&global_lock, false);
-#endif
-}
 
 
-
-
-
-
-static void snapshot_scan_pages(struct gc_thread_info *thread_info) {
-    assert(thread_info->gc_stage == GC_STAGE_SCAN_ROOTS);
+static void snapshot_scan_pages(struct gc_thread_info *thread) {
+    assert(thread->pages_done == NULL);
 
     // Capture pages ready for mark sweep
-    gc_page_t *scan_head = thread_info->scan_result; // Final result of last scan
-    gc_page_t *new_pages = thread_info->alloc_head;  // Allocations since last scan
+    gc_page_t *scan_head = thread->pages_todo;
+    gc_page_t *new_pages = thread->alloc_head;  // Allocations since last scan
 
     while (new_pages != NULL) {
         gc_page_t *page = new_pages; // Unlink from allocations list
         new_pages = page->head.next;
 
-        page->head.collection_candidate = true;
-
         page->head.next = scan_head; // Link into scan list
         scan_head = page;
     }
 
-    thread_info->alloc_head = NULL;
-    thread_info->scan_head = scan_head;
-    thread_info->scan_result = NULL;
-    thread_info->scanned_something_of_interest = false;
-    thread_info->prune_count_of_used_space = 0;
+    thread->pages_todo = scan_head;
+    thread->alloc_head = NULL;
 
-    thread_info->region_immutable.base_pointer = thread_info->region_mutable.base_pointer = NULL;
-    thread_info->region_immutable.bump_pointer = thread_info->region_mutable.bump_pointer = NULL;
+    thread->prune_count_of_used_space = 0;
+
+    thread->region_immutable.base_pointer = thread->region_mutable.base_pointer = NULL;
+    thread->region_immutable.bump_pointer = thread->region_mutable.bump_pointer = NULL;
 }
+
 
 static void scan_thread_roots(struct gc_thread_info *thread_info) {
     // Scan stack and registers
@@ -728,29 +742,42 @@ static void scan_thread_roots(struct gc_thread_info *thread_info) {
     thread_info->thread_roots_declaration_func(thread_info->thread_roots_context, object_gc_seen_by_field);
 }
 
-static bool take_page_and_scan(struct gc_thread_info *thread_info) {
+
+static enum work_result take_page_and_scan(struct gc_thread_info *thread) {
+    size_t scanned_count = 0;;
+
     // Take a page from the given thread. We might be stealing, so this must be done safely.
-    gc_page_t *page = thread_info->scan_head;
-    while (page && !atomic_compare_exchange_strong(&thread_info->scan_head, &page, page->head.next));
-    if (page == NULL) {
-        return false;
-    }
+    gc_page_t *page;
+    do {
+        page = atomic_load(&thread->pages_todo);
+        while (page && !atomic_compare_exchange_strong(&thread->pages_todo, &page, page->head.next));
+        if (page == NULL) {
+            return NO_MORE_WORK; // False means that there weren't any pages to process
+        }
 
-    // Scan the page
-    gc_scan_page(page);
+        // Put it in our thread local results area. No other thread touches this whilst scanning.
+        page->head.next = gc_thread_info.pages_done;
+        gc_thread_info.pages_done = page;
 
-    // Put it back in our thread local results area. No other thread touches this whilst scanning.
-    page->head.next = gc_thread_info.scan_result;
-    gc_thread_info.scan_result = page;
-    return true;
+        // Scan the page
+        scanned_count += gc_scan_page(page);
+    } while (scanned_count == 0);
+
+    if (scanned_count == 0)
+        return NO_MORE_WORK;
+    if (atomic_load(&thread->pages_todo) == NULL)
+        return DONE_SOME_AND_NO_MORE_WORK;
+    return DONE_SOME_WORK;
 }
 
-static bool take_page_and_prune(struct gc_thread_info *thread_info) {
+
+static enum work_result take_page_and_prune(struct gc_thread_info *thread) {
+
     // Take a page from the given thread. We might be stealing, so this must be done safely.
-    gc_page_t *page = thread_info->scan_head;
-    while (page && !atomic_compare_exchange_strong(&thread_info->scan_head, &page, page->head.next));
+    gc_page_t *page = atomic_load(&thread->pages_todo);
+    while (page && !atomic_compare_exchange_strong(&thread->pages_todo, &page, page->head.next));
     if (page == NULL) {
-        return false; // False means that there weren't any pages to process
+        return NO_MORE_WORK; // False means that there weren't any pages to process
     }
 
 #ifdef NDEBUG
@@ -777,268 +804,188 @@ static bool take_page_and_prune(struct gc_thread_info *thread_info) {
 
     // Page survived pruning. Put it back in our thread local results area.
     // Even a compacted page survives. It usually gets reclaimed on the next pass.
-    page->head.next = gc_thread_info.scan_result;
-    gc_thread_info.scan_result = page;
+    page->head.next = gc_thread_info.pages_done;
+    gc_thread_info.pages_done = page;
 
-    return true; // True means that we found and processed a page
+    if (atomic_load(&thread->pages_todo) == NULL)
+        return DONE_SOME_AND_NO_MORE_WORK;
+    return DONE_SOME_WORK;
 }
 
-static bool fsa_consensus_change_stage(enum gc_stage from_stage, enum gc_stage (*action)()) {
-    // Use the global lock, to ensure that only one thread succeeds at this
-    if (!gc_acquire_global_lock()) {
+
+
+
+
+static void fsa_advance_stage(enum gc_stage to_stage) {
+    stage = to_stage;
+    stage_progress_countdown = thread_count;
+    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next)
+        thread->stage_complete = false;
+}
+
+static bool fsa_end_of_stage() {
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&gc_thread_info.stage_complete, &expected, true))
         return false;
-    }
 
-    // Are all threads in the 'from_stage'. The stage must be stable such that threads only enter
-    // this stage and then require an external actor to move the out, like this function.
-    for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-        if (thread_info->gc_stage != from_stage) {
-            gc_release_global_lock();
-            return false;
-        }
-    }
+    if (atomic_fetch_sub(&stage_progress_countdown, 1) != 1)
+        return false;
 
-    // Perform some action that needs the global lock, and determines next stage
-    enum gc_stage to_stage = action();
-
-    for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-        thread_info->gc_stage = GC_STAGE_TEMP;
-    }
-
-    for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-        thread_info->gc_stage = to_stage;
-    }
-
-    gc_release_global_lock();
     return true;
 }
 
+static void fsa_consensus_change_stage2(
+    enum gc_stage(*confirm_action)(),
+    enum work_result(*do_some_work)(struct gc_thread_info*),
+    size_t target_work_amount
+) {
+    // Go around all threads, starting at this thread, until we've done enough work.
+    struct gc_thread_info *thread = &gc_thread_info;
+    enum work_result work_result;
+    do {
+        do {
+            work_result = do_some_work(thread);
+        } while ((work_result & NO_MORE_WORK) == 0 && --target_work_amount != 0);
 
+        thread = thread->next;
+        if (thread == NULL)
+            thread = threads;
+    } while (thread != &gc_thread_info && (work_result & DONE_SOME_WORK) == 0);
 
-
-
-
-
-static enum gc_stage gc_fsa_idle$action() {
-    return GC_STAGE_SCAN_ROOTS;
-}
-static void gc_fsa_idle() {
-    if (gc_enabled) {
-        // If all threads are idle, scan global roots, and then ask threads to scan their roots.
-        fsa_consensus_change_stage(GC_STAGE_IDLE, gc_fsa_idle$action);
+    // If we couldn't find any more work to do, set the flag to stop further processing
+    if ((work_result & NO_MORE_WORK) != 0) {
+         if (fsa_end_of_stage()) {
+             enum gc_stage to_stage = confirm_action();
+             fsa_advance_stage(to_stage);
+        }
     }
 }
 
-static void gc_fsa_scan_thread_local_roots(struct gc_thread_info *thread_info) {
-    // Capture pages ready for mark sweep
-    snapshot_scan_pages(thread_info);
 
-    // Scan stack and thread local roots
-    scan_thread_roots(thread_info);
 
-    // Reset the statistics gathering array
-    memset(thread_info->size_by_name, 0, sizeof(thread_info->size_by_name));
 
-    thread_info->gc_stage = GC_STAGE_SCAN_ROOTS_COMPLETE;
+
+
+static bool gc_fsa_idle() {
+    if (fsa_end_of_stage()) {
+        gc_safe_point_requested = true;
+        declare_roots_yafl(object_gc_seen_by_field);
+        declare_roots_thread(object_gc_seen_by_field);
+        atomic_fetch_add(&global_iteration_count, 1);
+        for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next)
+            thread->roots_scanned = false;
+        fsa_advance_stage(GC_STAGE_SCAN_ROOTS);
+    }
 }
 
-static atomic_size_t mark_sweep_iterations;
 
-static enum gc_stage gc_fsa_scan_roots_complete$action() {
-    declare_roots_thread(object_gc_seen_by_field);
-    declare_roots_yafl(object_gc_seen_by_field);
-    mark_sweep_iterations = 0;
+static enum gc_stage gc_fsa_scan_roots$confirm_action() {
     return GC_STAGE_MARK_SWEEP;
 }
-static void gc_fsa_scan_roots_complete() {
-    // If all threads are scanned, move on to mark sweep
-    if (!fsa_consensus_change_stage(GC_STAGE_SCAN_ROOTS_COMPLETE, gc_fsa_scan_roots_complete$action)) {
+static enum work_result gc_fsa_scan_roots$do_some_work(struct gc_thread_info *thread) {
+    if (change_thread_state(thread, THREAD_STATE_SUSPENDED, THREAD_STATE_SUSPENDED_SCAN)) {
 
-        // Try to scan other threads
-        for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-            if (change_thread_state(thread_info, THREAD_STATE_SUSPENDED, THREAD_STATE_SUSPENDED_SCAN)) {
-
-                // We've now locked access to the thread structure, but stage could have changed, so check again
-                if (thread_info->gc_stage == GC_STAGE_SCAN_ROOTS) {
-
-                    // Nobody else is able to do this now that we've effectively locked the thread
-                    // It is doing IO so it's safe, and it can't exit the IO block now that we have the lock
-                    gc_fsa_scan_thread_local_roots(thread_info);
-                }
-
-                atomic_store(&thread_info->thread_state, THREAD_STATE_SUSPENDED);
-            }
+        enum work_result work_result;
+        if (!thread->roots_scanned) {
+            thread->roots_scanned = true;
+            memset(thread->size_by_name, 0, sizeof(thread->size_by_name));
+            snapshot_scan_pages(thread);
+            scan_thread_roots(thread);
+            work_result = DONE_SOME_AND_NO_MORE_WORK;
+        } else {
+            work_result = NO_MORE_WORK;
         }
+
+        atomic_store(&thread->thread_state, THREAD_STATE_SUSPENDED);
+        return work_result;
+    } else {
+        if (thread->roots_scanned)
+            return NO_MORE_WORK;
+        return FAILED_TO_WORK;
     }
 }
+static void gc_fsa_scan_roots() {
+    object_gc_io_begin();
+    fsa_consensus_change_stage2(
+        gc_fsa_scan_roots$confirm_action,
+        gc_fsa_scan_roots$do_some_work,
+        1);
+    object_gc_io_end();
+}
 
+
+static enum gc_stage gc_fsa_mark_sweep$confirm_action() {
+    swap_source_target_lists();
+    enum gc_stage stage = scanned_something_of_interest ? GC_STAGE_MARK_SWEEP : GC_STAGE_PRUNE;
+    scanned_something_of_interest = false;
+    return stage;
+}
 static void gc_fsa_mark_sweep() {
-    // Scan pages, putting results into our threads result
-    enum gc_stage expected = GC_STAGE_MARK_SWEEP;
-    if (atomic_compare_exchange_strong(&gc_thread_info.gc_stage, &expected, GC_STAGE_WORKING)) {
-        for (int count = PAGES_SCANNED_PER_ALLOC; --count >= 0; ) {
-            if (!take_page_and_scan(&gc_thread_info)) {
-                bool scanned_something = false;
-
-                // There was nothing to scan, try stealing more work from other threads
-                for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-                    scanned_something = take_page_and_scan(thread_info);
-                }
-
-                if (!scanned_something) {
-                    // This thread has run out of work
-                    gc_thread_info.gc_stage = GC_STAGE_MARK_SWEEP_COMPLETE;
-                    return;
-                }
-            }
-        }
-        gc_thread_info.gc_stage = GC_STAGE_MARK_SWEEP;
-    }
+    // Scan pages, putting results into our thread's result
+    fsa_consensus_change_stage2(
+        gc_fsa_mark_sweep$confirm_action,
+        take_page_and_scan,
+        OBJECTS_SCANNED_PER_ALLOC);
 }
 
-static enum gc_stage gc_fsa_mark_sweep_complete$action() {
-    enum gc_stage to_stage = GC_STAGE_PRUNE;
-    atomic_fetch_add(&mark_sweep_iterations, 1);
-    for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
 
-        // Reset ready for next scan, or for pruning. It's all the same.
-        thread_info->scan_head = thread_info->scan_result;
-        thread_info->scan_result = NULL;
-
-        if (thread_info->scanned_something_of_interest) {
-            thread_info->scanned_something_of_interest = false;
-            to_stage = GC_STAGE_MARK_SWEEP;
-        }
-    }
-    if (to_stage == GC_STAGE_PRUNE) {
-        LOG(DEBUG, "Mark sweep iterations %ld", mark_sweep_iterations);
-    }
-    return to_stage;
-}
-static void gc_fsa_mark_sweep_complete() {
-    // Attempt the transition away from MARK_SWEEP_COMPLETE
-    if (!fsa_consensus_change_stage(GC_STAGE_MARK_SWEEP_COMPLETE, gc_fsa_mark_sweep_complete$action)) {
-
-        // If some thread managed to work steel another thread to empty, it could be stuck on MARK_SWEEP
-        for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-            if (thread_info->scan_head == NULL) {
-                enum gc_stage expected = GC_STAGE_MARK_SWEEP;
-                atomic_compare_exchange_strong(&thread_info->gc_stage, &expected, GC_STAGE_MARK_SWEEP_COMPLETE);
-            }
-        }
-    }
-}
-
-static void gc_fsa_prune() {
-    // Prune pages, putting results into our threads result
-    enum gc_stage expected = GC_STAGE_PRUNE;
-    if (atomic_compare_exchange_strong(&gc_thread_info.gc_stage, &expected, GC_STAGE_WORKING)) {
-        for (int count = PAGES_PRUNED_PER_ALLOC; --count >= 0; ) {
-            if (!take_page_and_prune(&gc_thread_info)) {
-                bool pruned_something = false;
-
-                // There was nothing to prune, try stealing more work from other threads
-                for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-                    pruned_something = take_page_and_prune(thread_info);
-                }
-
-                if (!pruned_something) {
-                    // This thread has run out of work
-                    gc_thread_info.gc_stage = GC_STAGE_PRUNE_COMPLETE;
-                    return;
-                }
-            }
-        }
-        gc_thread_info.gc_stage = GC_STAGE_PRUNE;
-    }
-}
-
-static enum gc_stage gc_fsa_prune_complete$action() {
+static enum gc_stage gc_fsa_prune$confirm_action() {
+    swap_source_target_lists();
+    gc_safe_point_requested = false;
     return GC_STAGE_IDLE;
 }
-static void gc_fsa_prune_complete() {
-    // Attempt the transition away from PRUNE_COMPLETE
-    if (!fsa_consensus_change_stage(GC_STAGE_PRUNE_COMPLETE, gc_fsa_prune_complete$action)) {
-
-        // If some thread managed to work steel another thread to empty, it could be stuck on PRUNE
-        for (struct gc_thread_info *thread_info = threads; thread_info != NULL; thread_info = thread_info->next) {
-            if (thread_info->scan_head == NULL) {
-                enum gc_stage expected = GC_STAGE_PRUNE;
-                atomic_compare_exchange_strong(&thread_info->gc_stage, &expected, GC_STAGE_PRUNE_COMPLETE);
-            }
-        }
-    }
+static void gc_fsa_prune() {
+    fsa_consensus_change_stage2(
+        gc_fsa_prune$confirm_action,
+        take_page_and_prune,
+        PAGES_PRUNED_PER_ALLOC);
 }
+
 
 EXPORT void object_gc_safe_point() {
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
-    if (--gc_thread_info.count_to_fsa == 0) {
-        gc_thread_info.count_to_fsa = COUNT_TO_FSA;
-
-        // Certain transitions can only occur from within the owning thread, or whilst blocked on IO
-        // Safe points ensure that these occur even when no allocations are occuring on the thread
-
-        gc_fsa(false);
-    }
+    gc_fsa(false);
 }
+
 
 // Arbitary safe point for GC magic to happen
 static void gc_fsa(bool real_work) {
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
 
-    switch (gc_thread_info.gc_stage) {
+    if (!gc_enabled)
+        return;
+
+    if (gc_thread_info.stage_complete)
+        return;
+
+    switch (stage) {
         case GC_STAGE_IDLE:
             LOG(TRACE, "IDLE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
             gc_fsa_idle();
-            break;
+            return;
 
         case GC_STAGE_SCAN_ROOTS:
             LOG(TRACE, "SCAN_ROOTS {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            update_stack_address_and_registers();
-            gc_fsa_scan_thread_local_roots(&gc_thread_info);
-            break;
-
-        case GC_STAGE_SCAN_ROOTS_COMPLETE:
-            LOG(TRACE, "SCAN_ROOTS_COMPLETE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_scan_roots_complete();
-            break;
+            gc_fsa_scan_roots();
+            return;
 
         case GC_STAGE_MARK_SWEEP:
-            if (real_work) {
-                LOG(TRACE, "MARK_SWEEP {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
-                gc_fsa_mark_sweep();
-            }
-            break;
-
-        case GC_STAGE_MARK_SWEEP_COMPLETE:
-            LOG(TRACE, "MARK_SWEEP_COMPLETE {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_mark_sweep_complete();
-            break;
+            if (!real_work)
+                return;
+            LOG(TRACE, "MARK_SWEEP {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
+            gc_fsa_mark_sweep();
+            return;
 
         case GC_STAGE_PRUNE:
-            if (real_work) {
-                LOG(TRACE, "PRUNE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-                gc_fsa_prune();
-            }
-            break;
-
-        case GC_STAGE_PRUNE_COMPLETE:
-            LOG(TRACE, "PRUNE_COMPLETE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_prune_complete();
-            break;
-
-        case GC_STAGE_TEMP:
-        case GC_STAGE_WORKING:
-            // Do nothing. These are marker stages used during other transitions.
-            break;
+            if (!real_work)
+                return;
+            LOG(TRACE, "PRUNE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
+            gc_fsa_prune();
+            return;
     }
+
+    gc_thread_info.counters.stage_working++;
 }
-
-
-
-
-
-
 
 EXPORT void object_gc_init() {
 }

@@ -152,14 +152,18 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
     struct test_gc_allocations_o* array[10] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
 
     for (int count = 0; count < 10; ++count) {
+        GC_SAFE_POINT();
         struct test_gc_allocations_o* obj = (struct test_gc_allocations_o*)array_create((vtable_t*)&test_gc_allocations_v, 3);
         array[count%10] = obj;
     }
 
-    for (int count = 0; count < 1000; ++count) {
+    for (int count = 0; count < 100; ++count) {
+        GC_SAFE_POINT();
         struct test_gc_allocations_o* obj;
 
         for (int count2 = 0; count2 < 1000; ++count2) {
+            GC_SAFE_POINT();
+
             string_t* str = (string_t*)string_append(left_str, right_str);
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
@@ -169,6 +173,7 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
         }
 
         for (int index = 0; index < 10; ++index) {
+            GC_SAFE_POINT();
             obj = (struct test_gc_allocations_o*)array[index];
 
             if (obj != NULL) {
@@ -194,6 +199,7 @@ void setup_allocation_test(object_t* _, fun_t continuation) {
     o->result_counter = count;
 
     while (--count >= 0) {
+        GC_SAFE_POINT();
         worker_node_t* node = thread_work_prepare((fun_t){.f=do_allocation_test,.o=(object_t*)o});
         thread_work_post_fast(node);
     }

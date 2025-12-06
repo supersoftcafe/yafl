@@ -183,6 +183,9 @@ enum {
 #define VT_TAG_SET(vt, tag) ((vtable_t*)((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK) | tag))
 
 EXTERN bool gc_enabled;
+EXTERN volatile bool gc_safe_point_requested;
+
+#define GC_SAFE_POINT() do { if (UNLIKELY(gc_safe_point_requested)) object_gc_safe_point(); } while (false)
 
 EXTERN vtable_t *object_get_vtable(object_t *object);
 EXTERN void object_set_reference(object_t *object, size_t field_offset, object_t *value);
