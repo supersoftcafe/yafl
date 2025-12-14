@@ -25,7 +25,7 @@ static pthread_once_t pages_once = ONCE_FLAG_INIT;
 static _pages_info_t* pages_info = NULL;
 
 static void init2() {
-    size_t count = 16ULL*1024*1024*1024 / GC_PAGE_SIZE;
+    size_t count = 1ULL*1024*1024*1024 / GC_PAGE_SIZE;
     size_t size = sizeof(_pages_info_t) + count + (count * GC_PAGE_SIZE) + GC_PAGE_SIZE;
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if (ptr == MAP_FAILED) {

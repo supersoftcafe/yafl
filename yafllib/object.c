@@ -6,12 +6,9 @@
 #include <pthread.h>
 
 #define COMPACT_THRESHOLD_PERCENT   33
-#define OBJECTS_SCANNED_PER_ALLOC   4
-// #define PAGES_SCANNED_PER_ALLOC     14
+#define OBJECTS_SCANNED_PER_ALLOC   1024
 #define PAGES_PRUNED_PER_ALLOC      256
-#define COUNT_TO_FSA                1024
-
-// #undef DISABLE_HEAP_COMPACTION
+#define DISABLE_HEAP_COMPACTION
 
 
 
@@ -130,13 +127,15 @@ enum gc_stage {
     GC_STAGE_IDLE,       // Nothing happening, waiting for GC to start
     GC_STAGE_SCAN_ROOTS, // Trying to scan stack. Globals scanned as we exited idle.
     GC_STAGE_MARK_SWEEP, // Walk the graph, mark things as seen and scan as we go
-    GC_STAGE_PRUNE       // Releasing unused pages and wiping bits on others ready for next scan
+    GC_STAGE_PRUNE,      // Releasing unused pages and wiping bits on others ready for next scan
+    GC_STAGE_TRANSITION  // Stage used between transitions
 };
 
 enum thread_state {
     THREAD_STATE_RUNNING,               // Busy running, don't interrupt
     THREAD_STATE_SUSPENDED,             // IO is in progress, so an external thread could scan this thread
     THREAD_STATE_SUSPENDED_SCAN,        // Thread is suspended, an external thread is scanning this one
+    THREAD_STATE_CRITICAL_SECTION,      // Don't advance GC state when in a critical section
     THREAD_STATE_EXITED
 };
 
@@ -152,7 +151,7 @@ thread_local struct gc_thread_info {
     thread_roots_declaration_func_t thread_roots_declaration_func;
     void* thread_roots_context;
 
-    atomic_bool stage_complete; // As each thread completes work, it marks this as true and decrements the global counter
+    ssize_t work_completed_in_stage;
     bool roots_scanned;
 
     _Atomic(enum thread_state) thread_state;
@@ -163,9 +162,12 @@ thread_local struct gc_thread_info {
     _Atomic(gc_page_t*) alloc_head; // Head of list of full pages waiting for next GC
     _Atomic(gc_page_t*) pages_todo; //
     _Atomic(gc_page_t*) pages_done; //
+            gc_page_t*  pages_free; // Thread-local free list of pages for recycling
+            size_t pages_release_counter;
 
     size_t prune_count_of_used_space;
     size_t prune_count_of_copied_pages;
+    size_t prune_count_of_all_pages;
 
     object_t **stack_lower_pointer; // Numerically lower pointer to the stack
     object_t **stack_upper_pointer; // Numerically higher pointer to the stack
@@ -190,11 +192,13 @@ thread_local struct gc_thread_info {
 
 static atomic_size_t thread_count = 0;
 static _Atomic(struct gc_thread_info*) threads = NULL;
+
 static _Atomic(enum gc_stage) stage = GC_STAGE_IDLE;
-static atomic_size_t stage_progress_countdown = 1;
+static _Atomic(enum gc_stage(*)()) _request_transition_action;
+
 static atomic_bool   scanned_something_of_interest = false;
 static atomic_size_t global_iteration_count = 0;
-
+static size_t trigger_page_count = 0;
 
 
 static void swap_source_target_lists() {
@@ -209,6 +213,8 @@ static void swap_source_target_lists() {
 
         assert(swapped_todo == todo);
         assert(swapped_done == done);
+
+        thread->work_completed_in_stage = 0;
     }
 }
 
@@ -232,17 +238,23 @@ static atomic_size_t gc_page_alloc_counter = 0;
 static gc_page_t* gc_page_alloc(size_t page_count) {
     LOG(TRACE, "gc_page_alloc(%ld)", page_count);
 
-    gc_page_t* page = memory_pages_alloc(page_count);
-    if (page == NULL)
-        abort_on_out_of_memory();
+#ifndef NDEBUG
+        atomic_fetch_add(&gc_page_alloc_counter, 1);
+#endif
+
+    gc_page_t *page;
+    if (page_count == 1 && (page = gc_thread_info.pages_free) != NULL) {
+        gc_thread_info.pages_free = page->head.next;
+
+    } else {
+        page = memory_pages_alloc(page_count);
+        if (page == NULL)
+            abort_on_out_of_memory();
+    }
 
     memset(page, 0, GC_PAGE_SIZE * page_count);
     page->head.page_count = page_count;
     page->head.magic_number = PAGE_MAGIC_NUMBER;
-
-#ifndef NDEBUG
-    atomic_fetch_add(&gc_page_alloc_counter, 1);
-#endif
 
     return page;
 }
@@ -251,10 +263,15 @@ static atomic_size_t gc_page_free_counter = 0;
 static void gc_page_free(gc_page_t* page) {
     assert(page->head.magic_number == PAGE_MAGIC_NUMBER);
     page->head.magic_number = 0;
-    memory_pages_free(page, page->head.page_count);
 #ifndef NDEBUG
     atomic_fetch_add(&gc_page_free_counter, 1);
 #endif
+    if ((++gc_thread_info.pages_release_counter & 15) == 0) {
+        memory_pages_free(page, page->head.page_count);
+    } else {
+        page->head.next = gc_thread_info.pages_free;
+        gc_thread_info.pages_free = page;
+    }
 }
 
 static void object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdiff_t* slot_out) {
@@ -564,7 +581,7 @@ EXPORT void object_gc_declare_thread(thread_roots_declaration_func_t thread_root
 
 }
 
-static NOINLINE bool gc_scan_page(gc_page_t* page) {
+static NOINLINE size_t gc_scan_page(gc_page_t* page) {
     size_t scanned_count = 0;
 
     for (ptrdiff_t index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
@@ -579,6 +596,7 @@ static NOINLINE bool gc_scan_page(gc_page_t* page) {
             assert(bitmap_test(&page->head.object_heads, slot));
 
             scanned_something_of_interest = true;
+
             gc_scan_object_shallow((object_t*)&page->slots[slot]);
 
             scanned_count += 1;
@@ -743,120 +761,114 @@ static void scan_thread_roots(struct gc_thread_info *thread_info) {
 }
 
 
-static enum work_result take_page_and_scan(struct gc_thread_info *thread) {
-    size_t scanned_count = 0;;
 
+
+
+static enum work_result take_page_and_do_something(struct gc_thread_info *thread, void(*do_something)(gc_page_t*)) {
     // Take a page from the given thread. We might be stealing, so this must be done safely.
-    gc_page_t *page;
+    gc_page_t *page, *next;
     do {
         page = atomic_load(&thread->pages_todo);
-        while (page && !atomic_compare_exchange_strong(&thread->pages_todo, &page, page->head.next));
-        if (page == NULL) {
-            return NO_MORE_WORK; // False means that there weren't any pages to process
-        }
+        if (page == NULL)
+            return NO_MORE_WORK;
+        if (page == (gc_page_t*)1)
+            return FAILED_TO_WORK; // Last object is still being worked on by another thread
+        next = page->head.next;
+        if (next == NULL)
+            next = (gc_page_t*)1; // If it's the last page, we need to leave a token to show that we're working on it.
+    } while (!atomic_compare_exchange_strong(&thread->pages_todo, &page, next));
 
-        // Put it in our thread local results area. No other thread touches this whilst scanning.
-        page->head.next = gc_thread_info.pages_done;
-        gc_thread_info.pages_done = page;
+    do_something(page);
 
-        // Scan the page
-        scanned_count += gc_scan_page(page);
-    } while (scanned_count == 0);
-
-    if (scanned_count == 0)
-        return NO_MORE_WORK;
-    if (atomic_load(&thread->pages_todo) == NULL)
+    if (next == (gc_page_t*)1) {
+        thread->pages_todo = NULL;
         return DONE_SOME_AND_NO_MORE_WORK;
-    return DONE_SOME_WORK;
+    } else if (atomic_load(&thread->pages_todo) == NULL) {
+        return DONE_SOME_AND_NO_MORE_WORK;
+    } else {
+        return DONE_SOME_WORK;
+    }
 }
 
 
-static enum work_result take_page_and_prune(struct gc_thread_info *thread) {
+static void take_page_and_scan$do_something(gc_page_t *page) {
+    // Put it in our thread local results area. No other thread touches this whilst scanning.
+    page->head.next = gc_thread_info.pages_done;
+    gc_thread_info.pages_done = page;
 
-    // Take a page from the given thread. We might be stealing, so this must be done safely.
-    gc_page_t *page = atomic_load(&thread->pages_todo);
-    while (page && !atomic_compare_exchange_strong(&thread->pages_todo, &page, page->head.next));
-    if (page == NULL) {
-        return NO_MORE_WORK; // False means that there weren't any pages to process
-    }
+    // Scan the page
+    size_t count = gc_scan_page(page);
+    gc_thread_info.work_completed_in_stage -= count;
+}
+static enum work_result take_page_and_scan(struct gc_thread_info *thread) {
+    return take_page_and_do_something(thread, take_page_and_scan$do_something);
+}
+
+
+static void take_page_and_prune$do_something(gc_page_t *page) {
+    gc_thread_info.prune_count_of_all_pages += 1;
+    gc_thread_info.work_completed_in_stage -= 1;
 
 #ifdef NDEBUG
     // Mask out the things that no longer exist
     bitmap_and(&page->head.object_heads, &page->head.marks_seen);
 #else
     // Whether we release or not, in debug mode we want to write rubbish to unused space
-    gc_clear_unused_space(page); // TODO: Log things that are removed, and then clear the object_heads bit
+    gc_clear_unused_space(page);
 #endif
 
     // If nothing is retained on this page, release it back to the system.
     if (!bitmap_test_any(&page->head.object_heads)) {
         gc_page_free(page);
-        return true; // True means that we found and processed a page
-    }
 
-    bitmap_reset_all(&page->head.marks_seen);
-    bitmap_reset_all(&page->head.marks_scanned);
+    } else {
+        bitmap_reset_all(&page->head.marks_seen);
+        bitmap_reset_all(&page->head.marks_scanned);
 
 #ifndef DISABLE_HEAP_COMPACTION
-    // Is compaction an option? Should we do it?
-    gc_compact_page(page);
+        // Is compaction an option? Should we do it?
+        gc_compact_page(page);
 #endif
 
-    // Page survived pruning. Put it back in our thread local results area.
-    // Even a compacted page survives. It usually gets reclaimed on the next pass.
-    page->head.next = gc_thread_info.pages_done;
-    gc_thread_info.pages_done = page;
-
-    if (atomic_load(&thread->pages_todo) == NULL)
-        return DONE_SOME_AND_NO_MORE_WORK;
-    return DONE_SOME_WORK;
+        // Page survived pruning. Put it back in our thread local results area.
+        // Even a compacted page survives. It usually gets reclaimed on the next pass.
+        page->head.next = gc_thread_info.pages_done;
+        gc_thread_info.pages_done = page;
+    }
+}
+static enum work_result take_page_and_prune(struct gc_thread_info *thread) {
+    return take_page_and_do_something(thread, take_page_and_prune$do_something);
 }
 
 
 
 
 
-static void fsa_advance_stage(enum gc_stage to_stage) {
-    stage = to_stage;
-    stage_progress_countdown = thread_count;
-    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next)
-        thread->stage_complete = false;
-}
-
-static bool fsa_end_of_stage() {
-    bool expected = false;
-    if (!atomic_compare_exchange_strong(&gc_thread_info.stage_complete, &expected, true))
-        return false;
-
-    if (atomic_fetch_sub(&stage_progress_countdown, 1) != 1)
-        return false;
-
-    return true;
-}
 
 static void fsa_consensus_change_stage2(
     enum gc_stage(*confirm_action)(),
-    enum work_result(*do_some_work)(struct gc_thread_info*),
-    size_t target_work_amount
+    enum work_result(*do_some_work)(struct gc_thread_info*)
 ) {
-    // Go around all threads, starting at this thread, until we've done enough work.
+    size_t threads_with_work_count = thread_count;
     struct gc_thread_info *thread = &gc_thread_info;
-    enum work_result work_result;
     do {
+        enum work_result work_result;
         do {
             work_result = do_some_work(thread);
-        } while ((work_result & NO_MORE_WORK) == 0 && --target_work_amount != 0);
+        } while ((work_result & NO_MORE_WORK) == 0 && gc_thread_info.work_completed_in_stage > 0);
+        if ((work_result & NO_MORE_WORK) != 0)
+            threads_with_work_count -= 1;
 
         thread = thread->next;
         if (thread == NULL)
             thread = threads;
-    } while (thread != &gc_thread_info && (work_result & DONE_SOME_WORK) == 0);
+    } while (thread != &gc_thread_info && gc_thread_info.work_completed_in_stage > 0);
 
-    // If we couldn't find any more work to do, set the flag to stop further processing
-    if ((work_result & NO_MORE_WORK) != 0) {
-         if (fsa_end_of_stage()) {
-             enum gc_stage to_stage = confirm_action();
-             fsa_advance_stage(to_stage);
+    if (threads_with_work_count == 0) {
+        // Definately no more work
+        enum gc_stage(*expected)() = NULL;
+        if (atomic_compare_exchange_strong(&_request_transition_action, &expected, confirm_action)) {
+            stage = GC_STAGE_TRANSITION;
         }
     }
 }
@@ -866,51 +878,76 @@ static void fsa_consensus_change_stage2(
 
 
 
-static bool gc_fsa_idle() {
-    if (fsa_end_of_stage()) {
-        gc_safe_point_requested = true;
-        declare_roots_yafl(object_gc_seen_by_field);
-        declare_roots_thread(object_gc_seen_by_field);
-        atomic_fetch_add(&global_iteration_count, 1);
-        for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next)
-            thread->roots_scanned = false;
-        fsa_advance_stage(GC_STAGE_SCAN_ROOTS);
+static atomic_size_t _mark_sweep_count;
+static atomic_size_t _skipped_alloc_count;
+
+static enum gc_stage gc_fsa_idle$confirm_action() {
+    LOG(INFO, "Mark Sweep %ld, Skip Alloc %ld", _mark_sweep_count, _skipped_alloc_count);
+    _mark_sweep_count = 0;
+    _skipped_alloc_count = 0;
+
+    gc_safe_point_requested = true;
+    declare_roots_yafl(object_gc_seen_by_field);
+    declare_roots_thread(object_gc_seen_by_field);
+    atomic_fetch_add(&global_iteration_count, 1);
+
+    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
+        thread->prune_count_of_all_pages = 0;
+        thread->roots_scanned = false;
+    }
+
+    return GC_STAGE_SCAN_ROOTS;
+}
+static void gc_fsa_idle() {
+    enum gc_stage(*expected)() = NULL;
+    if (atomic_compare_exchange_strong(&_request_transition_action, &expected, gc_fsa_idle$confirm_action)) {
+        stage = GC_STAGE_TRANSITION;
     }
 }
 
 
 static enum gc_stage gc_fsa_scan_roots$confirm_action() {
+    gc_safe_point_requested = false;
     return GC_STAGE_MARK_SWEEP;
 }
 static enum work_result gc_fsa_scan_roots$do_some_work(struct gc_thread_info *thread) {
-    if (change_thread_state(thread, THREAD_STATE_SUSPENDED, THREAD_STATE_SUSPENDED_SCAN)) {
+    if (thread->roots_scanned) {
+        return NO_MORE_WORK;
+    } else if (!change_thread_state(thread, THREAD_STATE_SUSPENDED, THREAD_STATE_SUSPENDED_SCAN)) {
+        return FAILED_TO_WORK;
+    } else {
 
         enum work_result work_result;
         if (!thread->roots_scanned) {
+            work_result = DONE_SOME_AND_NO_MORE_WORK;
             thread->roots_scanned = true;
+            gc_thread_info.work_completed_in_stage -= 1;
             memset(thread->size_by_name, 0, sizeof(thread->size_by_name));
             snapshot_scan_pages(thread);
             scan_thread_roots(thread);
-            work_result = DONE_SOME_AND_NO_MORE_WORK;
         } else {
             work_result = NO_MORE_WORK;
         }
 
         atomic_store(&thread->thread_state, THREAD_STATE_SUSPENDED);
         return work_result;
-    } else {
-        if (thread->roots_scanned)
-            return NO_MORE_WORK;
-        return FAILED_TO_WORK;
     }
 }
 static void gc_fsa_scan_roots() {
-    object_gc_io_begin();
-    fsa_consensus_change_stage2(
-        gc_fsa_scan_roots$confirm_action,
-        gc_fsa_scan_roots$do_some_work,
-        1);
-    object_gc_io_end();
+    assert(gc_thread_info.thread_state == THREAD_STATE_CRITICAL_SECTION);
+    update_stack_address_and_registers();
+    atomic_store(&gc_thread_info.thread_state, THREAD_STATE_SUSPENDED);
+
+    gc_thread_info.work_completed_in_stage = 1;
+    fsa_consensus_change_stage2(gc_fsa_scan_roots$confirm_action, gc_fsa_scan_roots$do_some_work);
+
+    enum thread_state expected = THREAD_STATE_SUSPENDED;
+    while (!atomic_compare_exchange_strong(&gc_thread_info.thread_state, &expected, THREAD_STATE_CRITICAL_SECTION)) {
+#ifndef NDEBUG
+        assert(expected == THREAD_STATE_SUSPENDED || expected == THREAD_STATE_SUSPENDED_SCAN);
+#endif
+        expected = THREAD_STATE_SUSPENDED;
+    }
 }
 
 
@@ -918,27 +955,27 @@ static enum gc_stage gc_fsa_mark_sweep$confirm_action() {
     swap_source_target_lists();
     enum gc_stage stage = scanned_something_of_interest ? GC_STAGE_MARK_SWEEP : GC_STAGE_PRUNE;
     scanned_something_of_interest = false;
+    atomic_fetch_add(&_mark_sweep_count, 1);
     return stage;
 }
 static void gc_fsa_mark_sweep() {
     // Scan pages, putting results into our thread's result
-    fsa_consensus_change_stage2(
-        gc_fsa_mark_sweep$confirm_action,
-        take_page_and_scan,
-        OBJECTS_SCANNED_PER_ALLOC);
+    gc_thread_info.work_completed_in_stage += OBJECTS_SCANNED_PER_ALLOC;
+    fsa_consensus_change_stage2(gc_fsa_mark_sweep$confirm_action, take_page_and_scan);
 }
 
 
 static enum gc_stage gc_fsa_prune$confirm_action() {
+    trigger_page_count = 0;
+    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next)
+        trigger_page_count += thread->prune_count_of_all_pages;
+
     swap_source_target_lists();
-    gc_safe_point_requested = false;
     return GC_STAGE_IDLE;
 }
 static void gc_fsa_prune() {
-    fsa_consensus_change_stage2(
-        gc_fsa_prune$confirm_action,
-        take_page_and_prune,
-        PAGES_PRUNED_PER_ALLOC);
+    gc_thread_info.work_completed_in_stage += PAGES_PRUNED_PER_ALLOC;
+    fsa_consensus_change_stage2(gc_fsa_prune$confirm_action, take_page_and_prune);
 }
 
 
@@ -955,36 +992,66 @@ static void gc_fsa(bool real_work) {
     if (!gc_enabled)
         return;
 
-    if (gc_thread_info.stage_complete)
-        return;
-
-    switch (stage) {
+    switch (atomic_load(&stage)) {
         case GC_STAGE_IDLE:
-            LOG(TRACE, "IDLE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_idle();
-            return;
+            gc_thread_info.thread_state = THREAD_STATE_CRITICAL_SECTION;
+            if (atomic_load(&stage) == GC_STAGE_IDLE) {
+                LOG(TRACE, "IDLE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
+                gc_fsa_idle();
+            }
+            gc_thread_info.thread_state = THREAD_STATE_RUNNING;
+            break;
 
         case GC_STAGE_SCAN_ROOTS:
-            LOG(TRACE, "SCAN_ROOTS {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_scan_roots();
-            return;
+            gc_thread_info.thread_state = THREAD_STATE_CRITICAL_SECTION;
+            if (atomic_load(&stage) == GC_STAGE_SCAN_ROOTS) {
+                LOG(TRACE, "SCAN_ROOTS {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
+                gc_fsa_scan_roots();
+            }
+            gc_thread_info.thread_state = THREAD_STATE_RUNNING;
+            break;
 
         case GC_STAGE_MARK_SWEEP:
             if (!real_work)
-                return;
-            LOG(TRACE, "MARK_SWEEP {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_mark_sweep();
-            return;
+                break;
+            gc_thread_info.thread_state = THREAD_STATE_CRITICAL_SECTION;
+            if (atomic_load(&stage) == GC_STAGE_MARK_SWEEP) {
+                LOG(TRACE, "MARK_SWEEP {%ld,%ld} iter=%ld", gc_page_alloc_counter, gc_page_free_counter);
+                gc_fsa_mark_sweep();
+            }
+            gc_thread_info.thread_state = THREAD_STATE_RUNNING;
+            break;
 
         case GC_STAGE_PRUNE:
             if (!real_work)
-                return;
-            LOG(TRACE, "PRUNE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
-            gc_fsa_prune();
-            return;
+                break;
+            gc_thread_info.thread_state = THREAD_STATE_CRITICAL_SECTION;
+            if (atomic_load(&stage) == GC_STAGE_PRUNE) {
+                LOG(TRACE, "PRUNE {%ld,%ld}", gc_page_alloc_counter, gc_page_free_counter);
+                gc_fsa_prune();
+            }
+            gc_thread_info.thread_state = THREAD_STATE_RUNNING;
+            break;
+
+        case GC_STAGE_TRANSITION:
+            atomic_fetch_add(&_skipped_alloc_count, 1);
+            break;
     }
 
-    gc_thread_info.counters.stage_working++;
+    if (atomic_load(&stage) == GC_STAGE_TRANSITION) {
+        for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
+            if (thread->thread_state == THREAD_STATE_CRITICAL_SECTION) {
+                atomic_fetch_add(&_skipped_alloc_count, 1);
+                return;
+            }
+        }
+        enum gc_stage(*action)() = atomic_exchange(&_request_transition_action, NULL);
+        if (action != NULL) {
+            stage = action();
+        } else {
+            atomic_fetch_add(&_skipped_alloc_count, 1);
+        }
+    }
 }
 
 EXPORT void object_gc_init() {
