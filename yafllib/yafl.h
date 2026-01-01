@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include "common.h"
 #include <stdatomic.h>
 #include <stdnoreturn.h>
 #include <stdint.h>
@@ -182,15 +183,33 @@ enum {
 #define VT_TAG_UNSET(vt)    ((vtable_t*)((uintptr_t)(vt) & ~(uintptr_t)VT_TAG_MASK))
 #define VT_TAG_SET(vt, tag) ((vtable_t*)((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK) | tag))
 
-EXTERN bool gc_enabled;
-EXTERN volatile bool gc_safe_point_requested;
+EXTERN void gc_start();
+#ifndef OBJECT_HEADER_EXCLUSIONS
+EXTERN thread_local struct {
+    volatile int_fast32_t safe_point_request;
+} gc_thread_info;
+#endif
+EXTERN volatile bool gc_write_barrier_requested;
 
-#define GC_SAFE_POINT() do { if (UNLIKELY(gc_safe_point_requested)) object_gc_safe_point(); } while (false)
 
+EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
+EXTERN void _gc_set_reference2(_Atomic(object_t*)*field, object_t *value);
+EXTERN void _gc_mark_as_seen2(object_t *object);
+
+#define GC_SAFE_POINT()\
+    do { if (UNLIKELY(gc_thread_info.safe_point_request)) _gc_safe_point2(); } while (false)
+#define GC_WRITE_REF(field, value)\
+    do {if (UNLIKELY(gc_write_barrier_requested))\
+            _gc_set_reference2((_Atomic(object_t*)*)&(field), value);\
+        else atomic_store((_Atomic(object_t*)*)&(field), value);\
+    } while (false)
+#define GC_MARK_SEEN(value)\
+    do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value); } while (false)
+
+
+EXTERN size_t object_get_size(object_t* ptr);
 EXTERN vtable_t *object_get_vtable(object_t *object);
-EXTERN void object_set_reference(object_t *object, size_t field_offset, object_t *value);
-EXTERN void object_mark_as_seen(object_t *object);
-EXTERN fun_t vtable_lookup(object_t *object, intptr_t id);
+EXTERN fun_t object_lookup_vtable(object_t *object, intptr_t id);
 
 
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
@@ -198,10 +217,9 @@ typedef void(*thread_roots_declaration_func_t)(void*,void(*)(object_t**));
 
 EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t);
 EXTERN void object_gc_init();
-EXTERN void object_gc_safe_point(); // Arbitary safe point for GC magic to happen
-EXTERN void object_gc_io_begin();   // Start of potentially thread pausing IO
-EXTERN void object_gc_io_end();     // End of potentially thread pausing IO
-EXTERN void object_gc_declare_thread(thread_roots_declaration_func_t,void*); // Any thread that can do allocation must call this early on
+EXTERN void gc_io_begin();   // Start of potentially thread pausing IO
+EXTERN void gc_io_end();     // End of potentially thread pausing IO
+EXTERN void gc_declare_thread(thread_roots_declaration_func_t,void*); // Any thread that can do allocation must call this early on
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 

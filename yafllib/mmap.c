@@ -3,7 +3,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "common.h"
 #include "yafl.h"
 
 

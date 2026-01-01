@@ -1,7 +1,7 @@
 
-#include "common.h"
 #include "yafl.h"
 #include <pthread.h>
+#include <time.h>
 
 EXPORT vtable_t* _worker_node_vt = VTABLE_DECLARE(0){
     .object_size = sizeof(worker_node_t),
@@ -74,7 +74,7 @@ HIDDEN void _thread_wake(worker_queue_t* queue) {
 }
 
 HIDDEN void _thread_wait(worker_queue_t* queue) {
-    object_gc_io_begin();
+    gc_io_begin();
 
     atomic_store(&queue->consumer_waiting_flag, true);
     pthread_mutex_lock(&queue->lock);
@@ -84,7 +84,7 @@ HIDDEN void _thread_wait(worker_queue_t* queue) {
     pthread_mutex_unlock(&queue->lock);
     atomic_store(&queue->consumer_waiting_flag, false);
 
-    object_gc_io_end();
+    gc_io_end();
 }
 
 
@@ -105,7 +105,8 @@ HIDDEN worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
         return NULL;
     }
 
-    object_mark_as_seen((object_t*)head);
+    GC_MARK_SEEN(&head->parent);
+
     if (UNLIKELY(!atomic_compare_exchange_strong(&queue->local_queue_head, &head, node))) {
         // Another thread got there before us
         return NULL;
@@ -114,12 +115,18 @@ HIDDEN worker_node_t* _thread_local_queue_try_steal(worker_queue_t* queue) {
     return node;
 }
 
-HIDDEN void _thread_work_invoke(worker_node_t* node) {
+HIDDEN void _thread_work_invoke(intptr_t thread_id, worker_node_t* node) {
     void(*fn)(void*) = (void(*)(void*))node->action.f;
     fn(node->action.o);
 }
 
+static struct timespec t_start;
+static struct timespec t_end;
 HIDDEN noreturn void __exit__(object_t* self, object_t* int_status) {
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    double seconds = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+    printf("Duration: %.2f s\n", seconds);
+
     int overflow;
     int32_t value = integer_to_int32_with_overflow(int_status, &overflow);
     exit(value);
@@ -132,7 +139,7 @@ static atomic_intptr_t _thread_countdown_to_gc_start;
 
 static void(*__entrypoint__)(object_t*, fun_t);
 HIDDEN void* _thread_main_loop(void* param) {
-    object_gc_declare_thread((void*)declare_local_roots_thread, &_locals);
+    gc_declare_thread((void*)declare_local_roots_thread, &_locals);
 
     if (param == (void*)0) {
         _thread_init();
@@ -148,7 +155,7 @@ HIDDEN void* _thread_main_loop(void* param) {
     }
 
     if (atomic_fetch_sub(&_thread_countdown_to_gc_start, 1) == 1) {
-        gc_enabled = true;
+        gc_start();
     }
 
     for (;;) {
@@ -158,10 +165,9 @@ HIDDEN void* _thread_main_loop(void* param) {
         worker_node_t* head = _locals.sideload_queue_head;
         worker_node_t* node = head->next;
         if (node) {
-            object_mark_as_seen((object_t*)head);
+            GC_MARK_SEEN(&node->parent);
             _locals.sideload_queue_head = node;
-            fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
-            _thread_work_invoke(node);
+            _thread_work_invoke(thread_id, node);
             continue;
         }
 
@@ -170,8 +176,7 @@ HIDDEN void* _thread_main_loop(void* param) {
         if (node) {
             // If our neighbour is starved, wake it up
             _thread_wake(&_queues->array[(thread_id + 1) % _queues->length]);
-            // fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
-            _thread_work_invoke(node);
+            _thread_work_invoke(thread_id, node);
             continue;
         }
 
@@ -181,8 +186,7 @@ HIDDEN void* _thread_main_loop(void* param) {
             ;index = (index+1) % _queues->length);
         if (node) {
             _thread_wake(&_queues->array[(thread_id + 1) % _queues->length]);
-            // fprintf(stderr, "Invoking work on thread %ld\n", thread_id);
-            _thread_work_invoke(node);
+            _thread_work_invoke(thread_id, node);
             continue;
         }
 
@@ -194,7 +198,7 @@ HIDDEN void* _thread_main_loop(void* param) {
 }
 
 static void _thread_init() {
-    intptr_t thread_count = 3;
+    intptr_t thread_count = 1;
     _thread_countdown_to_gc_start = thread_count;
 
     object_gc_init(); // Initialise the GC system
@@ -249,6 +253,7 @@ EXTERN void thread_work_post_io(worker_node_t* work) {
 }
 
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
     __entrypoint__ = entrypoint;
     _thread_main_loop((void*)0);
 }

@@ -118,7 +118,7 @@ struct test_gc_allocations_o {
     int32_t length;
     _Atomic(int32_t) result_counter;
     fun_t continuation;
-    string_t* results[16];
+    _Atomic(string_t*) results[3];
 };
 
 static vtable_t test_gc_allocations_v = {
@@ -157,18 +157,18 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
         array[count%10] = obj;
     }
 
-    for (int count = 0; count < 100; ++count) {
+    for (int count = 0; count < 1000; ++count) {
         GC_SAFE_POINT();
         struct test_gc_allocations_o* obj;
 
-        for (int count2 = 0; count2 < 1000; ++count2) {
+        for (int count2 = 0; count2 < 100; ++count2) {
             GC_SAFE_POINT();
 
             string_t* str = (string_t*)string_append(left_str, right_str);
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
-                object_set_reference((object_t*)obj, offsetof(struct test_gc_allocations_o, results[i]), (object_t*)str);
+                GC_WRITE_REF(obj->results[i], (object_t*)str);
             }
         }
 
@@ -185,10 +185,6 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
     }
 
     complete_allocation_test(self, array[3]->results[0]);
-
-    // TODO: Add an object name to the vtable header using a YAFL string
-    //       Prints only the objects that survived the last GC, otherwise it could get quite noisy in the console
-    // object_gc_print_heap();
 }
 
 void setup_allocation_test(object_t* _, fun_t continuation) {
