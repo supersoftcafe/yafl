@@ -7,8 +7,8 @@
 
 
 #define COMPACT_THRESHOLD_PERCENT   33
-#define PAGES_SCANNED_PER_ALLOC     4
-#define PAGES_PRUNED_PER_ALLOC      4
+#define PAGES_SCANNED_PER_ALLOC     2
+#define PAGES_PRUNED_PER_ALLOC      16
 #define REPROCESS_PAGE_COUNT        16
 #define MMAP_RELEASE_PAGE_MASK      0x3f
 #undef  CLEAR_RELEASED_HEAP
@@ -253,7 +253,10 @@ static list_element_t pages_to_prune = {&pages_to_prune, &pages_to_prune};
 
 
 static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
-    gc_fsa();
+    if (!gc_fsa()) {
+        gc_thread_info.lag_counter += 1;
+        atomic_fetch_or(&gc_thread_info.safe_point_request, GC_SAFE_POINT_CATCH_UP);
+    }
 
     gc_page_t *page = list_pop(&gc_thread_info.free_pages) ?: memory_pages_alloc(page_count);
 
@@ -567,10 +570,10 @@ static void gc_object_mark_as_seen(object_t *object) {
     LOG(ULTRA, "MARK(0x%lx) -> %s", (uintptr_t)object, vt->name);
 }
 
-static NOINLINE_DEBUG void gc_object_seen_by_field(object_t **field_ptr) {
+static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) {
     object_t *object = *field_ptr;
     while (gc_object_is_on_heap_fast(object)) {
-        gc_object_mark_as_seen(object);
+        atomic_gc_object_mark_as_seen(object);
         if (LIKELY(VT_TAG_GET(object->vtable) != VT_TAG_FORWARD)) break;
         *field_ptr = object = (object_t*)VT_TAG_UNSET(object->vtable);
     }
@@ -589,8 +592,8 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     reprocess_page_head = reprocess_page_tail = 0;
     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
 
-    declare_roots_yafl(gc_object_seen_by_field);
-    declare_roots_thread(gc_object_seen_by_field);
+    declare_roots_yafl(atomic_gc_object_seen_by_field);
+    declare_roots_thread(atomic_gc_object_seen_by_field);
     for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
         atomic_fetch_or(&thread->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
         thread->roots_scanned = false;
@@ -604,11 +607,16 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 
 
 
-static void gc_fsa_scan_roots$scan_range(object_t **range_ptr, object_t **range_end) {
+static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, object_t **range_end) {
     for (; range_ptr != range_end; range_ptr++) {
         object_t *object = *range_ptr;
         if (gc_object_is_on_heap_slow(object)) {
-            gc_object_mark_as_seen(object);
+
+            gc_page_t* page; ptrdiff_t slot;
+            object_get_page_and_slot(object, &page, &slot);
+            page->head.scanner.pinned = true;
+
+            atomic_gc_object_mark_as_seen(object);
         }
     }
 }
@@ -639,9 +647,11 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         gc_fsa_scan_roots$scan_range(thread->stack_lower_ptr, thread->stack_upper_ptr);
         gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);
         // Thread library has some stuff
-        thread->thread_roots_declaration_func(thread->thread_roots_context, gc_object_seen_by_field);
+        thread->thread_roots_declaration_func(thread->thread_roots_context, atomic_gc_object_seen_by_field);
         // Release the thread state
+        atomic_fetch_and(&thread->safe_point_request, ~GC_SAFE_POINT_SCAN_ROOTS);
         atomic_store(&thread->thread_state, old_state);
+        thread->lag_counter = 0;
     }
 
     for (thread = threads; thread != NULL; thread = thread->next)
@@ -650,11 +660,6 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
 
     assert(!list_empty(&pages_to_scan));
     assert(list_empty(&pages_to_prune));
-
-    for (thread = threads; thread != NULL; thread = thread->next) {
-        atomic_fetch_and(&thread->safe_point_request, ~GC_SAFE_POINT_SCAN_ROOTS);
-        thread->lag_counter = 0;
-    }
 
     return GC_STAGE_MARK_SWEEP;
 }
@@ -846,57 +851,49 @@ static NOINLINE_DEBUG bool gc_fsa() {
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
 
     bool expected = false;
-    if (!atomic_compare_exchange_strong(&fsa_lock, &expected, true)) {
-        gc_thread_info.lag_counter += 1;
-        atomic_fetch_or(&gc_thread_info.safe_point_request, GC_SAFE_POINT_CATCH_UP);
+    if (!atomic_compare_exchange_strong(&fsa_lock, &expected, true))
         return false;
-    }
 
-    enum gc_stage next_stage;
     switch (stage) {
         case GC_STAGE_NOT_STARTED:
-            next_stage = GC_STAGE_NOT_STARTED;
-            break;
+            stage = GC_STAGE_NOT_STARTED;
+            atomic_store(&fsa_lock, false);
+            return true;
 
         case GC_STAGE_IDLE:
             LOG(TRACE, "GC_STAGE_IDLE");
-            next_stage = GC_STAGE_START;
-            break;
+            stage = GC_STAGE_START;
+            atomic_store(&fsa_lock, false);
+            return true;
 
         case GC_STAGE_START:
             LOG(TRACE, "GC_STAGE_START");
-            // LOG(DEBUG, "GC_STAGE_START %ld", memory_count() * 16);
-            next_stage = gc_fsa_start();
-            break;
+            stage = gc_fsa_start();
+            atomic_store(&fsa_lock, false);
+            return true;
 
         case GC_STAGE_SCAN_ROOTS:
             LOG(TRACE, "GC_STAGE_SCAN_ROOTS");
-            next_stage = gc_fsa_scan_roots();
-            break;
+            stage = gc_fsa_scan_roots();
+            atomic_store(&fsa_lock, false);
+            return true;
 
         case GC_STAGE_MARK_SWEEP:
             LOG(TRACE, "GC_STAGE_MARK_SWEEP");
-            next_stage = gc_fsa_mark_sweep();
-            break;
+            stage = gc_fsa_mark_sweep();
+            atomic_store(&fsa_lock, false);
+            return true;
 
         case GC_STAGE_PRUNE:
             LOG(TRACE, "GC_STAGE_PRUNE");
-            next_stage = gc_fsa_prune();
-            break;
+            stage = gc_fsa_prune();
+            atomic_store(&fsa_lock, false);
+            return true;
+
+        default:
+            abort();
     }
 
-    if (next_stage != stage) {
-        // TODO: Require all threads to have gone through a checkpoint before moving to next stage
-        stage = next_stage;
-    }
-
-    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
-        if (thread->lag_counter > 0) {
-            atomic_fetch_or(&gc_thread_info.safe_point_request, GC_SAFE_POINT_CATCH_UP);
-        }
-    }
-
-    atomic_store(&fsa_lock, false);
     return true;
 }
 

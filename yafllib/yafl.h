@@ -101,7 +101,9 @@ enum log_level {
 };
 
 EXTERN enum log_level LOG_LEVEL;
-EXTERN void LOG(enum log_level level, char const* format, ...);
+EXTERN void _LOG(enum log_level level, char const* format, ...);
+#define LOG(level, ...)\
+    do { if ((level) >= LOG_LEVEL) _LOG((level), __VA_ARGS__); } while (false)
 
 EXTERN void log_error(char const* format, ...);
 EXTERN noreturn void log_error_and_exit(char const* format, ...);

@@ -16,7 +16,7 @@ static void LOG2(enum log_level level, const char* format, va_list argp) {
     }
 }
 
-EXPORT void LOG(enum log_level level, const char* format, ...) {
+EXPORT void _LOG(enum log_level level, const char* format, ...) {
     if (level >= LOG_LEVEL) {
         va_list argp;
         va_start(argp, format);
