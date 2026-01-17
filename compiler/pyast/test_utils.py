@@ -15,23 +15,23 @@ class Test(TestCase):
     def test_create_constructor(self):
         lr = LineRef("file", 1, 1)
         itype = t.BuiltinSpec(lr, "int32")
-        params = s.DestructureStatement(lr, "_@9338i", None, {}, None, t.TupleSpec(lr, [
+        params = s.DestructureStatement(lr, "_@9338i", None, {}, (), None, t.TupleSpec(lr, [
             TupleEntrySpec("first@123", itype),
             t.TupleSpec(lr, [
                 TupleEntrySpec("second@123", itype),
                 TupleEntrySpec("third@123", itype)
             ])
         ]), [
-            s.LetStatement(lr, "first@123", None, {}, None, itype),
-            s.DestructureStatement(lr, "_@84892", None, {}, None, t.TupleSpec(lr, [
+            s.LetStatement(lr, "first@123", None, {}, (), None, itype),
+            s.DestructureStatement(lr, "_@84892", None, {}, (), None, t.TupleSpec(lr, [
                 TupleEntrySpec("second@123", itype),
                 TupleEntrySpec("third@123", itype)
             ]), [
-                s.LetStatement(lr, "second@123", None, {}, None, itype),
-                s.LetStatement(lr, "third@123", None, {}, None, itype)
+                s.LetStatement(lr, "second@123", None, {}, (), None, itype),
+                s.LetStatement(lr, "third@123", None, {}, (), None, itype)
             ])
         ])
-        cls = s.ClassStatement(lr, "String@123", None, {}, params, [], [])
+        cls = s.ClassStatement(lr, "String@123", None, {}, (), params, [], [])
         func = u.create_constructor(cls)
 
         self.assertEqual("String@123", func.name)

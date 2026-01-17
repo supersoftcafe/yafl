@@ -176,7 +176,7 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
         return __create_c_code(new_statements, mains[0], just_testing=just_testing)
 
 
-def __tokenize_and_parse(source: list[Input]) -> (list[s.Statement], list[Error]):
+def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[Error]]:
     errors = []
     statements = []
 

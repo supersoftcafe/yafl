@@ -27,7 +27,7 @@ def fix_global_strings(statements: list[s.Statement]) -> list[s.Statement]:
     def create_string(index: int, value: str) -> s.LetStatement:
         lr = LineRef("$strings", index + 1, 1)
         return s.LetStatement(lr, f"$strings::string@{index}",
-                              ImportGroup(()), {},
+                              ImportGroup(()), {}, (),
                               e.StringExpression(lr, value),
                               t.BuiltinSpec(lr, "str"))
     global_statements = {value: create_string(index, value) for index,value in enumerate(all_string_literals)}

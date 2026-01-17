@@ -118,7 +118,7 @@ struct test_gc_allocations_o {
     int32_t length;
     _Atomic(int32_t) result_counter;
     fun_t continuation;
-    _Atomic(string_t*) results[3];
+    string_t *results[3];
 };
 
 static vtable_t test_gc_allocations_v = {
@@ -168,7 +168,8 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
-                GC_WRITE_REF(obj->results[i], (object_t*)str);
+                GC_WRITE_BARRIER(obj->results[i], 1);
+                obj->results[i] = (string_t*)str;
             }
         }
 

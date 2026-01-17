@@ -182,3 +182,4 @@ class Test(TestCase):
         self.assertEqual(1, len(params))
         self.assertIn("value@", params[0].name)
         self.assertIsInstance(params[0].declared_type, t.NamedSpec)
+

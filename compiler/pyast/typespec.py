@@ -25,10 +25,10 @@ class TypeSpec:
     def is_concrete(self) -> bool:
         return False
 
-    def _compile(self, resolver: g.Resolver) ->  (TypeSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
         raise NotImplementedError()
 
-    def compile(self, resolver: g.Resolver) ->  (TypeSpec, list[s.Statement]):
+    def compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
         type, statements = self._compile(resolver)
         if not isinstance(type, TypeSpec):
             raise ValueError("Urggg..  This is here to catch mistakes in the code that the IDE hasn't caught")
@@ -62,7 +62,7 @@ class CallableSpec(TypeSpec):
     def is_concrete(self) -> bool:
         return self.parameters.is_concrete() and (self.result is None or self.result.is_concrete())
 
-    def _compile(self, resolver: g.Resolver) ->  (TypeSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         p, pglb = self.parameters.compile(resolver)
         r, rglb = self.result and self.result.compile(resolver)
         xtype = dataclasses.replace(self, parameters=p, result=r)
@@ -126,7 +126,7 @@ class BuiltinSpec(TypeSpec):
             case _:
                 return None
 
-    def _compile(self, resolver: g.Resolver) ->  (TypeSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:
@@ -161,7 +161,7 @@ class ClassSpec(TypeSpec):
     def is_concrete(self) -> bool:
         return True
 
-    def _compile(self, resolver: g.Resolver) ->  (TypeSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         types = resolver.find_type({self.name})
         if len(types) == 1:
             return dataclasses.replace(self, name=types[0].unique_name), []
@@ -170,9 +170,11 @@ class ClassSpec(TypeSpec):
     def check(self, resolver: g.Resolver) -> list[Error]:
         types = resolver.find_type({self.name})
         if not types:
-            return [Error(f"Failed to resolve class {self.name}")]
+            return [Error(self.line_ref, f"Failed to resolve class {self.name}")]
         if len(types) > 1:
-            return [Error(f"Found too many classes named {self.name}")]
+            return [Error(self.line_ref, f"Found too many classes named {self.name}")]
+        if not isinstance(types[0].statement, s.ClassStatement):
+            return [Error(self.line_ref, f"Not a class {self.name}")]
         return []
 
     def generate(self) -> cg_t.Type:
@@ -206,11 +208,12 @@ class ClassSpec(TypeSpec):
 @dataclass(frozen=True)
 class NamedSpec(TypeSpec):
     name: str
+    # type_params: tuple[TypeSpec, ...] = ()
 
     def is_concrete(self) -> bool:
         return False
 
-    def _compile(self, resolver: g.Resolver) ->  (TypeSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         types = resolver.find_type({self.name})
         if len(types) == 1:
             xtype = types[0].statement
@@ -245,7 +248,7 @@ class CombinationSpec(TypeSpec):
     def is_concrete(self) -> bool:
         return all(x.is_concrete() for x in self.types)
 
-    def _compile(self, resolver: g.Resolver) ->  (TupleSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) ->  tuple[CombinationSpec, list[s.Statement]]:
         new_types, new_errors = zip(*[x.compile(resolver) for x in self.types])
         return dataclasses.replace(self, types = new_types), [x for stm in new_errors for x in stm]
 
@@ -268,7 +271,7 @@ class TupleEntrySpec:
     type: TypeSpec|None
     default: e.Expression|None = None
 
-    def compile(self, resolver: g.Resolver) ->  (TupleEntrySpec, list[s.Statement]):
+    def compile(self, resolver: g.Resolver) ->  tuple[TupleEntrySpec, list[s.Statement]]:
         new_type, new_statements1 = self.type.compile(resolver) if self.type else (None, [])
         new_default, new_statements2 = self.default.compile(resolver, new_type) if self.default else None, []
         return dataclasses.replace(self, type=new_type, default=new_default), new_statements1 + new_statements2
@@ -289,7 +292,7 @@ class TupleSpec(TypeSpec):
     def is_concrete(self) -> bool:
         return all(x.type and x.type.is_concrete() for x in self.entries)
 
-    def _compile(self, resolver: g.Resolver) ->  (TupleSpec, list[s.Statement]):
+    def _compile(self, resolver: g.Resolver) ->  tuple[TupleSpec, list[s.Statement]]:
         new_entries, new_errors = zip(*[x.compile(resolver) for x in self.entries])
         return dataclasses.replace(self, entries = new_entries), [x for stm in new_errors for x in stm]
 

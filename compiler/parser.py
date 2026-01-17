@@ -154,7 +154,7 @@ def __to_expr_tuple(result: p.Result[list[e.TupleEntryExpression]], tokens: list
 
 def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     params, expression = result.value
-    params2 = s.DestructureStatement(result.line_ref, '_', None, {}, None, None, params)
+    params2 = s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params)
     return p.Result(e.LambdaExpression(tokens[0].line_ref, params2, expression, None), result.tokens, result.line_ref, result.errors)
 
 
@@ -169,9 +169,9 @@ def __to_action_statement(result: p.Result[e.Expression], tokens: list[p.Token])
 def __to_let_statement(result: p.Result[tuple[str|list[s.LetStatement], list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
     target, dtype, value = result.value
     if isinstance(target, str):
-        statement = s.LetStatement(tokens[0].line_ref, f"{target}@{result.line_ref.hash6()}", None, {}, p.first_or_none(value), p.first_or_none(dtype))
+        statement = s.LetStatement(tokens[0].line_ref, f"{target}@{result.line_ref.hash6()}", None, {}, (), p.first_or_none(value), p.first_or_none(dtype))
     elif isinstance(target, list):
-        statement = s.DestructureStatement(tokens[0].line_ref, '_', None, {}, p.first_or_none(value), p.first_or_none(dtype), target)
+        statement = s.DestructureStatement(tokens[0].line_ref, '_', None, {}, (), p.first_or_none(value), p.first_or_none(dtype), target)
     else:
         raise ValueError("invalid target type")
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
@@ -226,25 +226,25 @@ def __to_tagged_spec_or_simple_type(result: p.Result[list[t.TypeSpec]], tokens: 
 
 def __to_function(result: p.Result[tuple[str, list[s.LetStatement], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.FunctionStatement]:
     name, params, dtype, body = result.value
-    statement = s.FunctionStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, s.DestructureStatement(result.line_ref, '_', None, {}, None, None, params), body,  p.first_or_none(dtype))
+    statement = s.FunctionStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, (), s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params), body,  p.first_or_none(dtype))
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
 def __to_class(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.LetStatement], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.ClassStatement]:
     attributes, name, params, implements, body = result.value
-    statement = s.ClassStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, s.DestructureStatement(result.line_ref, '_', None, {}, None, None, params), body, implements, False)
+    statement = s.ClassStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, (), s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params), body, implements, False)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
 def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.ClassStatement]:
     attributes, name, implements, body = result.value
-    statement = s.ClassStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, s.DestructureStatement(result.line_ref, '_', None, {}, None, None, []), body, implements, True)
+    statement = s.ClassStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, (), s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, []), body, implements, True)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
 def __to_type_alias(result: p.Result[tuple[str, t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
     name, typespec = result.value
-    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, typespec)
+    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, (), typespec)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression]]:

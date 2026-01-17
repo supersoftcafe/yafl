@@ -27,7 +27,7 @@ def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:
     def create_integer(index: int, value: int) -> s.LetStatement:
         lr = LineRef("$integers", index + 1, 1)
         return s.LetStatement(lr, f"$integers::integer@{'n'if value<0 else'p'}{(0-value)if value<0 else value}",
-                              ImportGroup(()), {},
+                              ImportGroup(()), {}, (),
                               e.IntegerExpression(lr, value, 0),
                               t.BuiltinSpec(lr, "bigint"))
     global_statements = {value: create_integer(index, value) for index,value in enumerate(all_integer_literals)}

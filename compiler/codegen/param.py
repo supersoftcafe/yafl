@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import langtools
-from codegen.tools import mangle_name
+from codegen.tools import mangle_name, to_pointer_mask
 import codegen.typedecl as t
 
 
@@ -343,9 +343,15 @@ class ObjectField(LParam):
 
     def to_c_store(self, type_cache: dict[t.Type, tuple[str, str]], value: str) ->str:
         index = f"[{self.index.to_c(type_cache)}]" if self.index is not None else ""
-        tmp_ptr = self.pointer.to_c(type_cache)
-        pointer = f"object_mutation({tmp_ptr})" if self.type.has_pointers else tmp_ptr
-        return f"    (({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}{index} = {value};\n"
+        pointer = self.pointer.to_c(type_cache)
+        field_ref = f"(({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}{index}"
+        if self.type.has_pointers:
+            mask = to_pointer_mask(self.type, self.type.declare(type_cache))
+            return f"    GC_WRITE_BARRIER({field_ref}, {mask});\n    {field_ref} = {value};\n"
+        else:
+            return f"    {field_ref} = {value};\n"
+
+
 
     def get_live_vars(self) -> frozenset[StackVar]:
         return self.pointer.get_live_vars() | (self.index.get_live_vars() if self.index else frozenset())

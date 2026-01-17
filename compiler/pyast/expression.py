@@ -164,7 +164,8 @@ class CallExpression(Expression):
         return []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        xtype = cast(t.CallableSpec, self.function.get_type(resolver))
+        ftype = self.function.get_type(resolver)
+        xtype = cast(t.CallableSpec, ftype)
 
         fun_op_bundle = self.function.generate(resolver).rename_vars(1)
         prm_op_bundle = self.parameter.generate(resolver).rename_vars(2)
@@ -288,7 +289,7 @@ class NamedExpression(Expression):
     name: str
 
     def __post_init__(self):
-        if self.name == '$lambdas::lambda@p7Phul':
+        if self.name == 'this':
             pass
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
@@ -300,6 +301,8 @@ class NamedExpression(Expression):
         return datas[0].statement.get_type() if len(datas) == 1 else None
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        if self.name == 'this':
+            pass
         if '@' in self.name:
             return self, [] # Early exit because we previously succeeded
         datas_full_list = resolver.find_data({self.name})
@@ -322,6 +325,8 @@ class NamedExpression(Expression):
         return []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        if self.name == 'this':
+            pass
         x = resolver.find_data({self.name})
         if not x:
             raise ValueError(f"Could not find {self.name}")

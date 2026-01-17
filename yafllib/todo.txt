@@ -1,0 +1,9 @@
+
+I've re-written this to use barriers and make the GC algorithm itself kind-of
+single threaded, but can run on any thread, with a debt concept so that threads
+that miss a chance to do some work have to pay back that work later.
+
+It's ok, and scales to 8 threads so far. I want to go further, but later, when
+I have moved the compiler along further.
+
+

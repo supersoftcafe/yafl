@@ -918,10 +918,12 @@ EXPORT void _gc_mark_as_seen2(object_t *object) {
 }
 
 
-EXPORT void _gc_set_reference2(_Atomic(object_t*)*field, object_t *object) {
-    object_t *old_object = atomic_load(field);
-    _gc_mark_as_seen2(old_object);
-    atomic_store(field, object);
+EXPORT void _gc_write_barrier2(object_t **field, uint32_t mask) {
+    while (mask) {
+        ptrdiff_t index = __builtin_ctz(mask);
+        mask &= mask-1;
+        _gc_mark_as_seen2(field[index]);
+    }
 }
 
 

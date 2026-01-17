@@ -15,6 +15,6 @@ def create_constructor(cls: s.ClassStatement) -> s.FunctionStatement:
     expression = e.TupleExpression(cls.line_ref, parameters)
 
     body = s.ReturnStatement(cls.line_ref, e.NewExpression(cls.line_ref, class_type, expression))
-    constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, cls.parameters, [body], class_type)
+    constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, (), cls.parameters, [body], class_type)
 
     return constructor

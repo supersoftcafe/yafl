@@ -1,7 +1,6 @@
 #pragma once
 
 
-#include "common.h"
 #include <stdatomic.h>
 #include <stdnoreturn.h>
 #include <stdint.h>
@@ -9,6 +8,25 @@
 #include <string.h>
 #include <stddef.h>
 #include <assert.h>
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <errno.h>
+
+
+
+
+#ifndef __STDC_NO_THREADS__
+#include <threads.h>
+#endif
+
+#ifndef __STDC_NO_ATOMICS__
+#include <stdatomic.h>
+#endif
+
+#define STACK_GROWS_DOWN    1
+enum { GC_PAGE_SIZE = 16384 };
 
 
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -195,15 +213,14 @@ EXTERN volatile bool gc_write_barrier_requested;
 
 
 EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
-EXTERN void _gc_set_reference2(_Atomic(object_t*)*field, object_t *value);
+EXTERN void _gc_write_barrier2(object_t **field, uint32_t mask);
 EXTERN void _gc_mark_as_seen2(object_t *object);
 
 #define GC_SAFE_POINT()\
     do { if (UNLIKELY(gc_thread_info.safe_point_request)) _gc_safe_point2(); } while (false)
-#define GC_WRITE_REF(field, value)\
+#define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
-            _gc_set_reference2((_Atomic(object_t*)*)&(field), value);\
-        else atomic_store((_Atomic(object_t*)*)&(field), value);\
+            _gc_write_barrier2((object_t**)&(field), (mask));\
     } while (false)
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value); } while (false)
@@ -400,6 +417,15 @@ INLINE bool integer_test_le(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
     return LIKELY(va&vb&1 && va<=vb) || integer_cmp(self, data) <= 0;
 }
+
+INLINE int32_t int32_add(int32_t self, int32_t data) { return self + data; }
+INLINE int32_t int32_sub(int32_t self, int32_t data) { return self - data; }
+INLINE int32_t int32_mul(int32_t self, int32_t data) { return self * data; }
+INLINE int32_t int32_div(int32_t self, int32_t data) { return self / data; }
+INLINE int32_t int32_rem(int32_t self, int32_t data) { return self % data; }
+INLINE bool int32_test_gt(int32_t self, int32_t data) { return self > data; }
+INLINE bool int32_test_eq(int32_t self, int32_t data) { return self == data; }
+INLINE bool int32_test_lt(int32_t self, int32_t data) { return self < data; }
 
 
 

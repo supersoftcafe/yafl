@@ -47,6 +47,7 @@ class NamedStatement(Statement):
     name: str
     imports: ImportGroup|None
     attributes: dict[str, e.Expression]
+    type_params: tuple[t.TypeSpec, ...]
 
     def add_namespace(self, path: str):
         return dataclasses.replace(self, name=f"{path}{self.name}")
@@ -146,7 +147,7 @@ class ClassFunctionSlot:
 
     def __post_init__(self):
         if not isinstance(self.provides, set):
-            raise Error()
+            raise ValueError()
 
 
 @dataclass
@@ -166,7 +167,7 @@ class ClassStatement(TypeStatement):
 
     def __find_locals(self, resolver: g.Resolver, names: set[str]) -> list[g.Resolved[DataStatement]]:
         m = self.find_data(resolver, names)
-        l = LetStatement(self.line_ref, "this", None, {}, None, t.ClassSpec(self.line_ref, self.name))
+        l = LetStatement(self.line_ref, "this", None, {}, (), None, t.ClassSpec(self.line_ref, self.name))
         s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" in names else []
         return m + s
 

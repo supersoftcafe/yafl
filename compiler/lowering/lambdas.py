@@ -49,18 +49,18 @@ def __create_function_from_lambda(lmd: e.LambdaExpression, nme: str, xpr: e.Expr
     statement = s.ReturnStatement(lr, xpr)
     # local_this = s.LetStatement(lr, "this", None, {}, None, t.ClassSpec(lr, nme)) if cpt else None
     return_type = cast(t.CallableSpec, lmd.return_type).result
-    function = s.FunctionStatement(lr, nme, __empty_imports, {}, lmd.parameters, [statement], return_type) #, local_this)
+    function = s.FunctionStatement(lr, nme, __empty_imports, {}, (), lmd.parameters, [statement], return_type) #, local_this)
     return function
 
 
 def __create_class_from_lambda(lmd: e.LambdaExpression, nme: str, fnc: s.FunctionStatement, cpt: list[tuple[str, t.TypeSpec]]) -> s.ClassStatement|None:
     lr = lmd.line_ref
     if cpt:
-        parameters = [s.LetStatement(lr, name, __empty_imports, {}, None, xtype) for name, xtype in cpt]
+        parameters = [s.LetStatement(lr, name, __empty_imports, {}, (), None, xtype) for name, xtype in cpt]
         parameter_type = t.TupleSpec(lr, [t.TupleEntrySpec(name, xtype) for name, xtype in cpt])
-        parameter = s.DestructureStatement(lr, "_", __empty_imports, {}, None, parameter_type, parameters)
+        parameter = s.DestructureStatement(lr, "_", __empty_imports, {}, (), None, parameter_type, parameters)
         attributes = {"final": e.IntegerExpression(lr, 1, 32)}
-        xclass = s.ClassStatement(lr, nme, __empty_imports, attributes, parameter, [fnc], [], False, set(), [])
+        xclass = s.ClassStatement(lr, nme, __empty_imports, attributes, (), parameter, [fnc], [], False, set(), [])
         return xclass
     else:
         return None
@@ -79,7 +79,7 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
         return e.NamedExpression(lr, fnc.name)
 
 
-def __scan_function_and_export_lambdas(statement: s.Statement) -> (s.Statement, list[s.Statement]):
+def __scan_function_and_export_lambdas(statement: s.Statement) -> tuple[s.Statement, list[s.Statement]]:
     exported_statements = []
 
     def export_if_lambda(resolver: g.Resolver, lmd):
@@ -95,7 +95,8 @@ def __scan_function_and_export_lambdas(statement: s.Statement) -> (s.Statement, 
 
         if cls:
             exported_statements.append(cls)
-        exported_statements.append(fnc)
+        else:
+            exported_statements.append(fnc)
         return result
 
     statement = statement.search_and_replace(g.ResolverRoot([]), export_if_lambda)

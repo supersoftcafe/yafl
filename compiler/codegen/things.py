@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Optional, Callable, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
-from codegen.tools import mangle_name
+from codegen.tools import mangle_name, to_pointer_mask
 
 from codegen.ops import Op, Jump, JumpIf, Return, Label
 
@@ -126,10 +126,6 @@ class Object:
                 return f.type
         return None
 
-    def __to_pointer_mask(self, field_type: t.Type, type_str: str) -> str:
-        mask = "".join(f"|maskof({type_str}, {path})" for path in field_type.get_pointer_paths(""))
-        return f"(0{mask})"
-
     @property
     def comment_line(self):
         return f"// {self.comment}\n" if self.comment else ""
@@ -137,12 +133,12 @@ class Object:
     def get_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         # Trim vtable reference and array field if it exists
         f = self.fields.fields[1:-1] if self.array_type else self.fields.fields[1:]
-        return self.__to_pointer_mask(t.Struct(f), f"{mangle_name(self.name)}_t")
+        return to_pointer_mask(t.Struct(f), f"{mangle_name(self.name)}_t")
 
     def get_array_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         array_type = self.array_type
         if not array_type: return "0"
-        return self.__to_pointer_mask(array_type, array_type.declare(type_cache))
+        return to_pointer_mask(array_type, array_type.declare(type_cache))
 
     def get_object_size(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         type_str = f"{mangle_name(self.name)}_t"
