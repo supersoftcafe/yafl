@@ -234,26 +234,6 @@ class Test(TestCase):
         self.assertNotEqual("", result)
         print(result)
 
-    def test_bind(self):
-        content = ("namespace System\n"
-                   "typealias Int : __builtin_type__<bigint>\n"
-                   "typealias String : __builtin_type__<str>\n"
-                   "fun print(str: System::String): System::Int\n"
-                   "    ret __builtin_op__<bigint>(\"print\", str)\n"
-                   "\n"
-                   "fun bind(in: String|None, func: (String):Int): Int|None\n"
-                   "    ret match in\n"
-                   "        (x:String) => func(x)\n"
-                   "        (x:None) => None\n"
-                   "\n"
-                   "fun main(): System::Int\n"
-                   "    ret \"Hello\"\n"
-                   "        ?> System::print\n")
-
-        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
-        self.assertNotEqual("", result)
-        print(result)
-
     def test_complex_init(self):
         content = ("namespace System\n"
                    "\n"
@@ -276,5 +256,33 @@ class Test(TestCase):
                    "    ret System::print(x)\n")
 
         result = compile([Input(content, "file.yafl")], just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)
+
+    def test_simple_generic_function(self):
+        content = ("namespace System\n"
+                   "typealias Int : __builtin_type__<int>\n"
+                   "fun doNothing<TValue>(value: TValue): TValue\n"
+                   "    ret value\n"
+                   "fun main(): System::Int\n"
+                   "    ret doNothing(1)\n")
+
+    def test_bind(self):
+        content = ("namespace System\n"
+                   "typealias Int : __builtin_type__<bigint>\n"
+                   "typealias String : __builtin_type__<str>\n"
+                   "fun print(str: System::String): System::Int\n"
+                   "    ret __builtin_op__<bigint>(\"print\", str)\n"
+                   "\n"
+                   "fun bind(in: String|None, func: (String):Int): Int|None\n"
+                   "    ret match in\n"
+                   "        (x:String) => func(x)\n"
+                   "        (x:None) => None\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "    ret \"Hello\"\n"
+                   "        ?> System::print\n")
+
+        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)

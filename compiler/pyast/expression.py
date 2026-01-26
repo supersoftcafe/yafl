@@ -287,6 +287,7 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
 @dataclass
 class NamedExpression(Expression):
     name: str
+    type_params: tuple[t.TypeSpec, ...] = ()
 
     def __post_init__(self):
         if self.name == 'this':

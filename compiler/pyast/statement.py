@@ -46,8 +46,9 @@ class Statement:
 class NamedStatement(Statement):
     name: str
     imports: ImportGroup|None
-    attributes: dict[str, e.Expression]
-    type_params: tuple[t.TypeSpec, ...]
+    attributes: dict[str, e.Expression|None]
+    type_params: tuple[str, ...]
+    trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)
 
     def add_namespace(self, path: str):
         return dataclasses.replace(self, name=f"{path}{self.name}")

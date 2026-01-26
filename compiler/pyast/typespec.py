@@ -157,6 +157,7 @@ def Bool() -> BuiltinSpec:
 @dataclass(frozen=True)
 class ClassSpec(TypeSpec):
     name: str
+    type_params: tuple[TypeSpec, ...] = ()
 
     def is_concrete(self) -> bool:
         return True
@@ -164,17 +165,19 @@ class ClassSpec(TypeSpec):
     def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         types = resolver.find_type({self.name})
         if len(types) == 1:
-            return dataclasses.replace(self, name=types[0].unique_name), []
+            type_params, statements = zip(*[tp.compile(resolver) for tp in self.type_params])
+            return dataclasses.replace(self, name=types[0].unique_name,  type_params=tuple(type_params)), [s for st in statements for s in st]
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:
+        tp_errors = [t for tp in self.type_params for t in tp.check(resolver)]
         types = resolver.find_type({self.name})
         if not types:
-            return [Error(self.line_ref, f"Failed to resolve class {self.name}")]
+            return [Error(self.line_ref, f"Failed to resolve class {self.name}")] + tp_errors
         if len(types) > 1:
-            return [Error(self.line_ref, f"Found too many classes named {self.name}")]
+            return [Error(self.line_ref, f"Found too many classes named {self.name}")] + tp_errors
         if not isinstance(types[0].statement, s.ClassStatement):
-            return [Error(self.line_ref, f"Not a class {self.name}")]
+            return [Error(self.line_ref, f"Not a class {self.name}")] + tp_errors
         return []
 
     def generate(self) -> cg_t.Type:
@@ -208,7 +211,7 @@ class ClassSpec(TypeSpec):
 @dataclass(frozen=True)
 class NamedSpec(TypeSpec):
     name: str
-    # type_params: tuple[TypeSpec, ...] = ()
+    type_params: tuple[TypeSpec, ...] = ()
 
     def is_concrete(self) -> bool:
         return False
@@ -222,7 +225,7 @@ class NamedSpec(TypeSpec):
                     return xtype.type, []
                 return self, [] # No change because target isn't a concrete type yet
             elif isinstance(xtype, s.ClassStatement):
-                return ClassSpec(self.line_ref, xtype.name), []
+                return ClassSpec(self.line_ref, xtype.name, self.type_params), []
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:

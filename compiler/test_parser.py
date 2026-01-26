@@ -173,9 +173,10 @@ class Test(TestCase):
             "    ret v.doit()\n"
             , "file")
 
-        result = p.parse(tokens)
-        result = [x for x in result.value if isinstance(x, s.ClassStatement)]
+        r = p.parse(tokens)
+        result = [x for x in r.value if isinstance(x, s.ClassStatement)]
         self.assertEqual(1, len(result))
+        self.assertEqual(0, len(r.errors))
         statement = result[0]
 
         params = statement.parameters.targets
@@ -183,3 +184,44 @@ class Test(TestCase):
         self.assertIn("value@", params[0].name)
         self.assertIsInstance(params[0].declared_type, t.NamedSpec)
 
+    def test_class_with_generics(self):
+        tokens = tokenize(
+            "interface Number<TValue> : Add<TValue>|Equal<TValue> where SomethingElse<TValue>|yetAnother<TValue>\n"
+            "    def `+`(a:TValue,b:TValue):TValue\n"
+            "    def `=`(a:TValue,b:TValue):Bool\n"
+            , "file"
+        )
+
+        result = p.parse(tokens)
+        result = [x for x in result.value if isinstance(x, s.ClassStatement)]
+        self.assertEqual(1, len(result))
+        statement = result[0]
+
+    def test_trait(self):
+        tokens = tokenize(
+            "let [trait] t:Number<Int> = IntNumber()\n"
+            , "file"
+        )
+
+        result = p.parse(tokens)
+        result = [x for x in result.value if isinstance(x, s.LetStatement)]
+        self.assertEqual(1, len(result))
+        statement = result[0]
+
+        attributes = statement.attributes
+        self.assertIn("trait", attributes)
+
+    def test_function_with_generics(self):
+        tokens = tokenize(
+            "fun doNothing<TValue>(value: TValue): TValue where Number<TValue>\n"
+            "    ret value\n"
+            , "file")
+
+        result = p.parse(tokens)
+        result = [x for x in result.value if isinstance(x, s.FunctionStatement)]
+        self.assertEqual(1, len(result))
+        statement = result[0]
+
+        type_params = statement.type_params
+        self.assertEqual(1, len(type_params))
+        self.assertIn("TValue@", type_params[0])

@@ -77,7 +77,7 @@ def __to_dot_path(result: p.Result[tuple[e.Expression, list[tuple[str, e.Express
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
-def __to_named_fully_qualified(result: p.Result[e.NamedExpression, list[e.NamedExpression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_named_fully_qualified(result: p.Result[tuple[e.NamedExpression, list[e.NamedExpression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     first, path = result.value
     expr = e.NamedExpression(first.line_ref, "::".join(ne.name for ne in ([first] + path)))
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
@@ -166,12 +166,12 @@ def __to_action_statement(result: p.Result[e.Expression], tokens: list[p.Token])
     return p.Result(s.ActionStatement(result.line_ref, result.value), result.tokens, result.line_ref, result.errors)
 
 
-def __to_let_statement(result: p.Result[tuple[str|list[s.LetStatement], list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
-    target, dtype, value = result.value
+def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|list[s.LetStatement], list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
+    attributes, target, dtype, value = result.value
     if isinstance(target, str):
-        statement = s.LetStatement(tokens[0].line_ref, f"{target}@{result.line_ref.hash6()}", None, {}, (), p.first_or_none(value), p.first_or_none(dtype))
+        statement = s.LetStatement(tokens[0].line_ref, f"{target}@{result.line_ref.hash6()}", None, attributes, (), p.first_or_none(value), p.first_or_none(dtype))
     elif isinstance(target, list):
-        statement = s.DestructureStatement(tokens[0].line_ref, '_', None, {}, (), p.first_or_none(value), p.first_or_none(dtype), target)
+        statement = s.DestructureStatement(tokens[0].line_ref, '_', None, attributes, (), p.first_or_none(value), p.first_or_none(dtype), target)
     else:
         raise ValueError("invalid target type")
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
@@ -187,10 +187,11 @@ def __to_namespace_statement(result: p.Result[list[str]], tokens: list[p.Token])
                   result.tokens, result.line_ref, result.errors)
 
 
-def __to_named_spec(result: p.Result[tuple[list[str], str]], tokens: list[p.Token]) -> p.Result[t.NamedSpec]:
-    path, name = result.value
-    return p.Result(t.NamedSpec(result.line_ref, '::'.join(path + [name])),
-                  result.tokens, result.line_ref, result.errors)
+def __to_named_spec(result: p.Result[tuple[list[str], str, list[list[t.TypeSpec]]]], tokens: list[p.Token]) -> p.Result[t.NamedSpec]:
+    path, name, generics = result.value
+    if len(generics) > 0: generics = generics[0]
+    ns = t.NamedSpec(result.line_ref, '::'.join(path + [name]), tuple(generics))
+    return p.Result(ns, result.tokens, result.line_ref, result.errors)
 
 
 def __to_builtin_spec(result: p.Result[str], tokens: list[p.Token]) -> p.Result[t.NamedSpec]:
@@ -247,7 +248,7 @@ def __to_type_alias(result: p.Result[tuple[str, t.TypeSpec]], tokens: list[p.Tok
     statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, (), typespec)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
-def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression]]:
+def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression|None]]:
     d = {key: (value[0] if value else None) for key, value in result.value[0]} if result.value else {}
     return p.Result(d, result.tokens, result.line_ref, result.errors)
 
@@ -272,9 +273,10 @@ __parse_statement = p.Parser(parse_statement)
 
 __parse_maybe_colon_type = p.maybe(p.requires(p.sym(":"), __parse_type, "missing type"))
 __parse_maybe_equal_expr = p.maybe(p.requires(p.sym("="), __parse_expression, "missing default value"))
+__parse_maybe_generics   = p.maybe(p.requires(p.sym("<"), p.delimited_list(__parse_type, ",") & p.discard_sym(">"), "missing generics"))
 
 __parse_type_builtin = (p.discard_sym("__builtin_type__") & p.discard_sym("<") & p.ident() & p.discard_sym(">")) >> __to_builtin_spec
-__parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident()) >> __to_named_spec
+__parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident() & __parse_maybe_generics) >> __to_named_spec
 __parse_type_tuple_entry = (p.maybe(p.ident()) & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_tuple_entry
 __parse_type_tuple_or_callable = p.requires(
     p.discard_sym("("),
@@ -287,12 +289,16 @@ __parse_type_any = p.delimited_list(__parse_type_any2, "|") >> __to_tagged_spec_
 ##############
 ## Expressions
 
-def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[t.TypeSpec]:
+__parse_attributes = p.maybe(p.discard_sym("[") & p.delimited_list(
+    p.ident() & p.maybe(p.discard_sym("=") & (__string() | __integer()))
+    , ",") & p.discard_sym("]")) >> __to_attributes
+
+def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[s.LetStatement]:
     return __parse_target_type_expr_any(tokens)
 __parse_target_type_expr = p.Parser(parse_target_type_expr)
 
 __parse_destructure_parts = p.discard_sym('(') & p.delimited_list(__parse_target_type_expr, ',') & p.discard_sym(')')
-__parse_target_type_expr_any = ((p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_let_statement
+__parse_target_type_expr_any = (__parse_attributes & (p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_let_statement
 
 __parse_expr_tuple_entry = (p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression) >> __to_expr_tuple_entry
 __parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple") >> __to_expr_tuple
@@ -313,10 +319,6 @@ __parse_ternery = (__parse_compare  & p.many(p.discard_sym("?") & __parse_compar
 
 #############
 ## Statements
-
-__parse_attributes = p.maybe(p.discard_sym("[") & p.delimited_list(
-    p.ident() & p.maybe(p.discard_sym("=") & (__string() | __integer()))
-    , ",") & p.discard_sym("]")) >> __to_attributes
 
 __parse_action = p.block(
     __parse_expression >> __to_action_statement)
