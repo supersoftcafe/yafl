@@ -87,6 +87,7 @@ class ResolvedScope(Enum):
     GLOBAL = 1
     MEMBER = 2
     LOCAL  = 3
+    TRAIT  = 4   # Found an interface member that must be treated as a trait reference during lowering
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,8 @@ class Resolved[T]:
     unique_name: str
     statement: T
     scope: ResolvedScope
+    trait_scope: t.TypeSpec|None = None     # We need this for mapping local types to target class types
+    owner_class: s.ClassStatement|None = None    # We need this for the generic type declarations
 
 
 class Resolver:
@@ -101,6 +104,9 @@ class Resolver:
         return []
 
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
+        return []
+
+    def get_traits(self) -> list[s.LetStatement]:
         return []
 
 
@@ -116,9 +122,11 @@ def match_names(name: str, matches: set[str]) -> bool:
 
 class ResolverRoot(Resolver):
     __statements: list[s.Statement]
+    __traits: list[s.LetStatement]
 
     def __init__(self, statements: list[s.Statement]):
         self.__statements = statements
+        self.__traits = [st for st in self.__statements if isinstance(st, s.LetStatement) and 'trait' in st.attributes]
 
     def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
         return [Resolved(x.name, x, ResolvedScope.GLOBAL)
@@ -129,6 +137,9 @@ class ResolverRoot(Resolver):
         return [Resolved(x.name, x, ResolvedScope.GLOBAL)
                 for x in self.__statements
                 if isinstance(x, s.DataStatement) and match_names(x.name, names)]
+
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__traits
 
 
 class AddScopeResolution(Resolver):
@@ -156,6 +167,9 @@ class AddScopeResolution(Resolver):
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
         return self.__parent.find_data(self.__expand_names(names))
 
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__parent.get_traits()
+
 
 class ResolverType(Resolver):
     __parent: Resolver
@@ -171,6 +185,9 @@ class ResolverType(Resolver):
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
         return self.__parent.find_data(names)
 
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__parent.get_traits()
+
 
 class ResolverData(Resolver):
     __parent: Resolver
@@ -185,3 +202,7 @@ class ResolverData(Resolver):
 
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
         return self.__parent.find_data(names) + self.__find(names)
+
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__parent.get_traits()
+

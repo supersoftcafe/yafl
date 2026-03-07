@@ -1,4 +1,5 @@
 
+from typing import Iterable
 import pyast.expression as e
 import pyast.statement as s
 import pyast.typespec as t
@@ -18,3 +19,15 @@ def create_constructor(cls: s.ClassStatement) -> s.FunctionStatement:
     constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, (), cls.parameters, [body], class_type)
 
     return constructor
+
+
+def flatten_lists[_X,_Y](lists: Iterable[tuple[_X, list[_Y]]]) -> tuple[list[_X], list[_Y]]:
+    xs: list[_X] = []
+    ys: list[_Y] = []
+
+    for x, ylist in lists:
+        xs.append(x)
+        ys.extend(ylist)
+
+    return xs, ys
+

@@ -1,6 +1,11 @@
 from unittest import TestCase
 
-from compiler import *
+import re
+
+
+import tokenizer as t
+import compiler as c
+import parser as p
 
 
 class Test(TestCase):
@@ -19,7 +24,7 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret 1 + 2 # Resolve correct plus method\n")
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -32,7 +37,7 @@ class Test(TestCase):
                    "    let x: System::Int = 2\n"
                    "    ret x\n")
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -47,7 +52,7 @@ class Test(TestCase):
                    "    let x: System::Pair = System::Pair(1, 2)\n"
                    "    ret x.right\n")
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -67,7 +72,7 @@ class Test(TestCase):
                    "    System::print(\"fred and bill\" + \", bert\")\n"
                    "    ret 0\n")
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -90,7 +95,7 @@ class Test(TestCase):
                    "    let v: System::Int = 20\n"
                    "    ret do10((x: System::Int) => x + v)\n")
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -109,7 +114,7 @@ class Test(TestCase):
                    "    ret v.doit()\n"
                    )
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -141,7 +146,7 @@ class Test(TestCase):
                    "    ret v.doit()\n"
                    )
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -154,7 +159,7 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret 0 > 0 ? 1 : 2\n")
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -164,7 +169,7 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret System::print(System::Char(48) + System::Char(49))\n")
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -174,7 +179,7 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret System::print(\"Hello\")\n")
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -184,7 +189,7 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret 1 |> (a: System::Int) => a\n")
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -200,7 +205,7 @@ class Test(TestCase):
                    "    ret (1, 2) |> (a: System::Int, b: System::Int) => a+b\n")
                    # "    ret (\"Hello\", \" there\", \"\n\") |> (a,b,c) => System::print(a + b + c)\n"
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -213,7 +218,7 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret \"Hello\" |> System::print\n")
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
@@ -230,42 +235,89 @@ class Test(TestCase):
                    "fun main(): System::Int\n"
                    "    ret (\"Hello\", \"there\", \"\\n\") |> (a: System::String, b: System::String, c: System::String) => System::print(a + b + c)\n")
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
     def test_complex_init(self):
-        content = ("namespace System\n"
-                   "\n"
-                   "typealias String : __builtin_type__<str>\n"
-                   "typealias Int : __builtin_type__<bigint>\n"
-                   "\n"
-                   "fun `+`(left: System::Int, right: System::Int): System::Int\n"
-                   "    ret __builtin_op__<bigint>(\"add\", left, right)\n"
-                   "\n"
-                   "fun `+`(left: System::String, right: System::String): System::String\n"
-                   "    ret __builtin_op__<str>(\"append\", left, right)\n"
-                   "\n"
-                   "fun print(str: System::String): System::Int\n"
-                   "    ret __builtin_op__<bigint>(\"print\", str)\n"
-                   "\n"
-                   "fun append(a: System::String, b: System::String):System::String\n"
-                   "    ret a + b\n"
-                   "let x: System::String = append(\"one\", \"two\")\n"
-                   "fun main(): System::Int\n"
-                   "    ret System::print(x)\n")
+        content = """
+namespace System
 
-        result = compile([Input(content, "file.yafl")], just_testing=False)
+typealias String : __builtin_type__<str>
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("add", left, right)
+
+fun `+`(left: System::String, right: System::String): System::String
+    ret __builtin_op__<str>("append", left, right)
+
+fun print(str: System::String): System::Int
+    ret __builtin_op__<bigint>("print", str)
+
+fun append(a: System::String, b: System::String):System::String
+    ret a + b
+let x: System::String = append("one", "two")
+fun main(): System::Int
+    ret System::print(x)
+"""
+
+        result = c.compile([c.Input(content, "file.yafl")], just_testing=False)
         self.assertNotEqual("", result)
         print(result)
 
     def test_simple_generic_function(self):
         content = ("namespace System\n"
-                   "typealias Int : __builtin_type__<int>\n"
+                   "typealias Int : __builtin_type__<bigint>\n"
                    "fun doNothing<TValue>(value: TValue): TValue\n"
                    "    ret value\n"
                    "fun main(): System::Int\n"
-                   "    ret doNothing(1)\n")
+                   "    ret doNothing<System::Int>(1)\n")
+
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)
+
+    def test_simple_interface(self):
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+interface IAdd
+    fun `+`(l:System::Int,r:System::Int): System::Int
+fun main(): System::Int
+    ret 0
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)
+
+    def test_simple_trait(self):
+        content = """namespace System
+
+typealias Int : __builtin_type__<bigint>
+
+interface Add<TValue>
+    fun `+`(l:TValue,r:TValue): TValue
+
+class AddInt() : Add<System::Int>
+    fun `+`(l:System::Int,r:System::Int): System::Int
+        ret __builtin_op__<bigint>("add", l, r)
+
+let [trait] _add_int: AddInt = AddInt()
+
+fun testIt<TVal>(l:TVal,r:TVal): TVal where Add<TVal>
+    ret l + r
+
+fun main(): System::Int
+    ret testIt<System::Int>(1,2)
+"""
+        parts = re.split(r'\n\s*\n', content)
+        for i in range(len(parts)):
+            joined = '\n\n'.join(parts[:i + 1])
+            result = p.parse(t.tokenize(joined, "file"))
+            # print(result)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)
 
     def test_bind(self):
         content = ("namespace System\n"
@@ -283,6 +335,6 @@ class Test(TestCase):
                    "    ret \"Hello\"\n"
                    "        ?> System::print\n")
 
-        result = compile([Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)

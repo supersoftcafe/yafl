@@ -211,6 +211,14 @@ class Test(TestCase):
         attributes = statement.attributes
         self.assertIn("trait", attributes)
 
+        type = statement.declared_type
+        self.assertIsInstance(type, t.NamedSpec)
+
+        type_params = type.type_params
+        self.assertEqual(1, len(type_params))
+        self.assertIsInstance(type_params[0], t.NamedSpec)
+        self.assertEqual("Int", type_params[0].name)
+
     def test_function_with_generics(self):
         tokens = tokenize(
             "fun doNothing<TValue>(value: TValue): TValue where Number<TValue>\n"
@@ -224,4 +232,33 @@ class Test(TestCase):
 
         type_params = statement.type_params
         self.assertEqual(1, len(type_params))
-        self.assertIn("TValue@", type_params[0])
+        self.assertIn("TValue@", type_params[0].name)
+
+        trait_params = statement.trait_params
+        self.assertEqual(1, len(trait_params))
+        self.assertEqual("Number", trait_params[0].name)
+
+
+    def test_access_with_generics(self):
+        tokens = tokenize(
+            "fun main(): Int\n"
+            "    ret doNothing<Int>(1)\n",
+            "file")
+
+        result = p.parse(tokens)
+        result = [x for x in result.value if isinstance(x, s.FunctionStatement)]
+        self.assertEqual(1, len(result))
+        statement = result[0]
+
+        result = [x for x in statement.statements if isinstance(x, s.ReturnStatement)]
+        self.assertEqual(1, len(result))
+        statement = result[0]
+
+        self.assertIsInstance(statement.value, e.CallExpression)
+        self.assertIsInstance(statement.value.function, e.NamedExpression)
+        load = statement.value.function
+
+        self.assertEqual(1, len(load.type_params))
+        type_param = load.type_params[0]
+        self.assertIsInstance(type_param, t.NamedSpec)
+        self.assertEqual("Int", type_param.name)

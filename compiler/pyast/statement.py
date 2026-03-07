@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import itertools
-from typing import Callable
+from collections.abc import Sequence
+from typing import Callable, Iterable
 from dataclasses import dataclass, field
 import dataclasses
 
@@ -18,6 +19,8 @@ import pyast.classtools as c
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+
+import pyast.utils as u
 
 
 @dataclass
@@ -47,12 +50,51 @@ class NamedStatement(Statement):
     name: str
     imports: ImportGroup|None
     attributes: dict[str, e.Expression|None]
-    type_params: tuple[str, ...]
-    trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)
+    type_params: tuple[TypeAliasStatement, ...]     # SomeClass<TValue1, TValue1>
+    trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)   # SomeClass<TValue>() where Numeric<TValue>
+
+    def _find_trait_data(self, resolver: g.Resolver, names: set[str]) -> list[g.Resolved[DataStatement]]:
+        def find_in_class(tp: t.ClassSpec) -> list[g.Resolved[DataStatement]]:
+            found = [rs.statement for rs in resolver.find_type({tp.name})]
+            match found:
+                case [ClassStatement() as cls]:
+                    if len(tp.type_params) == len(cls.type_params):
+                        return [g.Resolved(data.unique_name, data.statement, g.ResolvedScope.TRAIT, tp, cls) for data in cls.find_data(resolver, names)]
+                    return []
+                case _:
+                    raise LookupError("Failed to find class...  this shouldn't happen")
+        return [x for tp in self.trait_params if isinstance(tp, t.ClassSpec) and tp.is_concrete() for x in find_in_class(tp)]
+
+    def _find_generic_types(self, names: set[str]) -> list[g.Resolved[TypeStatement]]:
+        return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.match_names(tp.name, names)]
 
     def add_namespace(self, path: str):
         return dataclasses.replace(self, name=f"{path}{self.name}")
 
+    def check_caller_type_params(self, resolver: g.Resolver, caller_type_params: Sequence[t.TypeSpec], line_ref: LineRef) -> list[Error]:
+        if len(caller_type_params) > len(self.type_params):
+            return [Error(line_ref, "Excess type parameters")]
+        if len(caller_type_params) < len(self.type_params):
+            return [Error(line_ref, "Not enough type parameters")]
+
+        # replace type_params with real types in a temporary type ref
+        type_params = [dataclasses.replace(tp, type=ct) for ct, tp in zip(caller_type_params, self.type_params)]
+        resolver = g.ResolverType(resolver, lambda names:
+            [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in type_params if g.match_names(tp.name, names)])
+
+        # for each trait_param
+        #   temporary compile, to resolve real type parameters
+        #   find one trait that is assignment compatible
+        trait_providers = resolver.get_traits()
+        for trait_param in self.trait_params:
+            compiled, extra = trait_param.compile(resolver)
+            if extra: # Skip if compilation is still producing new statements
+                return [Error(line_ref, f"Compile steps incomplete for '{trait_param.name}'. Seeing this message indicates a compiler error.")]
+            tp_found = [tp for tp in trait_providers if t.trivially_assignable_equals(resolver, compiled, tp.declared_type)]
+            if len(tp_found) == 0:
+                return [Error(line_ref, f"Trait parameter '{trait_param.name}' does not match any trait")]
+
+        return []
 
 @dataclass
 class TypeStatement(NamedStatement):
@@ -62,6 +104,9 @@ class TypeStatement(NamedStatement):
 
 @dataclass
 class DataStatement(NamedStatement):
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DataStatement, list[Statement]]:
+        raise NotImplementedError()
+
     def get_type(self) -> t.TypeSpec|None:
         raise NotImplementedError()
 
@@ -73,7 +118,7 @@ class FunctionStatement(DataStatement):
     return_type: t.TypeSpec|None = None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
-        nested_resolver = g.ResolverData(resolver, self.__find_locals)
+        nested_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
             statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements])))
@@ -81,38 +126,46 @@ class FunctionStatement(DataStatement):
     def get_type(self) -> t.TypeSpec|None:
         return t.CallableSpec(self.line_ref, self.parameters.get_type(), self.return_type)
 
-    def __find_locals(self, names: set[str]) -> list[g.Resolved[DataStatement]]:
-        p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-             for let in self.parameters.flatten()
-             if g.match_names(let.name, names)]
-        l = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-             for x in self.statements if isinstance(x, LetStatement) for let in x.flatten()
-             if g.match_names(x.name, names)]
-        # s = [g.Resolved(self.local_this.name, self.local_this, g.ResolvedScope.LOCAL)] if self.local_this and self.local_this.name in names else []
-        return p + l # + s
+    def __find_locals(self, resolver: g.Resolver) -> Callable[[set[str]],list[g.Resolved[DataStatement]]]:
+        def finder(names: set[str]) -> list[g.Resolved[DataStatement]]:
+            p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                 for let in self.parameters.flatten()
+                 if g.match_names(let.name, names)]
+            l = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                 for x in self.statements if isinstance(x, LetStatement) for let in x.flatten()
+                 if g.match_names(x.name, names)]
+            # s = [g.Resolved(self.local_this.name, self.local_this, g.ResolvedScope.LOCAL)] if self.local_this and self.local_this.name in names else []
+            td = self._find_trait_data(resolver, names)
+            return p + l + td # + s
+        return finder
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement]]:
+        resolver = g.ResolverType(resolver, self._find_generic_types)
         rettype, rettype_glb = self.return_type.compile(resolver) if self.return_type else (None, [])
         prms, prms_glb = self.parameters.compile(resolver, None)
+        trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
 
-        resolver = g.ResolverData(resolver, self.__find_locals)
+        resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         smt_results = [x.compile(resolver, self.return_type) for x in self.statements]
 
         new_statements = [x[0] for x in smt_results if x[0]]
-        globals = [xg for x in smt_results for xg in x[1]] + rettype_glb + prms_glb
+        globals = [xg for x in smt_results for xg in x[1]] + rettype_glb + prms_glb + trts_glb
 
-        new_self = dataclasses.replace(self, parameters = prms, statements = new_statements, return_type = rettype)
+        new_self = dataclasses.replace(self, trait_params = tuple(trts), parameters = prms, statements = new_statements, return_type = rettype)
         return new_self, globals
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
-        resolver = g.ResolverData(resolver, self.__find_locals)
+        resolver = g.ResolverType(resolver, self._find_generic_types)
+        resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         err1 = self.return_type.check(resolver) if self.return_type else []
         err2 = self.parameters.check(resolver, None)
         err3 = [e for x in self.statements for e in x.check(resolver, self.return_type)]
-        return err1 + err2 + err3
+        err4 = [e for x in self.trait_params for e in x.check(resolver)]
+        return err1 + err2 + err3 + err4
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Function:
-        resolver = g.ResolverData(resolver, self.__find_locals)
+        resolver = g.ResolverType(resolver, self._find_generic_types)
+        resolver = g.ResolverData(resolver, self.__find_locals(resolver))
 
         bundle = g.OperationBundle()
         for index, parameter in enumerate(self.parameters.targets):
@@ -166,12 +219,14 @@ class ClassStatement(TypeStatement):
             raise ValueError()
 
 
-    def __find_locals(self, resolver: g.Resolver, names: set[str]) -> list[g.Resolved[DataStatement]]:
-        m = self.find_data(resolver, names)
-        l = LetStatement(self.line_ref, "this", None, {}, (), None, t.ClassSpec(self.line_ref, self.name))
-        s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" in names else []
-        return m + s
-
+    def __find_locals(self, resolver: g.Resolver) -> Callable[[set[str]],list[g.Resolved[DataStatement]]]:
+        def finder(names: set[str]) -> list[g.Resolved[DataStatement]]:
+            m = self.find_data(resolver, names)
+            l = LetStatement(self.line_ref, "this", None, {}, (), None, t.ClassSpec(self.line_ref, self.name))
+            s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" in names else []
+            td = self._find_trait_data(resolver, names)
+            return m + s + td
+        return finder
 
     def find_data(self, resolver: g.Resolver, names: set[str]) -> list[g.Resolved[DataStatement]]:
         s1 = self.parameters.flatten()
@@ -202,7 +257,7 @@ class ClassStatement(TypeStatement):
 
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
-        nested_resolver = g.ResolverData(resolver, lambda names: self.__find_locals(resolver, names))
+        nested_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
             statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements])))
@@ -225,18 +280,20 @@ class ClassStatement(TypeStatement):
 
         # Recurse to compile parameters and statements
         new_parameters, prm_glb = self.parameters.compile(resolver, None)
-        statement_resolver = g.ResolverData(resolver, lambda names: self.__find_locals(resolver, names))
-        tmp_result = [x.compile(statement_resolver, None) for x in self.statements]
-        new_statements, stm_glb = zip(*tmp_result) if tmp_result else ([], [])
+        statement_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
+        new_statements, stm_glb = u.flatten_lists(x.compile(statement_resolver, None) for x in self.statements)
+
+        trts, trts_glb = u.flatten_lists(x.compile(resolver) for x in self.trait_params)
 
         result = dataclasses.replace(self,
               implements=new_implements,
               parameters=new_parameters,
-              statements=list(new_statements),
+              statements=new_statements,
+              trait_params=tuple(trts),
               _all_slots=new_all_slots,
             _all_parents=new_all_parents)
 
-        return result, prm_glb + [x for stm in stm_glb for x in stm]
+        return result, prm_glb + trts_glb + stm_glb
 
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
@@ -259,14 +316,14 @@ class ClassStatement(TypeStatement):
 
         # Recurse to check parameters and statements
         prm_err = self.parameters.check(resolver, None)
-        resolver = g.ResolverData(resolver, lambda names: self.__find_locals(resolver, names))
+        resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         stm_err = [x for stm in self.statements for x in stm.check(resolver, None)]
 
         return prm_err + stm_err + impl_err + cls_type_err + bad_slots_err + empty_slots_err
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_x.Object, list[cg_x.Function]]:
-        resolver = g.ResolverData(resolver, lambda names: self.__find_locals(resolver, names))
+        resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         ast_functions = [fnc for fnc in self.statements if isinstance(fnc, FunctionStatement)]
         gen_functions = [fnc.global_codegen(resolver) for fnc in ast_functions]
 
@@ -318,7 +375,7 @@ class LetStatement(DataStatement):
             # Just a value, no work, caller does it
             return g.OperationBundle()
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
@@ -413,7 +470,7 @@ class DestructureStatement(LetStatement):
         tgts = [x[0] for x in results]
         tgts_glb = [g for x in results for g in x[1]]
         stmt = dataclasses.replace(stmt, targets=tgts)
-        return stmt, stmt_glb+tgts_glb
+        return cast(DestructureStatement, stmt), stmt_glb+tgts_glb
 
     # def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
     #     return super(self).check(resolver, func_ret_type)
@@ -486,6 +543,7 @@ class TypeAliasStatement(TypeStatement):
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         return self.type.check(resolver)
+
 
 @dataclass
 class ActionStatement(Statement):

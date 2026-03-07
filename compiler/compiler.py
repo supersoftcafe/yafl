@@ -7,6 +7,7 @@ import lowering.strings
 import lowering.globalfuncs
 import lowering.globalinit
 import lowering.lambdas
+import lowering.generics
 import lowering.inlining
 import lowering.cps
 import lowering.trim
@@ -154,26 +155,28 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
     resolver = g.ResolverRoot(statements)
 
     new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
-    new_errors = [x for stmt in new_statements for x in stmt.check(resolver, None)]
     mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
+    if new_statements != statements:
+        # More work to do
+        return __iterate_and_compile(new_statements, iteration_count + 1)
+
+    new_errors = [x for stmt in new_statements for x in stmt.check(resolver, None)]
     if not mains:
         new_errors += [Error(LineRef("none", 0, 0), "No main function found")]
     elif len(mains) > 1:
         new_errors += [Error(LineRef("none", 0, 0), "Too many main functions defined")]
 
-    if new_statements != statements:
-        # More work to do
-        return __iterate_and_compile(new_statements, iteration_count + 1)
-    elif new_errors:
+    if new_errors:
         # Nothing more to do, just errors
         return new_errors
-    else:
-        # All ok so let's create some C code
-        new_statements = lowering.strings.fix_global_strings(new_statements)
-        new_statements = lowering.integers.fix_global_integers(new_statements)
-        new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
-        return __create_c_code(new_statements, mains[0], just_testing=just_testing)
+
+    # All ok so let's create some C code
+    new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
+    new_statements = lowering.strings.fix_global_strings(new_statements)
+    new_statements = lowering.integers.fix_global_integers(new_statements)
+    new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
+    return __create_c_code(new_statements, mains[0], just_testing=just_testing)
 
 
 def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[Error]]:

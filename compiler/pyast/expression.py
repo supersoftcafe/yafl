@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Callable
 import dataclasses
-import pyast
 from dataclasses import dataclass, field
 from functools import reduce
 
@@ -17,6 +16,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.utils as u
 
 
 @dataclass
@@ -289,9 +289,11 @@ class NamedExpression(Expression):
     name: str
     type_params: tuple[t.TypeSpec, ...] = ()
 
+
     def __post_init__(self):
         if self.name == 'this':
             pass
+
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         # If the name resolves to just one statement we have a known type
@@ -299,7 +301,32 @@ class NamedExpression(Expression):
         # through a compile step and found the unique name of a type match.
         # Both outcomes are fine.
         datas = resolver.find_data({self.name})
-        return datas[0].statement.get_type() if len(datas) == 1 else None
+        if len(datas) != 1:
+            return None
+        resolved = datas[0]
+        statement = resolved.statement
+        raw_type = statement.get_type()
+        if raw_type is None:
+            return None
+
+        mapping: dict[str, t.TypeSpec] = {}
+
+        # Case 1: explicit type params on the call site (e.g., doNothing<Int>)
+        if self.type_params and hasattr(statement, 'type_params') and statement.type_params:
+            for placeholder, concrete in zip(statement.type_params, self.type_params):
+                mapping[placeholder.name] = concrete
+
+        # Case 2: resolved via a 'where' clause trait — map the interface's type params
+        # to the concrete types recorded in the trait_scope on this Resolved instance.
+        if (resolved.scope == g.ResolvedScope.TRAIT
+                and resolved.trait_scope is not None
+                and resolved.owner_class is not None):
+            for placeholder, concrete in zip(resolved.owner_class.type_params,
+                                             resolved.trait_scope.type_params):
+                mapping[placeholder.name] = concrete
+
+        return raw_type.substitute(mapping) if mapping else raw_type
+
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         if self.name == 'this':
@@ -315,15 +342,19 @@ class NamedExpression(Expression):
             this = NamedExpression(self.line_ref, "this")
             dot = DotExpression(self.line_ref, this, data.unique_name)
             return dot, []
-        return dataclasses.replace(self, name=data.unique_name), []
+        type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in self.type_params)
+        return dataclasses.replace(self, name=data.unique_name, type_params=tuple(type_params)), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
         datas = resolver.find_data({self.name})
-        if not datas:
-            return [Error(self.line_ref, f"Failed to resolve {self.name}")]
-        if len(datas) > 1:
-            return [Error(self.line_ref, f"Resolved too many {self.name}")]
-        return []
+        match datas:
+            case []:
+                return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors
+            case [resolved]:
+                return resolved.statement.check_caller_type_params(resolver, self.type_params, self.line_ref) + tp_errors
+            case _:
+                return [Error(self.line_ref, f"Resolved too many {self.name}")] + tp_errors
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         if self.name == 'this':

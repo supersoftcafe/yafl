@@ -4,7 +4,7 @@ import dataclasses
 from abc import abstractmethod
 from enum import Enum
 from typing import List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import langtools
@@ -20,7 +20,7 @@ from tokenizer import LineRef
 
 @dataclass(frozen=True)
 class TypeSpec:
-    line_ref: LineRef
+    line_ref: LineRef = field(compare=False)
 
     def is_concrete(self) -> bool:
         return False
@@ -45,6 +45,9 @@ class TypeSpec:
 
     def as_unique_id_str(self) -> str|None:
         raise NotImplementedError()
+
+    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
+        return self
 
 
 def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, right: TypeSpec | None) -> bool | None:
@@ -98,6 +101,11 @@ class CallableSpec(TypeSpec):
     def as_unique_id_str(self) -> str|None:
         p = self.parameters.as_unique_id_str()
         return p and f"f{p}"
+
+    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
+        return dataclasses.replace(self,
+            parameters=self.parameters.substitute(mapping),
+            result=self.result.substitute(mapping) if self.result else None)
 
 
 @dataclass(frozen=True)
@@ -160,25 +168,27 @@ class ClassSpec(TypeSpec):
     type_params: tuple[TypeSpec, ...] = ()
 
     def is_concrete(self) -> bool:
-        return True
+        return not self.type_params or all(tp.is_concrete() for tp in self.type_params)
 
     def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         types = resolver.find_type({self.name})
         if len(types) == 1:
-            type_params, statements = zip(*[tp.compile(resolver) for tp in self.type_params])
+            type_params, statements = zip(*[tp.compile(resolver) for tp in self.type_params]) if self.type_params else ([],[])
             return dataclasses.replace(self, name=types[0].unique_name,  type_params=tuple(type_params)), [s for st in statements for s in st]
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:
-        tp_errors = [t for tp in self.type_params for t in tp.check(resolver)]
+        tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
         types = resolver.find_type({self.name})
-        if not types:
-            return [Error(self.line_ref, f"Failed to resolve class {self.name}")] + tp_errors
-        if len(types) > 1:
-            return [Error(self.line_ref, f"Found too many classes named {self.name}")] + tp_errors
-        if not isinstance(types[0].statement, s.ClassStatement):
-            return [Error(self.line_ref, f"Not a class {self.name}")] + tp_errors
-        return []
+        match types:
+            case []:
+                return [Error(self.line_ref, f"Failed to resolve class {self.name}")] + tp_errors
+            case [resolved]:
+                if not isinstance(resolved.statement, s.ClassStatement):
+                    return [Error(self.line_ref, f"Not a class {self.name}")] + tp_errors
+                return resolved.statement.check_caller_type_params(resolver, self.type_params, self.line_ref) + tp_errors
+            case _:
+                return [Error(self.line_ref, f"Found too many classes named {self.name}")] + tp_errors
 
     def generate(self) -> cg_t.Type:
         return cg_t.DataPointer()
@@ -206,6 +216,36 @@ class ClassSpec(TypeSpec):
 
     def as_unique_id_str(self) -> str|None:
         return self.name
+
+    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
+        return dataclasses.replace(self,
+            type_params=tuple(tp.substitute(mapping) for tp in self.type_params))
+
+
+@dataclass(frozen=True)
+class GenericPlaceholderSpec(TypeSpec):
+    name: str
+
+    def is_concrete(self) -> bool:
+        return True
+
+    def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
+        return self, []
+
+    def check(self, resolver: g.Resolver) -> list[Error]:
+        return []
+
+    def generate(self) -> cg_t.Type:
+        raise RuntimeError("GenericPlaceholderSpec should be replaced with a concrete type")
+
+    def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
+        return self == right
+
+    def as_unique_id_str(self) -> str|None:
+        return None # This is 'alias', not a concrete type.
+
+    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
+        return mapping.get(self.name, self)
 
 
 @dataclass(frozen=True)
@@ -266,6 +306,9 @@ class CombinationSpec(TypeSpec):
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         raise NotImplementedError("Can't generate tagged unions, yet!")
+
+    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
+        return dataclasses.replace(self, types=[tp.substitute(mapping) for tp in self.types])
 
 
 @dataclass(frozen=True)
@@ -330,3 +373,8 @@ class TupleSpec(TypeSpec):
         if None in results:
             return None # Might be assignable, but still some doubt
         return True # Is assignable
+
+    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
+        return dataclasses.replace(self,
+            entries=[dataclasses.replace(ent, type=ent.type.substitute(mapping) if ent.type else None)
+                     for ent in self.entries])
