@@ -180,16 +180,86 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statem
             # No new specialized statements created - we're done iterating
             break
 
-        # Step 3: Replace concrete references with specialized names
-        statements = __replace_concrete_references(statements, data_refs, type_refs)
-
-        # Add specialized statements to the list for next iteration
-        statements = statements + specialized
+        # Step 3: Replace concrete references with specialized names in ALL statements
+        # (including newly specialized ones) so that the next iteration doesn't
+        # re-discover the same concrete instantiations and create duplicates.
+        statements = __replace_concrete_references(statements + specialized, data_refs, type_refs)
 
     # After iterations are stable, prune unused generics
     statements = __prune_unused_generics(statements)
 
     return statements
+
+
+def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statement]:
+    """
+    After monomorphization, replace TRAIT-scope function references with DotExpressions
+    on the concrete [trait] provider instance.
+
+    When a specialized function like testIt$generic$Int has a `where Add<Int>` clause,
+    calls to `+` inside the body resolve to TRAIT scope via _find_trait_data.  This
+    pass finds the [trait] let statement whose declared type is assignment-compatible
+    with the required trait spec (e.g. AddInt implements Add<Int>) and rewrites the
+    NamedExpression as DotExpression(provider, method), so codegen sees a normal
+    method call.  discover_global_function_calls then optimises the vtable dispatch to
+    a direct call where only one implementation exists.
+    """
+    resolver = g.ResolverRoot(statements)
+    traits = resolver.get_traits()
+
+    def redirect(r: g.Resolver, thing):
+        if not isinstance(thing, e.NamedExpression):
+            return thing
+
+        datas = r.find_data({thing.name})
+        if len(datas) != 1 or datas[0].scope != g.ResolvedScope.TRAIT:
+            return thing
+
+        trait_spec = datas[0].trait_scope
+        if not isinstance(trait_spec, t.ClassSpec):
+            return thing
+
+        # Find the [trait] let whose declared class implements the required trait.
+        # After monomorphization, _all_parents is updated (via search_and_replace traversal)
+        # so entries match the monomorphized trait_spec.name directly.
+        def implements_trait(tr: s.LetStatement) -> bool:
+            if not isinstance(tr.declared_type, t.ClassSpec):
+                return False
+            classes = r.find_type({tr.declared_type.name})
+            if len(classes) != 1 or not isinstance(classes[0].statement, s.ClassStatement):
+                return False
+            cls = classes[0].statement
+            if cls._all_parents is None:
+                return False
+            return any(isinstance(p, t.ClassSpec) and p.name == trait_spec.name
+                       for p in cls._all_parents)
+
+        providers = [tr for tr in traits if implements_trait(tr)]
+        if len(providers) != 1:
+            return thing
+
+        provider = providers[0]
+        provider_type = provider.declared_type
+        if not isinstance(provider_type, t.ClassSpec):
+            return thing
+
+        provider_classes = r.find_type({provider_type.name})
+        if len(provider_classes) != 1:
+            return thing
+        provider_class = provider_classes[0].statement
+        if not isinstance(provider_class, s.ClassStatement):
+            return thing
+
+        # Find the concrete method on the provider class by simple name
+        simple = g.simple_name(thing.name)
+        method_datas = provider_class.find_data(r, {simple})
+        if len(method_datas) != 1:
+            return thing
+
+        provider_expr = e.NamedExpression(thing.line_ref, provider.name)
+        return e.DotExpression(thing.line_ref, provider_expr, method_datas[0].unique_name)
+
+    return [stmt.search_and_replace(resolver, redirect) for stmt in statements]
 
 
 def convert_generic_to_concrete(statements: list[s.Statement]) -> list[s.Statement]:
@@ -224,4 +294,6 @@ def convert_generic_to_concrete(statements: list[s.Statement]) -> list[s.Stateme
     Second iteration finds helper<Int>, creates helper$generic$int32.
     Third iteration finds no new instantiations, prunes original generics.
     """
-    return __convert_generics_iterative(statements)
+    converted = __convert_generics_iterative(statements)
+    resolved = __resolve_trait_references(converted)
+    return resolved

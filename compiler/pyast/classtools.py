@@ -73,7 +73,12 @@ def find_classes_or_error(
         statement = found[0].statement
         if not isinstance(statement, s.ClassStatement):
             return xtype, p.Error(xtype.line_ref, f"Found non-class named \"{xtype.name}\"")
-        return statement.get_type(), statement
+        # Preserve type_params from xtype (compiled to resolve aliases like NamedSpec)
+        # so _all_parents retains parameterization info for monomorphization.
+        raw_params = xtype.type_params if isinstance(xtype, (t.ClassSpec, t.NamedSpec)) else ()
+        compiled_params = tuple(p.compile(resolver)[0] for p in raw_params)
+        resolved = t.ClassSpec(xtype.line_ref, statement.name, compiled_params)
+        return resolved, statement
     result = [find_class_or_error(xtype) for xtype in types]
     return result
 

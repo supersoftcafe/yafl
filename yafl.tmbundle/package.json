@@ -1,0 +1,24 @@
+{
+    "name": "yafl",
+    "displayName": "YAFL",
+    "description": "Syntax highlighting for YAFL (Yet Another Functional Language)",
+    "version": "0.1.0",
+    "engines": { "vscode": "^1.0.0" },
+    "contributes": {
+        "languages": [
+            {
+                "id": "yafl",
+                "aliases": ["YAFL", "yafl"],
+                "extensions": [".yafl"],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "yafl",
+                "scopeName": "source.yafl",
+                "path": "./Syntaxes/yafl.tmLanguage.json"
+            }
+        ]
+    }
+}

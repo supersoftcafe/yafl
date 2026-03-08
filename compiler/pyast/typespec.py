@@ -3,9 +3,9 @@ from __future__ import annotations
 import dataclasses
 from abc import abstractmethod
 from enum import Enum
-from typing import List
+from typing import List, Optional
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Optional
 
 import langtools
 from parselib import Error
@@ -46,8 +46,8 @@ class TypeSpec:
     def as_unique_id_str(self) -> str|None:
         raise NotImplementedError()
 
-    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
-        return self
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+        return langtools.cast(TypeSpec, replace(resolver, self))
 
 
 def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, right: TypeSpec | None) -> bool | None:
@@ -102,10 +102,11 @@ class CallableSpec(TypeSpec):
         p = self.parameters.as_unique_id_str()
         return p and f"f{p}"
 
-    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
-        return dataclasses.replace(self,
-            parameters=self.parameters.substitute(mapping),
-            result=self.result.substitute(mapping) if self.result else None)
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+        new_self = dataclasses.replace(self,
+            parameters=self.parameters.search_and_replace(resolver, replace),
+            result=self.result.search_and_replace(resolver, replace) if self.result else None)
+        return langtools.cast(TypeSpec, replace(resolver, new_self))
 
 
 @dataclass(frozen=True)
@@ -207,19 +208,19 @@ class ClassSpec(TypeSpec):
             return False # Right is resolved to something not a class so definitely False
         if self.name == right.name:
             return True # Exact match
-        lcls = find_class(self)
         rcls = find_class(right)
         if rcls._all_parents is None:
             return None # Right parents aren't resolved yet so Unknown
-        result = any(x for x in rcls._all_parents if find_class(x).name == self.name)
+        result = any(x.name == self.name for x in rcls._all_parents)
         return result
 
     def as_unique_id_str(self) -> str|None:
         return self.name
 
-    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
-        return dataclasses.replace(self,
-            type_params=tuple(tp.substitute(mapping) for tp in self.type_params))
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+        new_self = dataclasses.replace(self,
+            type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params))
+        return langtools.cast(TypeSpec, replace(resolver, new_self))
 
 
 @dataclass(frozen=True)
@@ -244,8 +245,8 @@ class GenericPlaceholderSpec(TypeSpec):
     def as_unique_id_str(self) -> str|None:
         return None # This is 'alias', not a concrete type.
 
-    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
-        return mapping.get(self.name, self)
+    # Base class search_and_replace is sufficient: it calls replace(resolver, self),
+    # which is where mappings like GenericPlaceholderSpec -> concrete type are applied.
 
 
 @dataclass(frozen=True)
@@ -307,8 +308,9 @@ class CombinationSpec(TypeSpec):
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         raise NotImplementedError("Can't generate tagged unions, yet!")
 
-    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
-        return dataclasses.replace(self, types=[tp.substitute(mapping) for tp in self.types])
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+        new_self = dataclasses.replace(self, types=[tp.search_and_replace(resolver, replace) for tp in self.types])
+        return langtools.cast(TypeSpec, replace(resolver, new_self))
 
 
 @dataclass(frozen=True)
@@ -329,6 +331,11 @@ class TupleEntrySpec:
 
     def generate(self) -> cg_t.Type:
         return self.type.generate()
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TupleEntrySpec:
+        return dataclasses.replace(self,
+            type=self.type.search_and_replace(resolver, replace) if self.type else None,
+            default=self.default.search_and_replace(resolver, replace) if self.default else None)
 
 
 @dataclass(frozen=True)
@@ -374,7 +381,7 @@ class TupleSpec(TypeSpec):
             return None # Might be assignable, but still some doubt
         return True # Is assignable
 
-    def substitute(self, mapping: dict[str, TypeSpec]) -> TypeSpec:
-        return dataclasses.replace(self,
-            entries=[dataclasses.replace(ent, type=ent.type.substitute(mapping) if ent.type else None)
-                     for ent in self.entries])
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+        new_self = dataclasses.replace(self,
+            entries=[ent.search_and_replace(resolver, replace) for ent in self.entries])
+        return langtools.cast(TypeSpec, replace(resolver, new_self))

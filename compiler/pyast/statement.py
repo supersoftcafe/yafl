@@ -121,7 +121,9 @@ class FunctionStatement(DataStatement):
         nested_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
-            statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements])))
+            statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements],
+            return_type=self.return_type.search_and_replace(resolver, replace) if self.return_type else None,
+            trait_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.trait_params))))
 
     def get_type(self) -> t.TypeSpec|None:
         return t.CallableSpec(self.line_ref, self.parameters.get_type(), self.return_type)
@@ -260,14 +262,19 @@ class ClassStatement(TypeStatement):
         nested_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
-            statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements])))
+            statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements],
+            implements=[tp.search_and_replace(resolver, replace) for tp in self.implements],
+            trait_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.trait_params),
+            _all_parents=({p.search_and_replace(resolver, replace) for p in self._all_parents}
+                          if self._all_parents is not None else None))))
 
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         # Resolve each of the inherited types and update the implements list
         unpacked_implements = [y for x in self.implements for y in (x.types if isinstance(x, t.CombinationSpec) else [x])]
         resolved_inheritance = c.find_classes_or_error(unpacked_implements, resolver)
-        classes = [xcls for (xtype, xcls) in resolved_inheritance if isinstance(xcls, ClassStatement)]
+        resolved_classes = [(xtype, xcls) for (xtype, xcls) in resolved_inheritance if isinstance(xcls, ClassStatement)]
+        classes = [xcls for (xtype, xcls) in resolved_classes]
         new_implements = [xtype for (xtype, xcls) in resolved_inheritance]
 
         # Build slots list of all functions
@@ -275,8 +282,9 @@ class ClassStatement(TypeStatement):
         parent_slots = [y for x in classes for y in (x._all_slots or [])]
         new_all_slots = c.override_inherited_slots(resolver, base_slots, parent_slots)
 
-        # Try to find all parent class type specs
-        new_all_parents = {y for x in classes for y in (x._all_parents or [])} | {x.get_type() for x in classes}
+        # Build transitive parent set using resolved xtypes (which preserve type_params)
+        # so that monomorphization can later update generic interface names in _all_parents.
+        new_all_parents = {y for x in classes for y in (x._all_parents or [])} | {xtype for (xtype, xcls) in resolved_classes}
 
         # Recurse to compile parameters and statements
         new_parameters, prm_glb = self.parameters.compile(resolver, None)
@@ -355,7 +363,8 @@ class LetStatement(DataStatement):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
-            default_value=self.default_value and self.default_value.search_and_replace(resolver, replace))))
+            default_value=self.default_value and self.default_value.search_and_replace(resolver, replace),
+            declared_type=self.declared_type.search_and_replace(resolver, replace) if self.declared_type else None)))
 
     def get_type(self) -> t.TypeSpec|None:
         return self.declared_type
@@ -443,8 +452,9 @@ class DestructureStatement(LetStatement):
     targets: list[LetStatement]
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
-        return cast(Statement, replace(resolver,dataclasses.replace(self,
+        return cast(Statement, replace(resolver, dataclasses.replace(self,
             default_value=self.default_value and self.default_value.search_and_replace(resolver, replace),
+            declared_type=self.declared_type.search_and_replace(resolver, replace) if self.declared_type else None,
             targets=[cast(LetStatement, x.search_and_replace(resolver, replace)) for x in self.targets])))
 
     def get_type(self) -> t.TupleSpec:
@@ -533,6 +543,10 @@ class NamespaceStatement(Statement):
 @dataclass
 class TypeAliasStatement(TypeStatement):
     type: t.TypeSpec
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+        return cast(Statement, replace(resolver, dataclasses.replace(self,
+            type=self.type.search_and_replace(resolver, replace))))
 
     def get_type(self) -> t.TypeSpec|None:
         return self.type if self.type.is_concrete() else None

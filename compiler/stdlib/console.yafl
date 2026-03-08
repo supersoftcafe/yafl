@@ -1,6 +1,5 @@
 namespace System
 
-
 fun print(str: System::String): System::Int
     ret __builtin_op__<bigint>("print_string", str)
 

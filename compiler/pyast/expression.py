@@ -46,6 +46,7 @@ class NewExpression(Expression):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
+            type=self.type.search_and_replace(resolver, replace),
             parameter=self.parameter.search_and_replace(resolver, replace))))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
@@ -325,8 +326,17 @@ class NamedExpression(Expression):
                                              resolved.trait_scope.type_params):
                 mapping[placeholder.name] = concrete
 
-        return raw_type.substitute(mapping) if mapping else raw_type
+        if not mapping:
+            return raw_type
+        def replace_fn(_, thing):
+            if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in mapping:
+                return mapping[thing.name]
+            return thing
+        return raw_type.search_and_replace(resolver, replace_fn)
 
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params))))
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         if self.name == 'this':
@@ -423,6 +433,7 @@ class BuiltinOpExpression(Expression):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
+            type=self.type.search_and_replace(resolver, replace),
             params=self.params.search_and_replace(resolver, replace))))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
@@ -468,7 +479,8 @@ class LambdaExpression(Expression):
         return cast(Expression, replace(resolver, dataclasses.replace(
             self,
             parameters=cast(s.DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
-            expression=self.expression.search_and_replace(nested_resolver, replace))))
+            expression=self.expression.search_and_replace(nested_resolver, replace),
+            return_type=self.return_type.search_and_replace(resolver, replace) if self.return_type else None)))
 
     def get_type(self, resolver: g.Resolver) -> t.CallableSpec | None:
         return self.return_type
