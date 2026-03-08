@@ -3,7 +3,7 @@ namespace System
 interface BasicPlus<TVal>
   fun `+`(left: TVal, right: TVal): TVal
 
-interface BasicMath<TVal>
+interface BasicMath<TVal> : BasicPlus<TVal>
   fun `*`(left: TVal, right: TVal): TVal
   fun `-`(left: TVal, right: TVal): TVal
   fun `/`(left: TVal, right: TVal): TVal
