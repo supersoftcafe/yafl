@@ -4,11 +4,11 @@ interface BasicPlus<TVal>
   fun `+`(left: TVal, right: TVal): TVal
 
 interface BasicMath<TVal>
-  fun `=`(left: TVal, right: TVal): TVal
   fun `*`(left: TVal, right: TVal): TVal
   fun `-`(left: TVal, right: TVal): TVal
   fun `/`(left: TVal, right: TVal): TVal
   fun `%`(left: TVal, right: TVal): TVal
-  fun `<`(left: TVal, right: TVal): TVal
-  fun `>`(left: TVal, right: TVal): TVal
+  fun `<`(left: TVal, right: TVal): System::Bool
+  fun `=`(left: TVal, right: TVal): System::Bool
+  fun `>`(left: TVal, right: TVal): System::Bool
 

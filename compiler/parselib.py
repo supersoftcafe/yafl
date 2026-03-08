@@ -182,7 +182,7 @@ def maybe(parser: Parser[T]) -> Parser[list[T]]:
     def p(tokens: List[Token]) -> Result[list[T]]:
         item = parser(tokens)
         if not item:
-            return Result([], tokens, item.line_ref, item.errors)
+            return Result([], tokens, item.line_ref, [])
         return Result([item.value], item.tokens, item.line_ref, item.errors)
     return Parser(p)
 

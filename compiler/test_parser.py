@@ -262,3 +262,21 @@ class Test(TestCase):
         type_param = load.type_params[0]
         self.assertIsInstance(type_param, t.NamedSpec)
         self.assertEqual("Int", type_param.name)
+
+    def test_less_than_ambiguity(self):
+        # `x < 0` is ambiguous: the parser greedily tries to interpret `<` after an
+        # identifier as the start of a generic type parameter list (e.g. `foo<T>`).
+        # It tries to parse `0` as a type argument, fails to find the closing `>`,
+        # then backtracks and correctly parses `<` as the comparison operator.
+        # However, it leaves behind a spurious "missing generics" error, which causes
+        # compilation to fail even though the expression itself is parsed correctly.
+        # This replicates the real failure in stdlib/string.yafl line 15.
+        tokens = tokenize("x < 0", "file")
+        result = p.parse_expression(tokens)
+
+        # The parser does recover and produce the right AST
+        self.assertIsNotNone(result.value)
+        self.assertIsInstance(result.value, e.CallExpression)
+
+        # And it should emit no errors — the failed generic attempt must not leak errors
+        self.assertEqual(0, len(result.errors))

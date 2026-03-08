@@ -6,21 +6,21 @@ typealias Bool : __builtin_type__<bool>
 
 let [trait] int_trait: _BasicMathInt = _BasicMathInt()
 
-class _BasicMathInt() : BasicMath<Int>
-  fun `+`(left: TVal, right: TVal): TVal
+class _BasicMathInt() : BasicMath<System::Int>
+  fun `+`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_add", left, right)
-  fun `-`(left: TVal, right: TVal): TVal
+  fun `-`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_sub", left, right)
-  fun `*`(left: TVal, right: TVal): TVal
+  fun `*`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_mul", left, right)
-  fun `/`(left: TVal, right: TVal): TVal
+  fun `/`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_div", left, right)
-  fun `%`(left: TVal, right: TVal): TVal
+  fun `%`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_rem", left, right)
-  fun `<`(left: TVal, right: TVal): TVal
+  fun `<`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_gt", left, right)
-  fun `=`(left: TVal, right: TVal): TVal
+  fun `=`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_eq", left, right)
-  fun `>`(left: TVal, right: TVal): TVal
+  fun `>`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_lt", left, right)
 
