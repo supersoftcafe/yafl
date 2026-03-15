@@ -115,9 +115,9 @@ def __removed_unused_stuff(from_app: Application, scan_sets: _scan_sets, to_app:
     new_scan_sets = seen_sets - to_app
     if not new_scan_sets:
         app = Application()
-        app.globals   = {name: from_app.globals[  name] for name in to_app.g}
-        app.objects   = {name: from_app.objects[  name] for name in to_app.o}
-        app.functions = {name: from_app.functions[name] for name in to_app.f}
+        app.globals   = {name: from_app.globals[  name] for name in sorted(to_app.g)}
+        app.objects   = {name: from_app.objects[  name] for name in sorted(to_app.o)}
+        app.functions = {name: from_app.functions[name] for name in sorted(to_app.f)}
         return app
     return __removed_unused_stuff(from_app, new_scan_sets, seen_sets | to_app)
 

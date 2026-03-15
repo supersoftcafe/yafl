@@ -27,7 +27,7 @@ def create_perfect_lookups(vtables: dict[str, list[str]]) -> tuple[dict[str, int
         return id
 
     # Generate random 32-bit ids for all methods
-    method_names = set(name for sublist in vtables.values() for name in sublist)
+    method_names = sorted(set(name for sublist in vtables.values() for name in sublist))
     method_ids = {name: next_method_id() for name in method_names}
 
     # Compute vtable sizes

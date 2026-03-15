@@ -79,7 +79,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
 
 
 
-def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False) -> str:
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0) -> str:
     a = Application()
     resolver = g.ResolverRoot(statements)
     for stmt in statements:
@@ -112,11 +112,12 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     a = lowering.trim.removed_unused_stuff(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
 
-    # Inlining with trimming is done iteratively
-    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
-    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
-    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
-    a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+    # Inlining with trimming is done iteratively (skipped at -O0)
+    if optimization_level > 0:
+        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
 
     # Lazy initialisation must be after inlining, and before CPS conversion.
     a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
@@ -151,7 +152,7 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
     return len(params_type.entries) == 0
 
 
-def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 1, just_testing = False) -> str|list[Error]:
+def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 1, just_testing = False, optimization_level: int = 0) -> str|list[Error]:
     resolver = g.ResolverRoot(statements)
 
     new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
@@ -159,7 +160,7 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
 
     if new_statements != statements:
         # More work to do
-        return __iterate_and_compile(new_statements, iteration_count + 1)
+        return __iterate_and_compile(new_statements, iteration_count + 1, just_testing=just_testing, optimization_level=optimization_level)
 
     new_errors = [x for stmt in new_statements for x in stmt.check(resolver, None)]
     if not mains:
@@ -171,12 +172,23 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
         # Nothing more to do, just errors
         return new_errors
 
+    # Catch any NamedSpec that the compile loop failed to resolve
+    named_spec_errors: list[Error] = []
+    def _find_named_specs(_, thing):
+        if isinstance(thing, t.NamedSpec):
+            named_spec_errors.append(Error(thing.line_ref, f"Failed to resolve type '{thing.name}'"))
+        return thing
+    for stmt in new_statements:
+        stmt.search_and_replace(resolver, _find_named_specs)
+    if named_spec_errors:
+        return named_spec_errors
+
     # All ok so let's create some C code
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
-    return __create_c_code(new_statements, mains[0], just_testing=just_testing)
+    return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level)
 
 
 def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[Error]]:
@@ -202,14 +214,14 @@ def __print_errors(errors: list[Error]) -> str:
     return ""
 
 
-def compile(source: list[Input], use_stdlib = False, just_testing = False) -> str:
+def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0) -> str:
     # Tokenize input
     statements, errors = __tokenize_and_parse(_read_stdlib_code(use_stdlib) + source)
     if errors:
         return __print_errors(errors)
 
     # Compile and find errors
-    compiled_result = __iterate_and_compile(statements, just_testing=just_testing)
+    compiled_result = __iterate_and_compile(statements, just_testing=just_testing, optimization_level=optimization_level)
     if isinstance(compiled_result, list):
         return __print_errors(compiled_result)
 

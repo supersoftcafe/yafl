@@ -279,6 +279,18 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
     result_list = []
     for x in list_data:
         other_type = x.statement.get_type()
+        # Apply trait type param substitution so e.g. Plus<Int>.+ has effective type
+        # (Int,Int)->Int rather than (TVal,TVal)->TVal, enabling correct disambiguation.
+        if (x.scope == g.ResolvedScope.TRAIT
+                and x.trait_scope is not None
+                and x.owner_class is not None):
+            mapping = {p.name: c for p, c in zip(x.owner_class.type_params, x.trait_scope.type_params)}
+            if mapping and other_type:
+                def replace_fn(_, thing, m=mapping):
+                    if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
+                        return m[thing.name]
+                    return thing
+                other_type = other_type.search_and_replace(resolver, replace_fn)
         b = t.trivially_assignable_equals(resolver, expected_type, other_type)
         if b is None or b: # Might be assignable
             result_list.append(x)
@@ -289,6 +301,7 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
 class NamedExpression(Expression):
     name: str
     type_params: tuple[t.TypeSpec, ...] = ()
+    resolved_trait_scope: t.ClassSpec | None = field(default=None, compare=False)
 
 
     def __post_init__(self):
@@ -302,6 +315,11 @@ class NamedExpression(Expression):
         # through a compile step and found the unique name of a type match.
         # Both outcomes are fine.
         datas = resolver.find_data({self.name})
+        # compile() already disambiguated via resolved_trait_scope; filter to that scope
+        if len(datas) > 1 and self.resolved_trait_scope is not None:
+            filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
+            if len(filtered) == 1:
+                datas = filtered
         if len(datas) != 1:
             return None
         resolved = datas[0]
@@ -335,8 +353,10 @@ class NamedExpression(Expression):
         return raw_type.search_and_replace(resolver, replace_fn)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+        rts = self.resolved_trait_scope.search_and_replace(resolver, replace) if self.resolved_trait_scope is not None else None
         return cast(Expression, replace(resolver, dataclasses.replace(self,
-            type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params))))
+            type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params),
+            resolved_trait_scope=rts if isinstance(rts, t.ClassSpec) else None)))
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         if self.name == 'this':
@@ -353,11 +373,17 @@ class NamedExpression(Expression):
             dot = DotExpression(self.line_ref, this, data.unique_name)
             return dot, []
         type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in self.type_params)
-        return dataclasses.replace(self, name=data.unique_name, type_params=tuple(type_params)), new_statements
+        trait_scope = data.trait_scope if data.scope == g.ResolvedScope.TRAIT and isinstance(data.trait_scope, t.ClassSpec) else None
+        return dataclasses.replace(self, name=data.unique_name, type_params=tuple(type_params), resolved_trait_scope=trait_scope), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
         datas = resolver.find_data({self.name})
+        # compile() already disambiguated via resolved_trait_scope; filter to that scope
+        if len(datas) > 1 and self.resolved_trait_scope is not None:
+            filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
+            if len(filtered) == 1:
+                datas = filtered
         match datas:
             case []:
                 return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors

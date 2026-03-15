@@ -61,8 +61,8 @@ def invert_and_merge_slots(slots: list[s.ClassFunctionSlot]) -> dict[str, set[st
 def find_classes_or_error(
         types: Iterable[t.TypeSpec],
         resolver: g.Resolver
-) -> list[(t.TypeSpec, s.ClassStatement|p.Error)]:
-    def find_class_or_error(xtype: t.TypeSpec) -> (t.TypeSpec, s.ClassStatement|p.Error):
+) -> list[tuple[t.TypeSpec, s.ClassStatement|p.Error]]:
+    def find_class_or_error(xtype: t.TypeSpec) -> tuple[t.TypeSpec, s.ClassStatement|p.Error]:
         if not isinstance(xtype, t.NamedSpec) and not isinstance(xtype, t.ClassSpec):
             return xtype, p.Error(xtype.line_ref, f"Class cannot inherit from this type \"{type(t)}\"")
         found = resolver.find_type({xtype.name})
@@ -76,7 +76,7 @@ def find_classes_or_error(
         # Preserve type_params from xtype (compiled to resolve aliases like NamedSpec)
         # so _all_parents retains parameterization info for monomorphization.
         raw_params = xtype.type_params if isinstance(xtype, (t.ClassSpec, t.NamedSpec)) else ()
-        compiled_params = tuple(p.compile(resolver)[0] for p in raw_params)
+        compiled_params = tuple(rp.compile(resolver)[0] for rp in raw_params)
         resolved = t.ClassSpec(xtype.line_ref, statement.name, compiled_params)
         return resolved, statement
     result = [find_class_or_error(xtype) for xtype in types]

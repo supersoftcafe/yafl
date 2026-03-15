@@ -58,12 +58,31 @@ class NamedStatement(Statement):
             found = [rs.statement for rs in resolver.find_type({tp.name})]
             match found:
                 case [ClassStatement() as cls]:
-                    if len(tp.type_params) == len(cls.type_params):
-                        return [g.Resolved(data.unique_name, data.statement, g.ResolvedScope.TRAIT, tp, cls) for data in cls.find_data(resolver, names)]
-                    return []
+                    if len(tp.type_params) != len(cls.type_params):
+                        return []
+                    # Search direct members first
+                    direct = [x for x in cls.parameters.flatten() + cls.statements
+                              if g.match_names(x.name, names)]
+                    if direct:
+                        return [g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls) for x in direct]
+                    # Not found directly — recurse into parent interfaces with type params substituted.
+                    # E.g. if cls is Math<TVal> : Plus<TVal> and tp is Math<Int>,
+                    # substitute TVal→Int to get Plus<Int>, preserving the correct trait_scope.
+                    mapping = {p.name: c for p, c in zip(cls.type_params, tp.type_params)}
+                    def replace_fn(_, thing, m=mapping):
+                        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
+                            return m[thing.name]
+                        return thing
+                    result = []
+                    for parent_type in cls.implements:
+                        substituted = parent_type.search_and_replace(resolver, replace_fn)
+                        if isinstance(substituted, t.ClassSpec) and substituted.is_concrete():
+                            result.extend(find_in_class(substituted))
+                    return result
                 case _:
                     raise LookupError("Failed to find class...  this shouldn't happen")
-        return [x for tp in self.trait_params if isinstance(tp, t.ClassSpec) and tp.is_concrete() for x in find_in_class(tp)]
+        return [x for tp in self.trait_params if isinstance(tp, t.ClassSpec) and tp.is_concrete()
+                for x in find_in_class(tp)]
 
     def _find_generic_types(self, names: set[str]) -> list[g.Resolved[TypeStatement]]:
         return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.match_names(tp.name, names)]
@@ -271,8 +290,11 @@ class ClassStatement(TypeStatement):
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         # Resolve each of the inherited types and update the implements list
+        # Use a resolver that includes this class's own generic type params so that
+        # e.g. `TVal` in `class Foo<TVal> : Bar<TVal>` resolves to GenericPlaceholderSpec.
+        type_resolver = g.ResolverType(resolver, self._find_generic_types)
         unpacked_implements = [y for x in self.implements for y in (x.types if isinstance(x, t.CombinationSpec) else [x])]
-        resolved_inheritance = c.find_classes_or_error(unpacked_implements, resolver)
+        resolved_inheritance = c.find_classes_or_error(unpacked_implements, type_resolver)
         resolved_classes = [(xtype, xcls) for (xtype, xcls) in resolved_inheritance if isinstance(xcls, ClassStatement)]
         classes = [xcls for (xtype, xcls) in resolved_classes]
         new_implements = [xtype for (xtype, xcls) in resolved_inheritance]
@@ -282,9 +304,23 @@ class ClassStatement(TypeStatement):
         parent_slots = [y for x in classes for y in (x._all_slots or [])]
         new_all_slots = c.override_inherited_slots(resolver, base_slots, parent_slots)
 
-        # Build transitive parent set using resolved xtypes (which preserve type_params)
-        # so that monomorphization can later update generic interface names in _all_parents.
-        new_all_parents = {y for x in classes for y in (x._all_parents or [])} | {xtype for (xtype, xcls) in resolved_classes}
+        # Build transitive parent set, substituting type params so that e.g.
+        # `class Foo : Bar<Int>` where `Bar<TVal> : Baz<TVal>` gets `Baz<Int>` (not `Baz<TVal>`)
+        # in its transitive parents, enabling monomorphization and trait lookup to work correctly.
+        new_all_parents: set[t.TypeSpec] = set()
+        for xtype, xcls in resolved_classes:
+            new_all_parents.add(xtype)
+            if xcls._all_parents:
+                if isinstance(xtype, t.ClassSpec) and xcls.type_params and xtype.type_params:
+                    mapping = {p.name: concrete for p, concrete in zip(xcls.type_params, xtype.type_params)}
+                    def replace_fn(_, thing, m=mapping):
+                        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
+                            return m[thing.name]
+                        return thing
+                    for parent in xcls._all_parents:
+                        new_all_parents.add(parent.search_and_replace(resolver, replace_fn))
+                else:
+                    new_all_parents.update(xcls._all_parents)
 
         # Recurse to compile parameters and statements
         new_parameters, prm_glb = self.parameters.compile(resolver, None)
@@ -335,8 +371,8 @@ class ClassStatement(TypeStatement):
         ast_functions = [fnc for fnc in self.statements if isinstance(fnc, FunctionStatement)]
         gen_functions = [fnc.global_codegen(resolver) for fnc in ast_functions]
 
-        extends = () if self.is_interface else tuple(x.as_unique_id_str() for x in self._all_parents)
-        functions = () if self.is_interface else tuple((y, x.name) for x in self._all_slots for y in x.provides)
+        extends = () if self.is_interface else tuple(sorted(x.as_unique_id_str() for x in self._all_parents if x.as_unique_id_str()))
+        functions = () if self.is_interface else tuple((y, x.name) for x in self._all_slots for y in sorted(x.provides))
 
         function_names = {f for s,f in functions}
         thunks = [c.create_thunk(self.name ,x) for x in self.parameters.flatten() if x.name in function_names]

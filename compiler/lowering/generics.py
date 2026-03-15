@@ -115,7 +115,7 @@ def __create_specialized_statements(
     Keep original generic statements (they'll be pruned later).
     """
     specialized: list[s.Statement] = []
-    all_refs = data_refs | type_refs
+    all_refs = sorted(data_refs | type_refs, key=lambda item: (item[0], tuple(tp.as_unique_id_str() or "" for tp in item[1])))
 
     for stmt in statements:
         if isinstance(stmt, s.NamedStatement) and stmt.type_params:
@@ -207,34 +207,35 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
     resolver = g.ResolverRoot(statements)
     traits = resolver.get_traits()
 
+    def implements_trait(tr: s.LetStatement, trait_spec: t.ClassSpec) -> bool:
+        if not isinstance(tr.declared_type, t.ClassSpec):
+            return False
+        classes = resolver.find_type({tr.declared_type.name})
+        if len(classes) != 1 or not isinstance(classes[0].statement, s.ClassStatement):
+            return False
+        cls = classes[0].statement
+        if cls._all_parents is None:
+            return False
+        return any(isinstance(p, t.ClassSpec) and p.name == trait_spec.name
+                   and (not trait_spec.type_params or p.type_params == trait_spec.type_params)
+                   for p in cls._all_parents)
+
     def redirect(r: g.Resolver, thing):
         if not isinstance(thing, e.NamedExpression):
             return thing
 
-        datas = r.find_data({thing.name})
-        if len(datas) != 1 or datas[0].scope != g.ResolvedScope.TRAIT:
-            return thing
+        # Use the trait_scope recorded during compilation if available, otherwise derive it.
+        if thing.resolved_trait_scope is not None:
+            trait_spec = thing.resolved_trait_scope
+        else:
+            datas = r.find_data({thing.name})
+            if len(datas) != 1 or datas[0].scope != g.ResolvedScope.TRAIT:
+                return thing
+            trait_spec = datas[0].trait_scope
+            if not isinstance(trait_spec, t.ClassSpec):
+                return thing
 
-        trait_spec = datas[0].trait_scope
-        if not isinstance(trait_spec, t.ClassSpec):
-            return thing
-
-        # Find the [trait] let whose declared class implements the required trait.
-        # After monomorphization, _all_parents is updated (via search_and_replace traversal)
-        # so entries match the monomorphized trait_spec.name directly.
-        def implements_trait(tr: s.LetStatement) -> bool:
-            if not isinstance(tr.declared_type, t.ClassSpec):
-                return False
-            classes = r.find_type({tr.declared_type.name})
-            if len(classes) != 1 or not isinstance(classes[0].statement, s.ClassStatement):
-                return False
-            cls = classes[0].statement
-            if cls._all_parents is None:
-                return False
-            return any(isinstance(p, t.ClassSpec) and p.name == trait_spec.name
-                       for p in cls._all_parents)
-
-        providers = [tr for tr in traits if implements_trait(tr)]
+        providers = [tr for tr in traits if implements_trait(tr, trait_spec)]
         if len(providers) != 1:
             return thing
 

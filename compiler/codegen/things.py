@@ -189,7 +189,7 @@ class Global:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
             return (f"{self.__prototype(type_cache)} = {{\n"
-             f"    (const vtable_t const *)&obj_{self.to_c_name()}\n"
+             f"    (const vtable_t const *)&obj_{mangle_name(self.object_name)}\n"
              + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
              f"}};\n")
         else:

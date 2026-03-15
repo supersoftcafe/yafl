@@ -50,7 +50,7 @@ def main():
     # print(f"Input files: {args.files}")
 
     files = [c._read_source(Path(x)) for x in args.files]
-    c_code = c.compile(files, use_stdlib=True, just_testing=False)
+    c_code = c.compile(files, use_stdlib=True, just_testing=False, optimization_level=int(args.O))
 
     if c_code:
         if args.c:

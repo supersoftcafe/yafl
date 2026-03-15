@@ -81,7 +81,8 @@ class Application:
     def __gen_global(self, name: str, g: Global):
         self.__forwards.append(g.to_c_prototype(self.__type_cache))
         self.__variables.append(g.to_c_implement(self.__type_cache))
-        self.__gc_roots.extend(g.type.get_pointer_paths(g.to_c_name()))
+        if not g.object_name:
+            self.__gc_roots.extend(g.type.get_pointer_paths(g.to_c_name()))
 
     def __declare_roots(self) -> str:
         declarations = ";\n    ".join([f"declare(&{r})" for r in self.__gc_roots])
