@@ -62,8 +62,8 @@ class Type(ABC):
     def declare(self, type_cache: Dict[Type, (str, str)]) -> str:
         return self._declare(type_cache, "    ")
 
-    def get_pointer_paths(self, path: str) -> set[str]:
-        return set()
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return []
 
 
 _str_escape_table = str.maketrans({f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))})
@@ -82,8 +82,8 @@ class Str(Type):
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return "object_t*"
 
-    def get_pointer_paths(self, path: str) -> set[str]:
-        return {path}
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return [path]
 
 @dataclass(frozen=True)
 class Int(Type):
@@ -123,8 +123,8 @@ class Int(Type):
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return f"int{self.precision}_t" if self.precision != 0 else "object_t*"
 
-    def get_pointer_paths(self, path: str) -> set[str]:
-        return {path} if self.precision == 0 else {}
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return [path] if self.precision == 0 else []
 
 
 @dataclass(frozen=True)
@@ -153,8 +153,8 @@ class DataPointer(Type):
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return "object_t*"
 
-    def get_pointer_paths(self, path: str) -> set[str]:
-        return {path}
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return [path]
 
 
 @dataclass(frozen=True)
@@ -187,8 +187,8 @@ class FuncPointer(Type):
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return "fun_t"
 
-    def get_pointer_paths(self, path: str) -> set[str]:
-        return {f"{path}.o"}
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return [f"{path}.o"]
 
 
 @dataclass(frozen=True)
@@ -232,7 +232,7 @@ class Struct(Type):
         if any(missing_names):
             raise ValueError(f"Fields {missing_names} are not present in the struct for initialisation")
         new_indent = field_indent + "    "
-        strings = ",".join(f"\n{new_indent}.{mangle_name(name)} = {data[name]}" for name, field_type in self.fields if name in data)
+        strings = ",".join(f"\n{new_indent}.{mangle_name(name)} = {field_type._initialise(type_cache, data[name], new_indent)}" for name, field_type in self.fields if name in data)
         return f"{{ {strings} \n{field_indent}}}"
 
     def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
@@ -261,8 +261,8 @@ class Void(Type):
     def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
         return "void"
 
-    def get_pointer_paths(self, path: str) -> set[str]:
-        return set()
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return []
 
 
 @dataclass(frozen=True)

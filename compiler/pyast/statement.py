@@ -81,8 +81,17 @@ class NamedStatement(Statement):
                     return result
                 case _:
                     raise LookupError("Failed to find class...  this shouldn't happen")
-        return [x for tp in self.trait_params if isinstance(tp, t.ClassSpec) and tp.is_concrete()
-                for x in find_in_class(tp)]
+        specs: set[t.ClassSpec] = set()
+        ordered_specs: list[t.ClassSpec] = []
+        for tp in self.trait_params:
+            if isinstance(tp, t.ClassSpec) and tp.is_concrete() and tp not in specs:
+                specs.add(tp)
+                ordered_specs.append(tp)
+        for iface in resolver.get_implicit_where_specs():
+            if isinstance(iface, t.ClassSpec) and iface.is_concrete() and iface not in specs:
+                specs.add(iface)
+                ordered_specs.append(iface)
+        return [x for tp in ordered_specs for x in find_in_class(tp)]
 
     def _find_generic_types(self, names: set[str]) -> list[g.Resolved[TypeStatement]]:
         return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.match_names(tp.name, names)]
@@ -423,6 +432,10 @@ class LetStatement(DataStatement):
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
+        if dt is None and dv is not None:
+            inferred = dv.get_type(resolver)
+            if inferred is not None:
+                dt = inferred
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
         return stmt, dv_glb+dt_glb
 

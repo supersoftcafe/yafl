@@ -255,9 +255,9 @@ def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, lis
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
-def __to_type_alias(result: p.Result[tuple[str, t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
-    name, typespec = result.value
-    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, (), typespec)
+def __to_type_alias(result: p.Result[tuple[dict, str, t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
+    attributes, name, typespec = result.value
+    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, (), typespec)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression|None]]:
@@ -316,8 +316,9 @@ __parse_type_any = p.delimited_list(__parse_type_any2, "|") >> __to_tagged_spec_
 ##############
 ## Expressions
 
+__parse_attr_name = p.ident() | p.sym(["where", "let", "fun", "class", "interface", "ret", "import", "namespace"])
 __parse_attributes = p.maybe(p.discard_sym("[") & p.delimited_list(
-    p.ident() & p.maybe(p.discard_sym("=") & (__string() | __integer()))
+    __parse_attr_name & p.maybe(p.discard_sym("=") & (__string() | __integer()))
     , ",") & p.discard_sym("]")) >> __to_attributes
 
 def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[s.LetStatement]:
@@ -389,7 +390,7 @@ __parse_let = p.block(p.requires(
 
 __parse_type_alias = p.block(p.requires(
     p.discard_sym("typealias"),
-    (p.ident() & p.discard_sym(":") & __parse_type) >> __to_type_alias,
+    (__parse_attributes & p.ident() & p.discard_sym(":") & __parse_type) >> __to_type_alias,
     "invalid typealias statement"))
 
 __parse_import = p.block(p.requires(

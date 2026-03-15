@@ -109,6 +109,9 @@ class Resolver:
     def get_traits(self) -> list[s.LetStatement]:
         return []
 
+    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+        return []
+
 
 def simple_name(name: str) -> str:
     return name.rpartition('@')[0] or name
@@ -141,6 +144,11 @@ class ResolverRoot(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__traits
 
+    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+        return [st.type for st in self.__statements
+                if isinstance(st, s.TypeAliasStatement) and 'where' in st.attributes
+                and isinstance(st.type, t.ClassSpec) and st.type.is_concrete()]
+
 
 class AddScopeResolution(Resolver):
     __parent: Resolver
@@ -170,6 +178,9 @@ class AddScopeResolution(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
+    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs()
+
 
 class ResolverType(Resolver):
     __parent: Resolver
@@ -188,6 +199,9 @@ class ResolverType(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
+    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs()
+
 
 class ResolverData(Resolver):
     __parent: Resolver
@@ -205,4 +219,7 @@ class ResolverData(Resolver):
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
+
+    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs()
 

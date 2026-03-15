@@ -4,6 +4,8 @@ typealias String : __builtin_type__<str>
 
 let [trait] _string_trait: _BasicPlusString = _BasicPlusString()
 
+typealias [where] _WhereBasicPlusString : BasicPlus<System::String>
+
 class _BasicPlusString() : BasicPlus<String>
   fun `+`(left: System::String, right: System::String): System::String
     ret __builtin_op__<str>("string_append", left, right)

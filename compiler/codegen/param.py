@@ -79,8 +79,8 @@ class NewStruct(RParam): # Create a new blank instance of the defined struct
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         xtype = self.get_type()
         type_name = xtype.declare(type_cache)
-        init_values = {name: expr.to_c(type_cache) for name, expr in self.values}
-        return f"({type_name}){xtype.initialise(type_cache, init_values)}"
+        fields = "".join(f"\n        .{t.mangle_name(name)} = {expr.to_c(type_cache)}," for name, expr in self.values)
+        return f"({type_name}){{{fields}\n    }}"
 
     def get_live_vars(self) -> frozenset[StackVar]:
         return frozenset(y for xname, x in self.values for y in x.get_live_vars())

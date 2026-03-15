@@ -6,6 +6,8 @@ typealias Bool : __builtin_type__<bool>
 
 let [trait] int_trait: _BasicMathInt = _BasicMathInt()
 
+typealias [where] _WhereBasicMathInt : BasicMath<System::Int>
+
 class _BasicMathInt() : BasicMath<System::Int>
   fun `+`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_add", left, right)
