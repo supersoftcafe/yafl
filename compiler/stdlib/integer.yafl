@@ -3,6 +3,8 @@ namespace System
 typealias Int32 : __builtin_type__<int32>
 typealias Int : __builtin_type__<bigint>
 typealias Bool : __builtin_type__<bool>
+typealias None : ()
+let None:None = ()
 
 let [trait] int_trait: _BasicMathInt = _BasicMathInt()
 

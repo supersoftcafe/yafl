@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import langtools
+import pyast.utils
 from parselib import Error
 import pyast.resolver as g
 import pyast.statement as s
@@ -346,8 +347,8 @@ class TupleSpec(TypeSpec):
         return all(x.type and x.type.is_concrete() for x in self.entries)
 
     def _compile(self, resolver: g.Resolver) ->  tuple[TupleSpec, list[s.Statement]]:
-        new_entries, new_errors = zip(*[x.compile(resolver) for x in self.entries])
-        return dataclasses.replace(self, entries = new_entries), [x for stm in new_errors for x in stm]
+        new_entries, new_statements = pyast.utils.flatten_lists(x.compile(resolver) for x in self.entries)
+        return dataclasses.replace(self, entries = new_entries), new_statements
 
     def check(self, resolver: g.Resolver) -> list[Error]:
         # All named parameters must come after all positional parameters
