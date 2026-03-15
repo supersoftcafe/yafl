@@ -1,0 +1,33 @@
+# Demonstrates the static-init optimisation.
+#
+# At -O1, the compiler detects that:
+#   1. LOCAL_ORIGIN is created with all-literal fields and promotes it to a
+#      C static global (no heap allocation).
+#   2. DEFAULT_CONFIG is a global let whose initialiser has all-literal fields,
+#      so its lazy-init machinery is eliminated and it becomes a direct C
+#      static struct (no lazy_global_init_complete check at runtime).
+#
+# Compile with:
+#   python main.py -O1 -c out.c samples/static_init_demo.yafl
+# Then inspect out.c: you should see no object_create() call for Point or
+# Config, and no lazy_global_init_complete() call.
+
+namespace Demo
+
+import System
+
+class Point(x: System::Int, y: System::Int)
+
+class Config(width: System::Int, height: System::Int)
+
+let defaultConfig: Config = Config(800, 600)
+
+fun getOriginX(): System::Int where BasicMath<System::Int>
+    let origin: Point = Point(0, 0)
+    ret origin.x
+
+fun main(): System::Int where BasicMath<System::Int>
+    let w: System::Int = defaultConfig.width
+    let h: System::Int = defaultConfig.height
+    let ox: System::Int = getOriginX()
+    ret w + h + ox

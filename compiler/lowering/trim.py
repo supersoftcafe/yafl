@@ -98,7 +98,8 @@ def __scan_global(g: Global) -> _scan_sets:
     rp = __scan_rparam(g.init) if g.init else _scan_sets()
     lf = _scan_sets(f=frozenset({g.lazy_init_function})) if g.lazy_init_function else _scan_sets()
     lv = _scan_sets(g=frozenset({g.lazy_init_flag})) if g.lazy_init_flag else _scan_sets()
-    return rp | lf | lv
+    on = _scan_sets(o=frozenset({g.object_name})) if g.object_name else _scan_sets()
+    return rp | lf | lv | on
 
 def __scan_object(o: Object) -> _scan_sets:
     return _scan_sets(f=frozenset(rn for vn, rn in o.functions), o=frozenset(o.extends))

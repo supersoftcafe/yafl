@@ -18,17 +18,18 @@ def _gen_function_ids(global_ids: dict[str, int]) -> str:
 
 # Aggregates all application data for code generation
 class Application:
-    functions: Dict[str, Function] = { }
-    objects: Dict[str, Object] = { }
-    globals: Dict[str, Global] = { }
+    def __init__(self):
+        self.functions: Dict[str, Function] = {}
+        self.objects: Dict[str, Object] = {}
+        self.globals: Dict[str, Global] = {}
 
-    __type_cache: dict[Type, tuple[str, str]] = { }
-    __typedefs : list[str] = []
-    __forwards : list[str] = []
-    __vtables  : list[str] = []
-    __variables: list[str] = []
-    __functions: list[str] = []
-    __gc_roots:  list[str] = []
+        self.__type_cache: dict[Type, tuple[str, str]] = {}
+        self.__typedefs: list[str] = []
+        self.__forwards: list[str] = []
+        self.__vtables: list[str] = []
+        self.__variables: list[str] = []
+        self.__functions: list[str] = []
+        self.__gc_roots: list[str] = []
 
 
     def __gen_function(self, name: str, f: Function):

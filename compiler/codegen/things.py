@@ -171,12 +171,12 @@ class Global:
         if self.object_name and self.init:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
-            last_element = self.init.values[-1]
-            if isinstance(last_element, p.InitArray):
+            if self.init.values and isinstance(self.init.values[-1], p.InitArray):
                 return (f"static struct {{\n"
                         + "".join(f"    {value.get_type().declare(type_cache)} {name};\n" for name, value in self.init.values) +
                         f"}}[1] {self.to_c_name()}")
-            return f"static {mangle_name(self.object_name)}_t[1] {self.to_c_name()}"
+            # Static object globals are declared as object_t* pointing to a named struct
+            return f"static object_t* {self.to_c_name()}"
         return f"static {self.type.declare(type_cache)} {self.to_c_name()}"
 
     def to_c_prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
@@ -188,10 +188,19 @@ class Global:
         if self.object_name:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
-            return (f"{self.__prototype(type_cache)} = {{\n"
-             f"    (const vtable_t const *)&obj_{mangle_name(self.object_name)}\n"
-             + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
-             f"}};\n")
+            if self.init.values and isinstance(self.init.values[-1], p.InitArray):
+                return (f"{self.__prototype(type_cache)} = {{\n"
+                 f"    (const vtable_t const *)&obj_{mangle_name(self.object_name)}\n"
+                 + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
+                 f"}};\n")
+            # Generate a named struct for the data, then a pointer to it
+            data_name = f"{self.to_c_name()}_data"
+            struct_body = ("    (const vtable_t const *)&obj_{}\n".format(mangle_name(self.object_name))
+                           + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
+            return (f"static {mangle_name(self.object_name)}_t {data_name} = {{\n"
+                    f"{struct_body}"
+                    f"}};\n"
+                    f"static object_t* {self.to_c_name()} = (object_t*)&{data_name};\n")
         else:
             return f"{self.__prototype(type_cache)} = {self.init.to_c(type_cache)};"
 

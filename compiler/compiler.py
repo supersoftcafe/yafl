@@ -9,6 +9,8 @@ import lowering.globalinit
 import lowering.lambdas
 import lowering.generics
 import lowering.inlining
+import lowering.staticinit
+import lowering.deadstores
 import lowering.cps
 import lowering.trim
 
@@ -118,6 +120,21 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
         a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
         a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+
+        # Dead store elimination: remove StackVar assignments whose value is never read.
+        # After inlining, trait-object `this` variables often become dead; removing them
+        # lets trim cascade and eliminate entire vtables and trait implementations.
+        a = lowering.trim.removed_unused_stuff(lowering.deadstores.eliminate_dead_stores(a))
+
+        # Static init optimisation: promote NewObject with all-literal fields to static globals,
+        # then inline single-use static globals into their lazy-init targets.
+        a = lowering.staticinit.convert_static_objects_pass(a)
+        a = lowering.staticinit.convert_static_objects_pass(a)
+        a = lowering.staticinit.convert_static_objects_pass(a)
+        a = lowering.staticinit.convert_static_objects_pass(a)
+
+        # Dead store elimination again: static-init may expose additional dead stores.
+        a = lowering.trim.removed_unused_stuff(lowering.deadstores.eliminate_dead_stores(a))
 
     # Lazy initialisation must be after inlining, and before CPS conversion.
     a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
