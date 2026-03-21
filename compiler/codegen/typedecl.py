@@ -65,6 +65,9 @@ class Type(ABC):
     def get_pointer_paths(self, path: str) -> list[str]:
         return []
 
+    def get_maybe_pointer_paths(self, path: str) -> list[str]:
+        return []
+
 
 _str_escape_table = str.maketrans({f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))})
 
@@ -246,6 +249,10 @@ class Struct(Type):
         return [pointer_path for name, field_type in self.fields for pointer_path in
                 field_type.get_pointer_paths(f"{path}.{mangle_name(name)}")]
 
+    def get_maybe_pointer_paths(self, path: str) -> List[str]:
+        return [p for name, field_type in self.fields
+                for p in field_type.get_maybe_pointer_paths(f"{path}.{mangle_name(name)}")]
+
 
 
 @dataclass(frozen=True)
@@ -308,3 +315,28 @@ class Array(Type):
     def get_pointer_paths(self, path: str) -> List[str]:
         return [pointer_path for index in range(self.length) for pointer_path in
                 self.type.get_pointer_paths(f"{path}.a[{index}]")]
+
+
+@dataclass(frozen=True)
+class UnionPayload(Type):
+    """C union payload for a tagged union. Each variant is a named member _v0, _v1, ...
+    All pointer slots are conservatively scanned (maybe-pointer); none are definite."""
+    variants: tuple[Type, ...]
+
+    @property
+    def _dont_cache(self) -> bool:
+        return True
+
+    def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+        new_indent = field_indent + "    "
+        members = "".join(
+            f"\n{field_indent}{v._declare(type_cache, new_indent)} _v{i};"
+            for i, v in enumerate(self.variants))
+        return f"union {{{members}\n{field_indent[:-4]}}}"
+
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return []  # No definite pointers — all handled via maybe-pointer scanning
+
+    def get_maybe_pointer_paths(self, path: str) -> list[str]:
+        return [p for i, v in enumerate(self.variants)
+                for p in v.get_pointer_paths(f"{path}._v{i}")]

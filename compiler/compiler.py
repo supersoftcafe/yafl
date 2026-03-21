@@ -11,6 +11,7 @@ import lowering.generics
 import lowering.inlining
 import lowering.staticinit
 import lowering.deadstores
+import lowering.unions
 import lowering.cps
 import lowering.trim
 
@@ -81,7 +82,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
 
 
 
-def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0) -> str:
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None) -> str:
     a = Application()
     resolver = g.ResolverRoot(statements)
     for stmt in statements:
@@ -110,6 +111,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 raise ValueError(f"Unexpected type {type(stmt)}")
 
     a.functions["__entrypoint__"] = __create_entry_point(main)
+    a.union_discriminators = union_discriminators or {}
 
     a = lowering.trim.removed_unused_stuff(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
@@ -205,7 +207,8 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
-    return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level)
+    union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
+    return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators)
 
 
 def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[Error]]:

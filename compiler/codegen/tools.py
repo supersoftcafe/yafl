@@ -12,3 +12,7 @@ def mangle_name(symbol: str) -> str:
 def to_pointer_mask(field_type: codegen.typedecl.Type, type_str: str) -> str:
     mask = "".join(f"|maskof({type_str}, {path})" for path in field_type.get_pointer_paths(""))
     return f"(0{mask})"
+
+def to_maybe_pointer_mask(field_type: codegen.typedecl.Type, type_str: str) -> str:
+    mask = "".join(f"|maskof({type_str}, {path})" for path in field_type.get_maybe_pointer_paths(""))
+    return f"(0{mask})"

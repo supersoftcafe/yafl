@@ -86,8 +86,17 @@ class CallableSpec(TypeSpec):
         if not isinstance(right, CallableSpec):
             return False
 
-        # Simple check for results
-        result_result = trivially_assignable_equals(resolver, self.result, right.result)
+        # Return types must be equivalent (bidirectionally assignable).
+        # Callables do not auto-widen return types — no implicit thunk generation.
+        result_fwd = trivially_assignable_equals(resolver, self.result, right.result)
+        result_rev = trivially_assignable_equals(resolver, right.result, self.result)
+        if result_fwd is False or result_rev is False:
+            result_result = False
+        elif result_fwd is True and result_rev is True:
+            result_result = True
+        else:
+            result_result = None
+
         # Direction swaps for parameters
         params_result = trivially_assignable_equals(resolver, right.parameters, self.parameters)
 
@@ -301,13 +310,39 @@ class CombinationSpec(TypeSpec):
         return [y for x in self.types for y in x.check(resolver)]
 
     def generate(self) -> cg_t.Type:
-        raise NotImplementedError("Can't generate tagged unions, yet!")
+        variant_types = [v.generate() for v in self.types]
+        unit = cg_t.Struct(())
+        non_unit = [vt for vt in variant_types if vt != unit]
+        if all(vt.get_pointer_paths("x") == ["x"] for vt in non_unit):
+            return cg_t.DataPointer()  # null sentinel for unit (None) variant(s)
+        return cg_t.Struct((
+            ("$tag", cg_t.Int(32)),
+            ("$val", cg_t.UnionPayload(tuple(variant_types)))
+        ))
 
     def as_unique_id_str(self) -> str|None:
-        raise NotImplementedError("Can't generate tagged unions, yet!")
+        ids = [x.as_unique_id_str() for x in self.types]
+        if not all(ids):
+            return None
+        return f"union({','.join(sorted(ids))})"
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
-        raise NotImplementedError("Can't generate tagged unions, yet!")
+        if isinstance(right, NamedSpec):
+            return None  # Not resolved yet
+        right_types = right.types if isinstance(right, CombinationSpec) else [right]
+        # Every type in right must be assignable to some type in self
+        outer: list[bool | None] = []
+        for right_t in right_types:
+            inner = [trivially_assignable_equals(resolver, left_t, right_t) for left_t in self.types]
+            if any(r is True for r in inner):
+                outer.append(True)
+            elif all(r is False for r in inner):
+                outer.append(False)
+            else:
+                outer.append(None)
+        if all(r is True for r in outer): return True
+        if any(r is False for r in outer): return False
+        return None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
         new_self = dataclasses.replace(self, types=[tp.search_and_replace(resolver, replace) for tp in self.types])

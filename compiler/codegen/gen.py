@@ -22,6 +22,7 @@ class Application:
         self.functions: Dict[str, Function] = {}
         self.objects: Dict[str, Object] = {}
         self.globals: Dict[str, Global] = {}
+        self.union_discriminators: Dict[str, int] = {}  # as_unique_id_str() → global discriminator ID
 
         self.__type_cache: dict[Type, tuple[str, str]] = {}
         self.__typedefs: list[str] = []
@@ -72,7 +73,9 @@ class Application:
             f"    .object_size = {o.get_object_size(type_cache)},\n"
             f"    .array_el_size = {o.get_array_el_size(type_cache)},\n"
             f"    .object_pointer_locations = {o.get_pointer_mask(type_cache)},\n"
+            f"    // .object_maybe_pointer_locations = {o.get_maybe_pointer_mask(type_cache)},\n"
             f"    .array_el_pointer_locations = {o.get_array_pointer_mask(type_cache)},\n"
+            f"    // .array_el_maybe_pointer_locations = {o.get_array_maybe_pointer_mask(type_cache)},\n"
             f"    .functions_mask = rotate_function_id({vtable_size-1}),\n"
             f"    .array_len_offset = {o.get_array_length_offset(type_cache)},\n"
             f"    .implements_array = VTABLE_IMPLEMENTS({len(implements_array)}, {implements_str}),\n"

@@ -295,7 +295,7 @@ __parse_statement = p.Parser(parse_statement)
 ############
 ## TypeSpecs
 
-__parse_maybe_colon_type = p.maybe(p.requires(p.sym(":"), __parse_type, "missing type")) >> __to_flat_type_list
+__parse_maybe_colon_type = p.maybe(p.requires(p.sym(":"), __parse_type, "missing type"))
 __parse_maybe_equal_expr = p.maybe(p.requires(p.sym("="), __parse_expression, "missing default value"))
 
 __parse_maybe_generic_spec = p.maybe(p.requires(
