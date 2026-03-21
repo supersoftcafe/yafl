@@ -169,7 +169,7 @@ def __create_launchpad_func(fn: Function, heap_object_name: str, basic_blocks: l
             save_vars = [Move(field, var) for var, field in basic_block.live.items()]
             # TODO: Might want to default init other members
             parameters = __append_to_struct(op.parameters, __continuation_param_var.name, GlobalFunction(f"{fn.name}${basic_block.name}", __frame_param_var))
-            tailcall = dataclasses.replace(op, musttail=True, parameters=parameters)
+            tailcall = dataclasses.replace(op, musttail=True, register=None, parameters=parameters)
             return [constructor] + save_vars + [tailcall]
         return [op2 for op1 in basic_block.ops for op2 in transform_op(op1)]
 
