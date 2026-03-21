@@ -334,9 +334,17 @@ class UnionPayload(Type):
             for i, v in enumerate(self.variants))
         return f"union {{{members}\n{field_indent[:-4]}}}"
 
+    def _all_pointer_like(self) -> bool:
+        non_unit = [v for v in self.variants if v != Struct(())]
+        return bool(non_unit) and all(v.get_pointer_paths("x") == ["x"] for v in non_unit)
+
     def get_pointer_paths(self, path: str) -> list[str]:
-        return []  # No definite pointers — all handled via maybe-pointer scanning
+        if self._all_pointer_like():
+            return [path]  # every variant is a single pointer word — definite pointer
+        return []
 
     def get_maybe_pointer_paths(self, path: str) -> list[str]:
+        if self._all_pointer_like():
+            return []  # definite pointer, not maybe
         return [p for i, v in enumerate(self.variants)
                 for p in v.get_pointer_paths(f"{path}._v{i}")]
