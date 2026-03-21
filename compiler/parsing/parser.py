@@ -8,7 +8,7 @@ from typing import Generic, TypeVar
 import pyast.expression as e
 import pyast.statement as s
 import pyast.typespec as t
-import parselib as p
+import parsing.parselib as p
 import pyast.utils
 
 

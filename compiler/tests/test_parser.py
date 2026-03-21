@@ -2,9 +2,9 @@
 from unittest import TestCase
 from pathlib import Path
 
-from tokenizer import tokenize
+from parsing.tokenizer import tokenize
 
-import parser as p
+import parsing.parser as p
 import pyast.expression as e
 import pyast.statement as s
 import pyast.typespec as t

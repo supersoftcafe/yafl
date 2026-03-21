@@ -9,14 +9,14 @@ from dataclasses import dataclass, field
 
 import langtools
 import pyast.utils
-from parselib import Error
+from parsing.parselib import Error
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.expression as e
 
 import codegen.typedecl as cg_t
 
-from tokenizer import LineRef
+from parsing.tokenizer import LineRef
 
 
 @dataclass(frozen=True)

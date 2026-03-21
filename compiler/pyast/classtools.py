@@ -11,7 +11,7 @@ import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
 import pyast.statement as s
-import parselib as p
+import parsing.parselib as p
 
 import codegen.ops as cg_o
 import codegen.param as cg_p

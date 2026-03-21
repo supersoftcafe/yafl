@@ -8,7 +8,7 @@ import pyast.typespec as t
 import pyast.utils as u
 from pyast.typespec import TupleEntrySpec
 
-from tokenizer import LineRef
+from parsing.tokenizer import LineRef
 
 
 class Test(TestCase):

@@ -3,9 +3,9 @@ from unittest import TestCase
 import re
 
 
-import tokenizer as t
+import parsing.tokenizer as t
 import compiler as c
-import parser as p
+import parsing.parser as p
 
 
 class Test(TestCase):

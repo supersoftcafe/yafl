@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 from dataclasses import dataclass, field
-from tokenizer import *
+from parsing.tokenizer import *
 
 
 T = TypeVar('T')

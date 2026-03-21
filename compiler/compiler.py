@@ -27,9 +27,9 @@ import pyast.resolver as g
 import pyast.typespec as t
 from dataclasses import dataclass, fields
 
-from tokenizer import tokenize, LineRef
-from parselib import Error
-from parser import parse
+from parsing.tokenizer import tokenize, LineRef
+from parsing.parselib import Error
+from parsing.parser import parse
 from pathlib import Path
 
 

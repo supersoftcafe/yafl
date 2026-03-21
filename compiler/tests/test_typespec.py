@@ -2,7 +2,7 @@ from unittest import TestCase
 
 import pyast.typespec as t
 import pyast.resolver as g
-from tokenizer import LineRef
+from parsing.tokenizer import LineRef
 
 glb = g.ResolverRoot([])
 lr = LineRef("f", 0, 0)

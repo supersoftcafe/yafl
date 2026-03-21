@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from functools import reduce
 
 from langtools import cast
-from tokenizer import LineRef
-from parselib import Error
+from parsing.tokenizer import LineRef
+from parsing.parselib import Error
 
 import codegen.ops as cg_o
 import codegen.param as cg_p

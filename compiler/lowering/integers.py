@@ -7,7 +7,7 @@ import pyast.resolver as g
 import pyast.typespec as t
 
 from pyast.statement import ImportGroup
-from tokenizer import LineRef
+from parsing.tokenizer import LineRef
 
 
 def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:

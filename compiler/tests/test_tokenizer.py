@@ -2,7 +2,7 @@
 from unittest import TestCase
 from pathlib import Path
 
-from tokenizer import tokenize, TokenKind
+from parsing.tokenizer import tokenize, TokenKind
 
 
 class Test(TestCase):
