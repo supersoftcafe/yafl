@@ -331,3 +331,38 @@ def convert_static_objects_pass(app: Application) -> Application:
     app = promote_static_objects(app)
     app = inline_single_use_globals(app)
     return lowering.trim.removed_unused_stuff(app)
+
+
+def _resolve_rparam_constants(val: RParam, globals: dict) -> RParam | None:
+    """Replace GlobalVar refs in val with traced Integer/String constants, or None if any fails."""
+    if isinstance(val, (Integer, String)):
+        return val
+    if isinstance(val, GlobalVar):
+        return _trace_to_constant(val, {}, globals)
+    if isinstance(val, NewStruct):
+        resolved = []
+        for name, v in val.values:
+            r = _resolve_rparam_constants(v, globals)
+            if r is None:
+                return None
+            resolved.append((name, r))
+        return NewStruct(tuple(resolved))
+    return None
+
+
+def resolve_flat_struct_global_inits(app: Application) -> Application:
+    """Resolve GlobalVar refs in flat-struct global inits to Integer/String constants."""
+    updated: dict[str, Global] = {}
+    for name, g in app.globals.items():
+        if g.object_name is not None or g.lazy_init_function or not isinstance(g.init, NewStruct):
+            continue
+        resolved = _resolve_rparam_constants(g.init, app.globals)
+        if resolved is not None and resolved != g.init:
+            updated[name] = dataclasses.replace(g, init=resolved)
+    if not updated:
+        return app
+    new_app = Application()
+    new_app.globals = {name: updated.get(name, g) for name, g in app.globals.items()}
+    new_app.objects = app.objects
+    new_app.functions = app.functions
+    return new_app

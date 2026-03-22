@@ -111,7 +111,12 @@ def __calculate_saved_vars(fn: Function) -> Function:
             return next_live | op.saved_vars
         def calc(index: int) -> Op:
             op = fn.ops[index]
-            ss1 = frozenset() if isinstance(op, Jump) or index >= len(fn.ops)-1 else saved_set_at(index+1)
+            if index >= len(fn.ops) - 1:
+                ss1 = frozenset()
+            elif isinstance(op, Jump):
+                ss1 = saved_set_at(labels[op.name]) if op.name in labels else frozenset()
+            else:
+                ss1 = saved_set_at(index + 1)
             ss2 = frozenset() if not isinstance(op, JumpIf) else saved_set_at(labels[op.label])
             this_live, this_dead = op.get_live_vars()
             saved_vars = (ss1 | ss2) - this_dead
@@ -203,9 +208,21 @@ def __create_continuation_funcs(fn: Function, basic_blocks: list[BasicBlock]) ->
         # Convert all var refs to field refs
         # Give function name using the label name as well
         name = f"{fn.name}${basic_block.name}"
-        params, assignment =\
-            (Struct((__frame_param_decl, ("$value", basic_block.result.get_type()))), [Move(basic_block.result, StackVar(basic_block.result.get_type(), "$value"))])\
-            if basic_block.result else (Struct((__frame_param_decl,)), [])
+        if basic_block.result is None:
+            params = Struct((__frame_param_decl,))
+            assignment = []
+        else:
+            result_type = basic_block.result.get_type()
+            if isinstance(result_type, Struct) and len(result_type.fields) > 1:
+                # Flatten multi-field struct into individual params to match how
+                # Call.to_c passes NewStruct values (each field as a separate arg).
+                flat_decls = tuple((f"$value_{i}", ft) for i, (_, ft) in enumerate(result_type.fields))
+                params = Struct((__frame_param_decl,) + flat_decls)
+                struct_fields = tuple((f_name, StackVar(ft, f"$value_{i}")) for i, (f_name, ft) in enumerate(result_type.fields))
+                assignment = [Move(basic_block.result, NewStruct(struct_fields))]
+            else:
+                params = Struct((__frame_param_decl, ("$value", result_type)))
+                assignment = [Move(basic_block.result, StackVar(result_type, "$value"))]
         ops = __convert_var_to_field_refs(assignment + [Jump(basic_block.name)] + all_ops, vars_to_fields)
         return dataclasses.replace(fn, ops=ops, name=name, params=params)
 

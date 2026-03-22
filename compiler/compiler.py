@@ -10,6 +10,7 @@ import lowering.globalinit
 import lowering.lambdas
 import lowering.generics
 import lowering.inlining
+import lowering.simple_classes
 import lowering.staticinit
 import lowering.deadstores
 import lowering.unions
@@ -139,6 +140,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         # Dead store elimination again: static-init may expose additional dead stores.
         a = lowering.trim.removed_unused_stuff(lowering.deadstores.eliminate_dead_stores(a))
 
+    # Resolve GlobalVar refs in flat-struct global inits to Integer/String constants so that
+    # lowered simple-class globals (e.g. Config(13)) become valid C static initialisers.
+    a = lowering.staticinit.resolve_flat_struct_global_inits(a)
+
     # Lazy initialisation must be after inlining, and before CPS conversion.
     a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
 
@@ -209,6 +214,7 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
     new_statements = lowering.integers.fix_global_integers(new_statements)
     new_statements = lowering.boxing.insert_boxing(new_statements)
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
+    new_statements = lowering.simple_classes.lower_simple_classes(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
     return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators)
 

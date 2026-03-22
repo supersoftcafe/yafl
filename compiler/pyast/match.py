@@ -135,8 +135,14 @@ class MatchExpression(e.Expression):
 
         if len(prims) == 1:
             si, _ = slot_assignments[0]
+            slot_value = cg_p.StructField(sv, slot_fields[si][0])
+            if isinstance(arm_ctype, cg_t.Struct):
+                field_name = arm_ctype.fields[0][0]
+                arm_value = cg_p.NewStruct(((field_name, slot_value),))
+            else:
+                arm_value = slot_value
             bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
-                                             operations=(cg_o.Move(arm_sv, cg_p.StructField(sv, slot_fields[si][0])),)))
+                                             operations=(cg_o.Move(arm_sv, arm_value),)))
         else:
             assert isinstance(arm_ctype, cg_t.Struct), f"Multi-primitive non-struct arm type {arm_ctype}"
             field_values: list[tuple[str, cg_p.RParam]] = []
@@ -215,14 +221,17 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
 
+            arm_local = []
             arm_resolver = resolver
             if arm.name and arm.name != "_":
                 var_idx = next((idx for idx, vt in enumerate(variant_types) if vt == arm_ctype), None)
                 if var_idx is not None:
                     arm_resolver = self.__bind_arm_var(
-                        arm, arm_ctype, variant_map[var_idx], slot_fields, sv, resolver, bundles)
+                        arm, arm_ctype, variant_map[var_idx], slot_fields, sv, resolver, arm_local)
 
-            self.__emit_arm_body(arm, arm_resolver, f"a{i}", result_var, bundles)
+            self.__emit_arm_body(arm, arm_resolver, f"a{i}", result_var, arm_local)
+            if arm_local:
+                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{i}_"))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 

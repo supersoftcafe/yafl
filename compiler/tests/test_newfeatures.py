@@ -119,6 +119,21 @@ fun main(): System::Int
         self.assertNotEqual("", result)
         print(result)
 
+    def test_action_statement(self):
+        """Bare expression statement: effectful call result is discarded, return value is unaffected."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun sideEffect(x: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", x, x)
+
+fun main(): System::Int
+    sideEffect(99)
+    ret 7
+"""
+        code = _compile_and_run(content)
+        self.assertEqual(7, code)
+
     def test_bind_operator_runs(self):
         """?> operator compiles and the binary produces the expected exit code."""
         content = """namespace System

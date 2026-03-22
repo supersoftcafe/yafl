@@ -193,8 +193,9 @@ class DotExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         btype = self.base.get_type(resolver)
         match btype:
-            case t.TupleSpec(_, entries, _):
-                raise ValueError("Dot operator on tuple not implemented yet")
+            case t.TupleSpec(entries=entries):
+                entry = next((en for en in entries if en.name == self.name), None)
+                return entry.type if entry else None
             case t.ClassSpec(_, cname):
                 cdecl = resolver.find_type({cname})
                 if not cdecl or len(cdecl) > 1:
@@ -214,8 +215,8 @@ class DotExpression(Expression):
 
         btype = base.get_type(resolver)
         match btype:
-            case t.TupleSpec(_, entries, _):
-                raise ValueError("Dot operator on tuple not implemented yet")
+            case t.TupleSpec():
+                pass  # field name is already the tuple entry name
             case t.ClassSpec(_, cname):
                 cdecl = resolver.find_type({cname})
                 if not cdecl or len(cdecl) > 1:
@@ -233,8 +234,11 @@ class DotExpression(Expression):
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         btype = self.base.get_type(resolver)
         match btype:
-            case t.TupleSpec(_, entries, _):
-                raise ValueError("Dot operator on tuple not implemented yet")
+            case t.TupleSpec(entries=entries):
+                entry = next((en for en in entries if en.name == self.name), None)
+                if not entry:
+                    return [Error(self.line_ref, f"Could not find field {self.name}")]
+                return []
             case t.ClassSpec(_, cname):
                 cdecl = resolver.find_type({cname})
                 if not cdecl or len(cdecl) > 1:
@@ -253,8 +257,12 @@ class DotExpression(Expression):
         base_bundle = self.base.generate(resolver)
         btype = self.base.get_type(resolver)
         match btype:
-            case t.TupleSpec(_, entries, _):
-                raise ValueError("Dot operator on tuple not implemented yet")
+            case t.TupleSpec(entries=entries):
+                idx = next((i for i, en in enumerate(entries) if en.name == self.name), None)
+                if idx is None:
+                    raise ValueError(f"Field {self.name} not found in TupleSpec")
+                result_var = cg_p.StructField(base_bundle.result_var, f"_{idx}")
+                return base_bundle + g.OperationBundle((), (), result_var)
 
             case t.ClassSpec(_, cname):
                 cdecl = cast(s.ClassStatement, resolver.find_type({cname})[0].statement)
@@ -724,6 +732,9 @@ class BoxExpression(Expression):
             return []  # unit variant: no slot values
         if len(inner_prims) == 1:
             si, _ = slot_assignments[0]
+            if isinstance(inner_ctype, cg_t.Struct):
+                field_name = inner_ctype.fields[0][0]
+                return [(slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name))]
             return [(slot_fields[si][0], inner_bundle.result_var)]
         # Multi-primitive variant: inner must be a flat Struct; map each field to its union slot.
         assert isinstance(inner_ctype, cg_t.Struct), \
