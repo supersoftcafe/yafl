@@ -137,12 +137,16 @@ class StructField(RParam):
 
     def get_type(self) -> t.Type:
         xtype = self.struct.get_type()
-        if not isinstance(xtype, t.Struct):
-            raise ValueError("Incorrect type of 'struct'")
-        xtype = next(type for name, type in xtype.fields if name == self.field)
-        if not xtype:
-            raise ValueError(f"Field '{self.field}' not found in 'struct'")
-        return xtype
+        if isinstance(xtype, t.Struct):
+            fields = xtype.fields
+        elif isinstance(xtype, t.UnionContainer):
+            fields = xtype.slots
+        else:
+            raise ValueError(f"StructField requires a Struct or UnionContainer, got {xtype}")
+        result = next((ftype for name, ftype in fields if name == self.field), None)
+        if result is None:
+            raise ValueError(f"Field '{self.field}' not found")
+        return result
 
     def rename_vars(self, renames: dict[str, str]) -> StructField:
         return dataclasses.replace(self, struct = self.struct.rename_vars(renames))
@@ -178,6 +182,104 @@ class Integer(RParam):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return self.get_type().initialise(type_cache,self.value)
+
+
+@dataclass(frozen=True)
+class IntEqConst(RParam):
+    """Emits `(value == const_val)` — used for $tag comparison in match arms."""
+    value: RParam
+    const_val: int
+
+    def get_type(self) -> t.Int:
+        return t.Int(32)
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.value.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.value.test(predicate)
+
+    def rename_vars(self, renames: dict[str, str]) -> RParam:
+        return dataclasses.replace(self, value=self.value.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, value=self.value.replace_params(replacer)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.value.get_live_vars()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"({self.value.to_c(type_cache)} == {self.const_val})"
+
+
+@dataclass(frozen=True)
+class NullPointer(RParam):
+    """A null data pointer — used when boxing unit/None into a DataPointer union."""
+    def get_type(self) -> t.DataPointer:
+        return t.DataPointer()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return "((object_t*)0)"
+
+
+@dataclass(frozen=True)
+class NewStructTyped(RParam):
+    """Compound literal with an explicit type — required when the inferred type of the values
+    would differ from the intended container type (e.g. a DataPointer value stored in a Str slot).
+
+    Always constructed via union_struct(), which zero-fills every unspecified slot so all
+    pointer slots are null-initialised for GC safety.
+    """
+    struct_type: t.UnionContainer
+    values: tuple[tuple[str, RParam], ...]
+
+    def __post_init__(self):
+        expected = {name for name, _ in self.struct_type.slots}
+        provided = {name for name, _ in self.values}
+        assert expected == provided, \
+            f"NewStructTyped: missing slots {expected - provided}, unexpected {provided - expected}"
+
+    def get_type(self) -> t.Type:
+        return self.struct_type
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + [p for _, v in self.values for p in v.flatten()]
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or any(v.test(predicate) for _, v in self.values)
+
+    def rename_vars(self, renames: dict[str, str]) -> RParam:
+        return dataclasses.replace(self, values=tuple((n, v.rename_vars(renames)) for n, v in self.values))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, values=tuple((n, v.replace_params(replacer)) for n, v in self.values)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return frozenset(lv for _, v in self.values for lv in v.get_live_vars())
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        type_name = self.struct_type.declare(type_cache)
+        fields = "".join(f"\n        .{t.mangle_name(name)} = {v.to_c(type_cache)}," for name, v in self.values)
+        return f"({type_name}){{{fields}\n    }}"
+
+
+def _zero_for(field_type: t.Type) -> RParam:
+    """Return a zero-valued RParam for the given primitive slot type."""
+    if isinstance(field_type, (t.DataPointer, t.Str)) or (isinstance(field_type, t.Int) and field_type.precision == 0):
+        return NullPointer()
+    if isinstance(field_type, t.Int):
+        return Integer(0, field_type.precision)
+    if isinstance(field_type, t.IntPtr):
+        return Integer(0, 64)
+    raise ValueError(f"No zero value defined for slot type {field_type}")
+
+
+def union_struct(container: t.UnionContainer, named_values: dict[str, RParam]) -> NewStructTyped:
+    """Build an exhaustive NewStructTyped for a UnionContainer, zero-filling any unspecified slots."""
+    return NewStructTyped(container, tuple(
+        (name, named_values.get(name, _zero_for(slot_type)))
+        for name, slot_type in container.slots
+    ))
 
 
 @dataclass(frozen=True)

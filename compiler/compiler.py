@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+import lowering.boxing
 import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
@@ -84,7 +85,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
 
 def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None) -> str:
     a = Application()
-    resolver = g.ResolverRoot(statements)
+    resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {})
     for stmt in statements:
         match stmt:
             case s.FunctionStatement() as f:
@@ -206,6 +207,7 @@ def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
+    new_statements = lowering.boxing.insert_boxing(new_statements)
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
     return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators)

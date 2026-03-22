@@ -1,6 +1,12 @@
 from unittest import TestCase
 
 import compiler as c
+from tests.testutil import compile_and_run
+
+
+def _compile_and_run(content: str, timeout: int = 5) -> int:
+    code, _ = compile_and_run(content, timeout)
+    return code
 
 
 class TestNewFeatures(TestCase):
@@ -81,7 +87,7 @@ fun print(str: System::String): System::Int
     ret __builtin_op__<bigint>("print", str)
 
 fun unwrap(in: String|None): System::Int
-    ret match in
+    ret match(in)
         (x:String) => print(x)
         (x:None) => 0
 
@@ -94,12 +100,15 @@ fun main(): System::Int
         print(result)
 
     def test_bind_operator(self):
-        """The ?> bind operator should thread a T|None value through a function returning T|None."""
+        """?> parses as a call operator: A ?> B desugars to `?>`(A, B)."""
         content = """namespace System
 typealias Int : __builtin_type__<bigint>
 typealias String : __builtin_type__<str>
 fun print(str: System::String): System::Int
     ret __builtin_op__<bigint>("print", str)
+
+fun `?>`(val: System::String, f: (:System::String):System::Int): System::Int
+    ret f(val)
 
 fun main(): System::Int
     ret "Hello"
@@ -109,3 +118,20 @@ fun main(): System::Int
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
+
+    def test_bind_operator_runs(self):
+        """?> operator compiles and the binary produces the expected exit code."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun `?>`(val: System::Int, f: (:System::Int):System::Int): System::Int
+    ret f(val)
+
+fun double(x: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", x, x)
+
+fun main(): System::Int
+    ret 3 ?> double
+"""
+        code = _compile_and_run(content)
+        self.assertEqual(6, code)

@@ -6,6 +6,7 @@ from functools import reduce
 from typing import Generic, TypeVar
 
 import pyast.expression as e
+import pyast.match as m
 import pyast.statement as s
 import pyast.typespec as t
 import parsing.parselib as p
@@ -181,6 +182,24 @@ def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
+def __to_match_arm(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
+    params, body = result.value
+    if len(params) == 0:
+        return p.Result(m.MatchArm(result.line_ref, None, None, body), result.tokens, result.line_ref, result.errors)
+    if len(params) == 1:
+        param = params[0]
+        raw_name = param.name.split('@')[0]
+        name = None if raw_name == '_' else raw_name
+        return p.Result(m.MatchArm(result.line_ref, name, param.declared_type, body), result.tokens, result.line_ref, result.errors)
+    errors = result.errors + [p.Error(result.line_ref, "match arm must have exactly one parameter")]
+    return p.Result(None, result.tokens, result.line_ref, errors)
+
+
+def __to_match_expression(result: p.Result[tuple[e.Expression, list[m.MatchArm]]], tokens: list[p.Token]) -> p.Result[m.MatchExpression]:
+    subject, arms = result.value
+    return p.Result(m.MatchExpression(result.line_ref, subject, arms), result.tokens, result.line_ref, result.errors)
+
+
 def __to_import_statement(result: p.Result[list[str]], tokens: list[p.Token]) -> p.Result[s.ImportStatement]:
     return p.Result(s.ImportStatement(result.line_ref, '::'.join(result.value)),
                   result.tokens, result.line_ref, result.errors)
@@ -342,7 +361,12 @@ __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expr
 __parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & p.ident() & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
 __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params) >> __to_named_fully_qualified
 
-__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_named_fully_qualified | __parse_lambda | __parse_expr_tuple
+# match arm: "(" name ":" type ")" "=>" expr  |  "()" "=>" expr
+__parse_match_arm = p.block((__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
+__parse_match_subject = p.requires(p.sym("("), __parse_expression & p.discard_sym(")"), "invalid match subject")
+__parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression") >> __to_match_expression
+
+__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_expr_tuple
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
@@ -350,7 +374,8 @@ __parse_pipeline= (__parse_invoke   & p.many(p.discard_sym("|>")    & __parse_in
 __parse_divmul  = (__parse_pipeline & p.many(p.sym(["%", "/", "*"]) & __parse_pipeline  )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
 __parse_compare = (__parse_addsub   & p.many(p.sym(["<", "=", ">"]) & __parse_addsub    )) >> __to_call_operators
-__parse_ternery = (__parse_compare  & p.many(p.discard_sym("?") & __parse_compare & p.discard_sym(":") & __parse_compare )) >> __to_ternery
+__parse_bind    = (__parse_compare  & p.many(p.sym("?>")             & __parse_compare   )) >> __to_call_operators
+__parse_ternery = (__parse_bind     & p.many(p.discard_sym("?") & __parse_bind & p.discard_sym(":") & __parse_bind)) >> __to_ternery
 
 
 #############

@@ -313,7 +313,7 @@ class CombinationSpec(TypeSpec):
         variant_types = [v.generate() for v in self.types]
         unit = cg_t.Struct(())
         non_unit = [vt for vt in variant_types if vt != unit]
-        if all(vt.get_pointer_paths("x") == ["x"] for vt in non_unit):
+        if len(non_unit) == 1 and non_unit[0].get_pointer_paths("x") == ["x"]:
             return cg_t.DataPointer()  # null sentinel for unit (None) variant(s)
         container, _ = cg_t.UnionContainer.compute(variant_types)
         return container

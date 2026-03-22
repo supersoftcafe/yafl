@@ -57,14 +57,14 @@ class Token:
     line_ref: LineRef
 
 
-__keywords = ["ret", "let", "fun", "typealias", "where", "class", "interface", "import", "namespace", "__builtin_type__", "__builtin_op__"]
+__keywords = ["ret", "let", "fun", "typealias", "where", "class", "interface", "import", "namespace", "__builtin_type__", "__builtin_op__", "match"]
 __ws = re.compile(r"[\t\v ]+")
 __kinds = [
     (__ws, None),  # White space
     (re.compile(r"#.*"), None),  # Line comment
     (re.compile(r"\"([^\"]|(\\\\)|(\\\"))*\"?"), TokenKind.STRING),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
-    (re.compile(r"(\|>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
+    (re.compile(r"(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
     (re.compile(r"\d[\w_]*((\.[a-df-zA-DF-Z\d_]*)?([eE][+-][\w_]*)|(\.[\w_]*))?"), TokenKind.NUMBER),
     (re.compile(r"."), TokenKind.CRAP)
 ]

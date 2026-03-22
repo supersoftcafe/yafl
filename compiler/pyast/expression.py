@@ -567,7 +567,7 @@ class TupleEntryExpression:
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[TupleEntryExpression, list[s.Statement]]:
         new_value, new_statements = self.value.compile(resolver, expected_type)
-        return dataclasses.replace(self, value = new_value), new_statements
+        return dataclasses.replace(self, value=new_value), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return self.value.check(resolver, expected_type)
@@ -589,8 +589,10 @@ class TupleExpression(Expression):
         return t.TupleSpec(self.line_ref, entries = entries)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        # TODO: Split the expected type, if tuple, and pass it through
-        p = [x.compile(resolver, None) for x in self.expressions]
+        expected_entries = expected_type.entries if isinstance(expected_type, t.TupleSpec) else []
+        def entry_expected(i: int) -> t.TypeSpec | None:
+            return expected_entries[i].type if i < len(expected_entries) else None
+        p = [x.compile(resolver, entry_expected(i)) for i, x in enumerate(self.expressions)]
         new_expressions, new_statements_lists = zip(*p) if p else ([], [])
         expr = dataclasses.replace(self, expressions=list(new_expressions))
         return expr, list(x for l in new_statements_lists for x in l)
@@ -665,3 +667,193 @@ class TerneryExpression(Expression):
         result = (cond_bundle + cond_bundle_suffix + false_bundle + false_bundle_suffix + true_bundle + true_bundle_suffix)
 
         return result.rename_vars("")
+
+
+
+@dataclass
+class BoxExpression(Expression):
+    """Widen a value of a variant type into its enclosing union type."""
+    inner: Expression
+    union_spec: t.CombinationSpec
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            inner=self.inner.search_and_replace(resolver, replace),
+            union_spec=cast(t.CombinationSpec, self.union_spec.search_and_replace(resolver, replace)))))
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec:
+        return self.union_spec
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        inner, stmts = self.inner.compile(resolver, None)
+        union_spec, spec_stmts = self.union_spec.compile(resolver)
+        return dataclasses.replace(self, inner=inner, union_spec=cast(t.CombinationSpec, union_spec)), stmts + spec_stmts
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return self.inner.check(resolver, None)
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        inner_bundle = self.inner.generate(resolver)
+        target_ctype = self.union_spec.generate()
+
+        # DataPointer union: exactly one non-unit pointer variant + optional unit (None)
+        if isinstance(target_ctype, cg_t.DataPointer):
+            inner_ctype = self.inner.get_type(resolver).generate()
+            if inner_ctype == cg_t.Struct(()):  # unit/None variant
+                return g.OperationBundle(inner_bundle.stack_vars, inner_bundle.operations, cg_p.NullPointer())
+            return inner_bundle  # Already a DataPointer — pass through
+
+        # UnionContainer union
+        assert isinstance(target_ctype, cg_t.UnionContainer), f"Expected UnionContainer, got {target_ctype}"
+        variant_types = [v.generate() for v in self.union_spec.types]
+        _, variant_map = cg_t.UnionContainer.compute(variant_types)
+
+        inner_ctype = self.inner.get_type(resolver).generate()
+        variant_idx = next(i for i, vt in enumerate(variant_types) if vt == inner_ctype)
+
+        discriminators = resolver.get_discriminators()
+        tag_value = discriminators.get(self.union_spec.types[variant_idx].as_unique_id_str(), 0)
+        slot_values = self.__build_variant_slots(inner_ctype, inner_bundle, variant_map[variant_idx], target_ctype.slots)
+        slot_values.append(("$tag", cg_p.Integer(tag_value, 32)))
+        return inner_bundle + g.OperationBundle((), (), cg_p.union_struct(target_ctype, dict(slot_values)))
+
+    def __build_variant_slots(self, inner_ctype, inner_bundle, slot_assignments, slot_fields):
+        """Map the inner value's primitives to their union slots; returns slot (name, value) pairs."""
+        inner_prims = cg_t._flatten_primitives(inner_ctype)
+        if len(inner_prims) == 0:
+            return []  # unit variant: no slot values
+        if len(inner_prims) == 1:
+            si, _ = slot_assignments[0]
+            return [(slot_fields[si][0], inner_bundle.result_var)]
+        # Multi-primitive variant: inner must be a flat Struct; map each field to its union slot.
+        assert isinstance(inner_ctype, cg_t.Struct), \
+            f"Boxing multi-primitive non-struct type {inner_ctype} not yet supported"
+        result = []
+        for prim_idx, (field_name, field_type) in enumerate(inner_ctype.fields):
+            assert len(cg_t._flatten_primitives(field_type)) == 1, \
+                f"Nested multi-primitive struct field '{field_name}: {field_type}' in boxing not yet supported"
+            si, _ = slot_assignments[prim_idx]
+            result.append((slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name)))
+        return result
+
+
+@dataclass
+class WideExpression(Expression):
+    """Widen a value of one union type to a strictly wider union type.
+
+    Handles DataPointer → UnionContainer (null-check) and
+    UnionContainer → UnionContainer (tag-based re-slot) widening.
+    """
+    inner: Expression
+    source_spec: t.CombinationSpec
+    target_spec: t.CombinationSpec
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            inner=self.inner.search_and_replace(resolver, replace),
+            source_spec=cast(t.CombinationSpec, self.source_spec.search_and_replace(resolver, replace)),
+            target_spec=cast(t.CombinationSpec, self.target_spec.search_and_replace(resolver, replace)))))
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec:
+        return self.target_spec
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        inner, stmts = self.inner.compile(resolver, None)
+        src, src_stmts = self.source_spec.compile(resolver)
+        tgt, tgt_stmts = self.target_spec.compile(resolver)
+        return dataclasses.replace(self,
+            inner=inner,
+            source_spec=cast(t.CombinationSpec, src),
+            target_spec=cast(t.CombinationSpec, tgt)), stmts + src_stmts + tgt_stmts
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return self.inner.check(resolver, None)
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        inner_bundle = self.inner.generate(resolver)
+        src_ctype = self.source_spec.generate()
+        tgt_ctype = self.target_spec.generate()
+        assert isinstance(tgt_ctype, cg_t.UnionContainer), \
+            f"WideExpression: target must be UnionContainer, got {tgt_ctype}"
+
+        tgt_container, tgt_variant_map = cg_t.UnionContainer.compute([v.generate() for v in self.target_spec.types])
+        discriminators = resolver.get_discriminators()
+        result_var = cg_p.StackVar(tgt_ctype, "wide_result")
+        end_label = "wide_end"
+        sv = inner_bundle.result_var
+
+        if isinstance(src_ctype, cg_t.DataPointer):
+            body = self.__widen_from_datapointer(
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label)
+        else:
+            assert isinstance(src_ctype, cg_t.UnionContainer), \
+                f"WideExpression: source must be DataPointer or UnionContainer, got {src_ctype}"
+            body = self.__widen_from_container(
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label)
+
+        bundles = [inner_bundle] + body + [g.OperationBundle(operations=(cg_o.Label(end_label),), result_var=result_var)]
+        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+
+    def __widen_from_datapointer(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
+                                  discriminators, result_var, end_label):
+        """Widen a DataPointer union (null = unit/None, non-null = pointer variant) to a UnionContainer."""
+        unit_type = cg_t.Struct(())
+        src_variant_types = [v.generate() for v in self.source_spec.types]
+        ptr_variant = next((v for v, vt in zip(self.source_spec.types, src_variant_types) if vt != unit_type), None)
+        unit_variant = next((v for v, vt in zip(self.source_spec.types, src_variant_types) if vt == unit_type), None)
+        assert ptr_variant is not None, "DataPointer union must have a non-unit pointer variant"
+
+        null_label = "wide_null"
+        ptr_uid = ptr_variant.as_unique_id_str()
+        ptr_tag = discriminators.get(ptr_uid, 0)
+        tgt_ptr_idx = next((i for i, v in enumerate(self.target_spec.types) if v.as_unique_id_str() == ptr_uid), None)
+        slot_values = [(tgt_slot_fields[tgt_si][0], sv) for tgt_si, _ in tgt_variant_map[tgt_ptr_idx]] \
+            if tgt_ptr_idx is not None else []
+        slot_values.append(("$tag", cg_p.Integer(ptr_tag, 32)))
+
+        unit_tag = discriminators.get(unit_variant.as_unique_id_str(), 0) if unit_variant else 0
+
+        return [
+            g.OperationBundle(operations=(cg_o.JumpIf(null_label, cg_p.IntEqConst(sv, 0)),)),
+            g.OperationBundle(stack_vars=(result_var,),
+                              operations=(cg_o.Move(result_var, cg_p.union_struct(tgt_ctype, dict(slot_values))),)),
+            g.OperationBundle(operations=(cg_o.Jump(end_label), cg_o.Label(null_label))),
+            g.OperationBundle(operations=(cg_o.Move(result_var,
+                                                     cg_p.union_struct(tgt_ctype, {"$tag": cg_p.Integer(unit_tag, 32)})),)),
+        ]
+
+    def __widen_from_container(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
+                                discriminators, result_var, end_label):
+        """Widen a UnionContainer to a wider UnionContainer by re-slotting each variant."""
+        src_variant_types = [v.generate() for v in self.source_spec.types]
+        _, src_variant_map = cg_t.UnionContainer.compute(src_variant_types)
+        src_tag_field = cg_p.StructField(sv, "$tag")
+
+        bundles = []
+        first_arm = True
+        for i, src_var in enumerate(self.source_spec.types):
+            var_uid = src_var.as_unique_id_str()
+            var_tag = discriminators.get(var_uid, 0)
+            arm_label, next_label = f"wide_arm_{i}", f"wide_next_{i}"
+
+            tgt_var_idx = next(
+                (ti for ti, tv in enumerate(self.target_spec.types) if tv.as_unique_id_str() == var_uid), None)
+            slot_values = []
+            if tgt_var_idx is not None:
+                for pi in range(len(cg_t._flatten_primitives(src_var.generate()))):
+                    tgt_si, _ = tgt_variant_map[tgt_var_idx][pi]
+                    src_si, _ = src_variant_map[i][pi]
+                    slot_values.append((tgt_slot_fields[tgt_si][0], cg_p.StructField(sv, src_ctype.slots[src_si][0])))
+            slot_values.append(("$tag", cg_p.Integer(var_tag, 32)))
+
+            bundles.append(g.OperationBundle(operations=(
+                cg_o.JumpIf(arm_label, cg_p.IntEqConst(src_tag_field, var_tag)),
+                cg_o.Jump(next_label), cg_o.Label(arm_label),
+            )))
+            bundles.append(g.OperationBundle(
+                stack_vars=(result_var,) if first_arm else (),
+                operations=(cg_o.Move(result_var, cg_p.union_struct(tgt_ctype, dict(slot_values))),
+                             cg_o.Jump(end_label))))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+            first_arm = False
+        return bundles

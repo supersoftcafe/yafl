@@ -552,7 +552,7 @@ class ReturnStatement(Statement):
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
         new_value, stmts = self.value.compile(resolver, func_ret_type)
-        return dataclasses.replace(self, value = new_value),[]
+        return dataclasses.replace(self, value=new_value), []
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         xtype = self.value.get_type(resolver)

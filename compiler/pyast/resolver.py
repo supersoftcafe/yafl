@@ -112,6 +112,9 @@ class Resolver:
     def get_implicit_where_specs(self) -> list[t.TypeSpec]:
         return []
 
+    def get_discriminators(self) -> dict[str, int]:
+        return {}
+
 
 def simple_name(name: str) -> str:
     return name.rpartition('@')[0] or name
@@ -181,6 +184,9 @@ class AddScopeResolution(Resolver):
     def get_implicit_where_specs(self) -> list[t.TypeSpec]:
         return self.__parent.get_implicit_where_specs()
 
+    def get_discriminators(self) -> dict[str, int]:
+        return self.__parent.get_discriminators()
+
 
 class ResolverType(Resolver):
     __parent: Resolver
@@ -202,6 +208,9 @@ class ResolverType(Resolver):
     def get_implicit_where_specs(self) -> list[t.TypeSpec]:
         return self.__parent.get_implicit_where_specs()
 
+    def get_discriminators(self) -> dict[str, int]:
+        return self.__parent.get_discriminators()
+
 
 class ResolverData(Resolver):
     __parent: Resolver
@@ -222,4 +231,31 @@ class ResolverData(Resolver):
 
     def get_implicit_where_specs(self) -> list[t.TypeSpec]:
         return self.__parent.get_implicit_where_specs()
+
+    def get_discriminators(self) -> dict[str, int]:
+        return self.__parent.get_discriminators()
+
+
+class ResolverDiscriminators(Resolver):
+    __parent: Resolver
+    __discriminators: dict[str, int]
+
+    def __init__(self, parent: Resolver, discriminators: dict[str, int]):
+        self.__parent = parent
+        self.__discriminators = discriminators
+
+    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
+        return self.__parent.find_type(names)
+
+    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
+        return self.__parent.find_data(names)
+
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__parent.get_traits()
+
+    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs()
+
+    def get_discriminators(self) -> dict[str, int]:
+        return self.__discriminators
 
