@@ -315,10 +315,8 @@ class CombinationSpec(TypeSpec):
         non_unit = [vt for vt in variant_types if vt != unit]
         if all(vt.get_pointer_paths("x") == ["x"] for vt in non_unit):
             return cg_t.DataPointer()  # null sentinel for unit (None) variant(s)
-        return cg_t.Struct((
-            ("$tag", cg_t.Int(32)),
-            ("$val", cg_t.UnionPayload(tuple(variant_types)))
-        ))
+        container, _ = cg_t.UnionContainer.compute(variant_types)
+        return container
 
     def as_unique_id_str(self) -> str|None:
         ids = [x.as_unique_id_str() for x in self.types]

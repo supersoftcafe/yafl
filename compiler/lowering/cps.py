@@ -180,9 +180,20 @@ def __create_launchpad_func(fn: Function, heap_object_name: str, basic_blocks: l
 
 def __create_continuation_funcs(fn: Function, basic_blocks: list[BasicBlock]) -> list[Function]:
     vars_to_fields = {var: field for bb in basic_blocks for var, field in bb.live.items()}
-    all_ops = [(op if not isinstance(op, Call) or op.musttail else dataclasses.replace(op, musttail=True)) for bb in basic_blocks for op in bb.ops]
-    # Convert all function calls to continuation tail calls
-    # Append all operations together into a complete list
+
+    def _transform_for_cont(bb: BasicBlock, op: Op) -> list[Op]:
+        if not isinstance(op, Call) or op.musttail:
+            return [op]
+        # Reuse the incoming $frame (no NewObject): after __convert_var_to_field_refs all
+        # live-var reads become ObjectField($frame, name), so overwriting $frame first would
+        # read from an empty new frame.  The incoming frame already holds the correct values
+        # (saved by the launchpad or previous continuation), so save_vars here are no-ops.
+        save_vars = [Move(field, var) for var, field in bb.live.items()]
+        parameters = __append_to_struct(op.parameters, __continuation_param_var.name,
+                                        GlobalFunction(f"{fn.name}${bb.name}", __frame_param_var))
+        return save_vars + [dataclasses.replace(op, musttail=True, register=None, parameters=parameters)]
+
+    all_ops = [op2 for bb in basic_blocks for op1 in bb.ops for op2 in _transform_for_cont(bb, op1)]
 
     def create_cont_func(basic_block: BasicBlock) -> Function:
         # Create function with first param named after heap frame, and second param named something like "$value"

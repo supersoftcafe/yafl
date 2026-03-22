@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Optional, Callable, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
-from codegen.tools import mangle_name, to_pointer_mask, to_maybe_pointer_mask
+from codegen.tools import mangle_name, to_pointer_mask
 
 from codegen.ops import Op, Jump, JumpIf, Return, Label
 
@@ -135,19 +135,10 @@ class Object:
         f = self.fields.fields[1:-1] if self.array_type else self.fields.fields[1:]
         return to_pointer_mask(t.Struct(f), f"{mangle_name(self.name)}_t")
 
-    def get_maybe_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        f = self.fields.fields[1:-1] if self.array_type else self.fields.fields[1:]
-        return to_maybe_pointer_mask(t.Struct(f), f"{mangle_name(self.name)}_t")
-
     def get_array_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         array_type = self.array_type
         if not array_type: return "0"
         return to_pointer_mask(array_type, array_type.declare(type_cache))
-
-    def get_array_maybe_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        array_type = self.array_type
-        if not array_type: return "0"
-        return to_maybe_pointer_mask(array_type, array_type.declare(type_cache))
 
     def get_object_size(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         type_str = f"{mangle_name(self.name)}_t"

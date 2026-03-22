@@ -65,10 +65,6 @@ class Type(ABC):
     def get_pointer_paths(self, path: str) -> list[str]:
         return []
 
-    def get_maybe_pointer_paths(self, path: str) -> list[str]:
-        return []
-
-
 _str_escape_table = str.maketrans({f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))})
 
 @dataclass(frozen=True)
@@ -249,9 +245,6 @@ class Struct(Type):
         return [pointer_path for name, field_type in self.fields for pointer_path in
                 field_type.get_pointer_paths(f"{path}.{mangle_name(name)}")]
 
-    def get_maybe_pointer_paths(self, path: str) -> List[str]:
-        return [p for name, field_type in self.fields
-                for p in field_type.get_maybe_pointer_paths(f"{path}.{mangle_name(name)}")]
 
 
 
@@ -317,34 +310,114 @@ class Array(Type):
                 self.type.get_pointer_paths(f"{path}.a[{index}]")]
 
 
+def _flatten_primitives(t: Type) -> list[Type]:
+    """Recursively decompose a type into its primitive slot types."""
+    if isinstance(t, Struct):
+        return [p for _, ft in t.fields for p in _flatten_primitives(ft)]  # unit → []
+    if isinstance(t, FuncPointer):
+        return [IntPtr(), DataPointer()]  # f=code pointer (non-GC), o=data pointer (GC)
+    if isinstance(t, UnionContainer):
+        return [slot_t for _, slot_t in t.slots]
+    return [t]  # Int, Str, DataPointer, IntPtr — already primitive
+
+
+def _primitive_rank(t: Type) -> int:
+    """Lower rank = stored first in the slot struct."""
+    if isinstance(t, Int) and t.precision == 64: return 0   # Int64 (8 bytes)
+    # Float64 would be rank 0 when added
+    if isinstance(t, (DataPointer, Str)): return 1           # GC pointer
+    if isinstance(t, Int) and t.precision == 0: return 1    # bigint = GC pointer
+    if isinstance(t, IntPtr): return 2                       # non-GC pointer-sized
+    if isinstance(t, Int) and t.precision == 32: return 3   # Int32
+    # Float32 would be rank 3 when added
+    if isinstance(t, Int) and t.precision == 16: return 4   # Int16
+    if isinstance(t, Int) and t.precision == 8: return 5    # Int8/Bool
+    return 6
+
+
+def _can_merge_into(small: Type, large: Type) -> bool:
+    """True if a fixed-width small integer can be stored in a fixed-width larger integer slot."""
+    return (isinstance(small, Int) and isinstance(large, Int)
+            and 0 < small.precision < large.precision)
+
+
 @dataclass(frozen=True)
-class UnionPayload(Type):
-    """C union payload for a tagged union. Each variant is a named member _v0, _v1, ...
-    All pointer slots are conservatively scanned (maybe-pointer); none are definite."""
-    variants: tuple[Type, ...]
+class UnionContainer(Type):
+    """Flat struct payload for a tagged union.
 
-    @property
-    def _dont_cache(self) -> bool:
-        return True
+    Variant types are deconstructed into typed primitive slots.  Same-type slots are
+    shared across mutually-exclusive variants.  Smaller integer slots are merged into
+    larger ones when no variant uses both.  Slots are sorted by rank so pointer slots
+    come before scalar slots, giving the GC precise (never maybe-pointer) information.
+    """
+    slots: tuple[tuple[str, Type], ...]  # (slot_name, slot_type)
 
-    def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare_struct(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         new_indent = field_indent + "    "
         members = "".join(
-            f"\n{field_indent}{v._declare(type_cache, new_indent)} _v{i};"
-            for i, v in enumerate(self.variants))
-        return f"union {{{members}\n{field_indent[:-4]}}}"
-
-    def _all_pointer_like(self) -> bool:
-        non_unit = [v for v in self.variants if v != Struct(())]
-        return bool(non_unit) and all(v.get_pointer_paths("x") == ["x"] for v in non_unit)
+            f"\n{field_indent}{slot_t._declare(type_cache, new_indent)} {mangle_name(name)};"
+            for name, slot_t in self.slots)
+        return f"struct {{{members}\n{field_indent[:-4]}}}"
 
     def get_pointer_paths(self, path: str) -> list[str]:
-        if self._all_pointer_like():
-            return [path]  # every variant is a single pointer word — definite pointer
-        return []
+        return [f"{path}.{mangle_name(name)}"
+                for name, slot_t in self.slots
+                if slot_t.get_pointer_paths("x") == ["x"]]
 
-    def get_maybe_pointer_paths(self, path: str) -> list[str]:
-        if self._all_pointer_like():
-            return []  # definite pointer, not maybe
-        return [p for i, v in enumerate(self.variants)
-                for p in v.get_pointer_paths(f"{path}._v{i}")]
+    @staticmethod
+    def compute(variant_types: list[Type]) -> tuple[UnionContainer, tuple[tuple[tuple[int, Type], ...], ...]]:
+        """Compute the slot layout for a union with the given variant types.
+
+        Returns (UnionContainer, variant_map) where variant_map[i] is a tuple of
+        (slot_index, original_type) for each primitive of variant i.  When original_type
+        differs from the slot type, a smaller int was merged into a larger slot (truncate
+        on read, zero-extend on write).
+        """
+        flat: list[list[Type]] = [_flatten_primitives(vt) for vt in variant_types]
+
+        # slots_list: list of [slot_type, set_of_variant_indices]
+        slots_list: list[list] = []
+        vmap: list[list[tuple[int, Type]]] = [[] for _ in flat]
+
+        for vi, prims in enumerate(flat):
+            for prim in prims:
+                found = next(
+                    (si for si, (st, su) in enumerate(slots_list) if st == prim and vi not in su),
+                    -1)
+                if found >= 0:
+                    slots_list[found][1].add(vi)
+                    vmap[vi].append((found, prim))
+                else:
+                    slots_list.append([prim, {vi}])
+                    vmap[vi].append((len(slots_list) - 1, prim))
+
+        # Merge smaller int slots into larger ones when no variant uses both
+        changed = True
+        while changed:
+            changed = False
+            for si in range(len(slots_list)):
+                if slots_list[si] is None: continue
+                st, su = slots_list[si]
+                for li in range(len(slots_list)):
+                    if li == si or slots_list[li] is None: continue
+                    lt, lu = slots_list[li]
+                    if _can_merge_into(st, lt) and su.isdisjoint(lu):
+                        lu.update(su)
+                        for vi in su:
+                            vmap[vi] = [(li if s == si else s, orig) for s, orig in vmap[vi]]
+                        slots_list[si] = None
+                        changed = True
+                        break
+                if changed: break
+
+        # Collect active slots and sort by rank
+        active = [(si, s) for si, s in enumerate(slots_list) if s is not None]
+        active.sort(key=lambda x: _primitive_rank(x[1][0]))
+        renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
+
+        slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", Int(32)),)
+        variant_map = tuple(
+            tuple((renumber[si], orig) for si, orig in vm)
+            for vm in vmap
+        )
+        return UnionContainer(slots=slot_fields), variant_map

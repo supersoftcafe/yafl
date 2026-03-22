@@ -309,7 +309,11 @@ __parse_type_tuple_or_callable = p.requires(
     p.discard_sym("("),
       ((p.delimited_list(__parse_type_tuple_entry, ",") & p.discard_sym(")") & __parse_maybe_colon_type) >> __to_tuple_or_callable_spec),
     "incomplete structured type")
-__parse_type_any2 = __parse_type_tuple_or_callable | __parse_type_builtin | __parse_type_named
+__parse_type_grouped = p.requires(
+    p.discard_sym("("),
+    __parse_type & p.discard_sym(")"),
+    "incomplete grouped type")
+__parse_type_any2 = __parse_type_tuple_or_callable | __parse_type_grouped | __parse_type_builtin | __parse_type_named
 __parse_type_any = p.delimited_list(__parse_type_any2, "|") >> __to_tagged_spec_or_simple_type
 
 
