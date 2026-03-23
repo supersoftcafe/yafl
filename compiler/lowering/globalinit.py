@@ -40,10 +40,6 @@ def __add_global_init_ops(app: Application, fn: Function) -> Function:
 def add_ops_to_support_global_lazy_init(app: Application) -> Application:
     updated_functions = {name: __add_global_init_ops(app, fn) for name, fn in app.functions.items()}
 
-    new_app = Application()
-    new_app.globals = app.globals
-    new_app.objects = app.objects
-    new_app.functions = updated_functions
-    return new_app
+    return dataclasses.replace(app, functions=updated_functions)
 
 

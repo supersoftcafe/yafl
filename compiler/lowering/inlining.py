@@ -82,9 +82,5 @@ def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
 
 def inline_small_functions(app: Application) -> Application:
     functions: dict[str, Function] = {name: __do_inlining(func, app.functions) for name, func in app.functions.items()}
-    new_app = Application()
-    new_app.globals = app.globals
-    new_app.objects = app.objects
-    new_app.functions = functions
-    return new_app
+    return dataclasses.replace(app, functions=functions)
 

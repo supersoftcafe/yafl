@@ -156,11 +156,7 @@ def promote_static_objects(app: Application) -> Application:
         for g in new_glbs:
             all_new_globals[g.name] = g
 
-    new_app = Application()
-    new_app.globals = {**all_new_globals, **app.globals}
-    new_app.objects = app.objects
-    new_app.functions = new_functions
-    return new_app
+    return dataclasses.replace(app, globals={**all_new_globals, **app.globals}, functions=new_functions)
 
 
 # ── Single-use global inlining ────────────────────────────────────────────────
@@ -312,18 +308,17 @@ def inline_single_use_globals(app: Application) -> Application:
     if not updated_globals:
         return app
 
-    new_app = Application()
-    new_app.globals = {
-        name: updated_globals.get(name, g)
-        for name, g in app.globals.items()
-        if name not in to_remove_globals
-    }
-    new_app.objects = app.objects
-    new_app.functions = {
-        name: fn for name, fn in app.functions.items()
-        if name not in to_remove_functions
-    }
-    return new_app
+    return dataclasses.replace(app,
+        globals={
+            name: updated_globals.get(name, g)
+            for name, g in app.globals.items()
+            if name not in to_remove_globals
+        },
+        functions={
+            name: fn for name, fn in app.functions.items()
+            if name not in to_remove_functions
+        },
+    )
 
 
 def convert_static_objects_pass(app: Application) -> Application:
@@ -361,8 +356,4 @@ def resolve_flat_struct_global_inits(app: Application) -> Application:
             updated[name] = dataclasses.replace(g, init=resolved)
     if not updated:
         return app
-    new_app = Application()
-    new_app.globals = {name: updated.get(name, g) for name, g in app.globals.items()}
-    new_app.objects = app.objects
-    new_app.functions = app.functions
-    return new_app
+    return dataclasses.replace(app, globals={name: updated.get(name, g) for name, g in app.globals.items()})

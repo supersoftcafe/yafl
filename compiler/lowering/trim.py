@@ -122,11 +122,11 @@ def __removed_unused_stuff(from_app: Application, scan_sets: _scan_sets, to_app:
     seen_sets = scan_sets | __reduce_scan_sets(from_globals + from_objects + from_functions)
     new_scan_sets = seen_sets - to_app
     if not new_scan_sets:
-        app = Application()
-        app.globals   = {name: from_app.globals[  name] for name in sorted(to_app.g)}
-        app.objects   = {name: from_app.objects[  name] for name in sorted(to_app.o)}
-        app.functions = {name: from_app.functions[name] for name in sorted(to_app.f)}
-        return app
+        return dataclasses.replace(from_app,
+            globals={name: from_app.globals[name] for name in sorted(to_app.g)},
+            objects={name: from_app.objects[name] for name in sorted(to_app.o)},
+            functions={name: from_app.functions[name] for name in sorted(to_app.f)},
+        )
     return __removed_unused_stuff(from_app, new_scan_sets, seen_sets | to_app)
 
 

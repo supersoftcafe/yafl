@@ -64,8 +64,4 @@ def eliminate_dead_stores_fn(fn: Function) -> Function:
 
 def eliminate_dead_stores(app: Application) -> Application:
     """Remove dead StackVar assignments from all functions."""
-    new_app = Application()
-    new_app.objects = app.objects
-    new_app.globals = app.globals
-    new_app.functions = {name: eliminate_dead_stores_fn(fn) for name, fn in app.functions.items()}
-    return new_app
+    return dataclasses.replace(app, functions={name: eliminate_dead_stores_fn(fn) for name, fn in app.functions.items()})

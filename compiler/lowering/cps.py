@@ -273,9 +273,8 @@ def __convert_function_to_cps(fn: Function) -> tuple[dict[str, Function], dict[s
 
 def convert_application_to_cps(app: Application) -> Application:
     cps_result = [__convert_function_to_cps(fn) for _, fn in app.functions.items()]
-    result = Application()
-    result.functions = reduce(lambda acc, v: acc | v[0], cps_result, dict())
-    result.objects   = reduce(lambda acc, v: acc | v[1], cps_result, dict()) | app.objects
-    result.globals   = app.globals
-    return result
+    return dataclasses.replace(app,
+        functions=reduce(lambda acc, v: acc | v[0], cps_result, dict()),
+        objects=reduce(lambda acc, v: acc | v[1], cps_result, dict()) | app.objects,
+    )
 

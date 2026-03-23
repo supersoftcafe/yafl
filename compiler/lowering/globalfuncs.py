@@ -30,9 +30,5 @@ def discover_global_function_calls(app: Application) -> Application:
     slot_funcs: dict[str, list[str]] = group_by_key(all_slots, lambda s: s[0], lambda s: [x for _,x in s])
     new_functions = {name: __optimize_function_calls(func, slot_funcs) for name, func in app.functions.items()}
 
-    new_app = Application()
-    new_app.globals = app.globals
-    new_app.objects = app.objects
-    new_app.functions = new_functions
-    return new_app
+    return dataclasses.replace(app, functions=new_functions)
 

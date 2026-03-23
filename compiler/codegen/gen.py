@@ -17,13 +17,14 @@ def _gen_function_ids(global_ids: dict[str, int]) -> str:
 
 
 # Aggregates all application data for code generation
+@dataclass
 class Application:
-    def __init__(self):
-        self.functions: Dict[str, Function] = {}
-        self.objects: Dict[str, Object] = {}
-        self.globals: Dict[str, Global] = {}
-        self.union_discriminators: Dict[str, int] = {}  # as_unique_id_str() → global discriminator ID
+    functions: Dict[str, Function] = field(default_factory=dict)
+    objects: Dict[str, Object] = field(default_factory=dict)
+    globals: Dict[str, Global] = field(default_factory=dict)
+    union_discriminators: Dict[str, int] = field(default_factory=dict)  # as_unique_id_str() → global discriminator ID
 
+    def __post_init__(self):
         self.__type_cache: dict[Type, tuple[str, str]] = {}
         self.__typedefs: list[str] = []
         self.__forwards: list[str] = []

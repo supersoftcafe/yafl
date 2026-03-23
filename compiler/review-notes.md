@@ -5,16 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `Application` is a mutable open class; all lowering passes silently drop new fields —
-`codegen/gen.py:20–26`, `lowering/*.py`**
-Every lowering pass constructs a bare `Application()` and assigns only the three core fields
-(`functions`, `objects`, `globals`). The `union_discriminators` field (gen.py:25) is silently
-dropped by all 8 construction sites. Adding any future field requires updating 8+ files by grep.
-In practice `union_discriminators` on `Application` is dead state (discriminators flow via
-`ResolverDiscriminators`, not via `Application`); the field on `Application` should either be
-removed or the passes should copy it. The structural fix is to make `Application` a frozen
-dataclass with a `replace(...)` helper so omissions are caught at construction time.
-
 **[major] `__calculate_saved_vars` in `cps.py` reads stale ops during iteration —
 `lowering/cps.py:112–113`**
 ```python
@@ -135,6 +125,14 @@ properly copied; until then it is harmless dead state.
 ---
 
 ## Fixed
+
+**[major] `Application` is a mutable open class; all lowering passes silently drop new fields —
+`codegen/gen.py:20–26`, `lowering/*.py`**
+_Fixed 2026-03-23._
+Converted `Application` to a `@dataclass` (mutable, non-frozen) with `field(default_factory=dict)`
+for all four public fields; updated all 9 pass-level construction sites to use
+`dataclasses.replace(app, ...)`, which automatically copies `union_discriminators` (and any future
+field) without requiring grep-based updates.
 
 **[critical] Integer literal trimming off-by-one on right boundary — `parsing/parser.py:27`**
 _Fixed 2026-03-23._
