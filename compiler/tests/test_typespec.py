@@ -44,3 +44,13 @@ class TestNamedSpec(TestCase):
         errors = spec.check(resolver)
         self.assertEqual(1, len(errors))
         self.assertIn("Unresolved", errors[0].message)
+
+
+class TestCallableSpec(TestCase):
+    def test_compile_with_none_result(self):
+        # CallableSpec with result=None must not crash when compiled.
+        params = t.TupleSpec(lr, [t.TupleEntrySpec(None, int32)])
+        spec = t.CallableSpec(lr, params, None)
+        compiled, stmts = spec.compile(glb)
+        self.assertIsNone(compiled.result)
+        self.assertEqual([], stmts)

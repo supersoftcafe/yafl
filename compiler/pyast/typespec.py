@@ -68,7 +68,7 @@ class CallableSpec(TypeSpec):
 
     def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         p, pglb = self.parameters.compile(resolver)
-        r, rglb = self.result and self.result.compile(resolver)
+        r, rglb = self.result.compile(resolver) if self.result else (None, [])
         xtype = dataclasses.replace(self, parameters=p, result=r)
         return xtype, pglb+rglb
 

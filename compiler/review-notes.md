@@ -5,13 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Minor
 
-**[minor] `CallableSpec._compile` crashes on `result=None` — `pyast/typespec.py:71`**
-```python
-r, rglb = self.result and self.result.compile(resolver)
-```
-If `self.result` is `None`, the `and` evaluates to `None`, which cannot be unpacked.
-Fix: `(r, rglb) = self.result.compile(resolver) if self.result else (None, [])`.
-
 **[minor] `integers.py` uses `Any` without importing it — `lowering/integers.py:17`**
 `from __future__ import annotations` suppresses the runtime NameError at module load, but mypy,
 `get_type_hints()`, and similar tools will fail.
@@ -149,3 +142,8 @@ current iteration count and is referenced in the `RuntimeError` message.
 **[major] `NamedSpec.check` always returns an error — `pyast/typespec.py:282–286`**
 _Fixed 2026-03-23._
 The `len(types) == 1` success case fell through to the final error return; added `if len(types) == 1: return []` before the fallthrough so a successfully-resolved `NamedSpec` correctly returns no errors.
+
+**[minor] `CallableSpec._compile` crashes on `result=None` — `pyast/typespec.py:71`**
+_Fixed 2026-03-23._
+`self.result and self.result.compile(resolver)` evaluated to `None` when `self.result` is `None`, which cannot be unpacked into `r, rglb`.
+Fixed by replacing with `self.result.compile(resolver) if self.result else (None, [])`.
