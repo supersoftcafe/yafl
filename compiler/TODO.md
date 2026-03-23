@@ -66,3 +66,12 @@ the procedural equivalent of a return statement. It still obeys the
 functional paradigm, but having it inside conditions might imply that
 else blocks are not required. I think that making the break statement
 itself a condition helps to avoid this anti-pattern.
+
+
+# Early returns
+
+I take it all back about having a special syntax for breaks. Early
+returns break that anyway, so we might as well have normal breaks.
+Code analysis will have to check for early return and for break if
+it causes any issues.
+
