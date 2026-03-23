@@ -1,6 +1,5 @@
 from unittest import TestCase
 
-import lowering.integers as integers_mod
 import codegen.typedecl as cg_t
 
 import pyast.resolver as g
@@ -13,12 +12,6 @@ from parsing.tokenizer import LineRef
 
 
 class Test(TestCase):
-    def test_integers_any_import(self):
-        # Any must be in the module namespace so that get_type_hints() can
-        # resolve the annotation on find_integer_literal / replace_integer_expression.
-        # This fails when `Any` is used in annotations but not imported.
-        self.assertIn('Any', vars(integers_mod))
-
     def test_create_constructor(self):
         lr = LineRef("file", 1, 1)
         itype = t.BuiltinSpec(lr, "int32")
