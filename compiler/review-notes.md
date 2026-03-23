@@ -5,11 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Minor
 
-**[minor] Parser `test()` function is dead code — `parsing/parser.py:483–554`**
-An ad-hoc inline test harness (~70 lines) with a commented-out call at line 554. This predates the
-`tests/` directory and no longer runs.
-Fix: remove or migrate to `tests/test_parser.py`.
-
 **[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
 The threshold `> 4` is unexplained. A named constant with a comment on its rationale would help.
 
@@ -149,3 +144,8 @@ annotation on `replace_integer_expression` to `Any`.
 _Fixed 2026-03-23._
 `self.result and self.result.compile(resolver)` evaluated to `None` when `self.result` is `None`, which cannot be unpacked into `r, rglb`.
 Fixed by replacing with `self.result.compile(resolver) if self.result else (None, [])`.
+
+**[minor] Parser `test()` function is dead code — `parsing/parser.py:483–554`**
+_Fixed 2026-03-23._
+An ad-hoc inline test harness (~70 lines) with a commented-out call predating the `tests/` directory.
+Fixed by deleting the `test()` function and its commented-out call site; added a regression test in `tests/test_parser.py` asserting the name is absent from the module.

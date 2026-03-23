@@ -293,6 +293,11 @@ class Test(TestCase):
         self.assertEqual(0b11110000, result.value.value)
         self.assertEqual(32, result.value.precision)
 
+    def test_no_dead_test_function(self):
+        import parsing.parser as parser_module
+        self.assertFalse(hasattr(parser_module, 'test'),
+                         "parsing.parser still exposes a module-level 'test' function (dead code)")
+
     def test_less_than_ambiguity(self):
         # `x < 0` is ambiguous: the parser greedily tries to interpret `<` after an
         # identifier as the start of a generic type parameter list (e.g. `foo<T>`).
