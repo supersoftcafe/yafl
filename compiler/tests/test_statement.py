@@ -87,6 +87,35 @@ class TestFindLocalsDestructure(TestCase):
             "__find_locals must not resolve the synthetic '_' root as a real local")
 
 
+class TestDestructureStatementAddNamespace(TestCase):
+    def test_add_namespace_does_not_raise(self):
+        """DestructureStatement.add_namespace must use super() not super(self).
+
+        super(self) passes an instance where a type is expected and raises
+        TypeError at runtime.  The fix is to use the no-argument super() form.
+        """
+        int32_type = t.BuiltinSpec(lr, "int32")
+        tuple_type = t.TupleSpec(lr, [
+            t.TupleEntrySpec("a", int32_type, None),
+            t.TupleEntrySpec("b", int32_type, None),
+        ])
+        leaf_a = s.LetStatement(lr, "a", None, {}, (), None, int32_type)
+        leaf_b = s.LetStatement(lr, "b", None, {}, (), None, int32_type)
+        destr = s.DestructureStatement(lr, "_", None, {}, (), None, tuple_type, [leaf_a, leaf_b])
+
+        # add_namespace must not raise; the root name '_' stays as '_' and leaf
+        # targets get the namespace prefix applied.
+        result = destr.add_namespace("NS::")
+        self.assertIsInstance(result, s.DestructureStatement,
+            "add_namespace on a DestructureStatement must return a DestructureStatement")
+        self.assertEqual(result.name, "_",
+            "root name '_' must be preserved by add_namespace")
+        self.assertEqual(result.targets[0].name, "NS::a",
+            "leaf target 'a' must be prefixed with namespace")
+        self.assertEqual(result.targets[1].name, "NS::b",
+            "leaf target 'b' must be prefixed with namespace")
+
+
 class TestReturnStatementCompile(TestCase):
     def test_propagates_statements_from_expression_compile(self):
         """ReturnStatement.compile must propagate statements returned by value.compile.

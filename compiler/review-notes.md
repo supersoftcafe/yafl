@@ -5,11 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Minor
 
-**[minor] `DestructureStatement.add_namespace` uses `super(self)` instead of `super()` —
-`pyast/statement.py:523`**
-`super(self)` is not the idiomatic Python 3 form and can break in non-standard execution
-environments. Fix: `super().add_namespace(path)`.
-
 **[minor] Parser `test()` function is dead code — `parsing/parser.py:483–554`**
 An ad-hoc inline test harness (~70 lines) with a commented-out call at line 554. This predates the
 `tests/` directory and no longer runs.
@@ -88,6 +83,13 @@ properly copied; until then it is harmless dead state.
 ---
 
 ## Fixed
+
+**[minor] `DestructureStatement.add_namespace` uses `super(self)` instead of `super()` —
+`pyast/statement.py:523`**
+_Fixed 2026-03-23._
+`super(self)` passes the instance as the type argument to `super()`, raising `TypeError` at
+runtime whenever `add_namespace` is called on a `DestructureStatement`.
+Fixed by replacing `super(self)` with the no-argument `super()` form.
 
 **[major] `__calculate_saved_vars` in `cps.py` reads stale ops during iteration —
 `lowering/cps.py:112–113`**

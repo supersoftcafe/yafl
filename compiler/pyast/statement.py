@@ -520,7 +520,7 @@ class DestructureStatement(LetStatement):
         return result
 
     def add_namespace(self, path: str):
-        x: DestructureStatement = cast(DestructureStatement, super(self).add_namespace(path))
+        x: DestructureStatement = cast(DestructureStatement, super().add_namespace(path))
         return dataclasses.replace(x, targets=[l.add_namespace(path) for l in self.targets])
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DestructureStatement, list[Statement]]:
