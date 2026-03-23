@@ -5,20 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `__calculate_saved_vars` in `cps.py` reads stale ops during iteration —
-`lowering/cps.py:112–113`**
-```python
-def calc(index: int) -> Op:
-    op = fn.ops[index]   # always the original pre-pass ops
-    ...
-```
-The `iterate()` loop feeds the updated `ops` back for fixpoint, but `calc()` reads from `fn.ops`
-(the original) rather than the current `ops` argument. Live sets are computed from the evolving ops
-via `saved_set_at`, but then applied to the original ops via `dataclasses.replace`. The loop still
-converges (live sets are monotone), but may over-approximate the heap-frame save set (saving more
-variables across function calls than necessary), increasing GC pressure.
-Fix: pass `ops` as a parameter to `calc` and `do_a_pass` and read from it inside `calc`.
-
 **[major] `NamedSpec.check` always returns an error — `pyast/typespec.py:282–286`**
 The `len(types) == 1` (resolution success) case falls through to the error return path. A
 successfully-resolved `NamedSpec` still reports "Unresolved reference". This is currently harmless
@@ -125,6 +111,16 @@ properly copied; until then it is harmless dead state.
 ---
 
 ## Fixed
+
+**[major] `__calculate_saved_vars` in `cps.py` reads stale ops during iteration —
+`lowering/cps.py:112–113`**
+_Fixed 2026-03-23._
+`calc()` read `fn.ops[index]` and `len(fn.ops)` instead of the current `ops` argument passed to
+`do_a_pass`; because the only differing field between `fn.ops[i]` and `ops[i]` is `saved_vars`
+(which `calc` overwrites anyway), the bug was behaviourally neutral, but still wrong.
+Fixed by replacing `fn.ops[index]` with `ops[index]` and `len(fn.ops)` with `len(ops)` inside `calc`.
+
+
 
 **[major] `Application` is a mutable open class; all lowering passes silently drop new fields —
 `codegen/gen.py:20–26`, `lowering/*.py`**

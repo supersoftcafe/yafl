@@ -305,3 +305,58 @@ fun main(): Int
     ret compute(20, "hi", 7)
 """
         self.assertEqual(13, _compile_and_run(src))
+
+
+# ---------------------------------------------------------------------------
+# CPS saved-variable liveness — variables that must survive across multiple
+# non-tail calls (exercises __calculate_saved_vars in lowering/cps.py)
+# ---------------------------------------------------------------------------
+
+class TestCpsSavedVars(TestCase):
+
+    def test_var_live_across_two_calls(self):
+        """a is bound before two non-tail calls; it must be saved across both.
+        a=add3(10)=13, b=add5(20)=25, c=add7(30)=37; result = a - b - c = -49 = 207.
+        If 'a' is not correctly saved across the call that computes 'b' or 'c',
+        its value is lost and the exit code differs."""
+        src = _PREAMBLE + _ARITH + """\
+fun add3(x: Int): Int
+    ret x + 3
+
+fun add5(x: Int): Int
+    ret x + 5
+
+fun add7(x: Int): Int
+    ret x + 7
+
+fun main(): Int
+    let a: Int = add3(10)
+    let b: Int = add5(20)
+    let c: Int = add7(30)
+    ret a - b - c
+"""
+        # 13 - 25 - 37 = -49; as unsigned byte: 207
+        self.assertEqual(207, _compile_and_run(src))
+
+    def test_multiple_vars_live_across_calls(self):
+        """Three variables each bound via a non-tail call; all three must
+        remain valid when they are used together in the final expression.
+        a=add3(4)=7, b=add5(2)=7, c=add7(1)=8; result = a - b + c = 8."""
+        src = _PREAMBLE + _ARITH + """\
+fun add3(x: Int): Int
+    ret x + 3
+
+fun add5(x: Int): Int
+    ret x + 5
+
+fun add7(x: Int): Int
+    ret x + 7
+
+fun main(): Int
+    let a: Int = add3(4)
+    let b: Int = add5(2)
+    let c: Int = add7(1)
+    ret a - b + c
+"""
+        # 7 - 7 + 8 = 8
+        self.assertEqual(8, _compile_and_run(src))

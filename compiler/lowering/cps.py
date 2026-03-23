@@ -110,8 +110,8 @@ def __calculate_saved_vars(fn: Function) -> Function:
             next_live, next_dead = op.get_live_vars()
             return next_live | op.saved_vars
         def calc(index: int) -> Op:
-            op = fn.ops[index]
-            if index >= len(fn.ops) - 1:
+            op = ops[index]
+            if index >= len(ops) - 1:
                 ss1 = frozenset()
             elif isinstance(op, Jump):
                 ss1 = saved_set_at(labels[op.name]) if op.name in labels else frozenset()
