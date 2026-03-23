@@ -163,7 +163,7 @@ class FunctionStatement(DataStatement):
                  if g.match_names(let.name, names)]
             l = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
                  for x in self.statements if isinstance(x, LetStatement) for let in x.flatten()
-                 if g.match_names(x.name, names)]
+                 if g.match_names(let.name, names)]
             # s = [g.Resolved(self.local_this.name, self.local_this, g.ResolvedScope.LOCAL)] if self.local_this and self.local_this.name in names else []
             td = self._find_trait_data(resolver, names)
             return p + l + td # + s

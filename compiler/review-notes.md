@@ -5,17 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `FunctionStatement.__find_locals` filters on wrong variable in LetStatement loop —
-`pyast/statement.py:165–166`**
-```python
-l = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-     for x in self.statements if isinstance(x, LetStatement) for let in x.flatten()
-     if g.match_names(x.name, names)]   # ← should be let.name, not x.name
-```
-For a `DestructureStatement`, `x.name` is the synthetic `_` root name, not the leaf names.
-Destructuring inside function bodies will fail to resolve the bound variables.
-Fix: `if g.match_names(let.name, names)`.
-
 **[major] `Application` is a mutable open class; all lowering passes silently drop new fields —
 `codegen/gen.py:20–26`, `lowering/*.py`**
 Every lowering pass constructs a bare `Application()` and assigns only the three core fields
