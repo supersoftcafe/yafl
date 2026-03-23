@@ -2,6 +2,7 @@ from unittest import TestCase
 
 import pyast.typespec as t
 import pyast.resolver as g
+import pyast.statement as s
 from parsing.tokenizer import LineRef
 
 glb = g.ResolverRoot([])
@@ -26,3 +27,20 @@ class TestTupleSpec(TestCase):
         result = t.trivially_assignable_equals(glb, l, r)
         self.assertIsNone(result)
 
+
+class TestNamedSpec(TestCase):
+    def test_check_resolved_returns_no_errors(self):
+        # A NamedSpec whose name is present in the resolver should pass check() with no errors.
+        alias = s.TypeAliasStatement(lr, "MyInt", None, {}, (), type=int32)
+        resolver = g.ResolverRoot([alias])
+        spec = t.NamedSpec(lr, "MyInt", ())
+        errors = spec.check(resolver)
+        self.assertEqual([], errors, "check() must return [] for a successfully resolved type")
+
+    def test_check_unresolved_returns_error(self):
+        # A NamedSpec whose name is absent from the resolver should still report an error.
+        resolver = g.ResolverRoot([])
+        spec = t.NamedSpec(lr, "Unknown", ())
+        errors = spec.check(resolver)
+        self.assertEqual(1, len(errors))
+        self.assertIn("Unresolved", errors[0].message)

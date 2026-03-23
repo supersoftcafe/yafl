@@ -3,17 +3,6 @@ _Last reviewed: 2026-03-23_
 
 ## Open findings
 
-### Major
-
-**[major] `NamedSpec.check` always returns an error — `pyast/typespec.py:282–286`**
-The `len(types) == 1` (resolution success) case falls through to the error return path. A
-successfully-resolved `NamedSpec` still reports "Unresolved reference". This is currently harmless
-only because the compile loop eliminates all `NamedSpec` before `check()` runs, but makes the
-method semantically wrong.
-Fix: add `case [_]: return []` before the final return.
-
----
-
 ### Minor
 
 **[minor] `CallableSpec._compile` crashes on `result=None` — `pyast/typespec.py:71`**
@@ -156,3 +145,7 @@ _Fixed 2026-03-23._
 The parameter was incremented and passed forward recursively but never used for logging or limiting.
 Fixed together with the termination guard finding: replaced with a loop variable that names the
 current iteration count and is referenced in the `RuntimeError` message.
+
+**[major] `NamedSpec.check` always returns an error — `pyast/typespec.py:282–286`**
+_Fixed 2026-03-23._
+The `len(types) == 1` success case fell through to the final error return; added `if len(types) == 1: return []` before the fallthrough so a successfully-resolved `NamedSpec` correctly returns no errors.

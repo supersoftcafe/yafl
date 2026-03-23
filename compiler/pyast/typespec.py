@@ -283,6 +283,8 @@ class NamedSpec(TypeSpec):
         types = resolver.find_type({self.name})
         if len(types) > 1:
             return [Error(self.line_ref, f"Ambiguous reference to '{self.name}'")]
+        if len(types) == 1:
+            return []
         return [Error(self.line_ref, f"Unresolved reference to '{self.name}'")]
 
     def generate(self) -> cg_t.Type:
