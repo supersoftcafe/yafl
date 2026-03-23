@@ -71,7 +71,11 @@ _Last reviewed: YYYY-MM-DD_
 (findings resolved by the fixer agent — do not remove or rewrite these entries)
 ```
 
-Each open finding should include: severity, file:line, one-sentence description, and suggested fix.
+Each open finding should include: severity, file:line, one-sentence description, suggested fix, and two assessments:
+- **difficulty**: `low` / `medium` / `high` — how hard the fix is to implement correctly (considering code complexity, risk of unintended side effects, and how well the problem is understood)
+- **impact**: `low` / `medium` / `high` — benefit once fixed (considering correctness risk, how often the code path is hit, and how much it helps future maintainers)
+
+Within each severity group, order findings by impact descending, then difficulty ascending — so the easiest wins appear first.
 
 **The `Fixed` section and failed-attempt notes are maintained by a separate fixer agent — treat them as read-only:**
 - Do not move, reword, or remove entries from `Fixed`. If you verify a fix is still in place, leave the entry as-is.

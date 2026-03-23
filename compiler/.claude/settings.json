@@ -1,0 +1,6 @@
+{
+  "allowedTools": [
+    "Bash(git *)",
+    "Bash(python -m unittest*)"
+  ]
+}
