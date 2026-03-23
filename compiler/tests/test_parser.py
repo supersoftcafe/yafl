@@ -263,6 +263,36 @@ class Test(TestCase):
         self.assertIsInstance(type_param, t.NamedSpec)
         self.assertEqual("Int", type_param.name)
 
+    def test_integer_binary_literal_long(self):
+        # 0b11110000 has 8 content characters; the buggy slice [2:8] gives "111100" (60)
+        # instead of "11110000" (240).
+        tokens = tokenize("0b11110000", "file")
+        result = p.parse_expression(tokens)
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(0b11110000, result.value.value)
+
+    def test_integer_hex_literal_long(self):
+        # 0xDEADBEEF has 8 hex digits; the buggy slice trims 2 extra from the right.
+        tokens = tokenize("0xDEADBEEF", "file")
+        result = p.parse_expression(tokens)
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(0xDEADBEEF, result.value.value)
+
+    def test_integer_octal_literal_long(self):
+        # 0o12345670 has 8 octal digits
+        tokens = tokenize("0o12345670", "file")
+        result = p.parse_expression(tokens)
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(0o12345670, result.value.value)
+
+    def test_integer_binary_with_size_suffix(self):
+        # 0b11110000i32 — prefix and suffix both present
+        tokens = tokenize("0b11110000i32", "file")
+        result = p.parse_expression(tokens)
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(0b11110000, result.value.value)
+        self.assertEqual(32, result.value.precision)
+
     def test_less_than_ambiguity(self):
         # `x < 0` is ambiguous: the parser greedily tries to interpret `<` after an
         # identifier as the start of a generic type parameter list (e.g. `foo<T>`).

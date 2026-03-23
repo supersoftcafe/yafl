@@ -24,7 +24,7 @@ def __integer() -> p.Parser[e.Expression]:
                 ends = lambda x: value.endswith(x)
                 radix, triml = (2, 2) if starts("0b") else (8, 2) if starts("0o") else (16, 2) if starts("0x") else (10, 0)
                 size, trimr = (8, 2) if ends("i8") else (16, 3) if ends("i16") else (32, 3) if ends("i32") else (64, 3) if ends("i64") else (0, 0)
-                value = value[ triml : len(value)-triml-trimr ].replace("_", "")
+                value = value[ triml : len(value) if not trimr else len(value)-trimr ].replace("_", "")
                 try:
                     return p.Result.ok(e.IntegerExpression(head.line_ref, int(value, radix), size), tail, head.line_ref)
                 except ValueError as err:

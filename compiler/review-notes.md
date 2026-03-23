@@ -3,18 +3,6 @@ _Last reviewed: 2026-03-23_
 
 ## Open findings
 
-### Critical
-
-**[critical] Integer literal trimming off-by-one on right boundary — `parsing/parser.py:27`**
-The slice expression `value[triml : len(value)-triml-trimr]` subtracts `triml` (the prefix length)
-from the right boundary, which is wrong. For a binary literal like `0b11110000` (8-char body),
-`triml=2, trimr=0`, so the slice is `[2:6]` = `"1111"` instead of `"11110000"`. Any binary, octal,
-or hex integer literal with more than 4 content characters is silently mis-parsed.
-Fix: `value[triml : len(value) if not trimr else len(value)-trimr]`
-(or equivalently: `value[triml : len(value)-trimr or None]`).
-
----
-
 ### Major
 
 **[major] `ReturnStatement.compile` silently discards statements produced by sub-expression —
@@ -180,4 +168,9 @@ properly copied; until then it is harmless dead state.
 
 ## Fixed
 
-_(No entries yet — this is the first review.)_
+**[critical] Integer literal trimming off-by-one on right boundary — `parsing/parser.py:27`**
+_Fixed 2026-03-23._
+The slice `value[triml : len(value)-triml-trimr]` erroneously subtracted the prefix length from the
+right boundary, silently mis-parsing any binary, octal, or hex literal with more than 4 content
+characters (e.g. `0b11110000` parsed as `60` instead of `240`).
+Fixed by changing the slice to `value[triml : len(value) if not trimr else len(value)-trimr]`.
