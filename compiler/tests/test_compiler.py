@@ -1,11 +1,15 @@
 from unittest import TestCase
+from unittest.mock import patch
 
 import re
+import dataclasses
 
 
 import parsing.tokenizer as t
 import compiler as c
 import parsing.parser as p
+import pyast.statement as s
+import parsing.tokenizer as tok
 
 
 class Test(TestCase):
@@ -253,3 +257,35 @@ fun main(): System::Int
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
         print(result)
+
+    def test_iterate_and_compile_raises_on_non_convergence(self):
+        """__iterate_and_compile must raise RuntimeError with a descriptive message when
+        the compile loop fails to converge, rather than recursing without bound."""
+        line_ref = tok.LineRef("test.yafl", 0, 0)
+
+        # A Statement whose compile() always returns a structurally different fresh copy
+        # (counter increments), so new_statements != statements every iteration.
+        call_count = {"n": 0}
+
+        @dataclasses.dataclass
+        class _DivergingStatement(s.Statement):
+            counter: int = 0
+
+            def compile(self, resolver, func_ret_type):
+                call_count["n"] += 1
+                return dataclasses.replace(self, counter=call_count["n"]), []
+
+            def check(self, resolver, func_ret_type):
+                return []
+
+        stmt = _DivergingStatement(line_ref=line_ref, counter=0)
+
+        # __iterate_and_compile is a module-level function stored under the literal key
+        # "__iterate_and_compile" in the module dict (no name mangling at module scope).
+        iterate_fn = c.__dict__["__iterate_and_compile"]
+
+        # The fixed code must raise RuntimeError with a message that includes the iteration
+        # count (not RecursionError from unbounded recursion).
+        with self.assertRaises(RuntimeError) as ctx:
+            iterate_fn([stmt])
+        self.assertIn("iteration", str(ctx.exception).lower())

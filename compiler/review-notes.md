@@ -5,13 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `__iterate_and_compile` has no termination guard — `compiler.py:180–188`**
-The function recurses unconditionally whenever `new_statements != statements`. Because equality is
-Python object identity for mutable dataclasses, any compile pass that produces fresh-but-equivalent
-nodes causes unbounded recursion. There is no iteration cap, visited-state check, or depth limit.
-Fix: add a `max_iterations` cap (e.g. 100) and raise a descriptive error if exceeded; also add the
-`iteration_count` parameter to log output so non-termination is diagnosable.
-
 **[major] `FunctionStatement.__find_locals` filters on wrong variable in LetStatement loop —
 `pyast/statement.py:165–166`**
 ```python
@@ -79,10 +72,6 @@ environments. Fix: `super().add_namespace(path)`.
 An ad-hoc inline test harness (~70 lines) with a commented-out call at line 554. This predates the
 `tests/` directory and no longer runs.
 Fix: remove or migrate to `tests/test_parser.py`.
-
-**[minor] `iteration_count` parameter in `__iterate_and_compile` is unused — `compiler.py:180`**
-It is incremented and passed forward but never used for logging, limiting, or anything else. Remove
-it or give it a purpose (see the termination guard finding above).
 
 **[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
 The threshold `> 4` is unexplained. A named constant with a comment on its rationale would help.
@@ -171,3 +160,16 @@ _Fixed 2026-03-23._
 `return dataclasses.replace(self, value=new_value), []` dropped any hoisted statements produced
 by the return expression's `compile()` call.
 Fixed by returning `stmts` instead of `[]`.
+
+**[major] `__iterate_and_compile` has no termination guard — `compiler.py:180–188`**
+_Fixed 2026-03-23._
+The function recursed unconditionally whenever `new_statements != statements`, with no iteration
+cap or depth limit, risking unbounded recursion if any compile pass was non-idempotent.
+Fixed by converting from recursion to an explicit `for` loop with a `_MAX_COMPILE_ITERATIONS = 100`
+cap; the loop's `else` clause raises `RuntimeError` with a descriptive message if the cap is hit.
+
+**[minor] `iteration_count` parameter in `__iterate_and_compile` is unused — `compiler.py:180`**
+_Fixed 2026-03-23._
+The parameter was incremented and passed forward recursively but never used for logging or limiting.
+Fixed together with the termination guard finding: replaced with a loop variable that names the
+current iteration count and is referenced in the `RuntimeError` message.

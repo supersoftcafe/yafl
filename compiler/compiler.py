@@ -177,15 +177,23 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
     return len(params_type.entries) == 0
 
 
-def __iterate_and_compile(statements: list[s.Statement], iteration_count: int = 1, just_testing = False, optimization_level: int = 0) -> str|list[Error]:
-    resolver = g.ResolverRoot(statements)
+_MAX_COMPILE_ITERATIONS = 100
 
-    new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
+
+def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0) -> str|list[Error]:
+    for iteration_count in range(1, _MAX_COMPILE_ITERATIONS + 1):
+        resolver = g.ResolverRoot(statements)
+        new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
+        if new_statements == statements:
+            break
+        statements = new_statements
+    else:
+        raise RuntimeError(
+            f"Compile loop failed to converge after {_MAX_COMPILE_ITERATIONS} iterations. "
+            "This is a compiler bug — a compile() pass is not idempotent."
+        )
+
     mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
-
-    if new_statements != statements:
-        # More work to do
-        return __iterate_and_compile(new_statements, iteration_count + 1, just_testing=just_testing, optimization_level=optimization_level)
 
     new_errors = [x for stmt in new_statements for x in stmt.check(resolver, None)]
     if not mains:
