@@ -5,11 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Minor
 
-**[minor] `integers.py` uses `Any` without importing it — `lowering/integers.py:17`**
-`from __future__ import annotations` suppresses the runtime NameError at module load, but mypy,
-`get_type_hints()`, and similar tools will fail.
-Fix: add `from typing import Any` or drop the annotation.
-
 **[minor] `DestructureStatement.add_namespace` uses `super(self)` instead of `super()` —
 `pyast/statement.py:523`**
 `super(self)` is not the idiomatic Python 3 form and can break in non-standard execution
@@ -142,6 +137,11 @@ current iteration count and is referenced in the `RuntimeError` message.
 **[major] `NamedSpec.check` always returns an error — `pyast/typespec.py:282–286`**
 _Fixed 2026-03-23._
 The `len(types) == 1` success case fell through to the final error return; added `if len(types) == 1: return []` before the fallthrough so a successfully-resolved `NamedSpec` correctly returns no errors.
+
+**[minor] `integers.py` uses `Any` without importing it — `lowering/integers.py:17`**
+_Fixed 2026-03-23._
+Added `from typing import Any` to `lowering/integers.py` and corrected the lowercase `any`
+annotation on `replace_integer_expression` to `Any`.
 
 **[minor] `CallableSpec._compile` crashes on `result=None` — `pyast/typespec.py:71`**
 _Fixed 2026-03-23._

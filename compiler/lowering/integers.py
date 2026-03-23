@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pyast.statement as s
 import pyast.expression as e
 
@@ -36,7 +38,7 @@ def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:
     global_references = {value: e.NamedExpression(statement.line_ref, statement.name) for value, statement in global_statements.items()}
 
     # Replace all strings with their global reference counterparts
-    def replace_integer_expression(resolver: g.Resolver, thing: any) -> any:
+    def replace_integer_expression(resolver: g.Resolver, thing: Any) -> Any:
         if isinstance(thing, e.IntegerExpression) and thing.precision == 0:
             return global_references[thing.value]
         return thing
