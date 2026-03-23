@@ -5,16 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `ReturnStatement.compile` silently discards statements produced by sub-expression —
-`pyast/statement.py:554–555`**
-```python
-new_value, stmts = self.value.compile(resolver, func_ret_type)
-return dataclasses.replace(self, value=new_value), []   # stmts discarded
-```
-Any global-level statement produced as a side-effect of compiling the return expression (e.g. a
-globally-resolved constant introduced by the expression's own compile step) is silently dropped.
-Fix: return `stmts` instead of `[]`.
-
 **[major] `__iterate_and_compile` has no termination guard — `compiler.py:180–188`**
 The function recurses unconditionally whenever `new_statements != statements`. Because equality is
 Python object identity for mutable dataclasses, any compile pass that produces fresh-but-equivalent
@@ -174,3 +164,10 @@ The slice `value[triml : len(value)-triml-trimr]` erroneously subtracted the pre
 right boundary, silently mis-parsing any binary, octal, or hex literal with more than 4 content
 characters (e.g. `0b11110000` parsed as `60` instead of `240`).
 Fixed by changing the slice to `value[triml : len(value) if not trimr else len(value)-trimr]`.
+
+**[major] `ReturnStatement.compile` silently discards statements produced by sub-expression —
+`pyast/statement.py:554–555`**
+_Fixed 2026-03-23._
+`return dataclasses.replace(self, value=new_value), []` dropped any hoisted statements produced
+by the return expression's `compile()` call.
+Fixed by returning `stmts` instead of `[]`.
