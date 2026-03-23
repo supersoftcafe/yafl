@@ -19,14 +19,14 @@ Read `/home/mbrown/Projects/my/yafl/compiler/review-notes.md`.
 - If the user specified a finding (by description, keyword, or file:line), locate it in the Open findings section.
 - Otherwise, take the highest-severity open finding (critical > major > minor). Within a severity, take the first listed.
 
-## Step 2 — Announce and proceed
+## Step 2 — Announce and confirm
 
 Print clearly:
 - The finding's severity and a one-sentence summary
 - The affected file and line(s)
-- The proposed fix in plain terms
+- The specific change you plan to make — be concrete, not vague
 
-Then immediately proceed to Step 3 without waiting for confirmation. The user will press Ctrl-C if they want to stop.
+**Wait for the user to explicitly confirm before touching any files or running any commands.** If the user says no or wants a different approach, discuss and agree on the approach before proceeding.
 
 ## Step 3 — Fix
 

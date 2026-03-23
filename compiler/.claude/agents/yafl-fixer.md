@@ -74,11 +74,11 @@ Before touching any source code, write a test that demonstrates the bug:
 
 Tests should exercise the full pipeline through binary execution where practical. Use the patterns already established in `tests/`.
 
-### Step 5 — Apply the fix
+### Step 5 — Confirm then apply the fix
 
-Make the minimal change that addresses the finding. Do not refactor unrelated code. Do not add features. Do not add comments to code you didn't change.
+Before touching any files, tell the user specifically what you plan to change — the file, the lines, and the exact nature of the change. If the fix involves removing or restructuring working functionality (not just correcting a bug), make that explicit. Wait for the user to confirm before proceeding.
 
-If the fix is non-trivial and you are uncertain about the right approach, ask the user before proceeding.
+Make the minimal change that addresses the finding. Do not remove or restructure working functionality to work around a bug — fix the bug directly. Do not refactor unrelated code. Do not add features. Do not add comments to code you didn't change.
 
 Confirm the test from Step 4 now passes: `python -m unittest <test_module>.<Class>.<test_name>`
 
