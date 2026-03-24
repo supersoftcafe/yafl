@@ -13,6 +13,7 @@ import lowering.inlining
 import lowering.deadstores
 import lowering.cps
 import lowering.trim
+import lowering.staticinit
 
 
 class TestApplicationDiscriminatorPreservation(TestCase):
@@ -127,3 +128,28 @@ class TestFlattenRParam(TestCase):
             result,
             "flatten() must include the nested GlobalVar directly, not as a sub-list",
         )
+
+
+class TestPromoteStaticObjectsCounter(TestCase):
+    def test_non_numeric_si_global_does_not_raise(self):
+        """promote_static_objects must not crash when a global name starts with '$si$'
+        but has a non-numeric suffix.
+
+        The old implementation parsed existing global names with
+        int(n.split("$si$")[1]), which raises ValueError for any name like
+        '$si$bogus'.  The fix replaces the name-parsing counter with a
+        module-level itertools.count() that never inspects global names.
+        """
+        from codegen.things import Global
+
+        app = Application()
+        app.globals["$si$bogus"] = Global(name="$si$bogus", type=t.DataPointer())
+
+        # Must not raise ValueError
+        try:
+            lowering.staticinit.promote_static_objects(app)
+        except ValueError as exc:
+            self.fail(
+                f"promote_static_objects raised ValueError on a non-numeric $si$ "
+                f"global name: {exc}"
+            )

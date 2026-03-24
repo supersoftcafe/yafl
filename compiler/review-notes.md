@@ -7,11 +7,6 @@ _Last reviewed: 2026-03-23_
 
 ### Minor
 
-**[minor] `staticinit.py` counter initialization parses global names — `lowering/staticinit.py:147–148`**
-`[int(n.split("$si$")[1]) for n in app.globals if n.startswith("$si$")]` relies on naming
-convention stability and will produce a duplicate or raise `ValueError` if any unrelated global
-matches the prefix. A monotone module-level counter or an explicit parameter would be safer.
-
 **[minor] Integer literal trimming in `parser.py` is error-prone to read**
 Even after fixing the off-by-one (see `Fixed`), the two-variable `triml/trimr` approach
 and the expression `len(value)-triml-trimr` are hard to audit. A named helper function
@@ -129,6 +124,12 @@ from the self-inclusion pattern, which is consistent across all param types.
 ---
 
 ## Fixed
+
+**[minor] `staticinit.py` counter initialization parses global names — `lowering/staticinit.py:147–148`**
+_Fixed 2026-03-24._
+Replaced the fragile `int(n.split("$si$")[1])` name-parsing counter with a module-level
+`_si_counter = itertools.count()`.  Dropped the `counter: list[int]` parameter from
+`_promote_one_function` and replaced `counter[0]` / `counter[0] += 1` with `next(_si_counter)`.
 
 **[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
 _Fixed 2026-03-24._

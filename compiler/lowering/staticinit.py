@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 
 import lowering.trim
 from codegen.gen import Application
@@ -8,6 +9,9 @@ from codegen.things import Function, Global
 from codegen.ops import Op, NewObject, Move, Return, Label, Jump, JumpIf, Call
 from codegen.param import RParam, LParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField
 from codegen.typedecl import DataPointer
+
+
+_si_counter = itertools.count()
 
 
 def _build_value_map(ops) -> dict[str, RParam]:
@@ -52,7 +56,7 @@ def _trace_to_constant(val: RParam, value_map: dict[str, RParam], globals: dict)
     return None
 
 
-def _promote_one_function(fn: Function, app: Application, counter: list[int]) -> tuple[Function, list[Global]]:
+def _promote_one_function(fn: Function, app: Application) -> tuple[Function, list[Global]]:
     """Promote NewObject ops with all-static fields to anonymous static globals."""
     value_map = _build_value_map(fn.ops)
     new_globals: list[Global] = []
@@ -113,8 +117,7 @@ def _promote_one_function(fn: Function, app: Application, counter: list[int]) ->
             continue
 
         # Create a new static global for this object
-        gname = f"$si${counter[0]}"
-        counter[0] += 1
+        gname = f"$si${next(_si_counter)}"
         new_globals.append(Global(
             name=gname,
             type=DataPointer(),
@@ -144,14 +147,11 @@ def _promote_one_function(fn: Function, app: Application, counter: list[int]) ->
 
 def promote_static_objects(app: Application) -> Application:
     """Promote NewObject constructions with all-static fields to static globals."""
-    existing = [int(n.split("$si$")[1]) for n in app.globals if n.startswith("$si$")]
-    counter = [max(existing) + 1 if existing else 0]
-
     new_functions: dict[str, Function] = {}
     all_new_globals: dict[str, Global] = {}
 
     for name, fn in app.functions.items():
-        new_fn, new_glbs = _promote_one_function(fn, app, counter)
+        new_fn, new_glbs = _promote_one_function(fn, app)
         new_functions[name] = new_fn
         for g in new_glbs:
             all_new_globals[g.name] = g
