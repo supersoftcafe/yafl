@@ -82,3 +82,48 @@ class TestApplication(TestCase):
     #     code = g.gen()
     #     print(code)
 
+
+class TestFlattenRParam(TestCase):
+    """NewStruct.flatten and InitArray.flatten must return a flat list of RParam.
+
+    The old implementations used `[item.flatten() for item in ...]` which produced
+    nested sub-lists — e.g. `[NewStruct, [GlobalVar]]` instead of `[NewStruct, GlobalVar]`.
+    globalinit iterates op.all_params() (which calls flatten()) looking for GlobalVar
+    instances via isinstance(); a sub-list never matches, so globals nested inside
+    NewStruct or InitArray parameters were silently skipped.
+    """
+
+    def _global_var(self) -> e.GlobalVar:
+        return e.GlobalVar(t.DataPointer(), "some_global")
+
+    def test_new_struct_flatten_is_flat(self):
+        """NewStruct.flatten() must return a flat list with no nested sub-lists."""
+        gv = self._global_var()
+        ns = e.NewStruct((("x", gv),))
+        result = ns.flatten()
+        for item in result:
+            self.assertIsInstance(
+                item, e.RParam,
+                f"flatten() returned a non-RParam element {type(item)}: {item!r}",
+            )
+        self.assertIn(
+            gv,
+            result,
+            "flatten() must include the nested GlobalVar directly, not as a sub-list",
+        )
+
+    def test_init_array_flatten_is_flat(self):
+        """InitArray.flatten() must return a flat list with no nested sub-lists."""
+        gv = self._global_var()
+        ia = e.InitArray(t.DataPointer(), (gv,))
+        result = ia.flatten()
+        for item in result:
+            self.assertIsInstance(
+                item, e.RParam,
+                f"flatten() returned a non-RParam element {type(item)}: {item!r}",
+            )
+        self.assertIn(
+            gv,
+            result,
+            "flatten() must include the nested GlobalVar directly, not as a sub-list",
+        )

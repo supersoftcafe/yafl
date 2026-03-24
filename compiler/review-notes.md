@@ -5,19 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `NewStruct.flatten` and `InitArray.flatten` return heterogeneous nested lists — `codegen/param.py:42,65`**
-Both methods are implemented as `return [self] + [item.flatten() for item in ...]`, which produces a list
-containing an RParam as the first element and sub-lists as subsequent elements (not a flat list of RParams).
-The correct form is a list comprehension: `return [self] + [p for item in ... for p in item.flatten()]`.
-The primary consumer of `all_params()` is `globalinit.__add_global_init_ops`, which iterates `op.all_params()`
-looking for `GlobalVar` instances; sub-lists will not match `isinstance(param, GlobalVar)`, so GlobalVars
-nested inside NewStruct call parameters silently skip lazy-init guard insertion. In practice, globals
-referenced as arguments to CPS calls are the most likely to be nested in NewStruct, which is exactly the
-call pattern introduced by CPS conversion.
-Suggested fix: change both `flatten` implementations to use a flattening comprehension.
-- **difficulty**: low (one-line fix each)
-- **impact**: medium (correctness risk in programs with lazy-init globals passed as call arguments)
-
 ### Minor
 
 **[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
@@ -145,6 +132,15 @@ from the self-inclusion pattern, which is consistent across all param types.
 ---
 
 ## Fixed
+
+**[major] `NewStruct.flatten` and `InitArray.flatten` return heterogeneous nested lists — `codegen/param.py:42,65`**
+_Fixed 2026-03-24._
+Both methods used `[item.flatten() for item in ...]`, producing nested sub-lists rather than a flat
+`list[RParam]`; `globalinit.__add_global_init_ops` iterates `op.all_params()` with `isinstance(param,
+GlobalVar)`, which never matches a sub-list, so `GlobalVar`s nested inside `NewStruct` parameters
+silently skipped lazy-init guard insertion.
+Fixed by changing both implementations to flattening comprehensions:
+`[p for item in ... for p in item.flatten()]`.
 
 **[major] `MatchArm.compile` silently discards hoisted statements — `pyast/match.py:45–46`**
 _Fixed 2026-03-24._

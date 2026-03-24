@@ -39,7 +39,7 @@ class InitArray(RParam): # Only for static initialisation of array types
     values: tuple[RParam, ...]
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
-        return [self] + [param.flatten() for param in self.values]
+        return [self] + [p for param in self.values for p in param.flatten()]
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or any(1 for v in self.values if v.test(predicate))
@@ -62,7 +62,7 @@ class NewStruct(RParam): # Create a new blank instance of the defined struct
     values: tuple[tuple[str, RParam], ...]
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
-        return [self] + [param.flatten() for name, param in self.values]
+        return [self] + [p for name, param in self.values for p in param.flatten()]
 
     def test(self, predicate: Callable[[RParam], bool]) -> bool:
         return predicate(self) or any(1 for _, p in self.values if p.test(predicate))
