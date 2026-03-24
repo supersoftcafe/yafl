@@ -3,6 +3,32 @@ _Last reviewed: 2026-03-23_
 
 ## Open findings
 
+### Major
+
+**[major] `MatchArm.compile` silently discards hoisted statements — `pyast/match.py:45–46`**
+`new_body, _ = self.body.compile(...)` and `new_type, _ = self.type_spec.compile(...)` both discard the
+`list[Statement]` return values. These lists carry global declarations hoisted from sub-expressions (e.g.
+string or integer globals), which must survive into the top-level statement list to be resolved later. Any
+match arm body that happens to generate a hoisted statement during the compile loop will have that statement
+silently dropped. The same pattern was already fixed for `ReturnStatement`; match arms need the same treatment.
+Suggested fix: propagate hoisted statements up through `MatchArm.compile` (change its return type to
+`tuple[MatchArm, list[Statement]]`) and propagate them further through `MatchExpression.compile`.
+- **difficulty**: medium (return type change propagates to callers)
+- **impact**: high (silent mis-compilation for match arms that produce hoisted declarations)
+
+**[major] `NewStruct.flatten` and `InitArray.flatten` return heterogeneous nested lists — `codegen/param.py:42,65`**
+Both methods are implemented as `return [self] + [item.flatten() for item in ...]`, which produces a list
+containing an RParam as the first element and sub-lists as subsequent elements (not a flat list of RParams).
+The correct form is a list comprehension: `return [self] + [p for item in ... for p in item.flatten()]`.
+The primary consumer of `all_params()` is `globalinit.__add_global_init_ops`, which iterates `op.all_params()`
+looking for `GlobalVar` instances; sub-lists will not match `isinstance(param, GlobalVar)`, so GlobalVars
+nested inside NewStruct call parameters silently skip lazy-init guard insertion. In practice, globals
+referenced as arguments to CPS calls are the most likely to be nested in NewStruct, which is exactly the
+call pattern introduced by CPS conversion.
+Suggested fix: change both `flatten` implementations to use a flattening comprehension.
+- **difficulty**: low (one-line fix each)
+- **impact**: medium (correctness risk in programs with lazy-init globals passed as call arguments)
+
 ### Minor
 
 **[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
@@ -14,7 +40,7 @@ convention stability and will produce a duplicate or raise `ValueError` if any u
 matches the prefix. A monotone module-level counter or an explicit parameter would be safer.
 
 **[minor] Integer literal trimming in `parser.py` is error-prone to read**
-Even after fixing the off-by-one (see critical finding), the two-variable `triml/trimr` approach
+Even after fixing the off-by-one (see `Fixed`), the two-variable `triml/trimr` approach
 and the expression `len(value)-triml-trimr` are hard to audit. A named helper function
 `strip_prefix_and_suffix(value, prefix_len, suffix_len)` returning `value[prefix_len:len(value)-suffix_len or None]`
 would make intent obvious.
@@ -25,10 +51,56 @@ would make intent obvious.
 A comment explaining that `OperationBundle.__add__` picks the right operand's `result_var` (so
 the NewStruct must be the rightmost operand) would help future readers.
 
-**[minor] `NamedExpression.compile` and `generate` have `if self.name == 'this': pass` stubs —
-`pyast/expression.py:370–371` and `403–405`**
+**[minor] `NamedExpression.__post_init__`, `compile`, and `generate` have `if self.name == 'this': pass` stubs —
+`pyast/expression.py:316–317`, `370–371`, and `404–405`**
 These are no-op branches that appear to be debugging leftovers or planned but unimplemented
 special-cases. They add noise without effect.
+
+**[minor] `inlining.py` performs an unguarded dict lookup on `app.functions` — `lowering/inlining.py:34`**
+The walrus expression `target := others[op.function.name]` is evaluated inside a short-circuited `or`
+chain that does NOT guard against missing keys — if none of the earlier conditions are `True`, the lookup
+executes regardless of whether `op.function.name` is in `others`. Currently safe because trim runs before
+inlining and `external=True` functions are only added by `globalinit` which runs after inlining. But the
+missing guard (`op.function.name not in others`) makes the function fragile — any ordering change produces
+an obscure `KeyError`.
+Suggested fix: add `op.function.name not in others or` as an additional early-exit condition.
+- **difficulty**: low
+- **impact**: low (latent, not currently triggered)
+
+**[minor] `all_labels` computed but never used in `inlining.py` — `lowering/inlining.py:27`**
+`all_labels: set[str] = {label.name for label in fn.ops if isinstance(label, Label)}` is built
+but never referenced in the function body. Dead computation.
+Suggested fix: remove the line.
+- **difficulty**: low
+- **impact**: low (noise/confusion only)
+
+**[minor] `IfStatement` is declared but has no body and is never constructed — `pyast/statement.py:630–633`**
+The class stub defines only three fields and no methods (`compile`, `check`, `generate`). Nothing
+in the codebase constructs or references it; the parser discards unexpected statement types before they
+reach the pipeline. Dead code that creates confusion about whether if-expressions are supported at the
+statement level.
+Suggested fix: remove the class (or replace it with a `# TODO: if-statements not yet supported` comment
+if this is intentional future work).
+- **difficulty**: low
+- **impact**: low (noise/confusion only)
+
+**[minor] `__compile` in `compiler.py` performs a redundant isinstance-list check — `compiler.py:161–165`**
+Lines 161–162 use `any(1 for x in result if isinstance(x, list))` to validate, then lines 163–165
+loop and check the same condition again. The second loop is unreachable — it tests the same condition
+that the `if` on line 161 already guards. Three `raise ValueError()` for the same invariant also
+means the error message is equally uninformative in all cases.
+Suggested fix: collapse to a single check with a descriptive message.
+- **difficulty**: low
+- **impact**: low (noise/confusion only)
+
+**[minor] `globalinit` emits duplicate lazy-init guards for the same global within one function —
+`lowering/globalinit.py:35–36`**
+If the same lazy-init global is referenced N times in a function's ops, N independent
+`JumpIf / Call / Label` sequences are prepended. Each is runtime-correct (the flag prevents
+actual double-init), but the redundant code inflates the generated C. A `seen` set filtering
+duplicates would eliminate this.
+- **difficulty**: low
+- **impact**: low (generated-code quality only; correct output)
 
 ---
 
@@ -74,6 +146,12 @@ Discriminators are threaded through `ResolverDiscriminators` at codegen time, so
 `Application` is currently dead state. The fixer agent has noted this in its instructions. If
 discriminators ever need to be available at IR-level passes (post-CPS), the field should be
 properly copied; until then it is harmless dead state.
+
+**`NewStruct.flatten` returns `[self]` plus the element-level flat lists — intentional self-inclusion**
+The base class `RParam.flatten` returns `[self]` for leaf nodes (self-reference for scanning
+purposes). The convention is that `flatten` returns "this node plus all nodes nested within me",
+with each level responsible for including itself. The bug noted above (nested lists) is separate
+from the self-inclusion pattern, which is consistent across all param types.
 
 ---
 

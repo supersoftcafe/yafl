@@ -1,6 +1,10 @@
 {
   "allowedTools": [
     "Bash(git *)",
-    "Bash(python -m unittest*)"
+    "Bash(python -m unittest*)",
+    "Bash(grep *)",
+    "Bash(rg *)",
+    "Write",
+    "Edit"
   ]
 }
