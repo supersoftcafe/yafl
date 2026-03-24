@@ -5,17 +5,6 @@ _Last reviewed: 2026-03-23_
 
 ### Major
 
-**[major] `MatchArm.compile` silently discards hoisted statements — `pyast/match.py:45–46`**
-`new_body, _ = self.body.compile(...)` and `new_type, _ = self.type_spec.compile(...)` both discard the
-`list[Statement]` return values. These lists carry global declarations hoisted from sub-expressions (e.g.
-string or integer globals), which must survive into the top-level statement list to be resolved later. Any
-match arm body that happens to generate a hoisted statement during the compile loop will have that statement
-silently dropped. The same pattern was already fixed for `ReturnStatement`; match arms need the same treatment.
-Suggested fix: propagate hoisted statements up through `MatchArm.compile` (change its return type to
-`tuple[MatchArm, list[Statement]]`) and propagate them further through `MatchExpression.compile`.
-- **difficulty**: medium (return type change propagates to callers)
-- **impact**: high (silent mis-compilation for match arms that produce hoisted declarations)
-
 **[major] `NewStruct.flatten` and `InitArray.flatten` return heterogeneous nested lists — `codegen/param.py:42,65`**
 Both methods are implemented as `return [self] + [item.flatten() for item in ...]`, which produces a list
 containing an RParam as the first element and sub-lists as subsequent elements (not a flat list of RParams).
@@ -156,6 +145,16 @@ from the self-inclusion pattern, which is consistent across all param types.
 ---
 
 ## Fixed
+
+**[major] `MatchArm.compile` silently discards hoisted statements — `pyast/match.py:45–46`**
+_Fixed 2026-03-24._
+`new_body, _ = self.body.compile(...)` and `new_type, _ = self.type_spec.compile(...)` both discarded
+the `list[Statement]` return values, causing any global declarations hoisted from a match arm body
+to be silently dropped.
+Fixed by changing `MatchArm.compile` to return `tuple[MatchArm, list[Statement]]`, and updating
+`MatchExpression.compile` to unpack all arm results and concatenate their statement lists alongside
+the subject's hoisted statements.
+
 
 **[minor] `DestructureStatement.add_namespace` uses `super(self)` instead of `super()` —
 `pyast/statement.py:523`**

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from unittest import TestCase
 
 import pyast.expression as e
+import pyast.match as m
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
@@ -136,4 +137,32 @@ class TestReturnStatementCompile(TestCase):
             side_stmt,
             stmts,
             "ReturnStatement.compile must propagate statements from expression.compile",
+        )
+
+
+class TestMatchArmCompile(TestCase):
+    def test_match_expression_propagates_arm_hoisted_statements(self):
+        """MatchExpression.compile must propagate hoisted statements from arm bodies.
+
+        MatchArm.compile previously used `new_body, _ = self.body.compile(...)`
+        which silently discarded any list[Statement] the body expression returned.
+        The same bug existed for the type_spec compile call.  Both drops must be
+        fixed: the statements must flow up through MatchArm.compile and then
+        through MatchExpression.compile to the caller.
+        """
+        resolver = g.ResolverRoot([])
+        int32_type = t.BuiltinSpec(lr, "int32")
+        side_stmt = _DummyStatement(lr)
+        body_expr = _ExprWithSideEffect(lr, side_stmt)
+        # Else arm (type_spec=None) so only the body path is exercised here.
+        arm = m.MatchArm(lr, None, None, body_expr)
+        subject = e.IntegerExpression(lr, 0, precision=32)
+        match_expr = m.MatchExpression(lr, subject, [arm])
+
+        _, stmts = match_expr.compile(resolver, int32_type)
+
+        self.assertIn(
+            side_stmt,
+            stmts,
+            "MatchExpression.compile must propagate hoisted statements from arm bodies",
         )

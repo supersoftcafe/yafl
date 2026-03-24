@@ -40,11 +40,11 @@ class MatchArm:
             return [g.Resolved(self.name, let, g.ResolvedScope.LOCAL)]
         return []
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> MatchArm:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement]]:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
-        new_body, _ = self.body.compile(nested_resolver, func_ret_type)
-        new_type, _ = self.type_spec.compile(resolver) if self.type_spec else (None, [])
-        return dataclasses.replace(self, type_spec=new_type, body=new_body)
+        new_body, body_stmts = self.body.compile(nested_resolver, func_ret_type)
+        new_type, type_stmts = self.type_spec.compile(resolver) if self.type_spec else (None, [])
+        return dataclasses.replace(self, type_spec=new_type, body=new_body), body_stmts + type_stmts
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
@@ -73,8 +73,10 @@ class MatchExpression(e.Expression):
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
         new_subject, subj_stmts = self.subject.compile(resolver, None)
-        new_arms = [arm.compile(resolver, expected_type) for arm in self.arms]
-        return dataclasses.replace(self, subject=new_subject, arms=new_arms), subj_stmts
+        arm_results = [arm.compile(resolver, expected_type) for arm in self.arms]
+        new_arms = [arm for arm, _ in arm_results]
+        arm_stmts = [stmt for _, stmts in arm_results for stmt in stmts]
+        return dataclasses.replace(self, subject=new_subject, arms=new_arms), subj_stmts + arm_stmts
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list:
         subj_type = self.subject.get_type(resolver)
