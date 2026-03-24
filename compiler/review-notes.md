@@ -7,9 +7,6 @@ _Last reviewed: 2026-03-23_
 
 ### Minor
 
-**[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
-The threshold `> 4` is unexplained. A named constant with a comment on its rationale would help.
-
 **[minor] `staticinit.py` counter initialization parses global names — `lowering/staticinit.py:147–148`**
 `[int(n.split("$si$")[1]) for n in app.globals if n.startswith("$si$")]` relies on naming
 convention stability and will produce a duplicate or raise `ValueError` if any unrelated global
@@ -132,6 +129,12 @@ from the self-inclusion pattern, which is consistent across all param types.
 ---
 
 ## Fixed
+
+**[minor] Magic constant `4` in `simple_classes.py` field limit — `lowering/simple_classes.py:45`**
+_Fixed 2026-03-24._
+Introduced `_MAX_FLAT_STRUCT_FIELDS = 4` with a comment explaining the rationale (arbitrary
+but reasonable cut-off: complex numbers and quaternions are optimised, matrices are not) and
+replaced the bare `4` with the named constant.
 
 **[major] `NewStruct.flatten` and `InitArray.flatten` return heterogeneous nested lists — `codegen/param.py:42,65`**
 _Fixed 2026-03-24._

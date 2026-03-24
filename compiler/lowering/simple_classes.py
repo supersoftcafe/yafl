@@ -32,6 +32,11 @@ from pyast.statement import ImportGroup
 
 __empty_imports = ImportGroup(tuple())
 
+# Maximum number of fields a class may have to qualify for flat-struct lowering.
+# Arbitrary but reasonable cut-off: a complex number (2 fields) and even a
+# quaternion (4 fields) are optimised, but a matrix is not.
+_MAX_FLAT_STRUCT_FIELDS = 4
+
 
 def __is_simple_class(
         cls: s.ClassStatement,
@@ -42,7 +47,7 @@ def __is_simple_class(
         return False
     if cls.name in base_class_names:
         return False
-    if len(cls.parameters.flatten()) > 4:
+    if len(cls.parameters.flatten()) > _MAX_FLAT_STRUCT_FIELDS:
         return False
     return True
 
