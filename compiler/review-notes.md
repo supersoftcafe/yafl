@@ -1,9 +1,30 @@
 # yafl Compiler — Review Notes
-_Last reviewed: 2026-03-23_
+_Last reviewed: 2026-03-24_
 
 ## Open findings
 
+### Critical
+
+_(none currently open)_
+
 ### Major
+
+**[major] `discriminators.get(..., 0)` silently assigns tag 0 on a missing key — `pyast/match.py:218`, `pyast/expression.py:723,819,825,847`**
+Five call sites use `discriminators.get(uid, 0)` when looking up the runtime tag value for a union variant.
+Tag `0` is also the legitimately assigned discriminator for the first union type encountered, so if any variant's `as_unique_id_str()` returns `None` (valid for `GenericPlaceholderSpec`) or a UID not present in the discriminator dict, two distinct variants silently share tag 0.
+In a well-typed program all variants should survive to codegen with concrete `as_unique_id_str()` values and should all be registered by `collect_discriminator_ids`. However, the fallback to 0 is a mis-compilation trap that will give no diagnostic — a `match` arm targeting the second variant will silently behave as if it were the first variant.
+Suggested fix: replace `discriminators.get(uid, 0)` with a helper that raises `KeyError` with a descriptive message if the key is absent or `None`.
+- **difficulty**: low
+- **impact**: high (silent mis-compilation; affects every boxed union and every match expression)
+
+**[major] `inlining.py` unguarded dict lookup `others[op.function.name]` — `lowering/inlining.py:34`**
+The walrus expression `target := others[op.function.name]` executes unconditionally whenever all earlier short-circuit conditions are False. If `op.function.name` is not a key in `others` (e.g., after any pipeline reordering that puts inlining before trim, or after adding an `external=True` function whose name happens to be referenced by a GlobalFunction), the result is an obscure `KeyError`.
+Currently safe only because `trim.py` is always run before inlining and `external=True` functions are only added by `globalinit` which runs after inlining. But the guard is purely implicit and ordering-dependent.
+Suggested fix: add an explicit `op.function.name not in others or` early-exit condition before the walrus assignment.
+- **difficulty**: low
+- **impact**: medium (currently survivable; but any pipeline ordering change produces a silent crash rather than a compiler error)
+
+Note: previously listed as minor; elevated to major because the walrus pattern obscures the missing guard and the fix is trivial.
 
 ### Minor
 
@@ -24,23 +45,22 @@ the NewStruct must be the rightmost operand) would help future readers.
 These are no-op branches that appear to be debugging leftovers or planned but unimplemented
 special-cases. They add noise without effect.
 
-**[minor] `inlining.py` performs an unguarded dict lookup on `app.functions` — `lowering/inlining.py:34`**
-The walrus expression `target := others[op.function.name]` is evaluated inside a short-circuited `or`
-chain that does NOT guard against missing keys — if none of the earlier conditions are `True`, the lookup
-executes regardless of whether `op.function.name` is in `others`. Currently safe because trim runs before
-inlining and `external=True` functions are only added by `globalinit` which runs after inlining. But the
-missing guard (`op.function.name not in others`) makes the function fragile — any ordering change produces
-an obscure `KeyError`.
-Suggested fix: add `op.function.name not in others or` as an additional early-exit condition.
-- **difficulty**: low
-- **impact**: low (latent, not currently triggered)
-
 **[minor] `all_labels` computed but never used in `inlining.py` — `lowering/inlining.py:27`**
 `all_labels: set[str] = {label.name for label in fn.ops if isinstance(label, Label)}` is built
 but never referenced in the function body. Dead computation.
 Suggested fix: remove the line.
 - **difficulty**: low
 - **impact**: low (noise/confusion only)
+
+**[minor] `__CUTOFF_COMPLEXITY = 10` in `inlining.py` is unexplained — `lowering/inlining.py:19`**
+The value `10` is the op-count ceiling for inlining a callee. There is no comment explaining
+why 10 was chosen (e.g., "empirically avoids code-size blowup for typical stdlib functions").
+The name says "complexity" but the check is purely on `len(ops)`, not on any structural measure of
+complexity. The `__` double-underscore prefix means it's never importable, which is fine, but the
+name might mislead a reader into thinking it measures something other than raw op count.
+Suggested fix: rename to `_MAX_INLINE_OPS` and add a one-line comment.
+- **difficulty**: low
+- **impact**: low (readability only)
 
 **[minor] `IfStatement` is declared but has no body and is never constructed — `pyast/statement.py:630–633`**
 The class stub defines only three fields and no methods (`compile`, `check`, `generate`). Nothing
@@ -69,6 +89,25 @@ actual double-init), but the redundant code inflates the generated C. A `seen` s
 duplicates would eliminate this.
 - **difficulty**: low
 - **impact**: low (generated-code quality only; correct output)
+
+**[minor] `NothingExpression` is defined but never referenced — `pyast/expression.py:556–561`**
+The class has only a `search_and_replace` implementation and is missing `compile`, `check`, and
+`generate`. It is never constructed anywhere in the codebase. Dead code that also raises
+`NotImplementedError` on any core method if ever instantiated.
+Suggested fix: remove the class, or add a TODO comment and implement the missing methods.
+- **difficulty**: low
+- **impact**: low (dead code; no runtime path reaches it)
+
+**[minor] `_si_counter` in `staticinit.py` is module-level and never reset — `lowering/staticinit.py:14`**
+The `itertools.count()` instance is shared across all calls to `compile()` within a process
+(e.g., all test cases in a test suite run). The generated names `$si$0`, `$si$1`, etc. are
+internal and trimmed before output, so this does not affect correctness in production. However,
+snapshot tests that assert generated C output will see different counter values depending on
+test execution order.
+Suggested fix: move `_si_counter` inside `promote_static_objects` (or reset it at the start of
+each top-level pass) so names are stable.
+- **difficulty**: low
+- **impact**: low (testing hazard only; no production correctness impact)
 
 ---
 
@@ -120,6 +159,18 @@ The base class `RParam.flatten` returns `[self]` for leaf nodes (self-reference 
 purposes). The convention is that `flatten` returns "this node plus all nodes nested within me",
 with each level responsible for including itself. The bug noted above (nested lists) is separate
 from the self-inclusion pattern, which is consistent across all param types.
+
+**`WideExpression.__widen_from_container` declares `result_var` only in the first arm's OperationBundle**
+The `first_arm` flag at `pyast/expression.py:844–869` ensures `result_var` is included in
+`stack_vars` exactly once. This is an idiomatic pattern in the codebase: `OperationBundle.stack_vars`
+accumulates all `StackVar` declarations by concatenation; including a var in more than one bundle
+would double-declare it in the emitted C. Including it in the first arm's bundle is correct.
+The pattern is fragile-looking but intentional and correct given the always-at-least-one-arm invariant.
+
+**`lambdas.py` uses Python recursion to handle nested lambdas**
+`__convert_lambdas_to_functions` recurses to handle lambdas-inside-lambdas. For realistic programs
+nesting depth is bounded by the source structure. Acceptable for a compiler that is not optimised
+for deeply-nested functional style.
 
 ---
 
