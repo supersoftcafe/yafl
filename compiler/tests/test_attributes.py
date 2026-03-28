@@ -1,0 +1,321 @@
+from io import StringIO
+from contextlib import redirect_stdout
+from unittest import TestCase
+
+import compiler as c
+from tests.testutil import compile_and_run_with_c_library
+
+
+def _compile(content: str) -> str:
+    return c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+
+
+def _compile_capturing_errors(content: str) -> tuple[str, str]:
+    """Returns (result, captured_stdout)."""
+    buf = StringIO()
+    with redirect_stdout(buf):
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+    return result, buf.getvalue()
+
+
+class TestFinal(TestCase):
+
+    def test_final_class_compiles(self):
+        """A [final] class compiles successfully."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+class [final] Point(x: System::Int, y: System::Int)
+
+fun main(): System::Int
+    let p: System::Point = System::Point(3, 4)
+    ret p.x
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_final_class_method_compiles(self):
+        """A [final] class with a method compiles successfully (direct dispatch path)."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+class [final] Counter(n: System::Int)
+    fun value(): System::Int
+        ret n
+
+fun main(): System::Int
+    let c: System::Counter = System::Counter(42)
+    ret c.value()
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_inherit_from_final_interface_is_error(self):
+        """Implementing a [final] interface is a compile error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+interface [final] Sealed
+    fun value(): System::Int
+
+class Breaker() : System::Sealed
+    fun value(): System::Int
+        ret 1
+
+fun main(): System::Int
+    ret 1
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("final", errors.lower())
+
+
+class TestForeign(TestCase):
+
+    def test_foreign_class_compiles(self):
+        """A [foreign, final] class with no parameters compiles successfully."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class [foreign, final] FileIO
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_foreign_standalone_function_compiles(self):
+        """A standalone [foreign("sym")] function with no body compiles successfully."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+fun [foreign("libyafl_get_env")] get_env(name: System::String): System::String
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_foreign_class_with_foreign_methods_compiles(self):
+        """A [foreign, final] class with [foreign] methods compiles successfully."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class [foreign, final] FileIO
+    fun [foreign("libyafl_file_read_line")] read_line(): System::String
+    fun [foreign("libyafl_file_close")]     close(): System::Int
+
+fun [foreign("libyafl_file_open")] open(path: System::String): System::FileIO
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_foreign_class_without_final_is_error(self):
+        """A [foreign] class without [final] is a compile error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+class [foreign] FileIO
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("final", errors.lower())
+
+    def test_foreign_class_with_symbol_is_error(self):
+        """[foreign("sym")] on a class is a compile error — classes take no symbol."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+class [foreign("libyafl_file_open"), final] FileIO
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("foreign", errors.lower())
+
+    def test_foreign_class_with_parameters_is_error(self):
+        """A [foreign, final] class with constructor parameters is a compile error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class [foreign, final] FileIO(path: System::String)
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("foreign", errors.lower())
+
+    def test_foreign_class_with_non_foreign_method_is_error(self):
+        """A [foreign] class with a non-[foreign] method is a compile error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class [foreign, final] FileIO
+    fun read(): System::String
+        ret "hello"
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("foreign", errors.lower())
+
+    def test_foreign_function_with_body_is_error(self):
+        """A [foreign] function with a body is a compile error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+fun [foreign("libyafl_get_env")] get_env(name: System::String): System::String
+    ret name
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("foreign", errors.lower())
+
+    def test_foreign_function_without_symbol_is_error(self):
+        """A [foreign] function without a string argument is a compile error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+fun [foreign] get_env(name: System::String): System::String
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("foreign", errors.lower())
+
+    def test_foreign_declarations_emit_no_definitions(self):
+        """Foreign class and functions produce no struct typedef, vtable, or function bodies in the C output."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class [foreign, final] FileIO
+    fun [foreign("libyafl_file_close")] close(): System::Int
+
+fun [foreign("libyafl_file_open")] open(path: System::String): System::FileIO
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        self.assertNotIn("libyafl_file_open", result)
+        self.assertNotIn("libyafl_file_close", result)
+        self.assertNotIn("FileIO_t", result)
+
+    def test_comma_separated_attributes(self):
+        """[foreign, final] — multiple attributes in one block, comma-separated."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+class [foreign, final] FileIO
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+
+class TestForeignIntegration(TestCase):
+    """Full compile-link-run tests for the [foreign] attribute.
+
+    The C library implements a trivial integer counter whose state lives in a
+    C global.  Foreign functions follow the CPS calling convention: they accept
+    a fun_t continuation as their last argument, compute the result, and call
+    the continuation rather than returning directly.
+    """
+
+    # counter_t extends object_t with a per-object int32_t field.
+    # The vtable's object_size covers the full struct so the GC allocates enough.
+    _C_LIBRARY = r"""
+#include <yafl.h>
+
+typedef struct {
+    object_t base;
+    int32_t  value;
+} counter_t;
+
+static vtable_t* _counter_implements[] = { NULL };
+
+static VTABLE_DECLARE_STRUCT(, 1) _counter_vtable = {
+    .object_size                = sizeof(counter_t),
+    .array_el_size              = 0,
+    .object_pointer_locations   = 0,
+    .array_el_pointer_locations = 0,
+    .functions_mask             = 0,
+    .array_len_offset           = 0,
+    .is_mutable                 = 0,
+    .name                       = "Counter",
+    .implements_array           = _counter_implements,
+    .lookup                     = {{ .i = -1, .f = (void*)&abort_on_vtable_lookup }}
+};
+
+/* Dispatch helper: call a CPS continuation with a single object_t* result. */
+static void _resume(fun_t cont, object_t* value) {
+    ((void(*)(object_t*, object_t*))cont.f)(cont.o, value);
+}
+
+void test_counter_create(object_t* _this, object_t* init, fun_t cont) {
+    counter_t* c = (counter_t*)object_create((vtable_t*)&_counter_vtable);
+    c->value = integer_to_int32(init);
+    _resume(cont, (object_t*)c);
+}
+
+void test_counter_get(object_t* _this, fun_t cont) {
+    _resume(cont, integer_create_from_int32(((counter_t*)_this)->value));
+}
+
+void test_counter_add(object_t* _this, object_t* n, fun_t cont) {
+    ((counter_t*)_this)->value += integer_to_int32(n);
+    _resume(cont, integer_create_from_int32(((counter_t*)_this)->value));
+}
+"""
+
+    _YAFL = """\
+namespace System
+typealias Int : __builtin_type__<bigint>
+
+class [foreign, final] Counter
+    fun [foreign("test_counter_get")] get(): System::Int
+    fun [foreign("test_counter_add")] add(n: System::Int): System::Int
+
+fun [foreign("test_counter_create")] create(init: System::Int): System::Counter
+
+fun main(): System::Int
+    let c: System::Counter = create(10)
+    let _a: System::Int = c.add(5)
+    let _b: System::Int = c.add(3)
+    ret c.get()
+"""
+
+    def test_foreign_counter(self):
+        """Create counter(10), add(5) → 15, add(3) → 18; get() returns 18."""
+        exit_code = compile_and_run_with_c_library(self._YAFL, self._C_LIBRARY)
+        self.assertEqual(18, exit_code)

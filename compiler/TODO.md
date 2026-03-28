@@ -216,23 +216,31 @@ prerequisite for the [foreign] interop mechanism below.
 
 # [foreign] C interop
 
-A class marked [foreign] has its implementation in an external C library. The
-compiler suppresses struct and function body emission, treating the type as an
-opaque pointer. Each associated function must additionally declare the C symbol
-it maps to:
+A class marked [foreign] declares an opaque type whose implementation lives in
+an external C library. The compiler suppresses struct typedef and vtable
+emission for the type entirely. A [foreign] class has no constructor parameters
+— instances cannot be constructed directly in YAFL. Instead, standalone
+[foreign] functions return instances of the type:
 
 ```
-class [foreign] [final] FileIO()
+class [foreign, final] FileIO
+    fun [foreign("libyafl_file_read_line")] read_line(): String|None
+    fun [foreign("libyafl_file_write")]     write(s: String): None
+    fun [foreign("libyafl_file_close")]     close(): None
 
-fun [foreign("libyafl_file_open")]      open(path: String): FileIO|None
-fun [foreign("libyafl_file_read_line")] read_line(file: FileIO): String|None
-fun [foreign("libyafl_file_write")]     write(file: FileIO, s: String): None
-fun [foreign("libyafl_file_close")]     close(file: FileIO): None
+fun [foreign("libyafl_file_open")]   open(path: String): FileIO
+fun [foreign("libyafl_file_create")] create(path: String): FileIO
 ```
 
-[foreign] on a class suppresses the struct definition and emits nothing.
-[foreign("symbol")] on a function suppresses the body and emits an extern
-prototype against that exact C symbol. Call sites are otherwise unchanged.
+[foreign("symbol")] on a function suppresses the body and maps the declaration
+to that exact C symbol. Call sites are otherwise unchanged.
+
+This applies equally to non-member functions with no associated foreign class —
+any standalone function can be declared as a foreign symbol:
+
+```
+fun [foreign("libyafl_get_env")] get_env(name: String): String|None
+```
 
 [foreign] classes must also be [final]: without that guarantee the compiler
 would need vtable entries for them, which cannot be generated for a type whose

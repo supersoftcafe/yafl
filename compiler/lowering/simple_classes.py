@@ -43,6 +43,8 @@ def __is_simple_class(
         base_class_names: set[str]) -> bool:
     if cls.is_interface:
         return False
+    if "foreign" in cls.attributes:
+        return False
     if cls.implements:
         return False
     if cls.name in base_class_names:

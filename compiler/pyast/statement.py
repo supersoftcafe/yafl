@@ -191,7 +191,21 @@ class FunctionStatement(DataStatement):
         err2 = self.parameters.check(resolver, None)
         err3 = [e for x in self.statements for e in x.check(resolver, self.return_type)]
         err4 = [e for x in self.trait_params for e in x.check(resolver)]
-        return err1 + err2 + err3 + err4
+
+        if "foreign" in self.attributes:
+            foreign_attr = self.attributes.get("foreign")
+            if (not isinstance(foreign_attr, e.TupleExpression)
+                    or len(foreign_attr.expressions) != 1
+                    or not isinstance(foreign_attr.expressions[0].value, e.StringExpression)):
+                foreign_err = [Error(self.line_ref, '[foreign] requires exactly one string argument: [foreign("symbol")]')]
+            elif self.statements:
+                foreign_err = [Error(self.line_ref, "[foreign] functions must have no body")]
+            else:
+                foreign_err = []
+        else:
+            foreign_err = []
+
+        return err1 + err2 + err3 + err4 + foreign_err
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Function:
         resolver = g.ResolverType(resolver, self._find_generic_types)
@@ -213,13 +227,21 @@ class FunctionStatement(DataStatement):
         for sv in bundle.stack_vars:
             vars.append( (sv.name, sv.type) )
 
+        foreign_attr = self.attributes.get("foreign")
+        foreign_symbol = (foreign_attr.expressions[0].value.value
+                          if isinstance(foreign_attr, e.TupleExpression)
+                          and len(foreign_attr.expressions) == 1
+                          and isinstance(foreign_attr.expressions[0].value, e.StringExpression)
+                          else None)
+
         return cg_x.Function(
             name = self.name,
             params = cg_t.Struct(fields = tuple(params)),
             result = self.return_type.generate(),
             stack_vars = cg_t.Struct(fields = tuple(vars)),
             ops = tuple(bundle.operations),
-            comment = self.name
+            comment = self.name,
+            foreign_symbol = foreign_symbol
         )
 
 
@@ -360,6 +382,10 @@ class ClassStatement(TypeStatement):
         cls_type_err = [] if all(x[1].is_interface for x in resolved_inheritance if isinstance(x[1], ClassStatement)) else\
             [Error(self.line_ref, "Must only inherit from pure interfaces")]
 
+        final_err = [Error(self.line_ref, f"Cannot inherit from final class '{xcls.name}'")
+                     for (xtype, xcls) in resolved_inheritance
+                     if isinstance(xcls, ClassStatement) and "final" in xcls.attributes]
+
         # Slots that have more than one implementor
         slots = c.invert_and_merge_slots(self._all_slots)
         bad_slots_err = [Error(self.line_ref, "One or more slots have multiple overrides")]\
@@ -372,7 +398,23 @@ class ClassStatement(TypeStatement):
         resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         stm_err = [x for stm in self.statements for x in stm.check(resolver, None)]
 
-        return prm_err + stm_err + impl_err + cls_type_err + bad_slots_err + empty_slots_err
+        if "foreign" in self.attributes:
+            foreign_attr = self.attributes.get("foreign")
+            if foreign_attr is not None:
+                class_foreign_err = [Error(self.line_ref, "[foreign] on a class takes no argument — instances are returned by foreign functions")]
+            elif "final" not in self.attributes:
+                class_foreign_err = [Error(self.line_ref, "[foreign] classes must also be [final]")]
+            elif self.parameters.flatten():
+                class_foreign_err = [Error(self.line_ref, "[foreign] classes must have no parameters — instances are returned by foreign functions, not constructed directly")]
+            elif any(not (isinstance(s, FunctionStatement) and "foreign" in s.attributes)
+                     for s in self.statements):
+                class_foreign_err = [Error(self.line_ref, "[foreign] classes may only contain [foreign] methods")]
+            else:
+                class_foreign_err = []
+        else:
+            class_foreign_err = []
+
+        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + bad_slots_err + empty_slots_err
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_x.Object, list[cg_x.Function]]:
@@ -395,7 +437,8 @@ class ClassStatement(TypeStatement):
                 tuple((p.name, p.get_type().generate()) for p in self.parameters.flatten())
             ),
             length_field=None,
-            comment=self.name
+            comment=self.name,
+            is_foreign="foreign" in self.attributes
         ) # TODO: Array support
 
         return xobject, gen_functions+thunks

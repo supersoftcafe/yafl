@@ -287,6 +287,7 @@ class GlobalFunction(RParam):
     name: str
     object: RParam|None = None
     external: bool = False
+    c_symbol: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -308,7 +309,8 @@ class GlobalFunction(RParam):
         return replacer(dataclasses.replace(self, object=self.object and self.object.replace_params(replacer)))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"((fun_t){{.f={mangle_name(self.name)},.o={self.object.to_c(type_cache) if self.object else 'NULL'}}})"
+        f_ref = self.c_symbol if self.c_symbol else mangle_name(self.name)
+        return f"((fun_t){{.f={f_ref},.o={self.object.to_c(type_cache) if self.object else 'NULL'}}})"
 
     def get_live_vars(self) -> frozenset[StackVar]:
         return self.object.get_live_vars() if self.object else set()

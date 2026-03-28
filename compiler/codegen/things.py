@@ -19,6 +19,7 @@ class Function:
     stack_vars: t.Struct
     ops: tuple[Op, ...]
     comment: str = ""
+    foreign_symbol: str | None = None
 
     def __post_init__(self):
         if len(self.params.fields) == 0:
@@ -39,6 +40,11 @@ class Function:
     @property
     def comment_line(self):
         return f"// {self.comment}\n" if self.comment else ""
+
+    def to_c_extern(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        """Emit an extern declaration for the underlying C symbol, using the YAFL calling convention."""
+        return (f"extern {self.result.declare(type_cache)} "
+                f"{self.foreign_symbol}({self.__declare_vars(type_cache, ', ', self.params, '')});\n")
 
     def to_c_prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"{self.comment_line}{self.__prototype(type_cache)};\n"
@@ -88,6 +94,7 @@ class Object:
     fields: t.ImmediateStruct               # All fields of this and parent objects in the correct order
     length_field: str|None = None           # Name of field that is the Int(32) length
     comment: str = ""
+    is_foreign: bool = False
 
     def __post_init__(self):
         if not isinstance(self.fields, t.ImmediateStruct):

@@ -339,9 +339,13 @@ __parse_type_any = p.delimited_list(__parse_type_any2, "|") >> __to_tagged_spec_
 ##############
 ## Expressions
 
+def __parse_attr_tuple(tokens: list[p.Token]) -> p.Result:
+    return __parse_expr_tuple(tokens)
+
 __parse_attr_name = p.ident() | p.sym(["where", "let", "fun", "class", "interface", "ret", "import", "namespace"])
+__parse_attr_value = (p.discard_sym("=") & (__string() | __integer())) | p.Parser(__parse_attr_tuple)
 __parse_attributes = p.maybe(p.discard_sym("[") & p.delimited_list(
-    __parse_attr_name & p.maybe(p.discard_sym("=") & (__string() | __integer()))
+    __parse_attr_name & p.maybe(__parse_attr_value)
     , ",") & p.discard_sym("]")) >> __to_attributes
 
 def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[s.LetStatement]:
@@ -349,6 +353,7 @@ def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[s.LetStatement]:
 __parse_target_type_expr = p.Parser(parse_target_type_expr)
 
 __parse_destructure_parts = p.discard_sym('(') & p.delimited_list(__parse_target_type_expr, ',') & p.discard_sym(')')
+__parse_maybe_destructure_parts = p.maybe(__parse_destructure_parts) >> __to_flat_list
 __parse_target_type_expr_any = (__parse_attributes & (p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_let_statement
 
 __parse_maybe_type_params = p.maybe(p.requires(
@@ -404,7 +409,7 @@ __parse_fun = p.block(p.requires(
 
 __parse_class = p.block(p.requires(
     p.discard_sym("class"),
-    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_class,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_maybe_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_class,
     "invalid class statement"))
 
 __parse_interface = p.block(p.requires(

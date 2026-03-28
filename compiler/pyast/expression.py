@@ -19,6 +19,16 @@ import pyast.typespec as t
 import pyast.utils as u
 
 
+def _foreign_symbol(stmt: s.FunctionStatement) -> str | None:
+    """Return the C symbol name if stmt has [foreign("symbol")], else None."""
+    foreign_attr = stmt.attributes.get("foreign")
+    if (isinstance(foreign_attr, TupleExpression)
+            and len(foreign_attr.expressions) == 1
+            and isinstance(foreign_attr.expressions[0].value, StringExpression)):
+        return foreign_attr.expressions[0].value.value
+    return None
+
+
 @dataclass
 class Expression:
     line_ref: LineRef
@@ -274,7 +284,7 @@ class DotExpression(Expression):
                 elif "final" not in cdecl.attributes:
                     result_var = cg_p.VirtualFunction(data.name, base_bundle.result_var)
                 else:
-                    result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var)
+                    result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var, c_symbol=_foreign_symbol(data))
 
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
@@ -409,7 +419,7 @@ class NamedExpression(Expression):
         x = x[0]
         match (x.scope, x.statement):
             case (g.ResolvedScope.GLOBAL, stmt) if isinstance(stmt, s.FunctionStatement):
-                return g.OperationBundle( (), (), cg_p.GlobalFunction(self.name) )
+                return g.OperationBundle((), (), cg_p.GlobalFunction(self.name, c_symbol=_foreign_symbol(stmt)))
             case (g.ResolvedScope.GLOBAL, stmt) if isinstance(stmt, s.LetStatement):
                 xtype = stmt.declared_type
                 if not xtype: raise ValueError(f"Failed to resolve {self.name} due to missing type")

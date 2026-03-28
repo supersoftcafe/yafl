@@ -112,13 +112,18 @@ class Application:
         if ep.result != Void():
             raise ValueError(f"Function '{entry_point_name}' is required to return Void")
 
-        vtables = {name: [signature for signature, _ in o.functions] for name, o in self.objects.items()}
+        vtables = {name: [signature for signature, _ in o.functions]
+                   for name, o in self.objects.items() if not o.is_foreign}
         global_ids, vtable_sizes = create_perfect_lookups(vtables)
 
         for name, f in self.functions.items():
-            self.__gen_function(name, f)
+            if f.foreign_symbol:
+                self.__forwards.append(f.to_c_extern(self.__type_cache))
+            else:
+                self.__gen_function(name, f)
         for name, o in self.objects.items():
-            self.__gen_object(name, o, global_ids, vtable_sizes)
+            if not o.is_foreign:
+                self.__gen_object(name, o, global_ids, vtable_sizes)
         for name, g in self.globals.items():
             self.__gen_global(name, g)
 
