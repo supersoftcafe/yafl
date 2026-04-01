@@ -20,7 +20,13 @@ followed by space for the returned value.
 
 The synchronous hot path should fall through quickly.
 
-Integer and string type encoding is impacted by this.
+Integer and string type encoding is impacted by this. To support this and other 
+disambiguations the following encoding is used:
+- bit zero set means it is a task pointer
+- bit one set means it is a compressed integer of 30 or 62 bits
+- bit two set means it is a string of 3 or 7 bytes, bits 3-5 encode length
+- 0 is None
+- all others are YAFL object pointers 
 
 # Simple classes
 
