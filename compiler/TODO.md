@@ -1,5 +1,29 @@
+# Change async model to task based
+
+Bit 0 of any pointer is reserved to indicate that it's a task pointer. Compressed 
+string and integer pointers must work around that. Any return value that is a pointer
+or a struct containting a pointer somewhere will use this encoding.
+
+One of the never used NaN values is used as a sentinal for float32 and 64 but the 
+function must return two, so that the second can be coerced into a pointer, but without
+causing the hot path to degrade to integer or ram ops for function calls that are
+known to be synchronous.
+
+Tagged unions with a spare tag value can be simply hijacked to have a new tag for the
+task pointer.
+
+Finally if all else fails a simple bool flag is tagged onto the end as a sentinal and
+wrapped into a union with the task pointer.
+
+The task object itself always has the same mutex and callback machinery at the start
+followed by space for the returned value.
+
+The synchronous hot path should fall through quickly.
+
+Integer and string type encoding is impacted by this.
 
 # Simple classes
+
 Any class that is below a particular complexity threshold (based on some heuristic
 of its instance values) and does not inherit from any other class, or have
 sub-classes, is equivalent to a C# struct with helper functions. We can add lowering
