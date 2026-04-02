@@ -26,7 +26,55 @@ disambiguations the following encoding is used:
 - bit one set means it is a compressed integer of 30 or 62 bits
 - bit two set means it is a string of 3 or 7 bytes, bits 3-5 encode length
 - 0 is None
-- all others are YAFL object pointers 
+- all others are YAFL object pointers
+
+Example launchpad, or fast path synchronous function, example:
+```
+struct thingyresult
+{
+  object_t* a;
+  int32_t b;
+};
+void get_thing$async(frame_t* frametask, object* resulttask)
+{
+  switch (frametask->callid)
+  {
+    case 1:
+      // do something with result
+      break;
+
+      // buld state machine here
+  }
+}
+struct thingyresult get_thing(object_t* this, int32_t value)
+{
+  int32_t call_id;
+  object_t* task;
+
+  object_t* result = something(null, value);
+  if (unlikely(is_task(result)))
+  {
+    task = extract_task(result);
+    call_id = 1;
+    goto asynccommon;
+  }
+  // carry on with hot sync path
+  return {result->field, value};
+
+asynccommon;
+  frame_t* frametask = allocateheapframe();
+  frametask->callid = call_id;
+
+  // save variables to heap frame
+
+  // Either saves the callback handler or directly calls it due
+  // to task already complete, which can happen.
+  save_callback_handler(task, (fun_t){.f=get_thing$async, .o=frametask});
+  return {.a = wrap_task(frametask) };
+}
+```
+
+
 
 # Simple classes
 
