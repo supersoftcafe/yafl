@@ -74,7 +74,15 @@ asynccommon;
 }
 ```
 
+# Syncronous optimization
 
+Any function marked as foreign could also have attribute [sync] to show that
+it never returns an async task. This is to help the optimizer so that it won't
+emit async handler code after call sites.
+
+Walking the graph the compiler can discover other functions that are synchronous
+and mark those. It will need somehow to discover recursive calls to correctky
+mark them.
 
 # Simple classes
 
