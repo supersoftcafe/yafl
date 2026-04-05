@@ -207,6 +207,71 @@ TEST(write_truncate_clears_content)
     io_close(r);
 TEST_END()
 
+/* ---- large read (> 32-byte stack buffer) ---- */
+
+TEST(read_large_allocation_path)
+    /* io_read with length > 32 takes the heap-allocation + string_truncate path.
+       Verify the content round-trips correctly. */
+    const char* payload = "0123456789abcdefghij0123456789abcdefghij"; /* 40 bytes */
+    object_t* w = io_create(NULL, TMP_PATH);
+    io_write(w, string_from_bytes((uint8_t*)payload, 40));
+    io_close(w);
+
+    object_t* r = io_open_read(NULL, TMP_PATH);
+    object_t* data = io_read(r, 40);
+    ASSERT(data != NULL);
+    ASSERT_EQ_I32(string_length(data), 40);
+    ASSERT_STR_EQ(data, payload);
+    io_close(r);
+TEST_END()
+
+TEST(read_exact_file_size)
+    /* Reading exactly the number of bytes in the file returns the data, and the
+       immediately following read returns NULL (clean EOF, no partial read). */
+    object_t* w = io_create(NULL, TMP_PATH);
+    io_write(w, STR("hello"));
+    io_close(w);
+
+    object_t* r = io_open_read(NULL, TMP_PATH);
+    object_t* data = io_read(r, 5);
+    ASSERT_STR_EQ(data, "hello");
+    object_t* eof = io_read(r, 5);
+    ASSERT(eof == NULL);
+    io_close(r);
+TEST_END()
+
+TEST(write_empty_string)
+    /* Writing a zero-length string returns 0, not an error. */
+    object_t* io = io_create(NULL, TMP_PATH);
+    object_t* n = io_write(io, STR(""));
+    ASSERT(PTR_IS_INTEGER(n));
+    ASSERT_EQ_I32(integer_to_int32(n), 0);
+    io_close(io);
+TEST_END()
+
+TEST(open_write_append_creates_nonexistent)
+    /* io_open_write with truncate=false (append mode) creates the file if it
+       does not already exist. */
+    const char* new_cstr = "/tmp/yafl_test_io_new.tmp";
+    object_t*   new_path = STR("/tmp/yafl_test_io_new.tmp");
+    remove(new_cstr);
+    object_t* io = io_open_write(NULL, new_path, false);
+    ASSERT(io != NULL && PTR_IS_OBJECT(io));
+    io_close(io);
+    object_t* verify = io_open_read(NULL, new_path);
+    ASSERT(verify != NULL && PTR_IS_OBJECT(verify));
+    io_close(verify);
+    remove(new_cstr);
+TEST_END()
+
+TEST(read_closed_returns_null_twice)
+    /* Repeated reads on a closed file both return NULL without crashing. */
+    object_t* io = io_create(NULL, TMP_PATH);
+    io_close(io);
+    ASSERT(io_read(io, 16) == NULL);
+    ASSERT(io_read(io, 16) == NULL);
+TEST_END()
+
 /* ---- entrypoint ---- */
 
 static roots_declaration_func_t prev_roots;
@@ -254,6 +319,13 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(read_partial_then_rest);
     RUN(write_append_roundtrip);
     RUN(write_truncate_clears_content);
+
+    /* large read / boundary / edge cases */
+    RUN(read_large_allocation_path);
+    RUN(read_exact_file_size);
+    RUN(write_empty_string);
+    RUN(open_write_append_creates_nonexistent);
+    RUN(read_closed_returns_null_twice);
 
     PRINT_RESULTS("io", _r);
 

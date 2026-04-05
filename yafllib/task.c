@@ -37,7 +37,7 @@ EXPORT object_t* task_complete(void* self) {
     task_t* task = (task_t*)self;
     int_fast32_t old = atomic_exchange(&task->state, TASK_COMPLETE);
     if (old == TASK_CALLBACK)
-        thread_work_post_io(thread_work_prepare((fun_t){.f=_task_call_complete, .o=task}));
+        thread_dispatch_io((fun_t){.f=_task_call_complete, .o=task});
     return NULL;
 }
 

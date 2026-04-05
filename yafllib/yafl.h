@@ -297,6 +297,8 @@ typedef struct worker_node {
 EXTERN worker_node_t* thread_work_prepare(fun_t action);
 EXTERN void thread_work_post_io(worker_node_t* work);
 EXTERN void thread_work_post_fast(worker_node_t* work);
+EXTERN void thread_dispatch_io(fun_t action);
+EXTERN void thread_dispatch_fast(fun_t action);
 
 
 /**********************************************************

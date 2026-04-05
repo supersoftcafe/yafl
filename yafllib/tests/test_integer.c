@@ -194,6 +194,21 @@ TEST(rem_large)
     ASSERT_INT_EQ(integer_rem(BL3(0,10,0,1), BL3(0,0,0,1)), I(10));
 TEST_END()
 
+TEST(rem_negative_dividend)
+    /* Sign of remainder follows the dividend (C99 convention). -10 % 3 == -1 */
+    ASSERT_INT_EQ(integer_rem(I(-10), I(3)), I(-1));
+TEST_END()
+
+TEST(rem_negative_divisor)
+    /* Divisor sign does not affect remainder sign. 10 % -3 == 1 */
+    ASSERT_INT_EQ(integer_rem(I(10), I(-3)), I(1));
+TEST_END()
+
+TEST(rem_both_negative)
+    /* Both negative: sign still follows dividend. -10 % -3 == -1 */
+    ASSERT_INT_EQ(integer_rem(I(-10), I(-3)), I(-1));
+TEST_END()
+
 /* ---- comparison ---- */
 
 TEST(cmp_equal)
@@ -260,6 +275,26 @@ TEST(to_int32_overflow)
     ASSERT(ov);
 TEST_END()
 
+TEST(to_int32_overflow_three_word)
+    /* Any heap integer with length > 1 sets overflow regardless of value,
+       because the value may exceed int32 range. */
+    object_t* big = BL3(0, 0, 0, 1);   /* 3-word heap integer */
+    int ov = 0;
+    integer_to_int32_with_overflow(big, &ov);
+    ASSERT(ov);
+TEST_END()
+
+/* ---- normalization ---- */
+
+TEST(add_result_normalizes_to_literal)
+    /* When big-integer arithmetic produces a result small enough for a tagged
+       literal, _normalize_integer must return a tagged pointer, not a heap object.
+       PTR_IS_INTEGER distinguishes tagged integers from heap integers. */
+    object_t* result = integer_add(BL3(0,0,0,1), BL3(-1,0,0,1));
+    ASSERT(PTR_IS_INTEGER(result));
+    ASSERT_INT_EQ_I32(result, 0);
+TEST_END()
+
 /* ---- entrypoint ---- */
 
 static roots_declaration_func_t prev_roots;
@@ -320,6 +355,9 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(rem_basic);
     RUN(rem_exact);
     RUN(rem_large);
+    RUN(rem_negative_dividend);
+    RUN(rem_negative_divisor);
+    RUN(rem_both_negative);
 
     /* comparison */
     RUN(cmp_equal);
@@ -336,6 +374,10 @@ static void run_tests(object_t* _, fun_t continuation) {
     /* overflow */
     RUN(to_int32_no_overflow);
     RUN(to_int32_overflow);
+    RUN(to_int32_overflow_three_word);
+
+    /* normalization */
+    RUN(add_result_normalizes_to_literal);
 
     PRINT_RESULTS("integer", _r);
 

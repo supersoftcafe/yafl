@@ -67,6 +67,19 @@ TEST(task_complete_after_on_complete_posts_callback)
     ASSERT(_callback_task_arg == t);
 TEST_END()
 
+TEST(task_complete_idempotent)
+    /* Completing a task twice must not fire the callback more than once.
+       First two completes set state to COMPLETE with no callback registered.
+       Registering after both completes fires exactly once (inline path). */
+    _reset_callback();
+    object_t* t = task_create(NULL);
+    task_complete(t);   /* PENDING -> COMPLETE, no callback */
+    task_complete(t);   /* already COMPLETE, no-op */
+    task_on_complete(t, CALLBACK);  /* fires inline: task already complete */
+    ASSERT(atomic_load(&_callback_fired));
+    ASSERT(_callback_task_arg == t);
+TEST_END()
+
 TEST(task_tagged_ptr_round_trip)
     object_t* t = task_create(NULL);
     object_t* tagged = (object_t*)((uintptr_t)t | PTR_TAG_TASK);
@@ -93,6 +106,7 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(task_on_complete_pending_returns_null);
     RUN(task_on_complete_already_complete_calls_immediately);
     RUN(task_complete_after_on_complete_posts_callback);
+    RUN(task_complete_idempotent);
     RUN(task_tagged_ptr_round_trip);
 
     PRINT_RESULTS("task", _r);

@@ -256,6 +256,14 @@ EXTERN void thread_work_post_io(worker_node_t* work) {
     }
 }
 
+EXPORT void thread_dispatch_io(fun_t action) {
+    thread_work_post_io(thread_work_prepare(action));
+}
+
+EXPORT void thread_dispatch_fast(fun_t action) {
+    thread_work_post_fast(thread_work_prepare(action));
+}
+
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {
     clock_gettime(CLOCK_MONOTONIC, &t_start);
     __entrypoint__ = entrypoint;
