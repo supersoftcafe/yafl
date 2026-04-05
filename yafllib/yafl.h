@@ -141,6 +141,7 @@ typedef struct {
     void* o;
 } fun_t;
 
+
 typedef struct {
     intptr_t i;
     void*    f;
@@ -202,6 +203,20 @@ enum {
 #define VT_TAG_GET(vt)      ((uintptr_t)(vt) & VT_TAG_MASK)
 #define VT_TAG_UNSET(vt)    ((vtable_t*)((uintptr_t)(vt) & ~(uintptr_t)VT_TAG_MASK))
 #define VT_TAG_SET(vt, tag) ((vtable_t*)((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK) | tag))
+
+enum {
+    PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.
+    PTR_TAG_TASK    = 0x1,  // If lowest bit is set, this is a task pointer. Invisible to GC, so must not be stored.
+    PTR_TAG_INTEGER = 0x2,  // Compressed integer in upper 30 or 62 bits.
+    PTR_TAG_STRING  = 0x4,  // Comrpessed string in upper 3 or 7 bytes. Upper bits of lowest byte are the length.
+    PTR_TAG_MASK    = 0x7
+};
+
+#define PTR_IS_OBJECT(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == 0)
+#define PTR_IS_TASK(ptr)    (((uintptr_t)(ptr)&PTR_TAG_TASK) != 0)
+#define PTR_IS_INTEGER(ptr) (((uintptr_t)(ptr)&PTR_TAG_INTEGER) != 0)
+#define PTR_IS_STRING(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == PTR_TAG_STRING)
+
 
 EXTERN void gc_start();
 #ifndef OBJECT_HEADER_EXCLUSIONS
@@ -289,6 +304,33 @@ EXTERN void thread_work_post_fast(worker_node_t* work);
  *************
  *****
  **
+ *                   Task
+ **
+ *****
+ *************
+ *****************************
+ **********************************************************/
+
+typedef struct {
+    object_t              parent;
+    _Atomic(int_fast32_t) state;
+    fun_t                 callback;
+} task_t;
+
+#define TASK_UNTAG(ptr) ((task_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
+
+EXTERN struct task_vtable TASK_VTABLE;
+
+EXTERN object_t* task_create     (void* self);
+EXTERN object_t* task_complete   (void* self);
+EXTERN object_t* task_on_complete(void* self, fun_t callback);
+
+
+/**********************************************************
+ *****************************
+ *************
+ *****
+ **
  *                   Lazy initialisation
  **
  *****
@@ -354,13 +396,13 @@ EXTERN struct integer_vtable INTEGER_VTABLE;
 #define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,((count)+1)/2,sign,array})
 #define INTEGER_LITERAL_N_1(value1) ((intptr_t)(value1))
 #define INTEGER_LITERAL_N_2(value1, value2) (((intptr_t)(value1)&0xffffffffull)|((intptr_t)(value2)<<32))
-#define INTEGER_LITERAL_1(sign, value1) (((!sign)&&(value1>INT32_MAX/2))||(value1>INT32_MAX/2+1)?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
-#define INTEGER_LITERAL_2(sign, value1, value2) (((!sign)&&(value2>INT32_MAX/2))||(value2>INT32_MAX/2+1)?INTEGER_LITERAL_N(sign,2,{INTEGER_LITERAL_N_2(value1, value2)}):(object_t*)((((intptr_t)value2<<32)+value1)*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_1(sign, value1) ((object_t*)((intptr_t)value1*(sign?-1:1)*4+PTR_TAG_INTEGER))
+#define INTEGER_LITERAL_2(sign, value1, value2) (((!sign)&&(value2>INT32_MAX/4))||(value2>INT32_MAX/4+1)?INTEGER_LITERAL_N(sign,2,{INTEGER_LITERAL_N_2(value1, value2)}):(object_t*)((((intptr_t)value2<<32)+value1)*(sign?-1:1)*4+PTR_TAG_INTEGER))
 #else
 #define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,sign,array})
 #define INTEGER_LITERAL_N_1(value1) value1
 #define INTEGER_LITERAL_N_2(value1, value2) value1, value2
-#define INTEGER_LITERAL_1(sign, value1) (((!sign)&&value1>INT32_MAX/2)||(value1>INT32_MAX/2+1)?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*2+1))
+#define INTEGER_LITERAL_1(sign, value1) (((!sign)&&value1>INT32_MAX/4)||(value1>INT32_MAX/4+1)?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*4+PTR_TAG_INTEGER))
 #define INTEGER_LITERAL_2(sign, value1, value2) INTEGER_LITERAL_N(sign, 2, {INTEGER_LITERAL_N_2(value1, value2)})
 #endif
 #define INTEGER_LITERAL_SEP ,
@@ -369,7 +411,7 @@ EXTERN struct integer_vtable INTEGER_VTABLE;
 EXTERN object_t* integer_add_full(object_t* self, object_t* data);
 INLINE object_t* integer_add(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data, vc;
-    if (LIKELY(va&vb&1 && !__builtin_add_overflow(va, vb^1, &vc))) {
+    if (LIKELY(va&vb&PTR_TAG_INTEGER && !__builtin_add_overflow(va, vb^PTR_TAG_INTEGER, &vc))) {
         return (object_t*)vc;
     }
     return integer_add_full(self, data);
@@ -378,7 +420,7 @@ INLINE object_t* integer_add(object_t* self, object_t* data) {
 EXTERN object_t* integer_sub_full(object_t* self, object_t* data);
 INLINE object_t* integer_sub(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data, vc;
-    if (LIKELY(va&vb&1 && !__builtin_sub_overflow(va, vb^1, &vc))) {
+    if (LIKELY(va&vb&PTR_TAG_INTEGER && !__builtin_sub_overflow(va, vb^PTR_TAG_INTEGER, &vc))) {
         return (object_t*)vc;
     }
     return integer_sub_full(self, data);
@@ -399,32 +441,32 @@ EXTERN object_t* integer_create_from_int32(int32_t value);
 
 INLINE bool integer_test_gt(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
-    return LIKELY(va&vb&1 && va>vb) || integer_cmp(self, data) > 0;
+    return LIKELY(va&vb&PTR_TAG_INTEGER && va>vb) || integer_cmp(self, data) > 0;
 }
 INLINE bool integer_test_ge(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
-    return LIKELY(va&vb&1 && va>=vb) || integer_cmp(self, data) >= 0;
+    return LIKELY(va&vb&PTR_TAG_INTEGER && va>=vb) || integer_cmp(self, data) >= 0;
 }
 INLINE bool integer_test_eq(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
-    return LIKELY(va&vb&1 && va==vb) || integer_cmp(self, data) == 0;
+    return LIKELY(va&vb&PTR_TAG_INTEGER && va==vb) || integer_cmp(self, data) == 0;
 }
 INLINE bool integer_test_lt(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
-    return LIKELY(va&vb&1 && va<vb) || integer_cmp(self, data) < 0;
+    return LIKELY(va&vb&PTR_TAG_INTEGER && va<vb) || integer_cmp(self, data) < 0;
 }
 INLINE bool integer_test_le(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
-    return LIKELY(va&vb&1 && va<=vb) || integer_cmp(self, data) <= 0;
+    return LIKELY(va&vb&PTR_TAG_INTEGER && va<=vb) || integer_cmp(self, data) <= 0;
 }
 
-INLINE int32_t int32_add(int32_t self, int32_t data) { return self + data; }
-INLINE int32_t int32_sub(int32_t self, int32_t data) { return self - data; }
-INLINE int32_t int32_mul(int32_t self, int32_t data) { return self * data; }
-INLINE int32_t int32_div(int32_t self, int32_t data) { return self / data; }
-INLINE int32_t int32_rem(int32_t self, int32_t data) { return self % data; }
+INLINE int32_t  int32_add(int32_t self, int32_t data) { return self + data; }
+INLINE int32_t  int32_sub(int32_t self, int32_t data) { return self - data; }
+INLINE int32_t  int32_mul(int32_t self, int32_t data) { return self * data; }
+INLINE int32_t  int32_div(int32_t self, int32_t data) { return self / data; }
+INLINE int32_t  int32_rem(int32_t self, int32_t data) { return self % data; }
 INLINE bool int32_test_gt(int32_t self, int32_t data) { return self > data; }
-INLINE bool int32_test_eq(int32_t self, int32_t data) { return self == data; }
+INLINE bool int32_test_eq(int32_t self, int32_t data) { return self ==data; }
 INLINE bool int32_test_lt(int32_t self, int32_t data) { return self < data; }
 
 
@@ -450,9 +492,6 @@ typedef struct string {
 struct string_vtable;
 EXTERN struct string_vtable STRING_VTABLE;
 
-struct string_empty;
-EXTERN struct string_empty STRING_EMPTY;
-
 
 // Helper macro to compute string length at compile time
 #define STRING_LEN(str) (sizeof(str) - 1)
@@ -464,13 +503,13 @@ EXTERN struct string_empty STRING_EMPTY;
 // Helper macro to create a short string value for 32-bit
 #if IS_LITTLE_ENDIAN
 #define SHORT_STRING_32(str, len) ( \
-                    (uint32_t)len            | \
+                  (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
                    ((uint32_t)str[0] <<  8 ) | \
     (len < 2 ? 0 : ((uint32_t)str[1] << 16)) | \
     (len < 3 ? 0 : ((uint32_t)str[2] << 24)) )
 #else
 #define SHORT_STRING_32(str, len) ( \
-                    (uint32_t)len            | \
+                  (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
                    ((uint32_t)str[0] << 24 ) | \
     (len < 2 ? 0 : ((uint32_t)str[1] << 16)) | \
     (len < 3 ? 0 : ((uint32_t)str[2] <<  8)) )
@@ -479,7 +518,7 @@ EXTERN struct string_empty STRING_EMPTY;
 // Helper macro to create a short string value for 64-bit
 #if IS_LITTLE_ENDIAN
 #define SHORT_STRING_64(str, len) ( \
-                    (uint64_t)len            | \
+                  (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
                    ((uint64_t)str[0] <<  8 ) | \
     (len < 2 ? 0 : ((uint64_t)str[1] << 16)) | \
     (len < 3 ? 0 : ((uint64_t)str[2] << 24)) | \
@@ -489,7 +528,7 @@ EXTERN struct string_empty STRING_EMPTY;
     (len < 7 ? 0 : ((uint64_t)str[6] << 56)) )
 #else
 #define SHORT_STRING_64(str, len) ( \
-                    (uint64_t)len            | \
+                  (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
                    ((uint64_t)str[0] << 56 ) | \
     (len < 2 ? 0 : ((uint64_t)str[1] << 48)) | \
     (len < 3 ? 0 : ((uint64_t)str[2] << 40)) | \
@@ -507,26 +546,53 @@ EXTERN struct string_empty STRING_EMPTY;
 #endif
 
 #define STR(contents) ( \
-    STRING_LEN(contents) == 0 ? \
-        (object_t*)&STRING_EMPTY : \
-    STRING_LEN(contents) < MAX_SHORT_LEN ? \
+    STRING_LEN(contents) <= MAX_SHORT_LEN ? \
         (object_t*)SHORT_STRING(contents, STRING_LEN(contents)) : \
         (object_t*)&( \
             struct { \
                 vtable_t* v; \
                 uint32_t l; \
                 char a[sizeof(contents)]; \
-            }){(vtable_t*)&STRING_VTABLE, STRING_LEN(contents), contents})
+            }){(vtable_t*)&STRING_VTABLE, sizeof(contents), contents})
 
 
 INLINE int32_t string_length(object_t* self) {
-    return ((string_t*)self)->length;
+    if (PTR_IS_STRING(self))
+        return (int32_t)((sizeof(uintptr_t)-1) & ((intptr_t)self / (PTR_TAG_MASK+1)));
+    return ((string_t*)self)->length - 1;
 }
 
 EXTERN object_t* string_allocate(int32_t length);
+EXTERN object_t* string_from_bytes(uint8_t* data, int32_t length);
+EXTERN int32_t   string_copy_cstr(object_t* self, char* buf, int32_t buf_size);
+EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
 EXTERN object_t* string_append(object_t* self, object_t* data);
+EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
+EXTERN int       string_compare(object_t* self, object_t* data);
 EXTERN object_t* wchar_to_string(object_t* integer);
 EXTERN object_t* print_string(object_t* self);
 
+
+/**********************************************************
+ *****************************
+ *************
+ *****
+ **
+ *                   I/O
+ **
+ *****
+ *************
+ *****************************
+ **********************************************************/
+
+EXPORT object_t* io_stdin (void* self);
+EXPORT object_t* io_stdout(void* self);
+EXPORT object_t* io_stderr(void* self);
+EXPORT object_t* io_create    (void* self, object_t* path);
+EXPORT object_t* io_open_read (void* self, object_t* path);
+EXPORT object_t* io_open_write(void* self, object_t* path, bool truncate);
+EXPORT object_t* io_read (void* self, int32_t length);
+EXPORT object_t* io_write(void* self, object_t* data);
+EXPORT object_t* io_close(void* self);
 
 

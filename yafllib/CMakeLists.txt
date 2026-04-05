@@ -7,9 +7,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Source files excluding main.c
 set(SRC_FILES
     integer.c
+    io.c
     object.c
     primitive.c
     string.c
+    task.c
     thread.c
     yafl.c
     lazy.c
@@ -36,4 +38,34 @@ install(TARGETS yafl_static ARCHIVE DESTINATION lib)
 
 # Optionally install headers
 install(FILES yafl.h DESTINATION include)
+
+
+# ---- Tests ----
+enable_testing()
+
+# Source files excluding main.c
+set(TEST_SRC_FILES
+    integer.c
+    io.c
+    object.c
+    primitive.c
+    string.c
+    task.c
+    thread.c
+    yafl.c
+    lazy.c
+    mmap.c
+)
+
+function(add_yafl_test name)
+    add_executable(${name} tests/${name}.c ${TEST_SRC_FILES})
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+add_yafl_test(test_integer)
+add_yafl_test(test_string)
+add_yafl_test(test_gc)
+add_yafl_test(test_io)
+add_yafl_test(test_task)
 

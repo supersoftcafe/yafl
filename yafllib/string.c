@@ -21,11 +21,6 @@ struct string_empty {
     uint32_t length;
     uint8_t array[1];
 };
-EXPORT struct string_empty STRING_EMPTY = {
-    .vtable = (vtable_t*)&STRING_VTABLE,
-    .length = 0,
-    .array = ""
-};
 
 
 HIDDEN string_t* _string_allocate(int32_t length) {
@@ -36,15 +31,13 @@ HIDDEN string_t* _string_allocate(int32_t length) {
 
 
 HIDDEN object_t* _string_create_from_bytes(uint8_t* data, int32_t length) {
-    if (length == 0) {
-        return (object_t*)&STRING_EMPTY;
-    } else if (length < sizeof(uintptr_t)-1) {
+    if (length < (int32_t)sizeof(uintptr_t)) {
         uintptr_t string = 0;
         memcpy(&string, data, length);
         uintptr_t test = 1;
         if (1 == *(uint8_t*)&test)
-             string = (string << 8) | length;
-        else string |= length;
+             string = (string << 8) | (length * (PTR_TAG_MASK+1) + PTR_TAG_STRING);
+        else string |= (length * (PTR_TAG_MASK+1) + PTR_TAG_STRING);
         return (object_t*)string;
     } else {
         assert(length <= INT32_MAX);
@@ -61,16 +54,15 @@ HIDDEN object_t* _string_create_from_cstr(char* data) {
 
 
 HIDDEN char* _string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
-    intptr_t masked_bits = (sizeof(uintptr_t)-1) & (intptr_t)self;
-    if (masked_bits == 0) {
-        *len_ptr = ((string_t*)self)->length;
+    if (!PTR_IS_STRING(self)) {
+        *len_ptr = ((string_t*)self)->length - 1;
         return (char*)((string_t*)self)->array;
     } else {
         uintptr_t test = 1;
         if (1 == *(uint8_t*)&test)
              *local_buffer = (uintptr_t)self >> 8;
-        else *local_buffer = (uintptr_t)self & ~7;
-        *len_ptr = (uint32_t)masked_bits;
+        else *local_buffer = (uintptr_t)self & ~255;
+        *len_ptr = (uint32_t)((sizeof(uintptr_t)-1) & ((intptr_t)self / (PTR_TAG_MASK+1)));
         return (char*)local_buffer;
     }
 }
@@ -83,7 +75,7 @@ HIDDEN object_t* _string_append2(char* cstr1, int32_t len1, char* cstr2, int32_t
 
     if (length < sizeof(uintptr_t)) {
         uintptr_t test = 1;
-        string = (string_t*)(uintptr_t)length;
+        string = (string_t*)(uintptr_t)(length * (PTR_TAG_MASK+1) + PTR_TAG_STRING);
         ptr = (uint8_t*)&string + (1==*(uint8_t*)&test ? 1 : 0);
     } else {
         string = _string_allocate(length);
@@ -98,6 +90,31 @@ HIDDEN object_t* _string_append2(char* cstr1, int32_t len1, char* cstr2, int32_t
 
 EXPORT object_t* string_allocate(int32_t length) {
     return (object_t*)_string_allocate(length);
+}
+
+
+EXPORT object_t* string_from_bytes(uint8_t* data, int32_t length) {
+    return _string_create_from_bytes(data, length);
+}
+
+
+EXPORT int32_t string_copy_cstr(object_t* self, char* buf, int32_t buf_size) {
+    intptr_t local; int32_t len;
+    char* src = _string_to_cstr(self, &local, &len);
+    int32_t copy = len < buf_size - 1 ? len : buf_size - 1;
+    memcpy(buf, src, copy);
+    buf[copy] = 0;
+    return len;
+}
+
+
+EXPORT object_t* string_truncate(object_t* self, int32_t new_length) {
+    string_t* s = (string_t*)self;
+    if (new_length < (int32_t)sizeof(uintptr_t))
+        return _string_create_from_bytes(s->array, new_length);
+    s->array[new_length] = 0;
+    s->length = new_length + 1;
+    return self;
 }
 
 
@@ -136,7 +153,7 @@ EXPORT object_t* string_slice_int32(object_t* self, int32_t start, int32_t end) 
     if (end <= start)
         end = start;
 
-    return _string_create_from_bytes((uint8_t*)cstr, end - start);
+    return _string_create_from_bytes((uint8_t*)(cstr + start), end - start);
 }
 
 
@@ -150,7 +167,7 @@ EXPORT object_t* string_slice(object_t* self, object_t* start_int, object_t* end
 EXPORT int string_compare(object_t* self, object_t* data) {
     intptr_t buf_a, buf_b; int32_t len_a, len_b;
     char* cstr_a = _string_to_cstr(self, &buf_a, &len_a);
-    char* cstr_b = _string_to_cstr(self, &buf_b, &len_b);
+    char* cstr_b = _string_to_cstr(data, &buf_b, &len_b);
 
     int result = memcmp(cstr_a, cstr_b, len_a < len_b ? len_a : len_b);
 

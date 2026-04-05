@@ -36,10 +36,10 @@ static integer_t* _integer_allocate(uint32_t length) {
     return (integer_t*)array_create((vtable_t*)&INTEGER_VTABLE, length);
 }
 
-#define _TAG_MASK 1
-#define _IS_LITERAL(x) (((intptr_t)(x)) & _TAG_MASK)
-#define _UNTAG_LITERAL(x) ((intptr_t)(x) >> 1)
-#define _TAG_LITERAL(n) ((integer_t*)(((intptr_t)(n) << 1) | _TAG_MASK))
+#define _TAG_MASK PTR_TAG_INTEGER
+#define _IS_LITERAL(x) (((intptr_t)(x)) & PTR_TAG_INTEGER)
+#define _UNTAG_LITERAL(x) ((intptr_t)(x) >> 2)
+#define _TAG_LITERAL(n) ((integer_t*)(((intptr_t)(n) << 2) | PTR_TAG_INTEGER))
 
 // Portable limits
 #if WORD_SIZE == 64
@@ -108,7 +108,7 @@ EXTERN int32_t integer_cmp(object_t* a, object_t* b) {
 }
 
 static integer_t* _integer_from_intptr(intptr_t literal) {
-    if (literal < INTPTR_MIN/2 || literal > INTPTR_MAX/2) {
+    if (literal < INTPTR_MIN/4 || literal > INTPTR_MAX/4) {
         integer_t* r = _integer_allocate(1);
         r->sign = _sign_of(literal);
         r->array[0] = _abs_val(literal);
@@ -125,8 +125,8 @@ static integer_t* _normalize_integer(integer_t* result) {
     }
 
     // If the result can be a literal, convert it to a literal
-    if (result->length == 1 && result->array[0] <= UINTPTR_MAX/2) {
-        if (!result->sign || result->array[0] < UINTPTR_MAX/2) {
+    if (result->length == 1 && result->array[0] <= UINTPTR_MAX/4) {
+        if (!result->sign || result->array[0] < UINTPTR_MAX/4) {
             return _TAG_LITERAL(result->sign ? -(intptr_t)result->array[0] : (intptr_t)result->array[0]);
         }
     }

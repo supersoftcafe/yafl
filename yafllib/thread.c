@@ -238,15 +238,19 @@ EXPORT void thread_work_post_fast(worker_node_t* work) {
     _locals.local_queue_tail = work;
 }
 
+static _Atomic(uint32_t) _io_post_counter;
+
 EXTERN void thread_work_post_io(worker_node_t* work) {
     // This could be called from anywhere, but it's really designed for use from
     // interrupt contexts or IO threads, where we don't have a work queue. Instead
     // we post this to one of the existing sideload queues on a worker thread, and
     // notify it if it is sleeping. Threads will always take a sideload job in
     // preference to a normal work unit.
-    worker_node_t* node = (worker_node_t*)work;
-    worker_queue_t* queue = &_queues->array[(intptr_t)work % _queues->length];
-    atomic_exchange(&queue->sideload_queue_tail, node)->next = node;
+    //
+    // Start from index 1 so IO work is distributed to non-main threads first.
+    uint32_t idx = (1 + atomic_fetch_add(&_io_post_counter, 1)) % (uint32_t)_queues->length;
+    worker_queue_t* queue = &_queues->array[idx];
+    atomic_exchange(&queue->sideload_queue_tail, (worker_node_t*)work)->next = work;
     if (atomic_load(&queue->consumer_waiting_flag)) {
         _thread_wake(queue);
     }
