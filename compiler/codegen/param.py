@@ -32,6 +32,9 @@ class RParam:
     def get_live_vars(self) -> frozenset[StackVar]:
         return frozenset()
 
+    def has_side_effects(self) -> bool:
+        return False
+
 
 @dataclass(frozen=True)
 class InitArray(RParam): # Only for static initialisation of array types
@@ -103,6 +106,9 @@ class Invoke(RParam):
 
     def get_type(self) -> t.Type:
         return self.type
+
+    def has_side_effects(self) -> bool:
+        return True
 
     def rename_vars(self, renames: dict[str, str]) -> Invoke:
         return dataclasses.replace(self, parameters = self.parameters.rename_vars(renames))

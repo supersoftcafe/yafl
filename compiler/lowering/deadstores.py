@@ -25,7 +25,7 @@ def _eliminate_once(fn: Function) -> Function:
     changed = False
     for op in fn.ops:
         if isinstance(op, Move) and isinstance(op.target, StackVar):
-            if op.target.name not in reads:
+            if op.target.name not in reads and not op.source.has_side_effects():
                 changed = True
                 continue  # drop dead store entirely
         elif isinstance(op, Call) and isinstance(op.register, StackVar):

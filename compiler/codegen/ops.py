@@ -21,7 +21,7 @@ class Op:
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> Op:
         return self
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         raise NotImplementedError()
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
@@ -38,7 +38,7 @@ class Label(Op):
     def rename_vars(self, renames: dict[str, str]) -> Label:
         return dataclasses.replace(self, name=renames.get(self.name, self.name))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"{self.name}:\n"
 
 
@@ -59,7 +59,7 @@ class Move(Op):
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> Move:
         return dataclasses.replace(self, target=self.target.replace_params(replacer), source=self.source.replace_params(replacer))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return self.target.to_c_store(type_cache, self.source.to_c(type_cache))
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
@@ -74,7 +74,7 @@ class Jump(Op):
     def rename_vars(self, renames: dict[str, str]) -> Jump:
         return dataclasses.replace(self, name=renames.get(self.name, self.name))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    goto {self.name};\n"
 
 
@@ -95,11 +95,64 @@ class JumpIf(Op):
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> JumpIf:
         return dataclasses.replace(self, condition=self.condition.replace_params(replacer))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    if ({self.condition.to_c(type_cache)}) goto {self.label};\n"
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.condition.get_live_vars(), frozenset()
+
+
+@dataclass(frozen=True)
+class IfTask(Op):
+    """Emit an UNLIKELY IS_TASK guard that extracts the task pointer, records
+    the call-site index, and jumps to the shared async-common block.
+
+    Replaces the JumpIf + separate cold-block pattern with a single compact op.
+    """
+    condition: RParam   # IS_TASK expression (without UNLIKELY wrapper)
+    task_source: RParam # expression from which TASK_UNTAG extracts the pointer
+    task_lhs: LParam    # where to store the untagged task pointer
+    call_id_lhs: LParam # where to store the call-site index
+    call_id: int        # the call-site index value
+    target: str         # label to jump to (always "$asynccommon")
+
+    def all_params(self) -> list[RParam]:
+        return (self.condition.flatten()
+                + self.task_source.flatten()
+                + self.task_lhs.flatten(is_reader=False)
+                + self.call_id_lhs.flatten(is_reader=False))
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.condition) or predicate(self.task_source)
+
+    def rename_vars(self, renames: dict[str, str]) -> IfTask:
+        return dataclasses.replace(self,
+            condition=self.condition.rename_vars(renames),
+            task_source=self.task_source.rename_vars(renames),
+            task_lhs=self.task_lhs.rename_vars(renames),
+            call_id_lhs=self.call_id_lhs.rename_vars(renames),
+            target=renames.get(self.target, self.target))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> IfTask:
+        return dataclasses.replace(self,
+            condition=self.condition.replace_params(replacer),
+            task_source=self.task_source.replace_params(replacer),
+            task_lhs=self.task_lhs.replace_params(replacer),
+            call_id_lhs=self.call_id_lhs.replace_params(replacer))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        return self.condition.get_live_vars() | self.task_source.get_live_vars(), frozenset()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        cond     = self.condition.to_c(type_cache)
+        task_dst = self.task_lhs.to_c(type_cache)
+        task_src = self.task_source.to_c(type_cache)
+        cid_dst  = self.call_id_lhs.to_c(type_cache)
+        return (f"    if (UNLIKELY({cond})) {{\n"
+                f"        {task_dst} = TASK_UNTAG({task_src});\n"
+                f"        {cid_dst} = ((int32_t){self.call_id});\n"
+                f"        goto {self.target};\n"
+                f"    }}\n")
 
 
 @dataclass(frozen=True)
@@ -130,10 +183,10 @@ class SwitchJump(Op):
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.condition.get_live_vars(), frozenset()
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         cond  = self.condition.to_c(type_cache)
         cases = "\n".join(f"        case {v}: goto {lbl};" for v, lbl in self.cases)
-        return f"    switch ({cond}) {{\n{cases}\n    }}\n"
+        return f"    switch ({cond}) {{\n{cases}\n        default: abort();\n    }}\n"
 
 
 @dataclass(frozen=True)
@@ -158,7 +211,7 @@ class NewObject(Op): # Create a new blank instance of the named object
                 register=self.register.replace_params(replacer),
                 size=self.size and self.size.replace_params(replacer))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         if self.size is not None:
             return f"    {self.register.to_c(type_cache)} = array_create(obj_{mangle_name(self.name)}, {self.size});\n"
         else:
@@ -197,7 +250,7 @@ class Call(Op):
             parameters = self.parameters.replace_params(replacer),
             register = self.register and self.register.replace_params(replacer))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         rg = self.register
         output, return_type = (lambda x: rg.to_c_store(type_cache, x), rg.get_type().declare(type_cache)) if rg else (lambda x: x, "void")
         tailreturn = "return " if self.musttail else ""
@@ -235,7 +288,7 @@ class Call(Op):
 @dataclass(frozen=True)
 class ReturnVoid(Op):
     """Emit a bare 'return;' for void functions (e.g. the async state machine)."""
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return "    return;\n"
 
 
@@ -259,7 +312,7 @@ class Return(Op):
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> Return:
         return dataclasses.replace(self, value=self.value.replace_params(replacer))
 
-    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    return {self.value.to_c(type_cache)};\n"
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:

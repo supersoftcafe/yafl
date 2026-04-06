@@ -6,9 +6,8 @@ Remove NullPointer for tuple()
 Support sync functions. Re-introduce tail calls.
 ZeroOf. Clean it up to be more OO.
 Use of tasks for lazy init??
-
 Task sub-classes. Does it emit state field correctly?
--O3 removed print lines. Not good.
+
 
 # Change async model to task based
 

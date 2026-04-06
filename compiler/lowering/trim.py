@@ -9,7 +9,7 @@ from typing import Iterable
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, Jump, NewObject, SwitchJump
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump
 from codegen.things import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, RParam, \
@@ -105,6 +105,9 @@ def __scan_op(op: Op) -> _scan_sets:
         case NewObject():
             x = _scan_sets(o=frozenset([op.name]))
             return __scan_rparam(op.register) | ((x | __scan_rparam(op.size)) if op.size else x)
+
+        case IfTask():
+            return __scan_rparam(op.condition) | __scan_rparam(op.task_source)
 
         case SwitchJump():
             return __scan_rparam(op.condition)

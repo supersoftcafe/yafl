@@ -31,7 +31,9 @@ def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
                 not isinstance(op.function, GlobalFunction) or
                 not isinstance(op.parameters, NewStruct) or
                 fn.name == op.function.name or op.musttail or
-                len((target := others[op.function.name]).ops) >= __CUTOFF_COMPLEXITY):
+                op.function.name not in others or
+                not (target := others[op.function.name]).ops or
+                len(target.ops) >= __CUTOFF_COMPLEXITY):
             new_ops.append(op)
             return # Not a candidate for inlining
 

@@ -21,7 +21,7 @@ from functools import reduce
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, Jump, NewObject, SwitchJump
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump
 from codegen.things import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Str, Type,
@@ -130,7 +130,7 @@ def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
         last_op = ops[-1]
         result = last_op.register if isinstance(last_op, Call) else None
         # Append a resume label right after the call (same as old CPS model)
-        augmented = ops + ([Label(name)] if isinstance(last_op, Call) and not last_op.musttail else [])
+        augmented = ops
         live_vars = {var: ObjectField(var.get_type(), __state_param_var, state_name, var.name, None)
                      for var in last_op.saved_vars}
         return BasicBlock(name, augmented, live_vars, result)
@@ -311,12 +311,10 @@ def __create_hot_path_func(fn: Function, state_name: str,
         if var.name not in param_names
     ]
 
-    # ── Per-call-site hot path + minimal cold block ───────────────────────────
-    cold_ops: list[Op] = []
+    # ── Per-call-site hot path ────────────────────────────────────────────────
 
     for i, bb in enumerate(basic_blocks[:-1]):
-        call_op      = bb.ops[-2]   # Call is second-to-last
-        resume_label = bb.ops[-1]   # Label("cont$i") is last
+        call_op = bb.ops[-1]   # Call is last
         assert isinstance(call_op, Call) and not call_op.musttail
         result_var = call_op.register
 
@@ -334,31 +332,25 @@ def __create_hot_path_func(fn: Function, state_name: str,
             # then unwrap on the sync path.
             sv_wrapped = StackVar(wrapped_type, f"$wrap${i}")
             wrap_fields.append((f"$wrap${i}", wrapped_type))
-            hot_ops.extend(bb.ops[:-2])
+            hot_ops.extend(bb.ops[:-1])
             hot_ops.append(dataclasses.replace(call_op, register=sv_wrapped))
-            hot_ops.append(resume_label)
             sv_for_check = sv_wrapped
         else:
             hot_ops.extend(bb.ops)
             sv_for_check = result_var
 
-        async_label = f"$async${i}"
-        check = Invoke("UNLIKELY",
-                       NewStruct((("x", __is_task_param(sv_for_check, wrapped_type)),)),
-                       Int(32))
-        hot_ops.append(JumpIf(async_label, check))
+        task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
+        hot_ops.append(IfTask(
+            condition=__is_task_param(sv_for_check, wrapped_type),
+            task_source=task_ptr,
+            task_lhs=__sv_async_task,
+            call_id_lhs=__sv_call_id,
+            call_id=i,
+            target="$asynccommon"))
 
         # Sync path: unwrap primitive if needed
         if needs_temp:
             hot_ops.append(Move(result_var, StructField(sv_wrapped, "value")))
-
-        # ── Minimal cold block: set call_id + task ptr, then jump to common ──
-        task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
-        untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
-        cold_ops.append(Label(async_label))
-        cold_ops.append(Move(__sv_call_id, Integer(i, 32)))
-        cold_ops.append(Move(__sv_async_task, untag))
-        cold_ops.append(Jump("$asynccommon"))
 
     # Terminal block
     terminal_ops: list[Op] = list(basic_blocks[-1].ops)
@@ -431,7 +423,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
         ("$sv_call_id",    Int(32)),
         ("$sv_async_task", DataPointer()),
     ) + tuple(wrap_fields))
-    all_ops = tuple(hot_ops) + tuple(cold_ops) + tuple(common_ops)
+    all_ops = tuple(hot_ops) + tuple(common_ops)
     return dataclasses.replace(fn,
                                result=wrapped_result,
                                ops=all_ops,
@@ -490,8 +482,8 @@ def __create_state_machine_func(fn: Function, state_name: str,
     # ── Body: bb[1]..bb[N-1] ops, with StackVar → state field substitution ──
     for i in range(1, n):
         bb = non_terminal[i]
-        body_ops_before_call = bb.ops[:-2]
-        call_op_orig         = bb.ops[-2]
+        body_ops_before_call = bb.ops[:-1]
+        call_op_orig         = bb.ops[-1]
 
         result_type  = call_op_orig.register.get_type() if call_op_orig.register else None
         wrapped_type = __wrap_return_type(result_type)  if result_type else None

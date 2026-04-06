@@ -139,3 +139,65 @@ fun main(): System::Int where BasicPlus<System::Int>
         # (read as arguments to integer_add).  Absence of either means a live store was dropped.
         self.assertIn("INTEGER_LITERAL_1(0, 1)", result)
         self.assertIn("INTEGER_LITERAL_1(0, 3)", result)
+
+    def test_foreign_void_call_survives_inlining(self):
+        """A [foreign] function call with a discarded result must not be eliminated by the inliner.
+
+        Foreign functions have no ops in app.functions (they map to an external C symbol).
+        The inliner previously treated 0-op functions as small enough to inline, then looped
+        over zero ops, effectively deleting the call site entirely.
+        """
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+fun [foreign("ext_side_effect")] do_thing(): Int
+fun main(): Int
+    let _ = do_thing()
+    ret __builtin_op__<bigint>("integer_literal", 0)
+"""
+        for level in (1, 3):
+            with self.subTest(optimization_level=level):
+                result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False, optimization_level=level)
+                self.assertIn("ext_side_effect", result,
+                              f"Foreign call disappeared at -O{level}")
+
+    def test_foreign_call_with_used_result_survives_inlining(self):
+        """A [foreign] function whose return value is used must not be inlined away.
+
+        Same root cause as the void case: the inliner must skip functions with no ops,
+        regardless of whether the caller uses the return value.
+        """
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+fun `+`(left: Int, right: Int): Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+fun [foreign("ext_get_value")] get_value(): Int
+fun main(): Int
+    let v = get_value()
+    ret v + __builtin_op__<bigint>("integer_literal", 1)
+"""
+        for level in (1, 3):
+            with self.subTest(optimization_level=level):
+                result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False, optimization_level=level)
+                self.assertIn("ext_get_value", result,
+                              f"Foreign call disappeared at -O{level}")
+
+    def test_builtin_side_effect_survives_dead_store_elimination(self):
+        """A __builtin_op__ call whose result is discarded must not be eliminated by DSE.
+
+        System::print compiles to Move(result, Invoke("print_string", ...)).  When the
+        caller discards the return value, DSE previously dropped the entire Move —
+        including the Invoke side-effect — because the target StackVar was unread.
+        The fix: only eliminate Moves whose source has no side effects.
+        """
+        content = """namespace System
+import System
+fun main(): System::Int where BasicMath<System::Int>
+    print("Hello")
+    print("Hi there")
+    ret 1 + 3
+"""
+        for level in (1, 3):
+            with self.subTest(optimization_level=level):
+                result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False, optimization_level=level)
+                self.assertIn("print_string", result,
+                              f"print_string call disappeared at -O{level}")
