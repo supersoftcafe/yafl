@@ -360,3 +360,103 @@ fun main(): Int
 """
         # 7 - 7 + 8 = 8
         self.assertEqual(8, _compile_and_run(src))
+
+    def test_four_sequential_calls(self):
+        """Four non-tail calls exercise state-machine idx dispatch through four
+        resume points (idx 0→1→2→3).  Values chosen so any dropped or
+        re-ordered result gives a clearly different exit code.
+        w=add3(10)=13, x=add5(20)=25, y=add3(30)=33, z=add5(40)=45.
+        13 - 25 + 33 - 45 = -24 → 232 mod 256."""
+        src = _PREAMBLE + _ARITH + """\
+fun add3(x: Int): Int
+    ret x + 3
+
+fun add5(x: Int): Int
+    ret x + 5
+
+fun compute(a: Int, b: Int, cc: Int, d: Int): Int
+    let w: Int = add3(a)
+    let x: Int = add5(b)
+    let y: Int = add3(cc)
+    let z: Int = add5(d)
+    ret w - x + y - z
+
+fun main(): Int
+    ret compute(10, 20, 30, 40)
+"""
+        self.assertEqual(232, _compile_and_run(src))
+
+
+# ---------------------------------------------------------------------------
+# Nested state machines — callee also has non-tail calls of its own
+# ---------------------------------------------------------------------------
+
+class TestNestedStateMachines(TestCase):
+
+    def test_nested_two_level(self):
+        """inner has its own non-tail call; main calls inner twice (both
+        non-tail).  Exercises state-machine callback chaining across two levels.
+        inner(5): add3(5)=8, 8+5=13.  inner(3): add3(3)=6, 6+5=11.  13+11=24."""
+        src = _PREAMBLE + _ARITH + """\
+fun add3(x: Int): Int
+    ret x + 3
+
+fun inner(x: Int): Int
+    let a: Int = add3(x)
+    ret a + 5
+
+fun main(): Int
+    let r1: Int = inner(5)
+    let r2: Int = inner(3)
+    ret r1 + r2
+"""
+        self.assertEqual(24, _compile_and_run(src))
+
+    def test_nested_three_level(self):
+        """Three levels of nesting: shallow → mid → main, each with its own
+        non-tail call.  Exercises three independently generated state machines.
+        shallow(1): add3(1)=4.  mid(1): shallow(1)+5=9.  main: mid(1)+7=16."""
+        src = _PREAMBLE + _ARITH + """\
+fun add3(x: Int): Int
+    ret x + 3
+
+fun add5(x: Int): Int
+    ret x + 5
+
+fun add7(x: Int): Int
+    ret x + 7
+
+fun shallow(x: Int): Int
+    let a: Int = add3(x)
+    ret a
+
+fun mid(x: Int): Int
+    let a: Int = shallow(x)
+    ret a + 5
+
+fun main(): Int
+    let a: Int = mid(1)
+    ret a + 7
+"""
+        self.assertEqual(16, _compile_and_run(src))
+
+    def test_nested_callee_called_multiple_times(self):
+        """inner has a state machine; outer calls it three times and combines
+        results.  Tests that each call site correctly resumes after inner
+        completes without corrupting earlier results.
+        inner(2)=5, inner(3)=6, inner(4)=7; 5+6+7=18."""
+        src = _PREAMBLE + _ARITH + """\
+fun add3(x: Int): Int
+    ret x + 3
+
+fun inner(x: Int): Int
+    let a: Int = add3(x)
+    ret a
+
+fun main(): Int
+    let a: Int = inner(2)
+    let b: Int = inner(3)
+    let cc: Int = inner(4)
+    ret a + b + cc
+"""
+        self.assertEqual(18, _compile_and_run(src))

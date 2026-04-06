@@ -9,11 +9,11 @@ from typing import Iterable
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, Move, Label, JumpIf, Jump, NewObject
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, Jump, NewObject, SwitchJump
 from codegen.things import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, RParam, \
-    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst
+    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap
 from functools import reduce
 
 
@@ -58,7 +58,7 @@ def __scan_rparam(p: RParam) -> _scan_sets:
         case StackVar():
             return _scan_sets()
         case ObjectField():
-            x = __scan_rparam(p.pointer)
+            x = __scan_rparam(p.pointer) | _scan_sets(o=frozenset([p.object_name]))
             return (x | __scan_rparam(p.index)) if p.index else x
 
         case GlobalFunction():
@@ -75,6 +75,12 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return __scan_rparam(p.value)
         case NewStructTyped():
             return __reduce_scan_sets(__scan_rparam(x) for _, x in p.values)
+        case TagTask():
+            return __scan_rparam(p.task)
+        case ZeroOf():
+            return _scan_sets()
+        case SyncWrap():
+            return __scan_rparam(p.value)
 
         case _:
             raise NotImplementedError(f"Unknown type of RParam {type(p)}")
@@ -93,10 +99,15 @@ def __scan_op(op: Op) -> _scan_sets:
             return __scan_rparam(op.function) | __scan_rparam(op.parameters) | (__scan_rparam(op.register) if op.register else _scan_sets())
         case Return():
             return __scan_rparam(op.value)
+        case ReturnVoid():
+            return _scan_sets()
 
         case NewObject():
             x = _scan_sets(o=frozenset([op.name]))
             return __scan_rparam(op.register) | ((x | __scan_rparam(op.size)) if op.size else x)
+
+        case SwitchJump():
+            return __scan_rparam(op.condition)
 
         case _:
             raise NotImplementedError(f"Unknown type of Op {type(op)}")

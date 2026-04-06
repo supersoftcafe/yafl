@@ -310,6 +310,55 @@ class Array(Type):
                 self.type.get_pointer_paths(f"{path}.a[{index}]")]
 
 
+@dataclass(frozen=True)
+class TaskWrapper(Type):
+    """Wraps a non-pointer primitive return type in a struct so it can carry a task signal.
+
+    Emits: struct { <inner> value; object_t* task; }
+    task == NULL means a real value; task != NULL means the result is a pending task.
+    """
+    inner: Type
+
+    @property
+    def has_pointers(self) -> bool:
+        return True  # the task field is a GC pointer
+
+    def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+        inner_decl = self.inner._declare(type_cache, field_indent)
+        return f"struct {{\n{field_indent}{inner_decl} value;\n{field_indent}object_t* task;\n{field_indent[:-4]}}}"
+
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return [f"{path}.task"]
+
+
+def first_pointer_field(t: Type) -> str | None:
+    """Return the name of the first pointer-typed field in a Struct type, or None.
+
+    Pointer-typed means: DataPointer, Str, or Int(precision=0) (bigint = object_t*).
+    """
+    if not isinstance(t, Struct):
+        return None
+    for name, ft in t.fields:
+        if isinstance(ft, (DataPointer, Str)) or (isinstance(ft, Int) and ft.precision == 0):
+            return name
+    return None
+
+
+def is_task_check(expr: str, t: Type) -> str:
+    """Return a C expression (truthy when result is a task) for the given return type."""
+    if isinstance(t, (DataPointer, Str)):
+        return f"PTR_IS_TASK({expr})"
+    if isinstance(t, FuncPointer):
+        return f"PTR_IS_TASK(({expr}).o)"
+    if isinstance(t, TaskWrapper):
+        return f"({expr}).task"
+    if isinstance(t, Struct):
+        fname = first_pointer_field(t)
+        if fname is not None:
+            return f"PTR_IS_TASK(({expr}).{mangle_name(fname)})"
+    raise ValueError(f"Cannot generate is_task_check for type {t}")
+
+
 def _flatten_primitives(t: Type) -> list[Type]:
     """Recursively decompose a type into its primitive slot types."""
     if isinstance(t, Struct):

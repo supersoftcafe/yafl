@@ -247,9 +247,8 @@ class TestForeignIntegration(TestCase):
     """Full compile-link-run tests for the [foreign] attribute.
 
     The C library implements a trivial integer counter whose state lives in a
-    C global.  Foreign functions follow the CPS calling convention: they accept
-    a fun_t continuation as their last argument, compute the result, and call
-    the continuation rather than returning directly.
+    C global.  Foreign functions follow the direct-return calling convention:
+    they accept their arguments and return the result directly (no continuation).
     """
 
     # counter_t extends object_t with a per-object int32_t field.
@@ -277,24 +276,19 @@ static VTABLE_DECLARE_STRUCT(, 1) _counter_vtable = {
     .lookup                     = {{ .i = -1, .f = (void*)&abort_on_vtable_lookup }}
 };
 
-/* Dispatch helper: call a CPS continuation with a single object_t* result. */
-static void _resume(fun_t cont, object_t* value) {
-    ((void(*)(object_t*, object_t*))cont.f)(cont.o, value);
-}
-
-void test_counter_create(object_t* _this, object_t* init, fun_t cont) {
+object_t* test_counter_create(object_t* _this, object_t* init) {
     counter_t* c = (counter_t*)object_create((vtable_t*)&_counter_vtable);
     c->value = integer_to_int32(init);
-    _resume(cont, (object_t*)c);
+    return (object_t*)c;
 }
 
-void test_counter_get(object_t* _this, fun_t cont) {
-    _resume(cont, integer_create_from_int32(((counter_t*)_this)->value));
+object_t* test_counter_get(object_t* _this) {
+    return integer_create_from_int32(((counter_t*)_this)->value);
 }
 
-void test_counter_add(object_t* _this, object_t* n, fun_t cont) {
+object_t* test_counter_add(object_t* _this, object_t* n) {
     ((counter_t*)_this)->value += integer_to_int32(n);
-    _resume(cont, integer_create_from_int32(((counter_t*)_this)->value));
+    return integer_create_from_int32(((counter_t*)_this)->value);
 }
 """
 

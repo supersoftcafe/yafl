@@ -141,6 +141,8 @@ class StructField(RParam):
             fields = xtype.fields
         elif isinstance(xtype, t.UnionContainer):
             fields = xtype.slots
+        elif isinstance(xtype, t.TaskWrapper):
+            fields = (("value", xtype.inner), ("task", t.DataPointer()))
         else:
             raise ValueError(f"StructField requires a Struct or UnionContainer, got {xtype}")
         result = next((ftype for name, ftype in fields if name == self.field), None)
@@ -223,6 +225,68 @@ class NullPointer(RParam):
 
 
 @dataclass(frozen=True)
+class SyncWrap(RParam):
+    """Wrap a synchronous return value in a TaskWrapper with task=NULL.
+
+    Used on the sync return path of a hot-path function whose return type has
+    been promoted to TaskWrapper(inner).  The caller checks .task != NULL to
+    detect async; NULL means the result is in .value.
+    """
+    value: RParam
+    wrapper_type: t.TaskWrapper
+
+    def get_type(self) -> t.TaskWrapper:
+        return self.wrapper_type
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.value.flatten(is_reader)
+
+    def test(self, predicate) -> bool:
+        return predicate(self) or self.value.test(predicate)
+
+    def rename_vars(self, renames: dict[str, str]) -> SyncWrap:
+        return dataclasses.replace(self, value=self.value.rename_vars(renames))
+
+    def replace_params(self, replacer) -> RParam:
+        return replacer(dataclasses.replace(self, value=self.value.replace_params(replacer)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.value.get_live_vars()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        value_c = self.value.to_c(type_cache)
+        type_name = self.wrapper_type.declare(type_cache)
+        return f"(({type_name}){{.value={value_c},.task=((object_t*)0)}})"
+
+
+@dataclass(frozen=True)
+class ZeroOf(RParam):
+    """Zero value of a specific type. Emits (TypeName){0} for struct/compound types.
+
+    Use this instead of NewStruct when zero-initialising a field whose type must
+    be preserved exactly — e.g. a Struct field in a state object where the field's
+    C typedef must match the assignment target.
+    """
+    value_type: t.Type
+
+    def get_type(self) -> t.Type:
+        return self.value_type
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        vt = self.value_type
+        if isinstance(vt, (t.DataPointer, t.Str)) or (isinstance(vt, t.Int) and vt.precision == 0):
+            return "((object_t*)0)"
+        if isinstance(vt, t.Int):
+            return "0"
+        if isinstance(vt, t.FuncPointer):
+            return "((fun_t){0})"
+        type_name = vt.declare(type_cache)
+        # Empty struct: {0} is technically "excess initializers"; use {} instead.
+        init = "{}" if isinstance(vt, t.Struct) and not vt.fields else "{0}"
+        return f"(({type_name}){init})"
+
+
+@dataclass(frozen=True)
 class NewStructTyped(RParam):
     """Compound literal with an explicit type — required when the inferred type of the values
     would differ from the intended container type (e.g. a DataPointer value stored in a Str slot).
@@ -280,6 +344,60 @@ def union_struct(container: t.UnionContainer, named_values: dict[str, RParam]) -
         (name, named_values.get(name, _zero_for(slot_type)))
         for name, slot_type in container.slots
     ))
+
+
+@dataclass(frozen=True)
+class TagTask(RParam):
+    """Returns the correct 'this is actually a task' value for a given return type.
+
+    For pointer types:    (RetType)((uintptr_t)task | PTR_TAG_TASK)
+    For TaskWrapper:      (WrapperType){ .value = <zero>, .task = task }
+    For struct-with-ptr:  (StructType){ .first_ptr = tagged_task, other=0... }
+    """
+    task: RParam
+    target_type: t.Type
+
+    def get_type(self) -> t.Type:
+        return self.target_type
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.task.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.task.test(predicate)
+
+    def rename_vars(self, renames: dict[str, str]) -> TagTask:
+        return dataclasses.replace(self, task=self.task.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, task=self.task.replace_params(replacer)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.task.get_live_vars()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        task_c = self.task.to_c(type_cache)
+        typ = self.target_type
+        if isinstance(typ, (t.DataPointer, t.Str)) or (isinstance(typ, t.Int) and typ.precision == 0):
+            return f"((object_t*)((uintptr_t){task_c} | PTR_TAG_TASK))"
+        if isinstance(typ, t.FuncPointer):
+            return f"((fun_t){{.f=NULL,.o=(void*)((uintptr_t){task_c} | PTR_TAG_TASK)}})"
+        if isinstance(typ, t.TaskWrapper):
+            inner_zero = ZeroOf(typ.inner).to_c(type_cache)
+            type_name = typ.declare(type_cache)
+            return f"(({type_name}){{.value={inner_zero},.task={task_c}}})"
+        if isinstance(typ, t.Struct):
+            fname = t.first_pointer_field(typ)
+            if fname is None:
+                raise ValueError(f"TagTask: struct {typ} has no pointer field")
+            type_name = typ.declare(type_cache)
+            fields = ", ".join(
+                f".{mangle_name(n)} = (object_t*)((uintptr_t){task_c} | PTR_TAG_TASK)" if n == fname
+                else f".{mangle_name(n)} = 0"
+                for n, _ in typ.fields
+            )
+            return f"(({type_name}){{{fields}}})"
+        raise ValueError(f"TagTask: unsupported target type {typ}")
 
 
 @dataclass(frozen=True)

@@ -103,6 +103,40 @@ class JumpIf(Op):
 
 
 @dataclass(frozen=True)
+class SwitchJump(Op):
+    """Dispatch to labeled targets based on an integer condition value.
+
+    `cases` is a tuple of (int_value, label_name) pairs.  Any value not
+    listed falls through to the next instruction (the idx==0 fall-through
+    in the state-machine dispatch is the canonical use-case).
+    """
+    condition: RParam
+    cases: tuple[tuple[int, str], ...]
+
+    def all_params(self) -> list[RParam]:
+        return self.condition.flatten()
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.condition)
+
+    def rename_vars(self, renames: dict[str, str]) -> SwitchJump:
+        return dataclasses.replace(self,
+            condition=self.condition.rename_vars(renames),
+            cases=tuple((v, renames.get(lbl, lbl)) for v, lbl in self.cases))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> SwitchJump:
+        return dataclasses.replace(self, condition=self.condition.replace_params(replacer))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        return self.condition.get_live_vars(), frozenset()
+
+    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+        cond  = self.condition.to_c(type_cache)
+        cases = "\n".join(f"        case {v}: goto {lbl};" for v, lbl in self.cases)
+        return f"    switch ({cond}) {{\n{cases}\n    }}\n"
+
+
+@dataclass(frozen=True)
 class NewObject(Op): # Create a new blank instance of the named object
     name: str
     register: LParam
@@ -196,6 +230,13 @@ class Call(Op):
         live = self.function.get_live_vars() | self.parameters.get_live_vars()
         dead = self.register.get_live_vars() if self.register else set()
         return (live, dead) if isinstance(self.register, StackVar) else (live | dead, frozenset())
+
+
+@dataclass(frozen=True)
+class ReturnVoid(Op):
+    """Emit a bare 'return;' for void functions (e.g. the async state machine)."""
+    def to_c(self, type_cache: Dict[t.Type, (str, str)]) -> str:
+        return "    return;\n"
 
 
 @dataclass(frozen=True)

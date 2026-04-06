@@ -110,6 +110,27 @@ fun main(): Int
 """
         self.assertEqual(13, _run(src))
 
+    def test_struct_returning_function_with_state_machine(self):
+        """make_box has a non-tail call before constructing and returning a Box.
+        Unlike test_class_returned_from_function (where the struct-returning
+        callee is pure-sync), here the struct-returning function itself has a
+        state machine.  Exercises the struct-typed hot-path and state machine."""
+        src = _PREAMBLE + """\
+class Box(value: Int)
+
+fun bump(n: Int): Int
+    ret n
+
+fun make_box(n: Int): Box
+    let v: Int = bump(n)
+    ret Box(v)
+
+fun main(): Int
+    let b: Box = make_box(17)
+    ret b.value
+"""
+        self.assertEqual(17, _run(src))
+
     def test_nested_simple_classes(self):
         """Class whose field is itself a simple class; both get lowered."""
         src = _PREAMBLE + _ARITH + """\

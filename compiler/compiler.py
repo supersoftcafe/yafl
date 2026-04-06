@@ -20,7 +20,7 @@ import lowering.trim
 import pyast.statement as s
 import pyast.expression as e
 
-from codegen.typedecl import DataPointer, Struct, Int
+from codegen.typedecl import DataPointer, FuncPointer, Struct, Int, Void
 from codegen.things import Function
 import codegen.param as cg_p
 import codegen.ops as cg_o
@@ -66,19 +66,38 @@ def _read_stdlib_code(use_stdlib: bool) -> list[Input]:
 
 
 def __create_entry_point(main: s.FunctionStatement) -> Function:
-    sv = cg_p.StackVar(Int(0), "result")
+    sv_result    = cg_p.StackVar(Int(0), "result")
+    sv_discard   = cg_p.StackVar(DataPointer(), "$sv_discard")
+    continuation = cg_p.StackVar(FuncPointer(), "$continuation")
+
+    is_task       = cg_p.Invoke("PTR_IS_TASK", cg_p.NewStruct((("p", sv_result),)), Int(32))
+    unlikely_chk  = cg_p.Invoke("UNLIKELY",    cg_p.NewStruct((("x", is_task),)),    Int(32))
+
+    untag       = cg_p.Invoke("TASK_UNTAG",      cg_p.NewStruct((("p",    sv_result),)),                         DataPointer())
+    on_complete = cg_p.Invoke("task_on_complete", cg_p.NewStruct((("task", untag), ("cb", continuation))),        DataPointer())
+
     return Function(
         name="__entrypoint__",
-        params=Struct(fields=(("this", DataPointer()),)),
-        result=Int(0),
-        stack_vars=Struct(fields=(("result", Int(0)),)),
+        params=Struct(fields=(("this", DataPointer()), ("$continuation", FuncPointer()))),
+        result=Void(),
+        stack_vars=Struct(fields=(("result", Int(0)), ("$sv_discard", DataPointer()))),
         ops=(
             cg_o.Call(
                 function=cg_p.GlobalFunction(main.name),
                 parameters=cg_p.NewStruct(()),
-                register=sv
+                register=sv_result,
             ),
-            cg_o.Return(sv)
+            cg_o.JumpIf("$async_entry", unlikely_chk),
+            # Sync path: invoke the CPS continuation with main's result
+            cg_o.Call(
+                function=continuation,
+                parameters=cg_p.NewStruct((("result", sv_result),)),
+            ),
+            cg_o.ReturnVoid(),
+            # Async path: register the continuation as task callback
+            cg_o.Label("$async_entry"),
+            cg_o.Move(sv_discard, on_complete),
+            cg_o.ReturnVoid(),
         )
     )
 

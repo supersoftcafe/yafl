@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from codegen.param import GlobalFunction, GlobalVar, Invoke, NewStruct, PointerTo
+from codegen.param import GlobalFunction, GlobalVar, Invoke, NewStruct, NullPointer, PointerTo
 from codegen.ops import Call, Op, JumpIf, Label
 from codegen.gen import Application
 from codegen.things import Function, Global
@@ -23,8 +23,10 @@ def __create_global_init_ops(glb: Global, index: Int) -> list[Op]:
 
     init_params = NewStruct( (
         ("flag", PointerTo(GlobalVar(DataPointer(), glb.lazy_init_flag))),
-        ("init", GlobalFunction(glb.lazy_init_function))
-        # Continuation parameter will be added by the CPS conversion later
+        ("init", GlobalFunction(glb.lazy_init_function)),
+        # TODO: bridge — lazy_global_init expects a CPS callback; pass null for now
+        # (async global init will hang until yafllib is updated to use direct-return convention)
+        ("callback", NewStruct((("f", NullPointer()), ("o", NullPointer())))),
     ))
     invoke = Call(GlobalFunction("lazy_global_init", external=True), init_params)
 

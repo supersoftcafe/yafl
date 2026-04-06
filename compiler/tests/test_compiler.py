@@ -289,3 +289,104 @@ fun main(): System::Int
         with self.assertRaises(RuntimeError) as ctx:
             iterate_fn([stmt])
         self.assertIn("iteration", str(ctx.exception).lower())
+
+
+class TestTaskConvention(TestCase):
+    """Compile-level checks for the task-based calling convention.
+
+    These tests verify that the code generator produces well-formed C for
+    scenarios that are structurally important but hard to exercise purely at
+    runtime (e.g. TaskWrapper for primitive returns, Void state machines).
+    """
+
+    def test_int32_return_with_state_machine_compiles(self):
+        """A function returning Int32 (fixed-width primitive) with a non-tail
+        call triggers TaskWrapper wrapping of the return type.  Verifies that
+        the generated C is accepted by clang (compile-only; no binary run).
+
+        Int32 literals are not natively supported in yafl test syntax, so
+        __builtin_op__<int32>("integer_literal", N) is used to produce one."""
+        import subprocess, tempfile, os
+        src = """\
+namespace System
+typealias Int : __builtin_type__<bigint>
+typealias Int32 : __builtin_type__<int32>
+
+fun [foreign("get_int32_value")] get_int32(): Int32
+
+fun identity(x: Int32): Int32
+    ret x
+
+fun double_call(x: Int32): Int32
+    let a: Int32 = identity(x)
+    ret a
+
+fun main(): Int
+    let r: Int32 = double_call(get_int32())
+    ret 0
+"""
+        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=False, just_testing=False)
+        self.assertTrue(c_code, "compilation produced no output")
+        # A state machine should have been generated for double_call, and the
+        # TaskWrapper struct (struct { int32_t value; object_t* task; }) for the return type.
+        self.assertIn("double_call", c_code)
+        self.assertIn("$async", c_code)
+        self.assertIn("int32_t value", c_code)   # TaskWrapper inner field
+
+        with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
+            obj = tmp.name
+        try:
+            result = subprocess.run(
+                ["clang", "-x", "c", "-c", "-O0", "-o", obj, "-"],
+                input=c_code, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(0, result.returncode, f"clang rejected generated C:\n{result.stderr}")
+        finally:
+            try:
+                os.unlink(obj)
+            except OSError:
+                pass
+
+    def test_none_returning_function_with_state_machine_compiles(self):
+        """A None-returning function (unit type ()) with non-tail calls generates
+        a state machine.  None maps to Struct(fields=()) at the IR level, so the
+        return type uses TaskWrapper(Struct(fields=())) for async signalling.
+        Verifies that the generated C is accepted by clang."""
+        import subprocess, tempfile, os
+        src = """\
+namespace System
+typealias Int : __builtin_type__<bigint>
+typealias None : ()
+let None: None = ()
+
+fun sideeffect(x: Int): Int
+    ret x
+
+fun effect(a: Int, b: Int): None
+    let ra: Int = sideeffect(a)
+    let rb: Int = sideeffect(b)
+    ret None
+
+fun main(): Int
+    let discard: None = effect(3, 7)
+    ret 13
+"""
+        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=False, just_testing=False)
+        self.assertTrue(c_code, "compilation produced no output")
+        # effect has two non-tail calls → should generate effect$async
+        self.assertIn("effect", c_code)
+        self.assertIn("$async", c_code)
+
+        with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
+            obj = tmp.name
+        try:
+            result = subprocess.run(
+                ["clang", "-x", "c", "-c", "-O0", "-o", obj, "-"],
+                input=c_code, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(0, result.returncode, f"clang rejected generated C:\n{result.stderr}")
+        finally:
+            try:
+                os.unlink(obj)
+            except OSError:
+                pass

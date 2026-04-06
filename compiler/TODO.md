@@ -1,3 +1,15 @@
+# Notes from async model to task update
+
+Review TaskWrapper deeper
+Remove ReturnVoid for Return tuple()
+Remove NullPointer for tuple()
+Support sync functions. Re-introduce tail calls.
+ZeroOf. Clean it up to be more OO.
+Use of tasks for lazy init??
+
+Task sub-classes. Does it emit state field correctly?
+-O3 removed print lines. Not good.
+
 # Change async model to task based
 
 Bit 0 of any pointer is reserved to indicate that it's a task pointer. Compressed 

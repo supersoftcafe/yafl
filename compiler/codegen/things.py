@@ -5,7 +5,7 @@ from typing import Optional, Callable, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
 from codegen.tools import mangle_name, to_pointer_mask
 
-from codegen.ops import Op, Jump, JumpIf, Return, Label
+from codegen.ops import Op, Jump, JumpIf, SwitchJump, Return, ReturnVoid, Label
 
 import codegen.typedecl as t
 import codegen.param as p
@@ -77,7 +77,12 @@ class Function:
                     to_see_indexes.add(labels[op.label])
                     if index+1 < len(self.ops):
                         to_see_indexes.add(index+1)
-                elif isinstance(op, Return):
+                elif isinstance(op, SwitchJump):
+                    for _, lbl in op.cases:
+                        to_see_indexes.add(labels[lbl])
+                    if index+1 < len(self.ops):
+                        to_see_indexes.add(index+1)
+                elif isinstance(op, (Return, ReturnVoid)):
                     pass
                 else:
                     if index+1 < len(self.ops):
