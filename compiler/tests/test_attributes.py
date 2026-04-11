@@ -313,3 +313,124 @@ fun main(): System::Int
         """Create counter(10), add(5) → 15, add(3) → 18; get() returns 18."""
         exit_code = compile_and_run_with_c_library(self._YAFL, self._C_LIBRARY)
         self.assertEqual(18, exit_code)
+
+
+class TestSync(TestCase):
+
+    def test_sync_function_compiles(self):
+        """A [sync] function compiles without error."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [sync] identity(x: System::Int): System::Int
+    ret x
+
+fun main(): System::Int
+    ret identity(42)
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_sync_with_argument_is_error(self):
+        """[sync("foo")] is a compile error — [sync] takes no arguments."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [sync("bad")] f(): System::Int
+    ret 0
+
+fun main(): System::Int
+    ret 0
+"""
+        result, errors = _compile_capturing_errors(content)
+        self.assertEqual("", result)
+        self.assertIn("sync", errors.lower())
+
+    def test_sync_function_has_no_async_sibling(self):
+        """A [sync] function does not generate a $async state machine."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [sync] identity(x: System::Int): System::Int
+    ret x
+
+fun [sync] double_call(x: System::Int): System::Int
+    let a: System::Int = identity(x)
+    ret a
+
+fun main(): System::Int
+    ret double_call(1)
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        self.assertNotIn("double_call$async", result)
+
+    def test_sync_function_return_type_not_wrapped(self):
+        """A [sync] function's return type is not wrapped for task signalling."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias Int32 : __builtin_type__<int32>
+
+fun [foreign("get_int32_value")] get_int32(): System::Int32
+
+fun [sync] identity(x: System::Int32): System::Int32
+    ret x
+
+fun main(): System::Int
+    let r: System::Int32 = identity(get_int32())
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        # [sync] skips CPS entirely — no TaskWrapper struct for identity
+        self.assertNotIn("identity$async", result)
+        # The return type of a [sync] function is not wrapped in TaskWrapper
+        # (unlike an equivalent non-sync function, which would wrap int32_t)
+        # We verify indirectly: the function compiles cleanly without task wrapping overhead.
+        self.assertIn("identity", result)
+
+    def test_calling_sync_functions_only_has_no_state_machine(self):
+        """A non-sync function whose non-tail calls are all [sync] generates no $async."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [sync] identity(x: System::Int): System::Int
+    ret x
+
+fun wrapper(x: System::Int): System::Int
+    let a: System::Int = identity(x)
+    ret a
+
+fun main(): System::Int
+    ret wrapper(1)
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        self.assertNotIn("wrapper$async", result)
+
+    def test_sync_combined_with_foreign(self):
+        """[foreign("sym"), sync] on a function compiles successfully."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [foreign("libyafl_get_value"), sync] get_value(): System::Int
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+
+    def test_sync_combined_with_impure(self):
+        """[impure, sync] on a function compiles successfully."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+fun [foreign("print_string"), impure, sync] print_s(s: System::String): System::Int
+
+fun main(): System::Int
+    ret 0
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)

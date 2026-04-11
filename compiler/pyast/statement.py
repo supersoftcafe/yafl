@@ -210,7 +210,12 @@ class FunctionStatement(DataStatement):
         else:
             impure_err = []
 
-        return err1 + err2 + err3 + err4 + foreign_err + impure_err
+        if "sync" in self.attributes:
+            sync_err = [] if self.attributes.get("sync") is None else [Error(self.line_ref, "[sync] takes no arguments")]
+        else:
+            sync_err = []
+
+        return err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Function:
         resolver = g.ResolverType(resolver, self._find_generic_types)
@@ -246,7 +251,8 @@ class FunctionStatement(DataStatement):
             stack_vars = cg_t.Struct(fields = tuple(vars)),
             ops = tuple(bundle.operations),
             comment = self.name,
-            foreign_symbol = foreign_symbol
+            foreign_symbol = foreign_symbol,
+            sync = "sync" in self.attributes
         )
 
 

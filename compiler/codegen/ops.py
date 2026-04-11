@@ -229,6 +229,7 @@ class Call(Op):
     register: LParam|None = None # Target of operation result, unless musttail == True
     musttail: bool = False # Current function will end here and the return value is the return of this call
     impure: bool = False   # If True, this call must never be eliminated even if the result is unused
+    sync: bool = False     # If True, this call is guaranteed to return synchronously (never a task)
 
     def all_params(self) -> list[RParam]:
         return self.function.flatten() + self.parameters.flatten() + (self.register.flatten(is_reader=False) if self.register else [])

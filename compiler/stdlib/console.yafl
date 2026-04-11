@@ -1,6 +1,6 @@
 namespace System
 
-fun [foreign("print_string"), impure] __print_string(str: System::String): System::Int
+fun [foreign("print_string"), impure, sync] __print_string(str: System::String): System::Int
 
 fun [impure] print(str: System::String): System::None
     __print_string(str)

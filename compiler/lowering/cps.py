@@ -123,7 +123,7 @@ def __convert_var_to_field_refs(ops: Iterable[Op],
 def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
     liveness_fn = __calculate_saved_vars(fn)
     partitions = langtools.partition(liveness_fn.ops,
-                                     lambda op: isinstance(op, Call) and not op.musttail)
+                                     lambda op: isinstance(op, Call) and not op.musttail and not op.sync)
 
     def make_block(index: int, ops: list[Op]) -> BasicBlock:
         name = f"cont${index}"
@@ -590,6 +590,10 @@ def __convert_function_to_task_convention(
     """
     # Skip __entrypoint__ – it bridges thread_start (old CPS) to the new world
     if fn.name == "__entrypoint__":
+        return {fn.name: fn}, {}
+
+    # Sync functions never suspend: no state machine, no return-type wrapping.
+    if fn.sync:
         return {fn.name: fn}, {}
 
     after_tail = __discover_tail_calls(fn)

@@ -20,6 +20,7 @@ class Function:
     ops: tuple[Op, ...]
     comment: str = ""
     foreign_symbol: str | None = None
+    sync: bool = False
 
     def __post_init__(self):
         if len(self.params.fields) == 0:
