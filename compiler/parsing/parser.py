@@ -132,6 +132,17 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
+def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    expr = result.value
+    line = result.line_ref
+    negated = e.CallExpression(line,
+        e.NamedExpression(line, "`-`"),
+        e.TupleExpression(line, [
+            e.TupleEntryExpression(None, expr),
+        ]))
+    return p.Result(negated, result.tokens, result.line_ref, result.errors)
+
+
 def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     def get_right_expr(condition: e.Expression, expressions: list[tuple[e.Expression, e.Expression]]) -> e.Expression:
         if not expressions:
@@ -375,7 +386,8 @@ __parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | _
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
-__parse_pipeline= (__parse_invoke   & p.many(p.discard_sym("|>")    & __parse_invoke    )) >> __to_pipeline
+__parse_unary   = (p.discard_sym("-") & __parse_invoke) >> __to_negate | __parse_invoke
+__parse_pipeline= (__parse_unary   & p.many(p.discard_sym("|>")    & __parse_unary    )) >> __to_pipeline
 __parse_divmul  = (__parse_pipeline & p.many(p.sym(["%", "/", "*"]) & __parse_pipeline  )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
 __parse_compare = (__parse_addsub   & p.many(p.sym(["<", "=", ">"]) & __parse_addsub    )) >> __to_call_operators

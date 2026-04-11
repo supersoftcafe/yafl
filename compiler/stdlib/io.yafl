@@ -1,0 +1,17 @@
+namespace System::IO
+
+import System
+
+fun [foreign("io_stdin"),sync] stdin(): IO
+fun [foreign("io_stdout"),sync] stdout(): IO
+fun [foreign("io_stderr"),sync] stderr(): IO
+
+fun [foreign("io_create"),impure] create(path: String): IO|Int
+fun [foreign("io_open_read"),impure] open_read(path: String): IO|Int
+fun [foreign("io_open_write"),impure] open_write(path: String, truncate: Bool): IO|Int
+
+class [foreign,final] IO:
+  fun [foreign("io_read"),impure] read(length: Int): String|Int|None
+  fun [foreign("io_write"),impure] write(data: String): Int|None
+  fun [foreign("io_close"),impure] close(): Int|None
+

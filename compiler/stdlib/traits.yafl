@@ -5,6 +5,7 @@ interface BasicPlus<TVal>
 
 interface BasicMath<TVal> : BasicPlus<TVal>
   fun `*`(left: TVal, right: TVal): TVal
+  fun `-`(right: TVal): TVal
   fun `-`(left: TVal, right: TVal): TVal
   fun `/`(left: TVal, right: TVal): TVal
   fun `%`(left: TVal, right: TVal): TVal

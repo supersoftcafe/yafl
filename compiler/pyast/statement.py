@@ -494,6 +494,10 @@ class LetStatement(DataStatement):
         return stmt, dv_glb+dt_glb
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
+        if self.default_value and self.declared_type:
+            xtype = self.default_value.get_type(resolver)
+            if xtype and not t.trivially_assignable_equals(resolver, self.declared_type, xtype):
+                return [Error(self.line_ref, "Incorrect type")]
         err1 = self.default_value.check(resolver, self.declared_type) if self.default_value else []
         err2 = self.declared_type.check(resolver) if self.declared_type else []
         return err1 + err2

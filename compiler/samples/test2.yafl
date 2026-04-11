@@ -1,10 +1,18 @@
 namespace Test
 
 import System
+import System::IO
+
+fun testIO(data: String): Int
+  let io: IO = stdout()
+  let len: Int = io.write(data)
+  io.close()
+  ret len
 
 fun main(): System::Int where BasicMath<System::Int>
-  System::print("Hello")
-  System::print("Hi there")
-  System::print("Whato")
+  testIO("Fred was what\n")
+  System::print("Hello\n")
+  System::print("Hi there\n")
+  System::print("Whato\n")
   ret 1 + 3
 

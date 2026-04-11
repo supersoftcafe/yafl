@@ -15,6 +15,7 @@ import lowering.staticinit
 import lowering.deadstores
 import lowering.unions
 import lowering.cps
+import lowering.sync_inference
 import lowering.trim
 
 import pyast.statement as s
@@ -166,6 +167,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Lazy initialisation must be after inlining, and before CPS conversion.
     a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
 
+    a = lowering.sync_inference.infer_sync(a)
     a = lowering.trim.removed_unused_stuff(lowering.cps.convert_application_to_cps(a))
     return a.gen(just_testing=just_testing)
 

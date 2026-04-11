@@ -434,3 +434,105 @@ fun main(): System::Int
 """
         result = _compile(content)
         self.assertNotEqual("", result)
+
+
+class TestSyncInference(TestCase):
+
+    def test_inferred_sync_leaf_has_no_async_sibling(self):
+        """A non-foreign leaf function (no non-tail calls) is inferred sync — no $async generated."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun add(x: System::Int, y: System::Int): System::Int
+    ret __builtin_op__<bigint>("add", x, y)
+
+fun main(): System::Int
+    ret add(1, 2)
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        self.assertNotIn("add$async", result)
+
+    def test_inferred_sync_propagates_through_chain(self):
+        """Sync inference propagates: if all non-tail callees are sync, the caller is sync too."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun leaf(x: System::Int): System::Int
+    ret x
+
+fun middle(x: System::Int): System::Int
+    let a: System::Int = leaf(x)
+    ret a
+
+fun main(): System::Int
+    ret middle(1)
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        self.assertNotIn("middle$async", result)
+
+    def test_inferred_sync_does_not_promote_foreign_leaf(self):
+        """A foreign function without [sync] is NOT inferred sync — its body is empty (unknown)."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [foreign("external_op")] ext(): System::Int
+
+fun wrapper(): System::Int
+    let a: System::Int = ext()
+    ret a
+
+fun main(): System::Int
+    ret wrapper()
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        # wrapper calls a non-sync foreign — it must not be inferred sync.
+        # Name mangling converts $ → Q36q, so check via regex.
+        self.assertRegex(result, r'wrapper\w+Q36qasync')
+
+    def test_inferred_sync_foreign_with_sync_attribute_is_promoted(self):
+        """A foreign function WITH [sync] IS sync — callers that only call it are also inferred sync."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun [foreign("external_op"), sync] ext(): System::Int
+
+fun wrapper(): System::Int
+    let a: System::Int = ext()
+    ret a
+
+fun main(): System::Int
+    ret wrapper()
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        # wrapper only calls a [sync] foreign — inferred sync, no state machine
+        self.assertNotIn("wrapper$async", result)
+
+    def test_inferred_sync_virtual_all_impls_sync(self):
+        """Virtual call is inferred sync when all implementing functions are sync."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+interface Adder
+    fun add(x: System::Int): System::Int
+
+class [final] One() : System::Adder
+    fun add(x: System::Int): System::Int
+        ret __builtin_op__<bigint>("add", x, 1)
+
+fun call_add(a: System::Adder, x: System::Int): System::Int
+    let r: System::Int = a.add(x)
+    ret r
+
+fun main(): System::Int
+    let o: System::One = System::One()
+    ret call_add(o, 5)
+"""
+        result = _compile(content)
+        self.assertNotEqual("", result)
+        # All implementations of Adder::add are leaf functions (inferred sync)
+        # so call_add should also be inferred sync
+        self.assertNotIn("call_add$async", result)

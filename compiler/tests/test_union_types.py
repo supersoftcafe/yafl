@@ -608,3 +608,37 @@ fun main(): Int
 """
         code, _ = _compile_and_run(src)
         self.assertEqual(3, code)
+
+    def test_ret_assignment_mismatch(self):
+        src = _PREAMBLE + """\
+fun returnsUnion():Int|None
+  ret None
+fun main():Int
+  ret returnsUnion()
+"""
+        code = _compile(src)
+        self.assertEqual("", code)
+
+    def test_let_assignment_mismatch(self):
+        src = _PREAMBLE + """\
+fun returnsUnion():Int|None
+  ret None
+fun main():Int
+  let x: Int = returnsUnion()
+  ret x
+"""
+        code = _compile(src)
+        self.assertEqual("", code)
+
+    def test_let_assignment_match(self):
+        src = """\
+import System
+fun returnsUnion():System::Int|System::None
+  ret System::None
+fun main():System::Int
+  ret match(returnsUnion())
+    (x: System::Int) => x
+    () => -1
+"""
+        code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", code)
