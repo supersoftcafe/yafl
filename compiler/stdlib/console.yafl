@@ -1,9 +1,11 @@
 namespace System
 
-fun print(str: System::String): System::None
-    __builtin_op__<bigint>("print_string", str)
+fun [foreign("print_string"), impure] __print_string(str: System::String): System::Int
+
+fun [impure] print(str: System::String): System::None
+    __print_string(str)
     ret None
 
-fun print(int: System::Int): System::None
+fun [impure] print(int: System::Int): System::None
     print(String(int))
     ret None

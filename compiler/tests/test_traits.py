@@ -13,10 +13,11 @@ class TestTraits(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    let result = System::Char(48) + System::Char(49)\n"
-                   "    ret System::print(\"Fred\")\n")
+                   "    System::print(\"Fred\")\n"
+                   "    ret 0\n")
 
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
-        self.assertNotEqual("", result)
+        self.assertIn("print_string", result, "Missing print statement")
         print(result)
 
     def test_simple_trait(self):

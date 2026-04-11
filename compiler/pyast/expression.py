@@ -29,6 +29,11 @@ def _foreign_symbol(stmt: s.FunctionStatement) -> str | None:
     return None
 
 
+def _is_impure(stmt: s.FunctionStatement) -> bool:
+    """Return True if stmt has the [impure] attribute."""
+    return "impure" in stmt.attributes
+
+
 @dataclass
 class Expression:
     line_ref: LineRef
@@ -181,10 +186,13 @@ class CallExpression(Expression):
         fun_op_bundle = self.function.generate(resolver).rename_vars(1)
         prm_op_bundle = self.parameter.generate(resolver).rename_vars(2)
 
+        fun_ref = fun_op_bundle.result_var
+        impure = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.impure
+
         result_var = cg_p.StackVar(xtype.result.generate(), "result")
         call_bundle = g.OperationBundle(
             (result_var,),
-            (  cg_o.Call(fun_op_bundle.result_var, prm_op_bundle.result_var, result_var),),
+            (cg_o.Call(fun_ref, prm_op_bundle.result_var, result_var, impure=impure),),
             result_var
         )
 
@@ -284,7 +292,7 @@ class DotExpression(Expression):
                 elif "final" not in cdecl.attributes:
                     result_var = cg_p.VirtualFunction(data.name, base_bundle.result_var)
                 else:
-                    result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var, c_symbol=_foreign_symbol(data))
+                    result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var, c_symbol=_foreign_symbol(data), impure=_is_impure(data))
 
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
@@ -419,7 +427,7 @@ class NamedExpression(Expression):
         x = x[0]
         match (x.scope, x.statement):
             case (g.ResolvedScope.GLOBAL, stmt) if isinstance(stmt, s.FunctionStatement):
-                return g.OperationBundle((), (), cg_p.GlobalFunction(self.name, c_symbol=_foreign_symbol(stmt)))
+                return g.OperationBundle((), (), cg_p.GlobalFunction(self.name, c_symbol=_foreign_symbol(stmt), impure=_is_impure(stmt)))
             case (g.ResolvedScope.GLOBAL, stmt) if isinstance(stmt, s.LetStatement):
                 xtype = stmt.declared_type
                 if not xtype: raise ValueError(f"Failed to resolve {self.name} due to missing type")

@@ -205,7 +205,12 @@ class FunctionStatement(DataStatement):
         else:
             foreign_err = []
 
-        return err1 + err2 + err3 + err4 + foreign_err
+        if "impure" in self.attributes:
+            impure_err = [] if self.attributes.get("impure") is None else [Error(self.line_ref, "[impure] takes no arguments")]
+        else:
+            impure_err = []
+
+        return err1 + err2 + err3 + err4 + foreign_err + impure_err
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Function:
         resolver = g.ResolverType(resolver, self._find_generic_types)

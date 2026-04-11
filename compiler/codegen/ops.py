@@ -228,6 +228,7 @@ class Call(Op):
     parameters: RParam # Must evaluate to a struct
     register: LParam|None = None # Target of operation result, unless musttail == True
     musttail: bool = False # Current function will end here and the return value is the return of this call
+    impure: bool = False   # If True, this call must never be eliminated even if the result is unused
 
     def all_params(self) -> list[RParam]:
         return self.function.flatten() + self.parameters.flatten() + (self.register.flatten(is_reader=False) if self.register else [])

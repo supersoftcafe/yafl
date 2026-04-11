@@ -406,6 +406,7 @@ class GlobalFunction(RParam):
     object: RParam|None = None
     external: bool = False
     c_symbol: str | None = None
+    impure: bool = False
 
     def __post_init__(self):
         if not isinstance(self.name, str):
