@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Sequence
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Any
 from dataclasses import dataclass, field
 import dataclasses
 
@@ -41,7 +41,7 @@ class Statement:
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         return g.OperationBundle()
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, self))
 
 
@@ -145,7 +145,7 @@ class FunctionStatement(DataStatement):
     statements: list[Statement]
     return_type: t.TypeSpec|None = None
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         nested_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
@@ -308,7 +308,7 @@ class ClassStatement(TypeStatement):
         return t.ClassSpec(self.line_ref, self.name)
 
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         nested_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
@@ -449,7 +449,7 @@ class LetStatement(DataStatement):
     default_value: e.Expression|None
     declared_type: t.TypeSpec|None
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             default_value=self.default_value and self.default_value.search_and_replace(resolver, replace),
             declared_type=self.declared_type.search_and_replace(resolver, replace) if self.declared_type else None)))
@@ -543,7 +543,7 @@ class LetStatement(DataStatement):
 class DestructureStatement(LetStatement):
     targets: list[LetStatement]
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             default_value=self.default_value and self.default_value.search_and_replace(resolver, replace),
             declared_type=self.declared_type.search_and_replace(resolver, replace) if self.declared_type else None,
@@ -589,7 +589,7 @@ class DestructureStatement(LetStatement):
 class ReturnStatement(Statement):
     value: e.Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             value=self.value.search_and_replace(resolver, replace))))
 
@@ -636,7 +636,7 @@ class NamespaceStatement(Statement):
 class TypeAliasStatement(TypeStatement):
     type: t.TypeSpec
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             type=self.type.search_and_replace(resolver, replace))))
 
@@ -655,12 +655,12 @@ class TypeAliasStatement(TypeStatement):
 class ActionStatement(Statement):
     action: e.Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Statement:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
             action=self.action.search_and_replace(resolver, replace))))
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        new_action, stmts = self.action.compile(resolver, func_ret_type)
+        new_action, stmts = self.action.compile(resolver, None)
         return dataclasses.replace(self, action = new_action), stmts
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
@@ -668,6 +668,7 @@ class ActionStatement(Statement):
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         return self.action.generate(resolver)
+
 
 @dataclass
 class IfStatement(Statement):

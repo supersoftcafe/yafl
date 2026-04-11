@@ -8,7 +8,7 @@ from codegen.ops import Op, Move, Call
 from codegen.param import StackVar
 
 
-def _collect_reads(ops: tuple[Op, ...]) -> set[str]:
+def __collect_reads(ops: tuple[Op, ...]) -> set[str]:
     """Collect all StackVar names that are ever read across all ops."""
     reads: set[str] = set()
     for op in ops:
@@ -18,14 +18,14 @@ def _collect_reads(ops: tuple[Op, ...]) -> set[str]:
     return reads
 
 
-def _eliminate_once(fn: Function) -> Function:
-    reads = _collect_reads(fn.ops)
+def __eliminate_once(fn: Function) -> Function:
+    reads = __collect_reads(fn.ops)
 
     new_ops = []
     changed = False
     for op in fn.ops:
         if isinstance(op, Move) and isinstance(op.target, StackVar):
-            if op.target.name not in reads and not op.source.has_side_effects():
+            if op.target.name not in reads:
                 changed = True
                 continue  # drop dead store entirely
         elif isinstance(op, Call) and isinstance(op.register, StackVar):
@@ -53,10 +53,10 @@ def _eliminate_once(fn: Function) -> Function:
     return dataclasses.replace(fn, ops=new_ops_t, stack_vars=new_stack_vars)
 
 
-def eliminate_dead_stores_fn(fn: Function) -> Function:
+def __eliminate_dead_stores_fn(fn: Function) -> Function:
     """Eliminate dead stores in a single function to a fixed point."""
     while True:
-        new_fn = _eliminate_once(fn)
+        new_fn = __eliminate_once(fn)
         if new_fn is fn:
             return fn
         fn = new_fn
@@ -64,4 +64,4 @@ def eliminate_dead_stores_fn(fn: Function) -> Function:
 
 def eliminate_dead_stores(app: Application) -> Application:
     """Remove dead StackVar assignments from all functions."""
-    return dataclasses.replace(app, functions={name: eliminate_dead_stores_fn(fn) for name, fn in app.functions.items()})
+    return dataclasses.replace(app, functions={name: __eliminate_dead_stores_fn(fn) for name, fn in app.functions.items()})

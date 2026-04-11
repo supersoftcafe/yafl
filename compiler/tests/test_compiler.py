@@ -171,10 +171,11 @@ class Test(TestCase):
         content = ("import System\n"
                    "\n"
                    "fun main(): System::Int\n"
-                   "    ret System::print(\"Hello\")\n")
+                   "    System::print(\"Hello\")\n"
+                   "    ret 0\n")
 
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
-        self.assertNotEqual("", result)
+        self.assertIn("print_string", result, "Missing print statement")
         print(result)
 
     def test_pipeline3(self):
@@ -390,3 +391,29 @@ fun main(): Int
                 os.unlink(obj)
             except OSError:
                 pass
+
+    def test_find_the_right_print_statement(self):
+        src = """\
+namespace System
+
+typealias String : __builtin_type__<str>
+typealias Int : __builtin_type__<bigint>
+typealias None : ()
+let None: None = ()
+
+fun print(str: System::String): System::None
+    __builtin_op__<bigint>("print_string", str)
+    ret None
+
+fun print(int: System::Int): System::None
+    print("other one")
+    ret None
+
+fun main(): Int
+    print("one")
+    ret 0
+"""
+
+        result = c.compile([c.Input(src, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+        print(result)

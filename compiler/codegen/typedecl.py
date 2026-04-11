@@ -38,13 +38,13 @@ class Type(ABC):
     #         raise ValueError()
     #     return 0
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         return f"{data}"
 
-    def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare_struct(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         raise NotImplementedError()
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         if self._dont_cache:
             declaration = self._declare_struct(type_cache, "    ")
         elif self not in type_cache:
@@ -56,10 +56,10 @@ class Type(ABC):
             declaration, _ = value
         return declaration
 
-    def initialise(self, type_cache: Dict[Type, (str, str)], data: Any) -> str:
+    def initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any) -> str:
         return self._initialise(type_cache, data, "    ")
 
-    def declare(self, type_cache: Dict[Type, (str, str)]) -> str:
+    def declare(self, type_cache: Dict[Type, tuple[str, str]]) -> str:
         return self._declare(type_cache, "    ")
 
     def get_pointer_paths(self, path: str) -> list[str]:
@@ -73,12 +73,12 @@ class Str(Type):
     # def size(self) -> int:
     #     return word_size
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         if not isinstance(data, str):
             raise ValueError("data must be of type str")
         return f"STR(\"{data.translate(_str_escape_table)}\")"
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         return "object_t*"
 
     def get_pointer_paths(self, path: str) -> list[str]:
@@ -92,7 +92,7 @@ class Int(Type):
     # def size(self) -> int:
     #     return self.precision // 8 if self.precision != 0 else word_size
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         if not isinstance(data, int):
             raise ValueError()
         if self.precision != 0:
@@ -119,7 +119,7 @@ class Int(Type):
             values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
             return f"INTEGER_LITERAL_N({sign}, {len(array)}, {' INTEGER_LITERAL_SEP '.join(values)})"
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         return f"int{self.precision}_t" if self.precision != 0 else "object_t*"
 
     def get_pointer_paths(self, path: str) -> list[str]:
@@ -132,10 +132,10 @@ class IntPtr(Type):
     # def size(self) -> int:
     #     return word_size
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         return f"{data}"
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         return "intptr_t"
 
 
@@ -149,7 +149,7 @@ class DataPointer(Type):
     def has_pointers(self) -> bool:
         return True
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         return "object_t*"
 
     def get_pointer_paths(self, path: str) -> list[str]:
@@ -179,11 +179,11 @@ class FuncPointer(Type):
     #         case _:
     #             raise ValueError()
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         fun, obj = (data['f'], data['o'] or "NULL") if isinstance(data, Mapping) else (str(data), "NULL")
         return f"(fun_t){{ .f = {fun}, .o = {obj} }}"
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         return "fun_t"
 
     def get_pointer_paths(self, path: str) -> list[str]:
@@ -225,7 +225,7 @@ class Struct(Type):
     #         case _:
     #             raise ValueError()
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         all_names = [name for name, type in self.fields]
         missing_names = [name for name, value in data.items() if name not in all_names]
         if any(missing_names):
@@ -234,7 +234,7 @@ class Struct(Type):
         strings = ",".join(f"\n{new_indent}.{mangle_name(name)} = {field_type._initialise(type_cache, data[name], new_indent)}" for name, field_type in self.fields if name in data)
         return f"{{ {strings} \n{field_indent}}}"
 
-    def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare_struct(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         new_indent = field_indent + "    "
         return f"struct {{ {"".join(f"\n{field_indent}{field_type._declare(type_cache, new_indent)} {mangle_name(name)};" for name, field_type in self.fields)}\n{field_indent[:-4]}}}"
 
@@ -258,7 +258,7 @@ class Void(Type):
     def has_pointers(self) -> bool:
         return False
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         return "void"
 
     def get_pointer_paths(self, path: str) -> list[str]:
@@ -296,12 +296,12 @@ class Array(Type):
     #         case _:
     #             raise ValueError()
 
-    def _initialise(self, type_cache: Dict[Type, (str, str)], data: Any, field_indent: str) -> str:
+    def _initialise(self, type_cache: Dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         new_indent = field_indent + "    "
         strings = ",".join(f"\n{field_indent}.a[{index}] = {self.type._initialise(type_cache, item, new_indent)}" for index, item in enumerate(data))
         return f"{{ {strings} \n{field_indent[:-4]}}}"
 
-    def _declare(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         new_indent = field_indent + "    "
         return f"struct {{\n{field_indent}{self.type._declare(type_cache, new_indent)} a[{self.length}];\n{field_indent[:-4]}}}"
 
@@ -323,7 +323,7 @@ class TaskWrapper(Type):
     def has_pointers(self) -> bool:
         return True  # the task field is a GC pointer
 
-    def _declare_struct(self, type_cache: Dict[Type, (str, str)], field_indent: str) -> str:
+    def _declare_struct(self, type_cache: Dict[Type, tuple[str, str]], field_indent: str) -> str:
         inner_decl = self.inner._declare(type_cache, field_indent)
         return f"struct {{\n{field_indent}{inner_decl} value;\n{field_indent}object_t* task;\n{field_indent[:-4]}}}"
 

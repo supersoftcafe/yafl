@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Any
 import dataclasses
 from dataclasses import dataclass, field
 from functools import reduce
@@ -45,7 +45,7 @@ class Expression:
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         raise NotImplementedError()
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, self))
 
 
@@ -54,7 +54,7 @@ class NewExpression(Expression):
     type: t.TypeSpec
     parameter: Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             type=self.type.search_and_replace(resolver, replace),
             parameter=self.parameter.search_and_replace(resolver, replace))))
@@ -133,7 +133,7 @@ class CallExpression(Expression):
     function: Expression
     parameter: Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             function=self.function.search_and_replace(resolver, replace),
             parameter=self.parameter.search_and_replace(resolver, replace))))
@@ -196,7 +196,7 @@ class DotExpression(Expression):
     base: Expression
     name: str
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             base=self.base.search_and_replace(resolver, replace))))
 
@@ -370,7 +370,7 @@ class NamedExpression(Expression):
             return thing
         return raw_type.search_and_replace(resolver, replace_fn)
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         rts = self.resolved_trait_scope.search_and_replace(resolver, replace) if self.resolved_trait_scope is not None else None
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params),
@@ -475,7 +475,7 @@ class BuiltinOpExpression(Expression):
     op: StringExpression
     params: Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             type=self.type.search_and_replace(resolver, replace),
             params=self.params.search_and_replace(resolver, replace))))
@@ -518,7 +518,7 @@ class LambdaExpression(Expression):
              if g.match_names(let.name, names)]
         return p
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
         nested_resolver = g.ResolverData(resolver, self.__find_locals)
         return cast(Expression, replace(resolver, dataclasses.replace(
             self,
@@ -566,7 +566,7 @@ class LambdaExpression(Expression):
 class NothingExpression(Expression):
     declarations: list[s.Statement]
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             declarations=[x.search_and_replace(resolver, replace) for x in self.declarations])))
 
@@ -576,7 +576,7 @@ class TupleEntryExpression:
     name: str|None
     value: Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> TupleEntryExpression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> TupleEntryExpression:
         return dataclasses.replace(self,
             value=self.value.search_and_replace(resolver, replace))
 
@@ -598,7 +598,7 @@ class TupleEntryExpression:
 class TupleExpression(Expression):
     expressions: list[TupleEntryExpression]
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             expressions=[x.search_and_replace(resolver, replace) for x in self.expressions])))
 
@@ -638,7 +638,7 @@ class TerneryExpression(Expression):
     trueResult: Expression
     falseResult: Expression
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,any],any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             condition=self.condition.search_and_replace(resolver, replace),
             trueResult=self.trueResult.search_and_replace(resolver, replace),
@@ -694,7 +694,7 @@ class BoxExpression(Expression):
     inner: Expression
     union_spec: t.CombinationSpec
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             inner=self.inner.search_and_replace(resolver, replace),
             union_spec=cast(t.CombinationSpec, self.union_spec.search_and_replace(resolver, replace)))))
@@ -769,7 +769,7 @@ class WideExpression(Expression):
     source_spec: t.CombinationSpec
     target_spec: t.CombinationSpec
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> Expression:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
         return cast(Expression, replace(resolver, dataclasses.replace(self,
             inner=self.inner.search_and_replace(resolver, replace),
             source_spec=cast(t.CombinationSpec, self.source_spec.search_and_replace(resolver, replace)),

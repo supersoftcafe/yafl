@@ -3,8 +3,8 @@ namespace Test
 import System
 
 fun main(): System::Int where BasicMath<System::Int>
-  print("Hello")
-  print("Hi there")
-  print("Whato")
+  System::print("Hello")
+  System::print("Hi there")
+  System::print("Whato")
   ret 1 + 3
 
