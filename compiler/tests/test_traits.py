@@ -87,6 +87,88 @@ fun main(): System::Int
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
 
+    def test_overload_resolution_global(self):
+        # Three global overloads: foo(Int,Int), foo(Int), foo(String).
+        # Calling foo(1) must resolve to the single-Int overload.
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+fun foo(a: System::Int, b: System::Int): System::Int
+    ret a
+
+fun foo(a: System::Int): System::Int
+    ret a
+
+fun foo(s: System::String): System::String
+    ret s
+
+fun main(): System::Int
+    ret foo(1)
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+
+    def test_overload_resolution_class(self):
+        # Three class-method overloads: foo(Int,Int), foo(Int), foo(String).
+        # Calling inst.foo(1) must resolve to the single-Int overload.
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class MyClass()
+    fun foo(a: System::Int, b: System::Int): System::Int
+        ret a
+    fun foo(a: System::Int): System::Int
+        ret a
+    fun foo(s: System::String): System::String
+        ret s
+
+let inst: MyClass = MyClass()
+
+fun main(): System::Int
+    ret inst.foo(1)
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+
+    def test_overload_resolution_trait(self):
+        # Trait overloads: foo(TVal,TVal) and foo(TVal) in Fooable<TVal>, plus foo(String) in FooStr.
+        # All three are in scope via `where Fooable<System::Int> | FooStr`.
+        # Calling foo(1) must resolve to the single-Int overload.
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+interface Fooable<TVal>
+    fun foo(a: TVal, b: TVal): TVal
+    fun foo(a: TVal): TVal
+
+interface FooStr
+    fun foo(s: System::String): System::String
+
+class FooInt() : Fooable<System::Int>
+    fun foo(a: System::Int, b: System::Int): System::Int
+        ret a
+    fun foo(a: System::Int): System::Int
+        ret a
+
+class FooStrImpl() : FooStr
+    fun foo(s: System::String): System::String
+        ret s
+
+let [trait] _foo_int: FooInt = FooInt()
+let [trait] _foo_str: FooStrImpl = FooStrImpl()
+
+fun testIt(x: System::Int): System::Int where Fooable<System::Int> | FooStr
+    ret foo(1)
+
+fun main(): System::Int
+    ret testIt(1)
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+
     def test_trait_result_passed_to_typed_function(self):
         # A trait method returns TVal; at check time the return type is unresolved
         # (NamedSpec("TVal")) in the calling context. Passing it to a function that
