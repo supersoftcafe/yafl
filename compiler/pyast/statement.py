@@ -486,9 +486,9 @@ class LetStatement(DataStatement):
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
-        if dt is None and dv is not None:
+        if (dt is None or isinstance(dt, t.NamedSpec)) and dv is not None:
             inferred = dv.get_type(resolver)
-            if inferred is not None:
+            if inferred is not None and not isinstance(inferred, t.NamedSpec):
                 dt = inferred
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
         return stmt, dv_glb+dt_glb

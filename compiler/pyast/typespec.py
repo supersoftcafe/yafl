@@ -54,8 +54,12 @@ class TypeSpec:
 def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, right: TypeSpec | None) -> bool | None:
     if left is None or right is None:
         return None
-    result = left.trivially_assignable_from(resolver, right)
-    return result
+    # In yafl, a 1-tuple is equivalent to its element (recursively)
+    while isinstance(right, TupleSpec) and len(right.entries) == 1 and right.entries[0].type is not None:
+        right = right.entries[0].type
+    while isinstance(left, TupleSpec) and len(left.entries) == 1 and left.entries[0].type is not None:
+        left = left.entries[0].type
+    return left.trivially_assignable_from(resolver, right)
 
 
 @dataclass(frozen=True)

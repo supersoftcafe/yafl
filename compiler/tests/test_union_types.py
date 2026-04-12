@@ -291,6 +291,79 @@ fun main(): Int
         code, _ = _compile_and_run(src)
         self.assertEqual(9, code)
 
+    def test_else_arm_taken(self):
+        """() else arm executes when no typed arm matches — None input to String|None."""
+        src = _PREAMBLE_ADD + """\
+fun classify(x: String|None): Int
+    ret match(x)
+        (s: String) => 2
+        () => 7
+
+fun main(): Int
+    ret classify(None)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(7, code)
+
+    def test_else_arm_not_taken_when_typed_arm_matches(self):
+        """() else arm is skipped when an earlier typed arm matches — String input."""
+        src = _PREAMBLE_ADD + """\
+fun classify(x: String|None): Int
+    ret match(x)
+        (s: String) => 2
+        () => 7
+
+fun main(): Int
+    ret classify("hello")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(2, code)
+
+    def test_three_variant_string_arm(self):
+        """Three-variant union String|Int|None, String input dispatches to String arm."""
+        src = _PREAMBLE_ADD + """\
+fun classify(x: String|Int|None): Int
+    ret match(x)
+        (s: String) => 1
+        (n: Int) => 2
+        (x: None) => 3
+
+fun main(): Int
+    ret classify("hello")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(1, code)
+
+    def test_three_variant_int_arm(self):
+        """Three-variant union String|Int|None, Int input dispatches to Int arm."""
+        src = _PREAMBLE_ADD + """\
+fun classify(x: String|Int|None): Int
+    ret match(x)
+        (s: String) => 1
+        (n: Int) => 2
+        (x: None) => 3
+
+fun main(): Int
+    ret classify(42)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(2, code)
+
+    def test_three_variant_none_arm(self):
+        """Three-variant union String|Int|None, None input dispatches to None arm."""
+        src = _PREAMBLE_ADD + """\
+fun classify(x: String|Int|None): Int
+    ret match(x)
+        (s: String) => 1
+        (n: Int) => 2
+        (x: None) => 3
+
+fun main(): Int
+    ret classify(None)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(3, code)
+
 
 # ---------------------------------------------------------------------------
 # Negative: type-checker must reject these programs
@@ -642,3 +715,32 @@ fun main():System::Int
 """
         code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", code)
+
+    def test_match_on_returned_union_typed_arm(self):
+        """match directly on a call that returns Int|None; typed arm taken and bound
+        variable returned as exit code."""
+        src = _PREAMBLE_ADD + """\
+fun returnsInt(): Int|None
+    ret 5
+
+fun main(): Int
+    ret match(returnsInt())
+        (x: Int) => x
+        () => 9
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(5, code)
+
+    def test_match_on_returned_union_else_arm(self):
+        """match directly on a call that returns Int|None; else arm taken when None."""
+        src = _PREAMBLE_ADD + """\
+fun returnsNone(): Int|None
+    ret None
+
+fun main(): Int
+    ret match(returnsNone())
+        (x: Int) => x
+        () => 9
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(9, code)

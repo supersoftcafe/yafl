@@ -199,4 +199,95 @@ fun main(): System::Int
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
         self.assertNotEqual("", result)
 
+    def test_two_concrete_instantiations(self):
+        # wrap<Int> and wrap<String> are both called; monomorphization must create two
+        # distinct specialisations and route trait dispatch correctly for each.
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+interface Identity<TVal>
+    fun id(x: TVal): TVal
+
+class IdInt() : Identity<System::Int>
+    fun id(x: System::Int): System::Int
+        ret x
+
+class IdStr() : Identity<System::String>
+    fun id(x: System::String): System::String
+        ret x
+
+let [trait] _id_int: IdInt = IdInt()
+let [trait] _id_str: IdStr = IdStr()
+
+fun wrap<TVal>(x: TVal): TVal where Identity<TVal>
+    ret id(x)
+
+fun main(): System::Int
+    let a = wrap<System::Int>(42)
+    let b = wrap<System::String>("hello")
+    ret a
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+
+    def test_multiple_where_constraints_both_used(self):
+        # A generic with two where constraints; both trait methods are used in the body.
+        # Verifies __resolve_trait_references routes each operator to the right provider
+        # when two different trait scopes are active simultaneously.
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+interface Add<TVal>
+    fun `+`(l: TVal, r: TVal): TVal
+
+interface Mul<TVal>
+    fun `*`(l: TVal, r: TVal): TVal
+
+class AddInt() : Add<System::Int>
+    fun `+`(l: System::Int, r: System::Int): System::Int
+        ret __builtin_op__<bigint>("integer_add", l, r)
+
+class MulInt() : Mul<System::Int>
+    fun `*`(l: System::Int, r: System::Int): System::Int
+        ret __builtin_op__<bigint>("integer_mul", l, r)
+
+let [trait] _add_int: AddInt = AddInt()
+let [trait] _mul_int: MulInt = MulInt()
+
+fun compute<TVal>(a: TVal, b: TVal): TVal where Add<TVal> | Mul<TVal>
+    ret a + (b * b)
+
+fun main(): System::Int
+    ret compute<System::Int>(1, 3)
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False)
+        self.assertNotEqual("", result)
+
+    def test_generic_in_default_namespace(self):
+        # Both the generic function and its caller are in the default (Main::) namespace
+        # rather than a named namespace.  This exercises the compiler.py fix that adds the
+        # caller's own namespace prefix to the resolver scopes so that sibling functions
+        # are accessible by bare name during compilation.
+        content = """\
+import System
+
+interface Add<TVal>
+    fun `+`(l: TVal, r: TVal): TVal
+
+class AddInt() : Add<System::Int>
+    fun `+`(l: System::Int, r: System::Int): System::Int
+        ret __builtin_op__<bigint>("integer_add", l, r)
+
+let [trait] _add_int: AddInt = AddInt()
+
+fun add<TVal>(l: TVal, r: TVal): TVal where Add<TVal>
+    ret l + r
+
+fun main(): System::Int
+    ret add<System::Int>(3, 4)
+"""
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+
 
