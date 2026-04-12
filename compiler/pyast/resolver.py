@@ -168,7 +168,7 @@ class AddScopeResolution(Resolver):
             if "::" in name or "@" in name:
                 return [name]
             else:
-                return [f"{scope}::{name}" for scope in self.__scopes]
+                return [name] + [f"{scope}::{name}" for scope in self.__scopes]
         result = set(new_name for name in names for new_name in expand_names(name))
         return result
 

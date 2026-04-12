@@ -181,9 +181,9 @@ EXPORT int string_compare(object_t* self, object_t* data) {
 }
 
 
-EXPORT object_t* print_string(object_t* self) {
+EXPORT object_t* print_string(object_t* self, object_t* data) {
     intptr_t buf; int32_t len;
-    char* cstr = _string_to_cstr(self, &buf, &len);
+    char* cstr = _string_to_cstr(data, &buf, &len);
     int32_t result = (int32_t)fwrite(cstr, 1, len, stdout);
     return integer_create_from_int32(result);
 }

@@ -38,36 +38,40 @@ static object_t* _io_fopen(object_t* path, const char* mode) {
 }
 
 
-EXPORT object_t* io_stdin(void* self) {
+EXPORT object_t* io_stdin(object_t* self) {
     return _io_wrap(stdin, false);
 }
 
-EXPORT object_t* io_stdout(void* self) {
+EXPORT object_t* io_stdout(object_t* self) {
     return _io_wrap(stdout, false);
 }
 
-EXPORT object_t* io_stderr(void* self) {
+EXPORT object_t* io_stderr(object_t* self) {
     return _io_wrap(stderr, false);
 }
 
-EXPORT object_t* io_create(void* self, object_t* path) {
+EXPORT object_t* io_create(object_t* self, object_t* path) {
     return _io_fopen(path, "w");
 }
 
-EXPORT object_t* io_open_read(void* self, object_t* path) {
+EXPORT object_t* io_open_read(object_t* self, object_t* path) {
     return _io_fopen(path, "r");
 }
 
-EXPORT object_t* io_open_write(void* self, object_t* path, bool truncate) {
+EXPORT object_t* io_open_write(object_t* self, object_t* path, bool truncate) {
     return _io_fopen(path, truncate ? "w" : "a");
 }
 
-EXPORT object_t* io_read(void* self, int32_t length) {
+EXPORT object_t* io_read(object_t* self, object_t* o_length) {
     io_t* io = (io_t*)self;
     if (io->file == NULL)
         return NULL;
-    if (length <= 0 || length > INT32_MAX - 1)
+
+    int overflow = 0;
+    int32_t length = integer_to_int32_with_overflow(o_length, &overflow);
+    if (overflow || length <= 0 || length > INT32_MAX - 1)
         return integer_create_from_int32(-EINVAL);
+
     if (length <= 32) {
         uint8_t buf[32];
         int32_t n = (int32_t)fread(buf, 1, length, io->file);
@@ -87,7 +91,7 @@ EXPORT object_t* io_read(void* self, int32_t length) {
     }
 }
 
-EXPORT object_t* io_write(void* self, object_t* data) {
+EXPORT object_t* io_write(object_t* self, object_t* data) {
     io_t* io = (io_t*)self;
     if (io->file == NULL)
         return NULL;
@@ -108,7 +112,7 @@ EXPORT object_t* io_write(void* self, object_t* data) {
     return integer_create_from_int32(n);
 }
 
-EXPORT object_t* io_close(void* self) {
+EXPORT object_t* io_close(object_t* self) {
     io_t* io = (io_t*)self;
     if (io->owned && io->file != NULL)
         fclose(io->file);

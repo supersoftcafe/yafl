@@ -1,15 +1,15 @@
 
 #include "test_framework.h"
 #include <stdio.h>
-EXTERN object_t* io_stdin (void* self);
-EXTERN object_t* io_stdout(void* self);
-EXTERN object_t* io_stderr(void* self);
-EXTERN object_t* io_create    (void* self, object_t* path);
-EXTERN object_t* io_open_read (void* self, object_t* path);
-EXTERN object_t* io_open_write(void* self, object_t* path, bool truncate);
-EXTERN object_t* io_read (void* self, int32_t length);
-EXTERN object_t* io_write(void* self, object_t* data);
-EXTERN object_t* io_close(void* self);
+EXTERN object_t* io_stdin (object_t* self);
+EXTERN object_t* io_stdout(object_t* self);
+EXTERN object_t* io_stderr(object_t* self);
+EXTERN object_t* io_create    (object_t* self, object_t* path);
+EXTERN object_t* io_open_read (object_t* self, object_t* path);
+EXTERN object_t* io_open_write(object_t* self, object_t* path, bool truncate);
+EXTERN object_t* io_read (object_t* self, object_t* length);
+EXTERN object_t* io_write(object_t* self, object_t* data);
+EXTERN object_t* io_close(object_t* self);
 
 static object_t* TMP_PATH;
 
@@ -121,14 +121,14 @@ TEST_END()
 
 TEST(read_bad_length_zero_returns_neg_int)
     object_t* io = io_create(NULL, TMP_PATH);
-    object_t* r = io_read(io, 0);
+    object_t* r = io_read(io, integer_create_from_int32(0));
     ASSERT_IS_NEG_INT(r);
     io_close(io);
 TEST_END()
 
 TEST(read_bad_length_negative_returns_neg_int)
     object_t* io = io_create(NULL, TMP_PATH);
-    object_t* r = io_read(io, -1);
+    object_t* r = io_read(io, integer_create_from_int32(-1));
     ASSERT_IS_NEG_INT(r);
     io_close(io);
 TEST_END()
@@ -136,7 +136,7 @@ TEST_END()
 TEST(read_closed_returns_null)
     object_t* io = io_create(NULL, TMP_PATH);
     io_close(io);
-    object_t* r = io_read(io, 16);
+    object_t* r = io_read(io, integer_create_from_int32(16));
     ASSERT(r == NULL);
 TEST_END()
 
@@ -144,7 +144,7 @@ TEST(read_eof_returns_null)
     object_t* w = io_create(NULL, TMP_PATH);
     io_close(w);
     object_t* io = io_open_read(NULL, TMP_PATH);
-    object_t* r = io_read(io, 16);
+    object_t* r = io_read(io, integer_create_from_int32(16));
     ASSERT(r == NULL);
     io_close(io);
 TEST_END()
@@ -157,7 +157,7 @@ TEST(write_read_roundtrip)
     io_close(w);
 
     object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, 11);
+    object_t* data = io_read(r, integer_create_from_int32(11));
     ASSERT_STR_EQ(data, "hello world");
     io_close(r);
 TEST_END()
@@ -168,11 +168,11 @@ TEST(read_partial_then_rest)
     io_close(w);
 
     object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* part1 = io_read(r, 5);
+    object_t* part1 = io_read(r, integer_create_from_int32(5));
     ASSERT_STR_EQ(part1, "hello");
-    object_t* part2 = io_read(r, 6);
+    object_t* part2 = io_read(r, integer_create_from_int32(6));
     ASSERT_STR_EQ(part2, " world");
-    object_t* eof = io_read(r, 16);
+    object_t* eof = io_read(r, integer_create_from_int32(16));
     ASSERT(eof == NULL);
     io_close(r);
 TEST_END()
@@ -187,7 +187,7 @@ TEST(write_append_roundtrip)
     io_close(a);
 
     object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, 11);
+    object_t* data = io_read(r, integer_create_from_int32(11));
     ASSERT_STR_EQ(data, "hello world");
     io_close(r);
 TEST_END()
@@ -202,7 +202,7 @@ TEST(write_truncate_clears_content)
     io_close(t);
 
     object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, 64);
+    object_t* data = io_read(r, integer_create_from_int32(64));
     ASSERT_STR_EQ(data, "hi");
     io_close(r);
 TEST_END()
@@ -218,7 +218,7 @@ TEST(read_large_allocation_path)
     io_close(w);
 
     object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, 40);
+    object_t* data = io_read(r, integer_create_from_int32(40));
     ASSERT(data != NULL);
     ASSERT_EQ_I32(string_length(data), 40);
     ASSERT_STR_EQ(data, payload);
@@ -233,9 +233,9 @@ TEST(read_exact_file_size)
     io_close(w);
 
     object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, 5);
+    object_t* data = io_read(r, integer_create_from_int32(5));
     ASSERT_STR_EQ(data, "hello");
-    object_t* eof = io_read(r, 5);
+    object_t* eof = io_read(r, integer_create_from_int32(5));
     ASSERT(eof == NULL);
     io_close(r);
 TEST_END()
@@ -268,8 +268,8 @@ TEST(read_closed_returns_null_twice)
     /* Repeated reads on a closed file both return NULL without crashing. */
     object_t* io = io_create(NULL, TMP_PATH);
     io_close(io);
-    ASSERT(io_read(io, 16) == NULL);
-    ASSERT(io_read(io, 16) == NULL);
+    ASSERT(io_read(io, integer_create_from_int32(16)) == NULL);
+    ASSERT(io_read(io, integer_create_from_int32(16)) == NULL);
 TEST_END()
 
 /* ---- entrypoint ---- */

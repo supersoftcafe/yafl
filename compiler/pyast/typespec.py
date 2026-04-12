@@ -276,7 +276,8 @@ class NamedSpec(TypeSpec):
                     return xtype.type, []
                 return self, [] # No change because target isn't a concrete type yet
             elif isinstance(xtype, s.ClassStatement):
-                return ClassSpec(self.line_ref, xtype.name, self.type_params), []
+                compiled_type_params = tuple(tp.compile(resolver)[0] for tp in self.type_params)
+                return ClassSpec(self.line_ref, xtype.name, compiled_type_params), []
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:

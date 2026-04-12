@@ -254,6 +254,31 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         # Find the concrete method on the provider class by simple name
         simple = g.simple_name(thing.name)
         method_datas = provider_class.find_data(r, {simple})
+        if not method_datas:
+            return thing
+
+        if len(method_datas) > 1:
+            # Multiple overloads — disambiguate by comparing the concrete type of
+            # the interface method (looked up by exact hash) against class methods.
+            iface_classes = r.find_type({trait_spec.name})
+            if len(iface_classes) == 1 and isinstance(iface_classes[0].statement, s.ClassStatement):
+                iface_cls = iface_classes[0].statement
+                iface_mds = iface_cls.find_data(r, {thing.name})
+                if len(iface_mds) == 1 and isinstance(iface_mds[0].statement, s.FunctionStatement):
+                    iface_type = iface_mds[0].statement.get_type()
+                    if iface_type is not None:
+                        if iface_cls.type_params and trait_spec.type_params:
+                            mapping = {p.name: c for p, c in zip(iface_cls.type_params, trait_spec.type_params)}
+                            def sub(_, node, m=mapping):
+                                if isinstance(node, t.GenericPlaceholderSpec) and node.name in m:
+                                    return m[node.name]
+                                return node
+                            iface_type = iface_type.search_and_replace(r, sub)
+                        matching = [md for md in method_datas
+                                    if t.trivially_assignable_equals(r, iface_type, md.statement.get_type())]
+                        if len(matching) == 1:
+                            method_datas = matching
+
         if len(method_datas) != 1:
             return thing
 

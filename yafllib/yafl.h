@@ -572,7 +572,7 @@ EXTERN object_t* string_append(object_t* self, object_t* data);
 EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
 EXTERN int       string_compare(object_t* self, object_t* data);
 EXTERN object_t* wchar_to_string(object_t* integer);
-EXTERN object_t* print_string(object_t* self);
+EXTERN object_t* print_string(object_t* self, object_t* data);
 
 
 /**********************************************************
@@ -587,14 +587,14 @@ EXTERN object_t* print_string(object_t* self);
  *****************************
  **********************************************************/
 
-EXPORT object_t* io_stdin (void* self);
-EXPORT object_t* io_stdout(void* self);
-EXPORT object_t* io_stderr(void* self);
-EXPORT object_t* io_create    (void* self, object_t* path);
-EXPORT object_t* io_open_read (void* self, object_t* path);
-EXPORT object_t* io_open_write(void* self, object_t* path, bool truncate);
-EXPORT object_t* io_read (void* self, int32_t length);
-EXPORT object_t* io_write(void* self, object_t* data);
-EXPORT object_t* io_close(void* self);
+EXPORT object_t* io_stdin (object_t* self);
+EXPORT object_t* io_stdout(object_t* self);
+EXPORT object_t* io_stderr(object_t* self);
+EXPORT object_t* io_create    (object_t* self, object_t* path);
+EXPORT object_t* io_open_read (object_t* self, object_t* path);
+EXPORT object_t* io_open_write(object_t* self, object_t* path, bool truncate);
+EXPORT object_t* io_read (object_t* self, object_t* length);
+EXPORT object_t* io_write(object_t* self, object_t* data);
+EXPORT object_t* io_close(object_t* self);
 
 

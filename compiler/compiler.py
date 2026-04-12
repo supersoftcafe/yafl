@@ -174,7 +174,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
 
 def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
     if isinstance(stmt, s.NamedStatement):
-        glb = g.AddScopeResolution(glb, stmt.imports)
+        import_scopes = set(x.path for x in stmt.imports.imports) if stmt.imports else set()
+        own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
+        if own_ns:
+            import_scopes.add(own_ns)
+        glb = g.AddScopeResolution(glb, import_scopes)
     result, extras = stmt.compile(glb, expected_type)
     result = [result] + extras
     if not isinstance(result, list):

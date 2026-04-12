@@ -43,6 +43,10 @@ Unix like OSs                           |   Microsoft Windows
 cmake --preset debug-unix               |   cmake --preset debug-windows
 cmake --build --preset debug-unix       |   cmake --build --preset debug-windows
 sudo cmake --install build/debug-unix   |   cmake --install build\debug-windows
+
+or
+
+cmake --preset debug-unix && cmake --build --preset debug-unix && sudo cmake --install build/debug-unix
 ```
 
 On Unix like OSs you may have to set the library path in order to run the resulting executables like so:
