@@ -97,16 +97,86 @@ class MatchExpression(e.Expression):
         subj_type = self.subject.get_type(resolver)
         if subj_type is None:
             return []  # Not ready
-        if isinstance(subj_type, t.EnumSpec):
-            errors = []
-            for arm in self.arms:
-                errors += arm.check(resolver, expected_type)
-            return errors
-        if not isinstance(subj_type, t.CombinationSpec):
+        if not isinstance(subj_type, (t.EnumSpec, t.CombinationSpec)):
             return [Error(self.line_ref, "match subject must be a union type")]
         errors = []
         for arm in self.arms:
             errors += arm.check(resolver, expected_type)
+        if subj_type.is_concrete():
+            errors += self.__check_exhaustiveness(subj_type)
+        return errors
+
+    def __check_exhaustiveness(self, subj_type: t.TypeSpec) -> list:
+        """Emit errors for non-exhaustive match and unreachable arms."""
+        errors: list = []
+
+        if isinstance(subj_type, t.EnumSpec):
+            remaining = set(subj_type.valid_leaf_names)
+            missing_name = lambda names: " | ".join(sorted(names))
+        else:
+            assert isinstance(subj_type, t.CombinationSpec)
+            remaining = {}  # id -> printable name
+            for v in subj_type.types:
+                uid = v.as_unique_id_str()
+                if uid is None:
+                    return []  # Subject not yet fully resolved
+                remaining[uid] = getattr(v, "name", uid)
+            missing_name = lambda ids: " | ".join(remaining_for_err[i] for i in ids)
+            remaining_for_err = dict(remaining)  # snapshot for error message
+
+        else_seen = False
+
+        def arm_covered_ids(arm_type: t.TypeSpec) -> set[str]:
+            """IDs covered by this arm's type_spec, for CombinationSpec subjects."""
+            if isinstance(arm_type, t.CombinationSpec):
+                out: set[str] = set()
+                for member in arm_type.types:
+                    out |= arm_covered_ids(member)
+                return out
+            uid = arm_type.as_unique_id_str()
+            return {uid} if uid else set()
+
+        for arm in self.arms:
+            if else_seen:
+                errors.append(Error(arm.line_ref, "unreachable arm: follows an else arm"))
+                continue
+
+            if arm.type_spec is None:
+                # else arm
+                if not remaining:
+                    errors.append(Error(arm.line_ref,
+                        "unreachable else arm: all variants already covered"))
+                else:
+                    if isinstance(remaining, set):
+                        remaining = set()
+                    else:
+                        remaining = {}
+                    else_seen = True
+                continue
+
+            if isinstance(subj_type, t.EnumSpec):
+                if not isinstance(arm.type_spec, t.EnumSpec):
+                    continue  # handled by other checks
+                covers = arm.type_spec.valid_leaf_names & remaining
+                if not covers:
+                    errors.append(Error(arm.line_ref,
+                        f"unreachable arm: leaves already covered"))
+                else:
+                    remaining -= covers
+            else:
+                arm_ids = arm_covered_ids(arm.type_spec)
+                covers = arm_ids & remaining.keys()
+                if not covers:
+                    errors.append(Error(arm.line_ref,
+                        f"unreachable arm: variant not in match subject or already covered"))
+                else:
+                    for k in covers:
+                        del remaining[k]
+
+        if not else_seen and remaining:
+            errors.append(Error(self.line_ref,
+                f"non-exhaustive match; missing: {missing_name(remaining)}"))
+
         return errors
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:

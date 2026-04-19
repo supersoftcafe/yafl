@@ -606,6 +606,75 @@ fun main(): Int
         code, _ = _compile_and_run(src)
         self.assertEqual(3, code)
 
+    def test_exhaustive_both_arms_compiles(self):
+        """match covering both variants of String|None compiles."""
+        src = _PREAMBLE_ADD + """\
+fun f(x: String|None): Int
+    ret match(x)
+        (s: String) => 1
+        (n: None)   => 0
+
+fun main(): Int
+    ret f(\"hi\")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(1, code)
+
+    def test_exhaustive_else_only_compiles(self):
+        """match with only an else arm compiles."""
+        src = _PREAMBLE_ADD + """\
+fun f(x: String|None): Int
+    ret match(x)
+        () => 3
+
+fun main(): Int
+    ret f(\"hi\")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(3, code)
+
+    def test_non_exhaustive_errors(self):
+        """match that omits a variant and has no else arm is a compile error."""
+        src = _PREAMBLE_ADD + """\
+fun f(x: String|None): Int
+    ret match(x)
+        (s: String) => 1
+
+fun main(): Int
+    ret f(\"hi\")
+"""
+        result = _compile(src)
+        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+
+    def test_unreachable_after_else_errors(self):
+        """An arm that comes after an else arm is flagged unreachable."""
+        src = _PREAMBLE_ADD + """\
+fun f(x: String|None): Int
+    ret match(x)
+        () => 3
+        (s: String) => 1
+
+fun main(): Int
+    ret f(\"hi\")
+"""
+        result = _compile(src)
+        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+
+    def test_duplicate_variant_arm_errors(self):
+        """Covering the same variant twice is flagged unreachable."""
+        src = _PREAMBLE_ADD + """\
+fun f(x: String|None): Int
+    ret match(x)
+        (s: String) => 1
+        (s: String) => 2
+        (n: None)   => 0
+
+fun main(): Int
+    ret f(\"hi\")
+"""
+        result = _compile(src)
+        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+
     def test_none_variant_dispatch(self):
         """Boxing None into (String|None,Int)|None; outer match dispatches to None arm."""
         src = _PREAMBLE_ADD + """\

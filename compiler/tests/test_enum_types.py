@@ -398,3 +398,109 @@ fun handle(x: IOError|String|None): Int
 fun main(): Int
   ret 0
 """)
+
+
+# ---------------------------------------------------------------------------
+# Exhaustiveness / unreachable checks
+# ---------------------------------------------------------------------------
+
+class TestEnumMatchExhaustiveness(TestCase):
+
+    def test_all_leaves_covered_compiles(self):
+        """Match covering every enum leaf compiles."""
+        _clang_check(_PREAMBLE + """\
+enum Colour(code: Int)
+  enum Red()
+  enum Green()
+  enum Blue()
+
+fun f(c: Colour): Int
+  ret match(c)
+    (r: Red)   => 1
+    (g: Green) => 2
+    (b: Blue)  => 3
+
+fun main(): Int
+  let c: Colour = Red(0)
+  ret f(c)
+""")
+
+    def test_missing_leaf_errors(self):
+        """Omitting one leaf with no else is a compile error."""
+        src = _PREAMBLE + """\
+enum Colour(code: Int)
+  enum Red()
+  enum Green()
+  enum Blue()
+
+fun f(c: Colour): Int
+  ret match(c)
+    (r: Red)   => 1
+    (g: Green) => 2
+
+fun main(): Int
+  let c: Colour = Red(0)
+  ret f(c)
+"""
+        result = _compile(src)
+        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+
+    def test_partial_plus_else_compiles(self):
+        """Covering two leaves plus an else arm compiles."""
+        _clang_check(_PREAMBLE + """\
+enum Colour(code: Int)
+  enum Red()
+  enum Green()
+  enum Blue()
+
+fun f(c: Colour): Int
+  ret match(c)
+    (r: Red)   => 1
+    (g: Green) => 2
+    ()         => 9
+
+fun main(): Int
+  let c: Colour = Red(0)
+  ret f(c)
+""")
+
+    def test_parent_level_arm_covers_subtree_compiles(self):
+        """A non-leaf arm covers its descendant leaves."""
+        _clang_check(_PREAMBLE + """\
+enum Shape(code: Int)
+  enum Round()
+    enum Circle()
+    enum Ellipse()
+  enum Square()
+
+fun f(s: Shape): Int
+  ret match(s)
+    (r: Round)  => 1
+    (q: Square) => 2
+
+fun main(): Int
+  let s: Shape = Circle(0)
+  ret f(s)
+""")
+
+    def test_redundant_leaf_after_parent_errors(self):
+        """A leaf arm after a parent that already covers it is unreachable."""
+        src = _PREAMBLE + """\
+enum Shape(code: Int)
+  enum Round()
+    enum Circle()
+    enum Ellipse()
+  enum Square()
+
+fun f(s: Shape): Int
+  ret match(s)
+    (r: Round)   => 1
+    (q: Square)  => 2
+    (c: Circle)  => 3
+
+fun main(): Int
+  let s: Shape = Circle(0)
+  ret f(s)
+"""
+        result = _compile(src)
+        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
