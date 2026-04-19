@@ -1,11 +1,22 @@
 """Tests for hierarchical enum types."""
 from __future__ import annotations
 
+import contextlib
+import io
 import subprocess
 from unittest import TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run
+
+
+def _compile_capturing_errors(source: str) -> tuple[str, str]:
+    """Run compile() and capture stdout (where compile() prints errors).
+    Returns (result, stdout_text)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = c.compile([c.Input(source, "test.yafl")], use_stdlib=False, just_testing=False)
+    return result, buf.getvalue()
 
 
 _PREAMBLE = """\
@@ -442,8 +453,12 @@ fun main(): Int
   let c: Colour = Red(0)
   ret f(c)
 """
-        result = _compile(src)
-        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("non-exhaustive", errors,
+            f"expected 'non-exhaustive' in errors, got: {errors!r}")
+        self.assertIn("Blue", errors,
+            f"expected missing leaf 'Blue' to appear in error, got: {errors!r}")
 
     def test_partial_plus_else_compiles(self):
         """Covering two leaves plus an else arm compiles."""
@@ -502,5 +517,7 @@ fun main(): Int
   let s: Shape = Circle(0)
   ret f(s)
 """
-        result = _compile(src)
-        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("unreachable", errors,
+            f"expected 'unreachable' in errors, got: {errors!r}")

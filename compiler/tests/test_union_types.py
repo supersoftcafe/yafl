@@ -1,6 +1,8 @@
 """Tests for union (CombinationSpec) types: type-checking, binary output, and negative cases."""
 from __future__ import annotations
 
+import contextlib
+import io
 import subprocess
 from unittest import TestCase
 
@@ -19,6 +21,15 @@ let None:None = ()
 
 def _compile(source: str) -> str:
     return c.compile([c.Input(source, "test.yafl")], use_stdlib=False, just_testing=False)
+
+
+def _compile_capturing_errors(source: str) -> tuple[str, str]:
+    """Run compile() and capture stdout (which is where compile() prints errors).
+    Returns (result, stdout_text)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = c.compile([c.Input(source, "test.yafl")], use_stdlib=False, just_testing=False)
+    return result, buf.getvalue()
 
 
 def _compile_and_clang_check(source: str) -> None:
@@ -643,8 +654,10 @@ fun f(x: String|None): Int
 fun main(): Int
     ret f(\"hi\")
 """
-        result = _compile(src)
-        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("non-exhaustive", errors,
+            f"expected 'non-exhaustive' in errors, got: {errors!r}")
 
     def test_unreachable_after_else_errors(self):
         """An arm that comes after an else arm is flagged unreachable."""
@@ -657,8 +670,12 @@ fun f(x: String|None): Int
 fun main(): Int
     ret f(\"hi\")
 """
-        result = _compile(src)
-        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("unreachable", errors,
+            f"expected 'unreachable' in errors, got: {errors!r}")
+        self.assertIn("follows an else", errors,
+            f"expected specific unreachable reason, got: {errors!r}")
 
     def test_duplicate_variant_arm_errors(self):
         """Covering the same variant twice is flagged unreachable."""
@@ -672,8 +689,10 @@ fun f(x: String|None): Int
 fun main(): Int
     ret f(\"hi\")
 """
-        result = _compile(src)
-        self.assertEqual("", result, f"expected compile failure, got: {result!r}")
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("unreachable", errors,
+            f"expected 'unreachable' in errors, got: {errors!r}")
 
     def test_none_variant_dispatch(self):
         """Boxing None into (String|None,Int)|None; outer match dispatches to None arm."""
