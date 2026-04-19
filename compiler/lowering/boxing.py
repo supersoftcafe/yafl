@@ -196,6 +196,21 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
         if actual_type is None:
             return expr
 
+    # Lambda: when passed to a call site whose declared callable has a
+    # wider return type than the lambda's body produces, box the body
+    # against that wider return type. Without this, `(x) => (io, s)` in
+    # an arg slot declared `(:IO, :T): (io: IO, v: T|IOError)` loses the
+    # widening to `String|IOError` and the call check rejects it.
+    if isinstance(expr, e.LambdaExpression) and isinstance(expected_type, t.CallableSpec):
+        nested_resolver = g.ResolverData(resolver, expr._LambdaExpression__find_locals)
+        new_body = __box_expr(expr.expression, expected_type.result, nested_resolver)
+        if new_body is not expr.expression:
+            # Keep the lambda's return_type but widen via the new body; if
+            # no return_type was declared, carry the expected_type forward.
+            new_return_type = expr.return_type if expr.return_type is not None else expected_type
+            return dataclasses.replace(expr, expression=new_body, return_type=new_return_type)
+        return expr
+
     if isinstance(expected_type, t.TupleSpec):
         if isinstance(expr, e.TupleExpression) and isinstance(actual_type, t.TupleSpec):
             return __box_tuple_field_widen(expr, actual_type, expected_type, resolver)

@@ -241,7 +241,14 @@ class ResolverData(Resolver):
         return self.__parent.find_type(names)
 
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(names) + self.__find(names)
+        # Lexical shadowing: a name bound at this scope hides the same name
+        # in any enclosing scope. Without this, a lambda parameter named `io`
+        # inside a function with a parameter also named `io` triggers an
+        # ambiguity error ("Resolved too many io") instead of shadowing.
+        own = self.__find(names)
+        if own:
+            return own
+        return self.__parent.find_data(names)
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()

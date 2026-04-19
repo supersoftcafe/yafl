@@ -310,6 +310,88 @@ class GenericPlaceholderSpec(TypeSpec):
     # which is where mappings like GenericPlaceholderSpec -> concrete type are applied.
 
 
+def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
+                  placeholder_names: set[str],
+                  mapping: dict[str, "TypeSpec"] | None = None) -> dict[str, "TypeSpec"] | None:
+    """Match a generic type tree against a concrete type tree; return a
+    {placeholder_name: concrete_type} mapping, or None if they don't unify.
+
+    Only recognises placeholders whose name appears in `placeholder_names`.
+    Unknown / unresolved branches are skipped (return the current mapping
+    unchanged) — the caller should treat a partial mapping as a failure if
+    every placeholder must be resolved.
+    """
+    if mapping is None:
+        mapping = {}
+
+    if isinstance(generic, GenericPlaceholderSpec) and generic.name in placeholder_names:
+        # Don't let a placeholder bind to itself (or to any other placeholder):
+        # the concrete side is not concrete enough to pin down.
+        if isinstance(concrete, GenericPlaceholderSpec):
+            return mapping
+        existing = mapping.get(generic.name)
+        if existing is None:
+            mapping[generic.name] = concrete
+            return mapping
+        if existing == concrete:
+            return mapping
+        return None  # conflicting bindings
+
+    # Same concrete leaf types — nothing to infer, but compatible.
+    if isinstance(generic, BuiltinSpec) and isinstance(concrete, BuiltinSpec):
+        return mapping if generic.type_name == concrete.type_name else None
+
+    if isinstance(generic, ClassSpec) and isinstance(concrete, ClassSpec):
+        if generic.name != concrete.name:
+            return mapping  # can't unify further, accept what we have
+        if len(generic.type_params) != len(concrete.type_params):
+            return mapping
+        m: dict[str, TypeSpec] | None = mapping
+        for gp, cp in zip(generic.type_params, concrete.type_params):
+            m = unify_generic(gp, cp, placeholder_names, m)
+            if m is None:
+                return None
+        return m
+
+    if isinstance(generic, TupleSpec) and isinstance(concrete, TupleSpec):
+        if len(generic.entries) != len(concrete.entries):
+            return mapping
+        m = mapping
+        for ge, ce in zip(generic.entries, concrete.entries):
+            if ge.type is None or ce.type is None:
+                continue
+            m = unify_generic(ge.type, ce.type, placeholder_names, m)
+            if m is None:
+                return None
+        return m
+
+    if isinstance(generic, CombinationSpec) and isinstance(concrete, CombinationSpec):
+        # Align by position; this is a weak match but works for the common
+        # case where the union variants appear in the same order.
+        if len(generic.types) != len(concrete.types):
+            return mapping
+        m = mapping
+        for gv, cv in zip(generic.types, concrete.types):
+            m = unify_generic(gv, cv, placeholder_names, m)
+            if m is None:
+                return None
+        return m
+
+    if isinstance(generic, CallableSpec) and isinstance(concrete, CallableSpec):
+        m = unify_generic(generic.parameters, concrete.parameters, placeholder_names, mapping)
+        if m is None:
+            return None
+        if generic.result is not None and concrete.result is not None:
+            m = unify_generic(generic.result, concrete.result, placeholder_names, m)
+            if m is None:
+                return None
+        return m
+
+    # Unknown / mismatched shapes — return current mapping unchanged rather
+    # than failing hard; the caller decides whether it's complete enough.
+    return mapping
+
+
 @dataclass(frozen=True)
 class NamedSpec(TypeSpec):
     name: str

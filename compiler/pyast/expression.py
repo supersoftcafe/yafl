@@ -408,20 +408,57 @@ class NamedExpression(Expression):
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         if self.name == 'this':
             pass
-        if '@' in self.name:
-            return self, [] # Early exit because we previously succeeded
-        datas_full_list = resolver.find_data({self.name})
-        datas = _reduce_list(resolver, expected_type, datas_full_list)
-        if len(datas) != 1:
-            return self, [] # Early exit because we didn't find a unique candidate
-        data = datas[0]
-        if data.scope == g.ResolvedScope.MEMBER:
-            this = NamedExpression(self.line_ref, "this")
-            dot = DotExpression(self.line_ref, this, data.unique_name)
-            return dot, []
-        type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in self.type_params)
-        trait_scope = data.trait_scope if data.scope == g.ResolvedScope.TRAIT and isinstance(data.trait_scope, t.ClassSpec) else None
-        return dataclasses.replace(self, name=data.unique_name, type_params=tuple(type_params), resolved_trait_scope=trait_scope), new_statements
+        # Resolve the statement this name refers to. Once the name is fully
+        # qualified (@-hash) we skip the ambiguity check but still run the
+        # generic-inference step below, because the argument types feeding
+        # inference may only become known on a later iteration of the
+        # compile loop.
+        datas = resolver.find_data({self.name})
+        if '@' not in self.name:
+            datas = _reduce_list(resolver, expected_type, datas)
+            if len(datas) != 1:
+                return self, [] # didn't find a unique candidate
+            data = datas[0]
+            if data.scope == g.ResolvedScope.MEMBER:
+                this = NamedExpression(self.line_ref, "this")
+                dot = DotExpression(self.line_ref, this, data.unique_name)
+                return dot, []
+            new_name = data.unique_name
+            trait_scope = (data.trait_scope
+                           if data.scope == g.ResolvedScope.TRAIT
+                           and isinstance(data.trait_scope, t.ClassSpec)
+                           else None)
+        else:
+            if len(datas) != 1:
+                return self, []
+            data = datas[0]
+            new_name = self.name
+            trait_scope = self.resolved_trait_scope
+
+        # Generic type-parameter inference: if the resolved statement has
+        # type_params and the call site supplied none, try to match the
+        # statement's declared signature against the expected_type from the
+        # enclosing CallExpression to fill them in.
+        type_params_to_compile: tuple[t.TypeSpec, ...] = self.type_params
+        stmt = data.statement
+        stmt_type_params = getattr(stmt, "type_params", None) or ()
+        if (not self.type_params
+                and stmt_type_params
+                and isinstance(expected_type, t.CallableSpec)):
+            placeholder_names = {tp.name for tp in stmt_type_params}
+            declared = stmt.get_type() if hasattr(stmt, "get_type") else None
+            if isinstance(declared, t.CallableSpec):
+                mapping = t.unify_generic(declared.parameters, expected_type.parameters, placeholder_names)
+                if (mapping is not None
+                        and declared.result is not None
+                        and expected_type.result is not None):
+                    mapping = t.unify_generic(declared.result, expected_type.result,
+                                              placeholder_names, mapping)
+                if mapping is not None and all(p.name in mapping for p in stmt_type_params):
+                    type_params_to_compile = tuple(mapping[p.name] for p in stmt_type_params)
+
+        type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in type_params_to_compile)
+        return dataclasses.replace(self, name=new_name, type_params=tuple(type_params), resolved_trait_scope=trait_scope), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
@@ -581,9 +618,19 @@ class LambdaExpression(Expression):
         sub_expected_type = expected_type.result if isinstance(expected_type, t.CallableSpec) else None
         new_xpr, new_xpr_glb = self.expression.compile(resolver, sub_expected_type)
 
-        # Calculate the return type from parameter types and expression
-        new_sub_expected_type = new_xpr.get_type(resolver)
-        new_ret = t.CallableSpec(self.line_ref, self.parameters.get_type(), new_sub_expected_type)
+        # Calculate the return type. Prefer the expected result type from the
+        # enclosing call site — that way a lambda whose body is narrower than
+        # the declared parameter widens via boxing, and the call's parameter
+        # check sees matching types.
+        body_type = new_xpr.get_type(resolver)
+        if (sub_expected_type is not None
+                and body_type is not None
+                and sub_expected_type.is_concrete()
+                and sub_expected_type.trivially_assignable_from(resolver, body_type) is True):
+            new_ret_result = sub_expected_type
+        else:
+            new_ret_result = body_type
+        new_ret = t.CallableSpec(self.line_ref, self.parameters.get_type(), new_ret_result)
 
         return dataclasses.replace(
             self, parameters=new_prm, expression=new_xpr,

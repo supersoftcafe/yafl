@@ -113,12 +113,15 @@ class MatchExpression(e.Expression):
         is_primitive_subject = (isinstance(subj_type, t.BuiltinSpec)
                                 and subj_type.type_name in ("bigint", "str"))
 
-        if has_literal and not is_primitive_subject:
+        # Subjects with literal arms must contain at least one primitive
+        # variant (Int or String) that the literal values can match.
+        if has_literal and not (is_primitive_subject or self.__subject_has_primitive(subj_type)):
             return [Error(self.line_ref,
-                "literal match arms require a primitive (Int or String) subject")]
+                "literal match arms require a subject with a primitive (Int or String) variant")]
 
         if not has_literal and not isinstance(subj_type, (t.EnumSpec, t.CombinationSpec)):
-            return [Error(self.line_ref, "match subject must be a union type")]
+            return [Error(self.line_ref, "match subject must be a union type"
+                          + ", or use literal patterns on an Int/String subject")]
 
         errors = []
         for arm in self.arms:
@@ -128,6 +131,14 @@ class MatchExpression(e.Expression):
         elif subj_type.is_concrete():
             errors += self.__check_exhaustiveness(subj_type, resolver)
         return errors
+
+    @staticmethod
+    def __subject_has_primitive(subj_type: t.TypeSpec) -> bool:
+        """True if subj_type is a union containing a primitive (bigint/str)."""
+        if isinstance(subj_type, t.CombinationSpec):
+            return any(isinstance(v, t.BuiltinSpec) and v.type_name in ("bigint", "str")
+                       for v in subj_type.types)
+        return False
 
     def __check_literal_arms(self, subj_type: t.BuiltinSpec) -> list:
         """Check literal arms: each literal's type matches subject; no duplicates;
@@ -226,6 +237,13 @@ class MatchExpression(e.Expression):
         for arm in self.arms:
             if else_seen:
                 errors.append(Error(arm.line_ref, "unreachable arm: follows an else arm"))
+                continue
+
+            # Literal arms narrow a primitive variant but can't cover it —
+            # `remaining` is unchanged. Treat them as always reachable; a
+            # literal against a subject lacking that primitive variant is
+            # already rejected by check().
+            if arm.literal is not None:
                 continue
 
             if arm.type_spec is None:
@@ -424,30 +442,38 @@ class MatchExpression(e.Expression):
         subj_has_none = any(v.generate() == unit_type for v in subj_type.types)
 
         null_arm = None
-        typed_tests: list[tuple] = []   # [(arm, is_instance RParam, suffix)]
-        foreign_fallback = None
         else_arm = None
+        foreign_fallback = None
+        # arm_steps preserves source order, emits interleaved with typed tests.
+        # Each entry: ("literal", arm) | ("typed", arm, test_expr, suffix)
+        arm_steps: list[tuple] = []
         for arm in self.arms:
+            if arm.literal is not None:
+                arm_steps.append(("literal", arm))
+                continue
             if arm.type_spec is None:
                 else_arm = arm
                 continue
             arm_ctype = arm.type_spec.generate()
             if arm_ctype == unit_type:
                 null_arm = arm
-            elif isinstance(arm_ctype, cg_t.Int) and arm_ctype.precision == 0:
-                typed_tests.append(
-                    (arm, cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE"), "int"))
+                continue
+            if isinstance(arm_ctype, cg_t.Int) and arm_ctype.precision == 0:
+                arm_steps.append(
+                    ("typed", arm,
+                     cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE"), "int"))
             elif isinstance(arm_ctype, cg_t.Str):
-                typed_tests.append(
-                    (arm, cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE"), "str"))
+                arm_steps.append(
+                    ("typed", arm,
+                     cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE"), "str"))
             elif isinstance(arm.type_spec, t.ClassSpec):
                 if self.__class_is_foreign(resolver, arm.type_spec.name):
                     foreign_fallback = arm
                 else:
-                    typed_tests.append(
-                        (arm,
+                    arm_steps.append(
+                        ("typed", arm,
                          cg_p.ObjVtableEq(sv, class_name=arm.type_spec.name),
-                         f"cls{len(typed_tests)}"))
+                         f"cls{len(arm_steps)}"))
 
         null_target = null_arm if null_arm is not None else (else_arm if subj_has_none else None)
         final_fallback = foreign_fallback if foreign_fallback is not None else else_arm
@@ -455,11 +481,14 @@ class MatchExpression(e.Expression):
         bundles: list = [subj_bundle]
         next_counter = [0]
 
-        def emit_test(target_arm, test_expr, suffix: str) -> None:
+        def emit_test(target_arm, test_expr, suffix: str,
+                      extra_bundles_before_test=()) -> None:
             idx = next_counter[0]
             next_counter[0] = idx + 1
             arm_label = f"match_{suffix}_{idx}"
             next_label = f"match_next_{idx}"
+            for eb in extra_bundles_before_test:
+                bundles.append(eb)
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
@@ -469,8 +498,47 @@ class MatchExpression(e.Expression):
 
         if null_target is not None:
             emit_test(null_target, cg_p.IntEqConst(sv, 0), "null")
-        for arm, test_expr, suffix in typed_tests:
-            emit_test(arm, test_expr, suffix)
+        for step in arm_steps:
+            if step[0] == "typed":
+                _, arm, test_expr, suffix = step
+                emit_test(arm, test_expr, suffix)
+            else:
+                _, arm = step
+                lit = arm.literal
+                idx = next_counter[0]
+                next_counter[0] = idx + 1
+                lit_bundle = lit.generate(resolver).rename_vars(f"lit{idx}")
+                arm_label  = f"match_lit_{idx}"
+                next_label = f"match_next_{idx}"
+                check_label = f"match_litchk_{idx}"
+                # Dispatch on the generated C type of the literal value, not
+                # the parse-time AST class — earlier passes rewrite string and
+                # integer literals into NamedExpression references to globals.
+                lit_ctype = lit_bundle.result_var.get_type()
+                if isinstance(lit_ctype, cg_t.Str):
+                    guard = cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
+                    args  = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
+                    cmp   = cg_p.Invoke("string_compare", args, cg_t.Int(32))
+                    test_expr = cg_p.IntEqConst(cmp, 0)
+                elif isinstance(lit_ctype, cg_t.Int) and lit_ctype.precision == 0:
+                    guard = cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
+                    args  = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
+                    test_expr = cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
+                else:
+                    continue  # unreachable — check() already validated
+                bundles.append(lit_bundle)
+                # if (is_primitive) goto check_label; else goto next_label
+                bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(check_label, guard),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Label(check_label),)))
+                # if (value == literal) goto arm_label; else goto next_label
+                bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
+                self.__emit_pointer_arm_body(arm, sv, resolver, f"lit{idx}", result_var, bundles)
+                bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+
         if final_fallback is not None:
             self.__emit_pointer_arm_body(final_fallback, sv, resolver, "fb",
                                          result_var, bundles)
@@ -514,7 +582,10 @@ class MatchExpression(e.Expression):
             bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"{suffix}_"))
 
     def __gen_tagged_match(self, resolver, subj_bundle, subj_type, container, result_var, discriminators):
-        """UnionContainer union: compare $tag for each arm."""
+        """UnionContainer union: compare $tag for each typed arm; for literal
+        arms, first test the $tag matches the variant the literal belongs to,
+        then extract the primitive from its slot and compare to the literal
+        value."""
         sv         = subj_bundle.result_var
         tag_field  = cg_p.StructField(sv, "$tag")
         stack_vars = (result_var,) if result_var else ()
@@ -525,13 +596,69 @@ class MatchExpression(e.Expression):
         slot_fields = container.slots
 
         bundles  = [subj_bundle]
-        else_arm = next((arm for arm in self.arms if arm.type_spec is None), None)
+        else_arm = next((arm for arm in self.arms
+                         if arm.type_spec is None and arm.literal is None), None)
 
-        for i, arm in enumerate([arm for arm in self.arms if arm.type_spec is not None]):
+        # For literal arms, find the variant that holds the matching primitive
+        # so we can extract sv.$s{slot} and compare. bigint → Int variant,
+        # str → Str variant.
+        def primitive_variant_info(lit_ctype):
+            for vi, vt in enumerate(variant_types):
+                if (isinstance(lit_ctype, cg_t.Int) and lit_ctype.precision == 0
+                        and isinstance(vt, cg_t.Int) and vt.precision == 0):
+                    return vi, vt
+                if isinstance(lit_ctype, cg_t.Str) and isinstance(vt, cg_t.Str):
+                    return vi, vt
+            return None, None
+
+        arm_index = 0
+        for arm in self.arms:
+            if arm.type_spec is None and arm.literal is None:
+                continue  # else arm handled after the loop
+
+            arm_label  = f"match_arm_{arm_index}"
+            next_label = f"match_next_{arm_index}"
+
+            if arm.literal is not None:
+                lit_bundle = arm.literal.generate(resolver).rename_vars(f"lit{arm_index}")
+                lit_ctype = lit_bundle.result_var.get_type()
+                var_idx, _ = primitive_variant_info(lit_ctype)
+                if var_idx is None:
+                    arm_index += 1
+                    continue  # check() prevents this; skip to be safe
+                tag_value = discriminators.get(subj_type.types[var_idx].as_unique_id_str(), 0)
+                # Extract the primitive from its slot.
+                si, _orig = variant_map[var_idx][0]
+                slot_val = cg_p.StructField(sv, slot_fields[si][0])
+                check_label = f"match_litchk_{arm_index}"
+                bundles.append(lit_bundle)
+                # Tag guard: only proceed if $tag selects the primitive variant.
+                bundles.append(g.OperationBundle(operations=(
+                    cg_o.JumpIf(check_label, cg_p.IntEqConst(tag_field, tag_value)),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Label(check_label),)))
+                # Value test.
+                args = cg_p.NewStruct((("a", slot_val), ("b", lit_bundle.result_var)))
+                if isinstance(lit_ctype, cg_t.Str):
+                    cmp = cg_p.Invoke("string_compare", args, cg_t.Int(32))
+                    test_expr = cg_p.IntEqConst(cmp, 0)
+                else:
+                    test_expr = cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
+                bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
+                arm_local = []
+                self.__emit_arm_body(arm, resolver, f"lit{arm_index}", result_var, arm_local)
+                if arm_local:
+                    bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"lit{arm_index}_"))
+                bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+                bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+                arm_index += 1
+                continue
+
+            # Typed arm — original path.
             arm_ctype  = arm.type_spec.generate()
             tag_value  = discriminators.get(arm.type_spec.as_unique_id_str(), 0)
-            arm_label  = f"match_arm_{i}"
-            next_label = f"match_next_{i}"
 
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, cg_p.IntEqConst(tag_field, tag_value)),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
@@ -545,11 +672,12 @@ class MatchExpression(e.Expression):
                     arm_resolver = self.__bind_arm_var(
                         arm, arm_ctype, variant_map[var_idx], slot_fields, sv, resolver, arm_local)
 
-            self.__emit_arm_body(arm, arm_resolver, f"a{i}", result_var, arm_local)
+            self.__emit_arm_body(arm, arm_resolver, f"a{arm_index}", result_var, arm_local)
             if arm_local:
-                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{i}_"))
+                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{arm_index}_"))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+            arm_index += 1
 
         if else_arm:
             else_local = []

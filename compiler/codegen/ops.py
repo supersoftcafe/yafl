@@ -186,6 +186,11 @@ class SwitchJump(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         cond  = self.condition.to_c(type_cache)
         cases = "\n".join(f"        case {v}: goto {lbl};" for v, lbl in self.cases)
+        # Default aborts: idx==0 must never reach this dispatch (heap memory
+        # is zero-initialised, so idx==0 would be uninitialised state). Every
+        # valid resume point must have a case; anything else is a compiler
+        # bug that we want to fail fast on. Cases that need to fall through
+        # to the next instruction emit `case V: break;` explicitly.
         return f"    switch ({cond}) {{\n{cases}\n        default: abort();\n    }}\n"
 
 

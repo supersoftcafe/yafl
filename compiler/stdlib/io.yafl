@@ -65,6 +65,25 @@ class [final] IO(_io: _IO)
       (c: Int)          => _close_result(c)
       (n: System::None) => None
 
+  # Read one byte at a time, stop at '\n', skip '\r', accumulate other bytes.
+  # EOF with some bytes already read returns those bytes as a successful
+  # partial line; EOF before any bytes propagates EOFError.
+  fun readLine(): (io: IO, v: String|IOError)
+    ret _read_line_loop(this, "")
+
+
+fun _read_line_loop(io: IO, acc: String): (io: IO, v: String|IOError)
+  let r = io.read(1)
+  ret match(r.v)
+    ("\n") => (r.io, acc)
+    ("\r") => _read_line_loop(r.io, acc)
+    (s: String) => _read_line_loop(r.io, acc + s)
+    (e: IOError) => match(e)
+      (eof: EOFError) => match(acc)
+        ("") => (r.io, e)
+        (x)  => (r.io, acc)
+      ()              => (r.io, e)
+
 
 fun _write_result(io: IO, n: Int): (io: IO, v: Int|IOError)
   let err: IOError = _error_from_code(n)

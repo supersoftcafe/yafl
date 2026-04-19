@@ -345,7 +345,8 @@ def __create_hot_path_func(fn: Function, state_name: str,
             task_source=task_ptr,
             task_lhs=__sv_async_task,
             call_id_lhs=__sv_call_id,
-            call_id=i,
+            call_id=i + 1,     # 1-based: idx==0 must never reach dispatch
+                               # (zero-init heap means uninitialised state)
             target="$asynccommon"))
 
         # Sync path: unwrap primitive if needed
@@ -464,20 +465,12 @@ def __create_state_machine_func(fn: Function, state_name: str,
     cold_ops: list[Op] = []
     sm_wrap_fields: list[tuple[str, Type]] = []
 
-    # ── Dispatch: switch on idx; cases 1..N-1 jump to their resume point;
-    #    idx==0 falls through to the extract-and-resume block below. ──────────
-    if n > 1:
-        sm_ops.append(SwitchJump(idx_field, tuple((i, f"$case${i}") for i in range(1, n))))
+    # ── Dispatch: switch on idx (1-based); every valid resume has a case
+    #    mapped to a label in dispatch_ops; idx==0 (uninitialised state) and
+    #    any out-of-range value hit the default abort. ──────────────────────
+    sm_ops.append(SwitchJump(idx_field, tuple((i + 1, f"$case${i + 1}") for i in range(n))))
 
-    # ── idx == 0: extract r0, fall through to resume$0 ──────────────────────
-    bb0 = non_terminal[0]
-    if bb0.result is not None and isinstance(bb0.result, StackVar):
-        callee_task_name = __task_subtype_name(bb0.result.get_type())
-        extract = __extract_from_task(__completed_param_var, bb0.result.get_type(),
-                                       callee_task_name)
-        sm_ops.append(Move(vars_to_fields[bb0.result], extract))
-
-    sm_ops.append(Label(f"$resume$0"))  # resume point for idx==0
+    sm_ops.append(Label(f"$resume$0"))  # resume point for first-call completion
 
     # ── Body: bb[1]..bb[N-1] ops, with StackVar → state field substitution ──
     for i in range(1, n):
@@ -519,7 +512,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
                 sm_ops.append(Move(orig_state_field, StructField(sv_wrapped, "value")))
 
             cold_ops.append(Label(async_sm_label))
-            cold_ops.append(Move(idx_field, Integer(i, 32)))
+            cold_ops.append(Move(idx_field, Integer(i + 1, 32)))   # 1-based
             task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
             untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
             callback = GlobalFunction(f"{fn.name}$async", __state_param_var)
@@ -551,11 +544,13 @@ def __create_state_machine_func(fn: Function, state_name: str,
             final_ops.append(op)
     sm_ops.extend(final_ops)
 
-    # ── Dispatch targets for idx 1..N-1 (at tail, after cold blocks) ─────────
+    # ── Dispatch targets for idx 1..N (at tail, after cold blocks). Case
+    #    (i+1) handles completion of non_terminal[i]'s call: extract that
+    #    call's result from the completed task, then jump to $resume$i.
     dispatch_ops: list[Op] = []
-    for i in range(1, n):
+    for i in range(n):
         bb = non_terminal[i]
-        dispatch_ops.append(Label(f"$case${i}"))
+        dispatch_ops.append(Label(f"$case${i + 1}"))
         if bb.result is not None and isinstance(bb.result, StackVar):
             callee_task_name = __task_subtype_name(bb.result.get_type())
             extract = __extract_from_task(__completed_param_var, bb.result.get_type(),
@@ -592,8 +587,19 @@ def __convert_function_to_task_convention(
     if fn.name == "__entrypoint__":
         return {fn.name: fn}, {}
 
-    # Sync functions never suspend: no state machine, no return-type wrapping.
+    # Sync functions never suspend, so they need no state machine — but they
+    # can still be invoked through a fun_t that expects the wrapped return
+    # convention (e.g. a lambda passed to a generic `?>`). Wrap the return
+    # type so the calling convention matches, and skip body CPS conversion.
     if fn.sync:
+        wrapped = __wrap_return_type(fn.result)
+        if isinstance(wrapped, TaskWrapper):
+            new_ops = tuple(
+                Return(SyncWrap(op.value, wrapped)) if isinstance(op, Return) else op
+                for op in fn.ops
+            )
+            simple = dataclasses.replace(fn, result=wrapped, ops=new_ops)
+            return {simple.name: simple}, {}
         return {fn.name: fn}, {}
 
     after_tail = __discover_tail_calls(fn)

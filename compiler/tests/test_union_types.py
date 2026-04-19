@@ -1145,16 +1145,47 @@ fun main(): Int
         self.assertIn("literal value already matched", errors,
             f"expected specific reason, got: {errors!r}")
 
-    def test_literal_on_union_subject_rejected(self):
-        """Literal arms on a union subject are rejected in phase 1."""
+    def test_literal_arm_on_union_matches(self):
+        """A string literal arm on a String|None union matches the literal
+        value; non-matching strings fall through to a typed or else arm."""
         src = self._PROLOGUE + """\
 fun f(x: String|None): Int
+    ret match(x)
+        ("hi") => 1
+        (s: String) => 2
+        (n: None)   => 0
+
+fun main(): Int
+    ret f("hi")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(1, code)
+
+    def test_literal_arm_on_union_falls_through(self):
+        """A non-matching string routes to the typed arm, not the literal arm."""
+        src = self._PROLOGUE + """\
+fun f(x: String|None): Int
+    ret match(x)
+        ("hi") => 1
+        (s: String) => 2
+        (n: None)   => 0
+
+fun main(): Int
+    ret f("bye")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(2, code)
+
+    def test_literal_arm_on_union_without_primitive_variant_rejected(self):
+        """Literal arms require at least one primitive variant in the subject."""
+        src = self._PROLOGUE + """\
+fun f(x: Int32|None): Int
     ret match(x)
         ("hi") => 1
         ()     => 0
 
 fun main(): Int
-    ret f("hi")
+    ret f(None)
 """
         result, errors = _compile_capturing_errors(src)
         self.assertEqual("", result)

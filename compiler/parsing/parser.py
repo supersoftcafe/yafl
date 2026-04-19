@@ -44,6 +44,31 @@ def __float() -> p.Parser[e.Expression]:
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
+_STRING_ESCAPES = {
+    'n': '\n', 'r': '\r', 't': '\t', '0': '\0',
+    '\\': '\\', '"': '"',
+}
+
+def _unescape_string(raw: str) -> tuple[str, str | None]:
+    """Decode yafl string escapes. Returns (decoded, error) — error is None on success."""
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        c = raw[i]
+        if c != '\\':
+            out.append(c)
+            i += 1
+            continue
+        if i + 1 >= len(raw):
+            return "", "dangling backslash in string literal"
+        nxt = raw[i+1]
+        if nxt not in _STRING_ESCAPES:
+            return "", f"unknown string escape: \\{nxt}"
+        out.append(_STRING_ESCAPES[nxt])
+        i += 2
+    return "".join(out), None
+
+
 def __string() -> p.Parser[e.Expression]:
     def _p(tokens: list[p.Token]) -> p.Result[e.StringExpression]:
         match tokens:
@@ -51,8 +76,10 @@ def __string() -> p.Parser[e.Expression]:
                 value = head.value
                 if not value.endswith('"'):
                     return p.Result.error("string missing quote", tail, head.line_ref)
-                # TODO: Process quotes
-                return p.Result.ok(e.StringExpression(head.line_ref, value[1:len(value)-1]), tail, head.line_ref)
+                decoded, err = _unescape_string(value[1:len(value)-1])
+                if err is not None:
+                    return p.Result.error(err, tail, head.line_ref)
+                return p.Result.ok(e.StringExpression(head.line_ref, decoded), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
