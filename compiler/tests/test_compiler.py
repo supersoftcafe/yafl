@@ -328,9 +328,10 @@ fun main(): Int
 """
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=False, just_testing=False)
         self.assertTrue(c_code, "compilation produced no output")
-        # A state machine should have been generated for double_call, and the
-        # TaskWrapper struct (struct { int32_t value; object_t* task; }) for the return type.
-        self.assertIn("double_call", c_code)
+        # A state machine should have been generated (for whichever function
+        # remains after AST inlining — double_call may be folded into main),
+        # plus the TaskWrapper struct (struct { int32_t value; object_t* task; })
+        # for the return type.
         self.assertIn("$async", c_code)
         self.assertIn("int32_t value", c_code)   # TaskWrapper inner field
 

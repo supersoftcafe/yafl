@@ -119,9 +119,9 @@ fun create(path: String): IO|IOError
 # successful (io, v), otherwise propagates the error with the same io handle.
 # IO-specific for now; a generic bind over any monad is deferred per TODO.md.
 
-fun `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
-                    f: (:IO, :TIn): (io: IO, v: TOut|IOError)):
-                    (io: IO, v: TOut|IOError)
+fun [inline] `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
+                             f: (:IO, :TIn): (io: IO, v: TOut|IOError)):
+                             (io: IO, v: TOut|IOError)
   ret match(pair.v)
     (x: TIn)     => f(pair.io, x)
     (e: IOError) => (pair.io, e)
