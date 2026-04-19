@@ -35,7 +35,7 @@ enum IOError(code: Int)
   enum InvalidArgError()
   enum UnknownIOError()
 
-fun _error_from_code(code: Int): IOError where BasicMath<Int>
+fun _error_from_code(code: Int): IOError
   ret code = -2  ? FileNotFoundError(code)
     : code = -13 ? PermissionDeniedError(code)
     : code = -21 ? IsDirectoryError(code)
@@ -63,10 +63,10 @@ class [final] IO(_io: _IO)
     ret _close_result(_io._close())
 
 
-fun _write_result(io: IO, n: Int): (io: IO, v: Int|IOError) where BasicMath<Int>
+fun _write_result(io: IO, n: Int): (io: IO, v: Int|IOError)
   ret n < 0 ? (io, _error_from_code(n)) : (io, n)
 
-fun _close_result(n: Int): IOError|None where BasicMath<Int>
+fun _close_result(n: Int): IOError|None
   ret n < 0 ? _error_from_code(n) : None
 
 

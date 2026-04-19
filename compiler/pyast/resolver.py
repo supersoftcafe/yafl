@@ -109,7 +109,7 @@ class Resolver:
     def get_traits(self) -> list[s.LetStatement]:
         return []
 
-    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         return []
 
     def get_discriminators(self) -> dict[str, int]:
@@ -160,10 +160,13 @@ class ResolverRoot(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__traits
 
-    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        if not scopes:
+            return []
         return [st.type for st in self.__statements
                 if isinstance(st, s.TypeAliasStatement) and 'where' in st.attributes
-                and isinstance(st.type, t.ClassSpec) and st.type.is_concrete()]
+                and isinstance(st.type, t.ClassSpec) and st.type.is_concrete()
+                and st.name.rpartition('::')[0] in scopes]
 
 
 class AddScopeResolution(Resolver):
@@ -194,8 +197,9 @@ class AddScopeResolution(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
-    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs()
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        merged = self.__scopes if scopes is None else (self.__scopes | scopes)
+        return self.__parent.get_implicit_where_specs(merged)
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__parent.get_discriminators()
@@ -218,8 +222,8 @@ class ResolverType(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
-    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs()
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs(scopes)
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__parent.get_discriminators()
@@ -242,8 +246,8 @@ class ResolverData(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
-    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs()
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs(scopes)
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__parent.get_discriminators()
@@ -266,8 +270,8 @@ class ResolverDiscriminators(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
-    def get_implicit_where_specs(self) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs()
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs(scopes)
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__discriminators

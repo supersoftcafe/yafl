@@ -13,7 +13,7 @@ class _BasicPlusString() : BasicPlus<String>
 fun Char(int: System::Int): System::String
   ret __builtin_op__<str>("wchar_to_string", int)
 
-fun String(int: System::Int): System::String where BasicMath<System::Int> | BasicPlus<System::String>
-  ret int < 0 ? "-" + String(0-int)
+fun String(int: System::Int): System::String
+  ret int < 0 ? "-" + String(-int)
     : int > 9 ? String(int / 10) + Char(48 + int % 10)
     :           Char(48 + int)

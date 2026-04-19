@@ -174,13 +174,18 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     return a.gen(just_testing=just_testing)
 
 
-def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
+def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
     if isinstance(stmt, s.NamedStatement):
         import_scopes = set(x.path for x in stmt.imports.imports) if stmt.imports else set()
         own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
         if own_ns:
             import_scopes.add(own_ns)
-        glb = g.AddScopeResolution(glb, import_scopes)
+        return g.AddScopeResolution(glb, import_scopes)
+    return glb
+
+
+def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
+    glb = __stmt_scope_resolver(stmt, glb)
     result, extras = stmt.compile(glb, expected_type)
     result = [result] + extras
     if not isinstance(result, list):
@@ -222,7 +227,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
 
     mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
-    new_errors = [x for stmt in new_statements for x in stmt.check(resolver, None)]
+    new_errors = [x for stmt in new_statements for x in stmt.check(__stmt_scope_resolver(stmt, resolver), None)]
     if not mains:
         new_errors += [Error(LineRef("none", 0, 0), "No main function found")]
     elif len(mains) > 1:
