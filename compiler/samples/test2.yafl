@@ -5,11 +5,11 @@ import System::IO
 
 class Container(a: String, b: String, c: String)
 
-fun testIO(io: IO): (IO,Container|IOError)
+fun testIO(io: IO): (io: IO, v: Container|IOError)
   ret io.read(10) ?> (io: IO, a: String) =>
       io.read(12) ?> (io: IO, b: String) =>
       io.read(16) ?> (io: IO, c: String) =>
-      (io, Container(a, b, c))
+      (io=io, v=Container(a, b, c))
 
 fun main(): System::Int where BasicMath<System::Int>
   testIO(stdin())

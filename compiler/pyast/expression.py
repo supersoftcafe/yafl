@@ -499,6 +499,18 @@ class IntegerExpression(Expression):
 
 
 @dataclass
+class FloatExpression(Expression):
+    value: float
+    precision: int = 0
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        return self, []
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return []
+
+
+@dataclass
 class BuiltinOpExpression(Expression):
     type: t.BuiltinSpec
     op: StringExpression

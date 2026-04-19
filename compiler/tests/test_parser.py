@@ -107,6 +107,32 @@ class Test(TestCase):
         result = p.parse_expression(tokens)
         self.assertIsInstance(result.value, e.StringExpression)
 
+    def test_negative_integer_literal_folds(self):
+        """`-2` parses as a negative IntegerExpression, not a call to `-`."""
+        result = p.parse_expression(tokenize("-2", "file"))
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(-2, result.value.value)
+
+    def test_negative_sized_integer_literal_folds(self):
+        """`-1i32` keeps its precision and folds the sign into the literal."""
+        result = p.parse_expression(tokenize("-1i32", "file"))
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(-1, result.value.value)
+        self.assertEqual(32, result.value.precision)
+
+    def test_negate_non_literal_stays_a_call(self):
+        """`-x` where `x` is a name still lowers to a call to `-`."""
+        result = p.parse_expression(tokenize("-x", "file"))
+        self.assertIsInstance(result.value, e.CallExpression)
+        self.assertIsInstance(result.value.function, e.NamedExpression)
+        self.assertEqual("`-`", result.value.function.name)
+
+    def test_negative_float_literal_folds(self):
+        """`-3.14` parses as a negative FloatExpression, not a call to `-`."""
+        result = p.parse_expression(tokenize("-3.14", "file"))
+        self.assertIsInstance(result.value, e.FloatExpression)
+        self.assertEqual(-3.14, result.value.value)
+
     def test_binop(self):
         tokens = tokenize("__builtin_op__<int32>(\"add\", 1i32, 2i32)", "file")
         result = p.parse_expression(tokens)

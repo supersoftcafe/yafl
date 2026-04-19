@@ -134,6 +134,9 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
 
 def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
     expr = result.value
+    if isinstance(expr, (e.IntegerExpression, e.FloatExpression)):
+        folded = dataclasses.replace(expr, value=-expr.value)
+        return p.Result(folded, result.tokens, result.line_ref, result.errors)
     line = result.line_ref
     negated = e.CallExpression(line,
         e.NamedExpression(line, "`-`"),
