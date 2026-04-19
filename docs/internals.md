@@ -1,8 +1,8 @@
-YAFL
-====
+# Internals
 
-High priority
--------------
+> **Note:** This document contains in-progress design notes and is not intended as user-facing documentation. Content may be incomplete or subject to change.
+
+## High priority
 
 * Command line to build with option to generate assembly
 * Remove all word size knowledge from python
@@ -11,8 +11,7 @@ High priority
 * Add async support through libuv (or self build, idk). First example is 'sleep'
 * Compiler does linking as well
 
-Medium priority
----------------
+## Medium priority
 
 * Reserve and use a bit to mark non-gc managed objects
 * Async
@@ -32,16 +31,14 @@ Medium priority
   * Do CPS conversion
   * De-duplicate classes, because CPS will create some duplicates
 
-Low priority
-------------
+## Low priority
 
-* Support for tagged unions at codegen level. 
+* Support for tagged unions at codegen level.
   * Max 256 tags + 8 bit mask for pointer locations. This puts an upper bound on union size.
   * Nested tagged unions have their mask merged into the parent mask.
 * Vtable pointer locations mask needs to be bigger and support location of tagged unions.
 
-Garbage Collector Notes
------------------------
+## Garbage Collector Notes
 
 * Bump pointers
 * Generational
@@ -57,19 +54,16 @@ Garbage Collector Notes
   * Promotion of blocks from older generation back to new generation.
   * During copying, things that mutated since last GC are copied to a different page.
     * This should help to group immutable items together.
-  * When updating pointer field, if old value is not null, mark that as seen. But only if we are in a scanning phase.  
+  * When updating pointer field, if old value is not null, mark that as seen. But only if we are in a scanning phase.
     * This will be performant for async heap frames, if initialised to null. Compiler will be able to optimise away many checks.
-
 
 **GC stages are**
 
 1. Scan roots
    * Between start and end of scanning roots all event loops must have moved forwards
-2. 
+2.
 
-
-Background
-----------
+## Background
 
 Yafl runtime is event driven with a thread per core for processing and
 another group of threads for async IO, if required. Worker threads
@@ -80,17 +74,13 @@ a few hundred milliseconds per event.
 
 Garbage collection depends upon this behaviour.
 
-
-Object header
--------------
+## Object header
 
 VTable pointer.
 Masked &1 if this is not managed by GC.
 Masked &2 if this is a forwarding pointer.
 
-
-GC scanning
-----------
+## GC scanning
 
 There are two lists of 16KiB pages, the collection set and the new
 set. The collection set
@@ -107,22 +97,15 @@ set. The collection set
    * An entire cycle of scanning results in no change, scanning is done.
 8. Completion...  next step
 
-Copying / compaction
---------------------
+## Copying / compaction
 
 1. Identify pages that will benefit from copying/compaction.
 2. Mark other pages as "target set" to avoid any copying from them.
 3. Set global flag to show that we're in the copying phase.
 4. Wait for all workers to reset flags.
-5. 
+5.
 
-
-
-
-
-
-GC Again
---------
+## GC Again
 
 A global atomic is used to control the stages of garbage collection.
 On app start up the stage is 0. This is the only time it can be 0.
@@ -141,7 +124,7 @@ This is denoted by "WAIT AND action description"
    * WAIT AND
       * scan thread local roots
       * mark local pages that are a part of this scan (including bump pointer target)
-      * reset the bump pointer to NULL 
+      * reset the bump pointer to NULL
 3. Scan global roots
    * WAIT
 4. Progressively scan all pages.
@@ -158,5 +141,3 @@ This is denoted by "WAIT AND action description"
       * Future enhancement 1, also re-use partially empty pages if there is enough contiguous space
       * Future enhancement 2, compaction,  but it needs read barriers
 7. Goto 1
-
-

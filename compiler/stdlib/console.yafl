@@ -9,3 +9,4 @@ fun [impure] print(str: System::String): System::None
 fun [impure] print(int: System::Int): System::None
     print(String(int))
     ret None
+

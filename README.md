@@ -80,5 +80,8 @@ more test.c
 # Links
 
 * [Architecture](docs/architecture.md)
-* [Heap and GC](docs/heap_and_gc.md)
+* [Language Guide](docs/guide.md)
+* [Language Reference](docs/reference.md)
+* [Roadmap](docs/roadmap.md)
+* [Internals](docs/internals.md)
 

@@ -1,3 +1,66 @@
+# Linear types and error handling
+
+Capturing a thought here. Trying to figure out what sequences of
+IO look like when combined with error handling. Below is what we
+might do without the benefit of some syntactic sugar. The issue
+we want to solve is how to capture the result of each function
+call whilst also handling errors.
+```
+class Thing(a:String,b:Int,c:String)
+class Error(message:String)
+
+fun readThing(io: IO): (IO,Thing|Error)
+  ret match(io.readLine())
+    (io2a:IO,a:String) => match(io2a.readInt())
+      (io3a:IO,b:Int) => match(io3a.readString())
+        (io4a:IO,c:String) => (io4a,Thing(a,b,c))
+        (io4b:IO,e4:Error) => (io4b,e4)
+      (io3b:IO,e3:Error) => (io3b,e3)
+    (io2b:IO,e2:Error) => (io2b,e2)
+```
+What should this look like if there is syntactic sugar. Just an
+idea.
+```
+fun readThing(io: IO): (IO,Thing|Error)
+  ret with(io)
+    let a = io.readString()
+    let b = io.readInt()
+    let c = io.readString()
+    Thing(a,b,c)
+```
+This is better! Relies on heavy inlining and some generics improvements. Change
+bind operator's associativity, so then the lambdas nest, and all the lambda params
+are available down the chain.
+```
+fun `?>`<TMonad, TValueIn, TValueOut>((monad,value):(TMonad,TValueIn|Error), transformer: (:TMonad,:TValueIn):(TMonad,TValueOut|Error)): (TMonad,TValueOut|Error)
+  ret match(value)
+    (v:TValueIn) => transformer(monad, v)
+    (e:Error) => (monad, e)
+fun readThing(io: IO): (IO,Thing|Error)
+  ret io.readString() ?> (io, a) =>
+      io.readInt()    ?> (io, b) =>
+      io.readString() ?> (io, c) =>
+      (io,Thing(a,b,c))
+```
+Each of the calls to `?>` gets inlined, and as it is inlined the lambda parameter
+becomes a forward declaration, then the next `?>` gets inlined. After the function
+calls have completed inlining (each of them being quite small) another optimizer
+phase needs to find single use functions and lambdas, and inline those. In the end
+the chained nested set of lambdas and function calls becomes flat, efficient code.
+
+This needs union types. That follows.
+
+# Union types
+
+A named type with name members that can be constructed and passed around. Match operators
+allow us to distinguish them. IOError::DoesNotExist(code, path) to construct.
+```
+union IOError(code: Int) # Parameter here is optional. If present, every variant gets this as its first parameter.
+  DoesNotExist(path: String)
+  EndOfFile()
+  etc...
+```
+
 # Notes from async model to task update
 
 Review TaskWrapper deeper

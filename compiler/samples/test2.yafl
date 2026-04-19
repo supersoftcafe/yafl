@@ -3,14 +3,16 @@ namespace Test
 import System
 import System::IO
 
-fun testIO(data: String): Int
-  let io: IO = stdout()
-  let len: Int = io.write(data)
-  io.close()
-  ret len
+class Container(a: String, b: String, c: String)
+
+fun testIO(io: IO): (IO,Container|IOError)
+  ret io.read(10) ?> (io: IO, a: String) =>
+      io.read(12) ?> (io: IO, b: String) =>
+      io.read(16) ?> (io: IO, c: String) =>
+      (io, Container(a, b, c))
 
 fun main(): System::Int where BasicMath<System::Int>
-  testIO("Fred was what\n")
+  testIO(stdin())
   System::print("Hello\n")
   System::print("Hi there\n")
   System::print("Whato\n")
