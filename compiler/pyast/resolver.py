@@ -126,6 +126,15 @@ def match_names(name: str, matches: set[str]) -> bool:
     return any(m for m in matches if m == name or name.startswith(m + '@'))
 
 
+def _find_in_enum_variants(variants: list[s.EnumStatement], names: set[str]) -> list[Resolved[s.TypeStatement]]:
+    results: list[Resolved[s.TypeStatement]] = []
+    for v in variants:
+        if match_names(v.name, names):
+            results.append(Resolved(v.name, v, ResolvedScope.GLOBAL))
+        results += _find_in_enum_variants(v.variants, names)
+    return results
+
+
 class ResolverRoot(Resolver):
     __statements: list[s.Statement]
     __traits: list[s.LetStatement]
@@ -135,9 +144,13 @@ class ResolverRoot(Resolver):
         self.__traits = [st for st in self.__statements if isinstance(st, s.LetStatement) and 'trait' in st.attributes]
 
     def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        return [Resolved(x.name, x, ResolvedScope.GLOBAL)
-                for x in self.__statements
-                if isinstance(x, s.TypeStatement) and match_names(x.name, names)]
+        results = [Resolved(x.name, x, ResolvedScope.GLOBAL)
+                   for x in self.__statements
+                   if isinstance(x, s.TypeStatement) and match_names(x.name, names)]
+        for x in self.__statements:
+            if isinstance(x, s.EnumStatement):
+                results += _find_in_enum_variants(x.variants, names)
+        return results
 
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
         return [Resolved(x.name, x, ResolvedScope.GLOBAL)

@@ -667,6 +667,87 @@ class TypeAliasStatement(TypeStatement):
 
 
 @dataclass
+class EnumStatement(TypeStatement):
+    parameters: DestructureStatement
+    variants: list[EnumStatement]
+    _root_name: str | None = field(default=None, compare=False)
+    _enum_spec: t.EnumSpec | None = field(default=None, compare=False)
+
+    def get_type(self) -> t.EnumSpec | None:
+        return self._enum_spec
+
+    def add_namespace(self, path: str):
+        new_variants = [v.add_namespace(path) for v in self.variants]
+        return dataclasses.replace(self, name=f"{path}{self.name}", variants=new_variants)
+
+    def _collect_leaf_names(self) -> list[str]:
+        if not self.variants:
+            return [self.name]
+        return [ln for v in self.variants for ln in v._collect_leaf_names()]
+
+    def _collect_data_fields(self) -> list[tuple[str, t.TypeSpec]]:
+        seen: set[str] = set()
+        result: list[tuple[str, t.TypeSpec]] = []
+        def collect(node: EnumStatement):
+            for let in node.parameters.flatten():
+                if let.name not in seen and let.declared_type is not None:
+                    seen.add(let.name)
+                    result.append((let.name, let.declared_type))
+            for v in node.variants:
+                collect(v)
+        collect(self)
+        return result
+
+    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...], all_fields: tuple[tuple[str, t.TypeSpec], ...]) -> EnumStatement:
+        my_leaves = frozenset(self._collect_leaf_names())
+        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, all_fields)
+        new_variants = [v._assign_specs(root_name, all_leaf_names, all_fields) for v in self.variants]
+        return dataclasses.replace(self, variants=new_variants, _root_name=root_name, _enum_spec=my_spec)
+
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement]]:
+        new_parameters, prm_stmts = self.parameters.compile(resolver, None)
+        new_variants: list[EnumStatement] = []
+        var_stmts: list[Statement] = []
+        for v in self.variants:
+            cv, vg = v.compile(resolver, None)
+            new_variants.append(cv)
+            var_stmts.extend(vg)
+        root_name = self.name
+        tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(self.line_ref, "int32"))
+        temp = dataclasses.replace(self, parameters=new_parameters, variants=new_variants)
+        all_leaf_names = tuple(temp._collect_leaf_names())
+        data_fields = temp._collect_data_fields()
+        all_fields = (tag_field,) + tuple(data_fields)
+        final_variants = [v._assign_specs(root_name, all_leaf_names, all_fields) for v in new_variants]
+        my_leaves = frozenset(all_leaf_names)
+        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, all_fields)
+        new_self = dataclasses.replace(self,
+            parameters=new_parameters, variants=final_variants,
+            _root_name=root_name, _enum_spec=my_spec)
+        return new_self, prm_stmts + var_stmts
+
+    def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
+        if self._enum_spec is None:
+            return [Error(self.line_ref, "Missed compile step")]
+        errors: list[Error] = list(self.parameters.check(resolver, None))
+        for v in self.variants:
+            errors += v.check(resolver, None)
+        return errors
+
+    def global_codegen(self, resolver: g.Resolver):
+        return None
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
+        new_params = cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace))
+        new_variants = [cast(EnumStatement, v.search_and_replace(resolver, replace)) for v in self.variants]
+        new_spec = self._enum_spec.search_and_replace(resolver, replace) if self._enum_spec else None
+        new_self = dataclasses.replace(self,
+            parameters=new_params, variants=new_variants,
+            _enum_spec=cast(t.EnumSpec, new_spec) if isinstance(new_spec, t.EnumSpec) else None)
+        return cast(Statement, replace(resolver, new_self))
+
+
+@dataclass
 class ActionStatement(Statement):
     action: e.Expression
 

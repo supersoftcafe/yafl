@@ -129,6 +129,8 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                     a.functions[function.name] = function
             case s.TypeAliasStatement() as t:
                 pass
+            case s.EnumStatement():
+                pass
             case _:
                 raise ValueError(f"Unexpected type {type(stmt)}")
 

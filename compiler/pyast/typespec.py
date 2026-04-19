@@ -238,6 +238,53 @@ class ClassSpec(TypeSpec):
 
 
 @dataclass(frozen=True)
+class EnumSpec(TypeSpec):
+    root_name: str
+    valid_leaf_names: frozenset[str]
+    all_leaf_names: tuple[str, ...]
+    all_fields: tuple[tuple[str, TypeSpec], ...]
+
+    def is_concrete(self) -> bool:
+        return '@' in self.root_name
+
+    def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
+        new_fields = []
+        stmts = []
+        for name, ftype in self.all_fields:
+            new_ftype, new_stmts = ftype.compile(resolver)
+            new_fields.append((name, new_ftype))
+            stmts.extend(new_stmts)
+        return dataclasses.replace(self, all_fields=tuple(new_fields)), stmts
+
+    def check(self, resolver: g.Resolver) -> list[Error]:
+        return [err for _, ftype in self.all_fields for err in ftype.check(resolver)]
+
+    def generate(self) -> cg_t.Type:
+        return cg_t.Struct(tuple((name, ftype.generate()) for name, ftype in self.all_fields))
+
+    def as_unique_id_str(self) -> str | None:
+        if '@' not in self.root_name:
+            return None
+        return f"enum({self.root_name})"
+
+    def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
+        if isinstance(right, NamedSpec):
+            return None
+        if not isinstance(right, EnumSpec):
+            return False
+        if '@' not in self.root_name or '@' not in right.root_name:
+            return None
+        if right.root_name != self.root_name:
+            return False
+        return right.valid_leaf_names <= self.valid_leaf_names
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+        new_fields = tuple((name, ftype.search_and_replace(resolver, replace)) for name, ftype in self.all_fields)
+        new_self = dataclasses.replace(self, all_fields=new_fields)
+        return langtools.cast(TypeSpec, replace(resolver, new_self))
+
+
+@dataclass(frozen=True)
 class GenericPlaceholderSpec(TypeSpec):
     name: str
 
@@ -282,6 +329,10 @@ class NamedSpec(TypeSpec):
             elif isinstance(xtype, s.ClassStatement):
                 compiled_type_params = tuple(tp.compile(resolver)[0] for tp in self.type_params)
                 return ClassSpec(self.line_ref, xtype.name, compiled_type_params), []
+            elif isinstance(xtype, s.EnumStatement):
+                if xtype._enum_spec is not None:
+                    return xtype._enum_spec, []
+                return self, []
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:

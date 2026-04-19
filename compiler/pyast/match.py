@@ -46,6 +46,10 @@ class MatchArm:
         new_type, type_stmts = self.type_spec.compile(resolver) if self.type_spec else (None, [])
         return dataclasses.replace(self, type_spec=new_type, body=new_body), body_stmts + type_stmts
 
+    def get_body_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
+        return self.body.get_type(nested_resolver)
+
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
         type_err = self.type_spec.check(resolver) if self.type_spec else []
@@ -66,14 +70,25 @@ class MatchExpression(e.Expression):
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         for arm in self.arms:
-            t_arm = arm.body.get_type(resolver)
+            t_arm = arm.get_body_type(resolver)
             if t_arm is not None:
                 return t_arm
         return None
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
         new_subject, subj_stmts = self.subject.compile(resolver, None)
-        arm_results = [arm.compile(resolver, expected_type) for arm in self.arms]
+        subj_type = new_subject.get_type(resolver)
+        arm_results = []
+        for arm in self.arms:
+            if arm.type_spec is None and arm.name and arm.name != "_" and subj_type is not None:
+                def find_else(names, a=arm, st=subj_type):
+                    if g.match_names(a.name, names):
+                        let = s.LetStatement(a.line_ref, a.name, None, {}, (), None, st)
+                        return [g.Resolved(a.name, let, g.ResolvedScope.LOCAL)]
+                    return []
+                arm_results.append(arm.compile(g.ResolverData(resolver, find_else), expected_type))
+            else:
+                arm_results.append(arm.compile(resolver, expected_type))
         new_arms = [arm for arm, _ in arm_results]
         arm_stmts = [stmt for _, stmts in arm_results for stmt in stmts]
         return dataclasses.replace(self, subject=new_subject, arms=new_arms), subj_stmts + arm_stmts
@@ -82,6 +97,11 @@ class MatchExpression(e.Expression):
         subj_type = self.subject.get_type(resolver)
         if subj_type is None:
             return []  # Not ready
+        if isinstance(subj_type, t.EnumSpec):
+            errors = []
+            for arm in self.arms:
+                errors += arm.check(resolver, expected_type)
+            return errors
         if not isinstance(subj_type, t.CombinationSpec):
             return [Error(self.line_ref, "match subject must be a union type")]
         errors = []
@@ -92,10 +112,14 @@ class MatchExpression(e.Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         subj_bundle = self.subject.generate(resolver).rename_vars("s")
         subj_type = self.subject.get_type(resolver)
-        assert isinstance(subj_type, t.CombinationSpec)
-        target_ctype = subj_type.generate()
         result_type = self.get_type(resolver)
         result_var = cg_p.StackVar(result_type.generate(), "result") if result_type else None
+
+        if isinstance(subj_type, t.EnumSpec):
+            return self.__gen_enum_match(resolver, subj_bundle, subj_type, result_var)
+
+        assert isinstance(subj_type, t.CombinationSpec)
+        target_ctype = subj_type.generate()
 
         discriminators = resolver.get_discriminators()
 
@@ -238,7 +262,80 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if else_arm:
-            self.__emit_arm_body(else_arm, resolver, "el", result_var, bundles)
+            else_local = []
+            else_resolver = resolver
+            if else_arm.name and else_arm.name != "_":
+                else_sv = cg_p.StackVar(subj_type.generate(), else_arm.name)
+                def find_else(names, arm=else_arm):
+                    if g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec or subj_type)
+                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                    return []
+                else_resolver = g.ResolverData(resolver, find_else)
+                else_local.append(g.OperationBundle(stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)))
+            self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
+            if else_local:
+                bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+
+        bundles.append(g.OperationBundle(stack_vars=stack_vars,
+                                         operations=(cg_o.Label(end_label),), result_var=result_var))
+        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+
+    def __gen_enum_match(self, resolver, subj_bundle, subj_type: t.EnumSpec, result_var):
+        """EnumSpec: compare $tag for each arm using discriminator indices from the EnumSpec."""
+        sv = subj_bundle.result_var
+        tag_sv = cg_p.StructField(sv, "$tag")
+        stack_vars = (result_var,) if result_var else ()
+        end_label = "match_end"
+        bundles = [subj_bundle]
+        else_arm = next((arm for arm in self.arms if arm.type_spec is None), None)
+
+        for i, arm in enumerate(arm for arm in self.arms if arm.type_spec is not None):
+            arm_type = arm.type_spec
+            assert isinstance(arm_type, t.EnumSpec)
+            arm_label = f"match_arm_{i}"
+            next_label = f"match_next_{i}"
+
+            for leaf_name in arm_type.valid_leaf_names:
+                leaf_idx = arm_type.all_leaf_names.index(leaf_name)
+                bundles.append(g.OperationBundle(operations=(
+                    cg_o.JumpIf(arm_label, cg_p.IntEqConst(tag_sv, leaf_idx)),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
+
+            arm_local = []
+            arm_resolver = resolver
+            if arm.name and arm.name != "_":
+                arm_sv = cg_p.StackVar(arm_type.generate(), arm.name)
+                def find_arm(names, arm=arm):
+                    if g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec)
+                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                    return []
+                arm_resolver = g.ResolverData(resolver, find_arm)
+                arm_local.append(g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, sv),)))
+
+            self.__emit_arm_body(arm, arm_resolver, f"a{i}", result_var, arm_local)
+            if arm_local:
+                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{i}_"))
+            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+
+        if else_arm:
+            else_local = []
+            else_resolver = resolver
+            if else_arm.name and else_arm.name != "_":
+                else_sv = cg_p.StackVar(subj_type.generate(), else_arm.name)
+                def find_else(names, arm=else_arm):
+                    if g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec or subj_type)
+                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                    return []
+                else_resolver = g.ResolverData(resolver, find_else)
+                else_local.append(g.OperationBundle(stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)))
+            self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
+            if else_local:
+                bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
 
         bundles.append(g.OperationBundle(stack_vars=stack_vars,
                                          operations=(cg_o.Label(end_label),), result_var=result_var))

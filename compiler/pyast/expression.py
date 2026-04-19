@@ -230,6 +230,8 @@ class DotExpression(Expression):
                 datas = cdecl.find_data(resolver, {self.name})
                 if datas and len(datas) == 1:
                     return datas[0].statement.get_type()
+            case t.EnumSpec(all_fields=fields):
+                return next((ft for fn, ft in fields if fn == self.name), None)
         return None
 
 
@@ -251,6 +253,11 @@ class DotExpression(Expression):
                 datas = _reduce_list(resolver, expected_type, cdecl.find_data(resolver, {self.name}))
                 if len(datas) == 1:
                     name = datas[0].unique_name
+            case t.EnumSpec(all_fields=fields):
+                if '@' not in self.name:
+                    match_field = next(((fn, ft) for fn, ft in fields if g.match_name(fn, self.name)), None)
+                    if match_field:
+                        name = match_field[0]
 
         expr = dataclasses.replace(self, base=base, name=name)
         return expr, new_statements
@@ -275,6 +282,10 @@ class DotExpression(Expression):
                     return [Error(self.line_ref, f"Could not find a field named {self.name}")]
                 if len(datas) > 1:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
+            case t.EnumSpec(all_fields=fields):
+                if not any(fn == self.name or g.match_name(fn, self.name) for fn, _ in fields):
+                    return [Error(self.line_ref, f"Could not find field {self.name}")]
+                return []
         return []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
@@ -301,6 +312,10 @@ class DotExpression(Expression):
                     result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var, c_symbol=_foreign_symbol(data), impure=_is_impure(data), sync=_is_sync(data))
 
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
+
+            case t.EnumSpec():
+                result_var = cg_p.StructField(base_bundle.result_var, self.name)
+                return base_bundle + g.OperationBundle((), (), result_var)
 
         raise ValueError("Could not generate dot expression")
 
@@ -892,3 +907,58 @@ class WideExpression(Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
             first_arm = False
         return bundles
+
+
+@dataclass
+class NewEnumExpression(Expression):
+    root_spec_name: str
+    leaf_name: str
+    field_args: dict[str, Expression]
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        types = resolver.find_type({self.root_spec_name})
+        if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
+            return types[0].statement._enum_spec
+        return None
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[NewEnumExpression, list[s.Statement]]:
+        new_field_args: dict[str, Expression] = {}
+        all_stmts: list[s.Statement] = []
+        for fname, fexpr in self.field_args.items():
+            new_fexpr, stmts = fexpr.compile(resolver, None)
+            new_field_args[fname] = new_fexpr
+            all_stmts.extend(stmts)
+        return dataclasses.replace(self, field_args=new_field_args), all_stmts
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        errors: list[Error] = []
+        for fname, fexpr in self.field_args.items():
+            errors += fexpr.check(resolver, None)
+        return errors
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
+        new_field_args = {k: v.search_and_replace(resolver, replace) for k, v in self.field_args.items()}
+        return cast(Expression, replace(resolver, dataclasses.replace(self, field_args=new_field_args)))
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        types = resolver.find_type({self.root_spec_name})
+        assert len(types) == 1
+        root_stmt = cast(s.EnumStatement, types[0].statement)
+        root_spec = root_stmt._enum_spec
+        assert root_spec is not None
+        leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
+        tag_const = cg_p.Integer(leaf_idx, 32)
+        bundles: list[g.OperationBundle] = []
+        field_values: list[tuple[str, cg_p.RParam]] = [("$tag", tag_const)]
+        for idx, (field_name, field_type_spec) in enumerate(root_spec.all_fields[1:]):
+            if field_name in self.field_args:
+                arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg{idx}_")
+                bundles.append(arg_bundle)
+                field_values.append((field_name, arg_bundle.result_var))
+            else:
+                field_values.append((field_name, cg_p.ZeroOf(field_type_spec.generate())))
+        result_param = cg_p.NewStruct(tuple(field_values))
+        final_bundle = g.OperationBundle((), (), result_param)
+        if bundles:
+            return reduce(lambda a, b: a + b, bundles + [final_bundle])
+        return final_bundle

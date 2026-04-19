@@ -449,7 +449,48 @@ __parse_namespace = p.block(p.requires(
     p.delimited_list(p.ident(), "::") >> __to_namespace_statement,
     "invalid namespace statement"))
 
-__parse_statement_any = p.block(__parse_class | __parse_interface | __parse_fun | __parse_let | __parse_type_alias | __parse_import | __parse_namespace | __parse_ret | __parse_action)
+def __to_enum(result: p.Result, tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
+    name, params, variants = result.value
+    statement = s.EnumStatement(
+        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, (),
+        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params or []),
+        variants)
+    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+
+
+def parse_enum(tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
+    return __parse_enum_any(tokens)
+__parse_enum = p.Parser(parse_enum)
+
+__parse_enum_any = p.block(p.requires(
+    p.discard_sym("enum"),
+    (p.ident() & __parse_maybe_destructure_parts & p.many(__parse_enum)) >> __to_enum,
+    "invalid enum statement"))
+
+
+def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.EnumStatement], import_group: s.ImportGroup) -> list[s.Statement]:
+    results: list[s.Statement] = []
+    all_ancestors = ancestors + [root]
+    if not root.variants:
+        all_params = [let for anc in all_ancestors for let in anc.parameters.flatten()]
+        true_root = ancestors[0] if ancestors else root
+        root_name = true_root.name
+        leaf_name = root.name
+        return_type = t.NamedSpec(root.line_ref, root_name)
+        field_args = {let.name: e.NamedExpression(let.line_ref, let.name) for let in all_params}
+        destr = s.DestructureStatement(root.line_ref, '_', None, {}, (), None, None, all_params)
+        new_enum_expr = e.NewEnumExpression(root.line_ref, root_name, leaf_name, field_args)
+        body = s.ReturnStatement(root.line_ref, new_enum_expr)
+        constructor = s.FunctionStatement(
+            root.line_ref, root.name, import_group, {}, (), destr, [body], return_type)
+        results.append(constructor)
+    else:
+        for v in root.variants:
+            results += _create_enum_leaf_constructors(v, all_ancestors, import_group)
+    return results
+
+
+__parse_statement_any = p.block(__parse_class | __parse_interface | __parse_fun | __parse_let | __parse_type_alias | __parse_import | __parse_namespace | __parse_ret | __parse_action | __parse_enum)
 
 
 
@@ -486,6 +527,11 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
                 new_statements.append(statement)
                 if isinstance(statement, s.ClassStatement) and not statement.is_interface:
                     new_statements.append(pyast.utils.create_constructor(statement))
+            case s.EnumStatement():
+                statement = statement.add_namespace(current_namespace)
+                statement = dataclasses.replace(statement, imports=import_group)
+                new_statements.append(statement)
+                new_statements += _create_enum_leaf_constructors(statement, [], import_group)
 
             case _: # Discard and report an error
                 errors.append(p.Error(statement.line_ref, f"unexpected statement {type(statement)}"))

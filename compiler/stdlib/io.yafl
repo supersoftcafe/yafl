@@ -2,68 +2,22 @@ namespace System::IO
 
 import System
 
-fun [foreign("io_stdin"),sync] _stdin(): _IO
-fun [foreign("io_stdout"),sync] _stdout(): _IO
-fun [foreign("io_stderr"),sync] _stderr(): _IO
+fun [foreign("io_stdin"),sync] stdin(): IO
+fun [foreign("io_stdout"),sync] stdout(): IO
+fun [foreign("io_stderr"),sync] stderr(): IO
 
-fun [foreign("io_create"),impure] _create(path: String): _IO|Int
-fun [foreign("io_open_read"),impure] _openRead(path: String): _IO|Int
-fun [foreign("io_open_write"),impure] _openWrite(path: String, truncate: Bool): _IO|Int
+fun [foreign("io_create"),impure] create(path: String): IO|Int
+fun [foreign("io_open_read"),impure] open_read(path: String): IO|Int
+fun [foreign("io_open_write"),impure] open_write(path: String, truncate: Bool): IO|Int
 
-class [foreign,final] _IO:
+class [foreign,final] IO:
   fun [foreign("io_read"),impure] read(length: Int): String|Int
-  fun [foreign("io_write"),impure] write(data: String): Int|None
-  fun [foreign("io_close"),impure] close(): Int|None
+  fun [foreign("io_write"),impure] write(data: String): Int
+  fun [foreign("io_close"),impure] close(): Int
 
-fun _wrapIO(result: _IO|Int): IO|IOError
-  ret match(result)
-    (io:_IO) => IO(io)
-    (code:Int) => IOError(code)
-
-
-class Error():
-  fun getMessage(): String
-
-class IOError(code: Int): Error
-  fun getMessage(): String
-    ret "IO Error"
-
-
-fun stdin(): IO
-  ret IO(_stdin())
-
-fun stdout(): IO
-  ret IO(_stdout())
-
-fun stderr(): IO
-  ret IO(_stderr())
-
-fun create(path: String): IO|IOError
-  ret _wrapIO(_create(path))
-
-fun openRead(path: String): IO|IOError
-  ret _wrapIO(_openRead(path))
-
-fun openWrite(path: String, truncate: Bool): IO|IOError
-  ret _wrapIO(_openWrite(path))
-
-class IO(io: _IO):
-  fun read(length: Int): (IO,String|IOError)
-    let result = match(io.read(length))
-      (code: Int) => IOError(code)
-      (data: String) => data
-    ret (this, result)
-
-  fun write(data: String): (IO, None|IOError)
-    let result = match(io.read(length))
-      (code: Int) => IOError(code)
-      () => None
-    ret (this, result)
-
-  fun close(): IOError|None
-    let result = match(io.close())
-      (code: Int) => IOError(code)
-      () => None
-    ret result
+enum IOError(code: Int)
+  enum EOFError()
+  enum FileNotFoundError()
+  enum PermissionDeniedError()
 
 
