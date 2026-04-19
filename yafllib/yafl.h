@@ -245,6 +245,29 @@ EXTERN size_t object_get_size(object_t* ptr);
 EXTERN vtable_t *object_get_vtable(object_t *object);
 EXTERN fun_t object_lookup_vtable(object_t *object, intptr_t id);
 
+// Tag-aware "is-a" test for match-arm dispatch. True if `obj` is an instance
+// of `target` either exactly (its vtable == target) or transitively (target
+// appears in its vtable's implements_array). NULL and tagged pointers match
+// the appropriate pseudo-vtable (INTEGER_VTABLE / STRING_VTABLE) and nothing
+// else.
+struct integer_vtable;
+struct string_vtable;
+EXTERN struct integer_vtable INTEGER_VTABLE;
+EXTERN struct string_vtable STRING_VTABLE;
+INLINE bool object_is_instance(object_t* obj, vtable_t* target) {
+    uintptr_t raw = (uintptr_t)obj;
+    if (raw == 0) return false;
+    if (raw & PTR_TAG_INTEGER) return target == (vtable_t*)&INTEGER_VTABLE;
+    if ((raw & PTR_TAG_MASK) == PTR_TAG_STRING) return target == (vtable_t*)&STRING_VTABLE;
+    if (raw & PTR_TAG_TASK) return false;
+    vtable_t* vt = VT_TAG_UNSET(obj->vtable);
+    if (vt == target) return true;
+    for (vtable_t** p = vt->implements_array; *p != NULL; p++) {
+        if (*p == target) return true;
+    }
+    return false;
+}
+
 
 typedef void(*roots_declaration_func_t)(void(*)(object_t**));
 typedef void(*thread_roots_declaration_func_t)(void*,void(*)(object_t**));

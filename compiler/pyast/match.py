@@ -22,17 +22,26 @@ import pyast.typespec as t
 
 @dataclass
 class MatchArm:
-    """One arm of a match expression."""
+    """One arm of a match expression.
+
+    Exactly one of the following holds:
+    - `literal` is set (IntegerExpression or StringExpression): literal arm.
+    - `type_spec` is set (with optional `name`): type-dispatch arm.
+    - Both `literal` and `type_spec` are None: else arm (with optional `name`
+      that binds the whole subject).
+    """
     line_ref: LineRef
     name: str | None         # Bound variable name; None for else arm, "_" to discard
-    type_spec: t.TypeSpec | None  # Variant type; None for else arm
+    type_spec: t.TypeSpec | None  # Variant type; None for else or literal arm
     body: e.Expression
+    literal: e.Expression | None = None  # Literal value to match against
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> MatchArm:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
         new_body = self.body.search_and_replace(nested_resolver, replace)
         new_type = self.type_spec.search_and_replace(resolver, replace) if self.type_spec else None
-        return dataclasses.replace(self, type_spec=new_type, body=new_body)
+        new_literal = self.literal.search_and_replace(resolver, replace) if self.literal else None
+        return dataclasses.replace(self, type_spec=new_type, body=new_body, literal=new_literal)
 
     def __find_bound(self, names: set[str]) -> list[g.Resolved[s.DataStatement]]:
         if self.name and self.name != "_" and self.type_spec and g.match_names(self.name, names):
@@ -44,7 +53,8 @@ class MatchArm:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
         new_body, body_stmts = self.body.compile(nested_resolver, func_ret_type)
         new_type, type_stmts = self.type_spec.compile(resolver) if self.type_spec else (None, [])
-        return dataclasses.replace(self, type_spec=new_type, body=new_body), body_stmts + type_stmts
+        new_literal, lit_stmts = self.literal.compile(resolver, None) if self.literal else (None, [])
+        return dataclasses.replace(self, type_spec=new_type, body=new_body, literal=new_literal), body_stmts + type_stmts + lit_stmts
 
     def get_body_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
@@ -54,7 +64,8 @@ class MatchArm:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
         type_err = self.type_spec.check(resolver) if self.type_spec else []
         body_err = self.body.check(nested_resolver, func_ret_type)
-        return type_err + body_err
+        literal_err = self.literal.check(resolver, None) if self.literal else []
+        return type_err + body_err + literal_err
 
 
 @dataclass
@@ -97,17 +108,86 @@ class MatchExpression(e.Expression):
         subj_type = self.subject.get_type(resolver)
         if subj_type is None:
             return []  # Not ready
-        if not isinstance(subj_type, (t.EnumSpec, t.CombinationSpec)):
+
+        has_literal = any(arm.literal is not None for arm in self.arms)
+        is_primitive_subject = (isinstance(subj_type, t.BuiltinSpec)
+                                and subj_type.type_name in ("bigint", "str"))
+
+        if has_literal and not is_primitive_subject:
+            return [Error(self.line_ref,
+                "literal match arms require a primitive (Int or String) subject")]
+
+        if not has_literal and not isinstance(subj_type, (t.EnumSpec, t.CombinationSpec)):
             return [Error(self.line_ref, "match subject must be a union type")]
+
         errors = []
         for arm in self.arms:
             errors += arm.check(resolver, expected_type)
-        if subj_type.is_concrete():
-            errors += self.__check_exhaustiveness(subj_type)
+        if is_primitive_subject and subj_type.is_concrete():
+            errors += self.__check_literal_arms(subj_type)
+        elif subj_type.is_concrete():
+            errors += self.__check_exhaustiveness(subj_type, resolver)
         return errors
 
-    def __check_exhaustiveness(self, subj_type: t.TypeSpec) -> list:
-        """Emit errors for non-exhaustive match and unreachable arms."""
+    def __check_literal_arms(self, subj_type: t.BuiltinSpec) -> list:
+        """Check literal arms: each literal's type matches subject; no duplicates;
+        else arm required (Int/String are not finite)."""
+        errors: list = []
+        expected_kind = subj_type.type_name  # "bigint" or "str"
+        seen_values: dict = {}
+        else_seen = False
+
+        for arm in self.arms:
+            if else_seen:
+                errors.append(Error(arm.line_ref, "unreachable arm: follows an else arm"))
+                continue
+
+            if arm.type_spec is not None:
+                errors.append(Error(arm.line_ref,
+                    f"type arms not allowed on a primitive ({expected_kind}) subject; use literal patterns"))
+                continue
+
+            if arm.literal is None:
+                # else arm (with optional binding)
+                else_seen = True
+                continue
+
+            lit = arm.literal
+            if expected_kind == "bigint":
+                if not isinstance(lit, e.IntegerExpression):
+                    errors.append(Error(arm.line_ref,
+                        f"literal arm type mismatch: expected integer, got {type(lit).__name__}"))
+                    continue
+                key = ("int", lit.value)
+            else:  # "str"
+                if not isinstance(lit, e.StringExpression):
+                    errors.append(Error(arm.line_ref,
+                        f"literal arm type mismatch: expected string, got {type(lit).__name__}"))
+                    continue
+                key = ("str", lit.value)
+
+            if key in seen_values:
+                errors.append(Error(arm.line_ref,
+                    f"unreachable arm: literal value already matched"))
+            else:
+                seen_values[key] = arm.line_ref
+
+        if not else_seen:
+            errors.append(Error(self.line_ref,
+                f"non-exhaustive match; a literal-pattern match on {expected_kind} requires an else arm"))
+
+        return errors
+
+    def __check_exhaustiveness(self, subj_type: t.TypeSpec, resolver: g.Resolver) -> list:
+        """Emit errors for non-exhaustive match and unreachable arms.
+
+        For CombinationSpec subjects, an arm's type T covers a subject
+        variant V when V is assignable to T (i.e. T is V or an ancestor of
+        V). This makes interface arms on a union of implementers behave
+        correctly, and flags later-arms-for-already-covered-variants as
+        unreachable regardless of whether the coverage came from an exact
+        match or a supertype match.
+        """
         errors: list = []
 
         if isinstance(subj_type, t.EnumSpec):
@@ -115,26 +195,33 @@ class MatchExpression(e.Expression):
             missing_name = lambda names: " | ".join(sorted(names))
         else:
             assert isinstance(subj_type, t.CombinationSpec)
-            remaining = {}  # id -> printable name
+            remaining = {}  # id -> (printable name, TypeSpec)
             for v in subj_type.types:
                 uid = v.as_unique_id_str()
                 if uid is None:
                     return []  # Subject not yet fully resolved
-                remaining[uid] = getattr(v, "name", uid)
+                remaining[uid] = (getattr(v, "name", uid), v)
+            remaining_for_err = {uid: name for uid, (name, _) in remaining.items()}
             missing_name = lambda ids: " | ".join(remaining_for_err[i] for i in ids)
-            remaining_for_err = dict(remaining)  # snapshot for error message
 
         else_seen = False
 
         def arm_covered_ids(arm_type: t.TypeSpec) -> set[str]:
-            """IDs covered by this arm's type_spec, for CombinationSpec subjects."""
+            """IDs of subject variants this arm covers (handles inheritance).
+
+            Iterates the remaining subject variants and keeps those
+            assignable to arm_type via trivially_assignable_from.
+            """
             if isinstance(arm_type, t.CombinationSpec):
                 out: set[str] = set()
                 for member in arm_type.types:
                     out |= arm_covered_ids(member)
                 return out
-            uid = arm_type.as_unique_id_str()
-            return {uid} if uid else set()
+            out = set()
+            for uid, (_, v) in remaining.items():
+                if arm_type.trivially_assignable_from(resolver, v) is True:
+                    out.add(uid)
+            return out
 
         for arm in self.arms:
             if else_seen:
@@ -164,8 +251,7 @@ class MatchExpression(e.Expression):
                 else:
                     remaining -= covers
             else:
-                arm_ids = arm_covered_ids(arm.type_spec)
-                covers = arm_ids & remaining.keys()
+                covers = arm_covered_ids(arm.type_spec)
                 if not covers:
                     errors.append(Error(arm.line_ref,
                         f"unreachable arm: variant not in match subject or already covered"))
@@ -184,6 +270,9 @@ class MatchExpression(e.Expression):
         subj_type = self.subject.get_type(resolver)
         result_type = self.get_type(resolver)
         result_var = cg_p.StackVar(result_type.generate(), "result") if result_type else None
+
+        if isinstance(subj_type, t.BuiltinSpec) and subj_type.type_name in ("bigint", "str"):
+            return self.__gen_primitive_match(resolver, subj_bundle, subj_type, result_var)
 
         if isinstance(subj_type, t.EnumSpec):
             return self.__gen_enum_match(resolver, subj_bundle, subj_type, result_var)
@@ -251,47 +340,178 @@ class MatchExpression(e.Expression):
                                              operations=(cg_o.Move(arm_sv, cg_p.NewStruct(tuple(field_values))),)))
         return make_resolver()
 
-    def __gen_pointer_match(self, resolver, subj_bundle, subj_type, result_var, discriminators):
-        """DataPointer union: null = unit variant, non-null = pointer variant."""
-        unit_type = cg_t.Struct(())
-        else_arm = next((arm for arm in self.arms if arm.type_spec is None), None)
-        null_arms = [arm for arm in self.arms if arm.type_spec is not None and arm.type_spec.generate() == unit_type]
-        ptr_arms  = [arm for arm in self.arms if arm.type_spec is not None and arm.type_spec.generate() != unit_type]
-
-        sv         = subj_bundle.result_var
-        null_arm   = null_arms[0] if null_arms else else_arm
-        ptr_arm    = ptr_arms[0]  if ptr_arms  else else_arm
+    def __gen_primitive_match(self, resolver, subj_bundle, subj_type, result_var):
+        """Literal-arm match on a primitive (Int = bigint, String = str) subject."""
+        is_bigint = subj_type.type_name == "bigint"
+        sv = subj_bundle.result_var
+        end_label = "match_end"
         stack_vars = (result_var,) if result_var else ()
-        null_label = "match_null"
-        end_label  = "match_end"
+        bundles = [subj_bundle]
 
-        bundles = [subj_bundle,
-                   g.OperationBundle(operations=(cg_o.JumpIf(null_label, cg_p.IntEqConst(sv, 0)),))]
+        literal_arms = [arm for arm in self.arms if arm.literal is not None]
+        else_arm = next((arm for arm in self.arms
+                         if arm.literal is None and arm.type_spec is None), None)
 
-        # Non-null (pointer) arm
-        if ptr_arm:
-            arm_resolver = resolver
-            if ptr_arm.name and ptr_arm.name != "_":
-                bound_sv = cg_p.StackVar(cg_t.DataPointer(), ptr_arm.name)
-                def find_ptr(names, arm=ptr_arm):
+        for i, arm in enumerate(literal_arms):
+            arm_label = f"match_arm_{i}"
+            next_label = f"match_next_{i}"
+
+            lit_bundle = arm.literal.generate(resolver).rename_vars(f"l{i}")
+            bundles.append(lit_bundle)
+
+            args = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
+            if is_bigint:
+                test_expr = cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
+            else:
+                cmp_expr = cg_p.Invoke("string_compare", args, cg_t.Int(32))
+                test_expr = cg_p.IntEqConst(cmp_expr, 0)
+
+            bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
+
+            arm_local = []
+            self.__emit_arm_body(arm, resolver, f"a{i}", result_var, arm_local)
+            if arm_local:
+                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{i}_"))
+            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+
+        if else_arm is not None:
+            else_local = []
+            else_resolver = resolver
+            if else_arm.name and else_arm.name != "_":
+                else_sv = cg_p.StackVar(subj_type.generate(), else_arm.name)
+                def find_else(names, arm=else_arm, st=subj_type):
                     if g.match_names(arm.name, names):
-                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec)
+                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, st)
                         return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
                     return []
-                arm_resolver = g.ResolverData(resolver, find_ptr)
-                bundles.append(g.OperationBundle(stack_vars=(bound_sv,),
-                                                 operations=(cg_o.Move(bound_sv, sv),)))
-            self.__emit_arm_body(ptr_arm, arm_resolver, "pt", result_var, bundles)
-
-        bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label), cg_o.Label(null_label))))
-
-        # Null (unit) arm
-        if null_arm:
-            self.__emit_arm_body(null_arm, resolver, "nu", result_var, bundles)
+                else_resolver = g.ResolverData(resolver, find_else)
+                else_local.append(g.OperationBundle(stack_vars=(else_sv,),
+                                                    operations=(cg_o.Move(else_sv, sv),)))
+            self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
+            if else_local:
+                bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
 
         bundles.append(g.OperationBundle(stack_vars=stack_vars,
                                          operations=(cg_o.Label(end_label),), result_var=result_var))
         return reduce(lambda a, b: a + b, bundles).rename_vars("")
+
+    def __gen_pointer_match(self, resolver, subj_bundle, subj_type, result_var, discriminators):
+        """DataPointer union dispatch.
+
+        Generates:
+          1. `sv == NULL` → null arm (or else arm if the subject has a unit
+             variant but no explicit typed one).
+          2. For each typed arm (Int, Str, class), a call to libyafl's
+             `object_is_instance(sv, target_vtable)` which handles both
+             tagged-pointer and heap-vtable representations and walks the
+             implements_array for inheritance.
+          3. Foreign classes can't be vtable-checked from generated code
+             (their symbol lives in an external library and the compiler
+             doesn't know the C name), so at most one foreign class per
+             union is allowed and it acts as the implicit fallback —
+             whatever didn't match any prior `is_instance` check falls
+             through to it.
+          4. If no foreign class, the else arm catches the remainder.
+        """
+        unit_type = cg_t.Struct(())
+        sv         = subj_bundle.result_var
+        stack_vars = (result_var,) if result_var else ()
+        end_label  = "match_end"
+
+        subj_has_none = any(v.generate() == unit_type for v in subj_type.types)
+
+        null_arm = None
+        typed_tests: list[tuple] = []   # [(arm, is_instance RParam, suffix)]
+        foreign_fallback = None
+        else_arm = None
+        for arm in self.arms:
+            if arm.type_spec is None:
+                else_arm = arm
+                continue
+            arm_ctype = arm.type_spec.generate()
+            if arm_ctype == unit_type:
+                null_arm = arm
+            elif isinstance(arm_ctype, cg_t.Int) and arm_ctype.precision == 0:
+                typed_tests.append(
+                    (arm, cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE"), "int"))
+            elif isinstance(arm_ctype, cg_t.Str):
+                typed_tests.append(
+                    (arm, cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE"), "str"))
+            elif isinstance(arm.type_spec, t.ClassSpec):
+                if self.__class_is_foreign(resolver, arm.type_spec.name):
+                    foreign_fallback = arm
+                else:
+                    typed_tests.append(
+                        (arm,
+                         cg_p.ObjVtableEq(sv, class_name=arm.type_spec.name),
+                         f"cls{len(typed_tests)}"))
+
+        null_target = null_arm if null_arm is not None else (else_arm if subj_has_none else None)
+        final_fallback = foreign_fallback if foreign_fallback is not None else else_arm
+
+        bundles: list = [subj_bundle]
+        next_counter = [0]
+
+        def emit_test(target_arm, test_expr, suffix: str) -> None:
+            idx = next_counter[0]
+            next_counter[0] = idx + 1
+            arm_label = f"match_{suffix}_{idx}"
+            next_label = f"match_next_{idx}"
+            bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
+            self.__emit_pointer_arm_body(target_arm, sv, resolver, suffix, result_var, bundles)
+            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
+
+        if null_target is not None:
+            emit_test(null_target, cg_p.IntEqConst(sv, 0), "null")
+        for arm, test_expr, suffix in typed_tests:
+            emit_test(arm, test_expr, suffix)
+        if final_fallback is not None:
+            self.__emit_pointer_arm_body(final_fallback, sv, resolver, "fb",
+                                         result_var, bundles)
+
+        bundles.append(g.OperationBundle(stack_vars=stack_vars,
+                                         operations=(cg_o.Label(end_label),), result_var=result_var))
+        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+
+    def __class_is_foreign(self, resolver: g.Resolver, class_name: str) -> bool:
+        """Return True if the named class is declared `[foreign]` — its
+        vtable symbol lives in an external library, so we can't emit a
+        vtable-identity check against it."""
+        classes = resolver.find_type({class_name})
+        for resolved in classes:
+            stmt = resolved.statement
+            if isinstance(stmt, s.ClassStatement) and "foreign" in stmt.attributes:
+                return True
+        return False
+
+    def __emit_pointer_arm_body(self, arm, sv, resolver, suffix, result_var, bundles):
+        """Bind the arm's name (if any) to the subject pointer and emit the body."""
+        arm_resolver = resolver
+        arm_local = []
+        if arm.name and arm.name != "_":
+            type_for_binding = arm.type_spec if arm.type_spec is not None else None
+            bound_sv = cg_p.StackVar(cg_t.DataPointer(), arm.name)
+            def find_bound(names, a=arm, t_spec=type_for_binding):
+                if g.match_names(a.name, names):
+                    # For an else arm there's no arm.type_spec; caller's
+                    # compile() already substituted the subject type into
+                    # the body resolver, so this local lookup uses
+                    # whatever type_spec the arm carries.
+                    let = s.LetStatement(a.line_ref, a.name, None, {}, (), None, t_spec)
+                    return [g.Resolved(a.name, let, g.ResolvedScope.LOCAL)]
+                return []
+            arm_resolver = g.ResolverData(resolver, find_bound)
+            arm_local.append(g.OperationBundle(stack_vars=(bound_sv,),
+                                               operations=(cg_o.Move(bound_sv, sv),)))
+        self.__emit_arm_body(arm, arm_resolver, suffix, result_var, arm_local)
+        if arm_local:
+            bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"{suffix}_"))
 
     def __gen_tagged_match(self, resolver, subj_bundle, subj_type, container, result_var, discriminators):
         """UnionContainer union: compare $tag for each arm."""

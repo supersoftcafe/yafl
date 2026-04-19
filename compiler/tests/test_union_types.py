@@ -376,6 +376,194 @@ fun main(): Int
         self.assertEqual(3, code)
 
 
+class TestMatchMultiClassPointerUnion(TestCase):
+    """Multi-class pointer unions use vtable-identity dispatch inside
+    __gen_pointer_match. Covers the cases the tag-bit-only dispatch can't:
+    two or more user class variants sharing the same heap-object space.
+
+    The classes here have enough fields to avoid simple-class lowering
+    (they stay as heap objects with distinct vtables)."""
+
+    _PROLOGUE = _PREAMBLE + """\
+class A(a1: Int, a2: Int, a3: Int, a4: Int, a5: Int)
+class B(b1: Int, b2: Int, b3: Int, b4: Int, b5: Int)
+class C(c1: Int, c2: Int, c3: Int, c4: Int, c5: Int)
+
+"""
+
+    def test_dispatch_to_first_class(self):
+        src = self._PROLOGUE + """\
+fun classify(v: A|B|C|None): Int
+    ret match(v)
+        (a: A)    => 1
+        (b: B)    => 2
+        (c: C)    => 3
+        (n: None) => 9
+
+fun main(): Int
+    let a: A = A(0,0,0,0,0)
+    ret classify(a)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(1, code)
+
+    def test_dispatch_to_middle_class(self):
+        src = self._PROLOGUE + """\
+fun classify(v: A|B|C|None): Int
+    ret match(v)
+        (a: A)    => 1
+        (b: B)    => 2
+        (c: C)    => 3
+        (n: None) => 9
+
+fun main(): Int
+    let b: B = B(0,0,0,0,0)
+    ret classify(b)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(2, code)
+
+    def test_dispatch_to_last_class(self):
+        src = self._PROLOGUE + """\
+fun classify(v: A|B|C|None): Int
+    ret match(v)
+        (a: A)    => 1
+        (b: B)    => 2
+        (c: C)    => 3
+        (n: None) => 9
+
+fun main(): Int
+    let c: C = C(0,0,0,0,0)
+    ret classify(c)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(3, code)
+
+    def test_dispatch_to_none_with_classes(self):
+        src = self._PROLOGUE + """\
+fun classify(v: A|B|C|None): Int
+    ret match(v)
+        (a: A)    => 1
+        (b: B)    => 2
+        (c: C)    => 3
+        (n: None) => 9
+
+fun main(): Int
+    ret classify(None)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(9, code)
+
+    def test_interface_arm_covers_all_implementors(self):
+        """An arm whose type is an interface shared by the subject variants
+        covers them all; a later arm for one of the implementors is
+        flagged unreachable."""
+        src = _PREAMBLE + """\
+interface Shape
+  fun side(): Int
+
+class A(a1: Int, a2: Int, a3: Int, a4: Int, a5: Int) : Shape
+  fun side(): Int
+    ret a1
+
+class B(b1: Int, b2: Int, b3: Int, b4: Int, b5: Int) : Shape
+  fun side(): Int
+    ret b1
+
+fun classify(v: A|B|None): Int
+  ret match(v)
+    (s: Shape) => 1
+    (a: A)     => 2
+    (n: None)  => 9
+
+fun main(): Int
+  ret 0
+"""
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("unreachable", errors,
+            f"expected 'unreachable' in errors, got: {errors!r}")
+
+    def test_interface_arm_exhausts_implementor_variants(self):
+        """Shape + None is exhaustive when the union contains only Shape-
+        implementing classes plus None."""
+        src = _PREAMBLE + """\
+interface Shape
+  fun side(): Int
+
+class A(a1: Int, a2: Int, a3: Int, a4: Int, a5: Int) : Shape
+  fun side(): Int
+    ret a1
+
+class B(b1: Int, b2: Int, b3: Int, b4: Int, b5: Int) : Shape
+  fun side(): Int
+    ret b1
+
+fun classify(v: A|B|None): Int
+  ret match(v)
+    (s: Shape) => 1
+    (n: None)  => 9
+
+fun main(): Int
+  ret 0
+"""
+        result, errors = _compile_capturing_errors(src)
+        self.assertNotEqual("", result,
+            f"expected successful compile, got errors: {errors!r}")
+
+    def test_exact_vtable_match_on_siblings(self):
+        """Two classes with no shared interface: each arm matches only its
+        own vtable, proving the dispatch doesn't collapse distinct classes."""
+        src = _PREAMBLE_ADD + """\
+class A(a1: Int, a2: Int, a3: Int, a4: Int, a5: Int)
+class B(b1: Int, b2: Int, b3: Int, b4: Int, b5: Int)
+
+fun pick(v: A|B|None): Int
+    ret match(v)
+        (a: A)    => 10
+        (b: B)    => 20
+        (n: None) => 30
+
+fun main(): Int
+    let a: A = A(0,0,0,0,0)
+    let b: B = B(0,0,0,0,0)
+    ret pick(a) + pick(b) + pick(None)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(60, code)
+
+    def test_dispatch_mixes_classes_int_string_none(self):
+        """The full menagerie: class + class + Int + String + None in one union."""
+        src = self._PROLOGUE + _PREAMBLE_ADD.split(_PREAMBLE, 1)[1] + """\
+fun classify(v: A|B|String|Int|None): Int
+    ret match(v)
+        (a: A)      => 1
+        (b: B)      => 2
+        (s: String) => 3
+        (n: Int)    => 4
+        (x: None)   => 5
+
+fun callA(): Int
+    let a: A = A(0,0,0,0,0)
+    ret classify(a)
+
+fun callStr(): Int
+    ret classify(\"hello\")
+
+fun callInt(): Int
+    ret classify(42)
+
+fun callNone(): Int
+    ret classify(None)
+
+fun main(): Int
+    ret callA() + callStr() + callInt() + callNone()
+"""
+        code, _ = _compile_and_run(src)
+        # 1 (A) + 3 (String) + 4 (Int) + 5 (None) = 13
+        self.assertEqual(13, code)
+
+
 # ---------------------------------------------------------------------------
 # Negative: type-checker must reject these programs
 # ---------------------------------------------------------------------------
@@ -832,3 +1020,143 @@ fun main(): Int
 """
         code, _ = _compile_and_run(src)
         self.assertEqual(9, code)
+
+
+# ---------------------------------------------------------------------------
+# Literal patterns in match arms (Int and String)
+# ---------------------------------------------------------------------------
+
+class TestMatchLiteralPatterns(TestCase):
+
+    _PROLOGUE = _PREAMBLE + """\
+fun `+`(l: Int, r: Int): Int
+    ret __builtin_op__<bigint>("integer_add", l, r)
+
+"""
+
+    def test_int_literal_arm_matches(self):
+        """Match on Int selects the exact literal arm."""
+        src = self._PROLOGUE + """\
+fun classify(x: Int): Int
+    ret match(x)
+        (0) => 10
+        (1) => 20
+        (x) => 99
+
+fun main(): Int
+    ret classify(1)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(20, code)
+
+    def test_int_literal_else_arm(self):
+        """Match on Int falls through to the else arm when no literal matches."""
+        src = self._PROLOGUE + """\
+fun classify(x: Int): Int
+    ret match(x)
+        (0) => 10
+        (1) => 20
+        (x) => 99
+
+fun main(): Int
+    ret classify(42)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(99, code)
+
+    def test_negative_int_literal_arm(self):
+        """A negative integer literal in a pattern matches its folded value."""
+        src = self._PROLOGUE + """\
+fun classify(x: Int): Int
+    ret match(x)
+        (-5) => 30
+        (x)  => 99
+
+fun main(): Int
+    ret classify(-5)
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(30, code)
+
+    def test_string_literal_arm_matches(self):
+        """Match on String selects the exact literal arm."""
+        src = self._PROLOGUE + """\
+fun classify(x: String): Int
+    ret match(x)
+        ("yes") => 1
+        ("no")  => 2
+        (x)     => 9
+
+fun main(): Int
+    ret classify("no")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(2, code)
+
+    def test_string_literal_else_arm(self):
+        """Match on String falls through to the else arm on no literal hit."""
+        src = self._PROLOGUE + """\
+fun classify(x: String): Int
+    ret match(x)
+        ("yes") => 1
+        ("no")  => 2
+        (x)     => 9
+
+fun main(): Int
+    ret classify("maybe")
+"""
+        code, _ = _compile_and_run(src)
+        self.assertEqual(9, code)
+
+    def test_missing_else_is_non_exhaustive_error(self):
+        """A literal-pattern match with no else arm is a compile error."""
+        src = self._PROLOGUE + """\
+fun classify(x: Int): Int
+    ret match(x)
+        (0) => 10
+        (1) => 20
+
+fun main(): Int
+    ret classify(0)
+"""
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("non-exhaustive", errors,
+            f"expected 'non-exhaustive' in errors, got: {errors!r}")
+        self.assertIn("else arm", errors,
+            f"expected 'else arm' hint, got: {errors!r}")
+
+    def test_duplicate_literal_is_unreachable_error(self):
+        """Two arms with the same literal value fail to compile."""
+        src = self._PROLOGUE + """\
+fun classify(x: Int): Int
+    ret match(x)
+        (0) => 10
+        (0) => 20
+        (x) => 9
+
+fun main(): Int
+    ret classify(0)
+"""
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("unreachable", errors,
+            f"expected 'unreachable' in errors, got: {errors!r}")
+        self.assertIn("literal value already matched", errors,
+            f"expected specific reason, got: {errors!r}")
+
+    def test_literal_on_union_subject_rejected(self):
+        """Literal arms on a union subject are rejected in phase 1."""
+        src = self._PROLOGUE + """\
+fun f(x: String|None): Int
+    ret match(x)
+        ("hi") => 1
+        ()     => 0
+
+fun main(): Int
+    ret f("hi")
+"""
+        result, errors = _compile_capturing_errors(src)
+        self.assertEqual("", result)
+        self.assertIn("primitive", errors,
+            f"expected 'primitive' hint, got: {errors!r}")

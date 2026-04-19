@@ -209,6 +209,12 @@ def __to_match_arm(result: p.Result[tuple[list[s.LetStatement], e.Expression]], 
     return p.Result(None, result.tokens, result.line_ref, errors)
 
 
+def __to_match_arm_literal(result: p.Result[tuple[e.Expression, e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
+    literal, body = result.value
+    return p.Result(m.MatchArm(result.line_ref, None, None, body, literal=literal),
+                    result.tokens, result.line_ref, result.errors)
+
+
 def __to_match_expression(result: p.Result[tuple[e.Expression, list[m.MatchArm]]], tokens: list[p.Token]) -> p.Result[m.MatchExpression]:
     subject, arms = result.value
     return p.Result(m.MatchExpression(result.line_ref, subject, arms), result.tokens, result.line_ref, result.errors)
@@ -380,8 +386,14 @@ __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expr
 __parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & p.ident() & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
 __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params) >> __to_named_fully_qualified
 
-# match arm: "(" name ":" type ")" "=>" expr  |  "()" "=>" expr
-__parse_match_arm = p.block((__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
+# match arm: "(" literal ")" "=>" expr  |  "(" name ":" type ")" "=>" expr  |  "()" "=>" expr
+__parse_signed_integer = ((p.discard_sym("-") & __integer()) >> __to_negate) | __integer()
+__parse_match_literal   = __parse_signed_integer | __string()
+__parse_match_arm_literal = p.block(
+    (p.discard_sym('(') & __parse_match_literal & p.discard_sym(')')
+     & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal)
+__parse_match_arm_destructure = p.block((__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
+__parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
 __parse_match_subject = p.requires(p.sym("("), __parse_expression & p.discard_sym(")"), "invalid match subject")
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression") >> __to_match_expression
 

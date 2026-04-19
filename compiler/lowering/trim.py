@@ -13,7 +13,7 @@ from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTas
 from codegen.things import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, RParam, \
-    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap
+    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq
 from functools import reduce
 
 
@@ -73,6 +73,10 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return _scan_sets()
         case IntEqConst():
             return __scan_rparam(p.value)
+        case ObjVtableEq():
+            # Keep the referenced class's vtable alive when dispatching on it.
+            on = _scan_sets(o=frozenset([p.class_name])) if p.class_name else _scan_sets()
+            return __scan_rparam(p.value) | on
         case NewStructTyped():
             return __reduce_scan_sets(__scan_rparam(x) for _, x in p.values)
         case TagTask():

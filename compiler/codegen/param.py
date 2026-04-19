@@ -225,6 +225,53 @@ class NullPointer(RParam):
 
 
 @dataclass(frozen=True)
+class ObjVtableEq(RParam):
+    """Emits `object_is_instance(p, target)` — libyafl's tag-aware "is-a"
+    test that handles NULL, tagged integer/string pointers, exact vtable
+    identity, and transitive matches against the vtable's implements_array.
+
+    Exactly one of `class_name` or `extern_symbol` must be set:
+      * `class_name` — the yafl class name (e.g. "System::IO::_IO@hash");
+        the target is `obj_` + mangle_name(class_name), and the trim pass
+        treats the class as live.
+      * `extern_symbol` — a library-provided C symbol (e.g.
+        "STRING_VTABLE", "INTEGER_VTABLE"); address-of is applied since
+        these are declared as structs in libyafl."""
+    value: RParam
+    class_name: str | None = None
+    extern_symbol: str | None = None
+
+    def __post_init__(self):
+        if (self.class_name is None) == (self.extern_symbol is None):
+            raise ValueError("ObjVtableEq: exactly one of class_name / extern_symbol must be set")
+
+    def get_type(self) -> t.Int:
+        return t.Int(8)
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.value.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.value.test(predicate)
+
+    def rename_vars(self, renames: dict[str, str]) -> RParam:
+        return dataclasses.replace(self, value=self.value.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, value=self.value.replace_params(replacer)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.value.get_live_vars()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        if self.class_name is not None:
+            target = f"obj_{mangle_name(self.class_name)}"
+        else:
+            target = f"(vtable_t*)&{self.extern_symbol}"
+        return f"object_is_instance({self.value.to_c(type_cache)}, {target})"
+
+
+@dataclass(frozen=True)
 class SyncWrap(RParam):
     """Wrap a synchronous return value in a TaskWrapper with task=NULL.
 

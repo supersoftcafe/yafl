@@ -353,6 +353,35 @@ class NamedSpec(TypeSpec):
         return None # This is 'alias', not a concrete type.
 
 
+def _is_pointer_union_distinguishable(variant_types: list[cg_t.Type]) -> bool:
+    """True if all variants are pointer-representable AND each variant is runtime-
+    distinguishable by pointer tag bits, null check, or vtable identity.
+
+    Rules per variant:
+      * Unit (empty Struct): null pointer.
+      * Int (bigint, precision 0): PTR_IS_INTEGER or vtable == INTEGER_VTABLE.
+      * Str: PTR_IS_STRING or vtable == STRING_VTABLE.
+      * Class (DataPointer / class object pointer): unique vtable.
+      * Anything else (scalars, composite structs): not pointer-representable.
+
+    Classes are disambiguated by their own vtable, so multiple class variants
+    are allowed — the dispatch generates a vtable-identity test per class.
+    """
+    for vt in variant_types:
+        if isinstance(vt, cg_t.Struct) and not vt.fields:
+            continue  # unit / None — null sentinel
+        if isinstance(vt, cg_t.Int) and vt.precision == 0:
+            continue  # bigint — PTR_IS_INTEGER or INTEGER_VTABLE
+        if isinstance(vt, cg_t.Str):
+            continue  # str — PTR_IS_STRING or STRING_VTABLE
+        if isinstance(vt, cg_t.DataPointer):
+            continue  # class object — unique vtable identifies it
+        return False  # scalar or composite struct — needs UnionContainer
+    non_unit = [vt for vt in variant_types
+                if not (isinstance(vt, cg_t.Struct) and not vt.fields)]
+    return len(non_unit) >= 1
+
+
 @dataclass(frozen=True)
 class CombinationSpec(TypeSpec):
     types: list[TypeSpec]
@@ -373,6 +402,8 @@ class CombinationSpec(TypeSpec):
         non_unit = [vt for vt in variant_types if vt != unit]
         if len(non_unit) == 1 and non_unit[0].get_pointer_paths("x") == ["x"]:
             return cg_t.DataPointer()  # null sentinel for unit (None) variant(s)
+        if _is_pointer_union_distinguishable(variant_types):
+            return cg_t.DataPointer()  # dispatch via pointer tag bits at runtime
         container, _ = cg_t.UnionContainer.compute(variant_types)
         return container
 

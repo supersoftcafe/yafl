@@ -18,7 +18,7 @@ fun [foreign("io_open_write"),impure] _open_write(path: String, truncate: Bool):
 class [foreign,final] _IO:
   fun [foreign("io_read"),impure]  _read(length: Int): String|Int|None
   fun [foreign("io_write"),impure] _write(data: String): Int
-  fun [foreign("io_close"),impure] _close(): Int
+  fun [foreign("io_close"),impure] _close(): Int|None
 
 
 # Errors. IOError carries the raw errno as `code`; specific variants name the
@@ -36,13 +36,14 @@ enum IOError(code: Int)
   enum UnknownIOError()
 
 fun _error_from_code(code: Int): IOError
-  ret code = -2  ? FileNotFoundError(code)
-    : code = -13 ? PermissionDeniedError(code)
-    : code = -21 ? IsDirectoryError(code)
-    : code = -17 ? FileExistsError(code)
-    : code = -28 ? NoSpaceError(code)
-    : code = -22 ? InvalidArgError(code)
-    :              UnknownIOError(code)
+  ret match(code)
+    (-2)  => FileNotFoundError(code)
+    (-13) => PermissionDeniedError(code)
+    (-21) => IsDirectoryError(code)
+    (-17) => FileExistsError(code)
+    (-28) => NoSpaceError(code)
+    (-22) => InvalidArgError(code)
+    ()    => UnknownIOError(code)
 
 
 # Public IO type. [final] — no subclassing, method calls dispatch directly
@@ -60,11 +61,14 @@ class [final] IO(_io: _IO)
     ret _write_result(this, _io._write(data))
 
   fun close(): IOError|None
-    ret _close_result(_io._close())
+    ret match(_io._close())
+      (c: Int)          => _close_result(c)
+      (n: System::None) => None
 
 
 fun _write_result(io: IO, n: Int): (io: IO, v: Int|IOError)
-  ret n < 0 ? (io, _error_from_code(n)) : (io, n)
+  let err: IOError = _error_from_code(n)
+  ret n < 0 ? (io=io, v=err) : (io=io, v=n)
 
 fun _close_result(n: Int): IOError|None
   ret n < 0 ? _error_from_code(n) : None

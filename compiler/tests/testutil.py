@@ -33,6 +33,28 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
             pass
 
 
+def compile_and_run_stdlib(source: str, timeout: int = 5) -> int:
+    """Compile yafl source with stdlib, link against libyafl, run, return exit code."""
+    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    assert c_code, "yafl compilation produced no output (type errors?)"
+
+    with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
+        binary = tmp.name
+    try:
+        result = subprocess.run(
+            ["clang", "-g", "-x", "c", "-", "-O0", "-l", "yafl", "-o", binary],
+            input=c_code, text=True, capture_output=True, timeout=30,
+        )
+        assert result.returncode == 0, f"clang failed:\n{result.stderr}"
+        run = subprocess.run([binary], capture_output=True, timeout=timeout)
+        return run.returncode
+    finally:
+        try:
+            os.unlink(binary)
+        except OSError:
+            pass
+
+
 def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5) -> int:
     """Compile yafl source alongside a C library, link, run, return exit code.
 

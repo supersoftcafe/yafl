@@ -835,6 +835,16 @@ class WideExpression(Expression):
         inner_bundle = self.inner.generate(resolver)
         src_ctype = self.source_spec.generate()
         tgt_ctype = self.target_spec.generate()
+
+        # DataPointer → DataPointer widening is a pass-through. Both unions use
+        # the same tag-bit-dispatch encoding, and every variant in the source
+        # spec is also a variant in the target spec with identical pointer
+        # representation.
+        if isinstance(tgt_ctype, cg_t.DataPointer):
+            assert isinstance(src_ctype, cg_t.DataPointer), \
+                f"WideExpression: DataPointer target requires DataPointer source, got {src_ctype}"
+            return inner_bundle
+
         assert isinstance(tgt_ctype, cg_t.UnionContainer), \
             f"WideExpression: target must be UnionContainer, got {tgt_ctype}"
 

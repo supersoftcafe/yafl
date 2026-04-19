@@ -30,11 +30,11 @@ class _BasicMathInt() : BasicMath<System::Int>
     ret __builtin_op__<bigint>("integer_rem", left, right)
 
   fun `<`(left: System::Int, right: System::Int): System::Bool
-    ret __builtin_op__<bool>("integer_test_gt", left, right)
+    ret __builtin_op__<bool>("integer_test_lt", left, right)
 
   fun `=`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_eq", left, right)
 
   fun `>`(left: System::Int, right: System::Int): System::Bool
-    ret __builtin_op__<bool>("integer_test_lt", left, right)
+    ret __builtin_op__<bool>("integer_test_gt", left, right)
 
