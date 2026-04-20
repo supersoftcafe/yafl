@@ -651,6 +651,59 @@ class LambdaExpression(Expression):
 
 
 @dataclass
+class LetInExpression(Expression):
+    """let name: declared_type = value in body — let binding at expression level.
+
+    Created by the AST inliner when a catalog function must be inlined at
+    expression position (e.g., inside a match arm body) and a non-cheap
+    argument would be evaluated multiple times without an intervening binding.
+    """
+    name: str
+    declared_type: t.TypeSpec
+    value: Expression
+    body: Expression
+
+    def __find_bound(self, names: set[str]) -> list[g.Resolved]:
+        if g.match_names(self.name, names):
+            let = s.LetStatement(self.line_ref, self.name, None, {}, (), None, self.declared_type)
+            return [g.Resolved(self.name, let, g.ResolvedScope.LOCAL)]
+        return []
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
+        body_resolver = g.ResolverData(resolver, self.__find_bound)
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            declared_type=self.declared_type.search_and_replace(resolver, replace),
+            value=self.value.search_and_replace(resolver, replace),
+            body=self.body.search_and_replace(body_resolver, replace))))
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        body_resolver = g.ResolverData(resolver, self.__find_bound)
+        return self.body.get_type(body_resolver)
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        new_val, val_stmts = self.value.compile(resolver, self.declared_type)
+        new_type, type_stmts = self.declared_type.compile(resolver)
+        body_resolver = g.ResolverData(resolver, self.__find_bound)
+        new_body, body_stmts = self.body.compile(body_resolver, expected_type)
+        return dataclasses.replace(self, value=new_val, declared_type=new_type, body=new_body), val_stmts + type_stmts + body_stmts
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        val_errs = self.value.check(resolver, self.declared_type)
+        body_resolver = g.ResolverData(resolver, self.__find_bound)
+        body_errs = self.body.check(body_resolver, expected_type)
+        return val_errs + body_errs
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        value_bundle = self.value.generate(resolver)
+        ctype = self.declared_type.generate()
+        sv = cg_p.StackVar(ctype, self.name)
+        init_bundle = g.OperationBundle(stack_vars=(sv,), operations=(cg_o.Move(sv, value_bundle.result_var),))
+        body_resolver = g.ResolverData(resolver, self.__find_bound)
+        body_bundle = self.body.generate(body_resolver)
+        return value_bundle + init_bundle + body_bundle
+
+
+@dataclass
 class NothingExpression(Expression):
     declarations: list[s.Statement]
 

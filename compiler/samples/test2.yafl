@@ -11,8 +11,10 @@ fun testIO(io: IO): (io: IO, v: Container|IOError)
       io.read(16) ?> (io: IO, c: String) =>
       (io=io, v=Container(a, b, c))
 
-fun main(): System::Int where BasicMath<System::Int>
-  testIO(stdin())
+fun main(): System::Int
+  let (io, value) = testIO(stdin())
+  io.close()
+
   System::print("Hello\n")
   System::print("Hi there\n")
   System::print("Whato\n")

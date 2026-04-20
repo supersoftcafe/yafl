@@ -583,6 +583,17 @@ class DestructureStatement(LetStatement):
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DestructureStatement, list[Statement]]:
         stmt, stmt_glb = super().compile(resolver, func_ret_type)
+        # Propagate inferred tuple entry types to targets that have no declared_type.
+        parent_type = stmt.declared_type
+        targets = stmt.targets
+        if isinstance(parent_type, t.TupleSpec) and len(parent_type.entries) == len(targets):
+            targets = [
+                dataclasses.replace(tgt, declared_type=entry.type)
+                if tgt.declared_type is None and entry.type is not None
+                else tgt
+                for tgt, entry in zip(targets, parent_type.entries)
+            ]
+            stmt = dataclasses.replace(stmt, targets=targets)
         results = [x.compile(resolver, None) for x in stmt.targets]
         tgts = [x[0] for x in results]
         tgts_glb = [g for x in results for g in x[1]]
@@ -592,9 +603,6 @@ class DestructureStatement(LetStatement):
     # def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
     #     return super(self).check(resolver, func_ret_type)
     #
-
-    def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        raise NotImplementedError()
 
     def flatten_to(self, path_to_thing, path):
         return [path_to_thing(path + [entry]) for target in self.targets for entry in target.flatten()]

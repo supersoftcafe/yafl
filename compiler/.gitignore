@@ -1,3 +1,4 @@
 yaflpy/lowlevel/build/**
+samples/*.c
 *.o
 

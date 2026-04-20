@@ -164,6 +164,17 @@ def __box_lambda(expr: e.LambdaExpression, resolver: g.Resolver) -> e.LambdaExpr
     return dataclasses.replace(expr, expression=new_body) if new_body is not expr.expression else expr
 
 
+def __let_in_scope(expr: e.LetInExpression, resolver: g.Resolver) -> g.Resolver:
+    name, lr, dt = expr.name, expr.line_ref, expr.declared_type
+
+    def find(names: set[str], n=name, l=lr, d=dt):
+        if g.match_names(n, names):
+            let = s.LetStatement(l, n, None, {}, (), None, d)
+            return [g.Resolved(n, let, g.ResolvedScope.LOCAL)]
+        return []
+    return g.ResolverData(resolver, find)
+
+
 def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g.Resolver) -> e.Expression:
     """Wrap expr in BoxExpression or WideExpression if its type needs widening
     to match the expected type.
@@ -177,6 +188,15 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
         return expr
     actual_type = expr.get_type(resolver)
     if actual_type is None:
+        return expr
+
+    # LetInExpression: box value against its declared type; box body against expected type.
+    if isinstance(expr, e.LetInExpression):
+        new_value = __box_expr(expr.value, expr.declared_type, resolver)
+        body_resolver = __let_in_scope(expr, resolver)
+        new_body = __box_expr(expr.body, expected_type, body_resolver)
+        if new_value is not expr.value or new_body is not expr.body:
+            return dataclasses.replace(expr, value=new_value, body=new_body)
         return expr
 
     # Match expressions: box each arm body against the expected type.

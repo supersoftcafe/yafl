@@ -118,6 +118,52 @@ def _substitute_names(obj: Any, mapping: dict[str, e.Expression]) -> Any:
     return obj
 
 
+def _rename_match_patterns(body: "e.Expression | list[s.Statement]", suffix: str) -> "e.Expression | list[s.Statement]":
+    """Rename all match arm pattern variables in body by appending suffix.
+
+    Prevents pattern variable names (e.g., the `x` in `?>`) from being captured
+    when the inlined body is substituted into a context that also has a binding
+    with the same name (e.g., a nested inlining of the same function).
+    """
+    bound: set[str] = set()
+
+    def _collect(_r, thing):
+        if isinstance(thing, m.MatchExpression):
+            for arm in thing.arms:
+                if arm.name and arm.name != "_":
+                    bound.add(arm.name)
+        return thing
+
+    resolver = g.ResolverRoot([])
+    if isinstance(body, list):
+        for stmt in body:
+            stmt.search_and_replace(resolver, _collect)
+    else:
+        body.search_and_replace(resolver, _collect)
+
+    if not bound:
+        return body
+
+    renames = {n: n + suffix for n in bound}
+
+    def _rename(_r, thing):
+        if isinstance(thing, e.NamedExpression) and thing.name in renames:
+            return dataclasses.replace(thing, name=renames[thing.name])
+        if isinstance(thing, m.MatchExpression):
+            new_arms = [
+                dataclasses.replace(arm, name=renames[arm.name])
+                if arm.name and arm.name in renames else arm
+                for arm in thing.arms
+            ]
+            if any(na is not oa for na, oa in zip(new_arms, thing.arms)):
+                return dataclasses.replace(thing, arms=new_arms)
+        return thing
+
+    if isinstance(body, list):
+        return [stmt.search_and_replace(resolver, _rename) for stmt in body]
+    return body.search_and_replace(resolver, _rename)
+
+
 def _rename_let_vars(stmts: list[s.Statement], suffix: str) -> tuple[list[s.Statement], dict[str, str]]:
     """Rename every let-bound name in `stmts` by appending `suffix`, so that
     inlining the same function at two sites doesn't create duplicate
@@ -254,8 +300,9 @@ def _inline_function_call(
 
     suffix = _fresh_suffix()
 
-    # Clone body with renamed lets so multiple inlinings don't collide.
+    # Clone body with renamed lets AND match arm patterns so multiple inlinings don't collide.
     body, let_rename = _rename_let_vars(list(target.statements), suffix)
+    body = _rename_match_patterns(body, suffix)
 
     # Build the param → argument mapping.
     param_subst: dict[str, e.Expression] = {}
@@ -347,41 +394,75 @@ def _beta_reduce_lambda(lambda_expr: e.LambdaExpression,
 
 def _expr_inline_function(
         target: s.FunctionStatement,
-        args: list[e.Expression]) -> e.Expression | None:
-    """Substitute args into the return-value expression of `target` and
-    return that expression. Only applicable when `target` is a pure function
-    (single ReturnStatement body) and every arg is 'cheap'. For anything
-    more complex we'd need prologue lets which aren't legal at expression
-    position in yafl."""
+        args: list[e.Expression],
+        resolver: "g.Resolver | None" = None) -> e.Expression | None:
+    """Substitute args into the return-value expression of `target` and return
+    the resulting expression, wrapping non-cheap multi-use args in
+    LetInExpressions to avoid duplicating side effects.
+
+    Only applicable when `target` has a single ReturnStatement body.
+    Narrowing guard: if the declared return type is a union/tuple/callable
+    and the body is a concrete leaf, substitution would hide the widening the
+    boxing pass relies on, so those cases are still rejected."""
     if len(target.statements) != 1:
         return None
     ret_stmt = target.statements[0]
     if not isinstance(ret_stmt, s.ReturnStatement):
         return None
-    # Narrowing guard: if the declared return type is a union/tuple/callable
-    # and the body expression is a concrete leaf (literal / None / bare name),
-    # substitution would hide the widening that the boxing pass relies on for
-    # callers that match-on-union. Only allow inlining in that case when the
-    # body is a CallExpression or MatchExpression (types are preserved by
-    # structure, not by widening a leaf).
     if isinstance(target.return_type, (t.CombinationSpec, t.TupleSpec, t.CallableSpec)):
         if not isinstance(ret_stmt.value, (e.CallExpression, m.MatchExpression)):
             return None
     params = list(target.parameters.flatten())
     if len(params) != len(args):
         return None
-    for p in params:
-        if isinstance(p.declared_type, (t.CombinationSpec, t.TupleSpec, t.CallableSpec)):
-            return None
-    for arg in args:
-        if not _is_cheap(arg):
-            return None
-    mapping: dict[str, e.Expression] = {p.name: a for p, a in zip(params, args)}
-    return _substitute_names(ret_stmt.value, mapping)
+
+    suffix = _fresh_suffix()
+    mapping: dict[str, e.Expression] = {}
+    # (bind_name, declared_type, arg_expr) for params that need a let-in binding
+    wrappers: list[tuple[str, t.TypeSpec, e.Expression]] = []
+
+    for p, arg in zip(params, args):
+        use_count = _count_name_refs(ret_stmt.value, p.name)
+        # CombinationSpec params always need a let-in to preserve the union type
+        # for match dispatch — a cheap/single-use narrow arg (e.g. a String for a
+        # String|None param) substituted directly would change the match subject
+        # type and break codegen.  Non-cheap args used more than once also need a
+        # let-in to avoid duplicating side effects.
+        need_let_in = (isinstance(p.declared_type, t.CombinationSpec)
+                       or (not _is_cheap(arg) and use_count > 1))
+        if need_let_in:
+            if p.declared_type is None:
+                return None
+            bind_name = p.name + suffix
+            mapping[p.name] = e.NamedExpression(arg.line_ref, bind_name)
+            # For union params, use the declared type to preserve match dispatch.
+            # For other params (e.g. tuples), use the arg's actual type so the
+            # LetInExpression C variable has the correct struct layout — the
+            # declared parameter type may use a wider representation (e.g.
+            # object_t* for IO) that differs from the concrete argument type.
+            if isinstance(p.declared_type, t.CombinationSpec):
+                bind_type = p.declared_type
+            elif resolver is not None:
+                actual = arg.get_type(resolver)
+                bind_type = actual if actual is not None else p.declared_type
+            else:
+                bind_type = p.declared_type
+            wrappers.append((bind_name, bind_type, arg))
+        else:
+            mapping[p.name] = arg
+
+    body = _rename_match_patterns(_substitute_names(ret_stmt.value, mapping), suffix)
+
+    # Wrap innermost-first so each LetInExpression is in scope for the next.
+    for bind_name, bind_type, bind_val in reversed(wrappers):
+        body = e.LetInExpression(bind_val.line_ref, bind_name, bind_type, bind_val, body)
+
+    return body
 
 
 def _beta_reduce_expressions(stmts: list[s.Statement],
-                             catalog_for_expr_inline: dict[str, s.FunctionStatement]) -> list[s.Statement]:
+                             catalog_for_expr_inline: dict[str, s.FunctionStatement],
+                             global_resolver: "g.Resolver | None" = None) -> list[s.Statement]:
     """Apply lambda beta-reduction throughout statements. Two cases:
        (a) `(lambda)(args)` — IIFE.
        (b) `f(args)` where f resolves via a prior `let f = lambda` and f is
@@ -429,12 +510,12 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
             target = catalog_for_expr_inline.get(thing.function.name)
             if target is not None and isinstance(thing.parameter, e.TupleExpression):
                 args = [te.value for te in thing.parameter.expressions]
-                reduced = _expr_inline_function(target, args)
+                reduced = _expr_inline_function(target, args, _resolver)
                 if reduced is not None:
                     return reduced
         return thing
 
-    resolver = g.ResolverRoot([])
+    resolver = global_resolver if global_resolver is not None else g.ResolverRoot([])
     new_stmts = [stmt.search_and_replace(resolver, replace) for stmt in stmts]
 
     # Drop `let` statements whose lambda was successfully inlined (they are
@@ -455,7 +536,8 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _rewrite_function(fn: s.FunctionStatement,
-                      catalog: dict[str, s.FunctionStatement]) -> tuple[s.FunctionStatement, bool]:
+                      catalog: dict[str, s.FunctionStatement],
+                      global_resolver: "g.Resolver | None" = None) -> tuple[s.FunctionStatement, bool]:
     """Inline within fn's body. Returns (new_fn, changed)."""
     changed = False
     currently_inlining = {fn.name}
@@ -475,7 +557,7 @@ def _rewrite_function(fn: s.FunctionStatement,
     # Pass 2: beta-reduce lambdas (IIFE + let-bound single-use) and
     # expression-position inlining of catalog functions whose body is a pure
     # single-return expression (so no prologue lets are needed).
-    reduced = _beta_reduce_expressions(stmts, catalog)
+    reduced = _beta_reduce_expressions(stmts, catalog, global_resolver)
     if reduced != stmts:
         changed = True
         stmts = reduced
@@ -504,10 +586,11 @@ def inline_ast(statements: list[s.Statement]) -> list[s.Statement]:
         if not catalog:
             break
         changed = False
+        global_resolver = g.ResolverRoot(current)
         new_stmts: list[s.Statement] = []
         for stmt in current:
             if isinstance(stmt, s.FunctionStatement):
-                new_fn, fn_changed = _rewrite_function(stmt, catalog)
+                new_fn, fn_changed = _rewrite_function(stmt, catalog, global_resolver)
                 new_stmts.append(new_fn)
                 changed = changed or fn_changed
             else:
