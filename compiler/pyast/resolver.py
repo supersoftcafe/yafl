@@ -79,9 +79,6 @@ class OperationBundle:
             self.operations + other.operations,
             other.result_var)
 
-    def append(self, other: OperationBundle) -> OperationBundle:
-        raise NotImplementedError()
-
 
 class ResolvedScope(Enum):
     GLOBAL = 1

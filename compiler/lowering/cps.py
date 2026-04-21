@@ -319,8 +319,27 @@ def __create_hot_path_func(fn: Function, state_name: str,
         result_var = call_op.register
 
         if result_var is None:
-            # Callee returns void — cannot be a task; emit unchanged
-            hot_ops.extend(bb.ops)
+            discarded_type = call_op.result_type
+            if discarded_type is None:
+                # Truly void-returning — cannot be a task; emit unchanged
+                hot_ops.extend(bb.ops)
+                continue
+            # Non-void async call with discarded result: still need the task check
+            # so the C cast uses the correct wrapped return type (avoids sret ABI mismatch).
+            discarded_wrapped = __wrap_return_type(discarded_type)
+            sv_discard_wrap = StackVar(discarded_wrapped, f"$wrap${i}")
+            wrap_fields.append((f"$wrap${i}", discarded_wrapped))
+            hot_ops.extend(bb.ops[:-1])
+            hot_ops.append(dataclasses.replace(call_op, register=sv_discard_wrap))
+            task_ptr = __task_ptr_from(sv_discard_wrap, discarded_wrapped)
+            hot_ops.append(IfTask(
+                condition=__is_task_param(sv_discard_wrap, discarded_wrapped),
+                task_source=task_ptr,
+                task_lhs=__sv_async_task,
+                call_id_lhs=__sv_call_id,
+                call_id=i + 1,
+                target="$asynccommon"))
+            # Value is discarded — no Move needed
             continue
 
         result_type  = result_var.get_type()
@@ -478,38 +497,57 @@ def __create_state_machine_func(fn: Function, state_name: str,
         body_ops_before_call = bb.ops[:-1]
         call_op_orig         = bb.ops[-1]
 
-        result_type  = call_op_orig.register.get_type() if call_op_orig.register else None
-        wrapped_type = __wrap_return_type(result_type)  if result_type else None
-        needs_temp   = result_type is not None and (wrapped_type is not result_type)
+        result_type     = call_op_orig.register.get_type() if call_op_orig.register else None
+        discarded_type  = None if result_type is not None else call_op_orig.result_type
+        wrapped_type    = __wrap_return_type(result_type)  if result_type else None
+        needs_temp      = result_type is not None and (wrapped_type is not result_type)
 
         substituted_before = __convert_var_to_field_refs(body_ops_before_call, vars_to_fields)
         sm_ops.extend(substituted_before)
 
         call_subst = call_op_orig.replace_params(lambda p: vars_to_fields.get(p, p))
 
-        if needs_temp:
+        if discarded_type is not None:
+            # Non-void call whose result was stripped by dead-store elimination.
+            # Still need to check for async and use the correct C cast (sret ABI).
+            discarded_wrapped = __wrap_return_type(discarded_type)
+            sv_discard_wrap = StackVar(discarded_wrapped, f"$sm_wrap${i}")
+            sm_wrap_fields.append((f"$sm_wrap${i}", discarded_wrapped))
+            sm_ops.append(dataclasses.replace(call_subst, register=sv_discard_wrap))
+            sm_ops.append(Label(f"$resume${i}"))
+            task_ptr = __task_ptr_from(sv_discard_wrap, discarded_wrapped)
+            check = Invoke("UNLIKELY",
+                           NewStruct((("x", __is_task_param(sv_discard_wrap, discarded_wrapped)),)),
+                           Int(32))
+            async_sm_label = f"$async_sm${i}"
+            sm_ops.append(JumpIf(async_sm_label, check))
+            cold_ops.append(Label(async_sm_label))
+            cold_ops.append(Move(idx_field, Integer(i + 1, 32)))
+            untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
+            callback = GlobalFunction(f"{fn.name}$async", __state_param_var)
+            cold_ops.append(Move(
+                __sv_discard,
+                Invoke("task_on_complete",
+                       NewStruct((("task", untag), ("cb", callback))),
+                       DataPointer())))
+            cold_ops.append(ReturnVoid())
+        elif needs_temp:
             sv_wrapped = StackVar(wrapped_type, f"$sm_wrap${i}")
             sm_wrap_fields.append((f"$sm_wrap${i}", wrapped_type))
             call_with_wrap = dataclasses.replace(call_subst, register=sv_wrapped)
             sm_ops.append(call_with_wrap)
             sv_for_check    = sv_wrapped
             orig_state_field = call_subst.register
-        else:
-            sm_ops.append(call_subst)
-            sv_for_check     = call_subst.register
-            orig_state_field = None
 
-        sm_ops.append(Label(f"$resume${i}"))
+            sm_ops.append(Label(f"$resume${i}"))
 
-        if sv_for_check is not None:
             check = Invoke("UNLIKELY",
                            NewStruct((("x", __is_task_param(sv_for_check, wrapped_type)),)),
                            Int(32))
             async_sm_label = f"$async_sm${i}"
             sm_ops.append(JumpIf(async_sm_label, check))
 
-            if needs_temp:
-                sm_ops.append(Move(orig_state_field, StructField(sv_wrapped, "value")))
+            sm_ops.append(Move(orig_state_field, StructField(sv_wrapped, "value")))
 
             cold_ops.append(Label(async_sm_label))
             cold_ops.append(Move(idx_field, Integer(i + 1, 32)))   # 1-based
@@ -522,6 +560,31 @@ def __create_state_machine_func(fn: Function, state_name: str,
                        NewStruct((("task", untag), ("cb", callback))),
                        DataPointer())))
             cold_ops.append(ReturnVoid())
+        else:
+            sm_ops.append(call_subst)
+            sv_for_check     = call_subst.register
+            orig_state_field = None
+
+            sm_ops.append(Label(f"$resume${i}"))
+
+            if sv_for_check is not None:
+                check = Invoke("UNLIKELY",
+                               NewStruct((("x", __is_task_param(sv_for_check, wrapped_type)),)),
+                               Int(32))
+                async_sm_label = f"$async_sm${i}"
+                sm_ops.append(JumpIf(async_sm_label, check))
+
+                cold_ops.append(Label(async_sm_label))
+                cold_ops.append(Move(idx_field, Integer(i + 1, 32)))   # 1-based
+                task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
+                untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
+                callback = GlobalFunction(f"{fn.name}$async", __state_param_var)
+                cold_ops.append(Move(
+                    __sv_discard,
+                    Invoke("task_on_complete",
+                           NewStruct((("task", untag), ("cb", callback))),
+                           DataPointer())))
+                cold_ops.append(ReturnVoid())
 
     # ── Terminal block ────────────────────────────────────────────────────────
     terminal_bb = basic_blocks[-1]

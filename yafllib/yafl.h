@@ -134,7 +134,7 @@ EXTERN noreturn void log_error_and_exit(char const* format, ...);
 
 
 #define maskof(type, field)\
-        ((uint32_t)(((uint32_t)1)<<(offsetof(struct {type o;}, o field)/sizeof(void*))))
+        ((uint64_t)(((uint64_t)1)<<(offsetof(struct {type o;}, o field)/sizeof(void*))))
 
 typedef struct {
     void* f;
@@ -150,9 +150,9 @@ typedef struct {
 typedef struct vtable {
     uint16_t object_size;
     uint16_t array_el_size;
-    uint32_t object_pointer_locations;
-    uint32_t array_el_pointer_locations;
     uint32_t functions_mask;     // Size-1, must be n^2-1, is the bit mask used to lookup function pointers
+    uint64_t object_pointer_locations;
+    uint64_t array_el_pointer_locations;
     uint16_t array_len_offset;   // Offset of uint32_t array length field
     uint16_t is_mutable:1;
     const char *name;
@@ -168,9 +168,9 @@ typedef struct vtable {
         struct NAME {\
             uint16_t object_size;\
             uint16_t array_el_size;\
-            uint32_t object_pointer_locations;\
-            uint32_t array_el_pointer_locations;\
             uint32_t functions_mask;\
+            uint64_t array_el_pointer_locations;\
+            uint64_t object_pointer_locations;\
             uint16_t array_len_offset;\
             uint16_t is_mutable:1;\
             const char* name;\

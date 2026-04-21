@@ -160,11 +160,11 @@ class Test(TestCase):
         tokens = tokenize("fun test()\n  println()\n  ret 0\n", "file")
         result = p.parse_statement(tokens)
         self.assertIsInstance(result.value, s.FunctionStatement)
-        statements = result.value.statements
-        self.assertEqual(2, len(statements))
-        st1, st2 = statements
-        self.assertIsInstance(st1, s.ActionStatement)
-        self.assertIsInstance(st2, s.ReturnStatement)
+        body = result.value.body
+        self.assertIsInstance(body, e.BlockExpression)
+        self.assertEqual(1, len(body.statements))
+        self.assertIsInstance(body.statements[0], s.ActionStatement)
+        self.assertIsInstance(body.value, e.IntegerExpression)
 
     def test_simple_class(self):
         tokens = tokenize("class Simple(value: System::Int32)", "file")
@@ -276,13 +276,11 @@ class Test(TestCase):
         self.assertEqual(1, len(result))
         statement = result[0]
 
-        result = [x for x in statement.statements if isinstance(x, s.ReturnStatement)]
-        self.assertEqual(1, len(result))
-        statement = result[0]
-
-        self.assertIsInstance(statement.value, e.CallExpression)
-        self.assertIsInstance(statement.value.function, e.NamedExpression)
-        load = statement.value.function
+        self.assertIsInstance(statement.body, e.BlockExpression)
+        call_expr = statement.body.value
+        self.assertIsInstance(call_expr, e.CallExpression)
+        self.assertIsInstance(call_expr.function, e.NamedExpression)
+        load = call_expr.function
 
         self.assertEqual(1, len(load.type_params))
         type_param = load.type_params[0]

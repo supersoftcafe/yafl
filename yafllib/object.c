@@ -684,10 +684,10 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
         gc_fsa_mark_sweep$page_needs_scan(page);
 }
 
-static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, uint32_t pointer_locations) {
+static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, uint64_t pointer_locations) {
     while (pointer_locations) {
         // Get the object reference
-        unsigned index = __builtin_ctz(pointer_locations);
+        unsigned index = __builtin_ctzll(pointer_locations);
         pointer_locations &= pointer_locations - 1;
         object_t **ptr_ptr = &base_ptr[index];
         object_t *object = *ptr_ptr;

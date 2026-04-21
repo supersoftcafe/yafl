@@ -2,8 +2,35 @@
 import os
 import subprocess
 import tempfile
+from pathlib import Path
 
 import compiler as c
+
+# Ensure compiled test binaries can find libyafl.so at runtime.
+_YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
+_RUN_ENV = {
+    **os.environ,
+    "LD_LIBRARY_PATH": os.pathsep.join(filter(None, [
+        str(_YAFLLIB_DIR),
+        str(_YAFLLIB_DIR / "build" / "debug-unix"),
+        os.environ.get("LD_LIBRARY_PATH", ""),
+    ])),
+}
+
+
+def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
+    """Assert that the yafl source compiles to C and clang accepts it with zero
+    warnings, zero errors, and zero notes.  Fails the test if clang emits
+    anything on stderr."""
+    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=use_stdlib, just_testing=False)
+    assert c_code, "yafl compilation produced no output"
+
+    result = subprocess.run(
+        ["clang", "-Werror", "-x", "c", "-", "-O0", "-fsyntax-only"],
+        input=c_code, text=True, capture_output=True, timeout=30,
+    )
+    assert result.stderr == "", f"clang emitted diagnostics:\n{result.stderr}"
+    assert result.returncode == 0, f"clang failed:\n{result.stderr}"
 
 
 def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
@@ -24,7 +51,7 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
 
-        run = subprocess.run([binary], capture_output=True, timeout=timeout)
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
         return run.returncode, ""
     finally:
         try:
@@ -46,7 +73,7 @@ def compile_and_run_stdlib(source: str, timeout: int = 5) -> int:
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
-        run = subprocess.run([binary], capture_output=True, timeout=timeout)
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
         return run.returncode
     finally:
         try:
@@ -86,5 +113,5 @@ def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5
         )
         assert result.returncode == 0, f"clang link failed:\n{result.stderr}"
 
-        run = subprocess.run([binary], capture_output=True, timeout=timeout)
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
         return run.returncode

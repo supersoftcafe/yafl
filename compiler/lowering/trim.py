@@ -19,18 +19,18 @@ from functools import reduce
 
 @dataclass
 class _scan_sets:
-    g: frozenset[str] = frozenset()
-    o: frozenset[str] = frozenset()
-    f: frozenset[str] = frozenset()
+    globals: frozenset[str] = frozenset()
+    objects: frozenset[str] = frozenset()
+    functions: frozenset[str] = frozenset()
 
     def __or__(self, other):
-        return _scan_sets(self.g | other.g, self.o | other.o, self.f | other.f)
+        return _scan_sets(self.globals | other.globals, self.objects | other.objects, self.functions | other.functions)
 
     def __sub__(self, other):
-        return _scan_sets(self.g - other.g, self.o - other.o, self.f - other.f)
+        return _scan_sets(self.globals - other.globals, self.objects - other.objects, self.functions - other.functions)
 
     def __bool__(self):
-        return bool(self.g or self.o or self.f)
+        return bool(self.globals or self.objects or self.functions)
 
 
 def __reduce_scan_sets(iter: Iterable[_scan_sets]) -> _scan_sets:
@@ -58,16 +58,16 @@ def __scan_rparam(p: RParam) -> _scan_sets:
         case StackVar():
             return _scan_sets()
         case ObjectField():
-            x = __scan_rparam(p.pointer) | _scan_sets(o=frozenset([p.object_name]))
+            x = __scan_rparam(p.pointer) | _scan_sets(objects=frozenset([p.object_name]))
             return (x | __scan_rparam(p.index)) if p.index else x
 
         case GlobalFunction():
             if p.external:
                 return _scan_sets()
-            x = _scan_sets(f=frozenset([p.name]))
+            x = _scan_sets(functions=frozenset([p.name]))
             return (x | __scan_rparam(p.object)) if p.object else x
         case GlobalVar():
-            return _scan_sets(g=frozenset([p.name]))
+            return _scan_sets(globals=frozenset([p.name]))
 
         case NullPointer():
             return _scan_sets()
@@ -75,7 +75,7 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return __scan_rparam(p.value)
         case ObjVtableEq():
             # Keep the referenced class's vtable alive when dispatching on it.
-            on = _scan_sets(o=frozenset([p.class_name])) if p.class_name else _scan_sets()
+            on = _scan_sets(objects=frozenset([p.class_name])) if p.class_name else _scan_sets()
             return __scan_rparam(p.value) | on
         case NewStructTyped():
             return __reduce_scan_sets(__scan_rparam(x) for _, x in p.values)
@@ -107,7 +107,7 @@ def __scan_op(op: Op) -> _scan_sets:
             return _scan_sets()
 
         case NewObject():
-            x = _scan_sets(o=frozenset([op.name]))
+            x = _scan_sets(objects=frozenset([op.name]))
             return __scan_rparam(op.register) | ((x | __scan_rparam(op.size)) if op.size else x)
 
         case IfTask():
@@ -121,32 +121,32 @@ def __scan_op(op: Op) -> _scan_sets:
 
 def __scan_global(g: Global) -> _scan_sets:
     rp = __scan_rparam(g.init) if g.init else _scan_sets()
-    lf = _scan_sets(f=frozenset({g.lazy_init_function})) if g.lazy_init_function else _scan_sets()
-    lv = _scan_sets(g=frozenset({g.lazy_init_flag})) if g.lazy_init_flag else _scan_sets()
-    on = _scan_sets(o=frozenset({g.object_name})) if g.object_name else _scan_sets()
+    lf = _scan_sets(functions=frozenset({g.lazy_init_function})) if g.lazy_init_function else _scan_sets()
+    lv = _scan_sets(globals=frozenset({g.lazy_init_flag})) if g.lazy_init_flag else _scan_sets()
+    on = _scan_sets(objects=frozenset({g.object_name})) if g.object_name else _scan_sets()
     return rp | lf | lv | on
 
 def __scan_object(o: Object) -> _scan_sets:
-    return _scan_sets(f=frozenset(rn for vn, rn in o.functions), o=frozenset(o.extends))
+    return _scan_sets(functions=frozenset(rn for vn, rn in o.functions), objects=frozenset(o.extends))
 
 def __scan_function(f: Function) -> _scan_sets:
     return __reduce_scan_sets(__scan_op(op) for op in f.ops)
 
 
 def __removed_unused_stuff(from_app: Application, scan_sets: _scan_sets, to_app: _scan_sets) -> Application:
-    from_globals   = [__scan_global(from_app.globals[    name]) for name in scan_sets.g]
-    from_objects   = [__scan_object(from_app.objects[    name]) for name in scan_sets.o]
-    from_functions = [__scan_function(from_app.functions[name]) for name in scan_sets.f]
+    from_globals   = [__scan_global(from_app.globals[    name]) for name in scan_sets.globals]
+    from_objects   = [__scan_object(from_app.objects[    name]) for name in scan_sets.objects]
+    from_functions = [__scan_function(from_app.functions[name]) for name in scan_sets.functions]
     seen_sets = scan_sets | __reduce_scan_sets(from_globals + from_objects + from_functions)
     new_scan_sets = seen_sets - to_app
     if not new_scan_sets:
         return dataclasses.replace(from_app,
-            globals={name: from_app.globals[name] for name in sorted(to_app.g)},
-            objects={name: from_app.objects[name] for name in sorted(to_app.o)},
-            functions={name: from_app.functions[name] for name in sorted(to_app.f)},
+            globals={name: from_app.globals[name] for name in sorted(to_app.globals)},
+            objects={name: from_app.objects[name] for name in sorted(to_app.objects)},
+            functions={name: from_app.functions[name] for name in sorted(to_app.functions)},
         )
     return __removed_unused_stuff(from_app, new_scan_sets, seen_sets | to_app)
 
 
 def removed_unused_stuff(app: Application) -> Application:
-    return __removed_unused_stuff(app, _scan_sets(f=frozenset(["__entrypoint__"])), _scan_sets())
+    return __removed_unused_stuff(app, _scan_sets(functions=frozenset(["__entrypoint__"])), _scan_sets())

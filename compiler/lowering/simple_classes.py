@@ -72,10 +72,7 @@ def __lift_method(
             return dataclasses.replace(thing, name="$this")
         return thing
 
-    new_statements = [
-        stmt.search_and_replace(g.ResolverRoot([]), rename_this)
-        for stmt in method.statements
-    ]
+    new_body = method.body.search_and_replace(g.ResolverRoot([]), rename_this) if method.body is not None else None
 
     this_let = s.LetStatement(lr, "$this", __empty_imports, {}, (), None, tuple_spec)
     new_targets = [this_let] + list(method.parameters.targets)
@@ -85,7 +82,7 @@ def __lift_method(
         method,
         name=f"{cls_name}__{method.name}",
         parameters=new_params,
-        statements=new_statements,
+        body=new_body,
     )
 
 

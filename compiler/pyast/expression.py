@@ -590,14 +590,14 @@ class LambdaExpression(Expression):
     expression: Expression
     return_type: t.CallableSpec | None = None
 
-    def __find_locals(self, names: set[str]) -> list[g.Resolved[s.DataStatement]]:
+    def _find_locals(self, names: set[str]) -> list[g.Resolved[s.DataStatement]]:
         p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
              for let in self.parameters.flatten()
              if g.match_names(let.name, names)]
         return p
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
-        nested_resolver = g.ResolverData(resolver, self.__find_locals)
+        nested_resolver = g.ResolverData(resolver, self._find_locals)
         return cast(Expression, replace(resolver, dataclasses.replace(
             self,
             parameters=cast(s.DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
@@ -609,7 +609,7 @@ class LambdaExpression(Expression):
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         # Include parameters in data resolution hierarchy
-        resolver = g.ResolverData(resolver, self.__find_locals)
+        resolver = g.ResolverData(resolver, self._find_locals)
 
         # Compile the parameter types
         new_prm, new_prm_glb = self.parameters.compile(resolver, None)
@@ -638,7 +638,7 @@ class LambdaExpression(Expression):
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # Include parameters in data resolution hierarchy
-        resolver = g.ResolverData(resolver, self.__find_locals)
+        resolver = g.ResolverData(resolver, self._find_locals)
 
         sub_expected_type = expected_type.result if isinstance(expected_type, t.CallableSpec) else None
         prm_err = self.parameters.check(resolver, None)
@@ -651,65 +651,76 @@ class LambdaExpression(Expression):
 
 
 @dataclass
-class LetInExpression(Expression):
-    """let name: declared_type = value in body — let binding at expression level.
+class BlockExpression(Expression):
+    """A sequence of statements followed by a value expression.
 
-    Created by the AST inliner when a catalog function must be inlined at
-    expression position (e.g., inside a match arm body) and a non-cheap
-    argument would be evaluated multiple times without an intervening binding.
+    Used as the body of FunctionStatement and produced by the inliner
+    when a call is substituted at expression position.
     """
-    name: str
-    declared_type: t.TypeSpec
+    statements: list[s.Statement]
     value: Expression
-    body: Expression
 
-    def __find_bound(self, names: set[str]) -> list[g.Resolved]:
-        if g.match_names(self.name, names):
-            let = s.LetStatement(self.line_ref, self.name, None, {}, (), None, self.declared_type)
-            return [g.Resolved(self.name, let, g.ResolvedScope.LOCAL)]
-        return []
+    def _find_locals(self) -> Callable[[set[str]], list[g.Resolved]]:
+        def finder(names: set[str]) -> list[g.Resolved]:
+            return [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                    for x in self.statements
+                    if isinstance(x, s.LetStatement)
+                    for let in x.flatten()
+                    if g.match_names(let.name, names)]
+        return finder
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
-        body_resolver = g.ResolverData(resolver, self.__find_bound)
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            declared_type=self.declared_type.search_and_replace(resolver, replace),
-            value=self.value.search_and_replace(resolver, replace),
-            body=self.body.search_and_replace(body_resolver, replace))))
+        nested = g.ResolverData(resolver, self._find_locals())
+        new_stmts = [x.search_and_replace(nested, replace) for x in self.statements]
+        new_val = self.value.search_and_replace(nested, replace)
+        return cast(Expression, replace(resolver, dataclasses.replace(self, statements=new_stmts, value=new_val)))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        body_resolver = g.ResolverData(resolver, self.__find_bound)
-        return self.body.get_type(body_resolver)
+        nested = g.ResolverData(resolver, self._find_locals())
+        return self.value.get_type(nested)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        new_val, val_stmts = self.value.compile(resolver, self.declared_type)
-        new_type, type_stmts = self.declared_type.compile(resolver)
-        body_resolver = g.ResolverData(resolver, self.__find_bound)
-        new_body, body_stmts = self.body.compile(body_resolver, expected_type)
-        return dataclasses.replace(self, value=new_val, declared_type=new_type, body=new_body), val_stmts + type_stmts + body_stmts
+        nested = g.ResolverData(resolver, self._find_locals())
+        stmt_results = [x.compile(nested, expected_type) for x in self.statements]
+        new_stmts = [r[0] for r in stmt_results if r[0]]
+        glbs: list[s.Statement] = [g for r in stmt_results for g in r[1]]
+        new_val, val_glbs = self.value.compile(nested, expected_type)
+        return dataclasses.replace(self, statements=new_stmts, value=new_val), glbs + val_glbs
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
-        val_errs = self.value.check(resolver, self.declared_type)
-        body_resolver = g.ResolverData(resolver, self.__find_bound)
-        body_errs = self.body.check(body_resolver, expected_type)
-        return val_errs + body_errs
+        nested = g.ResolverData(resolver, self._find_locals())
+        stmt_errs = [err for x in self.statements for err in x.check(nested, expected_type)]
+        val_errs = self.value.check(nested, expected_type)
+        if not val_errs and expected_type is not None:
+            xtype = self.value.get_type(nested)
+            if xtype is not None and not t.trivially_assignable_equals(nested, expected_type, xtype):
+                val_errs = [Error(self.value.line_ref, "Incorrect type")]
+        return stmt_errs + val_errs
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        value_bundle = self.value.generate(resolver)
-        ctype = self.declared_type.generate()
-        sv = cg_p.StackVar(ctype, self.name)
-        init_bundle = g.OperationBundle(stack_vars=(sv,), operations=(cg_o.Move(sv, value_bundle.result_var),))
-        body_resolver = g.ResolverData(resolver, self.__find_bound)
-        body_bundle = self.body.generate(body_resolver)
-        return value_bundle + init_bundle + body_bundle
+        nested = g.ResolverData(resolver, self._find_locals())
+        bundle = g.OperationBundle()
+        for i, stmt in enumerate(self.statements):
+            bundle = bundle + stmt.generate(nested, None).rename_vars(f"b{i}_")
+        return bundle + self.value.generate(nested)
 
 
 @dataclass
 class NothingExpression(Expression):
-    declarations: list[s.Statement]
-
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            declarations=[x.search_and_replace(resolver, replace) for x in self.declarations])))
+        return cast(Expression, replace(resolver, self))
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        return None
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        return self, []
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return []
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        return g.OperationBundle()
 
 
 @dataclass
@@ -774,7 +785,7 @@ class TupleExpression(Expression):
 
 
 @dataclass
-class TerneryExpression(Expression):
+class TernaryExpression(Expression):
     condition: Expression
     trueResult: Expression
     falseResult: Expression

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
-from typing import Optional, Callable, List, Dict, Any, Tuple, Union
+from typing import Callable, Any
 from pathlib import Path
 
 from codegen.tools import mangle_name
@@ -9,6 +10,7 @@ from codegen.tools import mangle_name
 from codegen.perfecthash import create_perfect_lookups
 from codegen.things import *
 from codegen.typedecl import *
+
 
 
 def _gen_function_ids(global_ids: dict[str, int]) -> str:
@@ -19,10 +21,10 @@ def _gen_function_ids(global_ids: dict[str, int]) -> str:
 # Aggregates all application data for code generation
 @dataclass
 class Application:
-    functions: Dict[str, Function] = field(default_factory=dict)
-    objects: Dict[str, Object] = field(default_factory=dict)
-    globals: Dict[str, Global] = field(default_factory=dict)
-    union_discriminators: Dict[str, int] = field(default_factory=dict)  # as_unique_id_str() → global discriminator ID
+    functions: dict[str, Function] = field(default_factory=dict)
+    objects: dict[str, Object] = field(default_factory=dict)
+    globals: dict[str, Global] = field(default_factory=dict)
+    union_discriminators: dict[str, int] = field(default_factory=dict)  # as_unique_id_str() → global discriminator ID
 
     def __post_init__(self):
         self.__type_cache: dict[Type, tuple[str, str]] = {}
@@ -35,7 +37,7 @@ class Application:
 
 
     def __gen_function(self, name: str, f: Function):
-        f = f.strip_unused_operations()
+        f = f.strip_unused_operations().simplify_control_flow().fold_struct_fields().copy_propagate().simplify_control_flow().eliminate_common_subexpressions()
         self.__forwards.append(f.to_c_prototype(self.__type_cache))
         self.__functions.append(f.to_c_implement(self.__type_cache))
 
@@ -68,15 +70,21 @@ class Application:
         vtable_str = ",".join(f"\n        {{ .i = {entry['i']}, .f = {entry['f']} }}" for entry in vtable_array)
 
         self.__typedefs.append(f"{o.comment_line}typedef {o.fields.declare(type_cache)} ALIGNED {mangled_name}_t;\n")
+        obj_size_str = o.get_object_size(type_cache)
+        arr_el_size_str = o.get_array_el_size(type_cache)
+        arr_len_offset_str = o.get_array_length_offset(type_cache)
+        ptr_mask_str = o.get_pointer_mask(type_cache)
+        arr_el_ptr_mask_str = o.get_array_pointer_mask(type_cache)
+
         self.__forwards.append(f"{o.comment_line}static vtable_t* const obj_{mangled_name};\n")
         self.__variables.append(
             f"{o.comment_line}static vtable_t* const obj_{mangle_name(name)} = VTABLE_DECLARE({len(vtable_array)}){{\n" +
-            f"    .object_size = {o.get_object_size(type_cache)},\n"
-            f"    .array_el_size = {o.get_array_el_size(type_cache)},\n"
-            f"    .object_pointer_locations = {o.get_pointer_mask(type_cache)},\n"
-            f"    .array_el_pointer_locations = {o.get_array_pointer_mask(type_cache)},\n"
+            f"    .object_size = {obj_size_str},\n"
+            f"    .array_el_size = {arr_el_size_str},\n"
             f"    .functions_mask = rotate_function_id({vtable_size-1}),\n"
-            f"    .array_len_offset = {o.get_array_length_offset(type_cache)},\n"
+            f"    .object_pointer_locations = {ptr_mask_str},\n"
+            f"    .array_el_pointer_locations = {arr_el_ptr_mask_str},\n"
+            f"    .array_len_offset = {arr_len_offset_str},\n"
             f"    .implements_array = VTABLE_IMPLEMENTS({len(implements_array)}, {implements_str}),\n"
             f"    .lookup = {{ {vtable_str} }},\n"
             f"}};\n")
@@ -84,7 +92,7 @@ class Application:
     def __gen_global(self, name: str, g: Global):
         self.__forwards.append(g.to_c_prototype(self.__type_cache))
         self.__variables.append(g.to_c_implement(self.__type_cache))
-        if not g.object_name:
+        if not g.object_name and g.lazy_init_function is not None:
             self.__gc_roots.extend(g.type.get_pointer_paths(g.to_c_name()))
 
     def __declare_roots(self) -> str:

@@ -24,7 +24,6 @@ __CUTOFF_COMPLEXITY = 10
 def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
     new_ops: list[Op] = []
     new_vars: list[tuple[str, Type]] = []
-    all_labels: set[str] = {label.name for label in fn.ops if isinstance(label, Label)}
 
     def replace_op_with_func(op: Op, unique_id: str):
         if (not isinstance(op, Call) or

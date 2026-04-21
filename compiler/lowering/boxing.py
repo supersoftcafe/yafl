@@ -28,6 +28,8 @@ def insert_boxing(statements: list[s.Statement]) -> list[s.Statement]:
 
 def __box_top_stmt(stmt: s.Statement, resolver: g.Resolver) -> s.Statement:
     if isinstance(stmt, s.FunctionStatement):
+        if stmt.body is None:
+            return stmt
         return stmt.search_and_replace(resolver, __make_replace(stmt.return_type))
     if isinstance(stmt, s.ClassStatement):
         # Each method needs a replace function that knows its own return type.
@@ -50,6 +52,15 @@ def __make_replace(return_type: t.TypeSpec | None):
     function encounters a ReturnStatement.
     """
     def replace(resolver: g.Resolver, thing):
+        if isinstance(thing, s.FunctionStatement):
+            # Box the body's final value against this function's own return type.
+            # search_and_replace calls replace(nested_resolver, fn) after recursing into
+            # the body, so resolver already includes the function's parameters.
+            if thing.body is not None and thing.return_type is not None:
+                new_body = __box_expr(thing.body, thing.return_type, resolver)
+                if new_body is not thing.body:
+                    return dataclasses.replace(thing, body=new_body)
+            return thing
         if isinstance(thing, s.ReturnStatement):
             return __box_return(thing, return_type, resolver)
         if isinstance(thing, s.LetStatement):
@@ -164,14 +175,16 @@ def __box_lambda(expr: e.LambdaExpression, resolver: g.Resolver) -> e.LambdaExpr
     return dataclasses.replace(expr, expression=new_body) if new_body is not expr.expression else expr
 
 
-def __let_in_scope(expr: e.LetInExpression, resolver: g.Resolver) -> g.Resolver:
-    name, lr, dt = expr.name, expr.line_ref, expr.declared_type
+def __block_scope(expr: e.BlockExpression, resolver: g.Resolver) -> g.Resolver:
+    lets = [(let.name, let.line_ref, let.declared_type)
+            for x in expr.statements
+            if isinstance(x, s.LetStatement)
+            for let in x.flatten()]
 
-    def find(names: set[str], n=name, l=lr, d=dt):
-        if g.match_names(n, names):
-            let = s.LetStatement(l, n, None, {}, (), None, d)
-            return [g.Resolved(n, let, g.ResolvedScope.LOCAL)]
-        return []
+    def find(names: set[str], bindings=lets):
+        return [g.Resolved(n, s.LetStatement(lr, n, None, {}, (), None, dt), g.ResolvedScope.LOCAL)
+                for n, lr, dt in bindings
+                if g.match_names(n, names)]
     return g.ResolverData(resolver, find)
 
 
@@ -179,7 +192,7 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
     """Wrap expr in BoxExpression or WideExpression if its type needs widening
     to match the expected type.
 
-    When `expr` is a MatchExpression or TerneryExpression, the expected type is
+    When `expr` is a MatchExpression or TernaryExpression, the expected type is
     propagated into each branch so branches with narrower types get boxed
     individually; this matters at codegen time because all branches share one
     result slot whose C type must be uniform.
@@ -190,13 +203,12 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
     if actual_type is None:
         return expr
 
-    # LetInExpression: box value against its declared type; box body against expected type.
-    if isinstance(expr, e.LetInExpression):
-        new_value = __box_expr(expr.value, expr.declared_type, resolver)
-        body_resolver = __let_in_scope(expr, resolver)
-        new_body = __box_expr(expr.body, expected_type, body_resolver)
-        if new_value is not expr.value or new_body is not expr.body:
-            return dataclasses.replace(expr, value=new_value, body=new_body)
+    # BlockExpression: box the final value against the expected type; statements box themselves.
+    if isinstance(expr, e.BlockExpression):
+        nested = __block_scope(expr, resolver)
+        new_value = __box_expr(expr.value, expected_type, nested)
+        if new_value is not expr.value:
+            return dataclasses.replace(expr, value=new_value)
         return expr
 
     # Match expressions: box each arm body against the expected type.
@@ -207,7 +219,7 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
             return expr
 
     # Ternary: box both branches against the expected type.
-    if isinstance(expr, e.TerneryExpression):
+    if isinstance(expr, e.TernaryExpression):
         new_true  = __box_expr(expr.trueResult,  expected_type, resolver)
         new_false = __box_expr(expr.falseResult, expected_type, resolver)
         if new_true is not expr.trueResult or new_false is not expr.falseResult:
@@ -222,7 +234,7 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
     # an arg slot declared `(:IO, :T): (io: IO, v: T|IOError)` loses the
     # widening to `String|IOError` and the call check rejects it.
     if isinstance(expr, e.LambdaExpression) and isinstance(expected_type, t.CallableSpec):
-        nested_resolver = g.ResolverData(resolver, expr._LambdaExpression__find_locals)
+        nested_resolver = g.ResolverData(resolver, expr._find_locals)
         new_body = __box_expr(expr.expression, expected_type.result, nested_resolver)
         if new_body is not expr.expression:
             # Keep the lambda's return_type but widen via the new body; if

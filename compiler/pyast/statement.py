@@ -142,14 +142,14 @@ class DataStatement(NamedStatement):
 @dataclass
 class FunctionStatement(DataStatement):
     parameters: DestructureStatement
-    statements: list[Statement]
+    body: e.Expression | None
     return_type: t.TypeSpec|None = None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         nested_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         return cast(Statement, replace(nested_resolver, dataclasses.replace(self,
             parameters=cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
-            statements=[x.search_and_replace(nested_resolver, replace) for x in self.statements],
+            body=self.body.search_and_replace(nested_resolver, replace) if self.body is not None else None,
             return_type=self.return_type.search_and_replace(resolver, replace) if self.return_type else None,
             trait_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.trait_params))))
 
@@ -161,12 +161,8 @@ class FunctionStatement(DataStatement):
             p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
                  for let in self.parameters.flatten()
                  if g.match_names(let.name, names)]
-            l = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-                 for x in self.statements if isinstance(x, LetStatement) for let in x.flatten()
-                 if g.match_names(let.name, names)]
-            # s = [g.Resolved(self.local_this.name, self.local_this, g.ResolvedScope.LOCAL)] if self.local_this and self.local_this.name in names else []
             td = self._find_trait_data(resolver, names)
-            return p + l + td # + s
+            return p + td
         return finder
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement]]:
@@ -175,21 +171,22 @@ class FunctionStatement(DataStatement):
         prms, prms_glb = self.parameters.compile(resolver, None)
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
 
-        resolver = g.ResolverData(resolver, self.__find_locals(resolver))
-        smt_results = [x.compile(resolver, self.return_type) for x in self.statements]
+        body_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
+        if self.body is not None:
+            new_body, body_glb = self.body.compile(body_resolver, self.return_type)
+        else:
+            new_body, body_glb = None, []
 
-        new_statements = [x[0] for x in smt_results if x[0]]
-        globals = [xg for x in smt_results for xg in x[1]] + rettype_glb + prms_glb + trts_glb
-
-        new_self = dataclasses.replace(self, trait_params = tuple(trts), parameters = prms, statements = new_statements, return_type = rettype)
+        globals = body_glb + rettype_glb + prms_glb + trts_glb
+        new_self = dataclasses.replace(self, trait_params=tuple(trts), parameters=prms, body=new_body, return_type=rettype)
         return new_self, globals
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         resolver = g.ResolverType(resolver, self._find_generic_types)
-        resolver = g.ResolverData(resolver, self.__find_locals(resolver))
+        body_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         err1 = self.return_type.check(resolver) if self.return_type else []
         err2 = self.parameters.check(resolver, None)
-        err3 = [e for x in self.statements for e in x.check(resolver, self.return_type)]
+        err3 = self.body.check(body_resolver, self.return_type) if self.body is not None else []
         err4 = [e for x in self.trait_params for e in x.check(resolver)]
 
         if "foreign" in self.attributes:
@@ -198,7 +195,7 @@ class FunctionStatement(DataStatement):
                     or len(foreign_attr.expressions) != 1
                     or not isinstance(foreign_attr.expressions[0].value, e.StringExpression)):
                 foreign_err = [Error(self.line_ref, '[foreign] requires exactly one string argument: [foreign("symbol")]')]
-            elif self.statements:
+            elif self.body is not None:
                 foreign_err = [Error(self.line_ref, "[foreign] functions must have no body")]
             else:
                 foreign_err = []
@@ -224,8 +221,10 @@ class FunctionStatement(DataStatement):
         bundle = g.OperationBundle()
         for index, parameter in enumerate(self.parameters.targets):
             bundle = bundle + parameter.to_c_destructure(None).rename_vars(f"p{index}_")
-        for index, statement in enumerate(self.statements):
-            bundle = bundle + statement.generate(resolver, None).rename_vars(f"s{index}_")
+        if self.body is not None:
+            body_bundle = self.body.generate(resolver)
+            ret_bundle = g.OperationBundle((), (cg_o.Return(body_bundle.result_var),))
+            bundle = bundle + (body_bundle + ret_bundle).rename_vars("body_")
 
         params: list[tuple[str, cg_t.Type]] = [("this", cg_t.DataPointer())]
         for prm in self.parameters.targets:
@@ -577,6 +576,22 @@ class DestructureStatement(LetStatement):
             result = result.rename_vars(1) + destr.rename_vars(2)
         return result
 
+    def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
+        expr_bundle = self.default_value.generate(resolver).rename_vars(1)
+        sv = cg_p.StackVar(self.declared_type.generate(), self.name)
+        init_bundle = g.OperationBundle(
+            stack_vars=(sv,),
+            operations=(cg_o.Move(sv, expr_bundle.result_var),),
+            result_var=None
+        )
+        # After (expr_bundle + init_bundle).rename_vars(1), `_` lands at index
+        # len(expr_bundle.stack_vars) in the combined tuple, so its renamed name
+        # is uvar_1_N.  Pass that renamed var as root so unpack ops reference it
+        # directly — they survive rename_vars(2) untouched.
+        sv_renamed = cg_p.StackVar(sv.type, f"uvar_1_{len(expr_bundle.stack_vars)}")
+        unpack_bundle = self.to_c_destructure(sv_renamed)
+        return (expr_bundle + init_bundle).rename_vars(1) + unpack_bundle.rename_vars(2)
+
     def add_namespace(self, path: str):
         x: DestructureStatement = cast(DestructureStatement, super().add_namespace(path))
         return dataclasses.replace(x, targets=[l.add_namespace(path) for l in self.targets])
@@ -751,7 +766,7 @@ class EnumStatement(TypeStatement):
         new_spec = self._enum_spec.search_and_replace(resolver, replace) if self._enum_spec else None
         new_self = dataclasses.replace(self,
             parameters=new_params, variants=new_variants,
-            _enum_spec=cast(t.EnumSpec, new_spec) if isinstance(new_spec, t.EnumSpec) else None)
+            _enum_spec=new_spec if isinstance(new_spec, t.EnumSpec) else None)
         return cast(Statement, replace(resolver, new_self))
 
 

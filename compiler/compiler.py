@@ -188,15 +188,7 @@ def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
 def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
     glb = __stmt_scope_resolver(stmt, glb)
     result, extras = stmt.compile(glb, expected_type)
-    result = [result] + extras
-    if not isinstance(result, list):
-        raise ValueError()
-    if any(1 for x in result if isinstance(x, list)):
-        raise ValueError()
-    for x in result:
-        if isinstance(x, list):
-            raise ValueError()
-    return result
+    return [result] + extras
 
 
 def __is_main_function(stmt: s.FunctionStatement) -> bool:

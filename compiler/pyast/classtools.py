@@ -21,7 +21,7 @@ import codegen.things as cg_x
 
 def create_slots_from_members(cls: s.ClassStatement) -> list[s.ClassFunctionSlot]:
     def to_slot(x: s.DataStatement) -> s.ClassFunctionSlot:
-        slots = {x.name} if isinstance(x, s.LetStatement) or (isinstance(x, s.FunctionStatement) and x.statements) else set()
+        slots = {x.name} if isinstance(x, s.LetStatement) or (isinstance(x, s.FunctionStatement) and x.body is not None) else set()
         slot = s.ClassFunctionSlot(x.name, x.get_type(), slots)
         return slot
     all_members = cls.parameters.flatten() + cls.statements

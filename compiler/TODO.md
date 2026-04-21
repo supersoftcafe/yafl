@@ -1,3 +1,26 @@
+# IO
+
+Well thought out IO library.
+More type support.
+Read/write lines.
+Real implementation of async IO. Might need platform specifics. Windows/Linux etc have different ways of doing this. In Liunx different versions have different ways. Ugh. Maybe just use that apache library.
+Buffering so that many operations are immediate.
+More?
+
+Finally, some real use case that works.
+
+# BlockExpression
+
+Currently defined as a sequence of statements followed by a value expression. I don't like this, in part
+because of early returns. I think that it needs to be a well structured set of statements, where all
+paths terminate on a ReturnStatement, and all ReturnStatement have the same or compatible type.
+
+Codegen then needs to take care of appropriate branching to realise this.
+
+# One line functions
+
+fun ohWhatever(a:Int) => a + 1
+
 # Linear types and error handling
 
 Capturing a thought here. Trying to figure out what sequences of

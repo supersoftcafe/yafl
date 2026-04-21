@@ -10,9 +10,20 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from pathlib import Path
 from unittest import TestCase
 
 import compiler as c
+
+_YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
+_RUN_ENV = {
+    **os.environ,
+    "LD_LIBRARY_PATH": os.pathsep.join(filter(None, [
+        str(_YAFLLIB_DIR),
+        str(_YAFLLIB_DIR / "build" / "debug-unix"),
+        os.environ.get("LD_LIBRARY_PATH", ""),
+    ])),
+}
 
 
 _PREAMBLE = """\
@@ -54,7 +65,7 @@ def _compile_and_run(source: str, timeout: int = 5) -> int:
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
-        run = subprocess.run([binary], capture_output=True, timeout=timeout)
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
         return run.returncode
     finally:
         try:

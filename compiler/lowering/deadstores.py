@@ -30,7 +30,7 @@ def __eliminate_once(fn: Function) -> Function:
                 continue  # drop dead store entirely
         elif isinstance(op, Call) and isinstance(op.register, StackVar):
             if op.register.name not in reads:
-                op = dataclasses.replace(op, register=None)
+                op = dataclasses.replace(op, register=None, result_type=op.register.get_type())
                 changed = True
         new_ops.append(op)
 

@@ -45,41 +45,34 @@ class _ExprWithSideEffect(e.Expression):
 
 class TestFindLocalsDestructure(TestCase):
     def test_destructure_leaf_names_are_resolved(self):
-        """FunctionStatement.__find_locals must match leaf names from DestructureStatement.
+        """BlockExpression.__find_locals must match leaf names from DestructureStatement.
 
-        When a function body contains `let (a, b) = expr`, the DestructureStatement
+        When a block body contains `let (a, b) = expr`, the DestructureStatement
         has name='_' and targets=[LetStatement('a',...), LetStatement('b',...)].
-        The old code checked `match_names(x.name, names)` (i.e. '_' against the
-        queried names), so 'a' and 'b' were never found.
-        The fix checks `match_names(let.name, names)` against the leaf names.
+        BlockExpression.__find_locals must find the leaf names via flatten().
         """
         int32_type = t.BuiltinSpec(lr, "int32")
         tuple_type = t.TupleSpec(lr, [
             t.TupleEntrySpec("a", int32_type, None),
             t.TupleEntrySpec("b", int32_type, None),
         ])
-        # Leaf LetStatements produced by x.flatten() for a DestructureStatement
         leaf_a = s.LetStatement(lr, "a@abc123", None, {}, (), None, int32_type)
         leaf_b = s.LetStatement(lr, "b@abc123", None, {}, (), None, int32_type)
         destr = s.DestructureStatement(lr, "_", None, {}, (), None, tuple_type, [leaf_a, leaf_b])
 
-        # Build a minimal FunctionStatement with the destructure as a body statement
-        params = s.DestructureStatement(lr, "_", None, {}, (), None, None, [])
-        fn = s.FunctionStatement(lr, "testfn@abc123", None, {}, (), params, [destr], int32_type)
+        value_expr = e.IntegerExpression(lr, 0, 32)
+        block = e.BlockExpression(lr, [destr], value_expr)
 
-        resolver = g.ResolverRoot([])
-        find_locals = fn._FunctionStatement__find_locals(resolver)
+        find_locals = block._find_locals()
 
-        # Querying for 'a' must return leaf_a; with the bug it returns nothing
         resolved_a = find_locals({"a@abc123"})
         self.assertEqual(len(resolved_a), 1,
-            "__find_locals must resolve leaf 'a' from DestructureStatement in function body")
+            "__find_locals must resolve leaf 'a' from DestructureStatement in block")
         self.assertIs(resolved_a[0].statement, leaf_a)
 
-        # Querying for 'b' must return leaf_b
         resolved_b = find_locals({"b@abc123"})
         self.assertEqual(len(resolved_b), 1,
-            "__find_locals must resolve leaf 'b' from DestructureStatement in function body")
+            "__find_locals must resolve leaf 'b' from DestructureStatement in block")
         self.assertIs(resolved_b[0].statement, leaf_b)
 
         # The synthetic root name '_' must NOT be returned when querying for real names

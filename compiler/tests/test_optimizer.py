@@ -181,6 +181,38 @@ fun main(): Int
                 self.assertIn("ext_get_value", result,
                               f"Foreign call disappeared at -O{level}")
 
+    def test_bind_chained_lambdas_not_lifted_to_closures(self):
+        """Lambdas passed to a chained `?>` must be fully inlined, not lifted to closure objects.
+
+        The `?>` operator is [inline] and calls its `f` parameter exactly once inside a match
+        arm. After the first `?>` is inlined at statement level and its lambda beta-reduced,
+        the second `?>` call ends up inside the match arm — at expression position. At that
+        point _expr_inline_function inlines it. The lambda argument must be substituted
+        directly (not wrapped in a let inside a BlockExpression), so the IIFE beta-reduction
+        pass can still reach it.
+
+        Regression: _expr_inline_function always wrapping every arg in a let hid the lambda
+        inside a BlockExpression where the outer single_use_lambdas scan couldn't see it.
+        """
+        content = """namespace Test
+import System
+import System::IO
+
+fun readTwo(io: System::IO::IO): (io: System::IO::IO, v: System::Int|System::IO::IOError)
+    ret io.read(10) ?> (io: System::IO::IO, a: System::String) =>
+        io.read(5) ?> (io: System::IO::IO, b: System::String) =>
+        (io=io, v=0)
+
+fun main(): System::Int
+    let (io, _) = readTwo(System::IO::stdin())
+    io.close()
+    ret 0
+"""
+        result = c.compile([c.Input(content, "test.yafl")], use_stdlib=True, just_testing=False, optimization_level=3)
+        self.assertNotEqual("", result)
+        self.assertNotIn("_lambdas_", result,
+                         "Lambdas in ?> chains should be fully inlined, not lifted to closures")
+
     def test_builtin_side_effect_survives_dead_store_elimination(self):
         """A __builtin_op__ call whose result is discarded must not be eliminated by DSE.
 

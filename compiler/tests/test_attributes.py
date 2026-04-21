@@ -387,7 +387,7 @@ fun main(): System::Int
         # inliner may eliminate `identity` entirely at its single call site;
         # what we care about is that no sync wrapping machinery appears.
         self.assertNotIn("identity$async", result)
-        self.assertNotIn("SystemQ__qidentityQ64q", result.split("// System::main")[0] if "// System::main" in result else "")
+        self.assertNotIn("System__identity_", result.split("// System::main")[0] if "// System::main" in result else "")
 
     def test_calling_sync_functions_only_has_no_state_machine(self):
         """A non-sync function whose non-tail calls are all [sync] generates no $async."""
@@ -491,8 +491,8 @@ fun main(): System::Int
         # wrapper calls a non-sync foreign — it must not be inferred sync.
         # After AST inlining wrapper is folded into main, so check that SOME
         # async continuation was emitted (the call chain could not be made sync).
-        # Name mangling converts $ → Q36q.
-        self.assertRegex(result, r'Q36qasync')
+        # Name mangling converts $ → _.
+        self.assertRegex(result, r'_async')
 
     def test_inferred_sync_foreign_with_sync_attribute_is_promoted(self):
         """A foreign function WITH [sync] IS sync — callers that only call it are also inferred sync."""

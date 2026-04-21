@@ -179,10 +179,10 @@ def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e
             return condition
         true_expr, false_expr = expressions[0]
         if len(expressions) == 1:
-            return e.TerneryExpression(condition.line_ref, condition, true_expr, false_expr)
+            return e.TernaryExpression(condition.line_ref, condition, true_expr, false_expr)
         else:
             false_expr = get_right_expr(false_expr, expressions[1:])
-            return e.TerneryExpression(condition.line_ref, condition, true_expr, false_expr)
+            return e.TernaryExpression(condition.line_ref, condition, true_expr, false_expr)
     left_expr, right_list = result.value
     expr = get_right_expr(left_expr, right_list)
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
@@ -295,11 +295,17 @@ def __to_tagged_spec_or_simple_type(result: p.Result[list[t.TypeSpec]], tokens: 
 
 
 def __to_function(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.FunctionStatement]:
-    attributes, name, generics, params, dtype, where_traits, body = result.value
+    attributes, name, generics, params, dtype, where_traits, body_stmts = result.value
+    if body_stmts and isinstance(body_stmts[-1], s.ReturnStatement):
+        body = e.BlockExpression(result.line_ref, list(body_stmts[:-1]), body_stmts[-1].value)
+    elif body_stmts:
+        body = e.BlockExpression(result.line_ref, list(body_stmts), e.NothingExpression(result.line_ref))
+    else:
+        body = None
     statement = s.FunctionStatement(
         result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
         s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params),
-        body,  p.first_or_none(dtype), trait_params=where_traits)
+        body, p.first_or_none(dtype), trait_params=where_traits)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
@@ -340,7 +346,7 @@ def __to_flat_type_list(result: p.Result[list[t.TypeSpec]], tokens: list[p.Token
         return p.Result([], result.tokens, result.line_ref, result.errors)
     xtype = result.value[0]
     if isinstance(xtype, t.CombinationSpec):
-        return p.Result(xtype.types, result.tokens, result.line_ref, result.errors)
+        return p.Result(list(xtype.types), result.tokens, result.line_ref, result.errors)
     return p.Result([xtype], result.tokens, result.line_ref, result.errors)
 
 def parse_type(tokens: list[p.Token]) -> p.Result[t.TypeSpec]:
@@ -522,9 +528,9 @@ def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.Enum
         field_args = {let.name: e.NamedExpression(let.line_ref, let.name) for let in all_params}
         destr = s.DestructureStatement(root.line_ref, '_', None, {}, (), None, None, all_params)
         new_enum_expr = e.NewEnumExpression(root.line_ref, root_name, leaf_name, field_args)
-        body = s.ReturnStatement(root.line_ref, new_enum_expr)
+        body = e.BlockExpression(root.line_ref, [], new_enum_expr)
         constructor = s.FunctionStatement(
-            root.line_ref, root.name, import_group, {}, (), destr, [body], return_type)
+            root.line_ref, root.name, import_group, {}, (), destr, body, return_type)
         results.append(constructor)
     else:
         for v in root.variants:

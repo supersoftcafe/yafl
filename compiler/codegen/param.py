@@ -79,6 +79,9 @@ class NewStruct(RParam): # Create a new blank instance of the defined struct
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         xtype = self.get_type()
         type_name = xtype.declare(type_cache)
+        if len(self.values) <= 2:
+            fields = ", ".join(f".{t.mangle_name(name)} = {expr.to_c(type_cache)}" for name, expr in self.values)
+            return f"({type_name}){{{fields}}}"
         fields = "".join(f"\n        .{t.mangle_name(name)} = {expr.to_c(type_cache)}," for name, expr in self.values)
         return f"({type_name}){{{fields}\n    }}"
 
@@ -370,6 +373,9 @@ class NewStructTyped(RParam):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         type_name = self.struct_type.declare(type_cache)
+        if len(self.values) <= 2:
+            fields = ", ".join(f".{t.mangle_name(name)} = {v.to_c(type_cache)}" for name, v in self.values)
+            return f"({type_name}){{{fields}}}"
         fields = "".join(f"\n        .{t.mangle_name(name)} = {v.to_c(type_cache)}," for name, v in self.values)
         return f"({type_name}){{{fields}\n    }}"
 

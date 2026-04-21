@@ -20,9 +20,12 @@ def __create_unique_name(lmd: e.LambdaExpression) -> str:
 
 
 def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[tuple[str, t.TypeSpec]]:
-    # Find all variable references and then remove the lambda parameters from the set
+    # Find all variable references and then remove the lambda parameters from the set.
+    # Use the outer resolver (not the inner one updated by search_and_replace) so that
+    # locally-defined names inside BlockExpression bodies are not mistakenly treated as
+    # free variables that need to be captured.
     references: dict[str, t.TypeSpec] = {}
-    def check_if_capture(resolver: g.Resolver, thing):
+    def check_if_capture(_inner_resolver: g.Resolver, thing):
         if isinstance(thing, e.NamedExpression):
             found = resolver.find_data({thing.name})
             if len(found) == 1:
@@ -46,10 +49,9 @@ def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.Typ
 
 def __create_function_from_lambda(lmd: e.LambdaExpression, nme: str, xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]]) -> s.FunctionStatement:
     lr = lmd.line_ref
-    statement = s.ReturnStatement(lr, xpr)
-    # local_this = s.LetStatement(lr, "this", None, {}, None, t.ClassSpec(lr, nme)) if cpt else None
     return_type = cast(t.CallableSpec, lmd.return_type).result
-    function = s.FunctionStatement(lr, nme, __empty_imports, {}, (), lmd.parameters, [statement], return_type) #, local_this)
+    body = e.BlockExpression(lr, [], xpr)
+    function = s.FunctionStatement(lr, nme, __empty_imports, {}, (), lmd.parameters, body, return_type)
     return function
 
 

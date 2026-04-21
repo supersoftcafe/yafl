@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Optional, Callable, List, Dict, Any, Tuple, Union
+from typing import Callable, Any
 from codegen.param import RParam, LParam, StackVar, NewStruct, GlobalFunction
 import codegen.typedecl as t
 from codegen.tools import mangle_name
@@ -82,6 +82,7 @@ class Jump(Op):
 class JumpIf(Op):
     label: str
     condition: RParam
+    invert: bool = False
 
     def all_params(self) -> list[RParam]:
         return self.condition.flatten()
@@ -96,7 +97,9 @@ class JumpIf(Op):
         return dataclasses.replace(self, condition=self.condition.replace_params(replacer))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"    if ({self.condition.to_c(type_cache)}) goto {self.label};\n"
+        cond = self.condition.to_c(type_cache)
+        test = f"!({cond})" if self.invert else cond
+        return f"    if ({test}) goto {self.label};\n"
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.condition.get_live_vars(), frozenset()
@@ -144,12 +147,13 @@ class IfTask(Op):
         return self.condition.get_live_vars() | self.task_source.get_live_vars(), frozenset()
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        cond     = self.condition.to_c(type_cache)
-        task_dst = self.task_lhs.to_c(type_cache)
-        task_src = self.task_source.to_c(type_cache)
-        cid_dst  = self.call_id_lhs.to_c(type_cache)
+        cond      = self.condition.to_c(type_cache)
+        task_dst  = self.task_lhs.to_c(type_cache)
+        task_src  = self.task_source.to_c(type_cache)
+        cid_dst   = self.call_id_lhs.to_c(type_cache)
+        dst_type  = self.task_lhs.get_type().declare(type_cache)
         return (f"    if (UNLIKELY({cond})) {{\n"
-                f"        {task_dst} = TASK_UNTAG({task_src});\n"
+                f"        {task_dst} = ({dst_type})TASK_UNTAG({task_src});\n"
                 f"        {cid_dst} = ((int32_t){self.call_id});\n"
                 f"        goto {self.target};\n"
                 f"    }}\n")
@@ -218,7 +222,7 @@ class NewObject(Op): # Create a new blank instance of the named object
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         if self.size is not None:
-            return f"    {self.register.to_c(type_cache)} = array_create(obj_{mangle_name(self.name)}, {self.size});\n"
+            return f"    {self.register.to_c(type_cache)} = array_create(obj_{mangle_name(self.name)}, {self.size.to_c(type_cache)});\n"
         else:
             return f"    {self.register.to_c(type_cache)} = object_create(obj_{mangle_name(self.name)});\n"
 
@@ -235,6 +239,7 @@ class Call(Op):
     musttail: bool = False # Current function will end here and the return value is the return of this call
     impure: bool = False   # If True, this call must never be eliminated even if the result is unused
     sync: bool = False     # If True, this call is guaranteed to return synchronously (never a task)
+    result_type: t.Type|None = None # Actual return type when register is None (preserves ABI on sret platforms)
 
     def all_params(self) -> list[RParam]:
         return self.function.flatten() + self.parameters.flatten() + (self.register.flatten(is_reader=False) if self.register else [])
@@ -259,7 +264,12 @@ class Call(Op):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         rg = self.register
-        output, return_type = (lambda x: rg.to_c_store(type_cache, x), rg.get_type().declare(type_cache)) if rg else (lambda x: x, "void")
+        if rg:
+            return_type = rg.get_type().declare(type_cache)
+        elif self.result_type is not None:
+            return_type = self.result_type.declare(type_cache)
+        else:
+            return_type = "void"
         tailreturn = "return " if self.musttail else ""
 
         prms = self.parameters
@@ -267,24 +277,34 @@ class Call(Op):
         if not isinstance(ptype, t.Struct):
             raise ValueError("parameters must be a struct type")
 
-        get_parameters_code = ""
         if isinstance(prms, NewStruct):
-            types = tuple(prm.get_type().declare(type_cache) for name, prm in prms.values)
-            params = tuple(prm.to_c(type_cache) for name, prm in prms.values)
+            types = tuple(prm.get_type().declare(type_cache) for _, prm in prms.values)
+            params = tuple(prm.to_c(type_cache) for _, prm in prms.values)
+            unpack = ""
         else:
-            if len(ptype.fields) > 0:
-                get_parameters_code = f"        {ptype.declare(type_cache)} prm = {prms.to_c(type_cache)};\n"
-            types = tuple(type.declare(type_cache) for _, type in ptype.fields)
+            types = tuple(typ.declare(type_cache) for _, typ in ptype.fields)
             params = tuple(f"prm.{name}" for name, _ in ptype.fields)
+            unpack = f"        {ptype.declare(type_cache)} prm = {prms.to_c(type_cache)};\n" if ptype.fields else ""
 
-        get_function_code = f"        fun_t fun = {self.function.to_c(type_cache)};\n"
+        types_str  = "".join(f", {typ}" for typ in types)
+        params_str = "".join(f", {prm}" for prm in params)
 
-        types  = "".join(f", {typ}" for typ in types )
-        params = "".join(f", {prm}" for prm in params)
+        if isinstance(self.function, GlobalFunction) and not unpack:
+            fn = self.function
+            f_ref = fn.c_symbol if fn.c_symbol else mangle_name(fn.name)
+            obj = fn.object.to_c(type_cache) if fn.object else "NULL"
+            call = f"(({return_type}(*)(void*{types_str})){f_ref})({obj}{params_str})"
+            if rg:
+                return f"    {rg.to_c(type_cache)} = {call};\n"
+            return f"    {tailreturn}{call};\n"
 
-        return (f"    {{\n{get_function_code}{get_parameters_code}"
-                f"        {tailreturn}{output(f"(({return_type}(*)(void*{types}))fun.f)(fun.o{params})")};\n"
-                f"    }}\n")
+        fun_decl = f"        fun_t fun = {self.function.to_c(type_cache)};\n"
+        call = f"(({return_type}(*)(void*{types_str}))fun.f)(fun.o{params_str})"
+        if rg:
+            assign = f"        {rg.to_c(type_cache)} = {call};\n"
+        else:
+            assign = f"        {tailreturn}{call};\n"
+        return f"    {{\n{fun_decl}{unpack}{assign}    }}\n"
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         live = self.function.get_live_vars() | self.parameters.get_live_vars()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses
 from abc import abstractmethod
 from enum import Enum
-from typing import List, Optional
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -466,7 +465,10 @@ def _is_pointer_union_distinguishable(variant_types: list[cg_t.Type]) -> bool:
 
 @dataclass(frozen=True)
 class CombinationSpec(TypeSpec):
-    types: list[TypeSpec]
+    types: tuple[TypeSpec, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, 'types', tuple(self.types))
 
     def is_concrete(self) -> bool:
         return all(x.is_concrete() for x in self.types)
@@ -545,7 +547,10 @@ class TupleEntrySpec:
 
 @dataclass(frozen=True)
 class TupleSpec(TypeSpec):
-    entries: list[TupleEntrySpec]
+    entries: tuple[TupleEntrySpec, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, 'entries', tuple(self.entries))
 
     def is_concrete(self) -> bool:
         return all(x.type and x.type.is_concrete() for x in self.entries)
