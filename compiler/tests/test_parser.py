@@ -102,6 +102,40 @@ class Test(TestCase):
         self.assertEqual(1, result.value.value)
         self.assertEqual(32, result.value.precision)
 
+    def test_float_decimal(self):
+        result = p.parse_expression(tokenize("1.5", "file"))
+        self.assertIsInstance(result.value, e.FloatExpression)
+        self.assertEqual(1.5, result.value.value)
+        self.assertEqual(64, result.value.precision)
+
+    def test_float_scientific(self):
+        result = p.parse_expression(tokenize("1e10", "file"))
+        self.assertIsInstance(result.value, e.FloatExpression)
+        self.assertEqual(1e10, result.value.value)
+
+    def test_float_scientific_signed_exponent(self):
+        result = p.parse_expression(tokenize("3.14e-2", "file"))
+        self.assertIsInstance(result.value, e.FloatExpression)
+        self.assertAlmostEqual(0.0314, result.value.value)
+
+    def test_float_f32_suffix(self):
+        result = p.parse_expression(tokenize("1.5f32", "file"))
+        self.assertIsInstance(result.value, e.FloatExpression)
+        self.assertEqual(1.5, result.value.value)
+        self.assertEqual(32, result.value.precision)
+
+    def test_float_f64_suffix_no_decimal(self):
+        result = p.parse_expression(tokenize("1f64", "file"))
+        self.assertIsInstance(result.value, e.FloatExpression)
+        self.assertEqual(1.0, result.value.value)
+        self.assertEqual(64, result.value.precision)
+
+    def test_hex_literal_with_e_digit_is_integer(self):
+        # 0xCAFE contains 'E' but must parse as a hex integer, not a float.
+        result = p.parse_expression(tokenize("0xCAFE", "file"))
+        self.assertIsInstance(result.value, e.IntegerExpression)
+        self.assertEqual(0xCAFE, result.value.value)
+
     def test_string(self):
         tokens = tokenize("\"fred\"", "file")
         result = p.parse_expression(tokens)

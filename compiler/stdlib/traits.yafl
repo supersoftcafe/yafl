@@ -3,13 +3,15 @@ namespace System
 interface BasicPlus<TVal>
   fun `+`(left: TVal, right: TVal): TVal
 
-interface BasicMath<TVal> : BasicPlus<TVal>
+interface BasicCompare<TVal>
+  fun `<`(left: TVal, right: TVal): System::Bool
+  fun `=`(left: TVal, right: TVal): System::Bool
+  fun `>`(left: TVal, right: TVal): System::Bool
+
+interface BasicMath<TVal> : BasicPlus<TVal>|BasicCompare<TVal>
   fun `*`(left: TVal, right: TVal): TVal
   fun `-`(right: TVal): TVal
   fun `-`(left: TVal, right: TVal): TVal
   fun `/`(left: TVal, right: TVal): TVal
   fun `%`(left: TVal, right: TVal): TVal
-  fun `<`(left: TVal, right: TVal): System::Bool
-  fun `=`(left: TVal, right: TVal): System::Bool
-  fun `>`(left: TVal, right: TVal): System::Bool
 

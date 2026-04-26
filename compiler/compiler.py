@@ -4,6 +4,7 @@ import sys
 
 import lowering.ast_inline
 import lowering.boxing
+import lowering.constants
 import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
@@ -245,6 +246,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
 
     # All ok so let's create some C code
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
+    new_statements = lowering.constants.inline_constants(new_statements)
     new_statements = lowering.ast_inline.inline_ast(new_statements)
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)

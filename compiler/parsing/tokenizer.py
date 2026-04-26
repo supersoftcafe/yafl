@@ -65,7 +65,14 @@ __kinds = [
     (re.compile(r"\"([^\"]|(\\\\)|(\\\"))*\"?"), TokenKind.STRING),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
     (re.compile(r"(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
-    (re.compile(r"\d[\w_]*((\.[a-df-zA-DF-Z\d_]*)?([eE][+-][\w_]*)|(\.[\w_]*))?"), TokenKind.NUMBER),
+    # Numeric literal: hex/bin/oct prefix forms, OR decimal with optional
+    # fraction, exponent (signed or unsigned), and type suffix (i8|i16|i32|i64|f32|f64).
+    (re.compile(
+        r"0[xX][0-9a-fA-F_]+(?:[a-zA-Z]\w*)?"        # hex
+        r"|0[bB][01_]+(?:[a-zA-Z]\w*)?"               # binary
+        r"|0[oO][0-7_]+(?:[a-zA-Z]\w*)?"              # octal
+        r"|\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d[\d_]*)?(?:[a-zA-Z]\w*)?"  # decimal
+    ), TokenKind.NUMBER),
     (re.compile(r"."), TokenKind.CRAP)
 ]
 

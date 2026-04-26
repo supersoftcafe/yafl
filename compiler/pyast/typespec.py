@@ -53,11 +53,19 @@ class TypeSpec:
 def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, right: TypeSpec | None) -> bool | None:
     if left is None or right is None:
         return None
-    # In yafl, a 1-tuple is equivalent to its element (recursively)
-    while isinstance(right, TupleSpec) and len(right.entries) == 1 and right.entries[0].type is not None:
+    # In yafl, a 1-tuple is equivalent to its element (recursively).
+    # The unwrap must be symmetric: if either side is a 1-tuple with an
+    # unknown entry type, treat the comparison as uncertain (None) rather
+    # than unwrapping only the side whose entry type is known — that
+    # produces a spurious TupleSpec-vs-singleton mismatch and returns False.
+    while isinstance(right, TupleSpec) and len(right.entries) == 1:
         right = right.entries[0].type
-    while isinstance(left, TupleSpec) and len(left.entries) == 1 and left.entries[0].type is not None:
+        if right is None:
+            return None
+    while isinstance(left, TupleSpec) and len(left.entries) == 1:
         left = left.entries[0].type
+        if left is None:
+            return None
     return left.trivially_assignable_from(resolver, right)
 
 
@@ -145,6 +153,10 @@ class BuiltinSpec(TypeSpec):
                 return cg_t.Int()
             case "bool":
                 return cg_t.Int(8)
+            case "float32":
+                return cg_t.Float(32)
+            case "float64":
+                return cg_t.Float(64)
             case _:
                 return None
 

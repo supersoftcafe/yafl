@@ -181,6 +181,66 @@ EXPORT int string_compare(object_t* self, object_t* data) {
 }
 
 
+EXPORT object_t* string_length_int(object_t* self) {
+    return integer_create_from_int32(string_length(self));
+}
+
+
+EXPORT object_t* string_compare_int(object_t* self, object_t* data) {
+    return integer_create_from_int32(string_compare(self, data));
+}
+
+
+EXPORT bool string_eq(object_t* self, object_t* data) {
+    return string_compare(self, data) == 0;
+}
+
+
+EXPORT bool string_lt(object_t* self, object_t* data) {
+    return string_compare(self, data) < 0;
+}
+
+
+EXPORT bool string_gt(object_t* self, object_t* data) {
+    return string_compare(self, data) > 0;
+}
+
+
+EXPORT object_t* string_at(object_t* self, object_t* o_index) {
+    int overflow = 0;
+    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    if (overflow) return _string_create_from_bytes((uint8_t*)"", 0);
+    return string_slice_int32(self, idx, idx + 1);
+}
+
+
+// Decimal Int parser. Optional leading '-' or '+', then 1+ digits.
+// Returns NULL on parse failure (becomes None in YAFL Int|None).
+EXPORT object_t* string_parse_int(object_t* self) {
+    intptr_t buf; int32_t len;
+    char* cstr = string_to_cstr(self, &buf, &len);
+
+    int32_t i = 0;
+    int neg = 0;
+    if (i < len && (cstr[i] == '-' || cstr[i] == '+')) {
+        neg = cstr[i] == '-';
+        i++;
+    }
+    if (i >= len) return NULL;
+
+    object_t* acc = integer_create_from_int32(0);
+    object_t* ten = integer_create_from_int32(10);
+    while (i < len) {
+        unsigned char c = (unsigned char)cstr[i++];
+        if (c < '0' || c > '9') return NULL;
+        acc = integer_mul(acc, ten);
+        acc = integer_add_full(acc, integer_create_from_int32(c - '0'));
+    }
+    if (neg) acc = integer_sub_full(integer_create_from_int32(0), acc);
+    return acc;
+}
+
+
 EXPORT object_t* print_string(object_t* self, object_t* data) {
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(data, &buf, &len);

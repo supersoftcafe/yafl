@@ -1,0 +1,62 @@
+namespace System
+
+typealias Float64 : __builtin_type__<float64>
+typealias Float32 : __builtin_type__<float32>
+typealias Float   : Float64
+
+# Common floating-point constants. By convention constants are UPPER_SNAKE_CASE.
+let [const] PI:     Float = 3.141592653589793
+let [const] TAU:    Float = 6.283185307179586
+let [const] E:      Float = 2.718281828459045
+let [const] SQRT_2: Float = 1.4142135623730951
+let [const] LN_2:   Float = 0.6931471805599453
+let [const] LN_10:  Float = 2.302585092994046
+
+let [trait] _float_trait: _BasicMathFloat = _BasicMathFloat()
+
+typealias [where] _WhereBasicMathFloat : BasicMath<System::Float64>
+
+class _BasicMathFloat() : BasicMath<Float64>
+  fun `+`(left: System::Float, right: System::Float): System::Float
+    ret __builtin_op__<float64>("float_add", left, right)
+
+  fun `-`(right: System::Float): System::Float
+    ret __builtin_op__<float64>("float_neg", right)
+
+  fun `-`(left: System::Float, right: System::Float): System::Float
+    ret __builtin_op__<float64>("float_sub", left, right)
+
+  fun `*`(left: System::Float, right: System::Float): System::Float
+    ret __builtin_op__<float64>("float_mul", left, right)
+
+  fun `/`(left: System::Float, right: System::Float): System::Float
+    ret __builtin_op__<float64>("float_div", left, right)
+
+  fun `%`(left: System::Float, right: System::Float): System::Float
+    ret __builtin_op__<float64>("float_rem", left, right)
+
+  fun `<`(left: System::Float, right: System::Float): System::Bool
+    ret __builtin_op__<bool>("float_lt", left, right)
+
+  fun `=`(left: System::Float, right: System::Float): System::Bool
+    ret __builtin_op__<bool>("float_eq", left, right)
+
+  fun `>`(left: System::Float, right: System::Float): System::Bool
+    ret __builtin_op__<bool>("float_gt", left, right)
+
+
+fun isNaN(f: System::Float): System::Bool
+  ret __builtin_op__<bool>("float_is_nan", f)
+
+fun Float(i: System::Int): System::Float
+  ret __builtin_op__<float64>("float_from_int", i)
+
+fun Int(f: System::Float): System::Int
+  ret __builtin_op__<bigint>("int_from_float", f)
+
+fun String(f: System::Float): System::String
+  ret __builtin_op__<str>("string_from_float", f)
+
+fun parseFloat(s: System::String): System::Float|System::None
+  let v: System::Float = __builtin_op__<float64>("float_parse_or_nan", s)
+  ret isNaN(v) ? None : v

@@ -245,7 +245,6 @@ class Call(Op):
     register: LParam|None = None # Target of operation result, unless musttail == True
     musttail: bool = False # Current function will end here and the return value is the return of this call
     impure: bool = False   # If True, this call must never be eliminated even if the result is unused
-    sync: bool = False     # If True, this call is guaranteed to return synchronously (never a task)
     result_type: t.Type|None = None # Actual return type when register is None (preserves ABI on sret platforms)
 
     def all_params(self) -> list[RParam]:

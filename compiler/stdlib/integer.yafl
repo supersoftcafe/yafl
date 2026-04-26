@@ -6,6 +6,10 @@ typealias Bool : __builtin_type__<bool>
 typealias None : ()
 let None:None = ()
 
+# Common integer constants. By convention constants are UPPER_SNAKE_CASE.
+let [const] INT32_MAX: Int32 = 2147483647i32
+let [const] INT32_MIN: Int32 = -2147483648i32
+
 let [trait] int_trait: _BasicMathInt = _BasicMathInt()
 
 typealias [where] _WhereBasicMathInt : BasicMath<System::Int>

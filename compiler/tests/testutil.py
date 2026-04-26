@@ -54,7 +54,7 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
 
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -77,7 +77,7 @@ def compile_and_run_stdlib(source: str, timeout: int = 5) -> int:
         binary = tmp.name
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -117,7 +117,7 @@ def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5
 
         result = subprocess.run(
             ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS,
-             "-x", "none", lib_obj, "-l", "yafl", "-o", binary],
+             "-x", "none", lib_obj, "-l", "yafl", "-l", "m", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang link failed:\n{result.stderr}"

@@ -21,7 +21,7 @@ from functools import reduce
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort
 from codegen.things import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Str, Type,
@@ -130,7 +130,7 @@ def __convert_var_to_field_refs(ops: Iterable[Op],
 def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
     liveness_fn = __calculate_saved_vars(fn)
     partitions = langtools.partition(liveness_fn.ops,
-                                     lambda op: isinstance(op, Call) and not op.musttail and not op.sync)
+                                     lambda op: isinstance(op, Call) and not op.musttail)
 
     def make_block(index: int, ops: list[Op]) -> BasicBlock:
         name = f"cont${index}"
@@ -391,9 +391,27 @@ def __create_hot_path_func(fn: Function, state_name: str,
     hot_ops.extend(terminal_ops)
 
     # ── Shared $asynccommon block ─────────────────────────────────────────────
-    # Allocates state, saves all live vars, creates the task, registers the
-    # callback, and returns the tagged task pointer.
+    # All Call sites jump here when IS_TASK fires. The label is the same in
+    # every function — what it does depends on whether this function can
+    # legally suspend:
+    #   * sync  → emit Abort (a "sync" function has been proven not to
+    #             suspend, so reaching here means a downstream call broke
+    #             that contract; better to crash than corrupt state).
+    #   * async → allocate state, save live vars, create task, register
+    #             continuation callback, return tagged task pointer.
     common_ops: list[Op] = [Label("$asynccommon")]
+
+    if fn.sync:
+        common_ops.append(Abort(reason="sync function reached $asynccommon"))
+        extra_stack = Struct((
+            ("$sv_call_id",    Int(32)),
+            ("$sv_async_task", DataPointer()),
+        ) + tuple(wrap_fields))
+        all_ops = tuple(hot_ops) + tuple(common_ops)
+        return dataclasses.replace(fn,
+                                   result=wrapped_result,
+                                   ops=all_ops,
+                                   stack_vars=fn.stack_vars + extra_stack)
 
     # Allocate state object
     common_ops.append(NewObject(state_name, __sv_state))
@@ -673,26 +691,13 @@ def __convert_function_to_task_convention(
         fn: Function) -> tuple[dict[str, Function], dict[str, Object]]:
     """
     If the function has no non-tail calls: just wrap its return type.
-    Otherwise: produce the hot-path function + the state-machine function,
-    plus a state Object.
+    Otherwise: produce the hot-path function (with the cold $asynccommon
+    block) and, for non-sync functions, the state-machine function plus a
+    state Object. Sync functions reuse the same hot path; their cold block
+    aborts instead of creating a task.
     """
     # Skip __entrypoint__ – it bridges thread_start (old CPS) to the new world
     if fn.name == "__entrypoint__":
-        return {fn.name: fn}, {}
-
-    # Sync functions never suspend, so they need no state machine — but they
-    # can still be invoked through a fun_t that expects the wrapped return
-    # convention (e.g. a lambda passed to a generic `?>`). Wrap the return
-    # type so the calling convention matches, and skip body CPS conversion.
-    if fn.sync:
-        wrapped = __wrap_return_type(fn.result)
-        if isinstance(wrapped, TaskWrapper):
-            new_ops = tuple(
-                Return(SyncWrap(op.value, wrapped)) if isinstance(op, Return) else op
-                for op in fn.ops
-            )
-            simple = dataclasses.replace(fn, result=wrapped, ops=new_ops)
-            return {simple.name: simple}, {}
         return {fn.name: fn}, {}
 
     after_tail = __discover_tail_calls(fn)
@@ -717,12 +722,15 @@ def __convert_function_to_task_convention(
 
     task_subtype_name = __task_subtype_name(fn.result)
 
-    state_obj   = __create_state_object(after_tail, state_name, basic_blocks)
-    hot_fn      = __create_hot_path_func(after_tail, state_name,
-                                          task_subtype_name, basic_blocks)
-    machine_fn  = __create_state_machine_func(after_tail, state_name,
-                                               task_subtype_name, basic_blocks)
+    hot_fn = __create_hot_path_func(after_tail, state_name,
+                                     task_subtype_name, basic_blocks)
+    if fn.sync:
+        # Sync function: $asynccommon aborts; no state machine, no state object.
+        return {hot_fn.name: hot_fn}, {}
 
+    state_obj  = __create_state_object(after_tail, state_name, basic_blocks)
+    machine_fn = __create_state_machine_func(after_tail, state_name,
+                                              task_subtype_name, basic_blocks)
     functions = {hot_fn.name: hot_fn, machine_fn.name: machine_fn}
     objects   = {state_obj.name: state_obj}
     return functions, objects

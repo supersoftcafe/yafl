@@ -499,7 +499,13 @@ class LetStatement(DataStatement):
                 return [Error(self.line_ref, "Incorrect type")]
         err1 = self.default_value.check(resolver, self.declared_type) if self.default_value else []
         err2 = self.declared_type.check(resolver) if self.declared_type else []
-        return err1 + err2
+        const_err: list[Error] = []
+        if "const" in self.attributes:
+            if self.attributes.get("const") is not None:
+                const_err.append(Error(self.line_ref, "[const] takes no arguments"))
+            if not isinstance(self.default_value, (e.IntegerExpression, e.FloatExpression, e.StringExpression)):
+                const_err.append(Error(self.line_ref, "[const] requires a literal value"))
+        return err1 + err2 + const_err
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         expr_bundle = self.default_value.generate(resolver).rename_vars(1)

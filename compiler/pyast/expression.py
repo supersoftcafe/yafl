@@ -193,12 +193,11 @@ class CallExpression(Expression):
 
         fun_ref = fun_op_bundle.result_var
         impure = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.impure
-        sync = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.sync
 
         result_var = cg_p.StackVar(xtype.result.generate(), "result")
         call_bundle = g.OperationBundle(
             (result_var,),
-            (cg_o.Call(fun_ref, prm_op_bundle.result_var, result_var, impure=impure, sync=sync),),
+            (cg_o.Call(fun_ref, prm_op_bundle.result_var, result_var, impure=impure),),
             result_var
         )
 
@@ -538,13 +537,20 @@ class IntegerExpression(Expression):
 @dataclass
 class FloatExpression(Expression):
     value: float
-    precision: int = 0
+    precision: int = 64
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        return t.BuiltinSpec(self.line_ref, f"float{self.precision}")
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         return self, []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        xexpr = cg_p.Float(self.value, self.precision)
+        return g.OperationBundle( (), (), xexpr )
 
 
 @dataclass

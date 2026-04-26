@@ -36,11 +36,33 @@ def __integer() -> p.Parser[e.Expression]:
 def __float() -> p.Parser[e.Expression]:
     def _p(tokens: list[p.Token]) -> p.Result[e.FloatExpression]:
         match tokens:
-            case[head, *tail] if head.kind == p.TokenKind.NUMBER and "." in head.value:
+            case[head, *tail] if head.kind == p.TokenKind.NUMBER:
+                value = head.value
+                # Hex/bin/oct prefixes are integer literals only (a hex literal
+                # may legitimately contain 'e'/'E' as a digit).
+                if value.startswith(("0x", "0X", "0b", "0B", "0o", "0O")):
+                    return p.Result.none(tokens, tokens[0].line_ref)
+                # A token is a float if it has a decimal point, an exponent,
+                # or an explicit f32/f64 suffix.
+                has_dot = "." in value
+                has_exp = "e" in value or "E" in value
+                ends_f32 = value.endswith("f32")
+                ends_f64 = value.endswith("f64")
+                if not (has_dot or has_exp or ends_f32 or ends_f64):
+                    return p.Result.none(tokens, tokens[0].line_ref)
+                # Strip the precision suffix; default to 64 bits.
+                if ends_f32:
+                    precision, num_str = 32, value[:-3]
+                elif ends_f64:
+                    precision, num_str = 64, value[:-3]
+                else:
+                    precision, num_str = 64, value
                 try:
-                    return p.Result.ok(e.FloatExpression(head.line_ref, float(head.value)), tail, head.line_ref)
+                    return p.Result.ok(
+                        e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision),
+                        tail, head.line_ref)
                 except ValueError as err:
-                    return p.Result.error(str(e), tail, head.line_ref)
+                    return p.Result.error(str(err), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 

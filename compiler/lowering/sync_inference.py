@@ -28,9 +28,12 @@ functions that can be proven to never suspend:
   Materialisation
   ---------------
   After convergence, every Function whose name is in the sync set gets
-  fn.sync = True, and every non-tail Call whose target is provably sync gets
-  op.sync = True.  (op.sync is read by the CPS pass to skip IfTask checks at
-  call sites.)
+  fn.sync = True. The CPS pass uses fn.sync to decide what the cold
+  $asynccommon block does: a sync function emits Abort there (it cannot
+  legally suspend), an async function does the state save + task creation
+  + tagged-task return. Per-Call optimisation does not exist — every
+  non-tail Call uniformly receives an IfTask check, so a misclassified
+  callee that suspends aborts cleanly rather than corrupting state.
 """
 
 from __future__ import annotations
@@ -101,17 +104,13 @@ def infer_sync(a: Application) -> Application:
                 changed = True
 
     # ------------------------------------------------------------------
-    # 5. Materialise: update fn.sync and Call.sync
+    # 5. Materialise: update fn.sync only. Call ops are uniformly emitted
+    # by CPS — there is no per-Call optimisation. fn.sync only changes
+    # what the cold $asynccommon block does (state save vs. abort).
     # ------------------------------------------------------------------
-    new_functions: dict[str, Function] = {}
-    for name, fn in a.functions.items():
-        new_ops = tuple(
-            dataclasses.replace(op, sync=True)
-            if isinstance(op, Call) and not op.musttail and _call_is_sync(op)
-            else op
-            for op in fn.ops
-        )
-        new_fn = dataclasses.replace(fn, ops=new_ops, sync=(name in sync_set))
-        new_functions[name] = new_fn
+    new_functions: dict[str, Function] = {
+        name: dataclasses.replace(fn, sync=(name in sync_set))
+        for name, fn in a.functions.items()
+    }
 
     return dataclasses.replace(a, functions=new_functions)

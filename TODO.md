@@ -1,4 +1,20 @@
 
+# Optimiser to reduce local variables
+
+If different parts of a function use a variable declared as object_t*, but they don't overlap, 
+they can share the same slot. This goes for heap frames for async functions as well, and of
+course other types. This step would reduce heap usage. Doesn't really reduce stack usage as
+the C compiler will do that anyway.
+
+# Large strings
+
+Heap only supports smaller objects, as a design choice. Larger strings will need to be
+compound objects. Needs some thought.
+
+# IO readline
+
+Just what it says
+
 # IO TTY input
 
 Currently the IO module tries to fill the buffer, which means that TTY input beyond what is needed

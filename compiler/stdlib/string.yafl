@@ -3,12 +3,24 @@ namespace System
 typealias String : __builtin_type__<str>
 
 let [trait] _string_trait: _BasicPlusString = _BasicPlusString()
+let [trait] _string_cmp_trait: _BasicCompareString = _BasicCompareString()
 
 typealias [where] _WhereBasicPlusString : BasicPlus<System::String>
+typealias [where] _WhereBasicCompareString : BasicCompare<System::String>
 
 class _BasicPlusString() : BasicPlus<String>
   fun `+`(left: System::String, right: System::String): System::String
     ret __builtin_op__<str>("string_append", left, right)
+
+class _BasicCompareString() : BasicCompare<String>
+  fun `<`(left: System::String, right: System::String): System::Bool
+    ret __builtin_op__<bool>("string_lt", left, right)
+
+  fun `=`(left: System::String, right: System::String): System::Bool
+    ret __builtin_op__<bool>("string_eq", left, right)
+
+  fun `>`(left: System::String, right: System::String): System::Bool
+    ret __builtin_op__<bool>("string_gt", left, right)
 
 fun Char(int: System::Int): System::String
   ret __builtin_op__<str>("wchar_to_string", int)
@@ -17,3 +29,18 @@ fun String(int: System::Int): System::String
   ret int < 0 ? "-" + String(-int)
     : int > 9 ? String(int / 10) + Char(48 + int % 10)
     :           Char(48 + int)
+
+fun length(s: System::String): System::Int
+  ret __builtin_op__<bigint>("string_length_int", s)
+
+fun slice(s: System::String, start: System::Int, end: System::Int): System::String
+  ret __builtin_op__<str>("string_slice", s, start, end)
+
+fun compare(left: System::String, right: System::String): System::Int
+  ret __builtin_op__<bigint>("string_compare_int", left, right)
+
+fun at(s: System::String, i: System::Int): System::String
+  ret __builtin_op__<str>("string_at", s, i)
+
+fun parseInt(s: System::String): System::Int|System::None
+  ret __builtin_op__<bigint>("string_parse_int", s)

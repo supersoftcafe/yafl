@@ -127,6 +127,28 @@ class Int(Type):
 
 
 @dataclass(frozen=True)
+class Float(Type):
+    precision: int  # 32 or 64
+
+    def _initialise(self, type_cache: dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
+        if not isinstance(data, (int, float)):
+            raise ValueError("Float literal must be int or float")
+        if self.precision == 32:
+            return f"((float){float(data)!r}f)"
+        return f"((double){float(data)!r})"
+
+    def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
+        if self.precision == 32:
+            return "float"
+        if self.precision == 64:
+            return "double"
+        raise ValueError(f"Float precision must be 32 or 64, got {self.precision}")
+
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return []
+
+
+@dataclass(frozen=True)
 class IntPtr(Type):
     # @property
     # def size(self) -> int:

@@ -12,7 +12,7 @@ from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort
 from codegen.things import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
-from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, RParam, \
+from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
     StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq
 from functools import reduce
 
@@ -52,6 +52,8 @@ def __scan_rparam(p: RParam) -> _scan_sets:
         case String():
             return _scan_sets()
         case Integer():
+            return _scan_sets()
+        case Float():
             return _scan_sets()
         case VirtualFunction():
             return __scan_rparam(p.object)

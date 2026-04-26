@@ -190,6 +190,18 @@ class Integer(RParam):
 
 
 @dataclass(frozen=True)
+class Float(RParam):
+    value: float
+    precision: int
+
+    def get_type(self) -> t.Float:
+        return t.Float(self.precision)
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return self.get_type().initialise(type_cache, self.value)
+
+
+@dataclass(frozen=True)
 class IntEqConst(RParam):
     """Emits `(value == const_val)` — used for $tag comparison in match arms."""
     value: RParam
@@ -388,6 +400,8 @@ def _zero_for(field_type: t.Type) -> RParam:
         return Integer(0, field_type.precision)
     if isinstance(field_type, t.IntPtr):
         return Integer(0, 64)
+    if isinstance(field_type, t.Float):
+        return Float(0.0, field_type.precision)
     raise ValueError(f"No zero value defined for slot type {field_type}")
 
 

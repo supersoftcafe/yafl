@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <math.h>
 
 
 
@@ -514,6 +515,36 @@ INLINE bool int32_test_lt(int32_t self, int32_t data) { return self < data; }
  *************
  *****
  **
+ *                       Float
+ **
+ *****
+ *************
+ *****************************
+ **********************************************************/
+
+INLINE double   float_add(double a, double b) { return a + b; }
+INLINE double   float_sub(double a, double b) { return a - b; }
+INLINE double   float_mul(double a, double b) { return a * b; }
+INLINE double   float_div(double a, double b) { return a / b; }
+INLINE double   float_neg(double a)            { return -a; }
+INLINE double   float_rem(double a, double b)  { return fmod(a, b); }
+INLINE bool     float_lt (double a, double b)  { return a <  b; }
+INLINE bool     float_eq (double a, double b)  { return a == b; }
+INLINE bool     float_gt (double a, double b)  { return a >  b; }
+INLINE bool     float_is_nan(double a)         { return a != a; }
+
+EXTERN double    float_from_int(object_t* i);
+EXTERN object_t* int_from_float(double f);
+EXTERN object_t* string_from_float(double f);
+EXTERN double    float_parse_or_nan(object_t* s);
+
+
+
+/**********************************************************
+ *****************************
+ *************
+ *****
+ **
  *                   Strings
  **
  *****
@@ -608,6 +639,13 @@ EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
 EXTERN object_t* string_append(object_t* self, object_t* data);
 EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
 EXTERN int       string_compare(object_t* self, object_t* data);
+EXTERN object_t* string_length_int(object_t* self);
+EXTERN object_t* string_compare_int(object_t* self, object_t* data);
+EXTERN bool      string_eq(object_t* self, object_t* data);
+EXTERN bool      string_lt(object_t* self, object_t* data);
+EXTERN bool      string_gt(object_t* self, object_t* data);
+EXTERN object_t* string_at(object_t* self, object_t* index);
+EXTERN object_t* string_parse_int(object_t* self);
 EXTERN object_t* wchar_to_string(object_t* integer);
 EXTERN object_t* print_string(object_t* self, object_t* data);
 
