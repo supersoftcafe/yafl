@@ -344,11 +344,23 @@ typedef struct {
 
 #define TASK_UNTAG(ptr) ((task_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
 
+// task_obj_t: task subtype whose result is an object_t* (the compiler's
+// "task$DataPointer" layout — used for YAFL return types String, Int (bigint),
+// union types, etc). Must stay binary-compatible with what the compiler
+// generates in cps.py.
+typedef struct {
+    task_t    parent;
+    object_t* result;
+} task_obj_t;
+
 EXTERN struct task_vtable TASK_VTABLE;
+EXTERN struct task_vtable TASK_OBJ_VTABLE;
+EXTERN vtable_t* const obj_task_obj;   // compiler-facing alias for TASK_OBJ_VTABLE
 
 EXTERN object_t* task_create     (void* self);
 EXTERN object_t* task_complete   (void* self);
 EXTERN object_t* task_on_complete(void* self, fun_t callback);
+EXTERN void      task_complete_io(void* self, worker_node_t* node);
 
 
 /**********************************************************
@@ -463,6 +475,7 @@ EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);
 EXTERN int32_t   integer_to_int32_with_overflow(object_t* self, int* overflow);
 EXTERN int32_t   integer_to_int32(object_t* self);
 EXTERN object_t* integer_create_from_int32(int32_t value);
+EXTERN object_t* integer_create_from_int32_noalloc(int32_t value);
 
 INLINE bool integer_test_gt(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
@@ -590,6 +603,7 @@ INLINE int32_t string_length(object_t* self) {
 EXTERN object_t* string_allocate(int32_t length);
 EXTERN object_t* string_from_bytes(uint8_t* data, int32_t length);
 EXTERN int32_t   string_copy_cstr(object_t* self, char* buf, int32_t buf_size);
+EXTERN char*     string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr);
 EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
 EXTERN object_t* string_append(object_t* self, object_t* data);
 EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);

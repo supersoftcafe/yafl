@@ -320,6 +320,22 @@ class ReturnVoid(Op):
 
 
 @dataclass(frozen=True)
+class Abort(Op):
+    """Terminates the program unconditionally.
+
+    Has no successor in the CFG — placed wherever the lowering proves that
+    control flow cannot legitimately continue (e.g. the fall-through past
+    an exhaustive set of match arms).  The compiled form is a libc `abort()`
+    call; under normal circumstances it is unreachable at runtime.
+    """
+    reason: str = ""
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        note = f"  // {self.reason}" if self.reason else ""
+        return f"    abort();{note}\n"
+
+
+@dataclass(frozen=True)
 class Return(Op):
     value: RParam
 

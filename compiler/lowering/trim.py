@@ -9,7 +9,7 @@ from typing import Iterable
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort
 from codegen.things import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, RParam, \
@@ -115,6 +115,9 @@ def __scan_op(op: Op) -> _scan_sets:
 
         case SwitchJump():
             return __scan_rparam(op.condition)
+
+        case Abort():
+            return _scan_sets()
 
         case _:
             raise NotImplementedError(f"Unknown type of Op {type(op)}")

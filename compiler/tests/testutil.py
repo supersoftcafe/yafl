@@ -8,6 +8,13 @@ import compiler as c
 
 # Ensure compiled test binaries can find libyafl.so at runtime.
 _YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
+_YAFLLIB_BUILD_DIR = _YAFLLIB_DIR / "build" / "debug-unix"
+# Point clang at the in-tree yafl.h and libyafl.so so tests use whatever is
+# checked out right now, not whatever is installed system-wide.
+_CLANG_BUILD_FLAGS = [
+    "-I", str(_YAFLLIB_DIR),
+    "-L", str(_YAFLLIB_BUILD_DIR),
+]
 _RUN_ENV = {
     **os.environ,
     "LD_LIBRARY_PATH": os.pathsep.join(filter(None, [
@@ -26,7 +33,8 @@ def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
     assert c_code, "yafl compilation produced no output"
 
     result = subprocess.run(
-        ["clang", "-Werror", "-x", "c", "-", "-O0", "-fsyntax-only"],
+        ["clang", "-Werror", "-x", "c", "-", "-O0", "-fsyntax-only",
+         "-I", str(_YAFLLIB_DIR)],
         input=c_code, text=True, capture_output=True, timeout=30,
     )
     assert result.stderr == "", f"clang emitted diagnostics:\n{result.stderr}"
@@ -46,7 +54,7 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
 
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", "-l", "yafl", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -69,7 +77,7 @@ def compile_and_run_stdlib(source: str, timeout: int = 5) -> int:
         binary = tmp.name
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", "-l", "yafl", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -102,13 +110,14 @@ def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5
             f.write(c_library)
 
         result = subprocess.run(
-            ["clang", "-g", "-O0", "-c", lib_src, "-o", lib_obj],
+            ["clang", "-g", "-O0", "-I", str(_YAFLLIB_DIR), "-c", lib_src, "-o", lib_obj],
             capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"C library compile failed:\n{result.stderr.decode()}"
 
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", "-x", "none", lib_obj, "-l", "yafl", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS,
+             "-x", "none", lib_obj, "-l", "yafl", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang link failed:\n{result.stderr}"

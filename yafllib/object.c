@@ -223,6 +223,15 @@ thread_local struct gc_thread_info {
     list_element_t free_pages;
     unsigned free_pages_counter;
 
+    // Quarantine: pages freed during a GC cycle are not reusable in the same
+    // cycle (the scanner may still hold a stale pointer through a forwarding
+    // chain, or a conservative stack pointer might still resolve to a slot in
+    // them). Pages are aged through pending_free_pages_curr → ..._prev → free
+    // across cycle boundaries; they spend at least one full cycle in pending.
+    list_element_t pending_free_pages_curr;
+    list_element_t pending_free_pages_prev;
+    uint64_t       last_drained_cycle;
+
     list_element_t  new_pages; // Circular list of pages waiting for next GC
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
@@ -235,6 +244,12 @@ thread_local struct gc_thread_info {
 static _Atomic(struct gc_thread_info*) threads = NULL;
 static enum gc_stage         stage = GC_STAGE_NOT_STARTED;
 static uint32_t              epoch = 0; // Must never be 0, except now
+
+// Bumped each time gc_fsa_prune drains pages_to_prune to empty (i.e., a full
+// GC cycle has completed). Per-thread allocation paths consult this to age
+// quarantined free pages: a page freed when this counter == K only becomes
+// reusable when the counter has advanced past K.
+static _Atomic(uint64_t)     gc_cycle_count = 0;
 
 static _Atomic(gc_page_t*) reprocess_page_list[REPROCESS_PAGE_COUNT];
 static atomic_size_t       reprocess_page_head;
@@ -258,6 +273,21 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
         atomic_fetch_or(&gc_thread_info.safe_point_request, GC_SAFE_POINT_CATCH_UP);
     }
 
+    // Age quarantined pages whenever the GC has advanced past the cycle in
+    // which we last drained: the prev list is now ripe (it survived a full
+    // cycle in pending), so move it to free; promote curr → prev. A page
+    // freed during cycle K therefore becomes reusable no earlier than cycle
+    // K+2, which is always after any scanner active at the time of the free
+    // has finished.
+    {
+        uint64_t cur = atomic_load(&gc_cycle_count);
+        if (cur != gc_thread_info.last_drained_cycle) {
+            list_move(&gc_thread_info.free_pages, &gc_thread_info.pending_free_pages_prev);
+            list_move(&gc_thread_info.pending_free_pages_prev, &gc_thread_info.pending_free_pages_curr);
+            gc_thread_info.last_drained_cycle = cur;
+        }
+    }
+
     gc_page_t *page = list_pop(&gc_thread_info.free_pages) ?: memory_pages_alloc(page_count);
 
     memset(page, 0, GC_PAGE_SIZE * page_count);
@@ -272,16 +302,25 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
 static NOINLINE_DEBUG void gc_page_free(gc_page_t* page) {
     assert(page->head.tag == PAGE_MAGIC_NUMBER);
     LOG(TRACE, "gc_page_free(%d) = 0x%lx", page->head.pages, (uintptr_t)page);
-    page->head.tag = 0;
 
+    // Multi-page allocations and the every-Nth single-page release path go
+    // back to the OS immediately. They cannot be inspected by a stale pointer
+    // post-munmap (the read would segfault), so quarantining them buys
+    // nothing.
     if (page->head.pages != 1 || (++gc_thread_info.free_pages_counter & MMAP_RELEASE_PAGE_MASK) == 0) {
+        page->head.tag = 0;
         memory_pages_free(page, page->head.pages);
-    } else {
-#ifdef CLEAR_RELEASED_HEAP
-        memset(page, 0, GC_PAGE_SIZE);
-#endif
-        list_link(&gc_thread_info.free_pages, (list_element_t*)&page->head.list);
+        return;
     }
+
+    // Single-page release that stays in process memory. Park on the per-thread
+    // quarantine list. Leave page->head.tag == PAGE_MAGIC_NUMBER and the
+    // objects bitmap intact for the duration of the quarantine, so any
+    // conservative pointer that still resolves to this page passes the
+    // existing on-heap checks rather than tripping an assertion. The page
+    // becomes reusable only after gc_page_alloc ages it through curr → prev →
+    // free in a future GC cycle.
+    list_link(&gc_thread_info.pending_free_pages_curr, (list_element_t*)&page->head.list);
 }
 
 
@@ -443,6 +482,9 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     gc_thread_info.thread_roots_context = thread_roots_context;
 
     gc_thread_info.free_pages.next = gc_thread_info.free_pages.prev = &gc_thread_info.free_pages;
+    gc_thread_info.pending_free_pages_curr.next = gc_thread_info.pending_free_pages_curr.prev = &gc_thread_info.pending_free_pages_curr;
+    gc_thread_info.pending_free_pages_prev.next = gc_thread_info.pending_free_pages_prev.prev = &gc_thread_info.pending_free_pages_prev;
+    gc_thread_info.last_drained_cycle = 0;
 
     gc_thread_info.next = threads;
     gc_thread_info.thread_state = THREAD_STATE_RUNNING;
@@ -836,8 +878,13 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_prune() {
         }
     }
 
-    if (list_empty(&pages_to_prune))
+    if (list_empty(&pages_to_prune)) {
+        // End of a full GC cycle: pages quarantined during this cycle now
+        // age one step toward reuse. Other threads observe this bump on
+        // their next gc_page_alloc and drain their own pending lists.
+        atomic_fetch_add(&gc_cycle_count, 1);
         return GC_STAGE_IDLE; // All done
+    }
     return GC_STAGE_PRUNE;
 }
 

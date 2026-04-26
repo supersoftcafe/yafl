@@ -53,7 +53,7 @@ HIDDEN object_t* _string_create_from_cstr(char* data) {
 }
 
 
-HIDDEN char* _string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
+EXPORT char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
     if (!PTR_IS_STRING(self)) {
         *len_ptr = ((string_t*)self)->length - 1;
         return (char*)((string_t*)self)->array;
@@ -100,7 +100,7 @@ EXPORT object_t* string_from_bytes(uint8_t* data, int32_t length) {
 
 EXPORT int32_t string_copy_cstr(object_t* self, char* buf, int32_t buf_size) {
     intptr_t local; int32_t len;
-    char* src = _string_to_cstr(self, &local, &len);
+    char* src = string_to_cstr(self, &local, &len);
     int32_t copy = len < buf_size - 1 ? len : buf_size - 1;
     memcpy(buf, src, copy);
     buf[copy] = 0;
@@ -120,12 +120,12 @@ EXPORT object_t* string_truncate(object_t* self, int32_t new_length) {
 
 EXPORT object_t* string_append(object_t* self, object_t* data) {
     intptr_t buf1; int32_t len1;
-    char* cstr1 = _string_to_cstr(self, &buf1, &len1);
+    char* cstr1 = string_to_cstr(self, &buf1, &len1);
     if (len1 == 0)
         return data;
 
     intptr_t buf2; int32_t len2;
-    char* cstr2 = _string_to_cstr(data, &buf2, &len2);
+    char* cstr2 = string_to_cstr(data, &buf2, &len2);
     if (len2 == 0)
         return self;
 
@@ -138,7 +138,7 @@ EXPORT object_t* string_slice_int32(object_t* self, int32_t start, int32_t end) 
         return self;
 
     intptr_t buf; int32_t len;
-    char* cstr = _string_to_cstr(self, &buf, &len);
+    char* cstr = string_to_cstr(self, &buf, &len);
 
     if (start < 0)
         start = 0;
@@ -166,8 +166,8 @@ EXPORT object_t* string_slice(object_t* self, object_t* start_int, object_t* end
 
 EXPORT int string_compare(object_t* self, object_t* data) {
     intptr_t buf_a, buf_b; int32_t len_a, len_b;
-    char* cstr_a = _string_to_cstr(self, &buf_a, &len_a);
-    char* cstr_b = _string_to_cstr(data, &buf_b, &len_b);
+    char* cstr_a = string_to_cstr(self, &buf_a, &len_a);
+    char* cstr_b = string_to_cstr(data, &buf_b, &len_b);
 
     int result = memcmp(cstr_a, cstr_b, len_a < len_b ? len_a : len_b);
 
@@ -183,7 +183,7 @@ EXPORT int string_compare(object_t* self, object_t* data) {
 
 EXPORT object_t* print_string(object_t* self, object_t* data) {
     intptr_t buf; int32_t len;
-    char* cstr = _string_to_cstr(data, &buf, &len);
+    char* cstr = string_to_cstr(data, &buf, &len);
     int32_t result = (int32_t)fwrite(cstr, 1, len, stdout);
     return integer_create_from_int32(result);
 }

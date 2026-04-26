@@ -138,6 +138,14 @@ EXPORT object_t* integer_create_from_int32(int32_t value) {
     return (object_t*)_integer_from_intptr(value);
 }
 
+EXPORT object_t* integer_create_from_int32_noalloc(int32_t value) {
+    intptr_t v = (intptr_t)value;
+    if (v < INTPTR_MIN/4 || v > INTPTR_MAX/4) {
+        log_error_and_exit("integer_create_from_int32_noalloc: value out of tagged range", stderr);
+    }
+    return (object_t*)_TAG_LITERAL(v);
+}
+
 EXPORT int32_t integer_to_int32_with_overflow(object_t* self, int* overflow) {
     intptr_t result;
     *overflow = 0;

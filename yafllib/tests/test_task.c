@@ -57,15 +57,9 @@ TEST(task_on_complete_already_complete_calls_immediately)
     ASSERT(_callback_task_arg == t);
 TEST_END()
 
-TEST(task_complete_after_on_complete_posts_callback)
-    /* Register callback first, then complete — fires asynchronously via thread system */
-    _reset_callback();
-    object_t* t = task_create(NULL);
-    task_on_complete(t, CALLBACK);
-    task_complete(t);
-    AWAIT_CALLBACK();
-    ASSERT(_callback_task_arg == t);
-TEST_END()
+/* task_complete after task_on_complete fires asynchronously via the thread
+   system. YAFL never does a synchronous wait, so instead of spin-waiting we
+   chain the remainder of the test suite into the callback itself. */
 
 TEST(task_complete_idempotent)
     /* Completing a task twice must not fire the callback more than once.
@@ -89,15 +83,42 @@ TEST_END()
 
 /* ---- entrypoint ---- */
 
+static struct test_results _async_r;
+static fun_t _async_continuation;
+static object_t* _async_expected_task;
+
 static roots_declaration_func_t prev_roots;
 static void declare_roots(void(*declare)(object_t**)) {
     prev_roots(declare);
     declare(&_callback_task_arg);
+    declare(&_async_expected_task);
+}
+
+static object_t* _async_after_complete(object_t* self, object_t* task_arg) {
+    struct test_results* _r = &_async_r;
+
+    /* Verify the async-complete test first, in the callback itself. */
+    printf("  %-50s ", "task_complete_after_on_complete_posts_callback");
+    if (task_arg == _async_expected_task) {
+        printf("OK\n"); _r->passed++;
+    } else {
+        printf("FAIL\n    callback task arg mismatch\n"); _r->failed++;
+    }
+
+    /* Remaining synchronous tests run inline. */
+    RUN(task_complete_idempotent);
+    RUN(task_tagged_ptr_round_trip);
+
+    PRINT_RESULTS("task", _r);
+    object_t* status = integer_create_from_int32(_r->failed ? 1 : 0);
+    ((void(*)(object_t*,object_t*))_async_continuation.f)(_async_continuation.o, status);
+    return NULL;
 }
 
 static void run_tests(object_t* _, fun_t continuation) {
-    struct test_results r = {0, 0, NULL};
-    struct test_results* _r = &r;
+    _async_r.passed = 0; _async_r.failed = 0; _async_r.current_test = NULL;
+    _async_continuation = continuation;
+    struct test_results* _r = &_async_r;
 
     printf("=== task tests ===\n");
 
@@ -105,14 +126,16 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(task_complete_no_callback_returns_null);
     RUN(task_on_complete_pending_returns_null);
     RUN(task_on_complete_already_complete_calls_immediately);
-    RUN(task_complete_after_on_complete_posts_callback);
-    RUN(task_complete_idempotent);
-    RUN(task_tagged_ptr_round_trip);
 
-    PRINT_RESULTS("task", _r);
-
-    object_t* status = integer_create_from_int32(r.failed ? 1 : 0);
-    ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, status);
+    /* Async case: register our completion-aware callback, complete the task,
+       and return. The callback runs on a worker (possibly this one, after
+       we return to the main loop), finishes the remaining tests, and
+       invokes the exit continuation. */
+    _reset_callback();
+    object_t* t = task_create(NULL);
+    _async_expected_task = t;
+    task_on_complete(t, (fun_t){.f=_async_after_complete, .o=NULL});
+    task_complete(t);
 }
 
 int main(void) {

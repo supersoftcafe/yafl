@@ -411,6 +411,13 @@ class MatchExpression(e.Expression):
             self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
             if else_local:
                 bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+        else:
+            # No fall-through arm: control cannot reach end_label with
+            # result_var uninitialised.  Emitting Abort here makes the
+            # unreachable fall-through explicit and removes a join that
+            # would otherwise merge an uninit path into the exit.
+            bundles.append(g.OperationBundle(operations=(
+                cg_o.Abort(reason="primitive match fell through all arms"),)))
 
         bundles.append(g.OperationBundle(stack_vars=stack_vars,
                                          operations=(cg_o.Label(end_label),), result_var=result_var))
@@ -542,6 +549,9 @@ class MatchExpression(e.Expression):
         if final_fallback is not None:
             self.__emit_pointer_arm_body(final_fallback, sv, resolver, "fb",
                                          result_var, bundles)
+        else:
+            bundles.append(g.OperationBundle(operations=(
+                cg_o.Abort(reason="pointer-union match fell through all arms"),)))
 
         bundles.append(g.OperationBundle(stack_vars=stack_vars,
                                          operations=(cg_o.Label(end_label),), result_var=result_var))
@@ -694,6 +704,9 @@ class MatchExpression(e.Expression):
             self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
             if else_local:
                 bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+        else:
+            bundles.append(g.OperationBundle(operations=(
+                cg_o.Abort(reason="tagged-union match fell through all arms"),)))
 
         bundles.append(g.OperationBundle(stack_vars=stack_vars,
                                          operations=(cg_o.Label(end_label),), result_var=result_var))
@@ -754,6 +767,9 @@ class MatchExpression(e.Expression):
             self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
             if else_local:
                 bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+        else:
+            bundles.append(g.OperationBundle(operations=(
+                cg_o.Abort(reason="enum match fell through all arms"),)))
 
         bundles.append(g.OperationBundle(stack_vars=stack_vars,
                                          operations=(cg_o.Label(end_label),), result_var=result_var))

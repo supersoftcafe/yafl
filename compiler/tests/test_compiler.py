@@ -338,8 +338,10 @@ fun main(): Int
         with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
             obj = tmp.name
         try:
+            from pathlib import Path as _P
+            _yafllib = _P(__file__).parent.parent.parent / "yafllib"
             result = subprocess.run(
-                ["clang", "-x", "c", "-c", "-O0", "-o", obj, "-"],
+                ["clang", "-x", "c", "-c", "-O0", "-I", str(_yafllib), "-o", obj, "-"],
                 input=c_code, text=True, capture_output=True, timeout=30,
             )
             self.assertEqual(0, result.returncode, f"clang rejected generated C:\n{result.stderr}")
@@ -382,8 +384,10 @@ fun main(): Int
         with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
             obj = tmp.name
         try:
+            from pathlib import Path as _P
+            _yafllib = _P(__file__).parent.parent.parent / "yafllib"
             result = subprocess.run(
-                ["clang", "-x", "c", "-c", "-O0", "-o", obj, "-"],
+                ["clang", "-x", "c", "-c", "-O0", "-I", str(_yafllib), "-o", obj, "-"],
                 input=c_code, text=True, capture_output=True, timeout=30,
             )
             self.assertEqual(0, result.returncode, f"clang rejected generated C:\n{result.stderr}")

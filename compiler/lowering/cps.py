@@ -116,8 +116,16 @@ def __vars_to_state_fields(vars: Iterable[StackVar], state_name: str) -> dict[St
 
 
 def __convert_var_to_field_refs(ops: Iterable[Op],
-                                 vars_to_fields: dict[StackVar, LParam]) -> tuple[Op, ...]:
-    return tuple(op.replace_params(lambda p: vars_to_fields.get(p, p)) for op in ops)
+                                 vars_to_fields: dict[str, LParam]) -> tuple[Op, ...]:
+    # Match by name: match-arm rebinding can produce StackVars that share a
+    # name but differ in IR type (e.g., _IO|Int pointer-union reinterpreted
+    # as Int(0) bigint). They map to the same C variable and the same state
+    # field, so substitution must key on name only.
+    def replacer(p: RParam) -> RParam:
+        if isinstance(p, StackVar) and p.name in vars_to_fields:
+            return vars_to_fields[p.name]
+        return p
+    return tuple(op.replace_params(replacer) for op in ops)
 
 
 def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
@@ -162,10 +170,12 @@ def __task_subtype_name(result_type: Type) -> str | None:
     """
     if isinstance(result_type, Void):
         return None
-    # Pointer-compatible: DataPointer, Str, bigint (Int(0)) — all stored as object_t*
+    # Pointer-compatible: DataPointer, Str, bigint (Int(0)) — all stored as object_t*.
+    # This maps to yafllib's pre-declared task_obj_t (yafl.h) and its vtable
+    # obj_task_obj, so we use the concrete yafllib name rather than synthesising one.
     if (isinstance(result_type, (DataPointer, Str))
             or (isinstance(result_type, Int) and result_type.precision == 0)):
-        return "task$DataPointer"
+        return "task_obj"
     # FuncPointer: stored as fun_t
     if isinstance(result_type, FuncPointer):
         return "task$FuncPointer"
@@ -467,15 +477,21 @@ def __create_state_machine_func(fn: Function, state_name: str,
     non_terminal = basic_blocks[:-1]   # blocks that end with a non-tail call
     n = len(non_terminal)
 
-    # Build substitution map: StackVar → ObjectField into $state
-    all_live: dict[StackVar, LParam] = {}
+    # Build substitution map: variable name → ObjectField into $state.
+    # Keyed by name (not full StackVar) because the same physical variable
+    # can appear with different IR types in different contexts — most
+    # commonly a match-arm rebinding reinterpreting a union pointer. The
+    # state struct is also one field per unique name, and both types map
+    # to the same C variable, so the substitution needs to match by name
+    # to stay consistent.
+    vars_to_fields: dict[str, LParam] = {}
     for bb in non_terminal:
-        all_live.update(bb.live)
+        for var, field in bb.live.items():
+            vars_to_fields.setdefault(var.name, field)
         if bb.result is not None and isinstance(bb.result, StackVar):
-            all_live[bb.result] = ObjectField(
+            vars_to_fields.setdefault(bb.result.name, ObjectField(
                 bb.result.get_type(), __state_param_var, state_name,
-                bb.result.name, None)
-    vars_to_fields = all_live
+                bb.result.name, None))
 
     idx_field = ObjectField(Int(32), __state_param_var, state_name, "idx", None)
     my_task_field = ObjectField(DataPointer(), __state_param_var, state_name, "my_task", None)
@@ -505,7 +521,18 @@ def __create_state_machine_func(fn: Function, state_name: str,
         substituted_before = __convert_var_to_field_refs(body_ops_before_call, vars_to_fields)
         sm_ops.extend(substituted_before)
 
-        call_subst = call_op_orig.replace_params(lambda p: vars_to_fields.get(p, p))
+        call_subst = call_op_orig.replace_params(
+            lambda p: vars_to_fields[p.name] if isinstance(p, StackVar) and p.name in vars_to_fields else p)
+
+        # The `$resume${i}` label marks the point both the sync fall-through
+        # *after* the IS_TASK check+unpack and the dispatch path (from
+        # `$case${i+1}`) converge.  The check+unpack reads the local wrap
+        # slot written by the Call op just above; the dispatch path reaches
+        # `$resume${i}` without having run that Call, so the check+unpack
+        # must sit *before* the label — on the sync edge only — and never be
+        # re-entered on resume.  Dispatch writes the extracted result into
+        # the state field and lands at the label with the check already
+        # satisfied.
 
         if discarded_type is not None:
             # Non-void call whose result was stripped by dead-store elimination.
@@ -514,13 +541,13 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sv_discard_wrap = StackVar(discarded_wrapped, f"$sm_wrap${i}")
             sm_wrap_fields.append((f"$sm_wrap${i}", discarded_wrapped))
             sm_ops.append(dataclasses.replace(call_subst, register=sv_discard_wrap))
-            sm_ops.append(Label(f"$resume${i}"))
             task_ptr = __task_ptr_from(sv_discard_wrap, discarded_wrapped)
             check = Invoke("UNLIKELY",
                            NewStruct((("x", __is_task_param(sv_discard_wrap, discarded_wrapped)),)),
                            Int(32))
             async_sm_label = f"$async_sm${i}"
             sm_ops.append(JumpIf(async_sm_label, check))
+            sm_ops.append(Label(f"$resume${i}"))
             cold_ops.append(Label(async_sm_label))
             cold_ops.append(Move(idx_field, Integer(i + 1, 32)))
             untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
@@ -539,8 +566,6 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sv_for_check    = sv_wrapped
             orig_state_field = call_subst.register
 
-            sm_ops.append(Label(f"$resume${i}"))
-
             check = Invoke("UNLIKELY",
                            NewStruct((("x", __is_task_param(sv_for_check, wrapped_type)),)),
                            Int(32))
@@ -548,6 +573,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sm_ops.append(JumpIf(async_sm_label, check))
 
             sm_ops.append(Move(orig_state_field, StructField(sv_wrapped, "value")))
+            sm_ops.append(Label(f"$resume${i}"))
 
             cold_ops.append(Label(async_sm_label))
             cold_ops.append(Move(idx_field, Integer(i + 1, 32)))   # 1-based
@@ -564,8 +590,6 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sm_ops.append(call_subst)
             sv_for_check     = call_subst.register
             orig_state_field = None
-
-            sm_ops.append(Label(f"$resume${i}"))
 
             if sv_for_check is not None:
                 check = Invoke("UNLIKELY",
@@ -585,6 +609,8 @@ def __create_state_machine_func(fn: Function, state_name: str,
                            NewStruct((("task", untag), ("cb", callback))),
                            DataPointer())))
                 cold_ops.append(ReturnVoid())
+
+            sm_ops.append(Label(f"$resume${i}"))
 
     # ── Terminal block ────────────────────────────────────────────────────────
     terminal_bb = basic_blocks[-1]
@@ -618,7 +644,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
             callee_task_name = __task_subtype_name(bb.result.get_type())
             extract = __extract_from_task(__completed_param_var, bb.result.get_type(),
                                            callee_task_name)
-            dispatch_ops.append(Move(vars_to_fields[bb.result], extract))
+            dispatch_ops.append(Move(vars_to_fields[bb.result.name], extract))
         dispatch_ops.append(Jump(f"$resume${i}"))
 
     all_ops = tuple(sm_ops) + tuple(cold_ops) + tuple(dispatch_ops)
@@ -718,12 +744,18 @@ def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
         ("callback", FuncPointer()),   # fun_t
         ("result",   result_type),
     )
+    # "task_obj" is pre-declared in yafllib (yafl.h + task.c: TASK_OBJ_VTABLE
+    # aliased as obj_task_obj). Mark it foreign so codegen doesn't emit a
+    # duplicate typedef/vtable; NewObject/ObjectField still reference the
+    # yafllib symbols by name.
+    is_foreign = subtype_name == "task_obj"
     return Object(
         name=subtype_name,
         extends=(),        # task_complete/task_on_complete cast directly; no vtable dispatch needed
         functions=(),
         fields=ImmediateStruct(fields),
         comment=f"task subtype for result type {result_type}",
+        is_foreign=is_foreign,
     )
 
 

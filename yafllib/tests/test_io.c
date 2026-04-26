@@ -1,6 +1,8 @@
 
 #include "test_framework.h"
 #include <stdio.h>
+#include <string.h>
+
 EXTERN object_t* io_stdin (object_t* self);
 EXTERN object_t* io_stdout(object_t* self);
 EXTERN object_t* io_stderr(object_t* self);
@@ -11,326 +13,344 @@ EXTERN object_t* io_read (object_t* self, object_t* length);
 EXTERN object_t* io_write(object_t* self, object_t* data);
 EXTERN object_t* io_close(object_t* self);
 
+// ---- CPS helper --------------------------------------------------------
+//
+// `then(result, next)`: if `result` is a task, register a trampoline that
+// will call `next(result_value)` when the task completes; if `result` is
+// already a plain value, call `next(result)` inline. Uses a single slot
+// because tests run sequentially.
+
+static void (*_next_step)(object_t*);
+// GC root for the task we're awaiting. Without this, the io_t and its
+// in-flight job are unrooted between dispatch and the caller storing the
+// result, and a GC cycle in that window collects them. (The library's
+// io_t.in_flight rooting only protects the job *given* io_t is itself
+// reachable; here the test driver IS the io_t's only root.)
+static object_t* _in_flight_task;
+
+static object_t* _trampoline(object_t* self_unused, object_t* task) {
+    object_t* value = ((task_obj_t*)task)->result;
+    void (*next)(object_t*) = _next_step;
+    _next_step = NULL;
+    _in_flight_task = NULL;
+    next(value);
+    return NULL;
+}
+
+static void then(object_t* result, void (*next)(object_t*)) {
+    if (!((uintptr_t)result & PTR_TAG_TASK)) {
+        next(result);
+        return;
+    }
+    _next_step = next;
+    task_obj_t* t = (task_obj_t*)TASK_UNTAG(result);
+    _in_flight_task = (object_t*)t;
+    task_on_complete(&t->parent, (fun_t){.f=(void*)_trampoline, .o=NULL});
+}
+
+
+// ---- test driver -------------------------------------------------------
+
+static struct test_results _results;
+static fun_t               _exit_cont;
+
+// Each test function has signature `void test_fn(void)` and is expected to
+// eventually (synchronously or via chained callbacks) call `_next()`. The
+// driver invokes tests in order.
+typedef void (*test_fn)(void);
+
+static const test_fn* _test_queue;
+static int            _test_queue_len;
+static int            _test_queue_idx;
+
 static object_t* TMP_PATH;
 
-#define ASSERT_IS_NEG_INT(v) \
-    do { \
-        object_t* _v = (v); \
-        if (!PTR_IS_INTEGER(_v) || integer_to_int32(_v) >= 0) { \
-            printf("FAIL\n    line %d: expected negative integer\n", __LINE__); \
-            _r->failed++; \
-            return; \
-        } \
-    } while (0)
 
-/* ---- constructors ---- */
+static void _finish(void) {
+    printf("io: %d passed, %d failed\n\n", _results.passed, _results.failed);
+    object_t* status = integer_create_from_int32(_results.failed ? 1 : 0);
+    ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, status);
+}
 
-TEST(stdout_returns_object)
-    object_t* io = io_stdout(NULL);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-TEST_END()
 
-TEST(stderr_returns_object)
-    object_t* io = io_stderr(NULL);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-TEST_END()
+static void _next(void) {
+    if (_test_queue_idx >= _test_queue_len) {
+        _finish();
+        return;
+    }
+    _test_queue[_test_queue_idx++]();
+}
 
-TEST(stdin_returns_object)
-    object_t* io = io_stdin(NULL);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-TEST_END()
 
-TEST(create_returns_object)
-    object_t* io = io_create(NULL, TMP_PATH);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-    io_close(io);
-TEST_END()
+static void _pass(const char* name) {
+    printf("  %-50s OK\n", name); fflush(stdout);
+    _results.passed++;
+    _next();
+}
 
-TEST(create_bad_path_returns_neg_int)
-    object_t* r = io_create(NULL, STR("/no/such/directory/file.tmp"));
-    ASSERT_IS_NEG_INT(r);
-TEST_END()
 
-TEST(open_read_bad_path_returns_neg_int)
-    object_t* r = io_open_read(NULL, STR("/no/such/file_yafl_test.tmp"));
-    ASSERT_IS_NEG_INT(r);
-TEST_END()
+static void _fail(const char* name, int line, const char* expr) {
+    printf("  %-50s FAIL\n    line %d: %s\n", name, line, expr); fflush(stdout);
+    _results.failed++;
+    _next();
+}
 
-TEST(open_read_returns_object)
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_close(w);
-    object_t* io = io_open_read(NULL, TMP_PATH);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-    io_close(io);
-TEST_END()
 
-TEST(open_write_truncate_returns_object)
-    object_t* io = io_open_write(NULL, TMP_PATH, true);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-    io_close(io);
-TEST_END()
+#define ASSERT_OR_FAIL(name, cond) \
+    do { if (!(cond)) { _fail((name), __LINE__, #cond); return; } } while (0)
 
-TEST(open_write_append_returns_object)
-    object_t* io = io_open_write(NULL, TMP_PATH, false);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-    io_close(io);
-TEST_END()
 
-/* ---- write ---- */
+// ---- tests -------------------------------------------------------------
 
-TEST(write_returns_byte_count)
-    object_t* io = io_create(NULL, TMP_PATH);
-    object_t* n = io_write(io, STR("hello"));
-    ASSERT(PTR_IS_INTEGER(n));
-    ASSERT_EQ_I32(integer_to_int32(n), 5);
-    io_close(io);
-TEST_END()
+// stdout/stderr/stdin: all synchronous, no file open needed.
 
-TEST(write_short_string_byte_count)
-    /* "hi" is a short (tagged) string — exercises the tagged-pointer path */
-    ASSERT(PTR_IS_STRING(STR("hi")));
-    object_t* io = io_create(NULL, TMP_PATH);
-    object_t* n = io_write(io, STR("hi"));
-    ASSERT_EQ_I32(integer_to_int32(n), 2);
-    io_close(io);
-TEST_END()
+static void test_stdio_returns_objects(void) {
+    const char* n = "stdio_returns_objects";
+    ASSERT_OR_FAIL(n, io_stdout(NULL) != NULL);
+    ASSERT_OR_FAIL(n, io_stderr(NULL) != NULL);
+    ASSERT_OR_FAIL(n, io_stdin (NULL) != NULL);
+    _pass(n);
+}
 
-TEST(write_closed_returns_null)
-    object_t* io = io_create(NULL, TMP_PATH);
-    io_close(io);
-    object_t* r = io_write(io, STR("hello"));
-    ASSERT(r == NULL);
-TEST_END()
 
-/* ---- close ---- */
+// create + empty close (fast close path, no flush needed).
 
-TEST(close_returns_null)
-    object_t* io = io_create(NULL, TMP_PATH);
-    object_t* r = io_close(io);
-    ASSERT(r == NULL);
-TEST_END()
+static void _create_close_step2(object_t* closed_result) {
+    if (closed_result != NULL) { _fail("create_close_roundtrip", __LINE__, "close returned non-null"); return; }
+    _pass("create_close_roundtrip");
+}
+static void _create_close_step1(object_t* io) {
+    if (!(io != NULL && PTR_IS_OBJECT(io))) { _fail("create_close_roundtrip", __LINE__, "create not object"); return; }
+    then(io_close(io), _create_close_step2);
+}
+static void test_create_close_roundtrip(void) {
+    then(io_create(NULL, TMP_PATH), _create_close_step1);
+}
 
-TEST(close_idempotent)
-    object_t* io = io_create(NULL, TMP_PATH);
-    io_close(io);
-    object_t* r = io_close(io);
-    ASSERT(r == NULL);
-TEST_END()
 
-/* ---- read ---- */
+// create with bad path -> negative int error.
 
-TEST(read_bad_length_zero_returns_neg_int)
-    object_t* io = io_create(NULL, TMP_PATH);
-    object_t* r = io_read(io, integer_create_from_int32(0));
-    ASSERT_IS_NEG_INT(r);
-    io_close(io);
-TEST_END()
+static object_t* _bad_path_obj;
+static void _bad_path_step1(object_t* result) {
+    if (!PTR_IS_INTEGER(result) || integer_to_int32(result) >= 0) {
+        _fail("create_bad_path_returns_error", __LINE__, "expected negative int");
+        return;
+    }
+    // Release the path reference so GC can reclaim it between tests.
+    _bad_path_obj = NULL;
+    _pass("create_bad_path_returns_error");
+}
+static void test_create_bad_path_returns_error(void) {
+    _bad_path_obj = string_from_bytes((uint8_t*)"/no/such/directory/file.tmp", 27);
+    then(io_create(NULL, _bad_path_obj), _bad_path_step1);
+}
 
-TEST(read_bad_length_negative_returns_neg_int)
-    object_t* io = io_create(NULL, TMP_PATH);
-    object_t* r = io_read(io, integer_create_from_int32(-1));
-    ASSERT_IS_NEG_INT(r);
-    io_close(io);
-TEST_END()
 
-TEST(read_closed_returns_null)
-    object_t* io = io_create(NULL, TMP_PATH);
-    io_close(io);
-    object_t* r = io_read(io, integer_create_from_int32(16));
-    ASSERT(r == NULL);
-TEST_END()
+// write + read round-trip: write fits in buffer (fast path), close flushes
+// (async), open_read + read (async refill) + close.
 
-TEST(read_eof_returns_null)
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_close(w);
-    object_t* io = io_open_read(NULL, TMP_PATH);
-    object_t* r = io_read(io, integer_create_from_int32(16));
-    ASSERT(r == NULL);
-    io_close(io);
-TEST_END()
+static object_t* _rt_io;
 
-/* ---- round-trips ---- */
+static void _rt_step6(object_t* close_rd) {
+    // close of read handle with empty buffer is synchronous NULL
+    (void)close_rd;
+    _pass("write_read_roundtrip");
+}
+static void _rt_step5(object_t* data) {
+    if (data == NULL) { _fail("write_read_roundtrip", __LINE__, "read returned NULL"); return; }
+    if (string_length(data) != 11) { _fail("write_read_roundtrip", __LINE__, "wrong length"); return; }
+    object_t* exp = STR("hello world");
+    if (string_compare(data, exp) != 0) { _fail("write_read_roundtrip", __LINE__, "content mismatch"); return; }
+    then(io_close(_rt_io), _rt_step6);
+}
+static void _rt_step4(object_t* opened) {
+    if (!(opened != NULL && PTR_IS_OBJECT(opened))) { _fail("write_read_roundtrip", __LINE__, "open_read failed"); return; }
+    _rt_io = opened;
+    then(io_read(opened, integer_create_from_int32(11)), _rt_step5);
+}
+static void _rt_step3(object_t* closed_write) {
+    (void)closed_write;
+    then(io_open_read(NULL, TMP_PATH), _rt_step4);
+}
+static void _rt_step2(object_t* written) {
+    if (!PTR_IS_INTEGER(written) || integer_to_int32(written) != 11) {
+        _fail("write_read_roundtrip", __LINE__, "write count wrong");
+        return;
+    }
+    then(io_close(_rt_io), _rt_step3);
+}
+static void _rt_step1(object_t* io) {
+    if (!(io != NULL && PTR_IS_OBJECT(io))) { _fail("write_read_roundtrip", __LINE__, "create failed"); return; }
+    _rt_io = io;
+    then(io_write(io, STR("hello world")), _rt_step2);
+}
+static void test_write_read_roundtrip(void) {
+    then(io_create(NULL, TMP_PATH), _rt_step1);
+}
 
-TEST(write_read_roundtrip)
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_write(w, STR("hello world"));
-    io_close(w);
 
-    object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, integer_create_from_int32(11));
-    ASSERT_STR_EQ(data, "hello world");
-    io_close(r);
-TEST_END()
+// Read past EOF -> NULL.
 
-TEST(read_partial_then_rest)
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_write(w, STR("hello world"));
-    io_close(w);
+static object_t* _eof_io;
+static void _eof_step3(object_t* closed) {
+    (void)closed;
+    _pass("read_eof_returns_null");
+}
+static void _eof_step2(object_t* data) {
+    if (data != NULL) { _fail("read_eof_returns_null", __LINE__, "expected NULL"); return; }
+    then(io_close(_eof_io), _eof_step3);
+}
+static void _eof_step1b(object_t* opened) {
+    if (!(opened != NULL && PTR_IS_OBJECT(opened))) { _fail("read_eof_returns_null", __LINE__, "open_read failed"); return; }
+    _eof_io = opened;
+    then(io_read(opened, integer_create_from_int32(16)), _eof_step2);
+}
+static void _eof_step1a(object_t* closed_write) {
+    (void)closed_write;
+    then(io_open_read(NULL, TMP_PATH), _eof_step1b);
+}
+static void _eof_step1(object_t* io) {
+    then(io_close(io), _eof_step1a);
+}
+static void test_read_eof_returns_null(void) {
+    then(io_create(NULL, TMP_PATH), _eof_step1);
+}
 
-    object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* part1 = io_read(r, integer_create_from_int32(5));
-    ASSERT_STR_EQ(part1, "hello");
-    object_t* part2 = io_read(r, integer_create_from_int32(6));
-    ASSERT_STR_EQ(part2, " world");
-    object_t* eof = io_read(r, integer_create_from_int32(16));
-    ASSERT(eof == NULL);
-    io_close(r);
-TEST_END()
 
-TEST(write_append_roundtrip)
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_write(w, STR("hello"));
-    io_close(w);
+// Oversize read -> clamped to IO_READ_MAX, not an error. File contains 40
+// bytes; we ask for 100000 but get back 40 (the actual file size).
 
-    object_t* a = io_open_write(NULL, TMP_PATH, false);
-    io_write(a, STR(" world"));
-    io_close(a);
+static object_t* _over_io;
+static uint8_t   _over_payload[40];
 
-    object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, integer_create_from_int32(11));
-    ASSERT_STR_EQ(data, "hello world");
-    io_close(r);
-TEST_END()
+static void _over_read_close_done(object_t* closed) { (void)closed; _pass("read_oversize_clamped"); }
+static void _over_read_done(object_t* data) {
+    if (data == NULL || !PTR_IS_OBJECT(data) || string_length(data) != 40) {
+        _fail("read_oversize_clamped", __LINE__, "wrong length or null");
+        return;
+    }
+    then(io_close(_over_io), _over_read_close_done);
+}
+static void _over_after_reopen(object_t* opened) {
+    if (!(opened != NULL && PTR_IS_OBJECT(opened))) { _fail("read_oversize_clamped", __LINE__, "open_read failed"); return; }
+    _over_io = opened;
+    then(io_read(opened, integer_create_from_int32(100000)), _over_read_done);
+}
+static void _over_after_close_write(object_t* closed) {
+    (void)closed;
+    then(io_open_read(NULL, TMP_PATH), _over_after_reopen);
+}
+static void _over_after_write(object_t* written) {
+    if (!PTR_IS_INTEGER(written) || integer_to_int32(written) != 40) {
+        _fail("read_oversize_clamped", __LINE__, "write count != 40");
+        return;
+    }
+    then(io_close(_over_io), _over_after_close_write);
+}
+static void _over_init(object_t* io) {
+    if (!(io != NULL && PTR_IS_OBJECT(io))) { _fail("read_oversize_clamped", __LINE__, "create failed"); return; }
+    _over_io = io;
+    for (int i = 0; i < 40; ++i) _over_payload[i] = (uint8_t)('a' + (i % 26));
+    then(io_write(io, string_from_bytes(_over_payload, 40)), _over_after_write);
+}
+static void test_read_oversize_clamped(void) {
+    then(io_create(NULL, TMP_PATH), _over_init);
+}
 
-TEST(write_truncate_clears_content)
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_write(w, STR("hello world"));
-    io_close(w);
 
-    object_t* t = io_open_write(NULL, TMP_PATH, true);
-    io_write(t, STR("hi"));
-    io_close(t);
+// Small write + big write preserves byte order.
 
-    object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, integer_create_from_int32(64));
-    ASSERT_STR_EQ(data, "hi");
-    io_close(r);
-TEST_END()
+static object_t* _ord_io;
+static uint8_t*  _ord_big;   // heap-allocated payload, 10000 bytes
+static int32_t   _ord_big_len;
 
-/* ---- large read (> 32-byte stack buffer) ---- */
+static void _ord_step_final(object_t* closed) {
+    (void)closed;
+    // Read back via stdio to validate bytes.
+    FILE* f = fopen("/tmp/yafl_test_io.tmp", "r");
+    if (!f) { _fail("small_then_big_write", __LINE__, "fopen readback"); return; }
+    char prefix[8] = {0};
+    size_t got = fread(prefix, 1, 7, f);
+    if (got != 7 || memcmp(prefix, "prefix:", 7) != 0) {
+        fclose(f); _fail("small_then_big_write", __LINE__, "prefix mismatch"); return;
+    }
+    uint8_t* buf = malloc((size_t)_ord_big_len);
+    got = fread(buf, 1, (size_t)_ord_big_len, f);
+    bool ok = (got == (size_t)_ord_big_len && memcmp(buf, _ord_big, (size_t)_ord_big_len) == 0);
+    free(buf); fclose(f);
+    free(_ord_big); _ord_big = NULL;
+    if (!ok) { _fail("small_then_big_write", __LINE__, "big payload mismatch"); return; }
+    _pass("small_then_big_write");
+}
 
-TEST(read_large_allocation_path)
-    /* io_read with length > 32 takes the heap-allocation + string_truncate path.
-       Verify the content round-trips correctly. */
-    const char* payload = "0123456789abcdefghij0123456789abcdefghij"; /* 40 bytes */
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_write(w, string_from_bytes((uint8_t*)payload, 40));
-    io_close(w);
+static void _ord_step_close(object_t* write2_result) {
+    if (!PTR_IS_INTEGER(write2_result) || integer_to_int32(write2_result) != _ord_big_len) {
+        _fail("small_then_big_write", __LINE__, "second write count");
+        return;
+    }
+    then(io_close(_ord_io), _ord_step_final);
+}
 
-    object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, integer_create_from_int32(40));
-    ASSERT(data != NULL);
-    ASSERT_EQ_I32(string_length(data), 40);
-    ASSERT_STR_EQ(data, payload);
-    io_close(r);
-TEST_END()
+static void _ord_step_big(object_t* write1_result) {
+    (void)write1_result;
+    object_t* big = string_from_bytes(_ord_big, _ord_big_len);
+    then(io_write(_ord_io, big), _ord_step_close);
+}
 
-TEST(read_exact_file_size)
-    /* Reading exactly the number of bytes in the file returns the data, and the
-       immediately following read returns NULL (clean EOF, no partial read). */
-    object_t* w = io_create(NULL, TMP_PATH);
-    io_write(w, STR("hello"));
-    io_close(w);
+static void _ord_step1(object_t* io) {
+    if (!(io != NULL && PTR_IS_OBJECT(io))) { _fail("small_then_big_write", __LINE__, "create failed"); return; }
+    _ord_io = io;
+    _ord_big_len = 10000;
+    _ord_big = malloc((size_t)_ord_big_len);
+    for (int32_t i = 0; i < _ord_big_len; ++i) _ord_big[i] = (uint8_t)('A' + (i % 26));
+    then(io_write(io, STR("prefix:")), _ord_step_big);
+}
 
-    object_t* r = io_open_read(NULL, TMP_PATH);
-    object_t* data = io_read(r, integer_create_from_int32(5));
-    ASSERT_STR_EQ(data, "hello");
-    object_t* eof = io_read(r, integer_create_from_int32(5));
-    ASSERT(eof == NULL);
-    io_close(r);
-TEST_END()
+static void test_small_then_big_write(void) {
+    then(io_create(NULL, TMP_PATH), _ord_step1);
+}
 
-TEST(write_empty_string)
-    /* Writing a zero-length string returns 0, not an error. */
-    object_t* io = io_create(NULL, TMP_PATH);
-    object_t* n = io_write(io, STR(""));
-    ASSERT(PTR_IS_INTEGER(n));
-    ASSERT_EQ_I32(integer_to_int32(n), 0);
-    io_close(io);
-TEST_END()
 
-TEST(open_write_append_creates_nonexistent)
-    /* io_open_write with truncate=false (append mode) creates the file if it
-       does not already exist. */
-    const char* new_cstr = "/tmp/yafl_test_io_new.tmp";
-    object_t*   new_path = STR("/tmp/yafl_test_io_new.tmp");
-    remove(new_cstr);
-    object_t* io = io_open_write(NULL, new_path, false);
-    ASSERT(io != NULL && PTR_IS_OBJECT(io));
-    io_close(io);
-    object_t* verify = io_open_read(NULL, new_path);
-    ASSERT(verify != NULL && PTR_IS_OBJECT(verify));
-    io_close(verify);
-    remove(new_cstr);
-TEST_END()
+// ---- driver ------------------------------------------------------------
 
-TEST(read_closed_returns_null_twice)
-    /* Repeated reads on a closed file both return NULL without crashing. */
-    object_t* io = io_create(NULL, TMP_PATH);
-    io_close(io);
-    ASSERT(io_read(io, integer_create_from_int32(16)) == NULL);
-    ASSERT(io_read(io, integer_create_from_int32(16)) == NULL);
-TEST_END()
-
-/* ---- entrypoint ---- */
+static const test_fn TESTS[] = {
+    test_stdio_returns_objects,
+    test_create_close_roundtrip,
+    test_create_bad_path_returns_error,
+    test_write_read_roundtrip,
+    test_read_eof_returns_null,
+    test_read_oversize_clamped,
+    test_small_then_big_write,
+};
 
 static roots_declaration_func_t prev_roots;
 static void declare_roots(void(*declare)(object_t**)) {
     prev_roots(declare);
     declare(&TMP_PATH);
+    declare(&_rt_io);
+    declare(&_eof_io);
+    declare(&_over_io);
+    declare(&_ord_io);
+    declare(&_bad_path_obj);
+    declare(&_in_flight_task);
 }
 
 static void run_tests(object_t* _, fun_t continuation) {
-    struct test_results r = {0, 0, NULL};
-    struct test_results* _r = &r;
-
-    TMP_PATH = STR("/tmp/yafl_test_io.tmp");
+    // GC-allocated so the path survives test function returns — tests chain
+    // asynchronously and the IO threadpool may read the path long after the
+    // function that passed it as a literal has popped its stack frame.
+    TMP_PATH  = string_from_bytes((uint8_t*)"/tmp/yafl_test_io.tmp", 21);
+    _exit_cont = continuation;
+    _results.passed = 0;
+    _results.failed = 0;
+    _test_queue = TESTS;
+    _test_queue_len = (int)(sizeof(TESTS)/sizeof(TESTS[0]));
+    _test_queue_idx = 0;
 
     printf("=== io tests ===\n");
-
-    /* constructors */
-    RUN(stdout_returns_object);
-    RUN(stderr_returns_object);
-    RUN(stdin_returns_object);
-    RUN(create_returns_object);
-    RUN(create_bad_path_returns_neg_int);
-    RUN(open_read_bad_path_returns_neg_int);
-    RUN(open_read_returns_object);
-    RUN(open_write_truncate_returns_object);
-    RUN(open_write_append_returns_object);
-
-    /* write */
-    RUN(write_returns_byte_count);
-    RUN(write_short_string_byte_count);
-    RUN(write_closed_returns_null);
-
-    /* close */
-    RUN(close_returns_null);
-    RUN(close_idempotent);
-
-    /* read */
-    RUN(read_bad_length_zero_returns_neg_int);
-    RUN(read_bad_length_negative_returns_neg_int);
-    RUN(read_closed_returns_null);
-    RUN(read_eof_returns_null);
-
-    /* round-trips */
-    RUN(write_read_roundtrip);
-    RUN(read_partial_then_rest);
-    RUN(write_append_roundtrip);
-    RUN(write_truncate_clears_content);
-
-    /* large read / boundary / edge cases */
-    RUN(read_large_allocation_path);
-    RUN(read_exact_file_size);
-    RUN(write_empty_string);
-    RUN(open_write_append_creates_nonexistent);
-    RUN(read_closed_returns_null_twice);
-
-    PRINT_RESULTS("io", _r);
-
-    object_t* status = integer_create_from_int32(r.failed ? 1 : 0);
-    ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, status);
+    _next();
+    // When the last test's callback fires, _finish calls the exit
+    // continuation.
 }
 
 int main(void) {

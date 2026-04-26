@@ -1039,6 +1039,11 @@ class WideExpression(Expression):
                              cg_o.Jump(end_label))))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
             first_arm = False
+        # All source variants are enumerated; any tag outside that set is
+        # unreachable at runtime.  Make that explicit so the end-label join
+        # has no uninitialised-result path.
+        bundles.append(g.OperationBundle(operations=(
+            cg_o.Abort(reason="container-widening fell through all source variants"),)))
         return bundles
 
 

@@ -8,6 +8,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(SRC_FILES
     integer.c
     io.c
+    io_thread.c
     object.c
     primitive.c
     string.c
@@ -47,6 +48,7 @@ enable_testing()
 set(TEST_SRC_FILES
     integer.c
     io.c
+    io_thread.c
     object.c
     primitive.c
     string.c
@@ -68,4 +70,7 @@ add_yafl_test(test_string)
 add_yafl_test(test_gc)
 add_yafl_test(test_io)
 add_yafl_test(test_task)
+add_yafl_test(test_io_stress)
+add_yafl_test(test_gc_stress)
+add_yafl_test(test_gc_min)
 

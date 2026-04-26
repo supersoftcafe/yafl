@@ -18,6 +18,7 @@ import lowering.unions
 import lowering.cps
 import lowering.sync_inference
 import lowering.trim
+import lowering.uninit_check
 
 import pyast.statement as s
 import pyast.expression as e
@@ -172,6 +173,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
 
     a = lowering.sync_inference.infer_sync(a)
     a = lowering.trim.removed_unused_stuff(lowering.cps.convert_application_to_cps(a))
+    lowering.uninit_check.check_application(a)
     return a.gen(just_testing=just_testing)
 
 
