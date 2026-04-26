@@ -99,7 +99,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
             cg_o.ReturnVoid(),
             # Async path: register the continuation as task callback
             cg_o.Label("$async_entry"),
-            cg_o.Move(sv_discard, on_complete),
+            cg_o.Move(sv_discard, on_complete, keep=True),
             cg_o.ReturnVoid(),
         )
     )

@@ -20,7 +20,6 @@ HIDDEN struct io_job_vtable IO_JOB_VTABLE = {
                               | maskof(io_job_t, .task.result)
                               | maskof(io_job_t, .next_in_io_queue)
                               | maskof(io_job_t, .io)
-                              | maskof(io_job_t, .write_data)
                               | maskof(io_job_t, .completion_node),
     .array_el_pointer_locations = 0,
     .functions_mask           = 0,

@@ -14,7 +14,6 @@ fun testIO(io: IO): (io: IO, v: Container|IOError)
 fun main(): System::Int
   let (io, value) = testIO(stdin())
   io.close()
-
   System::print("Hello\n")
   System::print("Hi there\n")
   System::print("Whato\n")

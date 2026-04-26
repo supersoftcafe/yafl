@@ -117,10 +117,9 @@ def __vars_to_state_fields(vars: Iterable[StackVar], state_name: str) -> dict[St
 
 def __convert_var_to_field_refs(ops: Iterable[Op],
                                  vars_to_fields: dict[str, LParam]) -> tuple[Op, ...]:
-    # Match by name: match-arm rebinding can produce StackVars that share a
-    # name but differ in IR type (e.g., _IO|Int pointer-union reinterpreted
-    # as Int(0) bigint). They map to the same C variable and the same state
-    # field, so substitution must key on name only.
+    # Each StackVar name within a function is unique to one declaration
+    # site (match arms get per-arm mangled names — see match._arm_unique_name),
+    # so name-keyed substitution maps each occurrence to the right state field.
     def replacer(p: RParam) -> RParam:
         if isinstance(p, StackVar) and p.name in vars_to_fields:
             return vars_to_fields[p.name]
@@ -443,7 +442,8 @@ def __create_hot_path_func(fn: Function, state_name: str,
         __sv_discard,
         Invoke("task_on_complete",
                NewStruct((("task", __sv_async_task), ("cb", callback))),
-               DataPointer())))
+               DataPointer()),
+        keep=True))
     common_ops.append(Return(TagTask(__sv_task, wrapped_result)))
 
     extra_stack = Struct((
@@ -556,7 +556,8 @@ def __create_state_machine_func(fn: Function, state_name: str,
                 __sv_discard,
                 Invoke("task_on_complete",
                        NewStruct((("task", untag), ("cb", callback))),
-                       DataPointer())))
+                       DataPointer()),
+                keep=True))
             cold_ops.append(ReturnVoid())
         elif needs_temp:
             sv_wrapped = StackVar(wrapped_type, f"$sm_wrap${i}")
@@ -584,7 +585,8 @@ def __create_state_machine_func(fn: Function, state_name: str,
                 __sv_discard,
                 Invoke("task_on_complete",
                        NewStruct((("task", untag), ("cb", callback))),
-                       DataPointer())))
+                       DataPointer()),
+                keep=True))
             cold_ops.append(ReturnVoid())
         else:
             sm_ops.append(call_subst)
@@ -607,7 +609,8 @@ def __create_state_machine_func(fn: Function, state_name: str,
                     __sv_discard,
                     Invoke("task_on_complete",
                            NewStruct((("task", untag), ("cb", callback))),
-                           DataPointer())))
+                           DataPointer()),
+                    keep=True))
                 cold_ops.append(ReturnVoid())
 
             sm_ops.append(Label(f"$resume${i}"))
@@ -627,7 +630,8 @@ def __create_state_machine_func(fn: Function, state_name: str,
                     op.value))
             final_ops.append(Move(
                 __sv_discard,
-                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer())))
+                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
+                keep=True))
             final_ops.append(ReturnVoid())
         else:
             final_ops.append(op)

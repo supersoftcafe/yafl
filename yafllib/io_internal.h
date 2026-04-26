@@ -50,28 +50,23 @@ typedef enum {
 // IO job.  Embeds task_obj_t as first field so (task_obj_t*)job is the
 // task the caller holds.  Allocated on a worker before suspension.
 //
-// The IO thread reads `op`, `io`, `open_mode` and writes only `raw_result`
-// / `eof` and (for OPEN) the FILE* into `io->file`.  All bytes the IO
-// thread reads or writes flow through `io->buf` — never `write_data` or
-// any other GC-managed memory.  `write_data` is touched only by the
-// worker (the dispatching call and the finisher), which is GC-aware.
+// All bytes the IO thread reads or writes flow through `io->buf`, which
+// lives on an `is_mutable=1` page that the GC will not compact.  The job
+// itself carries no caller-supplied pointers: there is nothing else for
+// the IO thread to dereference.  Every GC-managed field is grouped at
+// the start of the struct so the vtable's pointer mask stays compact and
+// the GC has all reachable references in one cache line.
 typedef struct io_job {
-    task_obj_t              task;              // first field: THE task returned to the caller
-    _Atomic(struct io_job*) next_in_io_queue;  // MPSC linkage in the IO queue (GC-traced)
+    task_obj_t              task;              // GC: callback.o, result
+    _Atomic(struct io_job*) next_in_io_queue;  // GC: MPSC linkage in the IO queue
+    io_t*                   io;                // GC: target handle (allocated on worker, even for OPEN)
+    worker_node_t*          completion_node;   // GC: pre-allocated; action = per-op finisher
 
     io_op_t                 op;
-    io_t*                   io;                // target handle (allocated on worker, even for OPEN)
-
-    object_t*               write_data;        // FLUSH_WRITE: ref to data the worker will copy in after flush
-    int32_t                 write_data_len;    // FLUSH_WRITE: total bytes in write_data
-
     char                    open_mode[4];      // "r", "w", "a"
     int32_t                 caller_length;     // REFILL: caller's requested length
-
     int32_t                 raw_result;        // bytes moved, 0 for EOF, -errno on failure
     bool                    eof;               // REFILL: 0 bytes + feof()
-
-    worker_node_t*          completion_node;   // pre-allocated; action = per-op finisher
 } io_job_t;
 
 VTABLE_DECLARE_STRUCT(io_vtable, 16);

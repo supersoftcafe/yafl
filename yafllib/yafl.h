@@ -169,8 +169,8 @@ typedef struct vtable {
             uint16_t object_size;\
             uint16_t array_el_size;\
             uint32_t functions_mask;\
-            uint64_t array_el_pointer_locations;\
             uint64_t object_pointer_locations;\
+            uint64_t array_el_pointer_locations;\
             uint16_t array_len_offset;\
             uint16_t is_mutable:1;\
             const char* name;\

@@ -77,13 +77,13 @@ static io_job_t* _io_job_alloc(io_op_t op,
     io_job_t* job = (io_job_t*)object_create((vtable_t*)&IO_JOB_VTABLE);
     atomic_store(&job->task.parent.state, 0);   // TASK_PENDING
     job->task.result     = NULL;
-    job->op              = op;
     job->io              = io;
+    job->completion_node = node;
+    job->op              = op;
     job->open_mode[0]    = 0;
     job->caller_length   = 0;
     job->raw_result      = 0;
     job->eof             = false;
-    job->completion_node = node;
 
     node->action.o = (object_t*)job;
     return job;
@@ -116,17 +116,13 @@ static object_t* _io_dispatch_refill(io_t* io, int32_t caller_length) {
 }
 
 
-// Dispatch a buffer flush.  `write_data`/`write_data_len`, if non-NULL,
-// is carried through to the finisher so that — once the flush has
-// drained the old buffer — the worker can copy as much of the caller's
-// data as fits into the now-empty buffer and return the byte count.
-// The IO thread itself never touches `write_data`; only the finisher
-// (which runs on a worker, GC-aware) does.
-static object_t* _io_dispatch_flush(io_t* io, object_t* write_data, int32_t write_data_len) {
+// Dispatch a buffer flush.  The job carries no caller-supplied data
+// pointer: the IO thread only ever touches `io->buf`, which lives on
+// an `is_mutable=1` page that the GC will not compact.  The finisher
+// resets `buf_tail` and resolves the task to 0 — caller loops back to
+// io_write with whatever bytes were not yet accepted.
+static object_t* _io_dispatch_flush(io_t* io) {
     io_job_t* job = _io_job_alloc(IO_OP_FLUSH_WRITE, io, _io_finish_flush_write);
-    GC_WRITE_BARRIER(job->write_data, 1);
-    job->write_data     = write_data;
-    job->write_data_len = write_data_len;
     _io_anchor_in_flight(io, job);
     _io_enqueue(job);
     return _io_as_task(job);
@@ -195,23 +191,10 @@ static void _io_finish_flush_write(io_job_t* job) {
     if (job->raw_result < 0) {
         result = integer_create_from_int32_noalloc(job->raw_result);
     } else {
-        // Buffer drained.  Copy as much of the caller's data as fits
-        // into the now-empty buffer, and return that count so the
-        // io_write task resolves to a non-zero accepted-byte count.
+        // Buffer drained.  The task resolves to 0 — the caller loops
+        // back to io_write, which now finds an empty buffer.
         io->buf_tail = 0;
-        int32_t copied = 0;
-        if (job->write_data != NULL) {
-            intptr_t local = 0;
-            int32_t  len   = 0;
-            const char* bytes = string_to_cstr(job->write_data, &local, &len);
-            if (len > job->write_data_len) len = job->write_data_len;
-            if (len < 0) len = 0;
-            int32_t n = (len < IO_BUFFER_SIZE) ? len : IO_BUFFER_SIZE;
-            if (n > 0) memcpy(io->buf, bytes, (size_t)n);
-            io->buf_tail = n;
-            copied = n;
-        }
-        result = integer_create_from_int32_noalloc(copied);
+        result = integer_create_from_int32_noalloc(0);
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
@@ -282,11 +265,11 @@ EXPORT object_t* io_read(object_t* self, object_t* o_length) {
 
 
 // io_write copies as much of `data` as fits into the handle's buffer and
-// returns the byte count it accepted (synchronously).  When the buffer is
-// full it dispatches a flush and returns a task that resolves to 0 once
-// the flush completes — callers loop, calling io_write again with the
-// remaining bytes after each acceptance.  This means the IO thread never
-// touches anything beyond `io->buf`.
+// returns the byte count it accepted (synchronously).  When the buffer
+// is already full it dispatches a flush and returns a task that resolves
+// to 0 once the flush completes — callers loop, calling io_write again
+// with the unwritten suffix until the byte count returned reaches the
+// payload length.  The IO thread never touches anything beyond `io->buf`.
 EXPORT object_t* io_write(object_t* self, object_t* data) {
     io_t* io = (io_t*)self;
     if (io == NULL || io->file == NULL) return NULL;
@@ -303,12 +286,9 @@ EXPORT object_t* io_write(object_t* self, object_t* data) {
         return integer_create_from_int32_noalloc(n);
     }
 
-    // Buffer full — flush asynchronously and carry the caller's data
-    // through to the finisher.  Once the flush completes the finisher
-    // copies as much of `data` as fits into the now-empty buffer and
-    // resolves the task to that byte count.  The caller loops with the
-    // remaining bytes.
-    return _io_dispatch_flush(io, data, len);
+    // Buffer is full — flush it.  When the task completes, the buffer
+    // is empty and the caller's next io_write call will copy in.
+    return _io_dispatch_flush(io);
 }
 
 

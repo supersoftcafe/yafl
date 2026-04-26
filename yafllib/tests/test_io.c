@@ -263,6 +263,7 @@ static void test_read_oversize_clamped(void) {
 static object_t* _ord_io;
 static uint8_t*  _ord_big;   // heap-allocated payload, 10000 bytes
 static int32_t   _ord_big_len;
+static int32_t   _ord_offset; // bytes of _ord_big accepted so far
 
 static void _ord_step_final(object_t* closed) {
     (void)closed;
@@ -283,18 +284,36 @@ static void _ord_step_final(object_t* closed) {
     _pass("small_then_big_write");
 }
 
-static void _ord_step_close(object_t* write2_result) {
-    if (!PTR_IS_INTEGER(write2_result) || integer_to_int32(write2_result) != _ord_big_len) {
-        _fail("small_then_big_write", __LINE__, "second write count");
+// io_write accepts up to one buffer's worth of bytes per call (per the
+// io.c contract — the IO thread never touches caller-provided memory,
+// only io->buf).  A payload larger than IO_BUFFER_SIZE therefore takes
+// more than one call: the caller resubmits the unwritten suffix until
+// all bytes have been accepted.  A return of 0 means the buffer was
+// full and a flush has just completed; the caller resubmits unchanged
+// and the next call accepts bytes into the empty buffer.
+static void _ord_step_check(object_t* write_result) {
+    if (!PTR_IS_INTEGER(write_result)) {
+        _fail("small_then_big_write", __LINE__, "non-integer write result"); return;
+    }
+    int32_t n = integer_to_int32(write_result);
+    if (n < 0) {
+        _fail("small_then_big_write", __LINE__, "negative write count"); return;
+    }
+    _ord_offset += n;
+    if (_ord_offset >= _ord_big_len) {
+        then(io_close(_ord_io), _ord_step_final);
         return;
     }
-    then(io_close(_ord_io), _ord_step_final);
+    object_t* suffix = string_from_bytes(_ord_big + _ord_offset,
+                                          _ord_big_len - _ord_offset);
+    then(io_write(_ord_io, suffix), _ord_step_check);
 }
 
 static void _ord_step_big(object_t* write1_result) {
     (void)write1_result;
+    _ord_offset = 0;
     object_t* big = string_from_bytes(_ord_big, _ord_big_len);
-    then(io_write(_ord_io, big), _ord_step_close);
+    then(io_write(_ord_io, big), _ord_step_check);
 }
 
 static void _ord_step1(object_t* io) {

@@ -20,6 +20,30 @@ import pyast.statement as s
 import pyast.typespec as t
 
 
+def _arm_unique_name(arm: "MatchArm") -> str:
+    """Per-arm unique name for the bound variable.
+
+    Two arms in the same source can use the same identifier (e.g. `Int a`
+    and `Str a`), each with its own type.  We rename the binding to a
+    name unique per source location so each arm gets its own typed local
+    and its own state-object field, eliminating the name-aliased-different-
+    type situation that downstream substitution previously had to paper
+    over.  hash6() is derived from line_ref so the result is deterministic
+    across runs and stable across compile passes.
+
+    Idempotent: once an arm carries the unique suffix, returning the same
+    arm yields the same name (so re-running compile is a no-op, and the
+    suffix that ast_inline appends to disambiguate inlined copies survives
+    a second look-up).  Returns the input verbatim when there is no name
+    to rename (else arm with no binding, or `_`).
+    """
+    if not arm.name or arm.name == "_":
+        return arm.name
+    if "@arm" in arm.name:
+        return arm.name
+    return f"{arm.name}@arm{arm.line_ref.hash6()}"
+
+
 @dataclass
 class MatchArm:
     """One arm of a match expression.
@@ -44,9 +68,14 @@ class MatchArm:
         return dataclasses.replace(self, type_spec=new_type, body=new_body, literal=new_literal)
 
     def __find_bound(self, names: set[str]) -> list[g.Resolved[s.DataStatement]]:
-        if self.name and self.name != "_" and self.type_spec and g.match_names(self.name, names):
-            let = s.LetStatement(self.line_ref, self.name, None, {}, (), None, self.type_spec)
-            return [g.Resolved(self.name, let, g.ResolvedScope.LOCAL)]
+        if self.name and self.name != "_" and self.type_spec:
+            unique = _arm_unique_name(self)
+            # Match either the user-typed name (during the first compile
+            # pass on the body) or the already-rewritten unique name
+            # (subsequent passes and generate-time lookups).
+            if unique in names or g.match_names(self.name, names):
+                let = s.LetStatement(self.line_ref, unique, None, {}, (), None, self.type_spec)
+                return [g.Resolved(unique, let, g.ResolvedScope.LOCAL)]
         return []
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement]]:
@@ -54,7 +83,12 @@ class MatchArm:
         new_body, body_stmts = self.body.compile(nested_resolver, func_ret_type)
         new_type, type_stmts = self.type_spec.compile(resolver) if self.type_spec else (None, [])
         new_literal, lit_stmts = self.literal.compile(resolver, None) if self.literal else (None, [])
-        return dataclasses.replace(self, type_spec=new_type, body=new_body, literal=new_literal), body_stmts + type_stmts + lit_stmts
+        # Rename arm.name to the unique form so it stays in sync with the
+        # body's NamedExpressions (which __find_bound rewrote during the
+        # body.compile() call above).  ast_inline then renames arm.name and
+        # the body together; without this, those two sides would desync.
+        return dataclasses.replace(self, name=_arm_unique_name(self),
+                                    type_spec=new_type, body=new_body, literal=new_literal), body_stmts + type_stmts + lit_stmts
 
     def get_body_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         nested_resolver = g.ResolverData(resolver, self.__find_bound) if self.name and self.name != "_" else resolver
@@ -92,10 +126,10 @@ class MatchExpression(e.Expression):
         arm_results = []
         for arm in self.arms:
             if arm.type_spec is None and arm.name and arm.name != "_" and subj_type is not None:
-                def find_else(names, a=arm, st=subj_type):
-                    if g.match_names(a.name, names):
-                        let = s.LetStatement(a.line_ref, a.name, None, {}, (), None, st)
-                        return [g.Resolved(a.name, let, g.ResolvedScope.LOCAL)]
+                def find_else(names, a=arm, st=subj_type, uniq=_arm_unique_name(arm)):
+                    if uniq in names or g.match_names(a.name, names):
+                        let = s.LetStatement(a.line_ref, uniq, None, {}, (), None, st)
+                        return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 arm_results.append(arm.compile(g.ResolverData(resolver, find_else), expected_type))
             else:
@@ -325,16 +359,18 @@ class MatchExpression(e.Expression):
         is loaded from its one union slot.  For a multi-primitive (struct) variant each field
         is loaded from its corresponding slot and the struct is reconstructed with NewStruct.
         """
-        def make_resolver(arm_=arm):
+        arm_unique = _arm_unique_name(arm)
+
+        def make_resolver(arm_=arm, uniq=arm_unique):
             def find(names):
-                if g.match_names(arm_.name, names):
-                    let = s.LetStatement(arm_.line_ref, arm_.name, None, {}, (), None, arm_.type_spec)
-                    return [g.Resolved(arm_.name, let, g.ResolvedScope.LOCAL)]
+                if uniq in names or g.match_names(arm_.name, names):
+                    let = s.LetStatement(arm_.line_ref, uniq, None, {}, (), None, arm_.type_spec)
+                    return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                 return []
             return g.ResolverData(resolver, find)
 
         prims = cg_t._flatten_primitives(arm_ctype)
-        arm_sv = cg_p.StackVar(arm_ctype, arm.name)
+        arm_sv = cg_p.StackVar(arm_ctype, arm_unique)
 
         if len(prims) == 1:
             si, _ = slot_assignments[0]
@@ -399,11 +435,12 @@ class MatchExpression(e.Expression):
             else_local = []
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
-                else_sv = cg_p.StackVar(subj_type.generate(), else_arm.name)
-                def find_else(names, arm=else_arm, st=subj_type):
-                    if g.match_names(arm.name, names):
-                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, st)
-                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                else_unique = _arm_unique_name(else_arm)
+                else_sv = cg_p.StackVar(subj_type.generate(), else_unique)
+                def find_else(names, arm=else_arm, st=subj_type, uniq=else_unique):
+                    if uniq in names or g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, st)
+                        return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 else_resolver = g.ResolverData(resolver, find_else)
                 else_local.append(g.OperationBundle(stack_vars=(else_sv,),
@@ -499,7 +536,7 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-            self.__emit_pointer_arm_body(target_arm, sv, resolver, suffix, result_var, bundles)
+            self.__emit_pointer_arm_body(target_arm, sv, subj_type, resolver, suffix, result_var, bundles)
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
@@ -542,12 +579,12 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-                self.__emit_pointer_arm_body(arm, sv, resolver, f"lit{idx}", result_var, bundles)
+                self.__emit_pointer_arm_body(arm, sv, subj_type, resolver, f"lit{idx}", result_var, bundles)
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if final_fallback is not None:
-            self.__emit_pointer_arm_body(final_fallback, sv, resolver, "fb",
+            self.__emit_pointer_arm_body(final_fallback, sv, subj_type, resolver, "fb",
                                          result_var, bundles)
         else:
             bundles.append(g.OperationBundle(operations=(
@@ -568,25 +605,38 @@ class MatchExpression(e.Expression):
                 return True
         return False
 
-    def __emit_pointer_arm_body(self, arm, sv, resolver, suffix, result_var, bundles):
-        """Bind the arm's name (if any) to the subject pointer and emit the body."""
+    def __emit_pointer_arm_body(self, arm, sv, subj_type, resolver, suffix, result_var, bundles):
+        """Bind the arm's name (if any) to the subject pointer and emit the body.
+
+        The bound local takes the arm's type (or subject type for an else
+        arm) so the StackVar's IR type matches the type the body sees via
+        the LetStatement.  This keeps name+type identity consistent for
+        downstream passes (definite-assignment, CPS state-object field
+        layout) — no name-aliased-different-type StackVars.
+
+        Unit-typed arms in a pointer-union (e.g. the `None` arm of
+        `Box|None`) need a special initialiser: the subject `sv` is
+        `object_t*` and can't assign to a `struct{}`, so we synthesise an
+        empty-struct zero value instead — the unit value carries no data
+        anyway.
+        """
         arm_resolver = resolver
         arm_local = []
         if arm.name and arm.name != "_":
-            type_for_binding = arm.type_spec if arm.type_spec is not None else None
-            bound_sv = cg_p.StackVar(cg_t.DataPointer(), arm.name)
-            def find_bound(names, a=arm, t_spec=type_for_binding):
-                if g.match_names(a.name, names):
-                    # For an else arm there's no arm.type_spec; caller's
-                    # compile() already substituted the subject type into
-                    # the body resolver, so this local lookup uses
-                    # whatever type_spec the arm carries.
-                    let = s.LetStatement(a.line_ref, a.name, None, {}, (), None, t_spec)
-                    return [g.Resolved(a.name, let, g.ResolvedScope.LOCAL)]
+            type_for_binding = arm.type_spec if arm.type_spec is not None else subj_type
+            arm_unique = _arm_unique_name(arm)
+            arm_ctype = type_for_binding.generate()
+            bound_sv = cg_p.StackVar(arm_ctype, arm_unique)
+            move_value: cg_p.RParam = cg_p.ZeroOf(arm_ctype) \
+                if isinstance(arm_ctype, cg_t.Struct) and not arm_ctype.fields else sv
+            def find_bound(names, a=arm, t_spec=type_for_binding, uniq=arm_unique):
+                if uniq in names or g.match_names(a.name, names):
+                    let = s.LetStatement(a.line_ref, uniq, None, {}, (), None, t_spec)
+                    return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                 return []
             arm_resolver = g.ResolverData(resolver, find_bound)
             arm_local.append(g.OperationBundle(stack_vars=(bound_sv,),
-                                               operations=(cg_o.Move(bound_sv, sv),)))
+                                               operations=(cg_o.Move(bound_sv, move_value),)))
         self.__emit_arm_body(arm, arm_resolver, suffix, result_var, arm_local)
         if arm_local:
             bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"{suffix}_"))
@@ -693,11 +743,12 @@ class MatchExpression(e.Expression):
             else_local = []
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
-                else_sv = cg_p.StackVar(subj_type.generate(), else_arm.name)
-                def find_else(names, arm=else_arm):
-                    if g.match_names(arm.name, names):
-                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec or subj_type)
-                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                else_unique = _arm_unique_name(else_arm)
+                else_sv = cg_p.StackVar(subj_type.generate(), else_unique)
+                def find_else(names, arm=else_arm, uniq=else_unique):
+                    if uniq in names or g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec or subj_type)
+                        return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 else_resolver = g.ResolverData(resolver, find_else)
                 else_local.append(g.OperationBundle(stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)))
@@ -737,11 +788,12 @@ class MatchExpression(e.Expression):
             arm_local = []
             arm_resolver = resolver
             if arm.name and arm.name != "_":
-                arm_sv = cg_p.StackVar(arm_type.generate(), arm.name)
-                def find_arm(names, arm=arm):
-                    if g.match_names(arm.name, names):
-                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec)
-                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                arm_unique = _arm_unique_name(arm)
+                arm_sv = cg_p.StackVar(arm_type.generate(), arm_unique)
+                def find_arm(names, arm=arm, uniq=arm_unique):
+                    if uniq in names or g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec)
+                        return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 arm_resolver = g.ResolverData(resolver, find_arm)
                 arm_local.append(g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, sv),)))
@@ -756,11 +808,12 @@ class MatchExpression(e.Expression):
             else_local = []
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
-                else_sv = cg_p.StackVar(subj_type.generate(), else_arm.name)
-                def find_else(names, arm=else_arm):
-                    if g.match_names(arm.name, names):
-                        let = s.LetStatement(arm.line_ref, arm.name, None, {}, (), None, arm.type_spec or subj_type)
-                        return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
+                else_unique = _arm_unique_name(else_arm)
+                else_sv = cg_p.StackVar(subj_type.generate(), else_unique)
+                def find_else(names, arm=else_arm, uniq=else_unique):
+                    if uniq in names or g.match_names(arm.name, names):
+                        let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec or subj_type)
+                        return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 else_resolver = g.ResolverData(resolver, find_else)
                 else_local.append(g.OperationBundle(stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)))
