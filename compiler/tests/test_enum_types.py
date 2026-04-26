@@ -7,7 +7,7 @@ import subprocess
 from unittest import TestCase
 
 import compiler as c
-from tests.testutil import compile_and_run
+from tests.testutil import compile_and_run, compile_and_run_stdlib
 
 
 def _compile_capturing_errors(source: str) -> tuple[str, str]:
@@ -521,3 +521,148 @@ fun main(): Int
         self.assertEqual("", result)
         self.assertIn("unreachable", errors,
             f"expected 'unreachable' in errors, got: {errors!r}")
+
+
+class TestRecursiveEnums(TestCase):
+    """Recursive enums (variant fields reference the enum's own root)
+    must compile to heap-allocated objects rather than flat structs."""
+
+    def test_linked_list_sum(self):
+        # Cons(1, Cons(2, Cons(3, Cons(4, Cons(5, Nil()))))) — sum = 15.
+        src = """namespace Test
+import System
+
+enum List
+  enum Cons(head: System::Int, tail: List)
+  enum Nil()
+
+fun sumList(l: List): System::Int
+  ret match(l)
+    (n: Nil) => 0
+    (c: Cons) => c.head + sumList(c.tail)
+
+fun main(): System::Int
+  let l: List = Cons(1, Cons(2, Cons(3, Cons(4, Cons(5, Nil())))))
+  ret sumList(l)
+"""
+        self.assertEqual(15, compile_and_run_stdlib(src))
+
+    def test_tree_node_count(self):
+        # Three nodes: root + 2 leaves' worth of structure.
+        # count(Node(Leaf, _, Leaf)) = 1 + count(Leaf) + count(Leaf) = 1.
+        # Build a 3-deep node chain on the right and count.
+        src = """namespace Test
+import System
+
+enum Tree
+  enum Node(left: Tree, value: System::Int, right: Tree)
+  enum Leaf()
+
+fun countNodes(t: Tree): System::Int
+  ret match(t)
+    (l: Leaf) => 0
+    (n: Node) => 1 + countNodes(n.left) + countNodes(n.right)
+
+fun main(): System::Int
+  let t: Tree = Node(Node(Leaf(), 1, Leaf()), 2, Node(Leaf(), 3, Leaf()))
+  ret countNodes(t)
+"""
+        self.assertEqual(3, compile_and_run_stdlib(src))
+
+    def test_recursive_enum_object_typedef_emitted(self):
+        # The recursive enum's root_name should appear as a heap Object
+        # in the C output (typedef'd struct), not just a flat anon
+        # struct. Check for the mangled type name.
+        src = """namespace Test
+import System
+
+enum List
+  enum Cons(head: System::Int, tail: List)
+  enum Nil()
+
+fun main(): System::Int
+  let l: List = Nil()
+  ret 0
+"""
+        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+        # The Object name 'Test::List@hash' is mangled to a C identifier.
+        # The simplest stable check: the canonical vtable symbol obj_*List* exists.
+        self.assertIn("List", result)
+        # And the heap allocator is invoked at least once (Nil() goes via
+        # the recursive constructor path: object_create on the enum's vtable).
+        self.assertIn("object_create", result)
+
+    def test_non_recursive_enum_remains_flat(self):
+        # A regression check: IOError is non-recursive — its Variant
+        # leaves carry a primitive int and unit, no self-reference. The
+        # flat-struct codegen must remain unchanged. We assert by
+        # checking that the program compiles and runs (uses match-on-flat-
+        # struct semantics throughout) and returns the expected value.
+        src = """namespace Test
+import System
+import System::IO
+
+fun main(): System::Int
+  let e: System::IO::IOError = System::IO::EOFError(0)
+  ret match(e)
+    (eof: System::IO::EOFError) => 0
+    () => 99
+"""
+        self.assertEqual(0, compile_and_run_stdlib(src))
+
+    def test_many_fielded_enum_is_complex(self):
+        # An enum with more than 8 entries in all_fields (data fields +
+        # the implicit $tag) is also marked complex and routed through
+        # heap allocation. Build a 10-data-field enum, store it, read a
+        # field back. With > 8 fields the codegen path is the same as
+        # for a recursive enum.
+        src = """namespace Test
+import System
+
+enum Wide
+  enum One(a: System::Int, b: System::Int, c: System::Int, d: System::Int, e: System::Int, f: System::Int, g: System::Int, h: System::Int, i: System::Int, j: System::Int)
+
+fun main(): System::Int
+  let w: Wide = One(0, 0, 0, 0, 0, 0, 0, 0, 0, 42)
+  ret match(w)
+    (one: One) => one.j
+"""
+        # Compile and confirm the heap-allocated path was used (the C
+        # output references object_create on the enum's vtable).
+        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+        self.assertIn("object_create", result)
+        # And the program runs end-to-end.
+        self.assertEqual(42, compile_and_run_stdlib(src))
+
+    def test_mutual_recursion(self):
+        # enum A's variant references B; enum B's variant references A.
+        # Both must be detected as recursive and registered as heap
+        # objects. Walk a 3-deep alternation and assert depth.
+        src = """namespace Test
+import System
+
+enum A
+  enum A1(b: B)
+  enum A2()
+
+enum B
+  enum B1(a: A)
+  enum B2()
+
+fun depthA(x: A): System::Int
+  ret match(x)
+    (a: A2) => 0
+    (a: A1) => 1 + depthB(a.b)
+
+fun depthB(x: B): System::Int
+  ret match(x)
+    (b: B2) => 0
+    (b: B1) => 1 + depthA(b.a)
+
+fun main(): System::Int
+  let v: A = A1(B1(A1(B1(A2()))))
+  ret depthA(v)
+"""
+        self.assertEqual(4, compile_and_run_stdlib(src))

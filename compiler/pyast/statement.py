@@ -763,8 +763,26 @@ class EnumStatement(TypeStatement):
             errors += v.check(resolver, None)
         return errors
 
-    def global_codegen(self, resolver: g.Resolver):
-        return None
+    def global_codegen(self, resolver: g.Resolver) -> cg_x.Object | None:
+        # Simple enums lower to flat by-value structs and need no heap
+        # object. Complex enums (recursive or many-fielded) register a
+        # single Object keyed by the root name; emit only at the root
+        # statement (skip variants nested in `variants`, which carry the
+        # same root_name).
+        if self._enum_spec is None or not self._enum_spec.is_complex:
+            return None
+        if self._root_name is not None and self._root_name != self.name:
+            return None
+        # First field MUST be ("type", DataPointer()) per Object's contract.
+        # all_fields[0] is already ("$tag", Int(32)); subsequent entries are
+        # the union of all variants' data fields.
+        fields = (("type", cg_t.DataPointer()),) + tuple(
+            (name, ftype.generate()) for name, ftype in self._enum_spec.all_fields)
+        return cg_x.Object(
+            name=self.name,
+            extends=(),
+            functions=(),
+            fields=cg_t.ImmediateStruct(fields))
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
         new_params = cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace))

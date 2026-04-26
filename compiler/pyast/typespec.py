@@ -253,24 +253,49 @@ class EnumSpec(TypeSpec):
     root_name: str
     valid_leaf_names: frozenset[str]
     all_leaf_names: tuple[str, ...]
-    all_fields: tuple[tuple[str, TypeSpec], ...]
+    # all_fields and is_complex are excluded from equality: two
+    # EnumSpec instances with the same root_name and valid_leaf_names
+    # are the same TYPE; all_fields is metadata that converges
+    # iteratively (and may legitimately differ between instances during
+    # compile-loop iterations without changing the type's identity).
+    # Including them in equality breaks compile-loop convergence on
+    # recursive enums whose all_fields stabilises a tier at a time.
+    all_fields: tuple[tuple[str, TypeSpec], ...] = field(compare=False)
+    # Set by lowering/complex_enums.py for enums that should lower to
+    # a heap-allocated object instead of a flat by-value struct. An
+    # enum is complex when (a) its all_fields graph contains a cycle
+    # through this root_name — directly or via mutual recursion through
+    # other enums (so the by-value struct would have infinite size),
+    # or (b) it has more than eight fields (large by-value pass-by
+    # becomes expensive). Both cases use the same heap-pointer codegen.
+    is_complex: bool = field(default=False, compare=False)
 
     def is_concrete(self) -> bool:
         return '@' in self.root_name
 
     def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
-        new_fields = []
-        stmts = []
-        for name, ftype in self.all_fields:
-            new_ftype, new_stmts = ftype.compile(resolver)
-            new_fields.append((name, new_ftype))
-            stmts.extend(new_stmts)
-        return dataclasses.replace(self, all_fields=tuple(new_fields)), stmts
+        # Snap all_fields to the latest canonical version stored on the
+        # source EnumStatement. Cached EnumSpec instances inside
+        # let.declared_type / function-param types thus stay fresh as
+        # the iterative compile loop refines field types from
+        # NamedSpec → concrete. The line_ref is preserved so error
+        # messages still point at the use site. Walking all_fields here
+        # would recurse infinitely on self-referential enums.
+        types = resolver.find_type({self.root_name})
+        if len(types) == 1:
+            target = types[0].statement
+            if isinstance(target, s.EnumStatement) and target._enum_spec is not None:
+                canonical = target._enum_spec
+                if canonical.all_fields != self.all_fields:
+                    return dataclasses.replace(self, all_fields=canonical.all_fields), []
+        return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:
         return [err for _, ftype in self.all_fields for err in ftype.check(resolver)]
 
     def generate(self) -> cg_t.Type:
+        if self.is_complex:
+            return cg_t.DataPointer()
         return cg_t.Struct(tuple((name, ftype.generate()) for name, ftype in self.all_fields))
 
     def as_unique_id_str(self) -> str | None:
@@ -290,9 +315,13 @@ class EnumSpec(TypeSpec):
         return right.valid_leaf_names <= self.valid_leaf_names
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
-        new_fields = tuple((name, ftype.search_and_replace(resolver, replace)) for name, ftype in self.all_fields)
-        new_self = dataclasses.replace(self, all_fields=new_fields)
-        return langtools.cast(TypeSpec, replace(resolver, new_self))
+        # Do NOT recurse into all_fields: a recursive enum's all_fields
+        # references the same EnumSpec, which would loop forever. all_fields
+        # is maintained by EnumStatement.compile from the variants'
+        # parameter lets — the AST-level recursion walks those lets via
+        # the EnumStatement, so every type in all_fields is reached
+        # through that other path.
+        return langtools.cast(TypeSpec, replace(resolver, self))
 
 
 @dataclass(frozen=True)

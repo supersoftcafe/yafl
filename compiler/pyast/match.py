@@ -766,7 +766,13 @@ class MatchExpression(e.Expression):
     def __gen_enum_match(self, resolver, subj_bundle, subj_type: t.EnumSpec, result_var):
         """EnumSpec: compare $tag for each arm using discriminator indices from the EnumSpec."""
         sv = subj_bundle.result_var
-        tag_sv = cg_p.StructField(sv, "$tag")
+        # Complex enums lower to DataPointer; the $tag field lives on the
+        # heap object and is read via ObjectField. Simple (non-complex)
+        # enums are flat structs and read via StructField.
+        if subj_type.is_complex:
+            tag_sv = cg_p.ObjectField(cg_t.Int(32), sv, subj_type.root_name, "$tag", None)
+        else:
+            tag_sv = cg_p.StructField(sv, "$tag")
         stack_vars = (result_var,) if result_var else ()
         end_label = "match_end"
         bundles = [subj_bundle]

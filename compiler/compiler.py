@@ -8,6 +8,7 @@ import lowering.constants
 import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
+import lowering.complex_enums
 import lowering.globalinit
 import lowering.lambdas
 import lowering.generics
@@ -132,8 +133,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                     a.functions[function.name] = function
             case s.TypeAliasStatement() as t:
                 pass
-            case s.EnumStatement():
-                pass
+            case s.EnumStatement() as en:
+                resolver2 = g.AddScopeResolution(resolver, en.imports)
+                obj = en.global_codegen(resolver2)
+                if obj is not None:
+                    a.objects[obj.name] = obj
             case _:
                 raise ValueError(f"Unexpected type {type(stmt)}")
 
@@ -246,6 +250,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
 
     # All ok so let's create some C code
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
+    new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
     new_statements = lowering.constants.inline_constants(new_statements)
     new_statements = lowering.ast_inline.inline_ast(new_statements)
     new_statements = lowering.strings.fix_global_strings(new_statements)

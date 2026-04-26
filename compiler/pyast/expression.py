@@ -312,8 +312,16 @@ class DotExpression(Expression):
 
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
-            case t.EnumSpec():
-                result_var = cg_p.StructField(base_bundle.result_var, self.name)
+            case t.EnumSpec() as es:
+                if es.is_complex:
+                    # Complex enum is a heap pointer; field access goes
+                    # through ObjectField (which inserts a GC write barrier
+                    # for pointer-typed writes).
+                    field_type_spec = next((ft for fn, ft in es.all_fields if fn == self.name), None)
+                    fty = field_type_spec.generate() if field_type_spec is not None else cg_t.DataPointer()
+                    result_var = cg_p.ObjectField(fty, base_bundle.result_var, es.root_name, self.name, None)
+                else:
+                    result_var = cg_p.StructField(base_bundle.result_var, self.name)
                 return base_bundle + g.OperationBundle((), (), result_var)
 
         raise ValueError("Could not generate dot expression")
@@ -1092,17 +1100,50 @@ class NewEnumExpression(Expression):
         assert root_spec is not None
         leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
         tag_const = cg_p.Integer(leaf_idx, 32)
-        bundles: list[g.OperationBundle] = []
+
+        if root_spec.is_complex:
+            # Heap-allocated path: NewObject + per-field ObjectField writes,
+            # mirroring the class constructor at expression.py:127-130.
+            result_var = cg_p.StackVar(cg_t.DataPointer(), "result")
+            ops: list[cg_o.Op] = [
+                cg_o.NewObject(root_spec.root_name, result_var),
+                cg_o.Move(
+                    cg_p.ObjectField(cg_t.Int(32), result_var, root_spec.root_name, "$tag", None),
+                    tag_const),
+            ]
+            bundles: list[g.OperationBundle] = []
+            for idx, (field_name, field_type_spec) in enumerate(root_spec.all_fields[1:]):
+                fty = field_type_spec.generate()
+                if field_name in self.field_args:
+                    arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg{idx}_")
+                    bundles.append(arg_bundle)
+                    ops.append(cg_o.Move(
+                        cg_p.ObjectField(fty, result_var, root_spec.root_name, field_name, None),
+                        arg_bundle.result_var))
+                else:
+                    ops.append(cg_o.Move(
+                        cg_p.ObjectField(fty, result_var, root_spec.root_name, field_name, None),
+                        cg_p.ZeroOf(fty)))
+            ctor_bundle = g.OperationBundle(
+                stack_vars=(result_var,),
+                operations=tuple(ops),
+                result_var=result_var)
+            if bundles:
+                return reduce(lambda a, b: a + b, bundles + [ctor_bundle])
+            return ctor_bundle
+
+        # Non-recursive: flat by-value struct via NewStruct.
+        bundles2: list[g.OperationBundle] = []
         field_values: list[tuple[str, cg_p.RParam]] = [("$tag", tag_const)]
         for idx, (field_name, field_type_spec) in enumerate(root_spec.all_fields[1:]):
             if field_name in self.field_args:
                 arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg{idx}_")
-                bundles.append(arg_bundle)
+                bundles2.append(arg_bundle)
                 field_values.append((field_name, arg_bundle.result_var))
             else:
                 field_values.append((field_name, cg_p.ZeroOf(field_type_spec.generate())))
         result_param = cg_p.NewStruct(tuple(field_values))
         final_bundle = g.OperationBundle((), (), result_param)
-        if bundles:
-            return reduce(lambda a, b: a + b, bundles + [final_bundle])
+        if bundles2:
+            return reduce(lambda a, b: a + b, bundles2 + [final_bundle])
         return final_bundle
