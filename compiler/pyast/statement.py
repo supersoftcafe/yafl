@@ -174,6 +174,8 @@ class FunctionStatement(DataStatement):
         body_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
         if self.body is not None:
             new_body, body_glb = self.body.compile(body_resolver, self.return_type)
+            if rettype is None:
+                rettype = new_body.get_type(body_resolver)
         else:
             new_body, body_glb = None, []
 

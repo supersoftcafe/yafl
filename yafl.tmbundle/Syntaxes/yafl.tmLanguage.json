@@ -60,6 +60,14 @@
                     }
                 },
                 {
+                    "name": "meta.enum.yafl",
+                    "match": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.enum.yafl" },
+                        "2": { "name": "entity.name.type.enum.yafl" }
+                    }
+                },
+                {
                     "name": "meta.class.yafl",
                     "match": "\\b(class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
@@ -123,14 +131,25 @@
         },
         "builtin_types": {
             "name": "storage.type.builtin.yafl",
-            "match": "\\b(bigint|int8|int16|int32|int64|str|bool)\\b"
+            "match": "\\b(bigint|int8|int16|int32|int64|float32|float64|str|bool)\\b"
         },
         "attribute": {
             "name": "meta.attribute.yafl",
-            "match": "\\[([A-Za-z_][A-Za-z0-9_]*)\\]",
-            "captures": {
-                "1": { "name": "storage.modifier.attribute.yafl" }
-            }
+            "begin": "\\[",
+            "end": "\\]",
+            "beginCaptures": {
+                "0": { "name": "punctuation.definition.attribute.begin.yafl" }
+            },
+            "endCaptures": {
+                "0": { "name": "punctuation.definition.attribute.end.yafl" }
+            },
+            "patterns": [
+                { "include": "#string" },
+                {
+                    "name": "storage.modifier.attribute.yafl",
+                    "match": "[A-Za-z_][A-Za-z0-9_]*"
+                }
+            ]
         },
         "number": {
             "name": "constant.numeric.yafl",
@@ -145,6 +164,10 @@
                 {
                     "name": "keyword.operator.bind.yafl",
                     "match": "\\?>"
+                },
+                {
+                    "name": "keyword.operator.ternary.yafl",
+                    "match": "\\?"
                 },
                 {
                     "name": "keyword.operator.arrow.yafl",

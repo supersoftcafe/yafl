@@ -65,7 +65,14 @@ class Type(ABC):
     def get_pointer_paths(self, path: str) -> list[str]:
         return []
 
-_str_escape_table = str.maketrans({f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))})
+# Escape table for emitting YAFL string literals into C source. Control
+# bytes and high-bit bytes go to \xHH hex escapes; backslash and double-
+# quote must be backslash-escaped or the surrounding C "..." breaks.
+_str_escape_table = str.maketrans({
+    **{f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))},
+    '\\': '\\\\',
+    '"':  '\\"',
+})
 
 @dataclass(frozen=True)
 class Str(Type):

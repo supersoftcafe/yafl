@@ -62,7 +62,12 @@ __ws = re.compile(r"[\t\v ]+")
 __kinds = [
     (__ws, None),  # White space
     (re.compile(r"#.*"), None),  # Line comment
-    (re.compile(r"\"([^\"]|(\\\\)|(\\\"))*\"?"), TokenKind.STRING),
+    # String literal: opening quote, then a body of either escape sequence
+    # (backslash + any single char, including a quote or another backslash)
+    # OR any non-backslash non-quote char. Ordering matters — `\.` must
+    # win over `[^\\\"]` so `"\""` tokenises as a single 4-char literal
+    # rather than splitting on the escaped quote.
+    (re.compile(r"\"(\\.|[^\\\"])*\"?"), TokenKind.STRING),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
     (re.compile(r"(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
     # Numeric literal: hex/bin/oct prefix forms, OR decimal with optional

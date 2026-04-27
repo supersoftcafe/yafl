@@ -331,6 +331,16 @@ def __to_function(result: p.Result[tuple[dict[str, e.Expression|None], str, list
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
+def __to_function_oneliner(result: p.Result, tokens: list[p.Token]) -> p.Result[s.FunctionStatement]:
+    attributes, name, generics, params, dtype, where_traits, expr = result.value
+    body = e.BlockExpression(result.line_ref, [], expr)
+    statement = s.FunctionStatement(
+        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
+        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params),
+        body, p.first_or_none(dtype), trait_params=where_traits)
+    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+
+
 def __to_class(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.ClassStatement]:
     attributes, name, generics, params, implements, where_traits, body = result.value
     statement = s.ClassStatement(
@@ -486,7 +496,8 @@ __parse_ret = p.block(p.requires(
 
 __parse_fun = p.block(p.requires(
     p.discard_sym("fun"),
-    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_function,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.discard_sym("=>") & __parse_expression) >> __to_function_oneliner
+    | (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_function,
     "invalid function statement"))
 
 __parse_class = p.block(p.requires(

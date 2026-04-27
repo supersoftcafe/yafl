@@ -1,4 +1,18 @@
 
+# Type inference
+
+The ideal is to be able to write code without specifying the type of parameters, class members
+, function return types etc. Not sure we can get there, but recursive type inference should be
+able to do quite a lot.
+
+```
+fun getAThing(a)
+  ret a + 1
+```
+
+In this example we might infer that 'a' is an Int because of the + operation, and then we can
+infer that the return type is Int because the result of + is used on a ret statement.
+
 # YAFL (Yet Another Functional Language)
 
 I've read about so many programming languages and worked in a few of them. C, C++, Python, Kotlin,

@@ -580,6 +580,109 @@ def _rewrite_function(fn: s.FunctionStatement,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Hoist remaining nested functions to global scope
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _to_let_lambda(fn: s.FunctionStatement) -> s.LetStatement:
+    """Convert a nested FunctionStatement to a LetStatement(LambdaExpression).
+    Used only when the function captures outer variables — lambdas.py will
+    then lift it to global scope with closure capture."""
+    callable_type = fn.get_type()
+    lambda_expr = e.LambdaExpression(
+        line_ref=fn.line_ref,
+        parameters=fn.parameters,
+        expression=fn.body,
+        return_type=callable_type,
+    )
+    return s.LetStatement(
+        line_ref=fn.line_ref,
+        name=fn.name,
+        imports=fn.imports,
+        attributes={},
+        type_params=(),
+        default_value=lambda_expr,
+        declared_type=callable_type,
+    )
+
+
+def _free_refs(fn: s.FunctionStatement, also_exclude: set[str]) -> set[str]:
+    """Names referenced in fn's body that are not fn's own params/lets/funs or also_exclude."""
+    own: set[str] = {p.name for p in fn.parameters.flatten()}
+    if isinstance(fn.body, e.BlockExpression):
+        for stmt in fn.body.statements:
+            if isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement):
+                own.add(stmt.name)
+            elif isinstance(stmt, s.FunctionStatement):
+                own.add(stmt.name)
+    exclude = own | also_exclude
+    refs: set[str] = set()
+    def visit(_r, thing):
+        if isinstance(thing, e.NamedExpression) and thing.name not in exclude:
+            refs.add(thing.name)
+        return thing
+    if isinstance(fn.body, e.BlockExpression):
+        fn.body.search_and_replace(g.ResolverRoot([]), visit)
+    return refs
+
+
+def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], list[s.FunctionStatement]]:
+    """Scan fn's body for nested FunctionStatements and decide how to handle each.
+
+    Returns (new_body_stmts, directly_hoisted).  A nested function is hoisted
+    directly (as a plain FunctionStatement at global scope) when it only
+    references global names or its sibling nested functions — no outer
+    parameters or let-bindings.  Otherwise it is converted to a
+    LetStatement(lambda) so that lambdas.py can apply closure capture.
+    """
+    if not isinstance(fn.body, e.BlockExpression):
+        return list(fn.body.statements) if hasattr(fn.body, 'statements') else [], []
+    body_stmts = list(fn.body.statements)
+    outer_params = {p.name for p in fn.parameters.flatten()}
+    outer_lets = {stmt.name for stmt in body_stmts
+                  if isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement)}
+    outer_var_names = outer_params | outer_lets
+    sibling_fn_names = {stmt.name for stmt in body_stmts if isinstance(stmt, s.FunctionStatement)}
+
+    new_body: list[s.Statement] = []
+    hoisted: list[s.FunctionStatement] = []
+    for stmt in body_stmts:
+        if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression):
+            if _free_refs(stmt, sibling_fn_names) & outer_var_names:
+                new_body.append(_to_let_lambda(stmt))
+            else:
+                hoisted.append(stmt)
+        else:
+            new_body.append(stmt)
+    return new_body, hoisted
+
+
+def _hoist_nested_fns_to_lambdas(statements: list[s.Statement]) -> list[s.Statement]:
+    """After the inlining fixpoint, hoist any FunctionStatement still nested inside
+    a function body.
+
+    If the nested function captures outer parameters or let-bindings it is
+    converted to a LetStatement(lambda) for lambdas.py to lift with closure
+    capture.  Otherwise it is extracted directly to global scope — no closure
+    needed, mutual-recursion-safe.  Applied recursively so that nested-inside-
+    nested functions are also hoisted.
+    """
+    result: list[s.Statement] = []
+    extra: list[s.Statement] = []
+    for stmt in statements:
+        if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression):
+            new_body_stmts, hoisted = _hoist_from_body(stmt)
+            new_body = dataclasses.replace(stmt.body, statements=new_body_stmts)
+            result.append(dataclasses.replace(stmt, body=new_body))
+            extra.extend(hoisted)
+        else:
+            result.append(stmt)
+    if extra:
+        extra = _hoist_nested_fns_to_lambdas(extra)
+        return result + extra
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -593,7 +696,7 @@ def inline_ast(statements: list[s.Statement]) -> list[s.Statement]:
     become heap-allocated closure classes.
     """
     _inline_counter[0] = 0
-    current = list(statements)
+    current = _hoist_nested_fns_to_lambdas(list(statements))
     for _ in range(_MAX_ITERATIONS):
         catalog = _build_catalog(current)
         if not catalog:

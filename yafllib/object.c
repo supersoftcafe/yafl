@@ -567,7 +567,7 @@ static bool gc_object_is_on_heap_slow(object_t *object) {
 
 static bool gc_object_is_on_heap_fast(object_t *object) {
     return object != NULL                                  // Must have a non-zero value
-        && ((intptr_t)object & 3) == 0                     // No packed data as they aren't real pointers
+        && ((intptr_t)object & PTR_TAG_MASK) == 0          // No packed data: rejects PTR_TAG_TASK (0x1), PTR_TAG_INTEGER (0x2), and PTR_TAG_STRING (0x4)
         && VT_TAG_GET(object->vtable) != VT_TAG_UNMANAGED; // Must be heap managed according to the tag
 }
 

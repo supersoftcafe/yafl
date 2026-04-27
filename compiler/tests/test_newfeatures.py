@@ -150,3 +150,65 @@ fun main(): System::Int
 """
         code = _compile_and_run(content)
         self.assertEqual(6, code)
+
+    def test_oneliner_with_return_type(self):
+        """One-liner function with explicit return type annotation."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+
+fun addThree(n: System::Int): System::Int => n + 3
+
+fun main(): System::Int => addThree(4)
+"""
+        code = _compile_and_run(content)
+        self.assertEqual(7, code)
+
+    def test_oneliner_infers_return_type(self):
+        """One-liner function with no return type — compiler infers it."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+
+fun addThree(n: System::Int) => n + 3
+
+fun main(): System::Int => addThree(4)
+"""
+        code = _compile_and_run(content)
+        self.assertEqual(7, code)
+
+    def test_oneliner_block_form_unchanged(self):
+        """Block-form functions still work alongside one-liners."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+
+fun addThree(n: System::Int): System::Int
+    ret n + 3
+
+fun main(): System::Int => addThree(5)
+"""
+        code = _compile_and_run(content)
+        self.assertEqual(8, code)
+
+    def test_oneliner_calls_other_oneliner(self):
+        """One-liners can call each other."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+
+fun inc(n: System::Int) => n + 1
+fun addTwo(n: System::Int) => inc(inc(n))
+
+fun main(): System::Int => addTwo(3)
+"""
+        code = _compile_and_run(content)
+        self.assertEqual(5, code)

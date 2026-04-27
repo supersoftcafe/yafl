@@ -1,4 +1,10 @@
 
+# Nested recursive functions with capture
+
+Currently nested recursive functions can't also capture locals. A lowering step that identifies
+these groups and creates a single capture class with these functions as members will deal with
+that.
+
 # Optimiser to reduce local variables
 
 If different parts of a function use a variable declared as object_t*, but they don't overlap, 

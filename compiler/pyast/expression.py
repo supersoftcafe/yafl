@@ -676,11 +676,12 @@ class BlockExpression(Expression):
 
     def _find_locals(self) -> Callable[[set[str]], list[g.Resolved]]:
         def finder(names: set[str]) -> list[g.Resolved]:
-            return [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-                    for x in self.statements
-                    if isinstance(x, s.LetStatement)
-                    for let in x.flatten()
-                    if g.match_names(let.name, names)]
+            lets = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                    for x in self.statements if isinstance(x, s.LetStatement)
+                    for let in x.flatten() if g.match_names(let.name, names)]
+            funs = [g.Resolved(fun.name, fun, g.ResolvedScope.LOCAL)
+                    for fun in self.statements if isinstance(fun, s.FunctionStatement) and g.match_names(fun.name, names)]
+            return lets + funs
         return finder
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
@@ -697,7 +698,7 @@ class BlockExpression(Expression):
         nested = g.ResolverData(resolver, self._find_locals())
         stmt_results = [x.compile(nested, expected_type) for x in self.statements]
         new_stmts = [r[0] for r in stmt_results if r[0]]
-        glbs: list[s.Statement] = [g for r in stmt_results for g in r[1]]
+        glbs: list[s.Statement] = [glb for r in stmt_results for glb in r[1]]
         new_val, val_glbs = self.value.compile(nested, expected_type)
         return dataclasses.replace(self, statements=new_stmts, value=new_val), glbs + val_glbs
 
