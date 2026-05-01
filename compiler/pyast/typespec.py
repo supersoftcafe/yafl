@@ -99,14 +99,17 @@ class CallableSpec(TypeSpec):
 
         # Return types must be equivalent (bidirectionally assignable).
         # Callables do not auto-widen return types — no implicit thunk generation.
+        # If either direction is undecided (None), defer the verdict: a generic
+        # placeholder expected-type vs T|None candidate is undecided, not False.
+        # A definite asymmetry (True/False or False/True) is still False.
         result_fwd = trivially_assignable_equals(resolver, self.result, right.result)
         result_rev = trivially_assignable_equals(resolver, right.result, self.result)
-        if result_fwd is False or result_rev is False:
-            result_result = False
+        if result_fwd is None or result_rev is None:
+            result_result: bool | None = None
         elif result_fwd is True and result_rev is True:
             result_result = True
         else:
-            result_result = None
+            result_result = False
 
         # Direction swaps for parameters
         params_result = trivially_assignable_equals(resolver, right.parameters, self.parameters)
@@ -253,9 +256,9 @@ class EnumSpec(TypeSpec):
     root_name: str
     valid_leaf_names: frozenset[str]
     all_leaf_names: tuple[str, ...]
-    # all_fields and is_complex are excluded from equality: two
-    # EnumSpec instances with the same root_name and valid_leaf_names
-    # are the same TYPE; all_fields is metadata that converges
+    # all_fields, is_complex, and type_params are excluded from equality:
+    # two EnumSpec instances with the same root_name and valid_leaf_names
+    # are the same TYPE; the other fields are metadata that converges
     # iteratively (and may legitimately differ between instances during
     # compile-loop iterations without changing the type's identity).
     # Including them in equality breaks compile-loop convergence on
@@ -269,6 +272,13 @@ class EnumSpec(TypeSpec):
     # or (b) it has more than eight fields (large by-value pass-by
     # becomes expensive). Both cases use the same heap-pointer codegen.
     is_complex: bool = field(default=False, compare=False)
+    # Set when NamedSpec._compile() produces an EnumSpec that still
+    # carries the source NamedSpec's type arguments (K, V, etc.).
+    # Used by the generics pass to detect and redirect concrete
+    # instantiations of generic enums. Excluded from equality so the
+    # compile loop can converge regardless of whether type_params are
+    # present (two specs with the same root_name are the same type).
+    type_params: tuple[TypeSpec, ...] = field(default=(), compare=False)
 
     def is_concrete(self) -> bool:
         return '@' in self.root_name
@@ -321,7 +331,12 @@ class EnumSpec(TypeSpec):
         # parameter lets — the AST-level recursion walks those lets via
         # the EnumStatement, so every type in all_fields is reached
         # through that other path.
-        return langtools.cast(TypeSpec, replace(resolver, self))
+        # DO recurse into type_params so that generics substitution can
+        # replace GenericPlaceholderSpec(K) → Int, etc., preserving the
+        # concrete type arguments for the generics redirect pass.
+        new_type_params = tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params)
+        new_self = dataclasses.replace(self, type_params=new_type_params) if new_type_params != self.type_params else self
+        return langtools.cast(TypeSpec, replace(resolver, new_self))
 
 
 @dataclass(frozen=True)
@@ -341,7 +356,15 @@ class GenericPlaceholderSpec(TypeSpec):
         raise RuntimeError("GenericPlaceholderSpec should be replaced with a concrete type")
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
-        return self == right
+        if not isinstance(right, GenericPlaceholderSpec):
+            return False
+        if self.name == right.name:
+            return True
+        # Different-named placeholders: return None (undecided) so that generic
+        # function bodies aren't rejected when one placeholder comes from a nested
+        # generic definition (e.g. enum field) and another from the calling function.
+        # Concrete type safety is enforced at instantiation time.
+        return None
 
     def as_unique_id_str(self) -> str|None:
         return None # This is 'alias', not a concrete type.
@@ -453,6 +476,12 @@ class NamedSpec(TypeSpec):
                 return ClassSpec(self.line_ref, xtype.name, compiled_type_params), []
             elif isinstance(xtype, s.EnumStatement):
                 if xtype._enum_spec is not None:
+                    # If this NamedSpec carries type_params (e.g. Dict<K,V>), propagate
+                    # them into the returned EnumSpec so the generics pass can detect
+                    # and redirect concrete instantiations like Dict<Int,Str>.
+                    if self.type_params:
+                        compiled_tps = tuple(tp.compile(resolver)[0] for tp in self.type_params)
+                        return dataclasses.replace(xtype._enum_spec, type_params=compiled_tps), []
                     return xtype._enum_spec, []
                 return self, []
         return self, []
@@ -603,7 +632,7 @@ class TupleSpec(TypeSpec):
     def check(self, resolver: g.Resolver) -> list[Error]:
         # All named parameters must come after all positional parameters
         max_unnamed_index = max((i for i, entry in enumerate(self.entries) if entry.name is None), default=0)
-        min_named_index = min((i for i, entry in enumerate(self.entries) if entry.name is not None), default=0)
+        min_named_index = min((i for i, entry in enumerate(self.entries) if entry.name is not None), default=len(self.entries))
         if max_unnamed_index > min_named_index:
             return [Error(self.line_ref, "Named parameters are not allowed before positional parameters")]
         return [y for x in self.entries for y in x.check(resolver)]
@@ -625,12 +654,21 @@ class TupleSpec(TypeSpec):
             return False
         if not len(self.entries) == len(right.entries):
             return False
-        results = {trivially_assignable_equals(resolver, l.type, r.type) for (l, r) in zip(self.entries, right.entries)}
-        if False in results:
-            return False # Definitely not assignable, even if there are some unknowns
+        raw = [(trivially_assignable_equals(resolver, l.type, r.type), l.type)
+               for l, r in zip(self.entries, right.entries)]
+        # Structural False: a concrete (non-placeholder) left type that definitively doesn't fit.
+        if any(res is False and not isinstance(ltype, GenericPlaceholderSpec) for res, ltype in raw):
+            return False
+        # All-placeholder-False: every element failed and none offered structural grounding.
+        if raw and all(res is False for res, _ in raw):
+            return False
+        # Promote remaining placeholder-Falses to None (they may match after instantiation)
+        # then apply the standard None/True rule.
+        results = {None if (res is False and isinstance(ltype, GenericPlaceholderSpec)) else res
+                   for res, ltype in raw}
         if None in results:
-            return None # Might be assignable, but still some doubt
-        return True # Is assignable
+            return None
+        return True
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
         new_self = dataclasses.replace(self,

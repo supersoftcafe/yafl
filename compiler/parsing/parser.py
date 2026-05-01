@@ -220,6 +220,12 @@ def __to_expr_tuple(result: p.Result[list[e.TupleEntryExpression]], tokens: list
     return p.Result(e.TupleExpression(result.line_ref, items), result.tokens, result.line_ref, result.errors)
 
 
+def __to_parallel_expr(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    assert isinstance(result.value, e.TupleExpression)
+    exprs = [entry.value for entry in result.value.expressions]
+    return p.Result(e.ParallelExpression(result.line_ref, exprs), result.tokens, result.line_ref, result.errors)
+
+
 def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     params, expression = result.value
     params2 = s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params)
@@ -462,7 +468,9 @@ __parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
 __parse_match_subject = p.requires(p.sym("("), __parse_expression & p.discard_sym(")"), "invalid match subject")
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression") >> __to_match_expression
 
-__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_expr_tuple
+__parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__") >> __to_parallel_expr
+
+__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_expr_tuple
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
@@ -531,9 +539,10 @@ __parse_namespace = p.block(p.requires(
     "invalid namespace statement"))
 
 def __to_enum(result: p.Result, tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
-    name, params, variants = result.value
+    name, generics, params, variants = result.value
+    type_params = tuple(generics) if generics else ()
     statement = s.EnumStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, (),
+        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, type_params,
         s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params or []),
         variants)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
@@ -545,7 +554,7 @@ __parse_enum = p.Parser(parse_enum)
 
 __parse_enum_any = p.block(p.requires(
     p.discard_sym("enum"),
-    (p.ident() & __parse_maybe_destructure_parts & p.many(__parse_enum)) >> __to_enum,
+    (p.ident() & __parse_maybe_generic_statement & __parse_maybe_destructure_parts & p.many(__parse_enum)) >> __to_enum,
     "invalid enum statement"))
 
 
@@ -557,13 +566,20 @@ def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.Enum
         true_root = ancestors[0] if ancestors else root
         root_name = true_root.name
         leaf_name = root.name
-        return_type = t.NamedSpec(root.line_ref, root_name)
+        type_params = true_root.type_params
+        # Return type references the root enum; if it's generic, carry type params
+        if type_params:
+            return_type_params = tuple(tp.type for tp in type_params)
+            return_type = t.NamedSpec(root.line_ref, root_name, type_params=return_type_params)
+        else:
+            return_type = t.NamedSpec(root.line_ref, root_name)
         field_args = {let.name: e.NamedExpression(let.line_ref, let.name) for let in all_params}
         destr = s.DestructureStatement(root.line_ref, '_', None, {}, (), None, None, all_params)
-        new_enum_expr = e.NewEnumExpression(root.line_ref, root_name, leaf_name, field_args)
+        new_enum_type_params = tuple(tp.type for tp in type_params) if type_params else ()
+        new_enum_expr = e.NewEnumExpression(root.line_ref, root_name, leaf_name, field_args, type_params=new_enum_type_params)
         body = e.BlockExpression(root.line_ref, [], new_enum_expr)
         constructor = s.FunctionStatement(
-            root.line_ref, root.name, import_group, {}, (), destr, body, return_type)
+            root.line_ref, root.name, import_group, {}, type_params, destr, body, return_type)
         results.append(constructor)
     else:
         for v in root.variants:

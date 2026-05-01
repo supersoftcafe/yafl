@@ -54,3 +54,25 @@ class TestCallableSpec(TestCase):
         compiled, stmts = spec.compile(glb)
         self.assertIsNone(compiled.result)
         self.assertEqual([], stmts)
+
+
+class TestGenericPlaceholderSpec(TestCase):
+    def test_same_name_assigns(self):
+        # Two placeholders with the same name represent the same type variable.
+        a = t.GenericPlaceholderSpec(lr, "T@h1")
+        b = t.GenericPlaceholderSpec(lr, "T@h1")
+        self.assertTrue(a.trivially_assignable_from(glb, b))
+
+    def test_different_names_undecided(self):
+        # Different placeholders may match after instantiation, so the answer
+        # is "undecided" (None), not False — concrete safety is enforced when
+        # the generic is monomorphised.
+        a = t.GenericPlaceholderSpec(lr, "T@h1")
+        b = t.GenericPlaceholderSpec(lr, "U@h2")
+        self.assertIsNone(a.trivially_assignable_from(glb, b))
+
+    def test_concrete_is_false(self):
+        # A placeholder vs a concrete type is structurally False at this layer
+        # (substitution happens in the generics pass, not here).
+        a = t.GenericPlaceholderSpec(lr, "T@h1")
+        self.assertFalse(a.trivially_assignable_from(glb, int32))

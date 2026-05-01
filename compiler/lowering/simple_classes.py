@@ -205,6 +205,16 @@ def __build_replace_fn(
         if isinstance(thing, t.ClassSpec) and thing.name in simple_classes:
             return simple_tuple_specs[thing.name]
 
+        # EnumSpec: update any ClassSpec entries in all_fields.
+        # EnumSpec.search_and_replace intentionally skips all_fields (to avoid
+        # infinite recursion on self-referential enums), so we apply the
+        # ClassSpec→TupleSpec replacement here with cycle detection.  This
+        # ensures that field-access type inference in codegen sees TupleSpec
+        # (not ClassSpec) for simple-class fields, which keeps BoxExpression
+        # boxing consistent with the updated struct field types.
+        if isinstance(thing, t.EnumSpec):
+            return __update_enum_all_fields(thing, simple_classes, simple_tuple_specs)
+
         # NewExpression whose type was already converted to TupleSpec → just the params
         if isinstance(thing, e.NewExpression) and isinstance(thing.type, t.TupleSpec):
             return thing.parameter
@@ -247,6 +257,40 @@ def __build_replace_fn(
     return replace_fn
 
 
+def __update_enum_all_fields(
+        spec: t.EnumSpec,
+        simple_classes: dict[str, s.ClassStatement],
+        simple_tuple_specs: dict[str, t.TupleSpec],
+        visited: frozenset[str] = frozenset(),
+) -> t.EnumSpec:
+    """Replace ClassSpec entries in an EnumSpec's all_fields with their TupleSpec.
+
+    EnumSpec.search_and_replace intentionally skips all_fields to avoid
+    infinite recursion on self-referential enums.  This function propagates
+    the simple-class conversion into all_fields explicitly, using a visited
+    set for cycle safety.  It is called both from the replace_fn (so ALL
+    EnumSpec instances in expressions and type specs are updated) and from a
+    post-pass on EnumStatement._enum_spec (for the struct definition itself).
+    """
+    if spec.root_name in visited:
+        return spec
+    inner_visited = visited | {spec.root_name}
+
+    def _fix(ftype: t.TypeSpec) -> t.TypeSpec:
+        if isinstance(ftype, t.ClassSpec) and ftype.name in simple_classes:
+            return simple_tuple_specs[ftype.name]
+        if isinstance(ftype, t.EnumSpec):
+            return __update_enum_all_fields(ftype, simple_classes, simple_tuple_specs, inner_visited)
+        return ftype
+
+    new_fields = tuple((n, _fix(ft)) for n, ft in spec.all_fields)
+    # EnumSpec.__eq__ excludes all_fields, so `new == old` would be True
+    # even when nested all_fields differ. Use identity per element.
+    if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, spec.all_fields)):
+        return spec
+    return dataclasses.replace(spec, all_fields=new_fields)
+
+
 def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
     resolver = g.ResolverRoot(statements)
 
@@ -287,5 +331,21 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
     lifted_final = [
         lifted.search_and_replace(resolver, replace_fn) for lifted in lifted_pre
     ]
+
+    # EnumSpec.search_and_replace skips all_fields to avoid infinite recursion
+    # on self-referential enums; the main pass above therefore leaves stale
+    # ClassSpec entries in complex enums' all_fields.  Fix them now so that the
+    # C struct fields match the flat-struct types used elsewhere.
+    def _fix_enum_stmt(stmt: s.Statement) -> s.Statement:
+        if (isinstance(stmt, s.EnumStatement)
+                and stmt._enum_spec is not None
+                and stmt._enum_spec.is_complex):
+            new_spec = __update_enum_all_fields(
+                stmt._enum_spec, simple_classes, simple_tuple_specs)
+            if new_spec is not stmt._enum_spec:
+                return dataclasses.replace(stmt, _enum_spec=new_spec)
+        return stmt
+
+    new_statements = [_fix_enum_stmt(stmt) for stmt in new_statements]
 
     return new_statements + lifted_final

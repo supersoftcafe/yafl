@@ -64,28 +64,37 @@ static void _io_finish_open        (io_job_t* job);
 static void _io_finish_close       (io_job_t* job);
 
 
+// Callback registered on the completion_task.  Runs on the worker after the
+// IO thread posts the task; invokes the op-specific finisher (which may
+// allocate) then drives the state machine forward.
+static object_t* _io_finisher_dispatcher(void* job_ptr, object_t* unused) {
+    (void)unused;
+    io_job_t* job = (io_job_t*)job_ptr;
+    job->finisher(job);
+    return NULL;
+}
+
+
 static io_job_t* _io_job_alloc(io_op_t op,
                                io_t* io,
                                void (*finisher)(io_job_t*)) {
-    // Pre-allocate the completion node so the IO thread can post back
-    // without ever calling into the allocator.
-    worker_node_t* node = thread_work_prepare((fun_t){
-        .f = (void*)finisher,
-        .o = NULL,   // filled in below once `job` exists
-    });
-
     io_job_t* job = (io_job_t*)object_create((vtable_t*)&IO_JOB_VTABLE);
-    atomic_store(&job->task.parent.state, 0);   // TASK_PENDING
+    task_init(&job->task.parent);              // sets thread_id, next, state=PENDING
     job->task.result     = NULL;
     job->io              = io;
-    job->completion_node = node;
+    job->finisher        = finisher;
     job->op              = op;
     job->open_mode[0]    = 0;
     job->caller_length   = 0;
     job->raw_result      = 0;
     job->eof             = false;
 
-    node->action.o = (object_t*)job;
+    // Pre-allocate the completion task so the IO thread can post back
+    // without calling into the allocator.  callback.o = job keeps the job
+    // reachable from the completion_task's pointer mask.
+    task_t* ct = (task_t*)task_create(NULL);
+    task_on_complete(ct, (fun_t){.f = (void*)_io_finisher_dispatcher, .o = (object_t*)job});
+    job->completion_task = ct;
     return job;
 }
 

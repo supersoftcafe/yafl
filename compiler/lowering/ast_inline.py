@@ -625,17 +625,32 @@ def _free_refs(fn: s.FunctionStatement, also_exclude: set[str]) -> set[str]:
     return refs
 
 
-def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], list[s.FunctionStatement]]:
+def _specialization_suffix(parent_name: str) -> str:
+    """Return the '$generic$…' tail of parent_name, or '' if not a specialisation."""
+    idx = parent_name.find('$generic$')
+    return parent_name[idx:] if idx >= 0 else ''
+
+
+def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], dict[str, str], list[s.FunctionStatement]]:
     """Scan fn's body for nested FunctionStatements and decide how to handle each.
 
-    Returns (new_body_stmts, directly_hoisted).  A nested function is hoisted
-    directly (as a plain FunctionStatement at global scope) when it only
+    Returns (new_body_stmts, renames, directly_hoisted).  A nested function is
+    hoisted directly (as a plain FunctionStatement at global scope) when it only
     references global names or its sibling nested functions — no outer
     parameters or let-bindings.  Otherwise it is converted to a
     LetStatement(lambda) so that lambdas.py can apply closure capture.
+
+    When fn is a generic specialisation (its name contains '$generic$'), each
+    directly-hoisted inner function is renamed by appending fn's specialisation
+    suffix.  This prevents name collisions when the same generic is specialised
+    with multiple concrete types (e.g. tail<JsonValue> and tail<JsonPair> both
+    have an inner function tailFull with the same hash).  renames maps the old
+    name to the new unique name; callers must apply it to all remaining
+    references inside fn's body.
     """
     if not isinstance(fn.body, e.BlockExpression):
-        return list(fn.body.statements) if hasattr(fn.body, 'statements') else [], []
+        stmts = list(fn.body.statements) if hasattr(fn.body, 'statements') else []
+        return stmts, {}, []
     body_stmts = list(fn.body.statements)
     outer_params = {p.name for p in fn.parameters.flatten()}
     outer_lets = {stmt.name for stmt in body_stmts
@@ -643,17 +658,26 @@ def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], list[s
     outer_var_names = outer_params | outer_lets
     sibling_fn_names = {stmt.name for stmt in body_stmts if isinstance(stmt, s.FunctionStatement)}
 
+    spec_suffix = _specialization_suffix(fn.name)
+
     new_body: list[s.Statement] = []
+    renames: dict[str, str] = {}
     hoisted: list[s.FunctionStatement] = []
     for stmt in body_stmts:
         if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression):
             if _free_refs(stmt, sibling_fn_names) & outer_var_names:
                 new_body.append(_to_let_lambda(stmt))
             else:
-                hoisted.append(stmt)
+                if spec_suffix and not stmt.name.endswith(spec_suffix):
+                    unique_name = stmt.name + spec_suffix
+                    renames[stmt.name] = unique_name
+                    hoisted.append(dataclasses.replace(stmt, name=unique_name))
+                else:
+                    hoisted.append(stmt)
         else:
             new_body.append(stmt)
-    return new_body, hoisted
+    return new_body, renames, hoisted
+
 
 
 def _hoist_nested_fns_to_lambdas(statements: list[s.Statement]) -> list[s.Statement]:
@@ -670,8 +694,19 @@ def _hoist_nested_fns_to_lambdas(statements: list[s.Statement]) -> list[s.Statem
     extra: list[s.Statement] = []
     for stmt in statements:
         if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression):
-            new_body_stmts, hoisted = _hoist_from_body(stmt)
-            new_body = dataclasses.replace(stmt.body, statements=new_body_stmts)
+            new_body_stmts, renames, hoisted = _hoist_from_body(stmt)
+            if renames:
+                def _rename(_r, thing, _rn=renames):
+                    if isinstance(thing, e.NamedExpression) and thing.name in _rn:
+                        return dataclasses.replace(thing, name=_rn[thing.name])
+                    return thing
+                resolver = g.ResolverRoot([])
+                new_body_stmts = [st.search_and_replace(resolver, _rename) for st in new_body_stmts]
+                new_body_value = stmt.body.value.search_and_replace(resolver, _rename)
+                hoisted = [cast(s.FunctionStatement, h.search_and_replace(resolver, _rename)) for h in hoisted]
+                new_body = dataclasses.replace(stmt.body, statements=new_body_stmts, value=new_body_value)
+            else:
+                new_body = dataclasses.replace(stmt.body, statements=new_body_stmts)
             result.append(dataclasses.replace(stmt, body=new_body))
             extra.extend(hoisted)
         else:

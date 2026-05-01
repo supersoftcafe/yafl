@@ -57,7 +57,7 @@ class Token:
     line_ref: LineRef
 
 
-__keywords = ["ret", "let", "fun", "typealias", "where", "class", "interface", "import", "namespace", "__builtin_type__", "__builtin_op__", "match", "enum"]
+__keywords = ["ret", "let", "fun", "typealias", "where", "class", "interface", "import", "namespace", "__builtin_type__", "__builtin_op__", "__parallel__", "match", "enum"]
 __ws = re.compile(r"[\t\v ]+")
 __kinds = [
     (__ws, None),  # White space

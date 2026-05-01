@@ -6,11 +6,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Source files excluding main.c
 set(SRC_FILES
+    hash.c
     integer.c
     float.c
     io.c
     io_thread.c
     object.c
+    parallel.c
     primitive.c
     string.c
     task.c
@@ -50,11 +52,13 @@ enable_testing()
 
 # Source files excluding main.c
 set(TEST_SRC_FILES
+    hash.c
     integer.c
     float.c
     io.c
     io_thread.c
     object.c
+    parallel.c
     primitive.c
     string.c
     task.c
@@ -79,4 +83,5 @@ add_yafl_test(test_task)
 add_yafl_test(test_io_stress)
 add_yafl_test(test_gc_stress)
 add_yafl_test(test_gc_min)
+add_yafl_test(test_parallel)
 

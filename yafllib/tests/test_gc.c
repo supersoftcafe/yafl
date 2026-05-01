@@ -95,9 +95,7 @@ static void setup_gc_test(object_t* _, fun_t continuation) {
 
     for (int32_t i = 0; i < worker_count; i++) {
         GC_SAFE_POINT();
-        worker_node_t* node = thread_work_prepare(
-            (fun_t){.f = _do_worker, .o = (object_t*)state});
-        thread_work_post_fast(node);
+        thread_dispatch((fun_t){.f = _do_worker, .o = (object_t*)state});
     }
 }
 

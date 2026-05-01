@@ -214,6 +214,43 @@ EXPORT object_t* string_at(object_t* self, object_t* o_index) {
 }
 
 
+// Return the unsigned byte value at byte offset `index`, or -1 if the index
+// is out of range. Use for UTF-8 boundary detection in YAFL string parsers
+// (string_at returns a 1-byte slice but doesn't expose the numeric value).
+EXPORT object_t* string_byte_at(object_t* self, object_t* o_index) {
+    int overflow = 0;
+    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    if (overflow) return integer_create_from_int32(-1);
+
+    intptr_t buf; int32_t len;
+    char* cstr = string_to_cstr(self, &buf, &len);
+    if (idx < 0 || idx >= len) return integer_create_from_int32(-1);
+    return integer_create_from_int32((unsigned char)cstr[idx]);
+}
+
+
+// Return the index of the first byte equal to `byte_value` at or after `from`,
+// or -1 if not found.  Linear scan in C — used by the JSON parser to find the
+// next delimiter in a buffered chunk without recursing through YAFL once per
+// byte (which blows the C stack on long string bodies).
+EXPORT object_t* string_find_byte(object_t* self, object_t* o_byte, object_t* o_from) {
+    int overflow = 0;
+    int32_t needle = integer_to_int32_with_overflow(o_byte, &overflow);
+    if (overflow || needle < 0 || needle > 255) return integer_create_from_int32(-1);
+    int32_t from = integer_to_int32_with_overflow(o_from, &overflow);
+    if (overflow) return integer_create_from_int32(-1);
+    if (from < 0) from = 0;
+
+    intptr_t buf; int32_t len;
+    char* cstr = string_to_cstr(self, &buf, &len);
+    if (from >= len) return integer_create_from_int32(-1);
+
+    void* hit = memchr(cstr + from, needle, (size_t)(len - from));
+    if (hit == NULL) return integer_create_from_int32(-1);
+    return integer_create_from_int32((int32_t)((char*)hit - cstr));
+}
+
+
 // Decimal Int parser. Optional leading '-' or '+', then 1+ digits.
 // Returns NULL on parse failure (becomes None in YAFL Int|None).
 EXPORT object_t* string_parse_int(object_t* self) {

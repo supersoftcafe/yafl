@@ -17,10 +17,11 @@ HIDDEN struct io_job_vtable IO_JOB_VTABLE = {
     .object_size              = sizeof(io_job_t),
     .array_el_size            = 0,
     .object_pointer_locations = maskof(io_job_t, .task.parent.callback.o)
+                              | maskof(io_job_t, .task.parent.next)
                               | maskof(io_job_t, .task.result)
                               | maskof(io_job_t, .next_in_io_queue)
                               | maskof(io_job_t, .io)
-                              | maskof(io_job_t, .completion_node),
+                              | maskof(io_job_t, .completion_task),
     .array_el_pointer_locations = 0,
     .functions_mask           = 0,
     .array_len_offset         = 0,
@@ -119,12 +120,10 @@ static void* _io_thread_main(void* arg) {
         } break;
         }
 
-        // Hand the finisher back to a worker.  The completion node is
-        // pre-allocated, its action is set at job creation, and it points
-        // at the job — so the IO thread does no allocation and no GC
-        // writes here.  After this call returns the job is also reachable
-        // via the worker's queue (action.o == job).
-        thread_work_post_io(job->completion_node);
+        // Hand the completion task back to its originating worker.  The
+        // completion_task is pre-allocated and its callback registered at job
+        // creation, so the IO thread does no allocation and no GC writes here.
+        thread_work_post(job->completion_task);
     }
     return NULL;
 }

@@ -3,10 +3,10 @@
 //
 //   1. The IO threadpool completes a job on an unrelated thread.
 //   2. The worker's finisher runs, which calls task_complete, which calls
-//      thread_dispatch_fast, which calls thread_work_prepare → object_create.
+//      thread_dispatch, which calls thread_work_prepare → object_create.
 //   3. object_create needs a new page → gc_page_alloc → gc_fsa →
 //      gc_fsa_mark_sweep — i.e. a full GC mark-sweep is run *inside* a
-//      worker's finisher, while io_job_t / worker_node_t slots are being
+//      worker's finisher, while io_job_t / task_t slots are being
 //      churned at high rate.
 //
 // Symptoms observed in the wild:
@@ -40,7 +40,7 @@ EXTERN object_t* io_write      (object_t* self, object_t* data);
 //
 // REPRO_ITERATIONS is the number of io_create-then-close cycles.  The
 // default is sized to drive the GC into multiple mark-sweep passes while
-// io_job_t / worker_node_t allocations are still in flight.  Increase if
+// io_job_t / task_t allocations are still in flight.  Increase if
 // it doesn't repro on a given machine; reduce for a quick smoke test.
 
 // 1000 iterations reproduces the bug ~100% of the time on a 4-thread
@@ -156,7 +156,7 @@ static void _stress_create_done(object_t* result) {
 
 // One iteration of the stress loop.  Allocates a path string, kicks off
 // io_create.  Each iteration churns an io_t (~8 KiB), an io_job_t, a
-// worker_node_t, plus the small return-value strings/integers — enough
+// task_t, plus the small return-value strings/integers — enough
 // allocator traffic to trigger several gc_fsa passes per thousand iters.
 static void _do_iteration(void) {
     char buf[64];

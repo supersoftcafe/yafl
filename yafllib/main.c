@@ -197,8 +197,7 @@ void setup_allocation_test(object_t* _, fun_t continuation) {
 
     while (--count >= 0) {
         GC_SAFE_POINT();
-        worker_node_t* node = thread_work_prepare((fun_t){.f=do_allocation_test,.o=(object_t*)o});
-        thread_work_post_fast(node);
+        thread_dispatch((fun_t){.f=do_allocation_test,.o=(object_t*)o});
     }
 }
 

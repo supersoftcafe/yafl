@@ -518,6 +518,14 @@ class MatchExpression(e.Expression):
                         ("typed", arm,
                          cg_p.ObjVtableEq(sv, class_name=arm.type_spec.name),
                          f"cls{len(arm_steps)}"))
+            elif isinstance(arm.type_spec, t.EnumSpec):
+                # Complex-enum leaf in a DataPointer union. The parent enum's
+                # vtable is shared by every leaf object; object_is_instance
+                # walks implements_array so a leaf matches against its parent.
+                arm_steps.append(
+                    ("typed", arm,
+                     cg_p.ObjVtableEq(sv, class_name=arm.type_spec.root_name),
+                     f"enum{len(arm_steps)}"))
 
         null_target = null_arm if null_arm is not None else (else_arm if subj_has_none else None)
         final_fallback = foreign_fallback if foreign_fallback is not None else else_arm
@@ -795,10 +803,21 @@ class MatchExpression(e.Expression):
             arm_resolver = resolver
             if arm.name and arm.name != "_":
                 arm_unique = _arm_unique_name(arm)
-                arm_sv = cg_p.StackVar(arm_type.generate(), arm_unique)
-                def find_arm(names, arm=arm, uniq=arm_unique):
+                # Use subj_type (always concrete) for the arm variable's machine type and
+                # resolver entry. arm_type.type_params may be () even for generic enums
+                # (EnumSpec built by _assign_specs never carries type_params), so the
+                # generics redirect pass can leave arm_type pointing at the pruned generic
+                # EnumSpec with stale all_fields containing GenericPlaceholderSpec entries.
+                # subj_type is the subject expression's fully-resolved type and is always
+                # the correct canonical type for the matched value in this arm.
+                #
+                # Note: arm.type_spec is still consulted for predicate dispatch (above,
+                # in __plan_match_arms) where only the leaf identity matters. It is the
+                # binding side that needs the canonical subject type.
+                arm_sv = cg_p.StackVar(subj_type.generate(), arm_unique)
+                def find_arm(names, arm=arm, uniq=arm_unique, st=subj_type):
                     if uniq in names or g.match_names(arm.name, names):
-                        let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec)
+                        let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, st)
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 arm_resolver = g.ResolverData(resolver, find_arm)

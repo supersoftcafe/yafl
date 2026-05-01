@@ -11,7 +11,7 @@ import lowering.globalfuncs
 import lowering.globalinit
 import lowering.inlining
 import lowering.deadstores
-import lowering.cps
+import lowering.async_lower as lowering_cps
 import lowering.trim
 import lowering.staticinit
 
@@ -40,8 +40,8 @@ class TestApplicationDiscriminatorPreservation(TestCase):
         result = lowering.globalinit.add_ops_to_support_global_lazy_init(self._app_with_discriminators())
         self.assertEqual(result.union_discriminators, {"SomeType|None": 42})
 
-    def test_cps_preserves_discriminators(self):
-        result = lowering.cps.convert_application_to_cps(self._app_with_discriminators())
+    def test_async_lower_preserves_discriminators(self):
+        result = lowering_cps.lower_async(self._app_with_discriminators())
         self.assertEqual(result.union_discriminators, {"SomeType|None": 42})
 
 
@@ -153,3 +153,59 @@ class TestPromoteStaticObjectsCounter(TestCase):
                 f"promote_static_objects raised ValueError on a non-numeric $si$ "
                 f"global name: {exc}"
             )
+
+
+class TestParallelCallDeadStore(TestCase):
+    """eliminate_dead_stores must drop a ParallelCall whose outputs are never read,
+    and must preserve one whose register is consumed by a subsequent op."""
+
+    def _make_app(self, ops: tuple) -> Application:
+        """Wrap ops in a minimal one-function Application."""
+        app = Application()
+        all_vars: list[tuple[str, t.Type]] = []
+        for op in ops:
+            _, writes = op.get_live_vars()
+            for sv in writes:
+                all_vars.append((sv.name, sv.get_type()))
+        app.functions["__entrypoint__"] = Function(
+            name="__entrypoint__",
+            params=t.Struct(fields=(("this", t.DataPointer()),)),
+            result=t.Void(),
+            stack_vars=t.Struct(fields=tuple(all_vars)),
+            ops=ops,
+        )
+        return app
+
+    def test_dead_parallel_call_is_dropped(self):
+        """A ParallelCall whose results are never read must be eliminated entirely."""
+        r0 = e.StackVar(t.DataPointer(), "$r0")
+        r1 = e.StackVar(t.DataPointer(), "$r1")
+        pc = o.ParallelCall(
+            calls=(e.GlobalFunction("fn_a"), e.GlobalFunction("fn_b")),
+            results=(r0, r1),
+            register=None,
+        )
+        app = self._make_app((pc, o.ReturnVoid()))
+        result = lowering.deadstores.eliminate_dead_stores(app)
+        fn_ops = result.functions["__entrypoint__"].ops
+        self.assertFalse(
+            any(isinstance(op, o.ParallelCall) for op in fn_ops),
+            "Dead ParallelCall must be eliminated when its results are never read",
+        )
+
+    def test_live_parallel_call_is_kept(self):
+        """A ParallelCall whose register is consumed by a subsequent op must be kept."""
+        r0 = e.StackVar(t.DataPointer(), "$r0")
+        reg = e.StackVar(t.DataPointer(), "$reg")
+        pc = o.ParallelCall(
+            calls=(e.GlobalFunction("fn_a"),),
+            results=(r0,),
+            register=reg,
+        )
+        app = self._make_app((pc, o.Return(reg)))
+        result = lowering.deadstores.eliminate_dead_stores(app)
+        fn_ops = result.functions["__entrypoint__"].ops
+        self.assertTrue(
+            any(isinstance(op, o.ParallelCall) for op in fn_ops),
+            "ParallelCall must be kept when its register is read by a subsequent op",
+        )

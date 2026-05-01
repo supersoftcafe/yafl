@@ -301,7 +301,7 @@ EXTERN size_t memory_count();
  *************
  *****
  **
- *                   Worker Threaads
+ *                   Worker Threads
  **
  *****
  *************
@@ -311,18 +311,7 @@ EXTERN size_t memory_count();
 
 EXTERN void declare_roots_thread(void(*)(object_t**));
 EXTERN void thread_start(void(*entrypoint)(object_t*, fun_t));
-
-typedef struct worker_node {
-    object_t parent;
-    _Atomic(struct worker_node*) next;
-    fun_t action;
-} worker_node_t;
-
-EXTERN worker_node_t* thread_work_prepare(fun_t action);
-EXTERN void thread_work_post_io(worker_node_t* work);
-EXTERN void thread_work_post_fast(worker_node_t* work);
-EXTERN void thread_dispatch_io(fun_t action);
-EXTERN void thread_dispatch_fast(fun_t action);
+EXTERN int32_t thread_current_id(void);
 
 
 /**********************************************************
@@ -337,10 +326,12 @@ EXTERN void thread_dispatch_fast(fun_t action);
  *****************************
  **********************************************************/
 
-typedef struct {
+typedef struct task_s {
     object_t              parent;
     _Atomic(int_fast32_t) state;
+    int32_t               thread_id;      // originating worker thread index
     fun_t                 callback;
+    _Atomic(struct task_s*) next;         // intrusive queue link
 } task_t;
 
 #define TASK_UNTAG(ptr) ((task_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
@@ -348,7 +339,7 @@ typedef struct {
 // task_obj_t: task subtype whose result is an object_t* (the compiler's
 // "task$DataPointer" layout — used for YAFL return types String, Int (bigint),
 // union types, etc). Must stay binary-compatible with what the compiler
-// generates in cps.py.
+// generates in async_lower.py.
 typedef struct {
     task_t    parent;
     object_t* result;
@@ -358,10 +349,39 @@ EXTERN struct task_vtable TASK_VTABLE;
 EXTERN struct task_vtable TASK_OBJ_VTABLE;
 EXTERN vtable_t* const obj_task_obj;   // compiler-facing alias for TASK_OBJ_VTABLE
 
+// Common initialiser for task_t and all subclasses — sets state, thread_id, next.
+EXTERN object_t* task_init       (void* task);
 EXTERN object_t* task_create     (void* self);
+EXTERN object_t* task_obj_create (void* self);
 EXTERN object_t* task_complete   (void* self);
 EXTERN object_t* task_on_complete(void* self, fun_t callback);
-EXTERN void      task_complete_io(void* self, worker_node_t* node);
+
+// Fixed-prefix layout shared by all compiler-generated parallel join tasks.
+// Must match the ImmediateStruct field order in async_lower._task_par_object()
+// AND must mirror task_t through 'next' for safe casting:
+//   type(0), state(8), thread_id(16), [pad4], callback(24), next(40), remaining(48)
+//
+// state is int_fast64_t (8 bytes) to match _Atomic(int_fast32_t) in task_t on 64-bit.
+// thread_id comes before callback, matching task_t's field order.
+typedef struct {
+    void*              type;
+    int64_t            state;           // same width as _Atomic(int_fast32_t) on 64-bit
+    int32_t            thread_id;       // offset 16
+    // 4 bytes implicit padding here
+    fun_t              callback;        // offset 24 — matches task_t.callback
+    void*              next;            // offset 40
+    _Atomic(int32_t)   remaining;       // offset 48
+} task_par_base_t;
+
+// Atomically decrement remaining; call task_complete(par_task) when it reaches 0.
+EXTERN object_t* parallel_join_decrement(void* par_task);
+
+// Post task to its designated worker thread (task->thread_id).
+EXTERN void thread_work_post(task_t* task);
+// Round-robin post across workers — use when spreading parallel work.
+EXTERN object_t* thread_work_post_parallel(task_t* task);
+// Create an ad-hoc dispatch task from a fun_t and post it to the current thread.
+EXTERN void thread_dispatch(fun_t action);
 
 
 /**********************************************************
@@ -569,42 +589,46 @@ EXTERN struct string_vtable STRING_VTABLE;
 #define MAX_SHORT_LEN ((WORD_SIZE/8) - 1)
 
 
-// Helper macro to create a short string value for 32-bit
+// Helper macro to create a short string value for 32-bit.
+// The (uint8_t) cast is essential: `char` is signed on many platforms, so
+// `(uint32_t)str[i]` would sign-extend bytes ≥0x80 into the high bits and
+// corrupt the packed pointer (causing wrong string_length, wrong byte reads).
 #if IS_LITTLE_ENDIAN
 #define SHORT_STRING_32(str, len) ( \
                   (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint32_t)str[0] <<  8 ) | \
-    (len < 2 ? 0 : ((uint32_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint32_t)str[2] << 24)) )
+                   ((uint32_t)(uint8_t)str[0] <<  8 ) | \
+    (len < 2 ? 0 : ((uint32_t)(uint8_t)str[1] << 16)) | \
+    (len < 3 ? 0 : ((uint32_t)(uint8_t)str[2] << 24)) )
 #else
 #define SHORT_STRING_32(str, len) ( \
                   (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint32_t)str[0] << 24 ) | \
-    (len < 2 ? 0 : ((uint32_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint32_t)str[2] <<  8)) )
+                   ((uint32_t)(uint8_t)str[0] << 24 ) | \
+    (len < 2 ? 0 : ((uint32_t)(uint8_t)str[1] << 16)) | \
+    (len < 3 ? 0 : ((uint32_t)(uint8_t)str[2] <<  8)) )
 #endif
 
-// Helper macro to create a short string value for 64-bit
+// Helper macro to create a short string value for 64-bit.
+// The (uint8_t) cast guards against signed-char sign extension — see SHORT_STRING_32.
 #if IS_LITTLE_ENDIAN
 #define SHORT_STRING_64(str, len) ( \
                   (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint64_t)str[0] <<  8 ) | \
-    (len < 2 ? 0 : ((uint64_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint64_t)str[2] << 24)) | \
-    (len < 4 ? 0 : ((uint64_t)str[3] << 32)) | \
-    (len < 5 ? 0 : ((uint64_t)str[4] << 40)) | \
-    (len < 6 ? 0 : ((uint64_t)str[5] << 48)) | \
-    (len < 7 ? 0 : ((uint64_t)str[6] << 56)) )
+                   ((uint64_t)(uint8_t)str[0] <<  8 ) | \
+    (len < 2 ? 0 : ((uint64_t)(uint8_t)str[1] << 16)) | \
+    (len < 3 ? 0 : ((uint64_t)(uint8_t)str[2] << 24)) | \
+    (len < 4 ? 0 : ((uint64_t)(uint8_t)str[3] << 32)) | \
+    (len < 5 ? 0 : ((uint64_t)(uint8_t)str[4] << 40)) | \
+    (len < 6 ? 0 : ((uint64_t)(uint8_t)str[5] << 48)) | \
+    (len < 7 ? 0 : ((uint64_t)(uint8_t)str[6] << 56)) )
 #else
 #define SHORT_STRING_64(str, len) ( \
                   (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint64_t)str[0] << 56 ) | \
-    (len < 2 ? 0 : ((uint64_t)str[1] << 48)) | \
-    (len < 3 ? 0 : ((uint64_t)str[2] << 40)) | \
-    (len < 4 ? 0 : ((uint64_t)str[3] << 32)) | \
-    (len < 5 ? 0 : ((uint64_t)str[4] << 24)) | \
-    (len < 6 ? 0 : ((uint64_t)str[5] << 16)) | \
-    (len < 7 ? 0 : ((uint64_t)str[6] <<  8)) )
+                   ((uint64_t)(uint8_t)str[0] << 56 ) | \
+    (len < 2 ? 0 : ((uint64_t)(uint8_t)str[1] << 48)) | \
+    (len < 3 ? 0 : ((uint64_t)(uint8_t)str[2] << 40)) | \
+    (len < 4 ? 0 : ((uint64_t)(uint8_t)str[3] << 32)) | \
+    (len < 5 ? 0 : ((uint64_t)(uint8_t)str[4] << 24)) | \
+    (len < 6 ? 0 : ((uint64_t)(uint8_t)str[5] << 16)) | \
+    (len < 7 ? 0 : ((uint64_t)(uint8_t)str[6] <<  8)) )
 #endif
 
 // Choose appropriate short string implementation based on word size
@@ -645,9 +669,13 @@ EXTERN bool      string_eq(object_t* self, object_t* data);
 EXTERN bool      string_lt(object_t* self, object_t* data);
 EXTERN bool      string_gt(object_t* self, object_t* data);
 EXTERN object_t* string_at(object_t* self, object_t* index);
+EXTERN object_t* string_byte_at(object_t* self, object_t* index);
+EXTERN object_t* string_find_byte(object_t* self, object_t* byte_value, object_t* from);
 EXTERN object_t* string_parse_int(object_t* self);
 EXTERN object_t* wchar_to_string(object_t* integer);
 EXTERN object_t* print_string(object_t* self, object_t* data);
+EXTERN object_t* string_hash(object_t* s);
+EXTERN object_t* float64_hash(double f);
 
 
 /**********************************************************

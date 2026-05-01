@@ -37,11 +37,17 @@ def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[t
     return captures
 
 
-def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]]) -> e.Expression:
+def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]], self_ref_names: frozenset[str] = frozenset(), method_nme: str = "") -> e.Expression:
     lr = xpr.line_ref
+    capture_names = {name for name, _ in cpt}
     def redirect_reference(resolver: g.Resolver, thing):
-        if isinstance(thing, e.NamedExpression) and any(name for name, type in cpt if thing.name == name):
-            return e.DotExpression(lr, e.NamedExpression(lr, "this"), thing.name)
+        if isinstance(thing, e.NamedExpression):
+            if thing.name in capture_names:
+                return e.DotExpression(lr, e.NamedExpression(lr, "this"), thing.name)
+            elif thing.name in self_ref_names:
+                # Self-referential capture: reconstruct the fun_t from `this` rather
+                # than reading a captured field (which would be null at creation time).
+                return e.DotExpression(lr, e.NamedExpression(lr, "this"), method_nme)
         return thing
     result = xpr.search_and_replace(g.ResolverRoot([]), redirect_reference)
     return result
@@ -90,7 +96,16 @@ def __scan_function_and_export_lambdas(statement: s.Statement) -> tuple[s.Statem
 
         nme = __create_unique_name(lmd)
         cpt = __discover_captures(resolver, lmd)
-        xpr = __redirect_references_to_class(lmd.expression, cpt)
+
+        # Remove self-referential captures: a capture whose declared type is
+        # the same object as lmd.return_type is the LetStatement that binds
+        # this very lambda (letrec). Capturing it stores null (fun_t{0}) at
+        # closure creation time. Instead, redirect self-calls to
+        # `this.method` which reconstructs {.f=fn, .o=this} on the fly.
+        self_ref_names = frozenset(name for name, xtype in cpt if xtype == lmd.return_type)
+        cpt = [(name, xtype) for name, xtype in cpt if name not in self_ref_names]
+
+        xpr = __redirect_references_to_class(lmd.expression, cpt, self_ref_names, nme)
         fnc = __create_function_from_lambda(lmd, nme, xpr, cpt)
         cls = __create_class_from_lambda(lmd, nme, fnc, cpt)
         result = __create_new_expression(cls, fnc, cpt)

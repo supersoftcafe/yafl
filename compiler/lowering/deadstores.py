@@ -4,7 +4,7 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.things import Function
-from codegen.ops import Op, Move, Call
+from codegen.ops import Op, Move, Call, ParallelCall
 from codegen.param import StackVar
 
 
@@ -32,6 +32,11 @@ def __eliminate_once(fn: Function) -> Function:
             if op.register.name not in reads:
                 op = dataclasses.replace(op, register=None, result_type=op.register.get_type())
                 changed = True
+        elif isinstance(op, ParallelCall):
+            outputs = ([op.register] if op.register else []) + list(op.results)
+            if outputs and all(sv.name not in reads for sv in outputs):
+                changed = True
+                continue
         new_ops.append(op)
 
     if not changed:

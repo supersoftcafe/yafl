@@ -154,12 +154,14 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     #      loop leaves NamedSpec references inside an enum's own
     #      all_fields when the spec was first built before the target
     #      was fully populated; codegen needs concrete types here.
-    #    Avoids descending into all_fields' EnumSpec subtrees (which
-    #    would loop on self-references), so non-complex EnumSpec
-    #    targets nested inside a complex enum keep their original
-    #    NamedSpec leaks — but codegen never walks the complex parent's
-    #    all_fields' subtypes' all_fields, so this is safe.
-    def _resolve_named(ft: t.TypeSpec) -> t.TypeSpec:
+    #    - Pruned generic EnumSpecs (not in roots) that survive as stale
+    #      references inside specialized enum all_fields are marked complex
+    #      so generate() never tries to expand their GenericPlaceholderSpec
+    #      all_fields.
+    #    - Recursion into all_fields is limited to depth=1 (fields of direct
+    #      fields) to fix two-level stale references (e.g. Dict.right.bucket)
+    #      without looping on self-recursive types.
+    def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
         # NamedSpec may still appear in EnumSpec.all_fields when the
         # iterative compile loop captured a self-reference at iteration 1
         # before the target's _enum_spec was populated. Resolve here.
@@ -174,13 +176,30 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
                 spec = roots[canonical]
                 is_complex = canonical in complex_set
                 return dataclasses.replace(spec, is_complex=is_complex) if is_complex != spec.is_complex else spec
-        # An EnumSpec already nested in all_fields needs its is_complex
-        # flag updated too; do NOT descend into its own all_fields (that
-        # would loop on self-references).
         if isinstance(ft, t.EnumSpec):
             is_complex = ft.root_name in complex_set
-            if is_complex != ft.is_complex:
-                return dataclasses.replace(ft, is_complex=is_complex)
+            # Pruned generics (no longer in roots after monomorphisation)
+            # appear as stale copies in specialized enums' all_fields.
+            # Their own all_fields still contain GenericPlaceholderSpec, so
+            # generate() must not expand them — mark as complex (→ DataPointer)
+            # and do not recurse into their stale all_fields.
+            if not is_complex and ft.root_name not in roots:
+                return dataclasses.replace(ft, is_complex=True) if not ft.is_complex else ft
+            # Recurse into all_fields with cycle detection: stop if we have
+            # already visited this root_name on the current path (handles
+            # self-recursive enums and mutual recursion without looping).
+            # This propagates is_complex to stale copies at any nesting depth
+            # (the old depth=1 limit missed copies embedded ≥2 levels deep).
+            if ft.root_name not in visited:
+                new_visited = visited | {ft.root_name}
+                new_fields = tuple((n, _resolve_named(f, new_visited)) for n, f in ft.all_fields)
+                fields_changed = any(nf is not of_
+                                     for (_, nf), (_, of_) in zip(new_fields, ft.all_fields))
+                if is_complex != ft.is_complex or fields_changed:
+                    return dataclasses.replace(ft, is_complex=is_complex, all_fields=new_fields)
+            else:
+                if is_complex != ft.is_complex:
+                    return dataclasses.replace(ft, is_complex=is_complex)
         return ft
 
     def mark(_resolver: g.Resolver, thing: Any) -> Any:
@@ -188,7 +207,9 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
             is_complex = thing.root_name in complex_set
             new_fields = tuple(
                 (n, _resolve_named(ft)) for n, ft in thing.all_fields)
-            if is_complex != thing.is_complex or new_fields != thing.all_fields:
+            fields_changed = any(nf is not of_
+                                 for (_, nf), (_, of_) in zip(new_fields, thing.all_fields))
+            if is_complex != thing.is_complex or fields_changed:
                 return dataclasses.replace(thing, is_complex=is_complex, all_fields=new_fields)
         return thing
 

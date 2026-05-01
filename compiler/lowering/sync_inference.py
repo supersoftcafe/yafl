@@ -42,7 +42,7 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.things import Function
-from codegen.ops import Call
+from codegen.ops import Call, ParallelCall
 from codegen.param import GlobalFunction, VirtualFunction
 
 
@@ -61,7 +61,7 @@ def infer_sync(a: Application) -> Application:
     # ------------------------------------------------------------------
     def _has_no_nontail_calls(fn: Function) -> bool:
         return not any(
-            isinstance(op, Call) and not op.musttail
+            (isinstance(op, Call) and not op.musttail) or isinstance(op, ParallelCall)
             for op in fn.ops
         )
 
@@ -99,7 +99,8 @@ def infer_sync(a: Application) -> Application:
             if fn.foreign_symbol is not None:
                 continue
             non_tail_calls = [op for op in fn.ops if isinstance(op, Call) and not op.musttail]
-            if all(_call_is_sync(op) for op in non_tail_calls):
+            has_parallel = any(isinstance(op, ParallelCall) for op in fn.ops)
+            if not has_parallel and all(_call_is_sync(op) for op in non_tail_calls):
                 sync_set.add(name)
                 changed = True
 

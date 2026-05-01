@@ -179,7 +179,7 @@ class CallExpression(Expression):
         if not isinstance(ftype, t.CallableSpec):
             return [Error(self.line_ref, "Callable must be of type CallableSpec")]
 
-        if not ftype.parameters.trivially_assignable_from(resolver, ptype):
+        if ftype.parameters.trivially_assignable_from(resolver, ptype) is False:
             return [Error(self.line_ref, "Parameters are not assignment compatible")]
 
         return []
@@ -665,6 +665,62 @@ class LambdaExpression(Expression):
 
 
 @dataclass
+class ParallelExpression(Expression):
+    exprs: list[Expression]
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(
+            self,
+            exprs=[e.search_and_replace(resolver, replace) for e in self.exprs])))
+
+    def get_type(self, resolver: g.Resolver) -> t.TupleSpec | None:
+        entries = []
+        for expr in self.exprs:
+            fn_type = expr.get_type(resolver)
+            if not isinstance(fn_type, t.CallableSpec) or fn_type.result is None:
+                return None
+            entries.append(t.TupleEntrySpec(None, fn_type.result))
+        return t.TupleSpec(self.line_ref, entries)
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        new_exprs, new_stmts = [], []
+        for expr in self.exprs:
+            new_e, stmts = expr.compile(resolver, None)
+            new_exprs.append(new_e)
+            new_stmts.extend(stmts)
+        return dataclasses.replace(self, exprs=new_exprs), new_stmts
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        bad_arg = "__parallel__ argument must be a zero-parameter function"
+        errors = []
+        for expr in self.exprs:
+            errors.extend(expr.check(resolver, None))
+            fn_type = expr.get_type(resolver)
+            if fn_type is None:
+                errors.append(Error(expr.line_ref, "__parallel__ argument type is unknown"))
+            elif not isinstance(fn_type, t.CallableSpec) or fn_type.parameters.entries:
+                errors.append(Error(expr.line_ref, bad_arg))
+        return errors
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        fn_bundles = [expr.generate(resolver).rename_vars(f"par{i}_") for i, expr in enumerate(self.exprs)]
+        result_types = [cast(t.CallableSpec, expr.get_type(resolver)).result for expr in self.exprs]
+        result_vars = tuple(cg_p.StackVar(rt.generate(), f"$par{i}") for i, rt in enumerate(result_types))
+        register = cg_p.StackVar(self.get_type(resolver).generate(), "$par_result")
+        parallel_op = cg_o.ParallelCall(
+            calls=tuple(b.result_var for b in fn_bundles),
+            results=result_vars,
+            register=register,
+        )
+        parallel_bundle = g.OperationBundle(
+            (register,) + result_vars,
+            (parallel_op,),
+            register,
+        )
+        return reduce(lambda x, y: y + x, reversed(fn_bundles), parallel_bundle)
+
+
+@dataclass
 class BlockExpression(Expression):
     """A sequence of statements followed by a value expression.
 
@@ -708,7 +764,7 @@ class BlockExpression(Expression):
         val_errs = self.value.check(nested, expected_type)
         if not val_errs and expected_type is not None:
             xtype = self.value.get_type(nested)
-            if xtype is not None and not t.trivially_assignable_equals(nested, expected_type, xtype):
+            if xtype is not None and t.trivially_assignable_equals(nested, expected_type, xtype) is False:
                 val_errs = [Error(self.value.line_ref, "Incorrect type")]
         return stmt_errs + val_errs
 
@@ -894,6 +950,13 @@ class BoxExpression(Expression):
         _, variant_map = cg_t.UnionContainer.compute(variant_types)
 
         inner_ctype = self.inner.get_type(resolver).generate()
+
+        # Identity boxing: inner already carries the full union representation.
+        # This happens when a match expression whose arms all return the boxed
+        # union is itself nested inside another box for the same union type.
+        if inner_ctype == target_ctype:
+            return inner_bundle
+
         variant_idx = next(i for i, vt in enumerate(variant_types) if vt == inner_ctype)
 
         discriminators = resolver.get_discriminators()
@@ -1067,6 +1130,7 @@ class NewEnumExpression(Expression):
     root_spec_name: str
     leaf_name: str
     field_args: dict[str, Expression]
+    type_params: tuple[t.TypeSpec, ...] = field(default_factory=tuple)
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         types = resolver.find_type({self.root_spec_name})
@@ -1091,7 +1155,8 @@ class NewEnumExpression(Expression):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
         new_field_args = {k: v.search_and_replace(resolver, replace) for k, v in self.field_args.items()}
-        return cast(Expression, replace(resolver, dataclasses.replace(self, field_args=new_field_args)))
+        new_type_params = tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params)
+        return cast(Expression, replace(resolver, dataclasses.replace(self, field_args=new_field_args, type_params=new_type_params)))
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         types = resolver.find_type({self.root_spec_name})

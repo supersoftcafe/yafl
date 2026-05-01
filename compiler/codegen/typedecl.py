@@ -302,6 +302,33 @@ class ImmediateStruct(Struct):
 
 
 @dataclass(frozen=True)
+class Foreign(Type):
+    """A C type defined outside the compiler (e.g. in yafl.h).
+
+    The compiler doesn't emit a typedef for it; it simply references `c_name`
+    and trusts that the surrounding code includes the right header.
+    `pointer_paths` lists the dotted-field paths inside this foreign type
+    that hold GC-traced object_t pointers, so to_pointer_mask includes them
+    and the GC walks them. Use the empty tuple for foreign types that hold
+    no traced pointers."""
+    c_name: str
+    pointer_paths: tuple[str, ...] = ()
+
+    @property
+    def has_pointers(self) -> bool:
+        return bool(self.pointer_paths)
+
+    def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
+        return self.c_name
+
+    def get_pointer_paths(self, path: str) -> list[str]:
+        if not self.pointer_paths:
+            return []
+        prefix = f"{path}." if path else ""
+        return [f"{prefix}{p}" for p in self.pointer_paths]
+
+
+@dataclass(frozen=True)
 class Array(Type):
     type: Type
     length: int

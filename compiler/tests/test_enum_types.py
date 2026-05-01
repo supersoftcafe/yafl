@@ -528,22 +528,13 @@ class TestRecursiveEnums(TestCase):
     must compile to heap-allocated objects rather than flat structs."""
 
     def test_linked_list_sum(self):
-        # Cons(1, Cons(2, Cons(3, Cons(4, Cons(5, Nil()))))) — sum = 15.
+        # Uses System::List from list.yafl. Sum of [1,2,3,4,5] via fold = 15.
         src = """namespace Test
 import System
 
-enum List
-  enum Cons(head: System::Int, tail: List)
-  enum Nil()
-
-fun sumList(l: List): System::Int
-  ret match(l)
-    (n: Nil) => 0
-    (c: Cons) => c.head + sumList(c.tail)
-
 fun main(): System::Int
-  let l: List = Cons(1, Cons(2, Cons(3, Cons(4, Cons(5, Nil())))))
-  ret sumList(l)
+  let l = System::prepend<System::Int>(1, System::prepend<System::Int>(2, System::prepend<System::Int>(3, System::prepend<System::Int>(4, System::prepend<System::Int>(5, System::List<System::Int>())))))
+  ret System::fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => acc + x)
 """
         self.assertEqual(15, compile_and_run_stdlib(src))
 
@@ -570,27 +561,24 @@ fun main(): System::Int
         self.assertEqual(3, compile_and_run_stdlib(src))
 
     def test_recursive_enum_object_typedef_emitted(self):
-        # The recursive enum's root_name should appear as a heap Object
-        # in the C output (typedef'd struct), not just a flat anon
-        # struct. Check for the mangled type name.
+        # System::_ListNode<T> is a recursive enum (its Cons variant references
+        # _ListNode<T> via `next`); its root must appear as a heap Object in
+        # the C output (typedef'd struct), not a flat anon struct.  The empty
+        # constructor alone wouldn't materialise _ListNode (trim removes the
+        # unused typedef), so prepend an element to force a _Cons allocation.
         src = """namespace Test
 import System
 
-enum List
-  enum Cons(head: System::Int, tail: List)
-  enum Nil()
-
 fun main(): System::Int
-  let l: List = Nil()
+  let empty: System::List<System::Int> = System::List<System::Int>()
+  let l: System::List<System::Int> = System::prepend<System::Int>(1, empty)
   ret 0
 """
         result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
-        # The Object name 'Test::List@hash' is mangled to a C identifier.
-        # The simplest stable check: the canonical vtable symbol obj_*List* exists.
+        # The Object name '_ListNode@hash' or 'List@hash' is mangled to a C identifier.
         self.assertIn("List", result)
-        # And the heap allocator is invoked at least once (Nil() goes via
-        # the recursive constructor path: object_create on the enum's vtable).
+        # The heap allocator must be invoked (recursive enum uses object_create).
         self.assertIn("object_create", result)
 
     def test_non_recursive_enum_remains_flat(self):

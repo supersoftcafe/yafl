@@ -80,7 +80,7 @@ class NamedStatement(Statement):
                             result.extend(find_in_class(substituted))
                     return result
                 case _:
-                    raise LookupError("Failed to find class...  this shouldn't happen")
+                    raise LookupError(f"Failed to find class {tp.name!r}: got {[type(f).__name__ for f in found]}")
         specs: set[t.ClassSpec] = set()
         ordered_specs: list[t.ClassSpec] = []
         for tp in self.trait_params:
@@ -485,11 +485,18 @@ class LetStatement(DataStatement):
             return g.OperationBundle()
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
+        def has_named_spec(spec: t.TypeSpec) -> bool:
+            if isinstance(spec, t.NamedSpec):
+                return True
+            if isinstance(spec, t.CombinationSpec):
+                return any(has_named_spec(s) for s in spec.types)
+            return False
+
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
         if (dt is None or isinstance(dt, t.NamedSpec)) and dv is not None:
             inferred = dv.get_type(resolver)
-            if inferred is not None and not isinstance(inferred, t.NamedSpec):
+            if inferred is not None and not has_named_spec(inferred):
                 dt = inferred
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
         return stmt, dv_glb+dt_glb
@@ -736,6 +743,10 @@ class EnumStatement(TypeStatement):
         return dataclasses.replace(self, variants=new_variants, _root_name=root_name, _enum_spec=my_spec)
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement]]:
+        # Expose this enum's generic type params (K, V, …) so that variant
+        # parameter types like `tail: _Bucket<K,V>` can resolve K and V.
+        if self.type_params:
+            resolver = g.ResolverType(resolver, self._find_generic_types)
         new_parameters, prm_stmts = self.parameters.compile(resolver, None)
         new_variants: list[EnumStatement] = []
         var_stmts: list[Statement] = []
@@ -787,8 +798,10 @@ class EnumStatement(TypeStatement):
             fields=cg_t.ImmediateStruct(fields))
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
-        new_params = cast(DestructureStatement, self.parameters.search_and_replace(resolver, replace))
-        new_variants = [cast(EnumStatement, v.search_and_replace(resolver, replace)) for v in self.variants]
+        # Expose generic type params so variant field types resolve correctly.
+        variant_resolver = g.ResolverType(resolver, self._find_generic_types) if self.type_params else resolver
+        new_params = cast(DestructureStatement, self.parameters.search_and_replace(variant_resolver, replace))
+        new_variants = [cast(EnumStatement, v.search_and_replace(variant_resolver, replace)) for v in self.variants]
         new_spec = self._enum_spec.search_and_replace(resolver, replace) if self._enum_spec else None
         new_self = dataclasses.replace(self,
             parameters=new_params, variants=new_variants,

@@ -69,6 +69,16 @@ def __make_replace(return_type: t.TypeSpec | None):
             return __box_call_args(thing, resolver)
         if isinstance(thing, e.LambdaExpression):
             return __box_lambda(thing, resolver)
+        if isinstance(thing, e.BoxExpression):
+            # ast_inline wraps inlined function results in BoxExpression when the
+            # callee's return type is a union. When such a BoxExpression appears
+            # at an "internal" position (e.g. as a match subject), no other entry
+            # point in this pass would visit it. Recurse here so its inner match
+            # arms / block values get boxed against the union spec.
+            new_inner = __box_expr(thing.inner, thing.union_spec, resolver)
+            if new_inner is not thing.inner:
+                return dataclasses.replace(thing, inner=new_inner)
+            return thing
         return thing
     return replace
 
@@ -100,7 +110,15 @@ def __arm_scope(arm, subject_type, resolver: g.Resolver) -> g.Resolver:
     """Return a resolver that knows about the arm's bound variable (if any)."""
     if not arm.name or arm.name == "_":
         return resolver
-    bound_type = arm.type_spec if arm.type_spec is not None else subject_type
+    # When matching on a complex enum, subject_type carries the monomorphized
+    # all_fields (concrete generic params filled in). arm.type_spec is stored
+    # at parse time and may be the pre-generics generic EnumSpec whose all_fields
+    # still contain GenericPlaceholderSpec — c.value lookups against that return
+    # a placeholder. Using subject_type mirrors what codegen's __gen_enum_match
+    # does (it binds the arm var to subj_type, not arm.type_spec, for the same
+    # reason; see match.py:806-812).
+    bound_type = subject_type if isinstance(subject_type, t.EnumSpec) \
+                              else (arm.type_spec or subject_type)
     if bound_type is None:
         return resolver
     name = arm.name
@@ -201,6 +219,24 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
         return expr
     actual_type = expr.get_type(resolver)
     if actual_type is None:
+        return expr
+
+    # BoxExpression: recurse into the inner expression so that when ast_inline wraps
+    # an inlined function result in BoxExpression(match, T|None), the inner match's
+    # arms get individually boxed and produce a uniform C type.
+    if isinstance(expr, e.BoxExpression):
+        # Idempotency guard: if inner already produces the union type (e.g. it was
+        # boxed in a prior visit), don't re-wrap. Without this, the BoxExpression
+        # case in __make_replace's replace would double-wrap previously-boxed
+        # singleton-variant arm bodies on each outward pass.
+        inner_actual = expr.inner.get_type(resolver)
+        if (inner_actual is not None
+                and inner_actual.as_unique_id_str() is not None
+                and inner_actual.as_unique_id_str() == expr.union_spec.as_unique_id_str()):
+            return expr
+        new_inner = __box_expr(expr.inner, expr.union_spec, resolver)
+        if new_inner is not expr.inner:
+            return dataclasses.replace(expr, inner=new_inner)
         return expr
 
     # BlockExpression: box the final value against the expected type; statements box themselves.

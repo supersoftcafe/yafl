@@ -60,9 +60,10 @@ typedef struct io_job {
     task_obj_t              task;              // GC: callback.o, result
     _Atomic(struct io_job*) next_in_io_queue;  // GC: MPSC linkage in the IO queue
     io_t*                   io;                // GC: target handle (allocated on worker, even for OPEN)
-    worker_node_t*          completion_node;   // GC: pre-allocated; action = per-op finisher
+    task_t*                 completion_task;   // GC: pre-allocated task; callback = per-op finisher
 
     io_op_t                 op;
+    void                    (*finisher)(struct io_job*);  // non-GC: runs on worker after IO
     char                    open_mode[4];      // "r", "w", "a"
     int32_t                 caller_length;     // REFILL: caller's requested length
     int32_t                 raw_result;        // bytes moved, 0 for EOF, -errno on failure

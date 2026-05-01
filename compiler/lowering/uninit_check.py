@@ -35,6 +35,8 @@ def _successors(ops: tuple[Op, ...], labels: dict[str, int], i: int) -> list[int
     n = len(ops)
     if isinstance(op, (Return, ReturnVoid, Abort)):
         return []
+    if isinstance(op, Call) and op.musttail:
+        return []
     if isinstance(op, Jump):
         return [labels[op.name]] if op.name in labels else []
     if isinstance(op, JumpIf):

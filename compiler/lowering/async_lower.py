@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Convert each function that has non-tail calls into two C functions:
+# Async lowering: convert each function that has non-tail calls into two C functions:
 #   1. Hot path  – original name, runs fully inline if all calls are sync.
 #      After each non-tail call, emits an UNLIKELY(IS_TASK) check; if true,
 #      branches to cold code at the tail that saves locals to a heap state
@@ -21,15 +21,15 @@ from functools import reduce
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall
 from codegen.things import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Str, Type,
-    TaskWrapper, first_pointer_field, is_task_check,
+    TaskWrapper, Foreign, first_pointer_field, is_task_check,
 )
 from codegen.param import (
     ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer,
-    RParam, StructField, NullPointer, Invoke, TagTask, IntEqConst, ZeroOf, SyncWrap,
+    RParam, StructField, NullPointer, Invoke, TagTask, IntEqConst, ZeroOf, SyncWrap, Cast,
 )
 
 
@@ -52,12 +52,108 @@ class BasicBlock:
 __state_param_var     = StackVar(DataPointer(), "$state")
 __completed_param_var = StackVar(DataPointer(), "$completed_task")
 
-# Internal scratch variables used in hot-path cold blocks / common block
+# Hot-path scratch variables. Reused across every call site within one
+# function because the hot path only has a single shared $asynccommon block,
+# so a single set of locals is enough. The state-machine function instead
+# allocates *per-call-site* StackVars (named $sv_par_sm$i, $sv_launcher_sm$i)
+# because each call site emits its own cold block that may run independently.
 __sv_state      = StackVar(DataPointer(), "$sv_state")
 __sv_task       = StackVar(DataPointer(), "$sv_task")
 __sv_discard    = StackVar(DataPointer(), "$sv_discard")
 __sv_call_id    = StackVar(Int(32),       "$sv_call_id")    # call-site index for asynccommon
 __sv_async_task = StackVar(DataPointer(), "$sv_async_task") # TASK_UNTAG'd task ptr for asynccommon
+__sv_par_task   = StackVar(DataPointer(), "$sv_par_task")   # par_task ptr in parallel cold blocks
+__sv_launcher   = StackVar(DataPointer(), "$sv_launcher")   # launcher task ptr
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-pattern emit helpers
+#
+# Each one returns a tuple of Ops for the caller to extend(...) into its own
+# op list.  These patterns appear in both the hot path and the state machine
+# with only minor variations (which scratch vars, which fn$async target);
+# parameterising the helpers keeps the two emission sites in lockstep.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _emit_par_task_setup(par_task_var: StackVar, par_task_name: str,
+                          closures: tuple[RParam, ...]) -> tuple[Op, ...]:
+    """Allocate a par_task, init it, set `remaining`, store per-slot closures."""
+    par_n = len(closures)
+    setup: list[Op] = [
+        NewObject(par_task_name, par_task_var),
+        Move(__sv_discard,
+             Invoke("task_init", NewStruct((("task", par_task_var),)), DataPointer()),
+             keep=True),
+        Move(ObjectField(Int(32), par_task_var, par_task_name, "remaining", None),
+             Integer(par_n, 32)),
+    ]
+    for k, closure in enumerate(closures):
+        setup.append(Move(
+            ObjectField(DataPointer(), par_task_var, par_task_name, f"closure_{k}", None),
+            closure))
+    return tuple(setup)
+
+
+def _emit_post_launcher(launcher_var: StackVar, par_task_var: StackVar,
+                         fn_name: str, call_site: int, slot: int) -> tuple[Op, ...]:
+    """Create one launcher task wired to fire slot K's lambda on a worker thread."""
+    launcher_cb = GlobalFunction(f"{fn_name}$par${call_site}$launcher${slot}", par_task_var)
+    return (
+        Move(launcher_var,
+             Invoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),
+        Move(__sv_discard,
+             Invoke("task_on_complete",
+                    NewStruct((("task", launcher_var), ("cb", launcher_cb))),
+                    DataPointer()),
+             keep=True),
+        Move(__sv_discard,
+             Invoke("thread_work_post_parallel",
+                    NewStruct((("task", Cast("task_t*", launcher_var)),)), DataPointer()),
+             keep=True),
+    )
+
+
+def _emit_task_alloc(sv_task: StackVar, task_subtype_name: str | None) -> tuple[Op, ...]:
+    """Allocate the task object that this function will fulfil.
+
+    Three paths, all leaving sv_task pointing at a fully task_init'd task:
+      - None        : Void-returning function uses the base task_t.
+      - "task_obj"  : pre-declared yafllib subtype (task_obj_create initialises).
+      - other       : compiler-synthesised subtype, allocate via NewObject + task_init.
+    """
+    if task_subtype_name is None:
+        return (Move(sv_task,
+            Invoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
+    if task_subtype_name == "task_obj":
+        return (Move(sv_task,
+            Invoke("task_obj_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
+    return (
+        NewObject(task_subtype_name, sv_task),
+        Move(__sv_discard,
+             Invoke("task_init", NewStruct((("task", sv_task),)), DataPointer()),
+             keep=True),
+    )
+
+
+def _emit_suspend_to_async(idx_field: LParam, idx: int, untagged_task: RParam,
+                            fn_name: str) -> tuple[Op, ...]:
+    """SM cold-block tail: write idx, register fn$async on the in-flight task, return.
+
+    `untagged_task` must already be a clean task_t pointer (no PTR_TAG_TASK bit
+    set). Call-site cold blocks should wrap their tagged result in TASK_UNTAG
+    before invoking; the parallel-suspend site passes its locally-allocated
+    par_task directly.
+    """
+    callback = GlobalFunction(f"{fn_name}$async", __state_param_var)
+    return (
+        Move(idx_field, Integer(idx, 32)),
+        Move(__sv_discard,
+             Invoke("task_on_complete",
+                    NewStruct((("task", untagged_task), ("cb", callback))),
+                    DataPointer()),
+             keep=True),
+        ReturnVoid(),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,10 +161,78 @@ __sv_async_task = StackVar(DataPointer(), "$sv_async_task") # TASK_UNTAG'd task 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def __discover_tail_calls(fn: Function) -> Function:
-    # In the direct-return calling convention every call site needs an
-    # IS_TASK check regardless of position, so tail-call collapsing is not
-    # used.  The C compiler handles tail-call optimisation where possible.
-    return fn
+    """Mark Calls in literal tail position as `musttail`.
+
+    A Call qualifies when it is immediately followed by a Return whose value
+    is the Call's result register, AND the Call's result type matches
+    fn.result. The match is on the *unwrapped* type (this pass runs before
+    __wrap_return_type is applied) — once both sides go through the same
+    wrapping in lowering, they will still match at the C level.
+
+    For void functions: a void Call followed by ReturnVoid also qualifies.
+
+    Effect downstream:
+      * `__create_basic_blocks` partitions on non-musttail Calls only, so
+        musttail Calls do NOT split a basic block — a function whose only
+        non-trivial calls are tail-calls becomes a single block, taking the
+        simple-wrapper path with no state machine generated.
+      * Codegen emits `return foo(...)` for musttail Calls, which clang TCOs
+        even at -O0. Without this, every recursion accumulates a real C
+        stack frame (the IS_TASK check inserted after the call breaks the
+        literal tail position the C compiler would otherwise see).
+
+    Currently only applied to **sync** functions (`fn.sync`).  Sync functions
+    don't generate a state machine, so the removed Return + musttail Call is
+    safe everywhere downstream.  Async functions would also benefit from this
+    optimisation but the state machine's terminal-block processing requires
+    the original Return to drive its task_complete sequence — without it the
+    state machine never completes the in-flight task, and the resulting CFG
+    contains a fall-through cycle that hangs `strip_unused_operations`.
+    Extending this to async functions is tracked in TODO.md.
+    """
+    if not fn.sync:
+        return fn
+    ops = list(fn.ops)
+    if len(ops) < 2:
+        return fn
+
+    new_ops: list[Op] = []
+    i = 0
+    n = len(ops)
+    while i < n:
+        op = ops[i]
+        nxt = ops[i + 1] if i + 1 < n else None
+
+        # Pattern 1 — non-void tail call: Call(register=R) ; Return(R)
+        # where R's type matches fn.result.
+        if (isinstance(op, Call)
+                and not op.musttail
+                and op.register is not None
+                and isinstance(nxt, Return)
+                and isinstance(nxt.value, StackVar)
+                and nxt.value.name == op.register.name
+                and op.register.get_type() == fn.result):
+            result_type = op.register.get_type()
+            new_ops.append(dataclasses.replace(
+                op, musttail=True, register=None, result_type=result_type))
+            i += 2
+            continue
+
+        # Pattern 2 — void tail call: Call(register=None, result_type=Void) ; ReturnVoid
+        if (isinstance(op, Call)
+                and not op.musttail
+                and op.register is None
+                and (op.result_type is None or isinstance(op.result_type, Void))
+                and isinstance(nxt, ReturnVoid)
+                and isinstance(fn.result, Void)):
+            new_ops.append(dataclasses.replace(op, musttail=True))
+            i += 2
+            continue
+
+        new_ops.append(op)
+        i += 1
+
+    return dataclasses.replace(fn, ops=tuple(new_ops))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,13 +294,13 @@ def __convert_var_to_field_refs(ops: Iterable[Op],
 def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
     liveness_fn = __calculate_saved_vars(fn)
     partitions = langtools.partition(liveness_fn.ops,
-                                     lambda op: isinstance(op, Call) and not op.musttail)
+                                     lambda op: (isinstance(op, Call) and not op.musttail)
+                                                 or isinstance(op, ParallelCall))
 
     def make_block(index: int, ops: list[Op]) -> BasicBlock:
         name = f"cont${index}"
         last_op = ops[-1]
-        result = last_op.register if isinstance(last_op, Call) else None
-        # Append a resume label right after the call (same as old CPS model)
+        result = last_op.register if isinstance(last_op, (Call, ParallelCall)) else None
         augmented = ops
         live_vars = {var: ObjectField(var.get_type(), __state_param_var, state_name, var.name, None)
                      for var in last_op.saved_vars}
@@ -323,7 +487,26 @@ def __create_hot_path_func(fn: Function, state_name: str,
     # ── Per-call-site hot path ────────────────────────────────────────────────
 
     for i, bb in enumerate(basic_blocks[:-1]):
-        call_op = bb.ops[-1]   # Call is last
+        call_op = bb.ops[-1]
+
+        if isinstance(call_op, ParallelCall):
+            par_task_name = f"task$par${i}${fn.name}"
+            closures = tuple(
+                call_ref.object if isinstance(call_ref, GlobalFunction) and call_ref.object is not None
+                else NullPointer()
+                for call_ref in call_op.calls)
+
+            hot_ops.extend(bb.ops[:-1])
+            hot_ops.extend(_emit_par_task_setup(__sv_par_task, par_task_name, closures))
+            for k in range(len(call_op.calls)):
+                hot_ops.extend(_emit_post_launcher(__sv_launcher, __sv_par_task, fn.name, i, k))
+
+            # Hand off to $asynccommon
+            hot_ops.append(Move(__sv_async_task, __sv_par_task))
+            hot_ops.append(Move(__sv_call_id, Integer(i + 1, 32)))
+            hot_ops.append(Jump("$asynccommon"))
+            continue
+
         assert isinstance(call_op, Call) and not call_op.musttail
         result_var = call_op.register
 
@@ -401,12 +584,15 @@ def __create_hot_path_func(fn: Function, state_name: str,
     #             continuation callback, return tagged task pointer.
     common_ops: list[Op] = [Label("$asynccommon")]
 
+    has_par = any(isinstance(bb.ops[-1], ParallelCall) for bb in basic_blocks[:-1])
+
     if fn.sync:
         common_ops.append(Abort(reason="sync function reached $asynccommon"))
+        par_fields = (("$sv_par_task", DataPointer()), ("$sv_launcher", DataPointer()), ("$sv_discard", DataPointer())) if has_par else ()
         extra_stack = Struct((
             ("$sv_call_id",    Int(32)),
             ("$sv_async_task", DataPointer()),
-        ) + tuple(wrap_fields))
+        ) + par_fields + tuple(wrap_fields))
         all_ops = tuple(hot_ops) + tuple(common_ops)
         return dataclasses.replace(fn,
                                    result=wrapped_result,
@@ -435,19 +621,10 @@ def __create_hot_path_func(fn: Function, state_name: str,
         ObjectField(Int(32), __sv_state, state_name, "idx", None),
         __sv_call_id))
 
-    # Create the task subtype (or base task_t for Void-returning functions)
-    if task_subtype_name is None:
-        common_ops.append(Move(
-            __sv_task,
-            Invoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())))
-    else:
-        common_ops.append(NewObject(task_subtype_name, __sv_task))
-        # TODO: atomic_store(&task->state, TASK_PENDING) once yafllib
-        # provides task_init().  Zero-fill from allocator is correct for now.
-        if not isinstance(fn.result, Void):
-            common_ops.append(Move(
-                ObjectField(fn.result, __sv_task, task_subtype_name, "result", None),
-                __zero_val(fn.result)))
+    # Create the task subtype (or base task_t for Void-returning functions).
+    # The helper ensures task_init() has been called regardless of which path
+    # is taken — never rely on zero-fill alone for state/thread_id/next.
+    common_ops.extend(_emit_task_alloc(__sv_task, task_subtype_name))
 
     # Link state → task (GC will trace my_task from here on)
     common_ops.append(Move(
@@ -464,13 +641,14 @@ def __create_hot_path_func(fn: Function, state_name: str,
         keep=True))
     common_ops.append(Return(TagTask(__sv_task, wrapped_result)))
 
+    par_fields = (("$sv_par_task", DataPointer()), ("$sv_launcher", DataPointer())) if has_par else ()
     extra_stack = Struct((
         ("$sv_state",      DataPointer()),
         ("$sv_task",       DataPointer()),
         ("$sv_discard",    DataPointer()),
         ("$sv_call_id",    Int(32)),
         ("$sv_async_task", DataPointer()),
-    ) + tuple(wrap_fields))
+    ) + par_fields + tuple(wrap_fields))
     all_ops = tuple(hot_ops) + tuple(common_ops)
     return dataclasses.replace(fn,
                                result=wrapped_result,
@@ -531,13 +709,40 @@ def __create_state_machine_func(fn: Function, state_name: str,
         body_ops_before_call = bb.ops[:-1]
         call_op_orig         = bb.ops[-1]
 
+        substituted_before = __convert_var_to_field_refs(body_ops_before_call, vars_to_fields)
+        sm_ops.extend(substituted_before)
+
+        if isinstance(call_op_orig, ParallelCall):
+            par_task_name = f"task$par${i}${fn.name}"
+
+            # Substitute captured StackVars to state fields in call refs
+            def _subst(p: RParam) -> RParam:
+                return vars_to_fields[p.name] if isinstance(p, StackVar) and p.name in vars_to_fields else p
+            pc_subst_calls = tuple(c.replace_params(_subst) for c in call_op_orig.calls)
+
+            sv_par_sm      = StackVar(DataPointer(), f"$sv_par_sm${i}")
+            sv_launcher_sm = StackVar(DataPointer(), f"$sv_launcher_sm${i}")
+            sm_wrap_fields.append((sv_par_sm.name, DataPointer()))
+            sm_wrap_fields.append((sv_launcher_sm.name, DataPointer()))
+
+            closures = tuple(
+                c.object if isinstance(c, GlobalFunction) and c.object is not None else NullPointer()
+                for c in pc_subst_calls)
+            sm_ops.extend(_emit_par_task_setup(sv_par_sm, par_task_name, closures))
+            for k in range(len(pc_subst_calls)):
+                sm_ops.extend(_emit_post_launcher(sv_launcher_sm, sv_par_sm, fn.name, i, k))
+
+            # Register fn$async on par_task and suspend; dispatch case$i+1 will
+            # land at $resume$i after the par_task completes.
+            sm_ops.extend(_emit_suspend_to_async(idx_field, i + 1, sv_par_sm, fn.name))
+            sm_ops.append(Label(f"$resume${i}"))
+            # No cold_ops entry needed — always takes the launcher path
+            continue
+
         result_type     = call_op_orig.register.get_type() if call_op_orig.register else None
         discarded_type  = None if result_type is not None else call_op_orig.result_type
         wrapped_type    = __wrap_return_type(result_type)  if result_type else None
         needs_temp      = result_type is not None and (wrapped_type is not result_type)
-
-        substituted_before = __convert_var_to_field_refs(body_ops_before_call, vars_to_fields)
-        sm_ops.extend(substituted_before)
 
         call_subst = call_op_orig.replace_params(
             lambda p: vars_to_fields[p.name] if isinstance(p, StackVar) and p.name in vars_to_fields else p)
@@ -552,86 +757,47 @@ def __create_state_machine_func(fn: Function, state_name: str,
         # the state field and lands at the label with the check already
         # satisfied.
 
+        # Decide which var receives the call's result for the IS_TASK check, and
+        # whether we need to unwrap a primitive into the destination state field
+        # on the sync edge.
         if discarded_type is not None:
             # Non-void call whose result was stripped by dead-store elimination.
             # Still need to check for async and use the correct C cast (sret ABI).
-            discarded_wrapped = __wrap_return_type(discarded_type)
-            sv_discard_wrap = StackVar(discarded_wrapped, f"$sm_wrap${i}")
-            sm_wrap_fields.append((f"$sm_wrap${i}", discarded_wrapped))
-            sm_ops.append(dataclasses.replace(call_subst, register=sv_discard_wrap))
-            task_ptr = __task_ptr_from(sv_discard_wrap, discarded_wrapped)
-            check = Invoke("UNLIKELY",
-                           NewStruct((("x", __is_task_param(sv_discard_wrap, discarded_wrapped)),)),
-                           Int(32))
-            async_sm_label = f"$async_sm${i}"
-            sm_ops.append(JumpIf(async_sm_label, check))
-            sm_ops.append(Label(f"$resume${i}"))
-            cold_ops.append(Label(async_sm_label))
-            cold_ops.append(Move(idx_field, Integer(i + 1, 32)))
-            untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
-            callback = GlobalFunction(f"{fn.name}$async", __state_param_var)
-            cold_ops.append(Move(
-                __sv_discard,
-                Invoke("task_on_complete",
-                       NewStruct((("task", untag), ("cb", callback))),
-                       DataPointer()),
-                keep=True))
-            cold_ops.append(ReturnVoid())
+            check_type = __wrap_return_type(discarded_type)
+            sv_check = StackVar(check_type, f"$sm_wrap${i}")
+            sm_wrap_fields.append((sv_check.name, check_type))
+            sm_ops.append(dataclasses.replace(call_subst, register=sv_check))
+            unwrap_op = None
         elif needs_temp:
-            sv_wrapped = StackVar(wrapped_type, f"$sm_wrap${i}")
-            sm_wrap_fields.append((f"$sm_wrap${i}", wrapped_type))
-            call_with_wrap = dataclasses.replace(call_subst, register=sv_wrapped)
-            sm_ops.append(call_with_wrap)
-            sv_for_check    = sv_wrapped
-            orig_state_field = call_subst.register
+            check_type = wrapped_type
+            sv_check = StackVar(wrapped_type, f"$sm_wrap${i}")
+            sm_wrap_fields.append((sv_check.name, wrapped_type))
+            sm_ops.append(dataclasses.replace(call_subst, register=sv_check))
+            unwrap_op = Move(call_subst.register, StructField(sv_check, "value"))
+        else:
+            check_type = wrapped_type
+            sv_check   = call_subst.register   # may be None for void calls
+            sm_ops.append(call_subst)
+            unwrap_op = None
 
+        if sv_check is None:
+            # Void call: nothing to test; resume falls through directly.
+            sm_ops.append(Label(f"$resume${i}"))
+        else:
             check = Invoke("UNLIKELY",
-                           NewStruct((("x", __is_task_param(sv_for_check, wrapped_type)),)),
+                           NewStruct((("x", __is_task_param(sv_check, check_type)),)),
                            Int(32))
             async_sm_label = f"$async_sm${i}"
             sm_ops.append(JumpIf(async_sm_label, check))
-
-            sm_ops.append(Move(orig_state_field, StructField(sv_wrapped, "value")))
+            if unwrap_op is not None:
+                sm_ops.append(unwrap_op)
             sm_ops.append(Label(f"$resume${i}"))
 
+            untagged = Invoke("TASK_UNTAG",
+                              NewStruct((("p", __task_ptr_from(sv_check, check_type)),)),
+                              DataPointer())
             cold_ops.append(Label(async_sm_label))
-            cold_ops.append(Move(idx_field, Integer(i + 1, 32)))   # 1-based
-            task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
-            untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
-            callback = GlobalFunction(f"{fn.name}$async", __state_param_var)
-            cold_ops.append(Move(
-                __sv_discard,
-                Invoke("task_on_complete",
-                       NewStruct((("task", untag), ("cb", callback))),
-                       DataPointer()),
-                keep=True))
-            cold_ops.append(ReturnVoid())
-        else:
-            sm_ops.append(call_subst)
-            sv_for_check     = call_subst.register
-            orig_state_field = None
-
-            if sv_for_check is not None:
-                check = Invoke("UNLIKELY",
-                               NewStruct((("x", __is_task_param(sv_for_check, wrapped_type)),)),
-                               Int(32))
-                async_sm_label = f"$async_sm${i}"
-                sm_ops.append(JumpIf(async_sm_label, check))
-
-                cold_ops.append(Label(async_sm_label))
-                cold_ops.append(Move(idx_field, Integer(i + 1, 32)))   # 1-based
-                task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
-                untag    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr),)), DataPointer())
-                callback = GlobalFunction(f"{fn.name}$async", __state_param_var)
-                cold_ops.append(Move(
-                    __sv_discard,
-                    Invoke("task_on_complete",
-                           NewStruct((("task", untag), ("cb", callback))),
-                           DataPointer()),
-                    keep=True))
-                cold_ops.append(ReturnVoid())
-
-            sm_ops.append(Label(f"$resume${i}"))
+            cold_ops.extend(_emit_suspend_to_async(idx_field, i + 1, untagged, fn.name))
 
     # ── Terminal block ────────────────────────────────────────────────────────
     terminal_bb = basic_blocks[-1]
@@ -662,7 +828,20 @@ def __create_state_machine_func(fn: Function, state_name: str,
     for i in range(n):
         bb = non_terminal[i]
         dispatch_ops.append(Label(f"$case${i + 1}"))
-        if bb.result is not None and isinstance(bb.result, StackVar):
+        call_op = bb.ops[-1]
+        if isinstance(call_op, ParallelCall):
+            # Completed task is the par_task; assemble tuple from its result_k fields.
+            pc = call_op
+            par_task_name  = f"task$par${i}${fn.name}"
+            par_result_types = [r.get_type() for r in pc.results]
+            if pc.register is not None and pc.register.name in vars_to_fields:
+                dispatch_ops.append(Move(
+                    vars_to_fields[pc.register.name],
+                    NewStruct(tuple(
+                        (f"_{k}", ObjectField(par_result_types[k], __completed_param_var,
+                                              par_task_name, f"result_{k}", None))
+                        for k in range(len(par_result_types))))))
+        elif bb.result is not None and isinstance(bb.result, StackVar):
             callee_task_name = __task_subtype_name(bb.result.get_type())
             extract = __extract_from_task(__completed_param_var, bb.result.get_type(),
                                            callee_task_name)
@@ -724,15 +903,36 @@ def __convert_function_to_task_convention(
 
     hot_fn = __create_hot_path_func(after_tail, state_name,
                                      task_subtype_name, basic_blocks)
+
+    # Scan for ParallelCall blocks; generate par_task structs, slot callbacks, and launcher callbacks.
+    par_objects: dict[str, Object] = {}
+    par_functions: dict[str, Function] = {}
+    for i, bb in enumerate(basic_blocks[:-1]):
+        call_op = bb.ops[-1]
+        if isinstance(call_op, ParallelCall):
+            pc = call_op
+            par_task_nm = f"task$par${i}${fn.name}"
+            res_types   = [r.get_type() for r in pc.results]
+            par_objects[par_task_nm] = _par_task_object(par_task_nm, res_types)
+            for k, rt in enumerate(res_types):
+                # Slot callback (for when the lambda itself is async)
+                cb = _slot_callback_function(fn.name, i, k, par_task_nm, rt)
+                par_functions[cb.name] = cb
+                # Launcher callback (runs on worker thread, calls the lambda)
+                call_ref = pc.calls[k]
+                lambda_name = call_ref.name if isinstance(call_ref, GlobalFunction) else f"__unknown_{k}__"
+                launcher = _launcher_callback_function(fn.name, i, k, par_task_nm, lambda_name, rt)
+                par_functions[launcher.name] = launcher
+
     if fn.sync:
         # Sync function: $asynccommon aborts; no state machine, no state object.
-        return {hot_fn.name: hot_fn}, {}
+        return {hot_fn.name: hot_fn} | par_functions, par_objects
 
     state_obj  = __create_state_object(after_tail, state_name, basic_blocks)
     machine_fn = __create_state_machine_func(after_tail, state_name,
                                               task_subtype_name, basic_blocks)
-    functions = {hot_fn.name: hot_fn, machine_fn.name: machine_fn}
-    objects   = {state_obj.name: state_obj}
+    functions = {hot_fn.name: hot_fn, machine_fn.name: machine_fn} | par_functions
+    objects   = {state_obj.name: state_obj} | par_objects
     return functions, objects
 
 
@@ -740,27 +940,40 @@ def __convert_function_to_task_convention(
 # Task-subtype Object generation (collected across all functions)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Fields common to all task subtypes (mirror task_t layout so casting works):
-#   type     – vtable pointer (= object_t.type)
-#   state    – _Atomic(int_fast32_t)  [treated as Int(32) in the IR]
-#   callback – fun_t
-#   result   – T  (the actual return value)
+# Compiler-generated task subtypes embed the foreign `task_t` (defined in
+# yafllib/yafl.h) directly as their first field. This guarantees binary
+# compatibility with task_init/task_complete/task_on_complete by construction —
+# no hand-rolled mirror of task_t's field layout is required. The subtype's
+# unique payload follows the parent and is named `result` (single value) or
+# `remaining` + per-slot fields (parallel join).
 #
-# The compiler-generated typedef embeds task_t directly as its first field
-# so casts between task_t* and task_T_t* are valid C.
+# pointer_paths advertises which fields *inside* task_t hold GC-traced pointers
+# so that to_pointer_mask() generates the correct mask:
+#   - callback.o : closure object pointed at by the task's callback
+#   - next       : intrusive queue link (another task)
+
+_TASK_T = Foreign("task_t", pointer_paths=("callback.o", "next"))
+
 
 def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
-    fields: tuple[tuple[str, Type], ...] = (
-        ("type",     DataPointer()),   # vtable
-        ("state",    Int(32)),         # _Atomic int – treated as Int(32) here
-        ("callback", FuncPointer()),   # fun_t
-        ("result",   result_type),
-    )
     # "task_obj" is pre-declared in yafllib (yafl.h + task.c: TASK_OBJ_VTABLE
     # aliased as obj_task_obj). Mark it foreign so codegen doesn't emit a
     # duplicate typedef/vtable; NewObject/ObjectField still reference the
-    # yafllib symbols by name.
+    # yafllib symbols by name.  The field list is only used for ObjectField
+    # access generation — the actual C layout comes from the pre-declared struct.
     is_foreign = subtype_name == "task_obj"
+    if is_foreign:
+        fields: tuple[tuple[str, Type], ...] = (
+            ("type",     DataPointer()),   # vtable
+            ("state",    Int(32)),         # _Atomic int – treated as Int(32) here
+            ("callback", FuncPointer()),   # fun_t
+            ("result",   result_type),
+        )
+    else:
+        fields = (
+            ("parent",  _TASK_T),
+            ("result",  result_type),
+        )
     return Object(
         name=subtype_name,
         extends=(),        # task_complete/task_on_complete cast directly; no vtable dispatch needed
@@ -768,6 +981,124 @@ def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
         fields=ImmediateStruct(fields),
         comment=f"task subtype for result type {result_type}",
         is_foreign=is_foreign,
+    )
+
+
+def _par_task_object(par_task_name: str, result_types: list[Type]) -> Object:
+    """Generate the par_task struct for a parallel call site.
+
+    Embeds task_t directly as `parent` (binary-compatible with task_par_base_t
+    in yafl.h, so parallel_join_decrement can cast safely), then adds the
+    per-instance fields: `remaining` (_Atomic int32 in C, Int(32) in IR),
+    per-slot closure pointers, and per-slot result values."""
+    N = len(result_types)
+    fields: tuple[tuple[str, Type], ...] = (
+        ("parent",    _TASK_T),
+        ("remaining", Int(32)),
+    ) + tuple((f"closure_{k}", DataPointer()) for k in range(N)) \
+      + tuple((f"result_{k}", rt) for k, rt in enumerate(result_types))
+    return Object(
+        name=par_task_name,
+        extends=(),
+        functions=(),
+        fields=ImmediateStruct(fields),
+        comment=f"parallel join task with {N} slots",
+        is_foreign=False,
+    )
+
+
+def _slot_callback_function(fn_name: str, call_site: int, slot: int,
+                              par_task_name: str, result_type: Type) -> Function:
+    """Generate the callback invoked when slot K's sub-task completes.
+
+    Writes the sub-task result into par_task->result_K then calls
+    parallel_join_decrement(par_task) which fires task_complete when all slots done.
+    """
+    sv_par      = StackVar(DataPointer(), "$par_task")
+    sv_sub      = StackVar(DataPointer(), "$completed_sub_task")
+    sv_discard_ = StackVar(DataPointer(), "$sv_discard_cb")
+
+    sub_task_name = __task_subtype_name(result_type)
+    ops_cb: list[Op] = []
+
+    if not isinstance(result_type, Void) and sub_task_name is not None:
+        ops_cb.append(Move(
+            ObjectField(result_type, sv_par, par_task_name, f"result_{slot}", None),
+            __extract_from_task(sv_sub, result_type, sub_task_name)))
+
+    ops_cb.append(Move(
+        sv_discard_,
+        Invoke("parallel_join_decrement", NewStruct((("par_task", sv_par),)), DataPointer()),
+        keep=True))
+    ops_cb.append(Return(NullPointer()))
+
+    return Function(
+        name=f"{fn_name}$par${call_site}$slot${slot}",
+        params=Struct((("$par_task", DataPointer()), ("$completed_sub_task", DataPointer()))),
+        result=DataPointer(),
+        stack_vars=Struct((("$sv_discard_cb", DataPointer()),)),
+        ops=tuple(ops_cb),
+    )
+
+
+def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
+                                 par_task_name: str, lambda_name: str,
+                                 result_type: Type) -> Function:
+    """Callback posted to a worker thread to invoke slot K's lambda.
+
+    Reads par_task->closure_K, calls lambda_name(closure), then:
+      - sync result: writes to result_K, calls parallel_join_decrement
+      - async result: registers slot_K callback on the returned task
+    """
+    sv_par       = StackVar(DataPointer(), "$par_task")
+    sv_closure   = StackVar(DataPointer(), "$launcher_closure")
+    wrapped_type = __wrap_return_type(result_type)
+    needs_temp   = wrapped_type is not result_type
+    sv_result_w  = StackVar(wrapped_type, "$result_w")
+    sv_discard_  = StackVar(DataPointer(), "$sv_discard_cb")
+
+    closure_field = ObjectField(DataPointer(), sv_par, par_task_name, f"closure_{slot}", None)
+
+    ops: list[Op] = []
+    # Read closure from par_task
+    ops.append(Move(sv_closure, closure_field))
+    # Call the lambda
+    ops.append(Call(GlobalFunction(lambda_name, sv_closure), NewStruct(()), sv_result_w))
+    # IS_TASK check
+    cond = Invoke("UNLIKELY",
+                  NewStruct((("x", __is_task_param(sv_result_w, wrapped_type)),)),
+                  Int(32))
+    ops.append(JumpIf("$launcher_async", cond))
+    # Sync path: write result, decrement
+    unwrapped = StructField(sv_result_w, "value") if needs_temp else sv_result_w
+    ops.append(Move(
+        ObjectField(result_type, sv_par, par_task_name, f"result_{slot}", None),
+        unwrapped))
+    ops.append(Move(sv_discard_,
+                    Invoke("parallel_join_decrement",
+                           NewStruct((("par_task", sv_par),)), DataPointer()),
+                    keep=True))
+    ops.append(Jump("$launcher_done"))
+    # Async path: register slot callback
+    ops.append(Label("$launcher_async"))
+    task_ptr_k = __task_ptr_from(sv_result_w, wrapped_type)
+    untag_k    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr_k),)), DataPointer())
+    slot_cb    = GlobalFunction(f"{fn_name}$par${call_site}$slot${slot}", sv_par)
+    ops.append(Move(sv_discard_,
+                    Invoke("task_on_complete",
+                           NewStruct((("task", untag_k), ("cb", slot_cb))),
+                           DataPointer()),
+                    keep=True))
+    ops.append(Label("$launcher_done"))
+    ops.append(Return(NullPointer()))
+
+    stack_vars_fields = [("$launcher_closure", DataPointer()), ("$result_w", wrapped_type), ("$sv_discard_cb", DataPointer())]
+    return Function(
+        name=f"{fn_name}$par${call_site}$launcher${slot}",
+        params=Struct((("$par_task", DataPointer()), ("$launched_task", DataPointer()))),
+        result=DataPointer(),
+        stack_vars=Struct(tuple(stack_vars_fields)),
+        ops=tuple(ops),
     )
 
 
@@ -793,10 +1124,10 @@ def collect_task_subtypes(app: Application) -> dict[str, Object]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public entry point (same name, same signature – compiler.py import unchanged)
+# Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def convert_application_to_cps(app: Application) -> Application:
+def lower_async(app: Application) -> Application:
     results = [__convert_function_to_task_convention(fn)
                for fn in app.functions.values()]
 

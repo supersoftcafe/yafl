@@ -9,11 +9,11 @@ from typing import Iterable
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall
 from codegen.things import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
-    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq
+    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq, Cast
 from functools import reduce
 
 
@@ -87,6 +87,8 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return _scan_sets()
         case SyncWrap():
             return __scan_rparam(p.value)
+        case Cast():
+            return __scan_rparam(p.inner)
 
         case _:
             raise NotImplementedError(f"Unknown type of RParam {type(p)}")
@@ -120,6 +122,9 @@ def __scan_op(op: Op) -> _scan_sets:
 
         case Abort():
             return _scan_sets()
+
+        case ParallelCall():
+            return reduce(lambda a, b: a | b, (__scan_rparam(c) for c in op.calls), _scan_sets())
 
         case _:
             raise NotImplementedError(f"Unknown type of Op {type(op)}")

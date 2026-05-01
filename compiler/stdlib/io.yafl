@@ -125,3 +125,17 @@ fun [inline] `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
   ret match(pair.v)
     (x: TIn)     => f(pair.io, x)
     (e: IOError) => (pair.io, e)
+
+
+# write() may be partial — io_write returns the byte count it accepted, which
+# can be less than the data length when the internal buffer fills.  writeAll
+# loops over the unwritten suffix until the entire payload is sent (or an
+# error occurs), so callers don't need to deal with partial writes.
+fun writeAll(io: IO, data: System::String): (io: IO, v: System::Int|IOError)
+  fun _resume(p: (io: IO, v: System::Int|IOError), data: System::String): (io: IO, v: System::Int|IOError)
+    ret match(p.v)
+      (n: System::Int) => n = System::length(data)
+                            ? (p.io, n)
+                            : writeAll(p.io, System::slice(data, n, System::length(data)))
+      (e: IOError)     => (p.io, e)
+  ret System::length(data) = 0 ? (io, 0) : _resume(io.write(data), data)

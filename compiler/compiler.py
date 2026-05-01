@@ -17,7 +17,7 @@ import lowering.simple_classes
 import lowering.staticinit
 import lowering.deadstores
 import lowering.unions
-import lowering.cps
+import lowering.async_lower
 import lowering.sync_inference
 import lowering.trim
 import lowering.uninit_check
@@ -149,10 +149,8 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
 
     # Inlining with trimming is done iteratively (skipped at -O0)
     if optimization_level > 0:
-        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
-        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
-        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
-        a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+        for _ in range(4):
+            a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
 
         # Dead store elimination: remove StackVar assignments whose value is never read.
         # After inlining, trait-object `this` variables often become dead; removing them
@@ -161,10 +159,8 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
 
         # Static init optimisation: promote NewObject with all-literal fields to static globals,
         # then inline single-use static globals into their lazy-init targets.
-        a = lowering.staticinit.convert_static_objects_pass(a)
-        a = lowering.staticinit.convert_static_objects_pass(a)
-        a = lowering.staticinit.convert_static_objects_pass(a)
-        a = lowering.staticinit.convert_static_objects_pass(a)
+        for _ in range(4):
+            a = lowering.staticinit.convert_static_objects_pass(a)
 
         # Dead store elimination again: static-init may expose additional dead stores.
         a = lowering.trim.removed_unused_stuff(lowering.deadstores.eliminate_dead_stores(a))
@@ -173,11 +169,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # lowered simple-class globals (e.g. Config(13)) become valid C static initialisers.
     a = lowering.staticinit.resolve_flat_struct_global_inits(a)
 
-    # Lazy initialisation must be after inlining, and before CPS conversion.
+    # Lazy initialisation must be after inlining, and before async lowering.
     a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
 
     a = lowering.sync_inference.infer_sync(a)
-    a = lowering.trim.removed_unused_stuff(lowering.cps.convert_application_to_cps(a))
+    a = lowering.trim.removed_unused_stuff(lowering.async_lower.lower_async(a))
     lowering.uninit_check.check_application(a)
     return a.gen(just_testing=just_testing)
 

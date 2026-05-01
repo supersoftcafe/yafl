@@ -22,6 +22,9 @@ class _BasicCompareString() : BasicCompare<String>
   fun `>`(left: System::String, right: System::String): System::Bool
     ret __builtin_op__<bool>("string_gt", left, right)
 
+  fun hashOf(value: System::String): System::Int
+    ret __builtin_op__<bigint>("string_hash", value)
+
 fun Char(int: System::Int): System::String
   ret __builtin_op__<str>("wchar_to_string", int)
 
@@ -41,6 +44,17 @@ fun compare(left: System::String, right: System::String): System::Int
 
 fun at(s: System::String, i: System::Int): System::String
   ret __builtin_op__<str>("string_at", s, i)
+
+# Unsigned byte value at byte offset i, or -1 if i is out of range.
+# Useful for UTF-8 boundary detection — `at` returns a 1-byte slice
+# but does not expose the numeric value.
+fun byteAt(s: System::String, i: System::Int): System::Int
+  ret __builtin_op__<bigint>("string_byte_at", s, i)
+
+# Index of the first byte equal to `byte` at or after `from`, or -1 if not found.
+# Used by parsers to scan a buffer in one C call rather than recursing per byte.
+fun findByte(s: System::String, byte: System::Int, from: System::Int): System::Int
+  ret __builtin_op__<bigint>("string_find_byte", s, byte, from)
 
 fun parseInt(s: System::String): System::Int|System::None
   ret __builtin_op__<bigint>("string_parse_int", s)

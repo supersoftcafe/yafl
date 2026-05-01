@@ -1,0 +1,145 @@
+namespace System
+import System
+
+
+# Internal cons node — heap-allocated (self-referential).
+enum _ListNode<T>
+  enum _Nil()
+  enum _Cons(value: T, next: _ListNode<T>)
+
+
+# Public list: front stores elements in traversal order,
+# rear stores elements in reverse-append order.
+# Invariant: when non-empty, front is always non-empty.
+enum List<T>
+  enum ListEmpty()
+  enum ListFull(front: _ListNode<T>, rear: _ListNode<T>)
+
+
+# ─── Internal helpers ────────────────────────────────────────────────────────
+
+fun _listReverseNode<T>(src: _ListNode<T>, acc: _ListNode<T>): _ListNode<T>
+  ret match(src)
+    (nil: _Nil) => acc
+    (c: _Cons)  => _listReverseNode<T>(c.next, _Cons<T>(c.value, acc))
+
+
+fun _listNodeLen<T>(n: _ListNode<T>): Int
+  ret match(n)
+    (nil: _Nil) => 0
+    (c: _Cons)  => 1 + _listNodeLen<T>(c.next)
+
+
+fun _listNodeGet<T>(n: _ListNode<T>, j: Int): T|None
+  ret match(n)
+    (nil: _Nil) => None
+    (c: _Cons)  => j = 0 ? c.value : _listNodeGet<T>(c.next, j - 1)
+
+
+fun _listHeadNode<T>(n: _ListNode<T>): T|None
+  ret match(n)
+    (nil: _Nil) => None
+    (c: _Cons)  => c.value
+
+
+# Normalize: if new front is empty and rear is non-empty, rotate rear → front.
+fun _listNormalize<T>(front: _ListNode<T>, rear: _ListNode<T>): List<T>
+  fun whenEmpty(r: _ListNode<T>): List<T>
+    ret match(r)
+      (rnil: _Nil) => ListEmpty<T>()
+      (rc: _Cons)  => ListFull<T>(_listReverseNode<T>(r, _Nil<T>()), _Nil<T>())
+  ret match(front)
+    (c: _Cons)  => ListFull<T>(front, rear)
+    (nil: _Nil) => whenEmpty(rear)
+
+
+# ─── Public API ──────────────────────────────────────────────────────────────
+
+fun List<T>(): List<T>
+  ret ListEmpty<T>()
+
+
+# Add element to the front: O(1)
+fun prepend<T>(x: T, l: List<T>): List<T>
+  ret match(l)
+    (e: ListEmpty) => ListFull<T>(_Cons<T>(x, _Nil<T>()), _Nil<T>())
+    (fl: ListFull) => ListFull<T>(_Cons<T>(x, fl.front), fl.rear)
+
+
+# Add element to the back: O(1)
+fun append<T>(l: List<T>, x: T): List<T>
+  ret match(l)
+    (e: ListEmpty) => ListFull<T>(_Cons<T>(x, _Nil<T>()), _Nil<T>())
+    (fl: ListFull) => ListFull<T>(fl.front, _Cons<T>(x, fl.rear))
+
+
+fun head<T>(l: List<T>): T|None
+  ret match(l)
+    (e: ListEmpty) => None
+    (fl: ListFull) => _listHeadNode<T>(fl.front)
+
+
+fun tail<T>(l: List<T>): List<T>
+  fun tailFull(front: _ListNode<T>, rear: _ListNode<T>): List<T>
+    ret match(front)
+      (nil: _Nil) => ListEmpty<T>()
+      (c: _Cons)  => _listNormalize<T>(c.next, rear)
+  ret match(l)
+    (e: ListEmpty) => ListEmpty<T>()
+    (fl: ListFull) => tailFull(fl.front, fl.rear)
+
+
+fun length<T>(l: List<T>): Int
+  ret match(l)
+    (e: ListEmpty) => 0
+    (fl: ListFull) => _listNodeLen<T>(fl.front) + _listNodeLen<T>(fl.rear)
+
+
+# O(1) when rear is non-empty (swap); O(n) otherwise (must reverse front)
+fun reverse<T>(l: List<T>): List<T>
+  ret match(l)
+    (e: ListEmpty) => ListEmpty<T>()
+    (fl: ListFull) => _listNormalize<T>(fl.rear, fl.front)
+
+
+fun get<T>(l: List<T>, i: Int): T|None
+  fun getFromFull(front: _ListNode<T>, rear: _ListNode<T>): T|None
+    let frontLen = _listNodeLen<T>(front)
+    ret i < frontLen
+      ? _listNodeGet<T>(front, i)
+      : _listNodeGet<T>(_listReverseNode<T>(rear, _Nil<T>()), i - frontLen)
+  ret match(l)
+    (e: ListEmpty) => None
+    (fl: ListFull) => getFromFull(fl.front, fl.rear)
+
+
+fun map<T,U>(l: List<T>, f: (T): U): List<U>
+  fun mapNode(n: _ListNode<T>): _ListNode<U>
+    ret match(n)
+      (nil: _Nil) => _Nil<U>()
+      (c: _Cons)  => _Cons<U>(f(c.value), mapNode(c.next))
+  ret match(l)
+    (e: ListEmpty) => ListEmpty<U>()
+    (fl: ListFull) => ListFull<U>(mapNode(fl.front), mapNode(fl.rear))
+
+
+fun filter<T>(l: List<T>, f: (T): Bool): List<T>
+  fun filterNode(n: _ListNode<T>): _ListNode<T>
+    ret match(n)
+      (nil: _Nil) => _Nil<T>()
+      (c: _Cons)  => f(c.value)
+        ? _Cons<T>(c.value, filterNode(c.next))
+        : filterNode(c.next)
+  ret match(l)
+    (e: ListEmpty) => ListEmpty<T>()
+    (fl: ListFull) => _listNormalize<T>(filterNode(fl.front), filterNode(fl.rear))
+
+
+fun fold<T,U>(l: List<T>, init: U, f: (U, T): U): U
+  fun foldNode(n: _ListNode<T>, acc: U): U
+    ret match(n)
+      (nil: _Nil) => acc
+      (c: _Cons)  => foldNode(c.next, f(acc, c.value))
+  ret match(l)
+    (e: ListEmpty) => init
+    (fl: ListFull) => foldNode(_listReverseNode<T>(fl.rear, _Nil<T>()), foldNode(fl.front, init))

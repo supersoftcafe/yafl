@@ -3,9 +3,12 @@ namespace System
 interface BasicPlus<TVal>
   fun `+`(left: TVal, right: TVal): TVal
 
-interface BasicCompare<TVal>
-  fun `<`(left: TVal, right: TVal): System::Bool
+interface BasicEquality<TVal>
   fun `=`(left: TVal, right: TVal): System::Bool
+  fun hashOf(value: TVal): System::Int  # Must return >= 0
+
+interface BasicCompare<TVal> : BasicEquality<TVal>
+  fun `<`(left: TVal, right: TVal): System::Bool
   fun `>`(left: TVal, right: TVal): System::Bool
 
 interface BasicMath<TVal> : BasicPlus<TVal>|BasicCompare<TVal>

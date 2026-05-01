@@ -367,3 +367,47 @@ class Return(Op):
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.value.get_live_vars(), frozenset()
 
+
+@dataclass(frozen=True)
+class ParallelCall(Op):
+    """N concurrent zero-param function calls — lowered by async_lower into a parallel join.
+
+    Each call in `calls` is a fun_t reference (zero-param, so no args tuple).
+    `results` holds one unwrapped result StackVar per slot.
+    `register` holds the assembled tuple StackVar (the value seen by subsequent code).
+
+    No to_c() — async_lower transforms this entirely before codegen.
+    """
+    calls:    tuple[RParam, ...]         # one fun_t reference per slot
+    results:  tuple[StackVar, ...]       # per-slot unwrapped result vars
+    register: StackVar | None = None     # assembled tuple result var
+
+    def all_params(self) -> list[RParam]:
+        reads = [p for fn_ref in self.calls for p in fn_ref.flatten()]
+        writes = [p for r in self.results for p in r.flatten(is_reader=False)]
+        if self.register:
+            writes += self.register.flatten(is_reader=False)
+        return reads + writes
+
+    def rename_vars(self, renames: dict[str, str]) -> ParallelCall:
+        return dataclasses.replace(self,
+            calls=tuple(r.rename_vars(renames) for r in self.calls),
+            results=tuple(r.rename_vars(renames) for r in self.results),
+            register=self.register and self.register.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> ParallelCall:
+        return dataclasses.replace(self,
+            calls=tuple(replacer(r) for r in self.calls),
+            results=tuple(replacer(r) for r in self.results),
+            register=self.register and replacer(self.register))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        reads = frozenset().union(*(r.get_live_vars() for r in self.calls))
+        writes: frozenset[StackVar] = frozenset(self.results)
+        if self.register:
+            writes = writes | frozenset({self.register})
+        return reads, writes
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        raise NotImplementedError("ParallelCall must be lowered by async_lower before codegen")
+

@@ -9,7 +9,8 @@ VTABLE_DECLARE_STRUCT(task_vtable, 0);
 EXPORT struct task_vtable TASK_VTABLE = {
     .object_size              = sizeof(task_t),
     .array_el_size            = 0,
-    .object_pointer_locations = maskof(task_t, .callback.o),
+    .object_pointer_locations = maskof(task_t, .callback.o)
+                              | maskof(task_t, .next),
     .array_el_pointer_locations = 0,
     .functions_mask           = 0,
     .array_len_offset         = 0,
@@ -22,6 +23,7 @@ EXPORT struct task_vtable TASK_OBJ_VTABLE = {
     .object_size              = sizeof(task_obj_t),
     .array_el_size            = 0,
     .object_pointer_locations = maskof(task_obj_t, .parent.callback.o)
+                              | maskof(task_obj_t, .parent.next)
                               | maskof(task_obj_t, .result),
     .array_el_pointer_locations = 0,
     .functions_mask           = 0,
@@ -43,9 +45,29 @@ HIDDEN void _task_call_complete(void* self) {
 }
 
 
-EXPORT object_t* task_create(void* self) {
-    task_t* task = (task_t*)object_create((vtable_t*)&TASK_VTABLE);
+// All task_t subclasses must initialise through here to ensure thread_id is set.
+EXPORT object_t* task_init(void* task_vp) {
+    task_t* task = (task_t*)task_vp;
     atomic_store(&task->state, TASK_PENDING);
+    task->thread_id = thread_current_id();
+    atomic_store(&task->next, (task_t*)NULL);
+    return NULL;
+}
+
+
+EXPORT object_t* task_create(void* self) {
+    (void)self;
+    task_t* task = (task_t*)object_create((vtable_t*)&TASK_VTABLE);
+    task_init(task);
+    return (object_t*)task;
+}
+
+
+EXPORT object_t* task_obj_create(void* self) {
+    (void)self;
+    task_obj_t* task = (task_obj_t*)object_create((vtable_t*)&TASK_OBJ_VTABLE);
+    task_init(task);
+    task->result = NULL;
     return (object_t*)task;
 }
 
@@ -54,18 +76,8 @@ EXPORT object_t* task_complete(void* self) {
     task_t* task = (task_t*)self;
     int_fast32_t old = atomic_exchange(&task->state, TASK_COMPLETE);
     if (old == TASK_CALLBACK)
-        thread_dispatch_fast((fun_t){.f=_task_call_complete, .o=task});
+        _task_call_complete(task);
     return NULL;
-}
-
-
-EXPORT void task_complete_io(void* self, worker_node_t* node) {
-    task_t* task = (task_t*)self;
-    int_fast32_t old = atomic_exchange(&task->state, TASK_COMPLETE);
-    if (old == TASK_CALLBACK) {
-        node->action = (fun_t){.f=_task_call_complete, .o=task};
-        thread_work_post_io(node);
-    }
 }
 
 

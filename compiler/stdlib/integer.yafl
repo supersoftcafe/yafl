@@ -42,3 +42,9 @@ class _BasicMathInt() : BasicMath<System::Int>
   fun `>`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_gt", left, right)
 
+  fun hashOf(value: System::Int): System::Int
+    ret abs(value)
+
+fun abs(value: System::Int): System::Int
+  ret value < 0 ? -value : value
+
