@@ -92,7 +92,7 @@ static void then(object_t* result, void (*next)(object_t*)) {
     _next_step = next;
     task_obj_t* t = (task_obj_t*)TASK_UNTAG(result);
     _in_flight_task = (object_t*)t;
-    task_on_complete(&t->parent, (fun_t){.f=(void*)_trampoline, .o=NULL});
+    task_on_complete((object_t*)t, (fun_t){.f=(void*)_trampoline, .o=NULL});
 }
 #endif // USE_TASKS
 
@@ -143,7 +143,7 @@ static void _finisher(task_obj_t* task) {
     }
     GC_WRITE_BARRIER(task->result, 1);
     task->result = result;
-    task_complete(&task->parent);
+    task_complete((object_t*)task);
 }
 
 static object_t* _run_finisher(void* task_ptr, object_t* unused) {
@@ -171,13 +171,13 @@ static void _do_iteration(void) {
     then(tagged, _step_done);   // task is now CALLBACK
 
     task_t* ct = (task_t*)task_create(NULL);
-    task_on_complete(ct, (fun_t){.f=(void*)_run_finisher, .o=(object_t*)task});
+    task_on_complete((object_t*)ct, (fun_t){.f=(void*)_run_finisher, .o=(object_t*)task});
     _in_flight_completion = ct;
 
 #if USE_CROSS_THREAD
-    thread_work_post_parallel(ct);
+    thread_work_post_parallel((object_t*)ct);
 #else
-    thread_work_post(ct);
+    thread_work_post((object_t*)ct);
 #endif
 }
 
@@ -203,8 +203,8 @@ static void _do_iteration(void) {
 #if USE_CROSS_THREAD
     // Create a dispatch task and post it to a (possibly different) worker.
     task_t* ct = (task_t*)task_create(NULL);
-    task_on_complete(ct, action);
-    thread_work_post_parallel(ct);
+    task_on_complete((object_t*)ct, action);
+    thread_work_post_parallel((object_t*)ct);
 #else
     thread_dispatch(action);
 #endif

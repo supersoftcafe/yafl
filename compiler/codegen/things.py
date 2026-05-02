@@ -350,14 +350,9 @@ class Object:
             raise ValueError("Object cannot have empty fields array")
         else:
             name, field_type = self.fields.fields[0]
-            if isinstance(field_type, t.Foreign):
-                # Foreign nested object whose first byte is the vtable (e.g.
-                # `task_t parent`). The C layout still places the vtable at
-                # offset 0, but the field name doesn't have to be "type".
-                pass
-            elif name != "type":
+            if name != "type":
                 raise ValueError("The first field of an object must be named 'type'")
-            elif not isinstance(field_type, t.DataPointer):
+            if not isinstance(field_type, t.DataPointer):
                 raise ValueError("The first field of an object must be DataPointer")
             if any(1 for name, field_type in self.fields.fields[:-1] if isinstance(field_type, t.Array)):
                 raise ValueError("An object may only have one array field and it must come last")
@@ -390,14 +385,10 @@ class Object:
         return f"// {self.comment}\n" if self.comment else ""
 
     def get_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        # Trim the explicit "type" vtable field (if any) and the trailing array
-        # field (if any).  When the first field is a Foreign nested object
-        # (e.g. `task_t parent`), it owns its vtable internally and is responsible
-        # for excluding that pointer from its own pointer_paths — so we keep it
-        # in the iteration.
-        fields = self.fields.fields
-        if fields and fields[0][0] == "type":
-            fields = fields[1:]
+        # Skip the leading "type" vtable field (the GC handles it via the
+        # vtable header, not through the per-object mask) and the trailing
+        # array field (whose mask is computed separately).
+        fields = self.fields.fields[1:]
         if self.array_type:
             fields = fields[:-1]
         return to_pointer_mask(t.Struct(fields), f"{mangle_name(self.name)}_t")

@@ -79,7 +79,7 @@ static io_job_t* _io_job_alloc(io_op_t op,
                                io_t* io,
                                void (*finisher)(io_job_t*)) {
     io_job_t* job = (io_job_t*)object_create((vtable_t*)&IO_JOB_VTABLE);
-    task_init(&job->task.parent);              // sets thread_id, next, state=PENDING
+    task_init((object_t*)&job->task);              // sets thread_id, next, state=PENDING
     job->task.result     = NULL;
     job->io              = io;
     job->finisher        = finisher;
@@ -93,7 +93,7 @@ static io_job_t* _io_job_alloc(io_op_t op,
     // without calling into the allocator.  callback.o = job keeps the job
     // reachable from the completion_task's pointer mask.
     task_t* ct = (task_t*)task_create(NULL);
-    task_on_complete(ct, (fun_t){.f = (void*)_io_finisher_dispatcher, .o = (object_t*)job});
+    task_on_complete((object_t*)ct, (fun_t){.f = (void*)_io_finisher_dispatcher, .o = (object_t*)job});
     job->completion_task = ct;
     return job;
 }
@@ -190,7 +190,7 @@ static void _io_finish_refill(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
-    task_complete(&job->task.parent);
+    task_complete((object_t*)&job->task);
 }
 
 
@@ -207,7 +207,7 @@ static void _io_finish_flush_write(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
-    task_complete(&job->task.parent);
+    task_complete((object_t*)&job->task);
 }
 
 
@@ -225,7 +225,7 @@ static void _io_finish_open(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
-    task_complete(&job->task.parent);
+    task_complete((object_t*)&job->task);
 }
 
 
@@ -239,7 +239,7 @@ static void _io_finish_close(io_job_t* job) {
         : NULL;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
-    task_complete(&job->task.parent);
+    task_complete((object_t*)&job->task);
 }
 
 

@@ -93,33 +93,6 @@ class NewStruct(RParam): # Create a new blank instance of the defined struct
 
 
 @dataclass(frozen=True)
-class Cast(RParam):
-    c_type: str   # raw C type string, e.g. "task_t*"
-    inner: RParam
-
-    def flatten(self, is_reader: bool = True) -> list[RParam]:
-        return [self] + self.inner.flatten()
-
-    def test(self, predicate: Callable[[RParam], bool]) -> bool:
-        return predicate(self) or self.inner.test(predicate)
-
-    def get_type(self) -> t.Type:
-        return self.inner.get_type()
-
-    def rename_vars(self, renames: dict[str, str]) -> Cast:
-        return dataclasses.replace(self, inner=self.inner.rename_vars(renames))
-
-    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
-        return replacer(dataclasses.replace(self, inner=self.inner.replace_params(replacer)))
-
-    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"(({self.c_type}){self.inner.to_c(type_cache)})"
-
-    def get_live_vars(self) -> frozenset[StackVar]:
-        return self.inner.get_live_vars()
-
-
-@dataclass(frozen=True)
 class Invoke(RParam):
     function: str
     parameters: RParam

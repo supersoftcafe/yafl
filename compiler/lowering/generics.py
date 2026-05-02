@@ -104,13 +104,6 @@ def __substitute_type_params(
         bare = gp.name.rpartition("@")[0] or gp.name
         return name_map.get(bare, gp)
 
-    def _fields_changed(new_fields, old_fields) -> bool:
-        # EnumSpec.__eq__ excludes all_fields, so a tuple of (name, EnumSpec)
-        # compares equal even when all_fields differ. Use identity.
-        if len(new_fields) != len(old_fields):
-            return True
-        return any(nv is not ov for (_, nv), (_, ov) in zip(new_fields, old_fields))
-
     def _substitute_in_field(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:
         if isinstance(ft, t.GenericPlaceholderSpec):
             return _resolve_gp(ft)
@@ -124,21 +117,15 @@ def __substitute_type_params(
                     new_name = __create_unique_name(ft.name, new_tp)
                     return dataclasses.replace(ft, name=new_name, type_params=())
                 return dataclasses.replace(ft, type_params=new_tp)
-        elif isinstance(ft, t.EnumSpec) and ft.root_name not in visited:
-            new_visited = visited | {ft.root_name}
-            new_fields = tuple((n, _substitute_in_field(f, new_visited)) for n, f in ft.all_fields)
-            if _fields_changed(new_fields, ft.all_fields):
-                return dataclasses.replace(ft, all_fields=new_fields)
+        if isinstance(ft, t.EnumSpec):
+            return ft.walk_all_fields(_substitute_in_field, visited)
         return ft
 
     def substitute(resolver: g.Resolver, thing):
         if isinstance(thing, t.GenericPlaceholderSpec):
             return _resolve_gp(thing)
         if isinstance(thing, t.EnumSpec):
-            new_fields = tuple((n, _substitute_in_field(f, frozenset({thing.root_name})))
-                               for n, f in thing.all_fields)
-            if _fields_changed(new_fields, thing.all_fields):
-                return dataclasses.replace(thing, all_fields=new_fields)
+            return thing.walk_all_fields(_substitute_in_field)
         return thing
 
     # Use search_and_replace to recursively substitute throughout the tree

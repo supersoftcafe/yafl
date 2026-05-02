@@ -102,12 +102,16 @@ fun reverse<T>(l: List<T>): List<T>
     (fl: ListFull) => _listNormalize<T>(fl.rear, fl.front)
 
 
+# O(n) traversal but no allocation: rear is stored in reverse-append order,
+# so the j-th appended element sits at position (rearLen - 1 - j) from rear's
+# head; we walk rear directly instead of reversing it into a fresh list.
 fun get<T>(l: List<T>, i: Int): T|None
   fun getFromFull(front: _ListNode<T>, rear: _ListNode<T>): T|None
     let frontLen = _listNodeLen<T>(front)
+    let rearLen = _listNodeLen<T>(rear)
     ret i < frontLen
       ? _listNodeGet<T>(front, i)
-      : _listNodeGet<T>(_listReverseNode<T>(rear, _Nil<T>()), i - frontLen)
+      : _listNodeGet<T>(rear, rearLen - 1 - (i - frontLen))
   ret match(l)
     (e: ListEmpty) => None
     (fl: ListFull) => getFromFull(fl.front, fl.rear)

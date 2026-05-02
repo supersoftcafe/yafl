@@ -158,13 +158,10 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     #      references inside specialized enum all_fields are marked complex
     #      so generate() never tries to expand their GenericPlaceholderSpec
     #      all_fields.
-    #    - Recursion into all_fields is limited to depth=1 (fields of direct
-    #      fields) to fix two-level stale references (e.g. Dict.right.bucket)
-    #      without looping on self-recursive types.
+    #    - Recursion into all_fields uses EnumSpec.walk_all_fields with a
+    #      visited set, propagating is_complex to stale copies at any depth
+    #      while avoiding loops on self-recursive types.
     def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
-        # NamedSpec may still appear in EnumSpec.all_fields when the
-        # iterative compile loop captured a self-reference at iteration 1
-        # before the target's _enum_spec was populated. Resolve here.
         if isinstance(ft, t.NamedSpec):
             canonical = name_to_root.get(ft.name)
             if canonical is None:
@@ -178,18 +175,8 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
                 return dataclasses.replace(spec, is_complex=is_complex) if is_complex != spec.is_complex else spec
         if isinstance(ft, t.EnumSpec):
             is_complex = ft.root_name in complex_set
-            # Pruned generics (no longer in roots after monomorphisation)
-            # appear as stale copies in specialized enums' all_fields.
-            # Their own all_fields still contain GenericPlaceholderSpec, so
-            # generate() must not expand them — mark as complex (→ DataPointer)
-            # and do not recurse into their stale all_fields.
             if not is_complex and ft.root_name not in roots:
                 return dataclasses.replace(ft, is_complex=True) if not ft.is_complex else ft
-            # Recurse into all_fields with cycle detection: stop if we have
-            # already visited this root_name on the current path (handles
-            # self-recursive enums and mutual recursion without looping).
-            # This propagates is_complex to stale copies at any nesting depth
-            # (the old depth=1 limit missed copies embedded ≥2 levels deep).
             if ft.root_name not in visited:
                 new_visited = visited | {ft.root_name}
                 new_fields = tuple((n, _resolve_named(f, new_visited)) for n, f in ft.all_fields)

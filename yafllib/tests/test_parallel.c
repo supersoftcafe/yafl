@@ -45,8 +45,8 @@ static void _entrypoint(object_t* self, fun_t continuation) {
 
     for (intptr_t k = 0; k < N_TASKS; k++) {
         task_t* t = (task_t*)task_create(NULL);
-        task_on_complete(t, (fun_t){.f = (void*)_record_and_decrement, .o = (void*)k});
-        object_t* ret = thread_work_post_parallel(t);
+        task_on_complete((object_t*)t, (fun_t){.f = (void*)_record_and_decrement, .o = (void*)k});
+        object_t* ret = thread_work_post_parallel((object_t*)t);
         if (ret != NULL) {
             atomic_fetch_add(&_returned_null, 1);
         }

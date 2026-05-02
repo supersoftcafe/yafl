@@ -45,7 +45,7 @@ static void then(object_t* result, void (*next)(object_t*)) {
     _next_step = next;
     task_obj_t* t = (task_obj_t*)TASK_UNTAG(result);
     _in_flight_task = (object_t*)t;
-    task_on_complete(&t->parent, (fun_t){.f=(void*)_trampoline, .o=NULL});
+    task_on_complete((object_t*)t, (fun_t){.f=(void*)_trampoline, .o=NULL});
 }
 
 

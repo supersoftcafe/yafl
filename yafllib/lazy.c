@@ -21,7 +21,7 @@ HIDDEN void _lazy_global_init_continue(object_t* self, int32_t ignore) {
     while (initial != NULL) {
         task_t* next = atomic_load(&initial->next);
         atomic_store(&initial->next, (task_t*)NULL);
-        thread_work_post(initial);
+        thread_work_post((object_t*)initial);
         initial = next;
     }
 }
@@ -33,11 +33,11 @@ EXPORT void lazy_global_init(object_t** self, object_t* _flag_ptr, fun_t init, f
 
     // Create a task that will resume with `callback` once init is done.
     task_t* desired = (task_t*)task_create(NULL);
-    task_on_complete(desired, callback);   // PENDING → CALLBACK
+    task_on_complete((object_t*)desired, callback);   // PENDING → CALLBACK
 
     do {
         if (expected == (task_t*)1) {
-            thread_work_post(desired);   // already initialized; resume immediately
+            thread_work_post((object_t*)desired);   // already initialised; resume immediately
             return;
         }
         atomic_store(&desired->next, expected);

@@ -338,6 +338,31 @@ class EnumSpec(TypeSpec):
         new_self = dataclasses.replace(self, type_params=new_type_params) if new_type_params != self.type_params else self
         return langtools.cast(TypeSpec, replace(resolver, new_self))
 
+    def walk_all_fields(self,
+                        fix: Callable[[TypeSpec, frozenset[str]], TypeSpec],
+                        visited: frozenset[str] = frozenset()) -> EnumSpec:
+        """Apply `fix` to each entry in all_fields with cycle detection.
+
+        EnumSpec.search_and_replace deliberately skips all_fields to avoid
+        looping on self-referential enums; lowering passes that need to
+        rewrite types nested in all_fields (e.g. ClassSpec→TupleSpec,
+        GenericPlaceholderSpec→concrete) use this helper instead.
+
+        `fix(field_type, inner_visited)` returns a (possibly substituted)
+        TypeSpec. The visited set tracks the recursion path by root_name;
+        callbacks can pass it back into walk_all_fields when descending into
+        a nested EnumSpec to avoid re-entering the current root.
+
+        Returns the original spec if no field changed (identity-checked).
+        """
+        if self.root_name in visited:
+            return self
+        inner_visited = visited | {self.root_name}
+        new_fields = tuple((n, fix(ft, inner_visited)) for n, ft in self.all_fields)
+        if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, self.all_fields)):
+            return self
+        return dataclasses.replace(self, all_fields=new_fields)
+
 
 @dataclass(frozen=True)
 class GenericPlaceholderSpec(TypeSpec):

@@ -22,8 +22,8 @@ EXPORT struct task_vtable TASK_VTABLE = {
 EXPORT struct task_vtable TASK_OBJ_VTABLE = {
     .object_size              = sizeof(task_obj_t),
     .array_el_size            = 0,
-    .object_pointer_locations = maskof(task_obj_t, .parent.callback.o)
-                              | maskof(task_obj_t, .parent.next)
+    .object_pointer_locations = maskof(task_obj_t, .callback.o)
+                              | maskof(task_obj_t, .next)
                               | maskof(task_obj_t, .result),
     .array_el_pointer_locations = 0,
     .functions_mask           = 0,
@@ -33,9 +33,9 @@ EXPORT struct task_vtable TASK_OBJ_VTABLE = {
     .implements_array         = VTABLE_IMPLEMENTS(0),
 };
 
-// Alias exposed under the compiler's naming convention so NewObject("task_obj")
-// resolves to our pre-declared vtable at link time.
-EXPORT vtable_t* const obj_task_obj = (vtable_t*)&TASK_OBJ_VTABLE;
+// Compiler-facing vtable aliases (obj_task, obj_task_obj) are defined as
+// macros in yafl.h so they expand to constant expressions usable inside
+// VTABLE_IMPLEMENTS' static initializer.
 
 
 HIDDEN void _task_call_complete(void* self) {
@@ -46,8 +46,8 @@ HIDDEN void _task_call_complete(void* self) {
 
 
 // All task_t subclasses must initialise through here to ensure thread_id is set.
-EXPORT object_t* task_init(void* task_vp) {
-    task_t* task = (task_t*)task_vp;
+EXPORT object_t* task_init(object_t* self) {
+    task_t* task = (task_t*)self;
     atomic_store(&task->state, TASK_PENDING);
     task->thread_id = thread_current_id();
     atomic_store(&task->next, (task_t*)NULL);
@@ -55,36 +55,36 @@ EXPORT object_t* task_init(void* task_vp) {
 }
 
 
-EXPORT object_t* task_create(void* self) {
+EXPORT object_t* task_create(object_t* self) {
     (void)self;
-    task_t* task = (task_t*)object_create((vtable_t*)&TASK_VTABLE);
+    object_t* task = object_create((vtable_t*)&TASK_VTABLE);
     task_init(task);
-    return (object_t*)task;
+    return task;
 }
 
 
-EXPORT object_t* task_obj_create(void* self) {
+EXPORT object_t* task_obj_create(object_t* self) {
     (void)self;
     task_obj_t* task = (task_obj_t*)object_create((vtable_t*)&TASK_OBJ_VTABLE);
-    task_init(task);
+    task_init((object_t*)task);
     task->result = NULL;
     return (object_t*)task;
 }
 
 
-EXPORT object_t* task_complete(void* self) {
+EXPORT object_t* task_complete(object_t* self) {
     task_t* task = (task_t*)self;
-    int_fast32_t old = atomic_exchange(&task->state, TASK_COMPLETE);
+    int32_t old = atomic_exchange(&task->state, TASK_COMPLETE);
     if (old == TASK_CALLBACK)
         _task_call_complete(task);
     return NULL;
 }
 
 
-EXPORT object_t* task_on_complete(void* self, fun_t callback) {
+EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     task_t* task = (task_t*)self;
     task->callback = callback;
-    int_fast32_t expected = TASK_PENDING;
+    int32_t expected = TASK_PENDING;
     if (atomic_compare_exchange_strong(&task->state, &expected, TASK_CALLBACK))
         return NULL;
     return ((object_t*(*)(object_t*,object_t*))callback.f)(callback.o, (object_t*)task);

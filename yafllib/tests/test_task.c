@@ -78,7 +78,7 @@ TEST(task_tagged_ptr_round_trip)
     object_t* t = task_create(NULL);
     object_t* tagged = (object_t*)((uintptr_t)t | PTR_TAG_TASK);
     ASSERT(PTR_IS_TASK(tagged));
-    ASSERT(TASK_UNTAG(tagged) == (task_t*)t);
+    ASSERT(TASK_UNTAG(tagged) == t);
 TEST_END()
 
 /* ---- entrypoint ---- */

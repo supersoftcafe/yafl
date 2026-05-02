@@ -2,6 +2,8 @@
 #include "yafl.h"
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 // One queue per worker.  All producers — the owner posting its own work,
 // other workers returning stolen-result callbacks, IO threads posting
@@ -17,10 +19,16 @@ typedef struct worker_queue {
     task_t*         tail;   // newest queued task; == head when one item
 } __attribute__((aligned(CACHE_LINE_SIZE))) worker_queue_t;
 
+// Upper bound on the worker pool. The static `array` declaration is just
+// a placeholder for the GC's variable-length array allocation (object_size
+// is taken from offsetof(.., array[0])); raising MAX_WORKERS only requires
+// growing the placeholder size to match.
+#define MAX_WORKERS 16
+
 typedef struct worker_queues {
     object_t parent;
     int32_t  length;
-    worker_queue_t array[16];
+    worker_queue_t array[MAX_WORKERS];
 } worker_queues_t;
 
 
@@ -102,12 +110,17 @@ static void __attribute__((noinline)) _queue_wait_for_work(worker_queue_t* queue
 }
 
 
+// Set by thread_start when YAFL_DURATION is non-empty; gates the timing
+// instrumentation so production runs don't print to stdout.
+static bool _print_duration = false;
 static struct timespec t_start;
 static struct timespec t_end;
 HIDDEN noreturn void __exit__(object_t* self, object_t* arg) {
-    clock_gettime(CLOCK_MONOTONIC, &t_end);
-    double seconds = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
-    printf("Duration: %.2f s\n", seconds);
+    if (_print_duration) {
+        clock_gettime(CLOCK_MONOTONIC, &t_end);
+        double seconds = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+        printf("Duration: %.2f s\n", seconds);
+    }
 
     // __entrypoint__ calls us either directly with main's integer result
     // (sync path) or via task_on_complete with main's task (async path).
@@ -157,7 +170,7 @@ HIDDEN void* _thread_main_loop(void* param) {
         // Fast path: pop one from our own queue.
         task_t* task = _queue_try_pop(queue);
         if (task) {
-            task_complete(task);
+            task_complete((object_t*)task);
             continue;
         }
 
@@ -168,7 +181,7 @@ HIDDEN void* _thread_main_loop(void* param) {
             if (task) break;
         }
         if (task) {
-            task_complete(task);
+            task_complete((object_t*)task);
             continue;
         }
 
@@ -179,8 +192,22 @@ HIDDEN void* _thread_main_loop(void* param) {
     return NULL;
 }
 
+// Decide how many workers to spawn. YAFL_THREADS overrides; otherwise use
+// the OS-reported online CPU count. Clamped to [1, MAX_WORKERS].
+static intptr_t _detect_thread_count(void) {
+    const char* env = getenv("YAFL_THREADS");
+    if (env && *env) {
+        long n = strtol(env, NULL, 10);
+        if (n >= 1) return n > MAX_WORKERS ? MAX_WORKERS : (intptr_t)n;
+    }
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) n = 1;
+    if (n > MAX_WORKERS) n = MAX_WORKERS;
+    return (intptr_t)n;
+}
+
 static void _thread_init() {
-    intptr_t thread_count = 2;
+    intptr_t thread_count = _detect_thread_count();
     _thread_countdown_to_gc_start = thread_count;
 
     object_gc_init();
@@ -203,26 +230,29 @@ static void _thread_init() {
     _io_threadpool_init();
 }
 
-EXPORT void thread_work_post(task_t* task) {
+EXPORT void thread_work_post(object_t* self) {
+    task_t* task = (task_t*)self;
     _queue_push(&_queues->array[task->thread_id], task);
 }
 
 static _Atomic(uint32_t) _parallel_post_counter;
 
-EXPORT object_t* thread_work_post_parallel(task_t* task) {
+EXPORT object_t* thread_work_post_parallel(object_t* self) {
     uint32_t idx = (1 + atomic_fetch_add(&_parallel_post_counter, 1)) % (uint32_t)_queues->length;
-    _queue_push(&_queues->array[idx], task);
+    _queue_push(&_queues->array[idx], (task_t*)self);
     return NULL;
 }
 
 EXPORT void thread_dispatch(fun_t action) {
-    task_t* task = (task_t*)task_create(NULL);
+    object_t* task = task_create(NULL);
     task_on_complete(task, action);   // PENDING → CALLBACK
     thread_work_post(task);
 }
 
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {
-    clock_gettime(CLOCK_MONOTONIC, &t_start);
+    const char* dur = getenv("YAFL_DURATION");
+    _print_duration = (dur != NULL && *dur != '\0');
+    if (_print_duration) clock_gettime(CLOCK_MONOTONIC, &t_start);
     __entrypoint__ = entrypoint;
     _thread_main_loop((void*)0);
 }

@@ -25,11 +25,11 @@ from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTas
 from codegen.things import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Str, Type,
-    TaskWrapper, Foreign, first_pointer_field, is_task_check,
+    TaskWrapper, first_pointer_field, is_task_check,
 )
 from codegen.param import (
     ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer,
-    RParam, StructField, NullPointer, Invoke, TagTask, IntEqConst, ZeroOf, SyncWrap, Cast,
+    RParam, StructField, NullPointer, Invoke, TagTask, IntEqConst, ZeroOf, SyncWrap,
 )
 
 
@@ -108,7 +108,7 @@ def _emit_post_launcher(launcher_var: StackVar, par_task_var: StackVar,
              keep=True),
         Move(__sv_discard,
              Invoke("thread_work_post_parallel",
-                    NewStruct((("task", Cast("task_t*", launcher_var)),)), DataPointer()),
+                    NewStruct((("task", launcher_var),)), DataPointer()),
              keep=True),
     )
 
@@ -692,6 +692,11 @@ def __create_state_machine_func(fn: Function, state_name: str,
     idx_field = ObjectField(Int(32), __state_param_var, state_name, "idx", None)
     my_task_field = ObjectField(DataPointer(), __state_param_var, state_name, "my_task", None)
 
+    def to_state_field(p: RParam) -> RParam:
+        if isinstance(p, StackVar) and p.name in vars_to_fields:
+            return vars_to_fields[p.name]
+        return p
+
     sm_ops: list[Op] = []
     cold_ops: list[Op] = []
     sm_wrap_fields: list[tuple[str, Type]] = []
@@ -715,10 +720,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
         if isinstance(call_op_orig, ParallelCall):
             par_task_name = f"task$par${i}${fn.name}"
 
-            # Substitute captured StackVars to state fields in call refs
-            def _subst(p: RParam) -> RParam:
-                return vars_to_fields[p.name] if isinstance(p, StackVar) and p.name in vars_to_fields else p
-            pc_subst_calls = tuple(c.replace_params(_subst) for c in call_op_orig.calls)
+            pc_subst_calls = tuple(c.replace_params(to_state_field) for c in call_op_orig.calls)
 
             sv_par_sm      = StackVar(DataPointer(), f"$sv_par_sm${i}")
             sv_launcher_sm = StackVar(DataPointer(), f"$sv_launcher_sm${i}")
@@ -744,8 +746,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
         wrapped_type    = __wrap_return_type(result_type)  if result_type else None
         needs_temp      = result_type is not None and (wrapped_type is not result_type)
 
-        call_subst = call_op_orig.replace_params(
-            lambda p: vars_to_fields[p.name] if isinstance(p, StackVar) and p.name in vars_to_fields else p)
+        call_subst = call_op_orig.replace_params(to_state_field)
 
         # The `$resume${i}` label marks the point both the sync fall-through
         # *after* the IS_TASK check+unpack and the dispatch path (from
@@ -940,43 +941,45 @@ def __convert_function_to_task_convention(
 # Task-subtype Object generation (collected across all functions)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Compiler-generated task subtypes embed the foreign `task_t` (defined in
-# yafllib/yafl.h) directly as their first field. This guarantees binary
-# compatibility with task_init/task_complete/task_on_complete by construction —
-# no hand-rolled mirror of task_t's field layout is required. The subtype's
-# unique payload follows the parent and is named `result` (single value) or
-# `remaining` + per-slot fields (parallel join).
-#
-# pointer_paths advertises which fields *inside* task_t hold GC-traced pointers
-# so that to_pointer_mask() generates the correct mask:
-#   - callback.o : closure object pointed at by the task's callback
-#   - next       : intrusive queue link (another task)
+# Mirror of task_t in yafllib/yafl.h.  Subtypes inherit these fields the
+# normal YAFL way (flat-layout), so ((task_t*)subtype) hits each prefix
+# field at the same offset by construction — no per-callsite cast machinery
+# needed. Order MUST match the C declaration of task_t exactly.
+_TASK_FIELDS: tuple[tuple[str, Type], ...] = (
+    ("type",       DataPointer()),   # object_t.vtable (vtable_t*)
+    ("state",      Int(32)),         # _Atomic(int_fast32_t)
+    ("thread_id",  Int(32)),         # originating worker thread index
+    ("callback",   FuncPointer()),   # fun_t
+    ("next",       DataPointer()),   # _Atomic(task_t*) — intrusive queue link
+)
 
-_TASK_T = Foreign("task_t", pointer_paths=("callback.o", "next"))
+
+def _task_object() -> Object:
+    """Foreign 'task' Object — its typedef lives in yafl.h; we publish the
+    field list so subtypes can extend it via normal YAFL inheritance and
+    ObjectField accesses to inherited fields resolve at the correct offsets.
+    """
+    return Object(
+        name="task",
+        extends=(),
+        functions=(),
+        fields=ImmediateStruct(_TASK_FIELDS),
+        comment="foreign task_t — declared in yafllib/yafl.h",
+        is_foreign=True,
+    )
 
 
 def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
     # "task_obj" is pre-declared in yafllib (yafl.h + task.c: TASK_OBJ_VTABLE
     # aliased as obj_task_obj). Mark it foreign so codegen doesn't emit a
     # duplicate typedef/vtable; NewObject/ObjectField still reference the
-    # yafllib symbols by name.  The field list is only used for ObjectField
-    # access generation — the actual C layout comes from the pre-declared struct.
+    # yafllib symbols by name.  Compiler-synthesised subtypes get a flat
+    # struct emitted by codegen with the task_t prefix followed by `result`.
     is_foreign = subtype_name == "task_obj"
-    if is_foreign:
-        fields: tuple[tuple[str, Type], ...] = (
-            ("type",     DataPointer()),   # vtable
-            ("state",    Int(32)),         # _Atomic int – treated as Int(32) here
-            ("callback", FuncPointer()),   # fun_t
-            ("result",   result_type),
-        )
-    else:
-        fields = (
-            ("parent",  _TASK_T),
-            ("result",  result_type),
-        )
+    fields = _TASK_FIELDS + (("result", result_type),)
     return Object(
         name=subtype_name,
-        extends=(),        # task_complete/task_on_complete cast directly; no vtable dispatch needed
+        extends=("task",),
         functions=(),
         fields=ImmediateStruct(fields),
         comment=f"task subtype for result type {result_type}",
@@ -987,19 +990,17 @@ def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
 def _par_task_object(par_task_name: str, result_types: list[Type]) -> Object:
     """Generate the par_task struct for a parallel call site.
 
-    Embeds task_t directly as `parent` (binary-compatible with task_par_base_t
-    in yafl.h, so parallel_join_decrement can cast safely), then adds the
-    per-instance fields: `remaining` (_Atomic int32 in C, Int(32) in IR),
-    per-slot closure pointers, and per-slot result values."""
+    Inherits task_t's prefix fields (so `(task_t*)par_task` and
+    `(task_par_base_t*)par_task` both work), then appends per-instance
+    fields: `remaining`, per-slot closure pointers, and per-slot results."""
     N = len(result_types)
-    fields: tuple[tuple[str, Type], ...] = (
-        ("parent",    _TASK_T),
+    fields = _TASK_FIELDS + (
         ("remaining", Int(32)),
     ) + tuple((f"closure_{k}", DataPointer()) for k in range(N)) \
       + tuple((f"result_{k}", rt) for k, rt in enumerate(result_types))
     return Object(
         name=par_task_name,
-        extends=(),
+        extends=("task",),
         functions=(),
         fields=ImmediateStruct(fields),
         comment=f"parallel join task with {N} slots",
@@ -1012,7 +1013,7 @@ def _slot_callback_function(fn_name: str, call_site: int, slot: int,
     """Generate the callback invoked when slot K's sub-task completes.
 
     Writes the sub-task result into par_task->result_K then calls
-    parallel_join_decrement(par_task) which fires task_complete when all slots done.
+    task_par_decrement(par_task) which fires task_complete when all slots done.
     """
     sv_par      = StackVar(DataPointer(), "$par_task")
     sv_sub      = StackVar(DataPointer(), "$completed_sub_task")
@@ -1028,7 +1029,7 @@ def _slot_callback_function(fn_name: str, call_site: int, slot: int,
 
     ops_cb.append(Move(
         sv_discard_,
-        Invoke("parallel_join_decrement", NewStruct((("par_task", sv_par),)), DataPointer()),
+        Invoke("task_par_decrement", NewStruct((("par_task", sv_par),)), DataPointer()),
         keep=True))
     ops_cb.append(Return(NullPointer()))
 
@@ -1047,7 +1048,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
     """Callback posted to a worker thread to invoke slot K's lambda.
 
     Reads par_task->closure_K, calls lambda_name(closure), then:
-      - sync result: writes to result_K, calls parallel_join_decrement
+      - sync result: writes to result_K, calls task_par_decrement
       - async result: registers slot_K callback on the returned task
     """
     sv_par       = StackVar(DataPointer(), "$par_task")
@@ -1075,7 +1076,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
         ObjectField(result_type, sv_par, par_task_name, f"result_{slot}", None),
         unwrapped))
     ops.append(Move(sv_discard_,
-                    Invoke("parallel_join_decrement",
+                    Invoke("task_par_decrement",
                            NewStruct((("par_task", sv_par),)), DataPointer()),
                     keep=True))
     ops.append(Jump("$launcher_done"))
@@ -1107,8 +1108,8 @@ def collect_task_subtypes(app: Application) -> dict[str, Object]:
     Scan all functions and collect the unique task-subtype objects that need
     to be generated (one per distinct non-Void codegen-level return type).
 
-    Also registers a foreign 'task' Object so that the trim pass can resolve
-    the extends=("task",) reference on every generated subtype.
+    Registers the foreign 'task' Object so that the trim pass and codegen can
+    resolve the extends=("task",) reference on every generated subtype.
     """
     seen: dict[str, Type] = {}
     for fn in app.functions.values():
@@ -1120,7 +1121,10 @@ def collect_task_subtypes(app: Application) -> dict[str, Object]:
             inner = fn.result.inner if isinstance(fn.result, TaskWrapper) else fn.result
             seen[name] = inner
 
-    return {name: _task_subtype_object(name, t) for name, t in seen.items()}
+    objs: dict[str, Object] = {name: _task_subtype_object(name, t)
+                               for name, t in seen.items()}
+    objs["task"] = _task_object()
+    return objs
 
 
 # ─────────────────────────────────────────────────────────────────────────────

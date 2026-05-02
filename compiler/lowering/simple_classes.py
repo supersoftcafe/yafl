@@ -263,32 +263,18 @@ def __update_enum_all_fields(
         simple_tuple_specs: dict[str, t.TupleSpec],
         visited: frozenset[str] = frozenset(),
 ) -> t.EnumSpec:
-    """Replace ClassSpec entries in an EnumSpec's all_fields with their TupleSpec.
-
-    EnumSpec.search_and_replace intentionally skips all_fields to avoid
-    infinite recursion on self-referential enums.  This function propagates
-    the simple-class conversion into all_fields explicitly, using a visited
-    set for cycle safety.  It is called both from the replace_fn (so ALL
-    EnumSpec instances in expressions and type specs are updated) and from a
-    post-pass on EnumStatement._enum_spec (for the struct definition itself).
+    """Propagate the simple-class → TupleSpec replacement into an EnumSpec's
+    all_fields. Called both from replace_fn (covering EnumSpec instances in
+    expressions and type specs) and from a post-pass on EnumStatement._enum_spec
+    (the struct definition itself).
     """
-    if spec.root_name in visited:
-        return spec
-    inner_visited = visited | {spec.root_name}
-
-    def _fix(ftype: t.TypeSpec) -> t.TypeSpec:
-        if isinstance(ftype, t.ClassSpec) and ftype.name in simple_classes:
-            return simple_tuple_specs[ftype.name]
-        if isinstance(ftype, t.EnumSpec):
-            return __update_enum_all_fields(ftype, simple_classes, simple_tuple_specs, inner_visited)
-        return ftype
-
-    new_fields = tuple((n, _fix(ft)) for n, ft in spec.all_fields)
-    # EnumSpec.__eq__ excludes all_fields, so `new == old` would be True
-    # even when nested all_fields differ. Use identity per element.
-    if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, spec.all_fields)):
-        return spec
-    return dataclasses.replace(spec, all_fields=new_fields)
+    def _fix(ft: t.TypeSpec, inner_visited: frozenset[str]) -> t.TypeSpec:
+        if isinstance(ft, t.ClassSpec) and ft.name in simple_classes:
+            return simple_tuple_specs[ft.name]
+        if isinstance(ft, t.EnumSpec):
+            return __update_enum_all_fields(ft, simple_classes, simple_tuple_specs, inner_visited)
+        return ft
+    return spec.walk_all_fields(_fix, visited)
 
 
 def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:

@@ -326,60 +326,76 @@ EXTERN int32_t thread_current_id(void);
  *****************************
  **********************************************************/
 
+// task_t is a YAFL object: its layout matches what the compiler emits for any
+// subclass that extends `task` — flat-prefix fields shared by every subtype so
+// (task_t*) casts of a subtype pointer hit each prefix field at the right
+// offset.  async_lower._TASK_FIELDS must mirror this declaration exactly.
+//
+// state is _Atomic(int32_t) (not int_fast32_t) so its width is fixed at 4
+// bytes on every platform — the IR represents it as Int(32) and the field
+// offsets must agree byte-for-byte.
 typedef struct task_s {
-    object_t              parent;
-    _Atomic(int_fast32_t) state;
-    int32_t               thread_id;      // originating worker thread index
-    fun_t                 callback;
-    _Atomic(struct task_s*) next;         // intrusive queue link
+    vtable_t*               type;          // == object_t.vtable
+    _Atomic(int32_t)        state;
+    int32_t                 thread_id;     // originating worker thread index
+    fun_t                   callback;
+    _Atomic(struct task_s*) next;          // intrusive queue link
 } task_t;
 
-#define TASK_UNTAG(ptr) ((task_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
+// Strip the PTR_TAG_TASK bit and yield a YAFL object pointer.  Callers that
+// need task-specific fields cast to (task_t*) themselves.
+#define TASK_UNTAG(ptr) ((object_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
 
 // task_obj_t: task subtype whose result is an object_t* (the compiler's
 // "task$DataPointer" layout — used for YAFL return types String, Int (bigint),
-// union types, etc). Must stay binary-compatible with what the compiler
-// generates in async_lower.py.
+// union types, etc). Flat-layout extension of task_t.
 typedef struct {
-    task_t    parent;
-    object_t* result;
+    vtable_t*               type;
+    _Atomic(int32_t)        state;
+    int32_t                 thread_id;
+    fun_t                   callback;
+    _Atomic(struct task_s*) next;
+    object_t*               result;
 } task_obj_t;
 
 EXTERN struct task_vtable TASK_VTABLE;
 EXTERN struct task_vtable TASK_OBJ_VTABLE;
-EXTERN vtable_t* const obj_task_obj;   // compiler-facing alias for TASK_OBJ_VTABLE
 
-// Common initialiser for task_t and all subclasses — sets state, thread_id, next.
-EXTERN object_t* task_init       (void* task);
-EXTERN object_t* task_create     (void* self);
-EXTERN object_t* task_obj_create (void* self);
-EXTERN object_t* task_complete   (void* self);
-EXTERN object_t* task_on_complete(void* self, fun_t callback);
+// Compiler-facing aliases for the runtime's task vtables. Defined as macros
+// rather than const variables so they expand to a compile-time constant at
+// every use site (needed inside VTABLE_IMPLEMENTS' static initializer).
+#define obj_task     ((vtable_t*)&TASK_VTABLE)
+#define obj_task_obj ((vtable_t*)&TASK_OBJ_VTABLE)
 
-// Fixed-prefix layout shared by all compiler-generated parallel join tasks.
-// Must match the ImmediateStruct field order in async_lower._task_par_object()
-// AND must mirror task_t through 'next' for safe casting:
-//   type(0), state(8), thread_id(16), [pad4], callback(24), next(40), remaining(48)
-//
-// state is int_fast64_t (8 bytes) to match _Atomic(int_fast32_t) in task_t on 64-bit.
-// thread_id comes before callback, matching task_t's field order.
+// Public task API — every entry takes object_t* (just like the rest of the
+// YAFL runtime) and casts internally.  Subclasses inherit task_t's prefix
+// fields the normal YAFL way, so passing any task subtype works.
+EXTERN object_t* task_init       (object_t* self);
+EXTERN object_t* task_create     (object_t* self);
+EXTERN object_t* task_obj_create (object_t* self);
+EXTERN object_t* task_complete   (object_t* self);
+EXTERN object_t* task_on_complete(object_t* self, fun_t callback);
+
+// Fixed-prefix layout for compiler-generated parallel join tasks.  Mirrors
+// task_t through `next`, then adds `remaining` for the join counter.  Each
+// per-callsite par_task struct (emitted by async_lower._par_task_object) is a
+// flat extension of this prefix.
 typedef struct {
-    void*              type;
-    int64_t            state;           // same width as _Atomic(int_fast32_t) on 64-bit
-    int32_t            thread_id;       // offset 16
-    // 4 bytes implicit padding here
-    fun_t              callback;        // offset 24 — matches task_t.callback
-    void*              next;            // offset 40
-    _Atomic(int32_t)   remaining;       // offset 48
+    vtable_t*               type;
+    _Atomic(int32_t)        state;
+    int32_t                 thread_id;
+    fun_t                   callback;
+    _Atomic(struct task_s*) next;
+    _Atomic(int32_t)        remaining;
 } task_par_base_t;
 
-// Atomically decrement remaining; call task_complete(par_task) when it reaches 0.
-EXTERN object_t* parallel_join_decrement(void* par_task);
+// Atomically decrement remaining; call task_complete when it reaches 0.
+EXTERN object_t* task_par_decrement(object_t* par_task);
 
 // Post task to its designated worker thread (task->thread_id).
-EXTERN void thread_work_post(task_t* task);
+EXTERN void thread_work_post(object_t* task);
 // Round-robin post across workers — use when spreading parallel work.
-EXTERN object_t* thread_work_post_parallel(task_t* task);
+EXTERN object_t* thread_work_post_parallel(object_t* task);
 // Create an ad-hoc dispatch task from a fun_t and post it to the current thread.
 EXTERN void thread_dispatch(fun_t action);
 

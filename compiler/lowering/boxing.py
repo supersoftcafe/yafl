@@ -75,12 +75,25 @@ def __make_replace(return_type: t.TypeSpec | None):
             # at an "internal" position (e.g. as a match subject), no other entry
             # point in this pass would visit it. Recurse here so its inner match
             # arms / block values get boxed against the union spec.
-            new_inner = __box_expr(thing.inner, thing.union_spec, resolver)
-            if new_inner is not thing.inner:
-                return dataclasses.replace(thing, inner=new_inner)
-            return thing
+            return __recurse_box_expression(thing, resolver)
         return thing
     return replace
+
+
+def __recurse_box_expression(expr: e.BoxExpression, resolver: g.Resolver) -> e.Expression:
+    """Recurse into a BoxExpression's inner so its match/block subexpressions
+    get boxed against the union spec. Includes an idempotency guard: if inner
+    already produces the union type, return unchanged to avoid re-wrapping.
+    """
+    inner_actual = expr.inner.get_type(resolver)
+    if (inner_actual is not None
+            and inner_actual.as_unique_id_str() is not None
+            and inner_actual.as_unique_id_str() == expr.union_spec.as_unique_id_str()):
+        return expr
+    new_inner = __box_expr(expr.inner, expr.union_spec, resolver)
+    if new_inner is not expr.inner:
+        return dataclasses.replace(expr, inner=new_inner)
+    return expr
 
 
 def __box_match_arms(expr: "m.MatchExpression", expected_type: t.TypeSpec,
@@ -225,19 +238,7 @@ def __box_expr(expr: e.Expression, expected_type: t.TypeSpec | None, resolver: g
     # an inlined function result in BoxExpression(match, T|None), the inner match's
     # arms get individually boxed and produce a uniform C type.
     if isinstance(expr, e.BoxExpression):
-        # Idempotency guard: if inner already produces the union type (e.g. it was
-        # boxed in a prior visit), don't re-wrap. Without this, the BoxExpression
-        # case in __make_replace's replace would double-wrap previously-boxed
-        # singleton-variant arm bodies on each outward pass.
-        inner_actual = expr.inner.get_type(resolver)
-        if (inner_actual is not None
-                and inner_actual.as_unique_id_str() is not None
-                and inner_actual.as_unique_id_str() == expr.union_spec.as_unique_id_str()):
-            return expr
-        new_inner = __box_expr(expr.inner, expr.union_spec, resolver)
-        if new_inner is not expr.inner:
-            return dataclasses.replace(expr, inner=new_inner)
-        return expr
+        return __recurse_box_expression(expr, resolver)
 
     # BlockExpression: box the final value against the expected type; statements box themselves.
     if isinstance(expr, e.BlockExpression):
