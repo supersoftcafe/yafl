@@ -231,7 +231,7 @@ class FunctionStatement(DataStatement):
         params: list[tuple[str, cg_t.Type]] = [("this", cg_t.DataPointer())]
         for prm in self.parameters.targets:
             xname = str(prm.name)
-            xtype = prm.declared_type.generate()
+            xtype = prm.declared_type.generate(resolver)
             params.append( (xname, xtype) )
 
         vars = []
@@ -248,7 +248,7 @@ class FunctionStatement(DataStatement):
         return cg_x.Function(
             name = self.name,
             params = cg_t.Struct(fields = tuple(params)),
-            result = self.return_type.generate(),
+            result = self.return_type.generate(resolver),
             stack_vars = cg_t.Struct(fields = tuple(vars)),
             ops = tuple(bundle.operations),
             comment = self.name,
@@ -438,7 +438,7 @@ class ClassStatement(TypeStatement):
         functions = () if self.is_interface else tuple((y, x.name) for x in self._all_slots for y in sorted(x.provides))
 
         function_names = {f for s,f in functions}
-        thunks = [c.create_thunk(self.name ,x) for x in self.parameters.flatten() if x.name in function_names]
+        thunks = [c.create_thunk(self.name, x, resolver) for x in self.parameters.flatten() if x.name in function_names]
 
         xobject = cg_x.Object(
             name=self.name,
@@ -446,7 +446,7 @@ class ClassStatement(TypeStatement):
             functions=functions,
             fields=cg_t.ImmediateStruct(
                 (("type", cg_t.DataPointer()),) +
-                tuple((p.name, p.get_type().generate()) for p in self.parameters.flatten())
+                tuple((p.name, p.get_type().generate(resolver)) for p in self.parameters.flatten())
             ),
             length_field=None,
             comment=self.name,
@@ -472,10 +472,10 @@ class LetStatement(DataStatement):
     def add_namespace(self, path: str):
         return self if self.name == '_' else super().add_namespace(path)
 
-    def to_c_destructure(self, root: cg_p.RParam | None) -> g.OperationBundle:
+    def to_c_destructure(self, root: cg_p.RParam | None, resolver: g.Resolver = None) -> g.OperationBundle:
         if root:
             # Leaf node, move the value into a stack var
-            var = cg_p.StackVar(self.get_type().generate(), self.name)
+            var = cg_p.StackVar(self.get_type().generate(resolver), self.name)
             return g.OperationBundle(
                 stack_vars=(var,),
                 operations=(cg_o.Move(var, root),),
@@ -518,7 +518,7 @@ class LetStatement(DataStatement):
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         expr_bundle = self.default_value.generate(resolver).rename_vars(1)
-        sv = cg_p.StackVar(self.declared_type.generate(), self.name)
+        sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
             operations=(cg_o.Move(sv, expr_bundle.result_var),),
@@ -534,7 +534,7 @@ class LetStatement(DataStatement):
         init_func_name: str|None = None
         init_flag_name: str|None = None
         rparam: cg_p.RParam|None = None
-        xtype = self.get_type().generate()
+        xtype = self.get_type().generate(resolver)
         if self.default_value:
             init = self.default_value.generate(resolver)
             if not init.operations and not init.stack_vars and init.result_var:
@@ -581,19 +581,19 @@ class DestructureStatement(LetStatement):
     def get_type(self) -> t.TupleSpec:
         return t.TupleSpec(self.line_ref, [t.TupleEntrySpec(x.name, x.get_type(), None) for x in self.targets])
 
-    def to_c_destructure(self, root: cg_p.RParam | None) -> g.OperationBundle:
+    def to_c_destructure(self, root: cg_p.RParam | None, resolver: g.Resolver = None) -> g.OperationBundle:
         if not root:
             # The first attempt should declare the root var
-            root = cg_p.StackVar(self.get_type().generate(), self.name)
+            root = cg_p.StackVar(self.get_type().generate(resolver), self.name)
         result = g.OperationBundle()
         for index, target in enumerate(self.targets):
-            destr = target.to_c_destructure(cg_p.StructField(root, f"_{index}"))
+            destr = target.to_c_destructure(cg_p.StructField(root, f"_{index}"), resolver)
             result = result.rename_vars(1) + destr.rename_vars(2)
         return result
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         expr_bundle = self.default_value.generate(resolver).rename_vars(1)
-        sv = cg_p.StackVar(self.declared_type.generate(), self.name)
+        sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
             operations=(cg_o.Move(sv, expr_bundle.result_var),),
@@ -604,7 +604,7 @@ class DestructureStatement(LetStatement):
         # is uvar_1_N.  Pass that renamed var as root so unpack ops reference it
         # directly — they survive rename_vars(2) untouched.
         sv_renamed = cg_p.StackVar(sv.type, f"uvar_1_{len(expr_bundle.stack_vars)}")
-        unpack_bundle = self.to_c_destructure(sv_renamed)
+        unpack_bundle = self.to_c_destructure(sv_renamed, resolver)
         return (expr_bundle + init_bundle).rename_vars(1) + unpack_bundle.rename_vars(2)
 
     def add_namespace(self, path: str):
@@ -790,7 +790,7 @@ class EnumStatement(TypeStatement):
         # all_fields[0] is already ("$tag", Int(32)); subsequent entries are
         # the union of all variants' data fields.
         fields = (("type", cg_t.DataPointer()),) + tuple(
-            (name, ftype.generate()) for name, ftype in self._enum_spec.all_fields)
+            (name, ftype.generate(resolver)) for name, ftype in self._enum_spec.all_fields)
         return cg_x.Object(
             name=self.name,
             extends=(),

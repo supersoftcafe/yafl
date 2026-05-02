@@ -6,7 +6,7 @@ code rather than a coincidental success.
 """
 from __future__ import annotations
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 from tests.testutil import compile_and_run_stdlib
 

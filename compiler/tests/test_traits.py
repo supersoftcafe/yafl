@@ -1,5 +1,5 @@
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import re
 

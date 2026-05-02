@@ -11,7 +11,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 

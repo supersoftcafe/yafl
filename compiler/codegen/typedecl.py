@@ -402,12 +402,12 @@ def _flatten_primitives(t: Type) -> list[Type]:
 def _primitive_rank(t: Type) -> int:
     """Lower rank = stored first in the slot struct."""
     if isinstance(t, Int) and t.precision == 64: return 0   # Int64 (8 bytes)
-    # Float64 would be rank 0 when added
+    if isinstance(t, Float) and t.precision == 64: return 0 # Float64 (8 bytes)
     if isinstance(t, (DataPointer, Str)): return 1           # GC pointer
     if isinstance(t, Int) and t.precision == 0: return 1    # bigint = GC pointer
     if isinstance(t, IntPtr): return 2                       # non-GC pointer-sized
     if isinstance(t, Int) and t.precision == 32: return 3   # Int32
-    # Float32 would be rank 3 when added
+    if isinstance(t, Float) and t.precision == 32: return 3 # Float32
     if isinstance(t, Int) and t.precision == 16: return 4   # Int16
     if isinstance(t, Int) and t.precision == 8: return 5    # Int8/Bool
     return 6

@@ -1,10 +1,32 @@
 """Shared helpers for compiler integration tests."""
 import os
+import signal
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
 
 import compiler as c
+
+
+class TimedTestCase(unittest.TestCase):
+    """TestCase that fails any individual test exceeding _TIMEOUT seconds.
+
+    Uses SIGALRM so the timeout applies to Python compilation time as well as
+    subprocess execution, catching infinite loops in the compiler itself.
+    """
+    _TIMEOUT = 120
+
+    def run(self, result=None):
+        def _handler(signum, frame):
+            raise TimeoutError(f"test exceeded {self._TIMEOUT}s")
+        old_handler = signal.signal(signal.SIGALRM, _handler)
+        signal.alarm(self._TIMEOUT)
+        try:
+            super().run(result)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
 
 # Ensure compiled test binaries can find libyafl.so at runtime.
 _YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"

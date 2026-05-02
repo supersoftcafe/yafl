@@ -5,7 +5,7 @@ zero warnings, zero errors, and zero notes (-Werror, -fsyntax-only).
 """
 from __future__ import annotations
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import assert_clean_compile
 
 

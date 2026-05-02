@@ -11,7 +11,7 @@ classes which do NOT qualify are still handled correctly as heap objects.
 """
 from __future__ import annotations
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 from tests.testutil import compile_and_run
 

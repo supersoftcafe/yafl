@@ -1,4 +1,4 @@
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 from unittest.mock import patch
 
 import re

@@ -1,7 +1,7 @@
 """Tests for nested function declarations inside function bodies."""
 from __future__ import annotations
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run

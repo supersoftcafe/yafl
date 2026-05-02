@@ -321,7 +321,7 @@ class MatchExpression(e.Expression):
         subj_bundle = self.subject.generate(resolver).rename_vars("s")
         subj_type = self.subject.get_type(resolver)
         result_type = self.get_type(resolver)
-        result_var = cg_p.StackVar(result_type.generate(), "result") if result_type else None
+        result_var = cg_p.StackVar(result_type.generate(resolver), "result") if result_type else None
 
         if isinstance(subj_type, t.BuiltinSpec) and subj_type.type_name in ("bigint", "str"):
             return self.__gen_primitive_match(resolver, subj_bundle, subj_type, result_var)
@@ -330,7 +330,7 @@ class MatchExpression(e.Expression):
             return self.__gen_enum_match(resolver, subj_bundle, subj_type, result_var)
 
         assert isinstance(subj_type, t.CombinationSpec)
-        target_ctype = subj_type.generate()
+        target_ctype = subj_type.generate(resolver)
 
         discriminators = resolver.get_discriminators()
 
@@ -383,13 +383,22 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
                                              operations=(cg_o.Move(arm_sv, arm_value),)))
         else:
-            assert isinstance(arm_ctype, cg_t.Struct), f"Multi-primitive non-struct arm type {arm_ctype}"
             field_values: list[tuple[str, cg_p.RParam]] = []
-            for prim_idx, (field_name, field_type) in enumerate(arm_ctype.fields):
-                assert len(cg_t._flatten_primitives(field_type)) == 1, \
-                    f"Nested multi-primitive field in match arm not yet supported"
-                si, _ = slot_assignments[prim_idx]
-                field_values.append((field_name, cg_p.StructField(sv, slot_fields[si][0])))
+            if isinstance(arm_ctype, cg_t.Struct):
+                for prim_idx, (field_name, field_type) in enumerate(arm_ctype.fields):
+                    assert len(cg_t._flatten_primitives(field_type)) == 1, \
+                        f"Nested multi-primitive field in match arm not yet supported"
+                    si, _ = slot_assignments[prim_idx]
+                    field_values.append((field_name, cg_p.StructField(sv, slot_fields[si][0])))
+            elif isinstance(arm_ctype, cg_t.UnionContainer):
+                for prim_idx, (slot_name, _) in enumerate(arm_ctype.slots):
+                    si, _ = slot_assignments[prim_idx]
+                    field_values.append((slot_name, cg_p.StructField(sv, slot_fields[si][0])))
+                bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
+                                                 operations=(cg_o.Move(arm_sv, cg_p.union_struct(arm_ctype, dict(field_values))),)))
+                return make_resolver()
+            else:
+                raise AssertionError(f"Multi-primitive non-struct arm type {arm_ctype}")
             bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
                                              operations=(cg_o.Move(arm_sv, cg_p.NewStruct(tuple(field_values))),)))
         return make_resolver()
@@ -436,7 +445,7 @@ class MatchExpression(e.Expression):
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
-                else_sv = cg_p.StackVar(subj_type.generate(), else_unique)
+                else_sv = cg_p.StackVar(subj_type.generate(resolver), else_unique)
                 def find_else(names, arm=else_arm, st=subj_type, uniq=else_unique):
                     if uniq in names or g.match_names(arm.name, names):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, st)
@@ -483,7 +492,7 @@ class MatchExpression(e.Expression):
         stack_vars = (result_var,) if result_var else ()
         end_label  = "match_end"
 
-        subj_has_none = any(v.generate() == unit_type for v in subj_type.types)
+        subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.types)
 
         null_arm = None
         else_arm = None
@@ -498,7 +507,7 @@ class MatchExpression(e.Expression):
             if arm.type_spec is None:
                 else_arm = arm
                 continue
-            arm_ctype = arm.type_spec.generate()
+            arm_ctype = arm.type_spec.generate(resolver)
             if arm_ctype == unit_type:
                 null_arm = arm
                 continue
@@ -633,7 +642,7 @@ class MatchExpression(e.Expression):
         if arm.name and arm.name != "_":
             type_for_binding = arm.type_spec if arm.type_spec is not None else subj_type
             arm_unique = _arm_unique_name(arm)
-            arm_ctype = type_for_binding.generate()
+            arm_ctype = type_for_binding.generate(resolver)
             bound_sv = cg_p.StackVar(arm_ctype, arm_unique)
             move_value: cg_p.RParam = cg_p.ZeroOf(arm_ctype) \
                 if isinstance(arm_ctype, cg_t.Struct) and not arm_ctype.fields else sv
@@ -659,7 +668,7 @@ class MatchExpression(e.Expression):
         stack_vars = (result_var,) if result_var else ()
         end_label  = "match_end"
 
-        variant_types = [v.generate() for v in subj_type.types]
+        variant_types = [v.generate(resolver) for v in subj_type.types]
         _, variant_map = cg_t.UnionContainer.compute(variant_types)
         slot_fields = container.slots
 
@@ -725,7 +734,7 @@ class MatchExpression(e.Expression):
                 continue
 
             # Typed arm — original path.
-            arm_ctype  = arm.type_spec.generate()
+            arm_ctype  = arm.type_spec.generate(resolver)
             tag_value  = discriminators.get(arm.type_spec.as_unique_id_str(), 0)
 
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, cg_p.IntEqConst(tag_field, tag_value)),)))
@@ -752,7 +761,7 @@ class MatchExpression(e.Expression):
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
-                else_sv = cg_p.StackVar(subj_type.generate(), else_unique)
+                else_sv = cg_p.StackVar(subj_type.generate(resolver), else_unique)
                 def find_else(names, arm=else_arm, uniq=else_unique):
                     if uniq in names or g.match_names(arm.name, names):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec or subj_type)
@@ -814,7 +823,7 @@ class MatchExpression(e.Expression):
                 # Note: arm.type_spec is still consulted for predicate dispatch (above,
                 # in __plan_match_arms) where only the leaf identity matters. It is the
                 # binding side that needs the canonical subject type.
-                arm_sv = cg_p.StackVar(subj_type.generate(), arm_unique)
+                arm_sv = cg_p.StackVar(subj_type.generate(resolver), arm_unique)
                 def find_arm(names, arm=arm, uniq=arm_unique, st=subj_type):
                     if uniq in names or g.match_names(arm.name, names):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, st)
@@ -834,7 +843,7 @@ class MatchExpression(e.Expression):
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
-                else_sv = cg_p.StackVar(subj_type.generate(), else_unique)
+                else_sv = cg_p.StackVar(subj_type.generate(resolver), else_unique)
                 def find_else(names, arm=else_arm, uniq=else_unique):
                     if uniq in names or g.match_names(arm.name, names):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec or subj_type)

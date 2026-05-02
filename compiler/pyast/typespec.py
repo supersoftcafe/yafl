@@ -18,6 +18,46 @@ import codegen.typedecl as cg_t
 from parsing.tokenizer import LineRef
 
 
+def collect_enum_leaves(stmt: s.EnumStatement) -> list[s.EnumStatement]:
+    """Return all leaf EnumStatement nodes in declaration order (same order as all_leaf_names)."""
+    if not stmt.variants:
+        return [stmt]
+    result: list[s.EnumStatement] = []
+    for v in stmt.variants:
+        result.extend(collect_enum_leaves(v))
+    return result
+
+
+def _collect_leaf_field_sets(
+        stmt: s.EnumStatement,
+        inherited: list,
+) -> list[list]:
+    """Return one field list per leaf, including fields inherited from ancestor nodes.
+
+    Fields declared (declared_type is not None) on parent enum nodes are inherited
+    by all descendant leaves, matching the behaviour of _collect_data_fields.
+    """
+    own = [let for let in stmt.parameters.flatten() if let.declared_type is not None]
+    combined = inherited + own
+    if not stmt.variants:
+        return [combined]
+    result: list[list] = []
+    for v in stmt.variants:
+        result.extend(_collect_leaf_field_sets(v, combined))
+    return result
+
+
+def enum_variant_types(stmt: s.EnumStatement, resolver: g.Resolver) -> list[cg_t.Type]:
+    """Return one Struct type per leaf variant, with all fields accessible to that leaf."""
+    return [
+        cg_t.Struct(tuple(
+            (let.name, let.declared_type.generate(resolver))
+            for let in fields
+        ))
+        for fields in _collect_leaf_field_sets(stmt, [])
+    ]
+
+
 @dataclass(frozen=True)
 class TypeSpec:
     line_ref: LineRef = field(compare=False)
@@ -37,7 +77,7 @@ class TypeSpec:
     def check(self, resolver: g.Resolver) -> list[Error]:
         raise NotImplementedError()
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         raise NotImplementedError()
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
@@ -86,7 +126,7 @@ class CallableSpec(TypeSpec):
     def check(self, resolver: g.Resolver) -> list[Error]:
         return self.parameters.check(resolver) + (self.result.check(resolver) if self.result else [])
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         return cg_t.FuncPointer()
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
@@ -172,7 +212,7 @@ class BuiltinSpec(TypeSpec):
             return [Error(self.line_ref, f"Unresolved reference to '{self.type_name}'")]
         return []
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         xtype = self.__translate()
         if xtype is None:
             raise ValueError(f"Unknown type {self.type_name}")
@@ -219,7 +259,7 @@ class ClassSpec(TypeSpec):
             case _:
                 return [Error(self.line_ref, f"Found too many classes named {self.name}")] + tp_errors
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         return cg_t.DataPointer()
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
@@ -303,10 +343,15 @@ class EnumSpec(TypeSpec):
     def check(self, resolver: g.Resolver) -> list[Error]:
         return [err for _, ftype in self.all_fields for err in ftype.check(resolver)]
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         if self.is_complex:
             return cg_t.DataPointer()
-        return cg_t.Struct(tuple((name, ftype.generate()) for name, ftype in self.all_fields))
+        types = resolver.find_type({self.root_name})
+        if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
+            stmt = langtools.cast(s.EnumStatement, types[0].statement)
+            container, _ = cg_t.UnionContainer.compute(enum_variant_types(stmt, resolver))
+            return container
+        return cg_t.Struct(tuple((name, ftype.generate(resolver)) for name, ftype in self.all_fields))
 
     def as_unique_id_str(self) -> str | None:
         if '@' not in self.root_name:
@@ -377,7 +422,7 @@ class GenericPlaceholderSpec(TypeSpec):
     def check(self, resolver: g.Resolver) -> list[Error]:
         return []
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         raise RuntimeError("GenericPlaceholderSpec should be replaced with a concrete type")
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
@@ -519,7 +564,7 @@ class NamedSpec(TypeSpec):
             return []
         return [Error(self.line_ref, f"Unresolved reference to '{self.name}'")]
 
-    def generate(self) -> cg_t.Type:
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
         raise RuntimeError("NamedSpec should be replaced with a concrete type")
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
@@ -575,8 +620,8 @@ class CombinationSpec(TypeSpec):
     def check(self, resolver: g.Resolver) -> list[Error]:
         return [y for x in self.types for y in x.check(resolver)]
 
-    def generate(self) -> cg_t.Type:
-        variant_types = [v.generate() for v in self.types]
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
+        variant_types = [v.generate(resolver) for v in self.types]
         unit = cg_t.Struct(())
         non_unit = [vt for vt in variant_types if vt != unit]
         if len(non_unit) == 1 and non_unit[0].get_pointer_paths("x") == ["x"]:
@@ -631,8 +676,8 @@ class TupleEntrySpec:
         err2 = self.default.check(resolver, self.type) if self.default else []
         return err1 + err2
 
-    def generate(self) -> cg_t.Type:
-        return self.type.generate()
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
+        return self.type.generate(resolver)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TupleEntrySpec:
         return dataclasses.replace(self,
@@ -662,8 +707,8 @@ class TupleSpec(TypeSpec):
             return [Error(self.line_ref, "Named parameters are not allowed before positional parameters")]
         return [y for x in self.entries for y in x.check(resolver)]
 
-    def generate(self) -> cg_t.Type:
-        return cg_t.Struct(tuple((f"_{idx}", ent.type.generate()) for idx, ent in enumerate(self.entries)))
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
+        return cg_t.Struct(tuple((f"_{idx}", ent.type.generate(resolver)) for idx, ent in enumerate(self.entries)))
 
     def as_unique_id_str(self) -> str|None:
         ids = [x.type and x.type.as_unique_id_str() for x in self.entries]

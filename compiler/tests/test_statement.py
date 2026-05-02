@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import pyast.expression as e
 import pyast.match as m

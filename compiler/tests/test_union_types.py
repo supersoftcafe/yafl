@@ -4,7 +4,7 @@ from __future__ import annotations
 import contextlib
 import io
 import subprocess
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run

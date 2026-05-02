@@ -120,13 +120,13 @@ class NewExpression(Expression):
 
         params_bundle = self.parameter.generate(resolver).rename_vars(1)
 
-        params_var = cg_p.StackVar(xtype.generate(), "params")
-        result_var = cg_p.StackVar(ctype.generate(), "result")
+        params_var = cg_p.StackVar(xtype.generate(resolver), "params")
+        result_var = cg_p.StackVar(ctype.generate(resolver), "result")
 
         cname = ctype.name
         ops = ( ( cg_o.Move(params_var, params_bundle.result_var),
                   cg_o.NewObject(cname, result_var) )
-               + tuple(cg_o.Move(cg_p.ObjectField(x.get_type().generate(), result_var, cname, x.name, None), cg_p.StructField(params_var, f"_{index}")) for index, x in enumerate(fields))
+               + tuple(cg_o.Move(cg_p.ObjectField(x.get_type().generate(resolver), result_var, cname, x.name, None), cg_p.StructField(params_var, f"_{index}")) for index, x in enumerate(fields))
         )
 
         constructor_bundle = g.OperationBundle(
@@ -194,7 +194,7 @@ class CallExpression(Expression):
         fun_ref = fun_op_bundle.result_var
         impure = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.impure
 
-        result_var = cg_p.StackVar(xtype.result.generate(), "result")
+        result_var = cg_p.StackVar(xtype.result.generate(resolver), "result")
         call_bundle = g.OperationBundle(
             (result_var,),
             (cg_o.Call(fun_ref, prm_op_bundle.result_var, result_var, impure=impure),),
@@ -301,7 +301,7 @@ class DotExpression(Expression):
             case t.ClassSpec(_, cname):
                 cdecl = cast(s.ClassStatement, resolver.find_type({cname})[0].statement)
                 data = cdecl.find_data(resolver, {self.name})[0].statement
-                xtype = data.get_type().generate()
+                xtype = data.get_type().generate(resolver)
 
                 if not isinstance(data, s.FunctionStatement):
                     result_var = cg_p.ObjectField(xtype, base_bundle.result_var, cdecl.name, data.name, None)
@@ -318,10 +318,30 @@ class DotExpression(Expression):
                     # through ObjectField (which inserts a GC write barrier
                     # for pointer-typed writes).
                     field_type_spec = next((ft for fn, ft in es.all_fields if fn == self.name), None)
-                    fty = field_type_spec.generate() if field_type_spec is not None else cg_t.DataPointer()
+                    fty = field_type_spec.generate(resolver) if field_type_spec is not None else cg_t.DataPointer()
                     result_var = cg_p.ObjectField(fty, base_bundle.result_var, es.root_name, self.name, None)
                 else:
-                    result_var = cg_p.StructField(base_bundle.result_var, self.name)
+                    # Flat enum uses UnionContainer slot layout. Find which leaf
+                    # declares this field, then map it to its slot.
+                    stmts = resolver.find_type({es.root_name})
+                    assert len(stmts) == 1
+                    root_stmt = cast(s.EnumStatement, stmts[0].statement)
+                    variant_types = t.enum_variant_types(root_stmt, resolver)
+                    container, variant_map = cg_t.UnionContainer.compute(variant_types)
+                    leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
+                    result_var = cg_p.StructField(base_bundle.result_var, self.name)  # fallback
+                    for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
+                        offset = 0
+                        for let in leaf_fields:
+                            n_prims = len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
+                            if let.name == self.name:
+                                si, _ = variant_map[leaf_idx][offset]
+                                result_var = cg_p.StructField(base_bundle.result_var, container.slots[si][0])
+                                break
+                            offset += n_prims
+                        else:
+                            continue
+                        break
                 return base_bundle + g.OperationBundle((), (), result_var)
 
         raise ValueError("Could not generate dot expression")
@@ -496,11 +516,11 @@ class NamedExpression(Expression):
             case (g.ResolvedScope.GLOBAL, stmt) if isinstance(stmt, s.LetStatement):
                 xtype = stmt.declared_type
                 if not xtype: raise ValueError(f"Failed to resolve {self.name} due to missing type")
-                return g.OperationBundle((), (), cg_p.GlobalVar(xtype.generate(), self.name))
+                return g.OperationBundle((), (), cg_p.GlobalVar(xtype.generate(resolver), self.name))
             case (g.ResolvedScope.LOCAL, stmt) if isinstance(stmt, s.LetStatement):
                 xtype = stmt.declared_type
                 if not xtype: raise ValueError(f"Failed to resolve {self.name} due to missing type")
-                return g.OperationBundle((), (), cg_p.StackVar(xtype.generate(), self.name))
+                return g.OperationBundle((), (), cg_p.StackVar(xtype.generate(resolver), self.name))
             case (scope, stmt):
                 raise ValueError(f"Reference to {scope} / {type(stmt)} for named reference {self.name} not implemented yet")
 
@@ -591,7 +611,7 @@ class BuiltinOpExpression(Expression):
         if not isinstance(ptype, cg_t.Struct):
             raise ValueError("BuiltinOpExpression parameters must be tuple")
 
-        xtype = self.type.generate()
+        xtype = self.type.generate(resolver)
         xexpr = cg_p.Invoke(self.op.value, params_bundle.result_var, xtype)
         final_bundle = g.OperationBundle( (), (), xexpr )
 
@@ -705,8 +725,8 @@ class ParallelExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         fn_bundles = [expr.generate(resolver).rename_vars(f"par{i}_") for i, expr in enumerate(self.exprs)]
         result_types = [cast(t.CallableSpec, expr.get_type(resolver)).result for expr in self.exprs]
-        result_vars = tuple(cg_p.StackVar(rt.generate(), f"$par{i}") for i, rt in enumerate(result_types))
-        register = cg_p.StackVar(self.get_type(resolver).generate(), "$par_result")
+        result_vars = tuple(cg_p.StackVar(rt.generate(resolver), f"$par{i}") for i, rt in enumerate(result_types))
+        register = cg_p.StackVar(self.get_type(resolver).generate(resolver), "$par_result")
         parallel_op = cg_o.ParallelCall(
             calls=tuple(b.result_var for b in fn_bundles),
             results=result_vars,
@@ -889,7 +909,7 @@ class TernaryExpression(Expression):
         return cond_err + true_err + false_err + self_err
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        result_var = cg_p.StackVar(self.get_type(resolver).generate(), "result")
+        result_var = cg_p.StackVar(self.get_type(resolver).generate(resolver), "result")
 
         cond_bundle = self.condition.generate(resolver).rename_vars("a")
         cond_bundle_suffix = g.OperationBundle(
@@ -935,21 +955,21 @@ class BoxExpression(Expression):
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         inner_bundle = self.inner.generate(resolver)
-        target_ctype = self.union_spec.generate()
+        target_ctype = self.union_spec.generate(resolver)
 
         # DataPointer union: exactly one non-unit pointer variant + optional unit (None)
         if isinstance(target_ctype, cg_t.DataPointer):
-            inner_ctype = self.inner.get_type(resolver).generate()
+            inner_ctype = self.inner.get_type(resolver).generate(resolver)
             if inner_ctype == cg_t.Struct(()):  # unit/None variant
                 return g.OperationBundle(inner_bundle.stack_vars, inner_bundle.operations, cg_p.NullPointer())
             return inner_bundle  # Already a DataPointer — pass through
 
         # UnionContainer union
         assert isinstance(target_ctype, cg_t.UnionContainer), f"Expected UnionContainer, got {target_ctype}"
-        variant_types = [v.generate() for v in self.union_spec.types]
+        variant_types = [v.generate(resolver) for v in self.union_spec.types]
         _, variant_map = cg_t.UnionContainer.compute(variant_types)
 
-        inner_ctype = self.inner.get_type(resolver).generate()
+        inner_ctype = self.inner.get_type(resolver).generate(resolver)
 
         # Identity boxing: inner already carries the full union representation.
         # This happens when a match expression whose arms all return the boxed
@@ -976,15 +996,20 @@ class BoxExpression(Expression):
                 field_name = inner_ctype.fields[0][0]
                 return [(slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name))]
             return [(slot_fields[si][0], inner_bundle.result_var)]
-        # Multi-primitive variant: inner must be a flat Struct; map each field to its union slot.
-        assert isinstance(inner_ctype, cg_t.Struct), \
-            f"Boxing multi-primitive non-struct type {inner_ctype} not yet supported"
+        # Multi-primitive variant: map each inner field/slot to its outer union slot.
         result = []
-        for prim_idx, (field_name, field_type) in enumerate(inner_ctype.fields):
-            assert len(cg_t._flatten_primitives(field_type)) == 1, \
-                f"Nested multi-primitive struct field '{field_name}: {field_type}' in boxing not yet supported"
-            si, _ = slot_assignments[prim_idx]
-            result.append((slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name)))
+        if isinstance(inner_ctype, cg_t.Struct):
+            for prim_idx, (field_name, field_type) in enumerate(inner_ctype.fields):
+                assert len(cg_t._flatten_primitives(field_type)) == 1, \
+                    f"Nested multi-primitive struct field '{field_name}: {field_type}' in boxing not yet supported"
+                si, _ = slot_assignments[prim_idx]
+                result.append((slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name)))
+        elif isinstance(inner_ctype, cg_t.UnionContainer):
+            for prim_idx, (slot_name, _) in enumerate(inner_ctype.slots):
+                si, _ = slot_assignments[prim_idx]
+                result.append((slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, slot_name)))
+        else:
+            raise AssertionError(f"Boxing multi-primitive non-struct type {inner_ctype} not yet supported")
         return result
 
 
@@ -1022,8 +1047,8 @@ class WideExpression(Expression):
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         inner_bundle = self.inner.generate(resolver)
-        src_ctype = self.source_spec.generate()
-        tgt_ctype = self.target_spec.generate()
+        src_ctype = self.source_spec.generate(resolver)
+        tgt_ctype = self.target_spec.generate(resolver)
 
         # DataPointer → DataPointer widening is a pass-through. Both unions use
         # the same tag-bit-dispatch encoding, and every variant in the source
@@ -1037,7 +1062,7 @@ class WideExpression(Expression):
         assert isinstance(tgt_ctype, cg_t.UnionContainer), \
             f"WideExpression: target must be UnionContainer, got {tgt_ctype}"
 
-        tgt_container, tgt_variant_map = cg_t.UnionContainer.compute([v.generate() for v in self.target_spec.types])
+        tgt_container, tgt_variant_map = cg_t.UnionContainer.compute([v.generate(resolver) for v in self.target_spec.types])
         discriminators = resolver.get_discriminators()
         result_var = cg_p.StackVar(tgt_ctype, "wide_result")
         end_label = "wide_end"
@@ -1045,21 +1070,21 @@ class WideExpression(Expression):
 
         if isinstance(src_ctype, cg_t.DataPointer):
             body = self.__widen_from_datapointer(
-                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label)
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label, resolver)
         else:
             assert isinstance(src_ctype, cg_t.UnionContainer), \
                 f"WideExpression: source must be DataPointer or UnionContainer, got {src_ctype}"
             body = self.__widen_from_container(
-                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label)
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label, resolver)
 
         bundles = [inner_bundle] + body + [g.OperationBundle(operations=(cg_o.Label(end_label),), result_var=result_var)]
         return reduce(lambda a, b: a + b, bundles).rename_vars("")
 
     def __widen_from_datapointer(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
-                                  discriminators, result_var, end_label):
+                                  discriminators, result_var, end_label, resolver):
         """Widen a DataPointer union (null = unit/None, non-null = pointer variant) to a UnionContainer."""
         unit_type = cg_t.Struct(())
-        src_variant_types = [v.generate() for v in self.source_spec.types]
+        src_variant_types = [v.generate(resolver) for v in self.source_spec.types]
         ptr_variant = next((v for v, vt in zip(self.source_spec.types, src_variant_types) if vt != unit_type), None)
         unit_variant = next((v for v, vt in zip(self.source_spec.types, src_variant_types) if vt == unit_type), None)
         assert ptr_variant is not None, "DataPointer union must have a non-unit pointer variant"
@@ -1084,9 +1109,9 @@ class WideExpression(Expression):
         ]
 
     def __widen_from_container(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
-                                discriminators, result_var, end_label):
+                                discriminators, result_var, end_label, resolver):
         """Widen a UnionContainer to a wider UnionContainer by re-slotting each variant."""
-        src_variant_types = [v.generate() for v in self.source_spec.types]
+        src_variant_types = [v.generate(resolver) for v in self.source_spec.types]
         _, src_variant_map = cg_t.UnionContainer.compute(src_variant_types)
         src_tag_field = cg_p.StructField(sv, "$tag")
 
@@ -1101,7 +1126,7 @@ class WideExpression(Expression):
                 (ti for ti, tv in enumerate(self.target_spec.types) if tv.as_unique_id_str() == var_uid), None)
             slot_values = []
             if tgt_var_idx is not None:
-                for pi in range(len(cg_t._flatten_primitives(src_var.generate()))):
+                for pi in range(len(cg_t._flatten_primitives(src_var.generate(resolver)))):
                     tgt_si, _ = tgt_variant_map[tgt_var_idx][pi]
                     src_si, _ = src_variant_map[i][pi]
                     slot_values.append((tgt_slot_fields[tgt_si][0], cg_p.StructField(sv, src_ctype.slots[src_si][0])))
@@ -1179,7 +1204,7 @@ class NewEnumExpression(Expression):
             ]
             bundles: list[g.OperationBundle] = []
             for idx, (field_name, field_type_spec) in enumerate(root_spec.all_fields[1:]):
-                fty = field_type_spec.generate()
+                fty = field_type_spec.generate(resolver)
                 if field_name in self.field_args:
                     arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg{idx}_")
                     bundles.append(arg_bundle)
@@ -1198,17 +1223,45 @@ class NewEnumExpression(Expression):
                 return reduce(lambda a, b: a + b, bundles + [ctor_bundle])
             return ctor_bundle
 
-        # Non-recursive: flat by-value struct via NewStruct.
+        # Non-recursive: flat by-value struct via NewStruct using UnionContainer slot layout.
+        variant_types = t.enum_variant_types(root_stmt, resolver)
+        container, variant_map = cg_t.UnionContainer.compute(variant_types)
+        leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
+        leaf_fields = leaf_field_sets[leaf_idx]
+
+        # Map each field name to its starting primitive index within this leaf's flattened type.
+        prim_start: dict[str, int] = {}
+        offset = 0
+        for let in leaf_fields:
+            prim_start[let.name] = offset
+            offset += len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
+
+        # Start with zero for every slot, then fill $tag and each provided field.
+        slot_values: list[tuple[str, cg_p.RParam]] = [
+            (sname, cg_p.ZeroOf(stype)) for sname, stype in container.slots
+        ]
+        tag_slot = next(i for i, (n, _) in enumerate(container.slots) if n == "$tag")
+        slot_values[tag_slot] = ("$tag", tag_const)
+
         bundles2: list[g.OperationBundle] = []
-        field_values: list[tuple[str, cg_p.RParam]] = [("$tag", tag_const)]
-        for idx, (field_name, field_type_spec) in enumerate(root_spec.all_fields[1:]):
-            if field_name in self.field_args:
-                arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg{idx}_")
-                bundles2.append(arg_bundle)
-                field_values.append((field_name, arg_bundle.result_var))
+        for field_name, arg_expr in self.field_args.items():
+            pi = prim_start[field_name]
+            let = next(l for l in leaf_fields if l.name == field_name)
+            n_prims = len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
+            arg_bundle = arg_expr.generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
+            bundles2.append(arg_bundle)
+            if n_prims == 1:
+                si, _ = variant_map[leaf_idx][pi]
+                slot_values[si] = (container.slots[si][0], arg_bundle.result_var)
             else:
-                field_values.append((field_name, cg_p.ZeroOf(field_type_spec.generate())))
-        result_param = cg_p.NewStruct(tuple(field_values))
+                # Multi-primitive field: decompose the struct result into individual slot writes.
+                for k in range(n_prims):
+                    si, _ = variant_map[leaf_idx][pi + k]
+                    sname, stype = container.slots[si]
+                    prim_field = cg_p.StructField(arg_bundle.result_var, f"_{k}")
+                    slot_values[si] = (sname, prim_field)
+
+        result_param = cg_p.union_struct(container, dict(slot_values))
         final_bundle = g.OperationBundle((), (), result_param)
         if bundles2:
             return reduce(lambda a, b: a + b, bundles2 + [final_bundle])

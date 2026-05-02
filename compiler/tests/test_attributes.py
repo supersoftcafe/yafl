@@ -1,6 +1,6 @@
 from io import StringIO
 from contextlib import redirect_stdout
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run_with_c_library

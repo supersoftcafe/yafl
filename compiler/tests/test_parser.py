@@ -1,5 +1,5 @@
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 from pathlib import Path
 
 from parsing.tokenizer import tokenize

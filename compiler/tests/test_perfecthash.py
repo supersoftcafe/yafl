@@ -1,4 +1,4 @@
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import random
 from codegen.perfecthash import create_perfect_lookups

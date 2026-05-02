@@ -1,19 +1,19 @@
 """Detect complex enums and mark them.
 
-A YAFL enum is "complex" when:
-  (a) Its `all_fields` graph contains a cycle through this enum's
-      `root_name` — directly (`enum List: Cons(tail: List)`) or via
-      mutual recursion through other enums (`enum A: A1(b: B); enum B:
-      B1(a: A)`). Recursive enums must lower to heap-allocated objects
-      so the compiled struct has finite size; OR
-  (b) It has more than `_MAX_FLAT_FIELDS` fields. Large by-value passing
-      becomes expensive; routing through a heap pointer is cheaper.
-
-Both cases use the same heap-pointer codegen (`is_complex=True`).
+A YAFL enum is "complex" when its `all_fields` graph contains a cycle
+through this enum's `root_name` — directly (`enum List: Cons(tail: List)`)
+or via mutual recursion through other enums (`enum A: A1(b: B); enum B:
+B1(a: A)`). Recursive enums must lower to heap-allocated objects so the
+compiled struct has finite size.
 
 This pass runs once after monomorphization. Each `EnumSpec` whose
 `root_name` qualifies gets `is_complex=True` rewritten via
 `search_and_replace`. Simple enums are unchanged.
+
+To break a cycle exactly one enum per cycle is marked complex; the rest
+stay flat. The breaker is chosen by: System:: enums first (they appear in
+many user-facing cycles), then the enum with the fewest all_fields entries
+(small nodes are cheap indirections; richer types stay flat), then root_name.
 
 Class boundaries break recursion cycles: a class field is already a
 heap pointer, so an enum that references a class which references the
@@ -29,13 +29,6 @@ import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
 
-
-# Enums with more than this many entries in `all_fields` (including the
-# implicit `$tag` discriminator) are considered complex and are heap-
-# allocated. The threshold matches the spirit of `simple_classes.py`'s
-# `_MAX_FLAT_STRUCT_FIELDS`: small types stay in registers / on the
-# stack; larger ones move to the heap.
-_MAX_FLAT_FIELDS = 8
 
 
 def _collect_reachable_roots(spec: t.TypeSpec | None, out: set[str], name_to_root: dict[str, str]) -> None:
@@ -89,23 +82,73 @@ def _build_name_to_root(roots: dict[str, t.EnumSpec]) -> dict[str, str]:
     return out
 
 
-def _find_recursive_roots(edges: dict[str, set[str]]) -> set[str]:
-    """Return every root that lies in a cycle (self-loop or mutual)."""
-    recursive: set[str] = set()
-    for start in edges:
-        # DFS from `start`; if we revisit `start` it's in a cycle.
-        visited: set[str] = set()
-        stack: list[str] = list(edges.get(start, set()))
-        while stack:
-            node = stack.pop()
-            if node == start:
-                recursive.add(start)
-                break
-            if node in visited:
-                continue
-            visited.add(node)
-            stack.extend(edges.get(node, set()) - visited)
-    return recursive
+def _find_sccs(edges: dict[str, set[str]]) -> list[set[str]]:
+    """Tarjan's SCC algorithm. Returns one set per strongly-connected component."""
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    sccs: list[set[str]] = []
+    counter = [0]
+
+    def visit(v: str) -> None:
+        index[v] = lowlink[v] = counter[0]
+        counter[0] += 1
+        stack.append(v)
+        on_stack.add(v)
+        for w in sorted(edges.get(v, ())):
+            if w not in index:
+                visit(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif w in on_stack:
+                lowlink[v] = min(lowlink[v], index[w])
+        if lowlink[v] == index[v]:
+            scc: set[str] = set()
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                scc.add(w)
+                if w == v:
+                    break
+            sccs.append(scc)
+
+    for v in sorted(edges):
+        if v not in index:
+            visit(v)
+    return sccs
+
+
+def _pick_cycle_breakers(edges: dict[str, set[str]], roots: dict[str, t.EnumSpec]) -> set[str]:
+    """Return the minimal set of nodes to mark complex to break all cycles.
+
+    Priority: System:: nodes first, then fewest all_fields entries, then root_name.
+    Prefer small nodes as the indirection point; richer types stay flat.
+    Iterates until no cycles remain (handles SCCs with multiple independent sub-cycles).
+    """
+    def _is_system(name: str) -> bool:
+        bare = name.rpartition("@")[0] or name
+        return bare.startswith("System::")
+
+    def _sort_key(name: str) -> tuple:
+        spec = roots.get(name)
+        return (not _is_system(name), len(spec.all_fields) if spec else 0, name)
+
+    result: set[str] = set()
+    work: dict[str, set[str]] = {k: set(v) for k, v in edges.items()}
+
+    while True:
+        cyclic = [s for s in _find_sccs(work)
+                  if len(s) > 1 or any(n in work.get(n, ()) for n in s)]
+        if not cyclic:
+            break
+        for scc in cyclic:
+            chosen = min(scc, key=_sort_key)
+            result.add(chosen)
+            del work[chosen]
+            for nbrs in work.values():
+                nbrs.discard(chosen)
+
+    return result
 
 
 def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
@@ -137,11 +180,8 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
             _collect_reachable_roots(ftype, children, name_to_root)
         edges[name] = children
 
-    # 3. Compute the complex set: cycles ∪ {enums with too many fields}.
-    complex_set = _find_recursive_roots(edges)
-    for name, spec in roots.items():
-        if len(spec.all_fields) > _MAX_FLAT_FIELDS:
-            complex_set.add(name)
+    # 3. Pick exactly one breaker per cycle.
+    complex_set = _pick_cycle_breakers(edges, roots)
 
     if not complex_set:
         return statements

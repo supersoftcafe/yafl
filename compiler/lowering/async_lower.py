@@ -567,10 +567,17 @@ def __create_hot_path_func(fn: Function, state_name: str,
     # Terminal block
     terminal_ops: list[Op] = list(basic_blocks[-1].ops)
     if isinstance(wrapped_result, TaskWrapper):
-        terminal_ops = [
-            Return(SyncWrap(op.value, wrapped_result)) if isinstance(op, Return) else op
-            for op in terminal_ops
-        ]
+        new_terminal: list[Op] = []
+        for op in terminal_ops:
+            if isinstance(op, Return):
+                new_terminal.append(Return(SyncWrap(op.value, wrapped_result)))
+            elif isinstance(op, Call) and op.musttail:
+                # Musttail tail-call to a callee that also returns TaskWrapper:
+                # update result_type so the C cast uses the wrapped typedef.
+                new_terminal.append(dataclasses.replace(op, result_type=wrapped_result))
+            else:
+                new_terminal.append(op)
+        terminal_ops = new_terminal
     hot_ops.extend(terminal_ops)
 
     # ── Shared $asynccommon block ─────────────────────────────────────────────
@@ -889,13 +896,17 @@ def __convert_function_to_task_convention(
     if len(basic_blocks) < 2:
         wrapped = __wrap_return_type(fn.result)
         if isinstance(wrapped, TaskWrapper):
-            # Promote Return(v) → Return(SyncWrap(v, wrapped)) so the function
-            # emits the correct TaskWrapper struct with .task=NULL.
-            new_ops = tuple(
-                Return(SyncWrap(op.value, wrapped)) if isinstance(op, Return) else op
-                for op in after_tail.ops
-            )
-            simple = dataclasses.replace(after_tail, result=wrapped, ops=new_ops)
+            # Promote Return(v) → Return(SyncWrap(v, wrapped)) and update any
+            # musttail Call result_type so the C cast uses the wrapped typedef.
+            new_ops = []
+            for op in after_tail.ops:
+                if isinstance(op, Return):
+                    new_ops.append(Return(SyncWrap(op.value, wrapped)))
+                elif isinstance(op, Call) and op.musttail:
+                    new_ops.append(dataclasses.replace(op, result_type=wrapped))
+                else:
+                    new_ops.append(op)
+            simple = dataclasses.replace(after_tail, result=wrapped, ops=tuple(new_ops))
         else:
             simple = dataclasses.replace(after_tail, result=wrapped)
         return {simple.name: simple}, {}

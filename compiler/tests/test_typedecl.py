@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 from codegen.typedecl import Int, FuncPointer, Struct, DataPointer, Array
 

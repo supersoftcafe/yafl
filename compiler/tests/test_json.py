@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV

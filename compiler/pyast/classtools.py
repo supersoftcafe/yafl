@@ -83,12 +83,12 @@ def find_classes_or_error(
     return result
 
 
-def create_thunk(class_name: str, let: s.LetStatement) -> cg_x.Function:
+def create_thunk(class_name: str, let: s.LetStatement, resolver: g.Resolver) -> cg_x.Function:
     xtype = langtools.cast(t.CallableSpec, let.get_type())
-    param_type = langtools.cast(cg_t.Struct, xtype.parameters.generate())
+    param_type = langtools.cast(cg_t.Struct, xtype.parameters.generate(resolver))
     param_vars = [cg_p.StackVar(ft, fn) for fn, ft in param_type.fields]
     xthis = cg_t.Struct((("this", cg_t.DataPointer()),))
-    result_type = xtype.result.generate()
+    result_type = xtype.result.generate(resolver)
     result_var = cg_p.StackVar(result_type, "result")
     locals = cg_t.Struct((("result", result_type),))
     op_call = cg_o.Call(

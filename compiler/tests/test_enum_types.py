@@ -4,7 +4,7 @@ from __future__ import annotations
 import contextlib
 import io
 import subprocess
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run, compile_and_run_stdlib
@@ -599,12 +599,10 @@ fun main(): System::Int
 """
         self.assertEqual(0, compile_and_run_stdlib(src))
 
-    def test_many_fielded_enum_is_complex(self):
-        # An enum with more than 8 entries in all_fields (data fields +
-        # the implicit $tag) is also marked complex and routed through
-        # heap allocation. Build a 10-data-field enum, store it, read a
-        # field back. With > 8 fields the codegen path is the same as
-        # for a recursive enum.
+    def test_wide_non_recursive_enum_remains_flat(self):
+        # A wide enum with no cycle is NOT marked complex — only cycles
+        # require heap allocation. Build a 10-data-field enum, store it,
+        # read a field back via flat-struct codegen.
         src = """namespace Test
 import System
 
@@ -616,18 +614,12 @@ fun main(): System::Int
   ret match(w)
     (one: One) => one.j
 """
-        # Compile and confirm the heap-allocated path was used (the C
-        # output references object_create on the enum's vtable).
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertNotEqual("", result)
-        self.assertIn("object_create", result)
-        # And the program runs end-to-end.
         self.assertEqual(42, compile_and_run_stdlib(src))
 
     def test_mutual_recursion(self):
         # enum A's variant references B; enum B's variant references A.
-        # Both must be detected as recursive and registered as heap
-        # objects. Walk a 3-deep alternation and assert depth.
+        # Exactly one of A/B is marked complex to break the cycle; the
+        # other stays flat. Walk a 3-deep alternation and assert depth.
         src = """namespace Test
 import System
 

@@ -1,4 +1,4 @@
-from unittest import TestCase
+from tests.testutil import TimedTestCase as TestCase
 
 import codegen.param as e
 import codegen.ops as o
