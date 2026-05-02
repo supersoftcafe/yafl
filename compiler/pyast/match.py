@@ -787,7 +787,7 @@ class MatchExpression(e.Expression):
         # heap object and is read via ObjectField. Simple (non-complex)
         # enums are flat structs and read via StructField.
         if subj_type.is_complex:
-            tag_sv = cg_p.ObjectField(cg_t.Int(32), sv, subj_type.root_name, "$tag", None)
+            tag_sv = cg_p.ObjectField(cg_t._tag_type(len(subj_type.all_leaf_names)), sv, subj_type.root_name, "$tag", None)
         else:
             tag_sv = cg_p.StructField(sv, "$tag")
         stack_vars = (result_var,) if result_var else ()

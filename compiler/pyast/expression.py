@@ -313,35 +313,44 @@ class DotExpression(Expression):
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
             case t.EnumSpec() as es:
-                if es.is_complex:
-                    # Complex enum is a heap pointer; field access goes
-                    # through ObjectField (which inserts a GC write barrier
-                    # for pointer-typed writes).
-                    field_type_spec = next((ft for fn, ft in es.all_fields if fn == self.name), None)
-                    fty = field_type_spec.generate(resolver) if field_type_spec is not None else cg_t.DataPointer()
-                    result_var = cg_p.ObjectField(fty, base_bundle.result_var, es.root_name, self.name, None)
-                else:
-                    # Flat enum uses UnionContainer slot layout. Find which leaf
-                    # declares this field, then map it to its slot.
-                    stmts = resolver.find_type({es.root_name})
-                    assert len(stmts) == 1
-                    root_stmt = cast(s.EnumStatement, stmts[0].statement)
-                    variant_types = t.enum_variant_types(root_stmt, resolver)
-                    container, variant_map = cg_t.UnionContainer.compute(variant_types)
-                    leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
-                    result_var = cg_p.StructField(base_bundle.result_var, self.name)  # fallback
-                    for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
-                        offset = 0
-                        for let in leaf_fields:
-                            n_prims = len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
-                            if let.name == self.name:
-                                si, _ = variant_map[leaf_idx][offset]
-                                result_var = cg_p.StructField(base_bundle.result_var, container.slots[si][0])
-                                break
-                            offset += n_prims
-                        else:
-                            continue
-                        break
+                stmts = resolver.find_type({es.root_name})
+                assert len(stmts) == 1
+                root_stmt = cast(s.EnumStatement, stmts[0].statement)
+                variant_types = t.enum_variant_types(root_stmt, resolver)
+                container, variant_map = cg_t.UnionContainer.compute(variant_types)
+                leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
+                ptr = base_bundle.result_var
+
+                def read_slot(si: int) -> cg_p.RParam:
+                    slot_name, slot_type = container.slots[si]
+                    if es.is_complex:
+                        return cg_p.ObjectField(slot_type, ptr, es.root_name, slot_name, None)
+                    return cg_p.StructField(ptr, slot_name)
+
+                result_var = None
+                for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
+                    offset = 0
+                    for let in leaf_fields:
+                        field_type = let.declared_type.generate(resolver)
+                        n_prims = len(cg_t._flatten_primitives(field_type))
+                        if let.name == self.name:
+                            slots_for_field = [variant_map[leaf_idx][offset + p] for p in range(n_prims)]
+                            if n_prims == 1:
+                                result_var = read_slot(slots_for_field[0][0])
+                            elif isinstance(field_type, cg_t.UnionContainer):
+                                result_var = cg_p.union_struct(field_type, {
+                                    fname: read_slot(slots_for_field[p][0])
+                                    for p, (fname, _) in enumerate(field_type.slots)})
+                            elif isinstance(field_type, cg_t.Struct):
+                                result_var = cg_p.NewStruct(tuple(
+                                    (fname, read_slot(slots_for_field[p][0]))
+                                    for p, (fname, _) in enumerate(field_type.fields)))
+                            break
+                        offset += n_prims
+                    else:
+                        continue
+                    break
+                assert result_var is not None, f"Field '{self.name}' not found in enum {es.root_name}"
                 return base_bundle + g.OperationBundle((), (), result_var)
 
         raise ValueError("Could not generate dot expression")
@@ -1190,31 +1199,55 @@ class NewEnumExpression(Expression):
         root_spec = root_stmt._enum_spec
         assert root_spec is not None
         leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
-        tag_const = cg_p.Integer(leaf_idx, 32)
+
+        variant_types = t.enum_variant_types(root_stmt, resolver)
+        container, variant_map = cg_t.UnionContainer.compute(variant_types)
+        leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
+        leaf_fields = leaf_field_sets[leaf_idx]
+        this_vm = variant_map[leaf_idx]
+        tag_slot_name, tag_slot_type = container.slots[-1]  # $tag is always last
+        tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
 
         if root_spec.is_complex:
-            # Heap-allocated path: NewObject + per-field ObjectField writes,
-            # mirroring the class constructor at expression.py:127-130.
+            # Heap-allocated path: NewObject, write $tag and shared slots.
             result_var = cg_p.StackVar(cg_t.DataPointer(), "result")
             ops: list[cg_o.Op] = [
                 cg_o.NewObject(root_spec.root_name, result_var),
                 cg_o.Move(
-                    cg_p.ObjectField(cg_t.Int(32), result_var, root_spec.root_name, "$tag", None),
+                    cg_p.ObjectField(tag_slot_type, result_var, root_spec.root_name, tag_slot_name, None),
                     tag_const),
             ]
+            # Zero-fill all non-$tag slots so unused pointer slots are null.
+            for slot_name, slot_type in container.slots[:-1]:
+                ops.append(cg_o.Move(
+                    cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
+                    cg_p.ZeroOf(slot_type)))
             bundles: list[g.OperationBundle] = []
-            for idx, (field_name, field_type_spec) in enumerate(root_spec.all_fields[1:]):
-                fty = field_type_spec.generate(resolver)
+            prim_off = 0
+            for let in leaf_fields:
+                field_name = let.name
+                field_type = let.declared_type.generate(resolver)
+                field_prim_names = [n for n, _ in (
+                    field_type.slots if isinstance(field_type, cg_t.UnionContainer) else
+                    field_type.fields if isinstance(field_type, cg_t.Struct) else [])]
+                n_prims = len(cg_t._flatten_primitives(field_type))
                 if field_name in self.field_args:
-                    arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg{idx}_")
+                    arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
                     bundles.append(arg_bundle)
-                    ops.append(cg_o.Move(
-                        cg_p.ObjectField(fty, result_var, root_spec.root_name, field_name, None),
-                        arg_bundle.result_var))
-                else:
-                    ops.append(cg_o.Move(
-                        cg_p.ObjectField(fty, result_var, root_spec.root_name, field_name, None),
-                        cg_p.ZeroOf(fty)))
+                    if n_prims == 1:
+                        si, _ = this_vm[prim_off]
+                        slot_name, slot_type = container.slots[si]
+                        ops.append(cg_o.Move(
+                            cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
+                            arg_bundle.result_var))
+                    else:
+                        for k, pname in enumerate(field_prim_names):
+                            si, _ = this_vm[prim_off + k]
+                            slot_name, slot_type = container.slots[si]
+                            ops.append(cg_o.Move(
+                                cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
+                                cg_p.StructField(arg_bundle.result_var, pname)))
+                prim_off += n_prims
             ctor_bundle = g.OperationBundle(
                 stack_vars=(result_var,),
                 operations=tuple(ops),
@@ -1224,11 +1257,6 @@ class NewEnumExpression(Expression):
             return ctor_bundle
 
         # Non-recursive: flat by-value struct via NewStruct using UnionContainer slot layout.
-        variant_types = t.enum_variant_types(root_stmt, resolver)
-        container, variant_map = cg_t.UnionContainer.compute(variant_types)
-        leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
-        leaf_fields = leaf_field_sets[leaf_idx]
-
         # Map each field name to its starting primitive index within this leaf's flattened type.
         prim_start: dict[str, int] = {}
         offset = 0
@@ -1240,26 +1268,28 @@ class NewEnumExpression(Expression):
         slot_values: list[tuple[str, cg_p.RParam]] = [
             (sname, cg_p.ZeroOf(stype)) for sname, stype in container.slots
         ]
-        tag_slot = next(i for i, (n, _) in enumerate(container.slots) if n == "$tag")
-        slot_values[tag_slot] = ("$tag", tag_const)
+        tag_slot_idx = next(i for i, (n, _) in enumerate(container.slots) if n == "$tag")
+        slot_values[tag_slot_idx] = ("$tag", tag_const)
 
         bundles2: list[g.OperationBundle] = []
         for field_name, arg_expr in self.field_args.items():
             pi = prim_start[field_name]
             let = next(l for l in leaf_fields if l.name == field_name)
-            n_prims = len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
+            field_type = let.declared_type.generate(resolver)
+            n_prims = len(cg_t._flatten_primitives(field_type))
             arg_bundle = arg_expr.generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
             bundles2.append(arg_bundle)
             if n_prims == 1:
                 si, _ = variant_map[leaf_idx][pi]
                 slot_values[si] = (container.slots[si][0], arg_bundle.result_var)
             else:
-                # Multi-primitive field: decompose the struct result into individual slot writes.
-                for k in range(n_prims):
+                # Multi-primitive: decompose using the field type's actual slot/field names.
+                prim_names = [n for n, _ in (
+                    field_type.slots if isinstance(field_type, cg_t.UnionContainer) else field_type.fields)]
+                for k, pname in enumerate(prim_names):
                     si, _ = variant_map[leaf_idx][pi + k]
-                    sname, stype = container.slots[si]
-                    prim_field = cg_p.StructField(arg_bundle.result_var, f"_{k}")
-                    slot_values[si] = (sname, prim_field)
+                    sname, _ = container.slots[si]
+                    slot_values[si] = (sname, cg_p.StructField(arg_bundle.result_var, pname))
 
         result_param = cg_p.union_struct(container, dict(slot_values))
         final_bundle = g.OperationBundle((), (), result_param)

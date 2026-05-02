@@ -419,6 +419,14 @@ def _can_merge_into(small: Type, large: Type) -> bool:
             and 0 < small.precision < large.precision)
 
 
+def _tag_type(n_variants: int) -> Int:
+    if n_variants <= 127:
+        return Int(8)
+    if n_variants <= 32767:
+        return Int(16)
+    return Int(32)
+
+
 @dataclass(frozen=True)
 class UnionContainer(Type):
     """Flat struct payload for a tagged union.
@@ -493,7 +501,7 @@ class UnionContainer(Type):
         active.sort(key=lambda x: _primitive_rank(x[1][0]))
         renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
 
-        slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", Int(32)),)
+        slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", _tag_type(len(variant_types))),)
         variant_map = tuple(
             tuple((renumber[si], orig) for si, orig in vm)
             for vm in vmap

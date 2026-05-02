@@ -123,36 +123,69 @@ def match_names(name: str, matches: set[str]) -> bool:
     return any(m for m in matches if m == name or name.startswith(m + '@'))
 
 
-def _find_in_enum_variants(variants: list[s.EnumStatement], names: set[str]) -> list[Resolved[s.TypeStatement]]:
-    results: list[Resolved[s.TypeStatement]] = []
+def _name_prefixes(name: str) -> list[str]:
+    parts = name.split('@')
+    return ['@'.join(parts[:i+1]) for i in range(len(parts))]
+
+
+def _index_enum_variants(
+    variants: list[s.EnumStatement],
+    index: dict[str, list[Resolved[s.TypeStatement]]]
+) -> None:
     for v in variants:
-        if match_names(v.name, names):
-            results.append(Resolved(v.name, v, ResolvedScope.GLOBAL))
-        results += _find_in_enum_variants(v.variants, names)
-    return results
+        resolved: Resolved[s.TypeStatement] = Resolved(v.name, v, ResolvedScope.GLOBAL)
+        for key in _name_prefixes(v.name):
+            index.setdefault(key, []).append(resolved)
+        _index_enum_variants(v.variants, index)
 
 
 class ResolverRoot(Resolver):
     __statements: list[s.Statement]
     __traits: list[s.LetStatement]
+    __type_index: dict[str, list[Resolved[s.TypeStatement]]]
+    __data_index: dict[str, list[Resolved[s.DataStatement]]]
 
-    def __init__(self, statements: list[s.Statement]):
+    def __init__(self, statements: list[s.Statement]) -> None:
         self.__statements = statements
         self.__traits = [st for st in self.__statements if isinstance(st, s.LetStatement) and 'trait' in st.attributes]
 
+        self.__type_index = {}
+        for st in self.__statements:
+            if isinstance(st, s.TypeStatement):
+                resolved: Resolved[s.TypeStatement] = Resolved(st.name, st, ResolvedScope.GLOBAL)
+                for key in _name_prefixes(st.name):
+                    self.__type_index.setdefault(key, []).append(resolved)
+            if isinstance(st, s.EnumStatement):
+                _index_enum_variants(st.variants, self.__type_index)
+
+        self.__data_index = {}
+        for st in self.__statements:
+            if isinstance(st, s.DataStatement):
+                resolved_d: Resolved[s.DataStatement] = Resolved(st.name, st, ResolvedScope.GLOBAL)
+                for key in _name_prefixes(st.name):
+                    self.__data_index.setdefault(key, []).append(resolved_d)
+
     def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        results = [Resolved(x.name, x, ResolvedScope.GLOBAL)
-                   for x in self.__statements
-                   if isinstance(x, s.TypeStatement) and match_names(x.name, names)]
-        for x in self.__statements:
-            if isinstance(x, s.EnumStatement):
-                results += _find_in_enum_variants(x.variants, names)
+        seen: set[int] = set()
+        results: list[Resolved[s.TypeStatement]] = []
+        for name in names:
+            for resolved in self.__type_index.get(name, []):
+                rid = id(resolved)
+                if rid not in seen:
+                    seen.add(rid)
+                    results.append(resolved)
         return results
 
     def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
-        return [Resolved(x.name, x, ResolvedScope.GLOBAL)
-                for x in self.__statements
-                if isinstance(x, s.DataStatement) and match_names(x.name, names)]
+        seen: set[int] = set()
+        results: list[Resolved[s.DataStatement]] = []
+        for name in names:
+            for resolved in self.__data_index.get(name, []):
+                rid = id(resolved)
+                if rid not in seen:
+                    seen.add(rid)
+                    results.append(resolved)
+        return results
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__traits
