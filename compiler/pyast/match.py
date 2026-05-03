@@ -338,8 +338,8 @@ class MatchExpression(e.Expression):
         if isinstance(target_ctype, cg_t.DataPointer):
             return self.__gen_pointer_match(resolver, subj_bundle, subj_type, result_var, discriminators)
 
-        # UnionContainer: tag comparison
-        assert isinstance(target_ctype, cg_t.UnionContainer)
+        # Struct-based tagged union: tag comparison
+        assert isinstance(target_ctype, cg_t.Struct)
         return self.__gen_tagged_match(resolver, subj_bundle, subj_type, target_ctype, result_var, discriminators)
 
     def __emit_arm_body(self, arm: MatchArm, arm_resolver: g.Resolver, suffix: str,
@@ -377,30 +377,29 @@ class MatchExpression(e.Expression):
             slot_value = cg_p.StructField(sv, slot_fields[si][0])
             if isinstance(arm_ctype, cg_t.Struct):
                 field_name = arm_ctype.fields[0][0]
-                arm_value = cg_p.NewStruct(((field_name, slot_value),))
+                arm_value = cg_p.union_struct(arm_ctype, {field_name: slot_value})
             else:
                 arm_value = slot_value
             bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
                                              operations=(cg_o.Move(arm_sv, arm_value),)))
         else:
-            field_values: list[tuple[str, cg_p.RParam]] = []
-            if isinstance(arm_ctype, cg_t.Struct):
-                for prim_idx, (field_name, field_type) in enumerate(arm_ctype.fields):
-                    assert len(cg_t._flatten_primitives(field_type)) == 1, \
-                        f"Nested multi-primitive field in match arm not yet supported"
-                    si, _ = slot_assignments[prim_idx]
-                    field_values.append((field_name, cg_p.StructField(sv, slot_fields[si][0])))
-            elif isinstance(arm_ctype, cg_t.UnionContainer):
-                for prim_idx, (slot_name, _) in enumerate(arm_ctype.slots):
-                    si, _ = slot_assignments[prim_idx]
-                    field_values.append((slot_name, cg_p.StructField(sv, slot_fields[si][0])))
-                bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
-                                                 operations=(cg_o.Move(arm_sv, cg_p.union_struct(arm_ctype, dict(field_values))),)))
-                return make_resolver()
-            else:
+            if not isinstance(arm_ctype, cg_t.Struct):
                 raise AssertionError(f"Multi-primitive non-struct arm type {arm_ctype}")
+
+            def reconstruct(ctype, offset):
+                """Rebuild ctype from union slots; returns (RParam, new_offset)."""
+                if not isinstance(ctype, cg_t.Struct):
+                    si, _ = slot_assignments[offset]
+                    return cg_p.StructField(sv, slot_fields[si][0]), offset + 1
+                fvs = {}
+                for fname, ftype in ctype.fields:
+                    val, offset = reconstruct(ftype, offset)
+                    fvs[fname] = val
+                return cg_p.union_struct(ctype, fvs), offset
+
+            arm_value, _ = reconstruct(arm_ctype, 0)
             bundles.append(g.OperationBundle(stack_vars=(arm_sv,),
-                                             operations=(cg_o.Move(arm_sv, cg_p.NewStruct(tuple(field_values))),)))
+                                             operations=(cg_o.Move(arm_sv, arm_value),)))
         return make_resolver()
 
     def __gen_primitive_match(self, resolver, subj_bundle, subj_type, result_var):
@@ -659,7 +658,7 @@ class MatchExpression(e.Expression):
             bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"{suffix}_"))
 
     def __gen_tagged_match(self, resolver, subj_bundle, subj_type, container, result_var, discriminators):
-        """UnionContainer union: compare $tag for each typed arm; for literal
+        """Tagged-union Struct: compare $tag for each typed arm; for literal
         arms, first test the $tag matches the variant the literal belongs to,
         then extract the primitive from its slot and compare to the literal
         value."""
@@ -669,8 +668,8 @@ class MatchExpression(e.Expression):
         end_label  = "match_end"
 
         variant_types = [v.generate(resolver) for v in subj_type.types]
-        _, variant_map = cg_t.UnionContainer.compute(variant_types)
-        slot_fields = container.slots
+        _, variant_map = cg_t.compute_union_slots(variant_types)
+        slot_fields = container.fields
 
         bundles  = [subj_bundle]
         else_arm = next((arm for arm in self.arms

@@ -32,18 +32,26 @@ import pyast.resolver as g
 
 
 def _collect_reachable_roots(spec: t.TypeSpec | None, out: set[str], name_to_root: dict[str, str]) -> None:
-    """Collect every EnumSpec.root_name reachable from `spec` without
-    crossing a class boundary. NamedSpecs are resolved via the
-    bare-name → canonical-root_name map — recursive-enum field types
-    may still appear as NamedSpec in EnumSpec.all_fields because the
-    iterative compile loop captures the self-reference at iteration 1
-    before its target's _enum_spec is populated."""
+    """Collect every EnumSpec.root_name directly referenced in `spec`,
+    without crossing EnumSpec or class boundaries.
+
+    We intentionally stop at EnumSpec boundaries (do not recurse into
+    spec.all_fields). The outer loop in mark_complex_enums visits each
+    root's own all_fields; transitive closure across enum boundaries is
+    computed by the SCC algorithm, not here. Recursing transitively would
+    create false self-loops (e.g. JsonValue → List → _ListNode → JsonValue)
+    that cause the wrong enum to be chosen as the cycle breaker.
+
+    NamedSpecs are resolved via the bare-name → canonical-root_name map —
+    recursive-enum field types may still appear as NamedSpec in
+    EnumSpec.all_fields because the iterative compile loop captures the
+    self-reference at iteration 1 before its target's _enum_spec is
+    populated."""
     if spec is None:
         return
     if isinstance(spec, t.EnumSpec):
         out.add(spec.root_name)
-        for _, ftype in spec.all_fields:
-            _collect_reachable_roots(ftype, out, name_to_root)
+        # Stop here — do not recurse into spec.all_fields.
     elif isinstance(spec, t.TupleSpec):
         for ent in spec.entries:
             _collect_reachable_roots(ent.type, out, name_to_root)
@@ -131,7 +139,8 @@ def _pick_cycle_breakers(edges: dict[str, set[str]], roots: dict[str, t.EnumSpec
 
     def _sort_key(name: str) -> tuple:
         spec = roots.get(name)
-        return (not _is_system(name), len(spec.all_fields) if spec else 0, name)
+        is_self_loop = name in work.get(name, ())
+        return (not _is_system(name), not is_self_loop, len(spec.all_fields) if spec else 0, name)
 
     result: set[str] = set()
     work: dict[str, set[str]] = {k: set(v) for k, v in edges.items()}

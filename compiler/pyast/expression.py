@@ -317,15 +317,26 @@ class DotExpression(Expression):
                 assert len(stmts) == 1
                 root_stmt = cast(s.EnumStatement, stmts[0].statement)
                 variant_types = t.enum_variant_types(root_stmt, resolver)
-                container, variant_map = cg_t.UnionContainer.compute(variant_types)
+                container, variant_map = cg_t.compute_union_slots(variant_types)
                 leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
                 ptr = base_bundle.result_var
 
                 def read_slot(si: int) -> cg_p.RParam:
-                    slot_name, slot_type = container.slots[si]
+                    slot_name, slot_type = container.fields[si]
                     if es.is_complex:
                         return cg_p.ObjectField(slot_type, ptr, es.root_name, slot_name, None)
                     return cg_p.StructField(ptr, slot_name)
+
+                def reconstruct_from_slots(ftype, slot_assigns, off):
+                    """Recursively rebuild ftype from union slots; returns (RParam, new_off)."""
+                    if isinstance(ftype, cg_t.Struct):
+                        fvs = []
+                        for fname, ft in ftype.fields:
+                            val, off = reconstruct_from_slots(ft, slot_assigns, off)
+                            fvs.append((fname, val))
+                        return cg_p.NewStruct(tuple(fvs)), off
+                    si, _ = slot_assigns[off]
+                    return read_slot(si), off + 1
 
                 result_var = None
                 for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
@@ -335,16 +346,7 @@ class DotExpression(Expression):
                         n_prims = len(cg_t._flatten_primitives(field_type))
                         if let.name == self.name:
                             slots_for_field = [variant_map[leaf_idx][offset + p] for p in range(n_prims)]
-                            if n_prims == 1:
-                                result_var = read_slot(slots_for_field[0][0])
-                            elif isinstance(field_type, cg_t.UnionContainer):
-                                result_var = cg_p.union_struct(field_type, {
-                                    fname: read_slot(slots_for_field[p][0])
-                                    for p, (fname, _) in enumerate(field_type.slots)})
-                            elif isinstance(field_type, cg_t.Struct):
-                                result_var = cg_p.NewStruct(tuple(
-                                    (fname, read_slot(slots_for_field[p][0]))
-                                    for p, (fname, _) in enumerate(field_type.fields)))
+                            result_var, _ = reconstruct_from_slots(field_type, slots_for_field, 0)
                             break
                         offset += n_prims
                     else:
@@ -973,10 +975,10 @@ class BoxExpression(Expression):
                 return g.OperationBundle(inner_bundle.stack_vars, inner_bundle.operations, cg_p.NullPointer())
             return inner_bundle  # Already a DataPointer — pass through
 
-        # UnionContainer union
-        assert isinstance(target_ctype, cg_t.UnionContainer), f"Expected UnionContainer, got {target_ctype}"
+        # Struct-based tagged union
+        assert isinstance(target_ctype, cg_t.Struct), f"Expected Struct (tagged union), got {target_ctype}"
         variant_types = [v.generate(resolver) for v in self.union_spec.types]
-        _, variant_map = cg_t.UnionContainer.compute(variant_types)
+        _, variant_map = cg_t.compute_union_slots(variant_types)
 
         inner_ctype = self.inner.get_type(resolver).generate(resolver)
 
@@ -990,35 +992,35 @@ class BoxExpression(Expression):
 
         discriminators = resolver.get_discriminators()
         tag_value = discriminators.get(self.union_spec.types[variant_idx].as_unique_id_str(), 0)
-        slot_values = self.__build_variant_slots(inner_ctype, inner_bundle, variant_map[variant_idx], target_ctype.slots)
+        slot_values = self.__build_variant_slots(inner_ctype, inner_bundle, variant_map[variant_idx], target_ctype.fields)
         slot_values.append(("$tag", cg_p.Integer(tag_value, 32)))
         return inner_bundle + g.OperationBundle((), (), cg_p.union_struct(target_ctype, dict(slot_values)))
 
     def __build_variant_slots(self, inner_ctype, inner_bundle, slot_assignments, slot_fields):
-        """Map the inner value's primitives to their union slots; returns slot (name, value) pairs."""
+        """Map the inner value's primitives to their union slots; returns slot (name, value) pairs.
+
+        Handles arbitrarily nested struct fields: a TupleSpec (key: Str, value: FlatEnum)
+        generates Struct([('_0', Str), ('_1', FlatEnum_struct)]).  FlatEnum_struct has
+        multiple primitives, so we recurse into it, reading each sub-field via nested
+        StructField and mapping it to its assigned union slot.
+        """
         inner_prims = cg_t._flatten_primitives(inner_ctype)
         if len(inner_prims) == 0:
             return []  # unit variant: no slot values
-        if len(inner_prims) == 1:
-            si, _ = slot_assignments[0]
-            if isinstance(inner_ctype, cg_t.Struct):
-                field_name = inner_ctype.fields[0][0]
-                return [(slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name))]
-            return [(slot_fields[si][0], inner_bundle.result_var)]
-        # Multi-primitive variant: map each inner field/slot to its outer union slot.
-        result = []
-        if isinstance(inner_ctype, cg_t.Struct):
-            for prim_idx, (field_name, field_type) in enumerate(inner_ctype.fields):
-                assert len(cg_t._flatten_primitives(field_type)) == 1, \
-                    f"Nested multi-primitive struct field '{field_name}: {field_type}' in boxing not yet supported"
-                si, _ = slot_assignments[prim_idx]
-                result.append((slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, field_name)))
-        elif isinstance(inner_ctype, cg_t.UnionContainer):
-            for prim_idx, (slot_name, _) in enumerate(inner_ctype.slots):
-                si, _ = slot_assignments[prim_idx]
-                result.append((slot_fields[si][0], cg_p.StructField(inner_bundle.result_var, slot_name)))
-        else:
-            raise AssertionError(f"Boxing multi-primitive non-struct type {inner_ctype} not yet supported")
+
+        def collect(param, ctype, offset):
+            """Yield (slot_name, value) pairs, advancing offset past each primitive."""
+            if isinstance(ctype, cg_t.Struct):
+                result = []
+                for field_name, field_type in ctype.fields:
+                    part, offset = collect(cg_p.StructField(param, field_name), field_type, offset)
+                    result.extend(part)
+                return result, offset
+            # Primitive (DataPointer, Int, Float, Str, etc.)
+            si, _ = slot_assignments[offset]
+            return [(slot_fields[si][0], param)], offset + 1
+
+        result, _ = collect(inner_bundle.result_var, inner_ctype, 0)
         return result
 
 
@@ -1026,8 +1028,8 @@ class BoxExpression(Expression):
 class WideExpression(Expression):
     """Widen a value of one union type to a strictly wider union type.
 
-    Handles DataPointer → UnionContainer (null-check) and
-    UnionContainer → UnionContainer (tag-based re-slot) widening.
+    Handles DataPointer → Struct (null-check) and
+    Struct → Struct (tag-based re-slot) widening.
     """
     inner: Expression
     source_spec: t.CombinationSpec
@@ -1068,10 +1070,10 @@ class WideExpression(Expression):
                 f"WideExpression: DataPointer target requires DataPointer source, got {src_ctype}"
             return inner_bundle
 
-        assert isinstance(tgt_ctype, cg_t.UnionContainer), \
-            f"WideExpression: target must be UnionContainer, got {tgt_ctype}"
+        assert isinstance(tgt_ctype, cg_t.Struct), \
+            f"WideExpression: target must be Struct (tagged union), got {tgt_ctype}"
 
-        tgt_container, tgt_variant_map = cg_t.UnionContainer.compute([v.generate(resolver) for v in self.target_spec.types])
+        tgt_container, tgt_variant_map = cg_t.compute_union_slots([v.generate(resolver) for v in self.target_spec.types])
         discriminators = resolver.get_discriminators()
         result_var = cg_p.StackVar(tgt_ctype, "wide_result")
         end_label = "wide_end"
@@ -1079,19 +1081,19 @@ class WideExpression(Expression):
 
         if isinstance(src_ctype, cg_t.DataPointer):
             body = self.__widen_from_datapointer(
-                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label, resolver)
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.fields, discriminators, result_var, end_label, resolver)
         else:
-            assert isinstance(src_ctype, cg_t.UnionContainer), \
-                f"WideExpression: source must be DataPointer or UnionContainer, got {src_ctype}"
+            assert isinstance(src_ctype, cg_t.Struct), \
+                f"WideExpression: source must be DataPointer or Struct (tagged union), got {src_ctype}"
             body = self.__widen_from_container(
-                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.slots, discriminators, result_var, end_label, resolver)
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.fields, discriminators, result_var, end_label, resolver)
 
         bundles = [inner_bundle] + body + [g.OperationBundle(operations=(cg_o.Label(end_label),), result_var=result_var)]
         return reduce(lambda a, b: a + b, bundles).rename_vars("")
 
     def __widen_from_datapointer(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
                                   discriminators, result_var, end_label, resolver):
-        """Widen a DataPointer union (null = unit/None, non-null = pointer variant) to a UnionContainer."""
+        """Widen a DataPointer union (null = unit/None, non-null = pointer variant) to a tagged-union Struct."""
         unit_type = cg_t.Struct(())
         src_variant_types = [v.generate(resolver) for v in self.source_spec.types]
         ptr_variant = next((v for v, vt in zip(self.source_spec.types, src_variant_types) if vt != unit_type), None)
@@ -1119,9 +1121,9 @@ class WideExpression(Expression):
 
     def __widen_from_container(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
                                 discriminators, result_var, end_label, resolver):
-        """Widen a UnionContainer to a wider UnionContainer by re-slotting each variant."""
+        """Widen a tagged-union Struct to a wider tagged-union Struct by re-slotting each variant."""
         src_variant_types = [v.generate(resolver) for v in self.source_spec.types]
-        _, src_variant_map = cg_t.UnionContainer.compute(src_variant_types)
+        _, src_variant_map = cg_t.compute_union_slots(src_variant_types)
         src_tag_field = cg_p.StructField(sv, "$tag")
 
         bundles = []
@@ -1138,7 +1140,7 @@ class WideExpression(Expression):
                 for pi in range(len(cg_t._flatten_primitives(src_var.generate(resolver)))):
                     tgt_si, _ = tgt_variant_map[tgt_var_idx][pi]
                     src_si, _ = src_variant_map[i][pi]
-                    slot_values.append((tgt_slot_fields[tgt_si][0], cg_p.StructField(sv, src_ctype.slots[src_si][0])))
+                    slot_values.append((tgt_slot_fields[tgt_si][0], cg_p.StructField(sv, src_ctype.fields[src_si][0])))
             slot_values.append(("$tag", cg_p.Integer(var_tag, 32)))
 
             bundles.append(g.OperationBundle(operations=(
@@ -1201,11 +1203,11 @@ class NewEnumExpression(Expression):
         leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
 
         variant_types = t.enum_variant_types(root_stmt, resolver)
-        container, variant_map = cg_t.UnionContainer.compute(variant_types)
+        container, variant_map = cg_t.compute_union_slots(variant_types)
         leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
         leaf_fields = leaf_field_sets[leaf_idx]
         this_vm = variant_map[leaf_idx]
-        tag_slot_name, tag_slot_type = container.slots[-1]  # $tag is always last
+        tag_slot_name, tag_slot_type = container.fields[-1]  # $tag is always last
         tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
 
         if root_spec.is_complex:
@@ -1218,35 +1220,33 @@ class NewEnumExpression(Expression):
                     tag_const),
             ]
             # Zero-fill all non-$tag slots so unused pointer slots are null.
-            for slot_name, slot_type in container.slots[:-1]:
+            for slot_name, slot_type in container.fields[:-1]:
                 ops.append(cg_o.Move(
                     cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
                     cg_p.ZeroOf(slot_type)))
+            def emit_heap(param, ftype, off):
+                """Recursively write ftype primitives from param to heap object slots."""
+                if isinstance(ftype, cg_t.Struct):
+                    for fname, ft in ftype.fields:
+                        off = emit_heap(cg_p.StructField(param, fname), ft, off)
+                    return off
+                si, _ = this_vm[off]
+                slot_name, slot_type = container.fields[si]
+                ops.append(cg_o.Move(
+                    cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
+                    param))
+                return off + 1
+
             bundles: list[g.OperationBundle] = []
             prim_off = 0
             for let in leaf_fields:
                 field_name = let.name
                 field_type = let.declared_type.generate(resolver)
-                field_prim_names = [n for n, _ in (
-                    field_type.slots if isinstance(field_type, cg_t.UnionContainer) else
-                    field_type.fields if isinstance(field_type, cg_t.Struct) else [])]
                 n_prims = len(cg_t._flatten_primitives(field_type))
                 if field_name in self.field_args:
                     arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
                     bundles.append(arg_bundle)
-                    if n_prims == 1:
-                        si, _ = this_vm[prim_off]
-                        slot_name, slot_type = container.slots[si]
-                        ops.append(cg_o.Move(
-                            cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
-                            arg_bundle.result_var))
-                    else:
-                        for k, pname in enumerate(field_prim_names):
-                            si, _ = this_vm[prim_off + k]
-                            slot_name, slot_type = container.slots[si]
-                            ops.append(cg_o.Move(
-                                cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
-                                cg_p.StructField(arg_bundle.result_var, pname)))
+                    emit_heap(arg_bundle.result_var, field_type, prim_off)
                 prim_off += n_prims
             ctor_bundle = g.OperationBundle(
                 stack_vars=(result_var,),
@@ -1256,7 +1256,7 @@ class NewEnumExpression(Expression):
                 return reduce(lambda a, b: a + b, bundles + [ctor_bundle])
             return ctor_bundle
 
-        # Non-recursive: flat by-value struct via NewStruct using UnionContainer slot layout.
+        # Non-recursive: flat by-value struct using the shared slot layout.
         # Map each field name to its starting primitive index within this leaf's flattened type.
         prim_start: dict[str, int] = {}
         offset = 0
@@ -1266,9 +1266,9 @@ class NewEnumExpression(Expression):
 
         # Start with zero for every slot, then fill $tag and each provided field.
         slot_values: list[tuple[str, cg_p.RParam]] = [
-            (sname, cg_p.ZeroOf(stype)) for sname, stype in container.slots
+            (sname, cg_p.ZeroOf(stype)) for sname, stype in container.fields
         ]
-        tag_slot_idx = next(i for i, (n, _) in enumerate(container.slots) if n == "$tag")
+        tag_slot_idx = next(i for i, (n, _) in enumerate(container.fields) if n == "$tag")
         slot_values[tag_slot_idx] = ("$tag", tag_const)
 
         bundles2: list[g.OperationBundle] = []
@@ -1279,17 +1279,18 @@ class NewEnumExpression(Expression):
             n_prims = len(cg_t._flatten_primitives(field_type))
             arg_bundle = arg_expr.generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
             bundles2.append(arg_bundle)
-            if n_prims == 1:
-                si, _ = variant_map[leaf_idx][pi]
-                slot_values[si] = (container.slots[si][0], arg_bundle.result_var)
-            else:
-                # Multi-primitive: decompose using the field type's actual slot/field names.
-                prim_names = [n for n, _ in (
-                    field_type.slots if isinstance(field_type, cg_t.UnionContainer) else field_type.fields)]
-                for k, pname in enumerate(prim_names):
-                    si, _ = variant_map[leaf_idx][pi + k]
-                    sname, _ = container.slots[si]
-                    slot_values[si] = (sname, cg_p.StructField(arg_bundle.result_var, pname))
+            def emit_flat(param, ftype, off):
+                """Recursively write ftype primitives from param to flat slot_values."""
+                if isinstance(ftype, cg_t.Struct):
+                    for fname, ft in ftype.fields:
+                        off = emit_flat(cg_p.StructField(param, fname), ft, off)
+                    return off
+                si, _ = variant_map[leaf_idx][off]
+                sname, _ = container.fields[si]
+                slot_values[si] = (sname, param)
+                return off + 1
+
+            emit_flat(arg_bundle.result_var, field_type, pi)
 
         result_param = cg_p.union_struct(container, dict(slot_values))
         final_bundle = g.OperationBundle((), (), result_param)

@@ -389,14 +389,21 @@ def is_task_check(expr: str, t: Type) -> str:
 
 
 def _flatten_primitives(t: Type) -> list[Type]:
-    """Recursively decompose a type into its primitive slot types."""
+    """Recursively decompose a type into its primitive slot types.
+
+    Str is normalised to DataPointer because both lower to object_t* in C with
+    identical GC behaviour.  Int(0) (bigint) is kept as Int(0) — not normalised
+    to DataPointer — so slot types stay consistent with field types in TupleSpec
+    and other aggregates.  Slot sharing between Int(0) and DataPointer variants
+    is handled by _slot_key in compute_union_slots instead.
+    """
     if isinstance(t, Struct):
         return [p for _, ft in t.fields for p in _flatten_primitives(ft)]  # unit → []
     if isinstance(t, FuncPointer):
         return [IntPtr(), DataPointer()]  # f=code pointer (non-GC), o=data pointer (GC)
-    if isinstance(t, UnionContainer):
-        return [slot_t for _, slot_t in t.slots]
-    return [t]  # Int, Str, DataPointer, IntPtr — already primitive
+    if isinstance(t, Str):
+        return [DataPointer()]  # Str and DataPointer both lower to object_t*
+    return [t]  # Int, Float, DataPointer, IntPtr — already primitive
 
 
 def _primitive_rank(t: Type) -> int:
@@ -419,6 +426,13 @@ def _can_merge_into(small: Type, large: Type) -> bool:
             and 0 < small.precision < large.precision)
 
 
+def _slot_key(t: Type) -> Type:
+    """Canonical slot type for sharing: Int(0) (bigint) shares slots with DataPointer since both lower to object_t*."""
+    if isinstance(t, Int) and t.precision == 0:
+        return DataPointer()
+    return t
+
+
 def _tag_type(n_variants: int) -> Int:
     if n_variants <= 127:
         return Int(8)
@@ -427,83 +441,61 @@ def _tag_type(n_variants: int) -> Int:
     return Int(32)
 
 
-@dataclass(frozen=True)
-class UnionContainer(Type):
-    """Flat struct payload for a tagged union.
+def compute_union_slots(variant_types: list[Type]) -> tuple[Struct, tuple[tuple[tuple[int, Type], ...], ...]]:
+    """Compute the shared-slot layout for a tagged union with the given per-variant types.
 
-    Variant types are deconstructed into typed primitive slots.  Same-type slots are
-    shared across mutually-exclusive variants.  Smaller integer slots are merged into
-    larger ones when no variant uses both.  Slots are sorted by rank so pointer slots
-    come before scalar slots, giving the GC precise (never maybe-pointer) information.
+    Returns (Struct, variant_map) where variant_map[i] is a tuple of
+    (slot_index, original_type) for each primitive of variant i.  When original_type
+    differs from the slot type, a smaller int was merged into a larger slot (truncate
+    on read, zero-extend on write).  The last field of the returned Struct is always
+    the $tag discriminant.
     """
-    slots: tuple[tuple[str, Type], ...]  # (slot_name, slot_type)
+    flat: list[list[Type]] = [_flatten_primitives(vt) for vt in variant_types]
 
-    def _declare_struct(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
-        new_indent = field_indent + "    "
-        members = "".join(
-            f"\n{field_indent}{slot_t._declare(type_cache, new_indent)} {mangle_name(name)};"
-            for name, slot_t in self.slots)
-        return f"struct {{{members}\n{field_indent[:-4]}}}"
+    # slots_list: list of [slot_type, set_of_variant_indices]
+    slots_list: list[list] = []
+    vmap: list[list[tuple[int, Type]]] = [[] for _ in flat]
 
-    def get_pointer_paths(self, path: str) -> list[str]:
-        return [f"{path}.{mangle_name(name)}"
-                for name, slot_t in self.slots
-                if slot_t.get_pointer_paths("x") == ["x"]]
+    for vi, prims in enumerate(flat):
+        for prim in prims:
+            prim_key = _slot_key(prim)
+            found = next(
+                (si for si, (st, su) in enumerate(slots_list) if st == prim_key and vi not in su),
+                -1)
+            if found >= 0:
+                slots_list[found][1].add(vi)
+                vmap[vi].append((found, prim))
+            else:
+                slots_list.append([prim_key, {vi}])
+                vmap[vi].append((len(slots_list) - 1, prim))
 
-    @staticmethod
-    def compute(variant_types: list[Type]) -> tuple[UnionContainer, tuple[tuple[tuple[int, Type], ...], ...]]:
-        """Compute the slot layout for a union with the given variant types.
+    # Merge smaller int slots into larger ones when no variant uses both
+    changed = True
+    while changed:
+        changed = False
+        for si in range(len(slots_list)):
+            if slots_list[si] is None: continue
+            st, su = slots_list[si]
+            for li in range(len(slots_list)):
+                if li == si or slots_list[li] is None: continue
+                lt, lu = slots_list[li]
+                if _can_merge_into(st, lt) and su.isdisjoint(lu):
+                    lu.update(su)
+                    for vi in su:
+                        vmap[vi] = [(li if s == si else s, orig) for s, orig in vmap[vi]]
+                    slots_list[si] = None
+                    changed = True
+                    break
+            if changed: break
 
-        Returns (UnionContainer, variant_map) where variant_map[i] is a tuple of
-        (slot_index, original_type) for each primitive of variant i.  When original_type
-        differs from the slot type, a smaller int was merged into a larger slot (truncate
-        on read, zero-extend on write).
-        """
-        flat: list[list[Type]] = [_flatten_primitives(vt) for vt in variant_types]
+    # Collect active slots and sort by rank
+    active = [(si, s) for si, s in enumerate(slots_list) if s is not None]
+    active.sort(key=lambda x: _primitive_rank(x[1][0]))
+    renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
 
-        # slots_list: list of [slot_type, set_of_variant_indices]
-        slots_list: list[list] = []
-        vmap: list[list[tuple[int, Type]]] = [[] for _ in flat]
-
-        for vi, prims in enumerate(flat):
-            for prim in prims:
-                found = next(
-                    (si for si, (st, su) in enumerate(slots_list) if st == prim and vi not in su),
-                    -1)
-                if found >= 0:
-                    slots_list[found][1].add(vi)
-                    vmap[vi].append((found, prim))
-                else:
-                    slots_list.append([prim, {vi}])
-                    vmap[vi].append((len(slots_list) - 1, prim))
-
-        # Merge smaller int slots into larger ones when no variant uses both
-        changed = True
-        while changed:
-            changed = False
-            for si in range(len(slots_list)):
-                if slots_list[si] is None: continue
-                st, su = slots_list[si]
-                for li in range(len(slots_list)):
-                    if li == si or slots_list[li] is None: continue
-                    lt, lu = slots_list[li]
-                    if _can_merge_into(st, lt) and su.isdisjoint(lu):
-                        lu.update(su)
-                        for vi in su:
-                            vmap[vi] = [(li if s == si else s, orig) for s, orig in vmap[vi]]
-                        slots_list[si] = None
-                        changed = True
-                        break
-                if changed: break
-
-        # Collect active slots and sort by rank
-        active = [(si, s) for si, s in enumerate(slots_list) if s is not None]
-        active.sort(key=lambda x: _primitive_rank(x[1][0]))
-        renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
-
-        slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", _tag_type(len(variant_types))),)
-        variant_map = tuple(
-            tuple((renumber[si], orig) for si, orig in vm)
-            for vm in vmap
-        )
-        return UnionContainer(slots=slot_fields), variant_map
+    slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", _tag_type(len(variant_types))),)
+    variant_map = tuple(
+        tuple((renumber[si], orig) for si, orig in vm)
+        for vm in vmap
+    )
+    return Struct(fields=slot_fields), variant_map

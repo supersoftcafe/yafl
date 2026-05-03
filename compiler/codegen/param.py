@@ -142,12 +142,10 @@ class StructField(RParam):
         xtype = self.struct.get_type()
         if isinstance(xtype, t.Struct):
             fields = xtype.fields
-        elif isinstance(xtype, t.UnionContainer):
-            fields = xtype.slots
         elif isinstance(xtype, t.TaskWrapper):
             fields = (("value", xtype.inner), ("task", t.DataPointer()))
         else:
-            raise ValueError(f"StructField requires a Struct or UnionContainer, got {xtype}")
+            raise ValueError(f"StructField requires a Struct, got {xtype}")
         result = next((ftype for name, ftype in fields if name == self.field), None)
         if result is None:
             raise ValueError(f"Field '{self.field}' not found")
@@ -356,14 +354,14 @@ class NewStructTyped(RParam):
     Always constructed via union_struct(), which zero-fills every unspecified slot so all
     pointer slots are null-initialised for GC safety.
     """
-    struct_type: t.UnionContainer
+    struct_type: t.Struct
     values: tuple[tuple[str, RParam], ...]
 
     def __post_init__(self):
-        expected = {name for name, _ in self.struct_type.slots}
+        expected = {name for name, _ in self.struct_type.fields}
         provided = {name for name, _ in self.values}
         assert expected == provided, \
-            f"NewStructTyped: missing slots {expected - provided}, unexpected {provided - expected}"
+            f"NewStructTyped: missing fields {expected - provided}, unexpected {provided - expected}"
 
     def get_type(self) -> t.Type:
         return self.struct_type
@@ -405,11 +403,11 @@ def _zero_for(field_type: t.Type) -> RParam:
     raise ValueError(f"No zero value defined for slot type {field_type}")
 
 
-def union_struct(container: t.UnionContainer, named_values: dict[str, RParam]) -> NewStructTyped:
-    """Build an exhaustive NewStructTyped for a UnionContainer, zero-filling any unspecified slots."""
+def union_struct(container: t.Struct, named_values: dict[str, RParam]) -> NewStructTyped:
+    """Build an exhaustive NewStructTyped for a union slot struct, zero-filling any unspecified fields."""
     return NewStructTyped(container, tuple(
-        (name, named_values.get(name, _zero_for(slot_type)))
-        for name, slot_type in container.slots
+        (name, named_values[name] if name in named_values else _zero_for(field_type))
+        for name, field_type in container.fields
     ))
 
 

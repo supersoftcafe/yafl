@@ -349,7 +349,7 @@ class EnumSpec(TypeSpec):
         types = resolver.find_type({self.root_name})
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
             stmt = langtools.cast(s.EnumStatement, types[0].statement)
-            container, _ = cg_t.UnionContainer.compute(enum_variant_types(stmt, resolver))
+            container, _ = cg_t.compute_union_slots(enum_variant_types(stmt, resolver))
             return container
         return cg_t.Struct(tuple((name, ftype.generate(resolver)) for name, ftype in self.all_fields))
 
@@ -597,7 +597,7 @@ def _is_pointer_union_distinguishable(variant_types: list[cg_t.Type]) -> bool:
             continue  # str — PTR_IS_STRING or STRING_VTABLE
         if isinstance(vt, cg_t.DataPointer):
             continue  # class object — unique vtable identifies it
-        return False  # scalar or composite struct — needs UnionContainer
+        return False  # scalar or composite struct — needs tagged-union Struct
     non_unit = [vt for vt in variant_types
                 if not (isinstance(vt, cg_t.Struct) and not vt.fields)]
     return len(non_unit) >= 1
@@ -628,7 +628,7 @@ class CombinationSpec(TypeSpec):
             return cg_t.DataPointer()  # null sentinel for unit (None) variant(s)
         if _is_pointer_union_distinguishable(variant_types):
             return cg_t.DataPointer()  # dispatch via pointer tag bits at runtime
-        container, _ = cg_t.UnionContainer.compute(variant_types)
+        container, _ = cg_t.compute_union_slots(variant_types)
         return container
 
     def as_unique_id_str(self) -> str|None:

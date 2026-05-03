@@ -787,9 +787,9 @@ class EnumStatement(TypeStatement):
         if self._root_name is not None and self._root_name != self.name:
             return None
         # First field MUST be ("type", DataPointer()) per Object's contract.
-        # Remaining fields are the shared primitive slots from UnionContainer.compute().
-        container, _ = cg_t.UnionContainer.compute(t.enum_variant_types(self, resolver))
-        fields = (("type", cg_t.DataPointer()),) + container.slots
+        # Remaining fields are the shared primitive slots from compute_union_slots().
+        container, _ = cg_t.compute_union_slots(t.enum_variant_types(self, resolver))
+        fields = (("type", cg_t.DataPointer()),) + container.fields
         return cg_x.Object(
             name=self.name,
             extends=(),
