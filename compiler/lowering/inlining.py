@@ -7,7 +7,7 @@ import pyast.expression as e
 import pyast.resolver as g
 import pyast.typespec as t
 from codegen.typedecl import Type, Struct
-from codegen.ops import Call, Op, Move, Label, Return, Jump
+from codegen.ops import Call, Op, Move, Label, Return, Jump, ParallelCall
 from codegen.gen import Application
 from codegen.param import GlobalFunction, NewStruct, StackVar
 from codegen.things import Function
@@ -32,7 +32,12 @@ def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
                 fn.name == op.function.name or op.musttail or
                 op.function.name not in others or
                 not (target := others[op.function.name]).ops or
-                len(target.ops) >= __CUTOFF_COMPLEXITY):
+                len(target.ops) >= __CUTOFF_COMPLEXITY or
+                # __entrypoint__ is hand-built and skipped by async_lower;
+                # inlining a body with ParallelCall here would leave that op
+                # un-lowered at codegen. Refuse inlining of any body that
+                # contains ParallelCall to keep the lowering pipeline coherent.
+                any(isinstance(o, ParallelCall) for o in target.ops)):
             new_ops.append(op)
             return # Not a candidate for inlining
 

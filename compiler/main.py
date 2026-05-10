@@ -34,6 +34,14 @@ def main():
         help="Output file name"
     )
 
+    # Disable the auto-parallelise tuple lowering (only takes effect at -O>=2)
+    parser.add_argument(
+        "--no-auto-parallel",
+        dest="disable_auto_parallel",
+        action="store_true",
+        help="Disable auto-parallelisation of tuple constructions"
+    )
+
     # Input files (positional, 1 or more)
     parser.add_argument(
         "files", nargs="+",
@@ -50,7 +58,7 @@ def main():
     # print(f"Input files: {args.files}")
 
     files = [c._read_source(Path(x)) for x in args.files]
-    c_code = c.compile(files, use_stdlib=True, just_testing=False, optimization_level=int(args.O))
+    c_code = c.compile(files, use_stdlib=True, just_testing=False, optimization_level=int(args.O), disable_auto_parallel=args.disable_auto_parallel)
 
     if c_code:
         if args.c:

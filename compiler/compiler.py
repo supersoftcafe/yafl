@@ -18,6 +18,7 @@ import lowering.staticinit
 import lowering.deadstores
 import lowering.unions
 import lowering.async_lower
+import lowering.parallelize_tuples
 import lowering.sync_inference
 import lowering.trim
 import lowering.uninit_check
@@ -110,7 +111,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
 
 def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None) -> str:
     a = Application()
-    resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {})
+    resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {}, optimization_level=optimization_level)
     for stmt in statements:
         match stmt:
             case s.FunctionStatement() as f:
@@ -208,7 +209,7 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
 _MAX_COMPILE_ITERATIONS = 100
 
 
-def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0) -> str|list[Error]:
+def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False) -> str|list[Error]:
     for iteration_count in range(1, _MAX_COMPILE_ITERATIONS + 1):
         resolver = g.ResolverRoot(statements)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
@@ -245,6 +246,11 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
         return named_spec_errors
 
     # All ok so let's create some C code
+    if optimization_level >= 2 and not disable_auto_parallel:
+        # Run before generic monomorphisation: we operate on templates so
+        # synthesised lambdas inherit the same generic context the surrounding
+        # code uses, and monomorphisation copies them into each instantiation.
+        new_statements = lowering.parallelize_tuples.parallelize_heavy_tuples(new_statements)
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
     new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
     new_statements = lowering.constants.inline_constants(new_statements)
@@ -281,14 +287,14 @@ def __print_errors(errors: list[Error]) -> str:
     return ""
 
 
-def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0) -> str:
+def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False) -> str:
     # Tokenize input
     statements, errors = __tokenize_and_parse(_read_stdlib_code(use_stdlib) + source)
     if errors:
         return __print_errors(errors)
 
     # Compile and find errors
-    compiled_result = __iterate_and_compile(statements, just_testing=just_testing, optimization_level=optimization_level)
+    compiled_result = __iterate_and_compile(statements, just_testing=just_testing, optimization_level=optimization_level, disable_auto_parallel=disable_auto_parallel)
     if isinstance(compiled_result, list):
         return __print_errors(compiled_result)
 

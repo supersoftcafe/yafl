@@ -112,6 +112,9 @@ class Resolver:
     def get_discriminators(self) -> dict[str, int]:
         return {}
 
+    def get_optimization_level(self) -> int:
+        return 0
+
 
 def simple_name(name: str) -> str:
     return name.rpartition('@')[0] or name
@@ -234,6 +237,9 @@ class AddScopeResolution(Resolver):
     def get_discriminators(self) -> dict[str, int]:
         return self.__parent.get_discriminators()
 
+    def get_optimization_level(self) -> int:
+        return self.__parent.get_optimization_level()
+
 
 class ResolverType(Resolver):
     __parent: Resolver
@@ -257,6 +263,9 @@ class ResolverType(Resolver):
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__parent.get_discriminators()
+
+    def get_optimization_level(self) -> int:
+        return self.__parent.get_optimization_level()
 
 
 class ResolverData(Resolver):
@@ -289,14 +298,19 @@ class ResolverData(Resolver):
     def get_discriminators(self) -> dict[str, int]:
         return self.__parent.get_discriminators()
 
+    def get_optimization_level(self) -> int:
+        return self.__parent.get_optimization_level()
+
 
 class ResolverDiscriminators(Resolver):
     __parent: Resolver
     __discriminators: dict[str, int]
+    __optimization_level: int
 
-    def __init__(self, parent: Resolver, discriminators: dict[str, int]):
+    def __init__(self, parent: Resolver, discriminators: dict[str, int], optimization_level: int = 0):
         self.__parent = parent
         self.__discriminators = discriminators
+        self.__optimization_level = optimization_level
 
     def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
         return self.__parent.find_type(names)
@@ -312,4 +326,7 @@ class ResolverDiscriminators(Resolver):
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__discriminators
+
+    def get_optimization_level(self) -> int:
+        return self.__optimization_level
 

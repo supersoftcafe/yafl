@@ -213,6 +213,43 @@ fun main(): System::Int
         self.assertNotIn("_lambdas_", result,
                          "Lambdas in ?> chains should be fully inlined, not lifted to closures")
 
+    def test_nested_arithmetic_inlines_without_one_tuple_wrapping(self):
+        """A 1-element tuple is equivalent to its sole value; the inliner must
+        not wrap a scalar argument in `struct_anon_1_t` when substituting it
+        into a __builtin_op__ that expects an object_t* / scalar.
+
+        Repro: `(a + b) - (a + b - 1)` at -O2. The outer `-` was inlining its
+        scalar args wrapped as a 1-tuple struct, then handing the struct to
+        `integer_sub`, which expects the scalar directly — clang refuses with
+        "assigning to 'object_t *' from incompatible type 'struct_anon_1_t'".
+        """
+        content = """\
+namespace Test
+import System
+
+fun count(n: System::Int): System::Int
+    ret n < 1 ? 0 : 1 + count(n - 1)
+
+fun main(): System::Int
+    let (a, b) = (count(3), count(3))
+    ret (a + b) - (a + b - 1)
+"""
+        for level in (1, 2, 3):
+            with self.subTest(optimization_level=level):
+                result = c.compile(
+                    [c.Input(content, "file.yafl")],
+                    use_stdlib=True, just_testing=False,
+                    optimization_level=level,
+                    disable_auto_parallel=True,
+                )
+                self.assertNotEqual("", result, f"compilation failed at -O{level}")
+                # The buggy emit was `(struct_anon_1_t){._0 = ...}` wrapping
+                # a scalar argument before passing it to integer_sub. The fix
+                # must keep the args as scalars.
+                self.assertNotIn(
+                    "(struct_anon_1_t){._0 =", result,
+                    f"-O{level}: scalar argument was wrapped in a 1-tuple struct")
+
     def test_builtin_side_effect_survives_dead_store_elimination(self):
         """A __builtin_op__ call whose result is discarded must not be eliminated by DSE.
 

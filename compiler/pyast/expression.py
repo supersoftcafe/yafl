@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
+import random
 from dataclasses import dataclass, field
 from functools import reduce
 
@@ -27,6 +28,20 @@ def _foreign_symbol(stmt: s.FunctionStatement) -> str | None:
             and isinstance(foreign_attr.expressions[0].value, StringExpression)):
         return foreign_attr.expressions[0].value.value
     return None
+
+
+def _unwrap_one_tuple(expr: "Expression") -> "Expression":
+    """A bracketed expression `(x)` parses to a 1-element TupleExpression.
+    YAFL treats a 1-tuple as equivalent to its sole value, so in value
+    positions we collapse the wrap. Only unnamed entries are unwrapped —
+    `(name = value)` is a named 1-tuple and may be load-bearing for
+    destructuring/type checks elsewhere.
+    """
+    while (isinstance(expr, TupleExpression)
+            and len(expr.expressions) == 1
+            and expr.expressions[0].name is None):
+        expr = expr.expressions[0].value
+    return expr
 
 
 def _is_impure(stmt: s.FunctionStatement) -> bool:
@@ -839,6 +854,7 @@ class TupleEntryExpression:
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[TupleEntryExpression, list[s.Statement]]:
         new_value, new_statements = self.value.compile(resolver, expected_type)
+        new_value = _unwrap_one_tuple(new_value)
         return dataclasses.replace(self, value=new_value), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
@@ -876,10 +892,20 @@ class TupleExpression(Expression):
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         param_bundles = [expr.generate(resolver).rename_vars(f"{index}_") for index, expr in enumerate(self.expressions)]
-        # xtype = self.get_type(resolver).generate()
+        # NewStruct field-name → result_var mapping is pinned to declared positions,
+        # so the resulting tuple value is unaffected by any reordering of evaluation below.
         value = cg_p.NewStruct(tuple(((f"_{idx}", x.result_var) for idx, x in enumerate(param_bundles))))
         final_bundle = g.OperationBundle((), (), value)
-        total_bundle = reduce(lambda x, y: y + x, reversed(param_bundles), final_bundle)
+        # At -O0, randomise the order in which children's side-effects fire so that
+        # any code accidentally relying on left-to-right tuple evaluation surfaces.
+        # Seed deterministically from the source location: same .yafl in → same .c out,
+        # but order varies across tuple sites within a program.
+        eval_bundles = param_bundles
+        if resolver.get_optimization_level() == 0 and len(eval_bundles) > 1:
+            rng = random.Random(f"{self.line_ref.filename}:{self.line_ref.line}:{self.line_ref.offset}")
+            eval_bundles = list(param_bundles)
+            rng.shuffle(eval_bundles)
+        total_bundle = reduce(lambda x, y: y + x, reversed(eval_bundles), final_bundle)
         return total_bundle
 
     def trim_left(self, amount: int) -> TupleExpression:
