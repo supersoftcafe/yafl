@@ -71,7 +71,7 @@ def _read_stdlib_code(use_stdlib: bool) -> list[Input]:
 
 
 def __create_entry_point(main: s.FunctionStatement) -> Function:
-    sv_result    = cg_p.StackVar(Int(0), "result")
+    sv_result    = cg_p.StackVar(DataPointer(), "result")
     sv_discard   = cg_p.StackVar(DataPointer(), "$sv_discard")
     continuation = cg_p.StackVar(FuncPointer(), "$continuation")
 
@@ -85,7 +85,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
         name="__entrypoint__",
         params=Struct(fields=(("this", DataPointer()), ("$continuation", FuncPointer()))),
         result=Void(),
-        stack_vars=Struct(fields=(("result", Int(0)), ("$sv_discard", DataPointer()))),
+        stack_vars=Struct(fields=(("result", DataPointer()), ("$sv_discard", DataPointer()))),
         ops=(
             cg_o.Call(
                 function=cg_p.GlobalFunction(main.name),

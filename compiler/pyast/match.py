@@ -510,11 +510,11 @@ class MatchExpression(e.Expression):
             if arm_ctype == unit_type:
                 null_arm = arm
                 continue
-            if isinstance(arm_ctype, cg_t.Int) and arm_ctype.precision == 0:
+            if isinstance(arm.type_spec, t.BuiltinSpec) and arm.type_spec.type_name == "bigint":
                 arm_steps.append(
                     ("typed", arm,
                      cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE"), "int"))
-            elif isinstance(arm_ctype, cg_t.Str):
+            elif isinstance(arm.type_spec, t.BuiltinSpec) and arm.type_spec.type_name == "str":
                 arm_steps.append(
                     ("typed", arm,
                      cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE"), "str"))
@@ -571,16 +571,17 @@ class MatchExpression(e.Expression):
                 arm_label  = f"match_lit_{idx}"
                 next_label = f"match_next_{idx}"
                 check_label = f"match_litchk_{idx}"
-                # Dispatch on the generated C type of the literal value, not
-                # the parse-time AST class — earlier passes rewrite string and
-                # integer literals into NamedExpression references to globals.
-                lit_ctype = lit_bundle.result_var.get_type()
-                if isinstance(lit_ctype, cg_t.Str):
+                # Use the AST type of the literal to select the runtime comparison.
+                # (Earlier passes rewrite literals to global refs, so the codegen type
+                # is DataPointer for both bigint and str — we need the AST type here.)
+                lit_ast_type = arm.literal.get_type(resolver)
+                is_str_lit = isinstance(lit_ast_type, t.BuiltinSpec) and lit_ast_type.type_name == "str"
+                if is_str_lit:
                     guard = cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
                     args  = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
                     cmp   = cg_p.Invoke("string_compare", args, cg_t.Int(32))
                     test_expr = cg_p.IntEqConst(cmp, 0)
-                elif isinstance(lit_ctype, cg_t.Int) and lit_ctype.precision == 0:
+                elif isinstance(lit_ast_type, t.BuiltinSpec) and lit_ast_type.type_name == "bigint":
                     guard = cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
                     args  = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
                     test_expr = cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
@@ -676,15 +677,11 @@ class MatchExpression(e.Expression):
                          if arm.type_spec is None and arm.literal is None), None)
 
         # For literal arms, find the variant that holds the matching primitive
-        # so we can extract sv.$s{slot} and compare. bigint → Int variant,
-        # str → Str variant.
-        def primitive_variant_info(lit_ctype):
-            for vi, vt in enumerate(variant_types):
-                if (isinstance(lit_ctype, cg_t.Int) and lit_ctype.precision == 0
-                        and isinstance(vt, cg_t.Int) and vt.precision == 0):
-                    return vi, vt
-                if isinstance(lit_ctype, cg_t.Str) and isinstance(vt, cg_t.Str):
-                    return vi, vt
+        # so we can extract sv.$s{slot} and compare.
+        def primitive_variant_info(lit_type_name: str):
+            for vi, vt_spec in enumerate(subj_type.types):
+                if isinstance(vt_spec, t.BuiltinSpec) and vt_spec.type_name == lit_type_name:
+                    return vi, variant_types[vi]
             return None, None
 
         arm_index = 0
@@ -696,9 +693,10 @@ class MatchExpression(e.Expression):
             next_label = f"match_next_{arm_index}"
 
             if arm.literal is not None:
+                lit_ast_type = arm.literal.get_type(resolver)
+                lit_type_name = lit_ast_type.type_name if isinstance(lit_ast_type, t.BuiltinSpec) else None
                 lit_bundle = arm.literal.generate(resolver).rename_vars(f"lit{arm_index}")
-                lit_ctype = lit_bundle.result_var.get_type()
-                var_idx, _ = primitive_variant_info(lit_ctype)
+                var_idx, _ = primitive_variant_info(lit_type_name)
                 if var_idx is None:
                     arm_index += 1
                     continue  # check() prevents this; skip to be safe
@@ -715,7 +713,7 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(check_label),)))
                 # Value test.
                 args = cg_p.NewStruct((("a", slot_val), ("b", lit_bundle.result_var)))
-                if isinstance(lit_ctype, cg_t.Str):
+                if lit_type_name == "str":
                     cmp = cg_p.Invoke("string_compare", args, cg_t.Int(32))
                     test_expr = cg_p.IntEqConst(cmp, 0)
                 else:

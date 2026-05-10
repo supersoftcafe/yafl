@@ -74,7 +74,7 @@ typedef struct page_head {
         bitmap_t        seen; // Starting slot of each seen object
         bitmap_t     scanned; // Starting slot of each scanned object
         bitmap_t atomic_seen; // Strictly for the early stage atomic updates
-        uint32_t processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
+        _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
         bool          pinned; // Stack references found, which can't be re-written easily
     } scanner;
 
@@ -141,8 +141,9 @@ static bool bitmap_test_all(const bitmap_t *bitmap) {
 static bool bitmap_or_test_reset_all(bitmap_t * __restrict target, bitmap_t * __restrict source) {
     mask_bits_t result = 0;
     for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {
-        result |= (target->a[index] |= source->a[index]);
-        source->a[index] = 0;
+        _Atomic(mask_bits_t) *src_ptr = (_Atomic(mask_bits_t)*)&source->a[index];
+        mask_bits_t bits = atomic_exchange(src_ptr, 0);
+        result |= (target->a[index] |= bits);
     }
     return result != 0;
 }
@@ -807,6 +808,13 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_mark_sweep() {
 
         page->head.scanner.processed_by_epoch = epoch;
         list_link(&pages_to_prune, (list_element_t*)&page->head.list);
+
+        // Drain marks that landed between the atomic_exchanges above and
+        // processed_by_epoch being set. Those barriers saw epoch mismatch
+        // and didn't enqueue for reprocessing. Any marks after epoch is set
+        // go through the normal reprocess pipeline.
+        if (bitmap_or_test_reset_all(&page->head.scanner.seen, &page->head.scanner.atomic_seen))
+            gc_fsa_mark_sweep$page_needs_scan(page);
     }
 
     // Move re-process pages back on to the scan list

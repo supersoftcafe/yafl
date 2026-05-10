@@ -24,7 +24,7 @@ from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall
 from codegen.things import Function, Object
 from codegen.typedecl import (
-    FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Str, Type,
+    FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type,
     TaskWrapper, first_pointer_field, is_task_check,
 )
 from codegen.param import (
@@ -315,10 +315,8 @@ def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
 
 def __wrap_return_type(t: Type) -> Type:
     """Adjust a function's return type to carry the task-pending signal."""
-    if isinstance(t, (Void, DataPointer, Str, FuncPointer)):
+    if isinstance(t, (Void, DataPointer, FuncPointer)):
         return t        # pointer types use PTR_TAG_TASK bit; Void stays Void
-    if isinstance(t, Int) and t.precision == 0:
-        return t        # bigint is object_t* — pointer tagging works
     if isinstance(t, Struct) and first_pointer_field(t) is not None:
         return t        # struct with a pointer field: tag via that field
     return TaskWrapper(t)   # pure primitive: wrap in {value, task*} struct
@@ -333,11 +331,9 @@ def __task_subtype_name(result_type: Type) -> str | None:
     """
     if isinstance(result_type, Void):
         return None
-    # Pointer-compatible: DataPointer, Str, bigint (Int(0)) — all stored as object_t*.
-    # This maps to yafllib's pre-declared task_obj_t (yafl.h) and its vtable
-    # obj_task_obj, so we use the concrete yafllib name rather than synthesising one.
-    if (isinstance(result_type, (DataPointer, Str))
-            or (isinstance(result_type, Int) and result_type.precision == 0)):
+    # DataPointer (covers bigint, str, and class pointers) — all stored as object_t*.
+    # Maps to yafllib's pre-declared task_obj_t (yafl.h).
+    if isinstance(result_type, DataPointer):
         return "task_obj"
     # FuncPointer: stored as fun_t
     if isinstance(result_type, FuncPointer):
@@ -358,13 +354,11 @@ def __is_task_param(result_var: RParam, wrapped_type: Type) -> RParam:
     `wrapped_type` must be the *already-wrapped* return type (i.e. the value
     returned by __wrap_return_type), not the original callee return type.
     """
-    if isinstance(wrapped_type, (DataPointer, Str)):
+    if isinstance(wrapped_type, DataPointer):
         return Invoke("PTR_IS_TASK", NewStruct((("p", result_var),)), Int(32))
     if isinstance(wrapped_type, FuncPointer):
         return Invoke("PTR_IS_TASK",
                       NewStruct((("p", StructField(result_var, "o")),)), Int(32))
-    if isinstance(wrapped_type, Int) and wrapped_type.precision == 0:
-        return Invoke("PTR_IS_TASK", NewStruct((("p", result_var),)), Int(32))
     if isinstance(wrapped_type, Struct):
         fname = first_pointer_field(wrapped_type)
         if fname:
@@ -379,10 +373,8 @@ def __task_ptr_from(result_var: RParam, wrapped_type: Type) -> RParam:
     """Return the pointer-to-task (suitable for TASK_UNTAG) from a task-carrying result."""
     if isinstance(wrapped_type, TaskWrapper):
         return StructField(result_var, "task")   # plain task ptr in .task; TASK_UNTAG is no-op
-    if isinstance(wrapped_type, (DataPointer, Str)):
+    if isinstance(wrapped_type, DataPointer):
         return result_var                         # result IS the tagged pointer
-    if isinstance(wrapped_type, Int) and wrapped_type.precision == 0:
-        return result_var                         # bigint = object_t*
     if isinstance(wrapped_type, FuncPointer):
         return StructField(result_var, "o")       # .o holds the tagged task pointer
     if isinstance(wrapped_type, Struct):
@@ -402,7 +394,7 @@ def __extract_from_task(completed_task: RParam, callee_result_type: Type,
 
 def __zero_val(t: Type) -> RParam:
     """Explicit zero/null initialiser for a field (never rely on object_create zero-fill)."""
-    if isinstance(t, (DataPointer, Str)) or (isinstance(t, Int) and t.precision == 0):
+    if isinstance(t, DataPointer):
         return NullPointer()
     if isinstance(t, Int):
         return Integer(0, t.precision)

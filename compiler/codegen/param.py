@@ -168,11 +168,11 @@ class StructField(RParam):
 class String(RParam):
     value: str
 
-    def get_type(self) -> t.Str:
-        return t.Str()
+    def get_type(self) -> t.DataPointer:
+        return t.DataPointer()
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return self.get_type().initialise(type_cache,self.value)
+        return t.str_literal(self.value)
 
 
 @dataclass(frozen=True)
@@ -180,11 +180,13 @@ class Integer(RParam):
     value: int
     precision: int
 
-    def get_type(self) -> t.Int:
-        return t.Int(self.precision)
+    def get_type(self) -> t.Type:
+        return t.DataPointer() if self.precision == 0 else t.Int(self.precision)
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return self.get_type().initialise(type_cache,self.value)
+        if self.precision == 0:
+            return t.bigint_literal(self.value)
+        return t.Int(self.precision).initialise(type_cache, self.value)
 
 
 @dataclass(frozen=True)
@@ -334,7 +336,7 @@ class ZeroOf(RParam):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         vt = self.value_type
-        if isinstance(vt, (t.DataPointer, t.Str)) or (isinstance(vt, t.Int) and vt.precision == 0):
+        if isinstance(vt, t.DataPointer):
             return "((object_t*)0)"
         if isinstance(vt, t.Int):
             return "0"
@@ -392,7 +394,7 @@ class NewStructTyped(RParam):
 
 def _zero_for(field_type: t.Type) -> RParam:
     """Return a zero-valued RParam for the given primitive slot type."""
-    if isinstance(field_type, (t.DataPointer, t.Str)) or (isinstance(field_type, t.Int) and field_type.precision == 0):
+    if isinstance(field_type, t.DataPointer):
         return NullPointer()
     if isinstance(field_type, t.Int):
         return Integer(0, field_type.precision)
@@ -443,7 +445,7 @@ class TagTask(RParam):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         task_c = self.task.to_c(type_cache)
         typ = self.target_type
-        if isinstance(typ, (t.DataPointer, t.Str)) or (isinstance(typ, t.Int) and typ.precision == 0):
+        if isinstance(typ, t.DataPointer):
             return f"((object_t*)((uintptr_t){task_c} | PTR_TAG_TASK))"
         if isinstance(typ, t.FuncPointer):
             return f"((fun_t){{.f=NULL,.o=(void*)((uintptr_t){task_c} | PTR_TAG_TASK)}})"

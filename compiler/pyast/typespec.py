@@ -183,7 +183,7 @@ class BuiltinSpec(TypeSpec):
     def __translate(self) -> cg_t.Type|None:
         match self.type_name:
             case "str":
-                return cg_t.Str()
+                return cg_t.DataPointer()
             case "int8":
                 return cg_t.Int(8)
             case "int16":
@@ -193,7 +193,7 @@ class BuiltinSpec(TypeSpec):
             case "int64":
                 return cg_t.Int(64)
             case "bigint":
-                return cg_t.Int()
+                return cg_t.DataPointer()
             case "bool":
                 return cg_t.Int(8)
             case "float32":
@@ -591,12 +591,8 @@ def _is_pointer_union_distinguishable(variant_types: list[cg_t.Type]) -> bool:
     for vt in variant_types:
         if isinstance(vt, cg_t.Struct) and not vt.fields:
             continue  # unit / None — null sentinel
-        if isinstance(vt, cg_t.Int) and vt.precision == 0:
-            continue  # bigint — PTR_IS_INTEGER or INTEGER_VTABLE
-        if isinstance(vt, cg_t.Str):
-            continue  # str — PTR_IS_STRING or STRING_VTABLE
         if isinstance(vt, cg_t.DataPointer):
-            continue  # class object — unique vtable identifies it
+            continue  # bigint, str, class — vtable/tag-bits identify at runtime
         return False  # scalar or composite struct — needs tagged-union Struct
     non_unit = [vt for vt in variant_types
                 if not (isinstance(vt, cg_t.Struct) and not vt.fields)]

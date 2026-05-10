@@ -13,7 +13,7 @@ class TestFunction(TestCase):
         Function(
             name="test",
             params=Struct((("this", DataPointer()),)),
-            result=Int(),
+            result=DataPointer(),
             stack_vars=Struct(()),
             ops=())
 
@@ -21,7 +21,7 @@ class TestFunction(TestCase):
         self.assertRaisesRegex(ValueError, "require a first parameter", Function,
                                name="test",
                                params=Struct(()),
-                               result=Int(),
+                               result=DataPointer(),
                                stack_vars=Struct(()),
                                ops=())
 

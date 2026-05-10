@@ -74,63 +74,49 @@ _str_escape_table = str.maketrans({
     '"':  '\\"',
 })
 
-@dataclass(frozen=True)
-class Str(Type):
-    # @property
-    # def size(self) -> int:
-    #     return word_size
+def str_literal(value: str) -> str:
+    return f"STR(\"{value.translate(_str_escape_table)}\")"
 
-    def _initialise(self, type_cache: dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
-        if not isinstance(data, str):
-            raise ValueError("data must be of type str")
-        return f"STR(\"{data.translate(_str_escape_table)}\")"
 
-    def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
-        return "object_t*"
+def bigint_literal(value: int) -> str:
+    sign = 0
+    if value < 0:
+        sign = -1
+        value = -value
+    array: list[int] = []
+    while value != 0:
+        array.append(value & mask_int)
+        value >>= 32
+    if not array:
+        return "INTEGER_LITERAL_1(0, 0)"
+    elif len(array) == 1:
+        return f"INTEGER_LITERAL_1({sign}, {array[0]})"
+    elif len(array) == 2:
+        return f"INTEGER_LITERAL_2({sign}, {array[0]}, {array[1]})"
+    else:
+        groups = [[x for _, x in group] for _, group in groupby(enumerate(array), key=lambda x: x[0] // 2)]
+        values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
+        return f"INTEGER_LITERAL_N({sign}, {len(array)}, {' INTEGER_LITERAL_SEP '.join(values)})"
 
-    def get_pointer_paths(self, path: str) -> list[str]:
-        return [path]
 
 @dataclass(frozen=True)
 class Int(Type):
-    precision: int = 0 # Bit precision
+    precision: int  # Bit precision: 8, 16, 32, or 64 only — use DataPointer() for bigint
 
     # @property
     # def size(self) -> int:
-    #     return self.precision // 8 if self.precision != 0 else word_size
+    #     return self.precision // 8
 
     def _initialise(self, type_cache: dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         if not isinstance(data, int):
             raise ValueError()
-        if self.precision != 0:
-            return f"((int{self.precision}_t){data})"
-
-        sign = 0
-        if data < 0:
-            sign = -1
-            data = -data
-
-        array: list[int] = []
-        while data != 0:
-            array.append(data & mask_int)
-            data = data >> 32
-
-        if not array:
-            return f"INTEGER_LITERAL_1(0, 0)"
-        elif len(array) == 1:
-            return f"INTEGER_LITERAL_1({sign}, {array[0]})"
-        elif len(array) == 2:
-            return f"INTEGER_LITERAL_2({sign}, {array[0]}, {array[1]})"
-        else:
-            groups = [[x for _, x in group] for _, group in groupby(enumerate(array), key=lambda x: x[0] // 2)]
-            values = [(f"INTEGER_LITERAL_N_1({x[0]})" if len(x) == 1 else f"INTEGER_LITERAL_N_2({x[0]}, {x[1]})") for x in groups]
-            return f"INTEGER_LITERAL_N({sign}, {len(array)}, {' INTEGER_LITERAL_SEP '.join(values)})"
+        return f"((int{self.precision}_t){data})"
 
     def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
-        return f"int{self.precision}_t" if self.precision != 0 else "object_t*"
+        return f"int{self.precision}_t"
 
     def get_pointer_paths(self, path: str) -> list[str]:
-        return [path] if self.precision == 0 else []
+        return []
 
 
 @dataclass(frozen=True)
@@ -361,21 +347,18 @@ class TaskWrapper(Type):
 
 
 def first_pointer_field(t: Type) -> str | None:
-    """Return the name of the first pointer-typed field in a Struct type, or None.
-
-    Pointer-typed means: DataPointer, Str, or Int(precision=0) (bigint = object_t*).
-    """
+    """Return the name of the first DataPointer-typed field in a Struct type, or None."""
     if not isinstance(t, Struct):
         return None
     for name, ft in t.fields:
-        if isinstance(ft, (DataPointer, Str)) or (isinstance(ft, Int) and ft.precision == 0):
+        if isinstance(ft, DataPointer):
             return name
     return None
 
 
 def is_task_check(expr: str, t: Type) -> str:
     """Return a C expression (truthy when result is a task) for the given return type."""
-    if isinstance(t, (DataPointer, Str)):
+    if isinstance(t, DataPointer):
         return f"PTR_IS_TASK({expr})"
     if isinstance(t, FuncPointer):
         return f"PTR_IS_TASK(({expr}).o)"
@@ -389,20 +372,11 @@ def is_task_check(expr: str, t: Type) -> str:
 
 
 def _flatten_primitives(t: Type) -> list[Type]:
-    """Recursively decompose a type into its primitive slot types.
-
-    Str is normalised to DataPointer because both lower to object_t* in C with
-    identical GC behaviour.  Int(0) (bigint) is kept as Int(0) — not normalised
-    to DataPointer — so slot types stay consistent with field types in TupleSpec
-    and other aggregates.  Slot sharing between Int(0) and DataPointer variants
-    is handled by _slot_key in compute_union_slots instead.
-    """
+    """Recursively decompose a type into its primitive slot types."""
     if isinstance(t, Struct):
         return [p for _, ft in t.fields for p in _flatten_primitives(ft)]  # unit → []
     if isinstance(t, FuncPointer):
         return [IntPtr(), DataPointer()]  # f=code pointer (non-GC), o=data pointer (GC)
-    if isinstance(t, Str):
-        return [DataPointer()]  # Str and DataPointer both lower to object_t*
     return [t]  # Int, Float, DataPointer, IntPtr — already primitive
 
 
@@ -410,8 +384,7 @@ def _primitive_rank(t: Type) -> int:
     """Lower rank = stored first in the slot struct."""
     if isinstance(t, Int) and t.precision == 64: return 0   # Int64 (8 bytes)
     if isinstance(t, Float) and t.precision == 64: return 0 # Float64 (8 bytes)
-    if isinstance(t, (DataPointer, Str)): return 1           # GC pointer
-    if isinstance(t, Int) and t.precision == 0: return 1    # bigint = GC pointer
+    if isinstance(t, DataPointer): return 1                  # GC pointer
     if isinstance(t, IntPtr): return 2                       # non-GC pointer-sized
     if isinstance(t, Int) and t.precision == 32: return 3   # Int32
     if isinstance(t, Float) and t.precision == 32: return 3 # Float32
@@ -427,9 +400,7 @@ def _can_merge_into(small: Type, large: Type) -> bool:
 
 
 def _slot_key(t: Type) -> Type:
-    """Canonical slot type for sharing: Int(0) (bigint) shares slots with DataPointer since both lower to object_t*."""
-    if isinstance(t, Int) and t.precision == 0:
-        return DataPointer()
+    """Canonical slot type for union slot sharing."""
     return t
 
 
