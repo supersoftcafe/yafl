@@ -1,8 +1,10 @@
 """Performance comparison test for the auto-parallelise pass.
 
 Compiles the same source twice — once with the auto-parallelise pass enabled
-(at -O2), once with --no-auto-parallel — runs each binary, asserts they
-produce the same exit code, and reports their wall-clock timings.
+(at -O2), once with --no-auto-parallel — runs each binary, asserts each
+produces the *expected* exit code (not merely that the two agree — a crash
+that hits both builds would otherwise sail through), and reports their
+wall-clock timings.
 
 Currently the test does NOT assert parallel < serial. The implementation is
 early; spawn cost calibration and capture-cost penalties are still TODO. This
@@ -103,7 +105,7 @@ class TestPerfParallelize(TestCase):
     # Run a few times and take the minimum to reduce variance.
     RUNS_PER_BINARY = 3
 
-    def _compare(self, source: str) -> None:
+    def _compare(self, source: str, *, expected_rc: int) -> None:
         serial_bin, _ = _build_binary(source, disable_auto_parallel=True)
         parallel_bin, rewrites = _build_binary(source, disable_auto_parallel=False)
         try:
@@ -119,10 +121,15 @@ class TestPerfParallelize(TestCase):
                 try: os.unlink(b)
                 except OSError: pass
 
-        # Correctness must match.
-        self.assertEqual(serial_rc, parallel_rc,
-                         f"serial and parallel produced different results: "
-                         f"serial={serial_rc} parallel={parallel_rc}")
+        # Both builds must produce the *expected* exit code. Checking only
+        # that serial == parallel is not enough: a workload that crashes
+        # (e.g. a stack-overflow → SIGSEGV → 139) crashes both builds
+        # identically, so the comparison passes while measuring nothing but
+        # time-to-crash.
+        self.assertEqual(serial_rc, expected_rc,
+                         f"serial build exited {serial_rc}, expected {expected_rc}")
+        self.assertEqual(parallel_rc, expected_rc,
+                         f"parallel build exited {parallel_rc}, expected {expected_rc}")
 
         ratio = parallel_t / serial_t if serial_t > 0 else float("inf")
         # Print to stderr so unittest -v shows it; this is informational.
@@ -140,29 +147,39 @@ class TestPerfParallelize(TestCase):
             f"parallel build is {ratio:.1f}× slower than serial — likely a bug")
 
     # -----------------------------------------------------------------
-    # CPU-bound workload: two recursive Fibonacci computations in a tuple.
-    # `fib` is recursive → cost-model lifts its summary above T_CPU.
-    # Two qualifying children → auto-parallelise rewrites the tuple.
+    # CPU-bound workload: two heavy nested loops in a tuple.
+    #
+    #   inner(n, acc)  — n iterations of integer arithmetic; returns 0.
+    #   outer(k, acc)  — k iterations, each running inner(...) once.
+    #   main           — (outer(...), outer(...)) in a tuple.
+    #
+    # Both `inner` and `outer` are recursive, so the cost model lifts their
+    # summaries above T_CPU. Only the (outer, outer) tuple in main has two
+    # qualifying children, so that's the one tuple auto-parallelise rewrites:
+    # `outer`'s body has just one heavy child per call (inner(...)), the loop
+    # index is trivial, so it stays sequential and there's no spawn explosion.
+    #
+    # Crucially the recursion depth is bounded (outer ≤ k frames, inner ≤ n),
+    # so the workload runs to completion instead of overflowing the stack —
+    # which is what makes the before/after timing meaningful at all.
     # -----------------------------------------------------------------
 
-    def test_cpu_bound_dual_count(self):
-        # `count` has exactly one recursive arg per call (the other is a
-        # literal), so it stays sequential — only the outer (count, count)
-        # tuple in main qualifies. This avoids the spawn-explosion that
-        # would happen if `count`'s own body kept auto-parallelising at every
-        # recursion level (a known limitation we'll address later with depth
-        # cutoffs).
+    def test_cpu_bound_dual_loop(self):
         src = """\
 namespace Test
 import System
 
-fun count(n: System::Int): System::Int
-    ret n < 1 ? 0 : 1 + count(n - 1)
+fun inner(n: System::Int, acc: System::Int): System::Int
+    ret n < 1 ? 0 : inner(n - 1, acc + n)
+
+fun outer(k: System::Int, acc: System::Int): System::Int
+    ret k < 1 ? acc : outer(k - 1, acc + inner(15000, 0))
 
 fun main(): System::Int
-    let (a, b) = (count(800000), count(800000))
+    let (a, b) = (outer(3000, 0), outer(3000, 0))
     ret a + b
 """
-        # count is deterministic — both runs must produce the same exit code,
-        # giving us a correctness check on the parallel join.
-        self._compare(src)
+        # inner(...) returns 0, so outer(k, 0) == 0 and main returns 0 — a
+        # deterministic result that doubles as a correctness check on the
+        # parallel join.
+        self._compare(src, expected_rc=0)

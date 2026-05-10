@@ -212,3 +212,37 @@ fun main(): System::Int => addTwo(3)
 """
         code = _compile_and_run(content)
         self.assertEqual(5, code)
+
+    def test_single_element_tuple_collapses_to_value(self):
+        """`( expr )` with a single un-named entry is just a parenthesised
+        expression. It must lower to the element itself — not to a one-field
+        struct that codegen then assigns to an `object_t*` slot, which is
+        invalid C and clang rejects."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+
+fun main(): System::Int
+    ret (1)
+"""
+        self.assertEqual(1, _compile_and_run(content))
+
+    def test_single_element_tuple_as_subexpression(self):
+        """A parenthesised sub-expression — e.g. the else-branch of a ternary,
+        as the auto-parallelise perf workload happened to write it — must not
+        wrap its value in a one-element tuple either."""
+        content = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+
+fun `+`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_add", left, right)
+fun `<`(left: System::Int, right: System::Int): System::Bool
+    ret __builtin_op__<bool>("integer_test_lt", left, right)
+
+fun main(): System::Int
+    ret 1 < 0 ? 9 : (3 + 4)
+"""
+        self.assertEqual(7, _compile_and_run(content))

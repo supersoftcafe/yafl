@@ -220,6 +220,18 @@ def __to_expr_tuple(result: p.Result[list[e.TupleEntryExpression]], tokens: list
     return p.Result(e.TupleExpression(result.line_ref, items), result.tokens, result.line_ref, result.errors)
 
 
+def __to_paren_expr(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    """`( expr )` as a primary expression: a single un-named entry is just a
+    parenthesised expression, so collapse the 1-tuple wrap. `()`, `(a, b)` and
+    `(name = value)` are left as TupleExpressions."""
+    value = result.value
+    if (isinstance(value, e.TupleExpression)
+            and len(value.expressions) == 1
+            and value.expressions[0].name is None):
+        value = value.expressions[0].value
+    return p.Result(value, result.tokens, result.line_ref, result.errors)
+
+
 def __to_parallel_expr(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
     assert isinstance(result.value, e.TupleExpression)
     exprs = [entry.value for entry in result.value.expressions]
@@ -470,7 +482,8 @@ __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.man
 
 __parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__") >> __to_parallel_expr
 
-__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_expr_tuple
+__parse_paren_expr = __parse_expr_tuple >> __to_paren_expr
+__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
