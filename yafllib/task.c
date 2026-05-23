@@ -81,6 +81,24 @@ EXPORT object_t* task_complete(object_t* self) {
 }
 
 
+// Like task_complete, but if a callback is registered, queue the task for
+// the worker loop to fire instead of running it inline. The caller's frame
+// returns immediately; the callback runs in a clean stack later. Use this
+// when finishing a task inside another callback — synchronous task_complete
+// would cascade through the callback chain and overflow the C stack on
+// deep trampoline recursion.
+EXPORT object_t* task_complete_deferred(object_t* self) {
+    task_t* task = (task_t*)self;
+    int32_t old = atomic_load(&task->state);
+    if (old == TASK_CALLBACK) {
+        thread_work_post(self);   // worker will task_complete; that fires the callback
+    } else {
+        atomic_store(&task->state, TASK_COMPLETE);
+    }
+    return NULL;
+}
+
+
 EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     task_t* task = (task_t*)self;
     task->callback = callback;

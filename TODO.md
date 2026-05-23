@@ -1,4 +1,67 @@
 
+# YAFL bootstrap compiler — remaining blockers
+
+Ranked by how blocking they are to writing the compiler in YAFL itself.
+
+## Hard blockers (compiler cannot function without these)
+
+- **argv / process args** — no way to read CLI input filenames today.
+- **subprocess spawn** — need to invoke clang. Workaround: split into "yafl emits
+  C, shell wrapper runs clang"; that means the YAFL binary alone isn't a
+  self-contained compiler.
+- **Recursive stack depth** — non-tail recursion blows the C stack. The
+  `[tail]` attribute helps but only in tail position. The typechecker walks
+  deep AST trees through arbitrary call paths. The async-tail-detection bug
+  below is part of this.
+
+## Ergonomic blockers (possible but writing 5K lines of yafl would be brutal)
+
+- **Early return from BlockExpression** (see section below) — the
+  "validate, validate, validate, build" pattern is the entire compiler. Without
+  it every check becomes a nested `match`.
+- **Conditions / Loops** (see sections below) — every multi-line branch becomes
+  a ternary or a recursive helper. Both already designed; not implemented.
+- **String builder / chunked concat** — codegen produces tens of KB per file;
+  naive `+` is quadratic. YAFL strings are immutable.  Either a `List<String>`
+  builder convention or a dedicated `StringBuilder`. The chunked-list pattern
+  from `JsonBigStr` is the model.
+
+## Stdlib gaps
+
+- **Set** — symbol tables / seen-sets. Workable via `Dict<K, None>` but ugly at
+  every call site.
+- **Format strings / printf** — for diagnostics. Every Error today is built by
+  `+`-concat.
+- **More List ops** — `groupBy`, `fold`, `partition`, `findIndex`; writable but
+  most compiler passes want them.
+- **Path / filesystem** — read a directory, stat, exists. Today only
+  `open_read` / `open_write` / `create` exist.
+
+## Performance / scaling
+
+- **Compiler self-throughput** — the Python compiler runs the suite in ~10 min
+  today. A YAFL compiler will be slower (per-call dispatch through generics,
+  allocation per AST node). It needs to compile itself in a tolerable time,
+  gated on: generic monomorphisation cost, GC throughput under high
+  allocation, and whether `[tail]` covers enough of the deep traversal paths.
+- **Compile times scale with stdlib size** — every example pulls in the whole
+  stdlib. As the stdlib grows to support bootstrap, compile times balloon.
+
+## Latent design
+
+- **Linear types** (see section below) — not strictly needed, but a compiler
+  opens many file handles and the leak hazard is real.
+- **Reflection / compile-time derivation** — explicitly out of scope. Means
+  every AST node type needs hand-written equality, hash, traverse, etc.;
+  manageable but adds ~30% boilerplate to the AST module.
+
+## Highest-leverage first
+
+If picking two things to fix first to unblock real progress: **early return
+from BlockExpression** and **a chunked-string builder convention**. Without
+those, the compiler code reads like a Lisp transcribed into ternaries.
+
+
 # Compiler bug — tail-call detection only enabled for sync functions
 
 `async_lower.__discover_tail_calls` now identifies `Call → Return(register)`
@@ -42,42 +105,6 @@ Workaround in `stdlib/json.yafl`: bulk-consume from a buffered lookahead so
 each recursion processes ~1 KiB at once, dropping the depth from O(N bytes)
 to O(N / 1024). Sync helpers (e.g. `_strScanDelim`) get the optimisation
 already; async parser bodies would benefit if the two fixes above land.
-
-
-# Compiler bug — Bool through async-state slots becomes struct vs int8_t
-
-A function returning `Bool` that gets called from inside another function and
-captured into the caller's async state slot triggers a codegen type mismatch:
-the slot is declared `struct_anon_X_t` while the assignment site uses
-`int8_t`. Repro: `_jsonShouldFlush(...): Bool` called from `_strAppend` (which
-becomes a state machine because it transitively calls `read`) was the original
-trigger; lifting the helper to top-level didn't help.
-
-Workaround in stdlib/json.yafl: carry the flag as `Int` (0/1). The proper fix
-is in either the boxing pass or the state-object field-type computation —
-something is treating Bool as `Bool|None` (or similar union) at one site and
-plain `bool` at the other.
-
-
-# Compiler bug — nested ternaries returning Int literals box inconsistently
-
-Repro (5 lines, no I/O):
-
-```yafl
-fun test(b: System::Int): System::Int
-  ret b > 127 ? (b > 191 ? 0 : 1) : 0
-```
-
-clang errors with two distinct types (`struct_anon_0_t` from the inner
-ternary, `object_t*` from the outer literal) being assigned to the same return
-variable. The boxing pass wraps the inner ternary's result in a 1-tuple
-(`{._0 = …}`) but leaves the outer `0` literal bare; both feed into the same
-return slot. Fix is in `lowering/boxing.py` — likely the BoxExpression
-recursion for nested match/ternary trees needs to either box uniformly across
-all sibling branches or strip the wrap when the join point is a primitive.
-
-Workaround: bind the inner ternary to a `let` first; each layer then has at
-most one ternary, which the boxing pass handles correctly.
 
 
 # Another specific heap layout optimisation

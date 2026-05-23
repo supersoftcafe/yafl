@@ -38,7 +38,7 @@ class _BasicMathFloat() : BasicMath<Float64>
   fun `<`(left: System::Float, right: System::Float): System::Bool
     ret __builtin_op__<bool>("float_lt", left, right)
 
-  fun `=`(left: System::Float, right: System::Float): System::Bool
+  fun `==`(left: System::Float, right: System::Float): System::Bool
     ret __builtin_op__<bool>("float_eq", left, right)
 
   fun `>`(left: System::Float, right: System::Float): System::Bool

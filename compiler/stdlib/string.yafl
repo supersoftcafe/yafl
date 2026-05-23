@@ -16,7 +16,7 @@ class _BasicCompareString() : BasicCompare<String>
   fun `<`(left: System::String, right: System::String): System::Bool
     ret __builtin_op__<bool>("string_lt", left, right)
 
-  fun `=`(left: System::String, right: System::String): System::Bool
+  fun `==`(left: System::String, right: System::String): System::Bool
     ret __builtin_op__<bool>("string_eq", left, right)
 
   fun `>`(left: System::String, right: System::String): System::Bool
@@ -42,12 +42,9 @@ fun slice(s: System::String, start: System::Int, end: System::Int): System::Stri
 fun compare(left: System::String, right: System::String): System::Int
   ret __builtin_op__<bigint>("string_compare_int", left, right)
 
-fun at(s: System::String, i: System::Int): System::String
-  ret __builtin_op__<str>("string_at", s, i)
-
 # Unsigned byte value at byte offset i, or -1 if i is out of range.
-# Useful for UTF-8 boundary detection — `at` returns a 1-byte slice
-# but does not expose the numeric value.
+# Use this for byte-level dispatch; if a 1-byte string is needed, use
+# `slice(s, i, i+1)`.
 fun byteAt(s: System::String, i: System::Int): System::Int
   ret __builtin_op__<bigint>("string_byte_at", s, i)
 
@@ -55,6 +52,19 @@ fun byteAt(s: System::String, i: System::Int): System::Int
 # Used by parsers to scan a buffer in one C call rather than recursing per byte.
 fun findByte(s: System::String, byte: System::Int, from: System::Int): System::Int
   ret __builtin_op__<bigint>("string_find_byte", s, byte, from)
+
+# Index of the first byte at or after `from` in `s` that is a member of
+# `accept`, or `length(s)` when no such byte exists.  Building block for
+# bulk-scanning parsers (e.g. find next delimiter in a buffer).
+fun findAny(s: System::String, accept: System::String, from: System::Int): System::Int
+  ret __builtin_op__<bigint>("string_find_any", s, accept, from)
+
+# Index of the first byte at or after `from` in `s` that is NOT a member
+# of `accept`, or `length(s)` when every remaining byte is in `accept`.
+# Counterpart to findAny — used to skip a run of characters from a fixed
+# set (whitespace, digits, etc.) in a single C call.
+fun skipAny(s: System::String, accept: System::String, from: System::Int): System::Int
+  ret __builtin_op__<bigint>("string_skip_any", s, accept, from)
 
 fun parseInt(s: System::String): System::Int|System::None
   ret __builtin_op__<bigint>("string_parse_int", s)

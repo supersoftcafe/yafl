@@ -34,13 +34,13 @@ fun _dict_node<K,V>(h: Int, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Di
 fun _bucket_get<K,V>(b: _DictBucket<K,V>, k: K): V|None where BasicEquality<K>
   ret match(b)
     (n: _BucketNil)  => None
-    (c: _BucketCons) => c.key = k ? c.value : _bucket_get<K,V>(c.tail, k)
+    (c: _BucketCons) => c.key == k ? c.value : _bucket_get<K,V>(c.tail, k)
 
 
 fun _bucket_put<K,V>(b: _DictBucket<K,V>, k: K, v: V): _DictBucket<K,V> where BasicEquality<K>
   ret match(b)
     (n: _BucketNil)  => _BucketCons<K,V>(k, v, _BucketNil<K,V>())
-    (c: _BucketCons) => c.key = k
+    (c: _BucketCons) => c.key == k
       ? _BucketCons<K,V>(k, v, c.tail)
       : _BucketCons<K,V>(c.key, c.value, _bucket_put<K,V>(c.tail, k, v))
 
@@ -48,13 +48,13 @@ fun _bucket_put<K,V>(b: _DictBucket<K,V>, k: K, v: V): _DictBucket<K,V> where Ba
 fun _bucket_remove<K,V>(b: _DictBucket<K,V>, k: K): _DictBucket<K,V> where BasicEquality<K>
   ret match(b)
     (n: _BucketNil)  => _BucketNil<K,V>()
-    (c: _BucketCons) => c.key = k ? c.tail : _BucketCons<K,V>(c.key, c.value, _bucket_remove<K,V>(c.tail, k))
+    (c: _BucketCons) => c.key == k ? c.tail : _BucketCons<K,V>(c.key, c.value, _bucket_remove<K,V>(c.tail, k))
 
 
 fun _bucket_has<K,V>(b: _DictBucket<K,V>, k: K): Bool where BasicEquality<K>
   ret match(b)
-    (n: _BucketNil)  => 0 = 1
-    (c: _BucketCons) => c.key = k ? 0 = 0 : _bucket_has<K,V>(c.tail, k)
+    (n: _BucketNil)  => 0 == 1
+    (c: _BucketCons) => c.key == k ? 0 == 0 : _bucket_has<K,V>(c.tail, k)
 
 
 # ─── AVL rotations and rebalancing ───────────────────────────────────────────
@@ -168,7 +168,7 @@ fun remove<K,V>(d: Dict<K,V>, k: K): Dict<K,V> where BasicEquality<K>
 fun contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
   let h = hashOf(k)
   ret match(d)
-    (e: DictEmpty) => 0 = 1
+    (e: DictEmpty) => 0 == 1
     (n: DictNode)  => h < n.hash
       ? contains<K,V>(n.left, k)
       : h > n.hash

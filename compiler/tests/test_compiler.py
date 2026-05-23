@@ -331,8 +331,10 @@ fun main(): Int
         # A state machine should have been generated (for whichever function
         # remains after AST inlining — double_call may be folded into main),
         # plus the TaskWrapper struct (struct { int32_t value; object_t* task; })
-        # for the return type.
-        self.assertIn("$async", c_code)
+        # for the return type. The state-machine companion function's name
+        # ends in `_async` (the YAFL-internal `$async` suffix, mangled to
+        # `_async` for portable C identifiers).
+        self.assertIn("_async", c_code)
         self.assertIn("int32_t value", c_code)   # TaskWrapper inner field
 
         with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:

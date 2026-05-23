@@ -318,7 +318,7 @@ class MatchExpression(e.Expression):
         return errors
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        subj_bundle = self.subject.generate(resolver).rename_vars("s")
+        subj_bundle = self.subject.generate(resolver).with_prefix("subj")
         subj_type = self.subject.get_type(resolver)
         result_type = self.get_type(resolver)
         result_var = cg_p.StackVar(result_type.generate(resolver), "result") if result_type else None
@@ -342,13 +342,40 @@ class MatchExpression(e.Expression):
         assert isinstance(target_ctype, cg_t.Struct)
         return self.__gen_tagged_match(resolver, subj_bundle, subj_type, target_ctype, result_var, discriminators)
 
-    def __emit_arm_body(self, arm: MatchArm, arm_resolver: g.Resolver, suffix: str,
-                        result_var: cg_p.StackVar | None, bundles: list) -> None:
-        """Generate arm body, append it to bundles, and store its result into result_var if present."""
-        body_bundle = arm.body.generate(arm_resolver).rename_vars(suffix)
+    def __emit_arm_body(self, arm: MatchArm, arm_resolver: g.Resolver, prefix: str,
+                        bundles: list, arm_results: list[tuple[str, cg_p.RParam]]) -> None:
+        """Generate the arm body, append it (prefixed) to `bundles`, then append
+        an explicit `Label({prefix}_exit)` that names the predecessor block the
+        Phi at the join sees for this arm's edge. Records `(exit_label,
+        body.result_var)` in `arm_results` so the caller can build the Phi.
+
+        The caller is responsible for emitting `Jump(end_label)` after this
+        and for accumulating `arm_results` across all arms.
+        """
+        body_bundle = arm.body.generate(arm_resolver).with_prefix(prefix)
         bundles.append(body_bundle)
-        if result_var:
-            bundles.append(g.OperationBundle(operations=(cg_o.Move(result_var, body_bundle.result_var),)))
+        if body_bundle.result_var is not None:
+            exit_label = f"{prefix}_exit"
+            bundles.append(g.OperationBundle(operations=(cg_o.Label(exit_label),)))
+            arm_results.append((exit_label, body_bundle.result_var))
+
+    def __emit_phi_join(self, end_label: str, result_var: cg_p.StackVar | None,
+                         arm_results: list[tuple[str, cg_p.RParam]]) -> g.OperationBundle:
+        """Build the bundle at the end of a match: `Label(end_label)` plus, if
+        the match has a value, a `Phi` collecting one source per arm.
+
+        If `result_var` is None (the match produces no value), just emits the
+        end label. If no arms contribute a value (all bodies are unit), same.
+        Otherwise emits the join Label, the Phi, and the result_var as the
+        bundle's result.
+        """
+        if result_var is None or not arm_results:
+            return g.OperationBundle(operations=(cg_o.Label(end_label),))
+        phi = cg_o.Phi(target=result_var, sources=tuple(arm_results))
+        return g.OperationBundle(
+            stack_vars=(result_var,),
+            operations=(cg_o.Label(end_label), phi),
+            result_var=result_var)
 
     def __bind_arm_var(self, arm: MatchArm, arm_ctype, slot_assignments, slot_fields,
                        sv: cg_p.RParam, resolver: g.Resolver, bundles: list) -> g.Resolver:
@@ -407,8 +434,8 @@ class MatchExpression(e.Expression):
         is_bigint = subj_type.type_name == "bigint"
         sv = subj_bundle.result_var
         end_label = "match_end"
-        stack_vars = (result_var,) if result_var else ()
         bundles = [subj_bundle]
+        arm_results: list[tuple[str, cg_p.RParam]] = []
 
         literal_arms = [arm for arm in self.arms if arm.literal is not None]
         else_arm = next((arm for arm in self.arms
@@ -418,7 +445,7 @@ class MatchExpression(e.Expression):
             arm_label = f"match_arm_{i}"
             next_label = f"match_next_{i}"
 
-            lit_bundle = arm.literal.generate(resolver).rename_vars(f"l{i}")
+            lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{i}")
             bundles.append(lit_bundle)
 
             args = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
@@ -432,15 +459,11 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
 
-            arm_local = []
-            self.__emit_arm_body(arm, resolver, f"a{i}", result_var, arm_local)
-            if arm_local:
-                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{i}_"))
+            self.__emit_arm_body(arm, resolver, f"arm{i}", bundles, arm_results)
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if else_arm is not None:
-            else_local = []
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
@@ -451,11 +474,9 @@ class MatchExpression(e.Expression):
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 else_resolver = g.ResolverData(resolver, find_else)
-                else_local.append(g.OperationBundle(stack_vars=(else_sv,),
-                                                    operations=(cg_o.Move(else_sv, sv),)))
-            self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
-            if else_local:
-                bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+                bundles.append(g.OperationBundle(
+                    stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)).with_prefix("else"))
+            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results)
         else:
             # No fall-through arm: control cannot reach end_label with
             # result_var uninitialised.  Emitting Abort here makes the
@@ -464,9 +485,8 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="primitive match fell through all arms"),)))
 
-        bundles.append(g.OperationBundle(stack_vars=stack_vars,
-                                         operations=(cg_o.Label(end_label),), result_var=result_var))
-        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+        bundles.append(self.__emit_phi_join(end_label, result_var, arm_results))
+        return reduce(lambda a, b: a + b, bundles)
 
     def __gen_pointer_match(self, resolver, subj_bundle, subj_type, result_var, discriminators):
         """DataPointer union dispatch.
@@ -488,8 +508,8 @@ class MatchExpression(e.Expression):
         """
         unit_type = cg_t.Struct(())
         sv         = subj_bundle.result_var
-        stack_vars = (result_var,) if result_var else ()
         end_label  = "match_end"
+        arm_results: list[tuple[str, cg_p.RParam]] = []
 
         subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.types)
 
@@ -552,7 +572,7 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-            self.__emit_pointer_arm_body(target_arm, sv, subj_type, resolver, suffix, result_var, bundles)
+            self.__emit_pointer_arm_body(target_arm, sv, subj_type, resolver, f"arm_{suffix}_{idx}", bundles, arm_results)
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
@@ -567,7 +587,7 @@ class MatchExpression(e.Expression):
                 lit = arm.literal
                 idx = next_counter[0]
                 next_counter[0] = idx + 1
-                lit_bundle = lit.generate(resolver).rename_vars(f"lit{idx}")
+                lit_bundle = lit.generate(resolver).with_prefix(f"lit{idx}")
                 arm_label  = f"match_lit_{idx}"
                 next_label = f"match_next_{idx}"
                 check_label = f"match_litchk_{idx}"
@@ -596,20 +616,19 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-                self.__emit_pointer_arm_body(arm, sv, subj_type, resolver, f"lit{idx}", result_var, bundles)
+                self.__emit_pointer_arm_body(arm, sv, subj_type, resolver, f"arm_lit_{idx}", bundles, arm_results)
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if final_fallback is not None:
             self.__emit_pointer_arm_body(final_fallback, sv, subj_type, resolver, "fb",
-                                         result_var, bundles)
+                                         bundles, arm_results)
         else:
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="pointer-union match fell through all arms"),)))
 
-        bundles.append(g.OperationBundle(stack_vars=stack_vars,
-                                         operations=(cg_o.Label(end_label),), result_var=result_var))
-        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+        bundles.append(self.__emit_phi_join(end_label, result_var, arm_results))
+        return reduce(lambda a, b: a + b, bundles)
 
     def __class_is_foreign(self, resolver: g.Resolver, class_name: str) -> bool:
         """Return True if the named class is declared `[foreign]` — its
@@ -622,7 +641,8 @@ class MatchExpression(e.Expression):
                 return True
         return False
 
-    def __emit_pointer_arm_body(self, arm, sv, subj_type, resolver, suffix, result_var, bundles):
+    def __emit_pointer_arm_body(self, arm, sv, subj_type, resolver, prefix, bundles,
+                                 arm_results: list[tuple[str, cg_p.RParam]]):
         """Bind the arm's name (if any) to the subject pointer and emit the body.
 
         The bound local takes the arm's type (or subject type for an else
@@ -636,9 +656,13 @@ class MatchExpression(e.Expression):
         `object_t*` and can't assign to a `struct{}`, so we synthesise an
         empty-struct zero value instead — the unit value carries no data
         anyway.
+
+        Both the optional binding bundle and the arm body share the same
+        `prefix` so names line up at the same path level; the body's
+        result-var name is reported back via `arm_results` for the Phi at
+        the match join.
         """
         arm_resolver = resolver
-        arm_local = []
         if arm.name and arm.name != "_":
             type_for_binding = arm.type_spec if arm.type_spec is not None else subj_type
             arm_unique = _arm_unique_name(arm)
@@ -652,11 +676,9 @@ class MatchExpression(e.Expression):
                     return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                 return []
             arm_resolver = g.ResolverData(resolver, find_bound)
-            arm_local.append(g.OperationBundle(stack_vars=(bound_sv,),
-                                               operations=(cg_o.Move(bound_sv, move_value),)))
-        self.__emit_arm_body(arm, arm_resolver, suffix, result_var, arm_local)
-        if arm_local:
-            bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"{suffix}_"))
+            bundles.append(g.OperationBundle(stack_vars=(bound_sv,),
+                                              operations=(cg_o.Move(bound_sv, move_value),)).with_prefix(prefix))
+        self.__emit_arm_body(arm, arm_resolver, prefix, bundles, arm_results)
 
     def __gen_tagged_match(self, resolver, subj_bundle, subj_type, container, result_var, discriminators):
         """Tagged-union Struct: compare $tag for each typed arm; for literal
@@ -665,8 +687,8 @@ class MatchExpression(e.Expression):
         value."""
         sv         = subj_bundle.result_var
         tag_field  = cg_p.StructField(sv, "$tag")
-        stack_vars = (result_var,) if result_var else ()
         end_label  = "match_end"
+        arm_results: list[tuple[str, cg_p.RParam]] = []
 
         variant_types = [v.generate(resolver) for v in subj_type.types]
         _, variant_map = cg_t.compute_union_slots(variant_types)
@@ -695,7 +717,7 @@ class MatchExpression(e.Expression):
             if arm.literal is not None:
                 lit_ast_type = arm.literal.get_type(resolver)
                 lit_type_name = lit_ast_type.type_name if isinstance(lit_ast_type, t.BuiltinSpec) else None
-                lit_bundle = arm.literal.generate(resolver).rename_vars(f"lit{arm_index}")
+                lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{arm_index}")
                 var_idx, _ = primitive_variant_info(lit_type_name)
                 if var_idx is None:
                     arm_index += 1
@@ -721,10 +743,7 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-                arm_local = []
-                self.__emit_arm_body(arm, resolver, f"lit{arm_index}", result_var, arm_local)
-                if arm_local:
-                    bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"lit{arm_index}_"))
+                self.__emit_arm_body(arm, resolver, f"lit{arm_index}", bundles, arm_results)
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
                 arm_index += 1
@@ -738,23 +757,23 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
 
-            arm_local = []
+            arm_prefix = f"arm{arm_index}"
             arm_resolver = resolver
             if arm.name and arm.name != "_":
                 var_idx = next((idx for idx, vt in enumerate(variant_types) if vt == arm_ctype), None)
                 if var_idx is not None:
+                    binding_local: list = []
                     arm_resolver = self.__bind_arm_var(
-                        arm, arm_ctype, variant_map[var_idx], slot_fields, sv, resolver, arm_local)
+                        arm, arm_ctype, variant_map[var_idx], slot_fields, sv, resolver, binding_local)
+                    if binding_local:
+                        bundles.append(reduce(lambda a, b: a + b, binding_local).with_prefix(arm_prefix))
 
-            self.__emit_arm_body(arm, arm_resolver, f"a{arm_index}", result_var, arm_local)
-            if arm_local:
-                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{arm_index}_"))
+            self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results)
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
             arm_index += 1
 
         if else_arm:
-            else_local = []
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
@@ -765,17 +784,15 @@ class MatchExpression(e.Expression):
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 else_resolver = g.ResolverData(resolver, find_else)
-                else_local.append(g.OperationBundle(stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)))
-            self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
-            if else_local:
-                bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+                bundles.append(g.OperationBundle(
+                    stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)).with_prefix("else"))
+            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results)
         else:
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="tagged-union match fell through all arms"),)))
 
-        bundles.append(g.OperationBundle(stack_vars=stack_vars,
-                                         operations=(cg_o.Label(end_label),), result_var=result_var))
-        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+        bundles.append(self.__emit_phi_join(end_label, result_var, arm_results))
+        return reduce(lambda a, b: a + b, bundles)
 
     def __gen_enum_match(self, resolver, subj_bundle, subj_type: t.EnumSpec, result_var):
         """EnumSpec: compare $tag for each arm using discriminator indices from the EnumSpec."""
@@ -787,9 +804,9 @@ class MatchExpression(e.Expression):
             tag_sv = cg_p.ObjectField(cg_t._tag_type(len(subj_type.all_leaf_names)), sv, subj_type.root_name, "$tag", None)
         else:
             tag_sv = cg_p.StructField(sv, "$tag")
-        stack_vars = (result_var,) if result_var else ()
         end_label = "match_end"
         bundles = [subj_bundle]
+        arm_results: list[tuple[str, cg_p.RParam]] = []
         else_arm = next((arm for arm in self.arms if arm.type_spec is None), None)
 
         for i, arm in enumerate(arm for arm in self.arms if arm.type_spec is not None):
@@ -797,6 +814,7 @@ class MatchExpression(e.Expression):
             assert isinstance(arm_type, t.EnumSpec)
             arm_label = f"match_arm_{i}"
             next_label = f"match_next_{i}"
+            arm_prefix = f"arm{i}"
 
             for leaf_name in arm_type.valid_leaf_names:
                 leaf_idx = arm_type.all_leaf_names.index(leaf_name)
@@ -805,7 +823,6 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
 
-            arm_local = []
             arm_resolver = resolver
             if arm.name and arm.name != "_":
                 arm_unique = _arm_unique_name(arm)
@@ -827,16 +844,14 @@ class MatchExpression(e.Expression):
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 arm_resolver = g.ResolverData(resolver, find_arm)
-                arm_local.append(g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, sv),)))
+                bundles.append(g.OperationBundle(
+                    stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, sv),)).with_prefix(arm_prefix))
 
-            self.__emit_arm_body(arm, arm_resolver, f"a{i}", result_var, arm_local)
-            if arm_local:
-                bundles.append(reduce(lambda a, b: a + b, arm_local).rename_vars(f"arm{i}_"))
+            self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results)
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if else_arm:
-            else_local = []
             else_resolver = resolver
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
@@ -847,14 +862,12 @@ class MatchExpression(e.Expression):
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
                 else_resolver = g.ResolverData(resolver, find_else)
-                else_local.append(g.OperationBundle(stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)))
-            self.__emit_arm_body(else_arm, else_resolver, "el", result_var, else_local)
-            if else_local:
-                bundles.append(reduce(lambda a, b: a + b, else_local).rename_vars("else_"))
+                bundles.append(g.OperationBundle(
+                    stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)).with_prefix("else"))
+            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results)
         else:
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="enum match fell through all arms"),)))
 
-        bundles.append(g.OperationBundle(stack_vars=stack_vars,
-                                         operations=(cg_o.Label(end_label),), result_var=result_var))
-        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+        bundles.append(self.__emit_phi_join(end_label, result_var, arm_results))
+        return reduce(lambda a, b: a + b, bundles)

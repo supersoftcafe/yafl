@@ -1,13 +1,29 @@
 """End-to-end tests for the System::IO stdlib: real file read/write, close,
-error-code mapping, and operation-after-close behaviour."""
+error-code mapping, and operation-after-close behaviour.
+
+`IO` is a linear type — every handle must be consumed exactly once. The
+sources below thread the handle through and close it on every path; the
+shared `_done` helper closes a handle and yields an exit code.
+"""
 from __future__ import annotations
 
+import io
 import os
 import tempfile
+import contextlib
 from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run_stdlib
+
+
+# Closes a handle on any path and yields the given exit code. Embedded into
+# the test sources that need to discharge a linear IO on an error arm.
+_DONE = """fun _done(h: IO, code: System::Int): System::Int
+  ret match(h.close())
+    (e: IOError)      => code
+    (n: System::None) => code
+"""
 
 
 class TestIO(TestCase):
@@ -18,9 +34,10 @@ class TestIO(TestCase):
 import System
 import System::IO
 
+""" + _DONE + """
 fun main(): System::Int
   ret match(open_read("/nonexistent/yafl_test_ypr0qZ_987654321"))
-    (h: IO) => 99
+    (h: IO) => _done(h, 99)
     (e: IOError) => match(e)
       (x: FileNotFoundError) => 0
       () => 1
@@ -38,22 +55,20 @@ fun main(): System::Int
 import System
 import System::IO
 
+{_DONE}
 fun doWrite(h: IO): System::Int
   let r = h.write("hello")
   ret match(r.v)
-    (n: System::Int) =>
-      match(r.io.close())
-        (e: IOError)      => 1
-        (n: System::None) => 0
-    (e: IOError) => 2
+    (n: System::Int) => _done(r.io, 0)
+    (e: IOError)     => _done(r.io, 2)
 
 fun doRead(h: IO): System::Int
   let r = h.read(5)
   ret match(r.v)
     (s: System::String) => match(s)
-      ("hello") => 0
-      (x) => 11
-    (e: IOError) => 12
+      ("hello") => _done(r.io, 0)
+      (x)       => _done(r.io, 11)
+    (e: IOError) => _done(r.io, 12)
 
 fun writePhase(): System::Int
   ret match(create("{path}"))
@@ -77,14 +92,10 @@ fun main(): System::Int
             with open(path, "rb") as f:
                 self.assertEqual(b"hello", f.read())
 
-    def test_read_after_close_returns_error(self):
-        """A read on a closed handle returns an IOError, not a String."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "closed.txt")
-            # seed the file with some content
-            with open(path, "w") as f:
-                f.write("data")
-            src = f"""namespace Main
+    def test_use_after_close_is_compile_error(self):
+        """Reading a handle after close() is a linearity violation — the
+        compiler must reject it (the handle is consumed by close)."""
+        src = """namespace Main
 import System
 import System::IO
 
@@ -100,39 +111,37 @@ fun tryReadClosed(h: IO): System::Int
     (n: System::None) => readAfterClose(h)
 
 fun main(): System::Int
-  ret match(open_read("{path}"))
+  ret match(open_read("/tmp/whatever"))
     (h: IO) => tryReadClosed(h)
     (e: IOError) => 88
 """
-            code = compile_and_run_stdlib(src)
-            self.assertEqual(0, code,
-                "expected IOError after read on closed handle")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = c.compile([c.Input(src, "test.yafl")],
+                               use_stdlib=True, just_testing=False)
+        self.assertEqual("", result, "use-after-close must be a compile error")
 
     def test_write_then_read_via_monadic_chain(self):
         """The (io, v: T|IOError) pair shape composes through nested match
-        destructuring that mirrors a future `?>` chain."""
+        destructuring, threading the handle the whole way."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "chain.txt")
             src = f"""namespace Main
 import System
 import System::IO
 
-fun closeOk(h: IO): System::Int
-  ret match(h.close())
-    (e: IOError)      => 1
-    (n: System::None) => 0
-
+{_DONE}
 fun writeSecond(h: IO): System::Int
   let r = h.write("cd")
   ret match(r.v)
-    (n: System::Int) => closeOk(r.io)
-    (e: IOError) => 2
+    (n: System::Int) => _done(r.io, 0)
+    (e: IOError)     => _done(r.io, 2)
 
 fun writeTwice(h: IO): System::Int
   let r = h.write("ab")
   ret match(r.v)
     (n: System::Int) => writeSecond(r.io)
-    (e: IOError) => 3
+    (e: IOError)     => _done(r.io, 3)
 
 fun main(): System::Int
   ret match(create("{path}"))
@@ -155,12 +164,13 @@ fun main(): System::Int
 import System
 import System::IO
 
+{_DONE}
 fun pickLine(h: IO): System::Int
   let r = h.readLine()
   ret match(r.v)
-    ("hello") => 0
-    (s: System::String) => 1
-    (e: IOError) => 2
+    ("hello") => _done(r.io, 0)
+    (s: System::String) => _done(r.io, 1)
+    (e: IOError) => _done(r.io, 2)
 
 fun main(): System::Int
   ret match(open_read("{path}"))
@@ -180,12 +190,13 @@ fun main(): System::Int
 import System
 import System::IO
 
+{_DONE}
 fun pickLine(h: IO): System::Int
   let r = h.readLine()
   ret match(r.v)
-    ("hi") => 0
-    (s: System::String) => 1
-    (e: IOError) => 2
+    ("hi") => _done(r.io, 0)
+    (s: System::String) => _done(r.io, 1)
+    (e: IOError) => _done(r.io, 2)
 
 fun main(): System::Int
   ret match(open_read("{path}"))
@@ -205,13 +216,14 @@ fun main(): System::Int
 import System
 import System::IO
 
+{_DONE}
 fun pickLine(h: IO): System::Int
   let r = h.readLine()
   ret match(r.v)
-    (s: System::String) => 1
+    (s: System::String) => _done(r.io, 1)
     (e: IOError) => match(e)
-      (eof: EOFError) => 0
-      ()              => 2
+      (eof: EOFError) => _done(r.io, 0)
+      ()              => _done(r.io, 2)
 
 fun main(): System::Int
   ret match(open_read("{path}"))
@@ -239,6 +251,7 @@ import System::IO
 
 class Triple(a: System::String, b: System::String, c: System::String)
 
+{_DONE}
 fun readThree(io: IO): (io: IO, v: Triple|IOError)
   ret io.readLine() ?> (io: IO, a: System::String) =>
       io.readLine() ?> (io: IO, b: System::String) =>
@@ -247,6 +260,7 @@ fun readThree(io: IO): (io: IO, v: Triple|IOError)
 
 fun check(h: IO): System::Int
   let r = readThree(h)
+  let closed = r.io.close()
   ret match(r.v)
     (t: Triple) => match(t.a)
       ("one") => match(t.b)
@@ -276,12 +290,13 @@ fun main(): System::Int
 import System
 import System::IO
 
+{_DONE}
 fun pickLine(h: IO): System::Int
   let r = h.readLine()
   ret match(r.v)
-    ("abc") => 0
-    (s: System::String) => 1
-    (e: IOError) => 2
+    ("abc") => _done(r.io, 0)
+    (s: System::String) => _done(r.io, 1)
+    (e: IOError) => _done(r.io, 2)
 
 fun main(): System::Int
   ret match(open_read("{path}"))
@@ -291,3 +306,30 @@ fun main(): System::Int
             code = compile_and_run_stdlib(src)
             self.assertEqual(0, code,
                 "readLine at EOF with partial data must return the partial line")
+
+    def test_pipe_chain_typechecks_in_let_binding(self):
+        """Regression: `let r = a ?> f` should typecheck identically to
+        `ret a ?> f`.  Bind chains used as a let's default value were
+        emitting a spurious "Incorrect type" diagnostic, which caused
+        compile() to return "" while the diagnostic was printed to
+        stdout — silently breaking any build that didn't re-check the
+        generated .c file."""
+        src = """namespace Main
+import System
+import System::IO
+
+fun emit(io: IO): (io: IO, v: Int|IOError)
+  let r = io.write("a") ?> (io: IO, _: Int) => io.write("b")
+  ret r
+
+fun main(): System::Int
+  let r = emit(stdout())
+  let closed = r.io.close()
+  ret match(r.v)
+    (n: System::Int) => 0
+    (e: IOError)     => 1
+"""
+        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        self.assertTrue(c_code,
+            "compile produced no output — `?>` chain in a `let` binding "
+            "triggered a spurious type error (works fine in a `ret` position)")

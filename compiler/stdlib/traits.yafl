@@ -4,7 +4,7 @@ interface BasicPlus<TVal>
   fun `+`(left: TVal, right: TVal): TVal
 
 interface BasicEquality<TVal>
-  fun `=`(left: TVal, right: TVal): System::Bool
+  fun `==`(left: TVal, right: TVal): System::Bool
   fun hashOf(value: TVal): System::Int  # Must return >= 0
 
 interface BasicCompare<TVal> : BasicEquality<TVal>

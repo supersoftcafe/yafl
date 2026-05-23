@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+from functools import reduce
 from collections.abc import Sequence
 from typing import Callable, Iterable, Any
 from dataclasses import dataclass, field
@@ -214,7 +215,18 @@ class FunctionStatement(DataStatement):
         else:
             sync_err = []
 
-        return err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
+        tail_err: list[Error] = []
+        if "tail" in self.attributes:
+            if self.attributes.get("tail") is not None:
+                tail_err.append(Error(self.line_ref, "[tail] takes no arguments"))
+            if self.body is None:
+                tail_err.append(Error(self.line_ref, "[tail] cannot be applied to a foreign function"))
+
+        terminal_err: list[Error] = []
+        if "terminal" in self.attributes and self.attributes.get("terminal") is not None:
+            terminal_err.append(Error(self.line_ref, "[terminal] takes no arguments"))
+
+        return err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err + tail_err + terminal_err
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Function:
         resolver = g.ResolverType(resolver, self._find_generic_types)
@@ -222,11 +234,11 @@ class FunctionStatement(DataStatement):
 
         bundle = g.OperationBundle()
         for index, parameter in enumerate(self.parameters.targets):
-            bundle = bundle + parameter.to_c_destructure(None).rename_vars(f"p{index}_")
+            bundle = bundle + parameter.to_c_destructure(None).with_prefix(f"p{index}")
         if self.body is not None:
             body_bundle = self.body.generate(resolver)
             ret_bundle = g.OperationBundle((), (cg_o.Return(body_bundle.result_var),))
-            bundle = bundle + (body_bundle + ret_bundle).rename_vars("body_")
+            bundle = bundle + (body_bundle + ret_bundle).with_prefix("body")
 
         params: list[tuple[str, cg_t.Type]] = [("this", cg_t.DataPointer())]
         for prm in self.parameters.targets:
@@ -253,7 +265,8 @@ class FunctionStatement(DataStatement):
             ops = tuple(bundle.operations),
             comment = self.name,
             foreign_symbol = foreign_symbol,
-            sync = "sync" in self.attributes
+            sync = "sync" in self.attributes,
+            tail = "tail" in self.attributes,
         )
 
 
@@ -426,7 +439,20 @@ class ClassStatement(TypeStatement):
         else:
             class_foreign_err = []
 
-        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + bad_slots_err + empty_slots_err
+        if "linear" in self.attributes:
+            if self.attributes.get("linear") is not None:
+                class_linear_err = [Error(self.line_ref, "[linear] takes no arguments")]
+            elif "final" not in self.attributes:
+                class_linear_err = [Error(self.line_ref, "[linear] classes must also be [final]")]
+            else:
+                class_linear_err = []
+        else:
+            class_linear_err = []
+
+        linear_tp_err = [Error(self.line_ref, "[linear] type parameters are only supported on functions")
+                         for tp in self.type_params if "linear" in tp.attributes]
+
+        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_x.Object, list[cg_x.Function]]:
@@ -485,18 +511,17 @@ class LetStatement(DataStatement):
             return g.OperationBundle()
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
-        def has_named_spec(spec: t.TypeSpec) -> bool:
-            if isinstance(spec, t.NamedSpec):
-                return True
-            if isinstance(spec, t.CombinationSpec):
-                return any(has_named_spec(s) for s in spec.types)
-            return False
-
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
-        if (dt is None or isinstance(dt, t.NamedSpec)) and dv is not None:
+        # Refine declared_type from the default value while it is not yet
+        # concrete (still contains unresolved NamedSpecs anywhere in the
+        # spec tree).  Use TypeSpec.is_concrete() rather than an ad-hoc
+        # recursive predicate, so all compound specs (tuples, callables,
+        # combinations, etc.) are checked uniformly.  The compile loop
+        # iterates until the inferred type stabilises as concrete.
+        if dv is not None and (dt is None or not dt.is_concrete()):
             inferred = dv.get_type(resolver)
-            if inferred is not None and not has_named_spec(inferred):
+            if inferred is not None and inferred.is_concrete():
                 dt = inferred
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
         return stmt, dv_glb+dt_glb
@@ -517,15 +542,15 @@ class LetStatement(DataStatement):
         return err1 + err2 + const_err
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        expr_bundle = self.default_value.generate(resolver).rename_vars(1)
+        expr_bundle = self.default_value.generate(resolver).with_prefix("expr")
         sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
             operations=(cg_o.Move(sv, expr_bundle.result_var),),
             result_var=None
         )
-        unpack_bundle = self.to_c_destructure(None)
-        return (expr_bundle + init_bundle).rename_vars(1) + unpack_bundle.rename_vars(2)
+        unpack_bundle = self.to_c_destructure(None).with_prefix("unpack")
+        return expr_bundle + init_bundle + unpack_bundle
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[list[cg_x.Global], list[cg_x.Function]]:
         init_funcs: list[cg_x.Function] = []
@@ -585,27 +610,24 @@ class DestructureStatement(LetStatement):
         if not root:
             # The first attempt should declare the root var
             root = cg_p.StackVar(self.get_type().generate(resolver), self.name)
-        result = g.OperationBundle()
-        for index, target in enumerate(self.targets):
-            destr = target.to_c_destructure(cg_p.StructField(root, f"_{index}"), resolver)
-            result = result.rename_vars(1) + destr.rename_vars(2)
-        return result
+        bundles = [
+            target.to_c_destructure(cg_p.StructField(root, f"_{index}"), resolver).with_prefix(f"f{index}")
+            for index, target in enumerate(self.targets)
+        ]
+        return reduce(lambda a, b: a + b, bundles) if bundles else g.OperationBundle()
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        expr_bundle = self.default_value.generate(resolver).rename_vars(1)
+        expr_bundle = self.default_value.generate(resolver).with_prefix("expr")
         sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
             operations=(cg_o.Move(sv, expr_bundle.result_var),),
             result_var=None
         )
-        # After (expr_bundle + init_bundle).rename_vars(1), `_` lands at index
-        # len(expr_bundle.stack_vars) in the combined tuple, so its renamed name
-        # is uvar_1_N.  Pass that renamed var as root so unpack ops reference it
-        # directly — they survive rename_vars(2) untouched.
-        sv_renamed = cg_p.StackVar(sv.type, f"uvar_1_{len(expr_bundle.stack_vars)}")
-        unpack_bundle = self.to_c_destructure(sv_renamed, resolver)
-        return (expr_bundle + init_bundle).rename_vars(1) + unpack_bundle.rename_vars(2)
+        # `sv` is at the un-prefixed root of init_bundle; pass it directly as
+        # the destructure root rather than predicting a renamed name.
+        unpack_bundle = self.to_c_destructure(sv, resolver).with_prefix("unpack")
+        return expr_bundle + init_bundle + unpack_bundle
 
     def add_namespace(self, path: str):
         x: DestructureStatement = cast(DestructureStatement, super().add_namespace(path))
@@ -774,6 +796,8 @@ class EnumStatement(TypeStatement):
         errors: list[Error] = list(self.parameters.check(resolver, None))
         for v in self.variants:
             errors += v.check(resolver, None)
+        errors += [Error(self.line_ref, "[linear] type parameters are only supported on functions")
+                   for tp in self.type_params if "linear" in tp.attributes]
         return errors
 
     def global_codegen(self, resolver: g.Resolver) -> cg_x.Object | None:

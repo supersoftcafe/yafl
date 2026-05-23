@@ -36,7 +36,7 @@ class _BasicMathInt() : BasicMath<System::Int>
   fun `<`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_lt", left, right)
 
-  fun `=`(left: System::Int, right: System::Int): System::Bool
+  fun `==`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_eq", left, right)
 
   fun `>`(left: System::Int, right: System::Int): System::Bool

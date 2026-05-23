@@ -243,10 +243,11 @@ EXPORT object_t* thread_work_post_parallel(object_t* self) {
     return NULL;
 }
 
-EXPORT void thread_dispatch(fun_t action) {
+EXPORT object_t* thread_dispatch(fun_t action) {
     object_t* task = task_create(NULL);
     task_on_complete(task, action);   // PENDING → CALLBACK
     thread_work_post(task);
+    return NULL;
 }
 
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {

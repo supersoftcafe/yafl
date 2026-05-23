@@ -79,7 +79,7 @@ import System
 fun main(): System::Int
   let a: System::String = "hi"
   let b: System::String = "hi"
-  ret a = b ? 0 : 1
+  ret a == b ? 0 : 1
 """
         self.assertEqual(0, compile_and_run_stdlib(src))
 
@@ -93,15 +93,6 @@ fun main(): System::Int
   ret a < b ? 0 : 1
 """
         self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_at_returns_single_byte(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret length(at("hello", 1))
-"""
-        self.assertEqual(1, compile_and_run_stdlib(src))
 
     def test_parseInt_valid(self):
         src = """namespace Main
@@ -256,7 +247,7 @@ fun main(): System::Int
         src = """namespace Main
 import System
 fun main(): System::Int
-  ret PI + PI = TAU ? 0 : 1
+  ret PI + PI == TAU ? 0 : 1
 """
         self.assertEqual(0, compile_and_run_stdlib(src))
 

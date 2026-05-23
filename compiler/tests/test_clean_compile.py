@@ -75,3 +75,61 @@ fun main(): System::Int
   ret 0
 """
         assert_clean_compile(src)
+
+    def test_nested_ternary_int_literals(self):
+        """A nested ternary whose branches are Int literals previously emitted
+        two incompatible types (struct_anon_X_t from the inner ternary,
+        object_t* from the outer literal) into the same return variable."""
+        src = """\
+namespace Test
+import System
+
+fun test(b: System::Int): System::Int
+  ret b > 127 ? (b > 191 ? 0 : 1) : 0
+
+fun main(): System::Int
+  ret test(100)
+"""
+        assert_clean_compile(src, use_stdlib=True)
+
+    def test_bool_through_async_state_slot(self):
+        """A Bool result captured into an async function's state slot must use
+        consistent C types at declaration and assignment. The bug surfaced when
+        a Bool-returning helper was called from a function that becomes a state
+        machine because of a transitive async call (e.g. io.write)."""
+        src = _PREAMBLE + """\
+fun shouldFlush(n: System::Int): System::Bool
+  ret n > 100
+
+fun writer(io: IO, n: System::Int): (io: IO, v: System::Int|IOError)
+  let flush = shouldFlush(n)
+  let r = io.write("hello")
+  ret flush ? r.io.write("!") : (r.io, r.v)
+
+fun main(): System::Int
+  let result = writer(stdout(), 200)
+  let closed = result.io.close()
+  ret 0
+"""
+        assert_clean_compile(src)
+
+    def test_bool_async_helper_captured_across_suspension(self):
+        """An async Bool-returning helper, called twice from an async caller
+        with its result kept across the second suspension, must produce a
+        state slot whose declared type matches the assigned value's type."""
+        src = _PREAMBLE + """\
+fun isReady(io: IO): (io: IO, v: System::Bool)
+  let r = io.write("?")
+  ret (io = r.io, v = 1 < 2)
+
+fun runner(io: IO): System::Int
+  let a = isReady(io)
+  let b = isReady(a.io)
+  let closed = b.io.close()
+  ret a.v ? (b.v ? 0 : 1) : 2
+
+fun main(): System::Int
+  let result = runner(stdout())
+  ret 0
+"""
+        assert_clean_compile(src)

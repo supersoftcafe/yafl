@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from codegen.ops import (
     Op, Label, Move, Jump, JumpIf, SwitchJump, IfTask, NewObject,
-    Call, Return, ReturnVoid, Abort,
+    Call, Return, ReturnVoid, Abort, Phi,
 )
 from codegen.param import StackVar
 from codegen.things import Function
@@ -63,6 +63,14 @@ def _successors(ops: tuple[Op, ...], labels: dict[str, int], i: int) -> list[int
 
 def _reads_writes(op: Op) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
     """Return (reads, writes) for a single op."""
+    if isinstance(op, Phi):
+        # Phi sources are conditional reads on their predecessor edges, not
+        # unconditional reads at the Phi's location. The per-edge verification
+        # in `_check_phi_sources` catches a genuinely uninitialised source.
+        # The target is written when the block is entered.
+        writes = frozenset({op.target}) if isinstance(op.target, StackVar) else frozenset()
+        return frozenset(), writes
+
     reads, writes = op.get_live_vars()
 
     # Op.get_live_vars() does not report IfTask's task_lhs / call_id_lhs
@@ -96,6 +104,13 @@ def check_function(fn: Function) -> None:
 
     Parameters are treated as initialised on entry.  Unreachable ops are
     skipped.
+
+    Phi ops are special: each source is consumed only on the edge from its
+    labelled predecessor, not at the Phi's location.  The standard data-
+    flow models the Phi as zero unconditional reads + a single write of
+    the target; a separate per-edge pass below checks each source against
+    its predecessor's exit set so a genuine "source uninitialised on its
+    edge" bug is still caught.
     """
     ops = fn.ops
     n = len(ops)
@@ -171,6 +186,91 @@ def check_function(fn: Function) -> None:
                 f"This is a codegen bug — either the lowering produced a read-"
                 f"before-write, or the variable should have been promoted to "
                 f"the task-heap state object.")
+
+    # Per-edge Phi verification. Each Phi source is consumed on the edge
+    # from its labelled predecessor; the source's reads must be in that
+    # predecessor's exit set at the point control leaves for the Phi
+    # block.
+    _check_phi_sources(fn, ops, labels, entry)
+
+
+def _check_phi_sources(
+    fn: Function,
+    ops: tuple[Op, ...],
+    labels: dict[str, int],
+    entry: list[frozenset[StackVar] | None],
+) -> None:
+    """For each Phi source (P_label, source), verify `source`'s reads are
+    defined in the exit set of every edge from block P_label into the
+    Phi's block."""
+    # Index Phi ops by their enclosing block label (most recent Label).
+    phi_ops_by_block: dict[str, list[Phi]] = {}
+    current_block: str | None = None
+    for op in ops:
+        if isinstance(op, Label):
+            current_block = op.name
+        elif isinstance(op, Phi) and current_block is not None:
+            phi_ops_by_block.setdefault(current_block, []).append(op)
+    if not phi_ops_by_block:
+        return
+
+    # Collect every edge from a labelled block into a Phi block:
+    # list of (predecessor_label, phi_block_label, exit-set-at-transfer).
+    edges: list[tuple[str, str, frozenset[StackVar]]] = []
+    current_block = None
+    for i, op in enumerate(ops):
+        e = entry[i]
+        if isinstance(op, Label):
+            # Fall-through edge to a new block. The previous op (if any)
+            # transferred control here if it wasn't a terminator. The
+            # exit set at that transfer is entry[i-1] | writes(prev).
+            if op.name in phi_ops_by_block and current_block is not None and i > 0:
+                prev = ops[i - 1]
+                if not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
+                    if not (isinstance(prev, Call) and prev.musttail):
+                        prev_e = entry[i - 1]
+                        if prev_e is not None:
+                            _, prev_writes = _reads_writes(prev)
+                            edges.append((current_block, op.name, prev_e | prev_writes))
+            current_block = op.name
+            continue
+        if e is None or current_block is None:
+            continue
+        _, writes = _reads_writes(op)
+        exit_here = e | writes
+        if isinstance(op, Jump) and op.name in phi_ops_by_block:
+            edges.append((current_block, op.name, exit_here))
+        elif isinstance(op, JumpIf) and op.label in phi_ops_by_block:
+            edges.append((current_block, op.label, exit_here))
+        elif isinstance(op, IfTask) and op.target in phi_ops_by_block:
+            edges.append((current_block, op.target, exit_here))
+        elif isinstance(op, SwitchJump):
+            for _, lbl in op.cases:
+                if lbl in phi_ops_by_block:
+                    edges.append((current_block, lbl, exit_here))
+
+    # For every edge into a Phi block, check the Phi source whose label
+    # matches this predecessor is fully defined.
+    for pred_label, phi_block, pred_exit in edges:
+        for phi in phi_ops_by_block[phi_block]:
+            for source_label, source in phi.sources:
+                if source_label != pred_label:
+                    continue
+                needed = source.get_live_vars()
+                missing = needed - pred_exit
+                if missing:
+                    raise UninitialisedReadError(
+                        f"uninitialised StackVar read in function {fn.name!r}: "
+                        f"Phi at block {phi_block!r}, source from predecessor "
+                        f"{pred_label!r}:\n"
+                        f"  phi      : {phi!r}\n"
+                        f"  source   : {source!r}\n"
+                        f"  needs    : {sorted(needed, key=lambda v: v.name)}\n"
+                        f"  exit set : {sorted(pred_exit, key=lambda v: v.name)}\n"
+                        f"  missing  : {sorted(missing, key=lambda v: v.name)}\n"
+                        f"This is a codegen bug — the Phi source is read on "
+                        f"the edge from this predecessor but isn't defined "
+                        f"there.")
 
 
 def check_application(app: Application) -> None:

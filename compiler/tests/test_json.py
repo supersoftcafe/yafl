@@ -18,6 +18,7 @@ import System::Json
 
 fun handleParse(r: (state: ParseState, v: JsonValue|JsonParseError),
                 onValue: (:JsonValue): System::Int): System::Int
+  let closed = r.state.io.close()
   ret match(r.v)
     (val: JsonValue)    => onValue(val)
     (e: JsonParseError) => 90
@@ -216,7 +217,7 @@ fun lookupX(l: List<JsonPair>): System::Int
   let h = head<JsonPair>(l)
   ret match(h)
     (n: None)     => 99
-    (p: JsonPair) => p.key = "x" ? unwrapInt(p.value) : lookupX(tail<JsonPair>(l))"""
+    (p: JsonPair) => p.key == "x" ? unwrapInt(p.value) : lookupX(tail<JsonPair>(l))"""
         self.assertEqual(7, self._run('{"x": 7}', body))
 
     def test_parse_object_three_entries_count(self):
@@ -236,24 +237,17 @@ fun lenObj(l: List<JsonPair>): System::Int
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "out.json")
             src = _HARNESS_PRELUDE + f"""
-fun doPrint(h: IO, v: JsonValue): System::Int
+fun printAndClose(h: IO, v: JsonValue): System::Int
   let r = printValue(h, v)
+  let closed = r.io.close()
   ret match(r.v)
     (n: System::Int) => 0
     (e: IOError)     => 70
 
-fun closeOk(h: IO): System::Int
-  ret match(h.close())
-    (e: IOError)      => 60
-    (n: System::None) => 0
-
-fun afterPrint(h: IO, code: System::Int): System::Int
-  ret code = 0 ? closeOk(h) : code
-
 fun main(): System::Int
   let v: JsonValue = JsonNum(42.0)
   ret match(create("{path}"))
-    (h: IO)      => afterPrint(h, doPrint(h, v))
+    (h: IO)      => printAndClose(h, v)
     (e: IOError) => 80
 """
             self.assertEqual(0, _run_with_json_module(src))
@@ -270,23 +264,16 @@ fun main(): System::Int
             with open(in_path, "w") as f:
                 f.write(original)
             src = _HARNESS_PRELUDE + f"""
-fun doPrint(h: IO, v: JsonValue): System::Int
+fun printAndClose(h: IO, v: JsonValue): System::Int
   let r = printValue(h, v)
+  let closed = r.io.close()
   ret match(r.v)
     (n: System::Int) => 0
     (e: IOError)     => 70
 
-fun closeOk(h: IO): System::Int
-  ret match(h.close())
-    (e: IOError)      => 60
-    (n: System::None) => 0
-
-fun afterPrint(h: IO, code: System::Int): System::Int
-  ret code = 0 ? closeOk(h) : code
-
 fun handleParsed(v: JsonValue): System::Int
   ret match(create("{out_path}"))
-    (h: IO)      => afterPrint(h, doPrint(h, v))
+    (h: IO)      => printAndClose(h, v)
     (e: IOError) => 80
 
 fun main(): System::Int
@@ -360,23 +347,16 @@ class TestJsonInteger(TestCase):
             with open(in_path, "w") as f:
                 f.write(original)
             src = _HARNESS_PRELUDE + f"""
-fun doPrint(h: IO, v: JsonValue): System::Int
+fun printAndClose(h: IO, v: JsonValue): System::Int
   let r = printValue(h, v)
+  let closed = r.io.close()
   ret match(r.v)
     (n: System::Int) => 0
     (e: IOError)     => 70
 
-fun closeOk(h: IO): System::Int
-  ret match(h.close())
-    (e: IOError)      => 60
-    (n: System::None) => 0
-
-fun afterPrint(h: IO, code: System::Int): System::Int
-  ret code = 0 ? closeOk(h) : code
-
 fun handleParsed(v: JsonValue): System::Int
   ret match(create("{out_path}"))
-    (h: IO)      => afterPrint(h, doPrint(h, v))
+    (h: IO)      => printAndClose(h, v)
     (e: IOError) => 80
 
 fun main(): System::Int
@@ -478,7 +458,7 @@ fun sumChunks(l: List<String>): System::Int
     () => 99
 
 fun startsAtBoundary(s: System::String): System::Int
-  let bv: System::Int = System::length(s) = 0 ? 0 : System::byteAt(s, 0)
+  let bv: System::Int = System::length(s) == 0 ? 0 : System::byteAt(s, 0)
   let lowHi: System::Int = bv > 191 ? 1 : 0
   ret bv < 128 ? 1 : lowHi
 
@@ -504,23 +484,16 @@ fun allStartAtBoundary(l: List<System::String>): System::Int
             with open(in_path, "w") as f:
                 f.write(original)
             src = _HARNESS_PRELUDE + f"""
-fun doPrint(h: IO, v: JsonValue): System::Int
+fun printAndClose(h: IO, v: JsonValue): System::Int
   let r = printValue(h, v)
+  let closed = r.io.close()
   ret match(r.v)
     (n: System::Int) => 0
     (e: IOError)     => 70
 
-fun closeOk(h: IO): System::Int
-  ret match(h.close())
-    (e: IOError)      => 60
-    (n: System::None) => 0
-
-fun afterPrint(h: IO, code: System::Int): System::Int
-  ret code = 0 ? closeOk(h) : code
-
 fun handleParsed(v: JsonValue): System::Int
   ret match(create("{out_path}"))
-    (h: IO)      => afterPrint(h, doPrint(h, v))
+    (h: IO)      => printAndClose(h, v)
     (e: IOError) => 80
 
 fun main(): System::Int

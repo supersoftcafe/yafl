@@ -53,21 +53,6 @@ HIDDEN object_t* _string_create_from_cstr(char* data) {
 }
 
 
-EXPORT char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
-    if (!PTR_IS_STRING(self)) {
-        *len_ptr = ((string_t*)self)->length - 1;
-        return (char*)((string_t*)self)->array;
-    } else {
-        uintptr_t test = 1;
-        if (1 == *(uint8_t*)&test)
-             *local_buffer = (uintptr_t)self >> 8;
-        else *local_buffer = (uintptr_t)self & ~255;
-        *len_ptr = (uint32_t)((sizeof(uintptr_t)-1) & ((intptr_t)self / (PTR_TAG_MASK+1)));
-        return (char*)local_buffer;
-    }
-}
-
-
 HIDDEN object_t* _string_append2(char* cstr1, int32_t len1, char* cstr2, int32_t len2) {
     int64_t length = (int64_t)len1 + len2;
     string_t* string;
@@ -181,54 +166,6 @@ EXPORT int string_compare(object_t* self, object_t* data) {
 }
 
 
-EXPORT object_t* string_length_int(object_t* self) {
-    return integer_create_from_int32(string_length(self));
-}
-
-
-EXPORT object_t* string_compare_int(object_t* self, object_t* data) {
-    return integer_create_from_int32(string_compare(self, data));
-}
-
-
-EXPORT bool string_eq(object_t* self, object_t* data) {
-    return string_compare(self, data) == 0;
-}
-
-
-EXPORT bool string_lt(object_t* self, object_t* data) {
-    return string_compare(self, data) < 0;
-}
-
-
-EXPORT bool string_gt(object_t* self, object_t* data) {
-    return string_compare(self, data) > 0;
-}
-
-
-EXPORT object_t* string_at(object_t* self, object_t* o_index) {
-    int overflow = 0;
-    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
-    if (overflow) return _string_create_from_bytes((uint8_t*)"", 0);
-    return string_slice_int32(self, idx, idx + 1);
-}
-
-
-// Return the unsigned byte value at byte offset `index`, or -1 if the index
-// is out of range. Use for UTF-8 boundary detection in YAFL string parsers
-// (string_at returns a 1-byte slice but doesn't expose the numeric value).
-EXPORT object_t* string_byte_at(object_t* self, object_t* o_index) {
-    int overflow = 0;
-    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
-    if (overflow) return integer_create_from_int32(-1);
-
-    intptr_t buf; int32_t len;
-    char* cstr = string_to_cstr(self, &buf, &len);
-    if (idx < 0 || idx >= len) return integer_create_from_int32(-1);
-    return integer_create_from_int32((unsigned char)cstr[idx]);
-}
-
-
 // Return the index of the first byte equal to `byte_value` at or after `from`,
 // or -1 if not found.  Linear scan in C — used by the JSON parser to find the
 // next delimiter in a buffered chunk without recursing through YAFL once per
@@ -248,6 +185,73 @@ EXPORT object_t* string_find_byte(object_t* self, object_t* o_byte, object_t* o_
     void* hit = memchr(cstr + from, needle, (size_t)(len - from));
     if (hit == NULL) return integer_create_from_int32(-1);
     return integer_create_from_int32((int32_t)((char*)hit - cstr));
+}
+
+
+// Build a 256-bit byte-set from `accept`: lookup[i] is 1 iff byte i appears
+// in accept.  Used by string_find_any / string_skip_any to dispatch on a
+// byte class in O(1) per input byte (vs O(|accept|) per byte for strpbrk
+// on long needles, and without needing a NUL-terminated needle copy).
+static void _build_byteset(const char* needle, int32_t needle_len,
+                           unsigned char lookup[256]) {
+    for (int i = 0; i < 256; ++i) lookup[i] = 0;
+    for (int32_t i = 0; i < needle_len; ++i)
+        lookup[(unsigned char)needle[i]] = 1;
+}
+
+
+// Return the index of the first byte at or after `from` that belongs to
+// `accept`, or length(self) if no such byte exists (in particular when
+// `from >= length`).  Returning length-not-found rather than -1 is more
+// convenient for parsers — the result is always a safe slice upper bound.
+EXPORT object_t* string_find_any(object_t* self, object_t* o_accept, object_t* o_from) {
+    intptr_t s_buf; int32_t s_len;
+    char* s = string_to_cstr(self, &s_buf, &s_len);
+
+    int overflow = 0;
+    int32_t from = integer_to_int32_with_overflow(o_from, &overflow);
+    if (overflow) return integer_create_from_int32(s_len);
+    if (from < 0) from = 0;
+    if (from >= s_len) return integer_create_from_int32(s_len);
+
+    intptr_t a_buf; int32_t a_len;
+    char* accept = string_to_cstr(o_accept, &a_buf, &a_len);
+
+    unsigned char lookup[256];
+    _build_byteset(accept, a_len, lookup);
+
+    for (int32_t i = from; i < s_len; ++i) {
+        if (lookup[(unsigned char)s[i]]) return integer_create_from_int32(i);
+    }
+    return integer_create_from_int32(s_len);
+}
+
+
+// Return the index of the first byte at or after `from` that is NOT in
+// `accept`, or length(self) if every remaining byte is in `accept`.
+// Counterpart of string_find_any; used to skip a fixed run of characters
+// (whitespace, digit-set, etc.) in one C call rather than per-byte YAFL
+// recursion.
+EXPORT object_t* string_skip_any(object_t* self, object_t* o_accept, object_t* o_from) {
+    intptr_t s_buf; int32_t s_len;
+    char* s = string_to_cstr(self, &s_buf, &s_len);
+
+    int overflow = 0;
+    int32_t from = integer_to_int32_with_overflow(o_from, &overflow);
+    if (overflow) return integer_create_from_int32(s_len);
+    if (from < 0) from = 0;
+    if (from >= s_len) return integer_create_from_int32(s_len);
+
+    intptr_t a_buf; int32_t a_len;
+    char* accept = string_to_cstr(o_accept, &a_buf, &a_len);
+
+    unsigned char lookup[256];
+    _build_byteset(accept, a_len, lookup);
+
+    for (int32_t i = from; i < s_len; ++i) {
+        if (!lookup[(unsigned char)s[i]]) return integer_create_from_int32(i);
+    }
+    return integer_create_from_int32(s_len);
 }
 
 

@@ -5,7 +5,7 @@ from typing import Callable, Any
 from dataclasses import dataclass, field
 from codegen.tools import mangle_name, to_pointer_mask
 
-from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Label
+from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Label, Phi, Abort
 
 import codegen.typedecl as t
 import codegen.param as p
@@ -39,6 +39,8 @@ class Function:
     comment: str = ""
     foreign_symbol: str | None = None
     sync: bool = False
+    tail: bool = False          # `[tail]`: queue-dispatch trampoline lowering applies.
+    bypass_async: bool = False  # Skip async_lower; ops are already in their final hand-crafted form.
 
     def __post_init__(self):
         if len(self.params.fields) == 0:
@@ -76,6 +78,96 @@ class Function:
                 f"{vars_section}"
                 f"{''.join(op.to_c(type_cache) for op in self.ops)}"
                 f"}}\n")
+
+    def lower_phis(self) -> Function:
+        """Return a copy of this function with every `Phi` replaced by per-edge
+        `Move`s on each predecessor's exit to the Phi's block. This is the
+        SSA → imperative translation; it must run before any CFG-modifying
+        transformation (those are Phi-unaware)."""
+        new_ops = self.__lower_phis_for_emission()
+        if new_ops is self.ops:
+            return self
+        return dataclasses.replace(self, ops=new_ops)
+
+    def __lower_phis_for_emission(self) -> tuple[Op, ...]:
+        """Return this function's ops with every `Phi` replaced by per-edge
+        `Move`s. The Phi op disappears from the emitted stream; the Moves
+        are inserted on each predecessor's exit to the Phi's block.
+
+        - For a predecessor reaching the block via `Jump(L)`: insert
+          `Move(target, source)` immediately before that Jump.
+        - For a fall-through edge (the op before `Label(L)` is not a
+          terminator): insert the Move immediately before `Label(L)`.
+
+        Asserts loudly on shapes the generators are expected to avoid:
+          - `Phi` somewhere other than the top of a labelled block.
+          - `JumpIf` targeting a Phi-containing block (would need block
+            splitting to attach a conditional Move).
+          - Missing source for an actual predecessor.
+        """
+        phis_at: dict[str, list[Phi]] = {}
+        current_label: str | None = None
+        in_phi_region = False
+        for op in self.ops:
+            if isinstance(op, Label):
+                current_label = op.name
+                in_phi_region = True
+            elif isinstance(op, Phi):
+                if not in_phi_region or current_label is None:
+                    raise AssertionError(
+                        f"{self.name}: Phi for target {op.target.name!r} is "
+                        f"not at the top of a labelled block.")
+                phis_at.setdefault(current_label, []).append(op)
+            else:
+                in_phi_region = False
+
+        if not phis_at:
+            return self.ops
+
+        def source_for(phi: Phi, pred_label: str | None) -> p.RParam:
+            for lbl, val in phi.sources:
+                if lbl == pred_label:
+                    return val
+            raise AssertionError(
+                f"{self.name}: Phi @ {self.__phi_target_name(phi)} expected a "
+                f"source from predecessor {pred_label!r}; "
+                f"sources are {[s for s, _ in phi.sources]}.")
+
+        out: list[Op] = []
+        cur: str | None = None
+        for op in self.ops:
+            if isinstance(op, Phi):
+                continue  # already lowered into Moves on predecessor edges
+
+            if isinstance(op, Jump):
+                for phi in phis_at.get(op.name, ()):
+                    out.append(Move(phi.target, source_for(phi, cur)))
+                out.append(op)
+
+            elif isinstance(op, JumpIf):
+                if op.label in phis_at:
+                    raise AssertionError(
+                        f"{self.name}: JumpIf(label={op.label!r}) targets a "
+                        f"Phi-containing block. Generators must route through "
+                        f"an intermediate branch label so the Phi sees an "
+                        f"unconditional predecessor.")
+                out.append(op)
+
+            elif isinstance(op, Label):
+                if op.name in phis_at and out and not isinstance(out[-1], (Jump, Return, ReturnVoid, Abort)):
+                    for phi in phis_at[op.name]:
+                        out.append(Move(phi.target, source_for(phi, cur)))
+                out.append(op)
+                cur = op.name
+
+            else:
+                out.append(op)
+
+        return tuple(out)
+
+    @staticmethod
+    def __phi_target_name(phi: Phi) -> str:
+        return phi.target.name if isinstance(phi.target, p.StackVar) else "<?>"
 
     def replace_params(self, replacer: Callable[[p.RParam], p.RParam]) -> Function:
         return dataclasses.replace(self, ops=tuple(op.replace_params(replacer) for op in self.ops))
@@ -136,36 +228,34 @@ class Function:
 
     def strip_unused_operations(self) -> Function:
         labels: dict[str, int] = {op.name: index for index, op in enumerate(self.ops) if isinstance(op, Label)}
-        seen_indexes: set[int] = set()
-        to_see_indexes: set[int] = {0}
-        while to_see_indexes:
-            seen_indexes.update(to_see_indexes)
-            to_see = to_see_indexes
-            to_see_indexes = set()
-            for index in to_see:
-                op = self.ops[index]
-                if isinstance(op, Jump):
-                    to_see_indexes.add(labels[op.name])
-                elif isinstance(op, JumpIf):
-                    to_see_indexes.add(labels[op.label])
-                    if index+1 < len(self.ops):
-                        to_see_indexes.add(index+1)
-                elif isinstance(op, IfTask):
-                    to_see_indexes.add(labels[op.target])
-                    if index+1 < len(self.ops):
-                        to_see_indexes.add(index+1)
-                elif isinstance(op, SwitchJump):
-                    for _, lbl in op.cases:
-                        to_see_indexes.add(labels[lbl])
-                    if index+1 < len(self.ops):
-                        to_see_indexes.add(index+1)
-                elif isinstance(op, (Return, ReturnVoid)):
-                    pass
-                else:
-                    if index+1 < len(self.ops):
-                        to_see_indexes.add(index+1)
-        ops = tuple(op for index, op in enumerate(self.ops) if index in seen_indexes)
-        return dataclasses.replace(self, ops=ops)
+        n = len(self.ops)
+
+        def successors(index: int) -> list[int]:
+            op = self.ops[index]
+            fallthrough = [index + 1] if index + 1 < n else []
+            if isinstance(op, (Return, ReturnVoid)):
+                return []
+            if isinstance(op, Call) and op.musttail:
+                return []  # codegen emits `return foo(...)` — no successor
+            if isinstance(op, Jump):
+                return [labels[op.name]]
+            if isinstance(op, JumpIf):
+                return [labels[op.label]] + fallthrough
+            if isinstance(op, IfTask):
+                return [labels[op.target]] + fallthrough
+            if isinstance(op, SwitchJump):
+                return [labels[lbl] for _, lbl in op.cases] + fallthrough
+            return fallthrough
+
+        seen: set[int] = {0}
+        worklist: list[int] = [0]
+        while worklist:
+            for succ in successors(worklist.pop()):
+                if succ not in seen:
+                    seen.add(succ)
+                    worklist.append(succ)
+
+        return dataclasses.replace(self, ops=tuple(op for i, op in enumerate(self.ops) if i in seen))
 
     def fold_struct_fields(self) -> Function:
         """Fold StructField(NewStruct/NewStructTyped, name) → the value directly,

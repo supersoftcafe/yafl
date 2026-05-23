@@ -33,7 +33,7 @@ fun _listNodeLen<T>(n: _ListNode<T>): Int
 fun _listNodeGet<T>(n: _ListNode<T>, j: Int): T|None
   ret match(n)
     (nil: _Nil) => None
-    (c: _Cons)  => j = 0 ? c.value : _listNodeGet<T>(c.next, j - 1)
+    (c: _Cons)  => j == 0 ? c.value : _listNodeGet<T>(c.next, j - 1)
 
 
 fun _listHeadNode<T>(n: _ListNode<T>): T|None

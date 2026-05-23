@@ -69,7 +69,7 @@ __kinds = [
     # rather than splitting on the escaped quote.
     (re.compile(r"\"(\\.|[^\\\"])*\"?"), TokenKind.STRING),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
-    (re.compile(r"(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
+    (re.compile(r"(==)|(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
     # Numeric literal: hex/bin/oct prefix forms, OR decimal with optional
     # fraction, exponent (signed or unsigned), and type suffix (i8|i16|i32|i64|f32|f64).
     (re.compile(

@@ -37,6 +37,11 @@ class Application:
 
 
     def __gen_function(self, name: str, f: Function):
+        # SSA → imperative first: replace every Phi with per-edge Moves while
+        # the original CFG (and thus predecessor labels) is still intact.
+        # All downstream codegen transformations are Phi-unaware and may
+        # rewrite labels, so they must only ever see plain Moves and Jumps.
+        f = f.lower_phis()
         f = f.strip_unused_operations().simplify_control_flow().fold_struct_fields().copy_propagate().simplify_control_flow().eliminate_common_subexpressions()
         self.__forwards.append(f.to_c_prototype(self.__type_cache))
         self.__functions.append(f.to_c_implement(self.__type_cache))

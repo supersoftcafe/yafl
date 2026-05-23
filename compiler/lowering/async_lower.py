@@ -20,8 +20,9 @@ from typing import Iterable
 from functools import reduce
 
 import langtools
+from lowering.task_abi import TASK_FIELDS, wrap_return_type, is_task_param, task_ptr_from
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
 from codegen.things import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type,
@@ -64,6 +65,85 @@ __sv_call_id    = StackVar(Int(32),       "$sv_call_id")    # call-site index fo
 __sv_async_task = StackVar(DataPointer(), "$sv_async_task") # TASK_UNTAG'd task ptr for asynccommon
 __sv_par_task   = StackVar(DataPointer(), "$sv_par_task")   # par_task ptr in parallel cold blocks
 __sv_launcher   = StackVar(DataPointer(), "$sv_launcher")   # launcher task ptr
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Return conversion helpers
+#
+# A Return / ReturnVoid op semantically means "the function exits here with
+# this value." It can appear at the end of the function (the natural place)
+# OR anywhere else in the op stream — early exits introduced by branch
+# threading, by future optimisations, or by source-level early-return syntax
+# once that exists. Both the hot-path and state-machine emitters must handle
+# Returns uniformly wherever they appear, otherwise a mid-function Return
+# leaks through as a `return value;` inside a function that's been declared
+# void (state machine) or whose return type has been wrapped (hot path).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def __convert_returns_for_state_machine(
+        ops: Iterable[Op],
+        my_task_field: RParam,
+        fn_result: Type,
+        task_subtype_name: str | None) -> list[Op]:
+    """Convert each Return / ReturnVoid in `ops` to `task_complete` + ReturnVoid.
+
+    For non-void Returns: also store the value into the task's result field.
+    Non-Return ops pass through unchanged.
+    """
+    out: list[Op] = []
+    for op in ops:
+        if isinstance(op, Return):
+            if task_subtype_name is not None and not isinstance(fn_result, Void):
+                out.append(Move(
+                    ObjectField(fn_result, my_task_field, task_subtype_name, "result", None),
+                    op.value))
+            out.append(Move(
+                __sv_discard,
+                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
+                keep=True))
+            out.append(ReturnVoid())
+        elif isinstance(op, ReturnVoid):
+            out.append(Move(
+                __sv_discard,
+                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
+                keep=True))
+            out.append(ReturnVoid())
+        else:
+            out.append(op)
+    return out
+
+
+def __convert_returns_for_hot_path(
+        ops: Iterable[Op],
+        wrapped_result: Type) -> list[Op]:
+    """Wrap each Return's value in SyncWrap if the function's return type
+    was wrapped in a TaskWrapper (pure-primitive returns), and bring each
+    musttail Call's result_type into line with the function's wrapped result
+    so the emitted C cast `((wrapped_t(*)(…))callee)(…)` agrees with the
+    surrounding `return` statement's type.
+
+    Both adjustments are no-ops when the return type isn't TaskWrapper-
+    wrapped (pointer-typed returns pass through unchanged).
+    """
+    if not isinstance(wrapped_result, TaskWrapper):
+        return list(ops)
+    out: list[Op] = []
+    for op in ops:
+        if isinstance(op, Return):
+            # Skip if the Return value is already shaped like the wrapped
+            # type (e.g. a TagTask constructing the async-pending form).
+            # Lets passes that hand-build wrapped-shape returns interoperate
+            # with the hot-path SyncWrap convention.
+            if op.value.get_type() == wrapped_result:
+                out.append(op)
+            else:
+                out.append(Return(SyncWrap(op.value, wrapped_result)))
+        elif isinstance(op, Call) and op.musttail:
+            out.append(dataclasses.replace(op, result_type=wrapped_result))
+        else:
+            out.append(op)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,7 +246,7 @@ def __discover_tail_calls(fn: Function) -> Function:
     A Call qualifies when it is immediately followed by a Return whose value
     is the Call's result register, AND the Call's result type matches
     fn.result. The match is on the *unwrapped* type (this pass runs before
-    __wrap_return_type is applied) — once both sides go through the same
+    wrap_return_type is applied) — once both sides go through the same
     wrapping in lowering, they will still match at the C level.
 
     For void functions: a void Call followed by ReturnVoid also qualifies.
@@ -181,17 +261,13 @@ def __discover_tail_calls(fn: Function) -> Function:
         stack frame (the IS_TASK check inserted after the call breaks the
         literal tail position the C compiler would otherwise see).
 
-    Currently only applied to **sync** functions (`fn.sync`).  Sync functions
-    don't generate a state machine, so the removed Return + musttail Call is
-    safe everywhere downstream.  Async functions would also benefit from this
-    optimisation but the state machine's terminal-block processing requires
-    the original Return to drive its task_complete sequence — without it the
-    state machine never completes the in-flight task, and the resulting CFG
-    contains a fall-through cycle that hangs `strip_unused_operations`.
-    Extending this to async functions is tracked in TODO.md.
+    Applies to both sync and async functions. Sync functions don't generate
+    a state machine, so the removed Return + musttail Call is safe everywhere
+    downstream. Async functions get the musttail preserved on the hot path
+    (clang TCOs `return foo(...)`); the state machine separately re-expands
+    musttail back to Call+Return via `__unroll_musttail_for_state_machine`
+    so its terminal-Return → task_complete sequence still fires.
     """
-    if not fn.sync:
-        return fn
     ops = list(fn.ops)
     if len(ops) < 2:
         return fn
@@ -291,6 +367,37 @@ def __convert_var_to_field_refs(ops: Iterable[Op],
     return tuple(op.replace_params(replacer) for op in ops)
 
 
+def __unroll_musttail_for_state_machine(fn: Function) -> Function:
+    """Re-expand `Call(musttail=True)` back into `Call(register=tmp) + Return(tmp)`
+    (or `Call + ReturnVoid` for void calls) so the state-machine code generation
+    can drive task_complete via its existing terminal-Return handling.
+
+    The hot path keeps the original musttail Call so its C codegen emits
+    `return foo(...)` and clang TCOs it. Only the state-machine path needs
+    the re-expansion: after a suspension+resume, control re-enters via the
+    dispatch — there is no tail position from C's perspective — so the call
+    must be a regular non-tail call whose result feeds task_complete.
+
+    The fresh temp becomes a basic-block result and ends up as a state-object
+    field via the existing `__create_state_object` machinery.
+    """
+    new_ops: list[Op] = []
+    counter = 0
+    for op in fn.ops:
+        if isinstance(op, Call) and op.musttail:
+            counter += 1
+            if op.result_type is None or isinstance(op.result_type, Void):
+                new_ops.append(dataclasses.replace(op, musttail=False))
+                new_ops.append(ReturnVoid())
+            else:
+                tmp = StackVar(op.result_type, f"$musttail$ret${counter}")
+                new_ops.append(dataclasses.replace(op, musttail=False, register=tmp))
+                new_ops.append(Return(tmp))
+        else:
+            new_ops.append(op)
+    return dataclasses.replace(fn, ops=tuple(new_ops))
+
+
 def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
     liveness_fn = __calculate_saved_vars(fn)
     partitions = langtools.partition(liveness_fn.ops,
@@ -312,15 +419,6 @@ def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Return-type helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def __wrap_return_type(t: Type) -> Type:
-    """Adjust a function's return type to carry the task-pending signal."""
-    if isinstance(t, (Void, DataPointer, FuncPointer)):
-        return t        # pointer types use PTR_TAG_TASK bit; Void stays Void
-    if isinstance(t, Struct) and first_pointer_field(t) is not None:
-        return t        # struct with a pointer field: tag via that field
-    return TaskWrapper(t)   # pure primitive: wrap in {value, task*} struct
-
 
 def __task_subtype_name(result_type: Type) -> str | None:
     """Name of the compiler-generated task subtype, or None for Void (base task_t).
@@ -346,42 +444,6 @@ def __task_subtype_name(result_type: Type) -> str | None:
         return __task_subtype_name(result_type.inner)
     # Struct (or any other type): unique subtype per distinct layout
     return f"task$T{abs(hash(result_type))}"
-
-
-def __is_task_param(result_var: RParam, wrapped_type: Type) -> RParam:
-    """RParam that is truthy (Int(32)) when result_var carries a task signal.
-
-    `wrapped_type` must be the *already-wrapped* return type (i.e. the value
-    returned by __wrap_return_type), not the original callee return type.
-    """
-    if isinstance(wrapped_type, DataPointer):
-        return Invoke("PTR_IS_TASK", NewStruct((("p", result_var),)), Int(32))
-    if isinstance(wrapped_type, FuncPointer):
-        return Invoke("PTR_IS_TASK",
-                      NewStruct((("p", StructField(result_var, "o")),)), Int(32))
-    if isinstance(wrapped_type, Struct):
-        fname = first_pointer_field(wrapped_type)
-        if fname:
-            return Invoke("PTR_IS_TASK",
-                          NewStruct((("p", StructField(result_var, fname)),)), Int(32))
-    if isinstance(wrapped_type, TaskWrapper):
-        return StructField(result_var, "task")  # truthy when non-NULL
-    raise ValueError(f"Cannot generate IS_TASK check for type {wrapped_type}")
-
-
-def __task_ptr_from(result_var: RParam, wrapped_type: Type) -> RParam:
-    """Return the pointer-to-task (suitable for TASK_UNTAG) from a task-carrying result."""
-    if isinstance(wrapped_type, TaskWrapper):
-        return StructField(result_var, "task")   # plain task ptr in .task; TASK_UNTAG is no-op
-    if isinstance(wrapped_type, DataPointer):
-        return result_var                         # result IS the tagged pointer
-    if isinstance(wrapped_type, FuncPointer):
-        return StructField(result_var, "o")       # .o holds the tagged task pointer
-    if isinstance(wrapped_type, Struct):
-        fname = first_pointer_field(wrapped_type)
-        if fname:
-            return StructField(result_var, fname)
-    raise ValueError(f"Cannot extract task ptr from wrapped type {wrapped_type}")
 
 
 def __extract_from_task(completed_task: RParam, callee_result_type: Type,
@@ -445,7 +507,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
     null/zero-initialised in the function prologue so that earlier cold blocks
     never write garbage pointer values into the state object.
     """
-    wrapped_result = __wrap_return_type(fn.result)
+    wrapped_result = wrap_return_type(fn.result)
     wrap_fields: list[tuple[str, Type]] = []
 
     # ── Collect all vars that end up as state-object fields ──────────────────
@@ -488,7 +550,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
                 else NullPointer()
                 for call_ref in call_op.calls)
 
-            hot_ops.extend(bb.ops[:-1])
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], wrapped_result))
             hot_ops.extend(_emit_par_task_setup(__sv_par_task, par_task_name, closures))
             for k in range(len(call_op.calls)):
                 hot_ops.extend(_emit_post_launcher(__sv_launcher, __sv_par_task, fn.name, i, k))
@@ -506,18 +568,19 @@ def __create_hot_path_func(fn: Function, state_name: str,
             discarded_type = call_op.result_type
             if discarded_type is None:
                 # Truly void-returning — cannot be a task; emit unchanged
-                hot_ops.extend(bb.ops)
+                # (only the Returns inside the body need conversion)
+                hot_ops.extend(__convert_returns_for_hot_path(bb.ops, wrapped_result))
                 continue
             # Non-void async call with discarded result: still need the task check
             # so the C cast uses the correct wrapped return type (avoids sret ABI mismatch).
-            discarded_wrapped = __wrap_return_type(discarded_type)
+            discarded_wrapped = wrap_return_type(discarded_type)
             sv_discard_wrap = StackVar(discarded_wrapped, f"$wrap${i}")
             wrap_fields.append((f"$wrap${i}", discarded_wrapped))
-            hot_ops.extend(bb.ops[:-1])
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], wrapped_result))
             hot_ops.append(dataclasses.replace(call_op, register=sv_discard_wrap))
-            task_ptr = __task_ptr_from(sv_discard_wrap, discarded_wrapped)
+            task_ptr = task_ptr_from(sv_discard_wrap, discarded_wrapped)
             hot_ops.append(IfTask(
-                condition=__is_task_param(sv_discard_wrap, discarded_wrapped),
+                condition=is_task_param(sv_discard_wrap, discarded_wrapped),
                 task_source=task_ptr,
                 task_lhs=__sv_async_task,
                 call_id_lhs=__sv_call_id,
@@ -527,7 +590,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
             continue
 
         result_type  = result_var.get_type()
-        wrapped_type = __wrap_return_type(result_type)
+        wrapped_type = wrap_return_type(result_type)
         needs_temp   = (wrapped_type is not result_type)
 
         if needs_temp:
@@ -535,16 +598,16 @@ def __create_hot_path_func(fn: Function, state_name: str,
             # then unwrap on the sync path.
             sv_wrapped = StackVar(wrapped_type, f"$wrap${i}")
             wrap_fields.append((f"$wrap${i}", wrapped_type))
-            hot_ops.extend(bb.ops[:-1])
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], wrapped_result))
             hot_ops.append(dataclasses.replace(call_op, register=sv_wrapped))
             sv_for_check = sv_wrapped
         else:
-            hot_ops.extend(bb.ops)
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops, wrapped_result))
             sv_for_check = result_var
 
-        task_ptr = __task_ptr_from(sv_for_check, wrapped_type)
+        task_ptr = task_ptr_from(sv_for_check, wrapped_type)
         hot_ops.append(IfTask(
-            condition=__is_task_param(sv_for_check, wrapped_type),
+            condition=is_task_param(sv_for_check, wrapped_type),
             task_source=task_ptr,
             task_lhs=__sv_async_task,
             call_id_lhs=__sv_call_id,
@@ -556,21 +619,10 @@ def __create_hot_path_func(fn: Function, state_name: str,
         if needs_temp:
             hot_ops.append(Move(result_var, StructField(sv_wrapped, "value")))
 
-    # Terminal block
-    terminal_ops: list[Op] = list(basic_blocks[-1].ops)
-    if isinstance(wrapped_result, TaskWrapper):
-        new_terminal: list[Op] = []
-        for op in terminal_ops:
-            if isinstance(op, Return):
-                new_terminal.append(Return(SyncWrap(op.value, wrapped_result)))
-            elif isinstance(op, Call) and op.musttail:
-                # Musttail tail-call to a callee that also returns TaskWrapper:
-                # update result_type so the C cast uses the wrapped typedef.
-                new_terminal.append(dataclasses.replace(op, result_type=wrapped_result))
-            else:
-                new_terminal.append(op)
-        terminal_ops = new_terminal
-    hot_ops.extend(terminal_ops)
+    # Terminal block: same Return + musttail conversion as the per-call-site
+    # bodies above. The terminal block is just the block whose last op isn't
+    # a non-tail Call; structurally it has no special status.
+    hot_ops.extend(__convert_returns_for_hot_path(basic_blocks[-1].ops, wrapped_result))
 
     # ── Shared $asynccommon block ─────────────────────────────────────────────
     # All Call sites jump here when IS_TASK fires. The label is the same in
@@ -714,6 +766,10 @@ def __create_state_machine_func(fn: Function, state_name: str,
         call_op_orig         = bb.ops[-1]
 
         substituted_before = __convert_var_to_field_refs(body_ops_before_call, vars_to_fields)
+        # An early Return inside a non-terminal block's body must also drive
+        # task_complete — same conversion as the terminal block applies here.
+        substituted_before = __convert_returns_for_state_machine(
+            substituted_before, my_task_field, fn.result, task_subtype_name)
         sm_ops.extend(substituted_before)
 
         if isinstance(call_op_orig, ParallelCall):
@@ -742,7 +798,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
 
         result_type     = call_op_orig.register.get_type() if call_op_orig.register else None
         discarded_type  = None if result_type is not None else call_op_orig.result_type
-        wrapped_type    = __wrap_return_type(result_type)  if result_type else None
+        wrapped_type    = wrap_return_type(result_type)  if result_type else None
         needs_temp      = result_type is not None and (wrapped_type is not result_type)
 
         call_subst = call_op_orig.replace_params(to_state_field)
@@ -763,7 +819,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
         if discarded_type is not None:
             # Non-void call whose result was stripped by dead-store elimination.
             # Still need to check for async and use the correct C cast (sret ABI).
-            check_type = __wrap_return_type(discarded_type)
+            check_type = wrap_return_type(discarded_type)
             sv_check = StackVar(check_type, f"$sm_wrap${i}")
             sm_wrap_fields.append((sv_check.name, check_type))
             sm_ops.append(dataclasses.replace(call_subst, register=sv_check))
@@ -785,7 +841,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sm_ops.append(Label(f"$resume${i}"))
         else:
             check = Invoke("UNLIKELY",
-                           NewStruct((("x", __is_task_param(sv_check, check_type)),)),
+                           NewStruct((("x", is_task_param(sv_check, check_type)),)),
                            Int(32))
             async_sm_label = f"$async_sm${i}"
             sm_ops.append(JumpIf(async_sm_label, check))
@@ -794,32 +850,19 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sm_ops.append(Label(f"$resume${i}"))
 
             untagged = Invoke("TASK_UNTAG",
-                              NewStruct((("p", __task_ptr_from(sv_check, check_type)),)),
+                              NewStruct((("p", task_ptr_from(sv_check, check_type)),)),
                               DataPointer())
             cold_ops.append(Label(async_sm_label))
             cold_ops.extend(_emit_suspend_to_async(idx_field, i + 1, untagged, fn.name))
 
     # ── Terminal block ────────────────────────────────────────────────────────
+    # Same Return-conversion logic as the per-call-site bodies above. The
+    # terminal block is just the block whose last op happens to not be a
+    # non-tail Call; structurally it has no special status.
     terminal_bb = basic_blocks[-1]
     terminal_ops = __convert_var_to_field_refs(terminal_bb.ops, vars_to_fields)
-
-    # Replace the terminal Return with task-completion logic
-    final_ops: list[Op] = []
-    for op in terminal_ops:
-        if isinstance(op, Return):
-            # Write result into task, then complete
-            if task_subtype_name is not None and not isinstance(fn.result, Void):
-                final_ops.append(Move(
-                    ObjectField(fn.result, my_task_field, task_subtype_name, "result", None),
-                    op.value))
-            final_ops.append(Move(
-                __sv_discard,
-                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
-                keep=True))
-            final_ops.append(ReturnVoid())
-        else:
-            final_ops.append(op)
-    sm_ops.extend(final_ops)
+    sm_ops.extend(__convert_returns_for_state_machine(
+        terminal_ops, my_task_field, fn.result, task_subtype_name))
 
     # ── Dispatch targets for idx 1..N (at tail, after cold blocks). Case
     #    (i+1) handles completion of non_terminal[i]'s call: extract that
@@ -848,7 +891,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
             dispatch_ops.append(Move(vars_to_fields[bb.result.name], extract))
         dispatch_ops.append(Jump(f"$resume${i}"))
 
-    all_ops = tuple(sm_ops) + tuple(cold_ops) + tuple(dispatch_ops)
+    all_ops = _prune_unreachable_phi_sources(tuple(sm_ops) + tuple(cold_ops) + tuple(dispatch_ops))
 
     extra_stack = Struct((("$sv_discard", DataPointer()),) + tuple(sm_wrap_fields))
 
@@ -860,6 +903,59 @@ def __create_state_machine_func(fn: Function, state_name: str,
         ops=all_ops,
         comment=fn.comment,
     )
+
+
+def _prune_unreachable_phi_sources(ops: tuple[Op, ...]) -> tuple[Op, ...]:
+    """Block splitting across the hot path / state-machine boundary leaves
+    Phi nodes whose source labels refer to predecessors now living in a
+    different function. Drop those sources here so each remaining Phi has
+    one source per actual predecessor in this function's CFG."""
+    # Collect actual predecessor labels for every Phi block.
+    block_predecessors: dict[str, set[str]] = {}
+    current_block: str | None = None
+    for i, op in enumerate(ops):
+        if isinstance(op, Label):
+            # Fall-through edge from the previous op's block (if any).
+            if i > 0 and current_block is not None:
+                prev = ops[i - 1]
+                if not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
+                    if not (isinstance(prev, Call) and prev.musttail):
+                        block_predecessors.setdefault(op.name, set()).add(current_block)
+            current_block = op.name
+        elif isinstance(op, Jump):
+            if current_block is not None:
+                block_predecessors.setdefault(op.name, set()).add(current_block)
+        elif isinstance(op, JumpIf):
+            if current_block is not None:
+                block_predecessors.setdefault(op.label, set()).add(current_block)
+        elif isinstance(op, IfTask):
+            if current_block is not None:
+                block_predecessors.setdefault(op.target, set()).add(current_block)
+        elif isinstance(op, SwitchJump):
+            if current_block is not None:
+                for _, lbl in op.cases:
+                    block_predecessors.setdefault(lbl, set()).add(current_block)
+
+    out: list[Op] = []
+    current_block = None
+    for op in ops:
+        if isinstance(op, Label):
+            current_block = op.name
+            out.append(op)
+            continue
+        if isinstance(op, Phi) and current_block is not None:
+            preds = block_predecessors.get(current_block, set())
+            kept = tuple((lbl, v) for lbl, v in op.sources if lbl in preds)
+            if kept == op.sources:
+                out.append(op)
+            elif kept:
+                out.append(dataclasses.replace(op, sources=kept))
+            # else: every source pruned → drop the Phi entirely (the target
+            # is written elsewhere — e.g. in the hot-path function for an
+            # arm that doesn't suspend).
+            continue
+        out.append(op)
+    return tuple(out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -879,6 +975,12 @@ def __convert_function_to_task_convention(
     if fn.name == "__entrypoint__":
         return {fn.name: fn}, {}
 
+    # Functions explicitly marked bypass_async (hand-crafted trampoline
+    # helpers, etc.) pass through unchanged — their ops are already in
+    # final form and need no IS_TASK insertion, state machine, or wrap.
+    if fn.bypass_async:
+        return {fn.name: fn}, {}
+
     after_tail = __discover_tail_calls(fn)
     state_name = f"{fn.name}$state"
     basic_blocks = __create_basic_blocks(after_tail, state_name)
@@ -886,14 +988,20 @@ def __convert_function_to_task_convention(
     # Functions with at most one block (no non-tail calls) need only
     # their return type adjusted (or kept as-is if it stays pointer-typed).
     if len(basic_blocks) < 2:
-        wrapped = __wrap_return_type(fn.result)
+        wrapped = wrap_return_type(fn.result)
         if isinstance(wrapped, TaskWrapper):
             # Promote Return(v) → Return(SyncWrap(v, wrapped)) and update any
             # musttail Call result_type so the C cast uses the wrapped typedef.
             new_ops = []
             for op in after_tail.ops:
                 if isinstance(op, Return):
-                    new_ops.append(Return(SyncWrap(op.value, wrapped)))
+                    # Skip the wrap when the Return value already has the
+                    # wrapped shape (passes that hand-build async-pending
+                    # returns supply pre-wrapped values).
+                    if op.value.get_type() == wrapped:
+                        new_ops.append(op)
+                    else:
+                        new_ops.append(Return(SyncWrap(op.value, wrapped)))
                 elif isinstance(op, Call) and op.musttail:
                     new_ops.append(dataclasses.replace(op, result_type=wrapped))
                 else:
@@ -932,9 +1040,20 @@ def __convert_function_to_task_convention(
         # Sync function: $asynccommon aborts; no state machine, no state object.
         return {hot_fn.name: hot_fn} | par_functions, par_objects
 
-    state_obj  = __create_state_object(after_tail, state_name, basic_blocks)
-    machine_fn = __create_state_machine_func(after_tail, state_name,
-                                              task_subtype_name, basic_blocks)
+    # The state machine needs musttail Calls re-expanded back to Call+Return
+    # so the existing terminal-Return → task_complete logic fires. The hot path
+    # keeps the musttail so its terminal C codegen emits `return foo(...)`.
+    # Skip the re-expansion (and second basic-block partition) when there's
+    # nothing to unroll — most async functions hit this path.
+    if any(isinstance(op, Call) and op.musttail for op in after_tail.ops):
+        sm_fn = __unroll_musttail_for_state_machine(after_tail)
+        sm_basic_blocks = __create_basic_blocks(sm_fn, state_name)
+    else:
+        sm_fn = after_tail
+        sm_basic_blocks = basic_blocks
+    state_obj  = __create_state_object(sm_fn, state_name, sm_basic_blocks)
+    machine_fn = __create_state_machine_func(sm_fn, state_name,
+                                              task_subtype_name, sm_basic_blocks)
     functions = {hot_fn.name: hot_fn, machine_fn.name: machine_fn} | par_functions
     objects   = {state_obj.name: state_obj} | par_objects
     return functions, objects
@@ -942,20 +1061,12 @@ def __convert_function_to_task_convention(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Task-subtype Object generation (collected across all functions)
+#
+# `TASK_FIELDS` is defined in `lowering.task_abi` and shared with passes
+# that synthesise task-aware code (e.g. tail_trampoline). Subtypes inherit
+# those fields the normal YAFL way so `((task_t*)subtype)` hits each prefix
+# field at the same offset by construction.
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Mirror of task_t in yafllib/yafl.h.  Subtypes inherit these fields the
-# normal YAFL way (flat-layout), so ((task_t*)subtype) hits each prefix
-# field at the same offset by construction — no per-callsite cast machinery
-# needed. Order MUST match the C declaration of task_t exactly.
-_TASK_FIELDS: tuple[tuple[str, Type], ...] = (
-    ("type",       DataPointer()),   # object_t.vtable (vtable_t*)
-    ("state",      Int(32)),         # _Atomic(int_fast32_t)
-    ("thread_id",  Int(32)),         # originating worker thread index
-    ("callback",   FuncPointer()),   # fun_t
-    ("next",       DataPointer()),   # _Atomic(task_t*) — intrusive queue link
-)
-
 
 def _task_object() -> Object:
     """Foreign 'task' Object — its typedef lives in yafl.h; we publish the
@@ -966,7 +1077,7 @@ def _task_object() -> Object:
         name="task",
         extends=(),
         functions=(),
-        fields=ImmediateStruct(_TASK_FIELDS),
+        fields=ImmediateStruct(TASK_FIELDS),
         comment="foreign task_t — declared in yafllib/yafl.h",
         is_foreign=True,
     )
@@ -979,7 +1090,7 @@ def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
     # yafllib symbols by name.  Compiler-synthesised subtypes get a flat
     # struct emitted by codegen with the task_t prefix followed by `result`.
     is_foreign = subtype_name == "task_obj"
-    fields = _TASK_FIELDS + (("result", result_type),)
+    fields = TASK_FIELDS + (("result", result_type),)
     return Object(
         name=subtype_name,
         extends=("task",),
@@ -997,7 +1108,7 @@ def _par_task_object(par_task_name: str, result_types: list[Type]) -> Object:
     `(task_par_base_t*)par_task` both work), then appends per-instance
     fields: `remaining`, per-slot closure pointers, and per-slot results."""
     N = len(result_types)
-    fields = _TASK_FIELDS + (
+    fields = TASK_FIELDS + (
         ("remaining", Int(32)),
     ) + tuple((f"closure_{k}", DataPointer()) for k in range(N)) \
       + tuple((f"result_{k}", rt) for k, rt in enumerate(result_types))
@@ -1056,7 +1167,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
     """
     sv_par       = StackVar(DataPointer(), "$par_task")
     sv_closure   = StackVar(DataPointer(), "$launcher_closure")
-    wrapped_type = __wrap_return_type(result_type)
+    wrapped_type = wrap_return_type(result_type)
     needs_temp   = wrapped_type is not result_type
     sv_result_w  = StackVar(wrapped_type, "$result_w")
     sv_discard_  = StackVar(DataPointer(), "$sv_discard_cb")
@@ -1070,7 +1181,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
     ops.append(Call(GlobalFunction(lambda_name, sv_closure), NewStruct(()), sv_result_w))
     # IS_TASK check
     cond = Invoke("UNLIKELY",
-                  NewStruct((("x", __is_task_param(sv_result_w, wrapped_type)),)),
+                  NewStruct((("x", is_task_param(sv_result_w, wrapped_type)),)),
                   Int(32))
     ops.append(JumpIf("$launcher_async", cond))
     # Sync path: write result, decrement
@@ -1085,7 +1196,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
     ops.append(Jump("$launcher_done"))
     # Async path: register slot callback
     ops.append(Label("$launcher_async"))
-    task_ptr_k = __task_ptr_from(sv_result_w, wrapped_type)
+    task_ptr_k = task_ptr_from(sv_result_w, wrapped_type)
     untag_k    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr_k),)), DataPointer())
     slot_cb    = GlobalFunction(f"{fn_name}$par${call_site}$slot${slot}", sv_par)
     ops.append(Move(sv_discard_,

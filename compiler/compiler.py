@@ -18,8 +18,13 @@ import lowering.staticinit
 import lowering.deadstores
 import lowering.unions
 import lowering.async_lower
+import lowering.branch_threading
+import lowering.copy_propagation
 import lowering.parallelize_tuples
+import lowering.ssa_validate
+import lowering.linearity
 import lowering.sync_inference
+import lowering.tail_trampoline
 import lowering.trim
 import lowering.uninit_check
 
@@ -145,6 +150,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     a.functions["__entrypoint__"] = __create_entry_point(main)
     a.union_discriminators = union_discriminators or {}
 
+    # SSA + control-flow + Phi validation right after AST lowering, before
+    # any IR-level transformations. Catches generator bugs at the source.
+    lowering.ssa_validate.validate(a)
+
     a = lowering.trim.removed_unused_stuff(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
 
@@ -173,9 +182,31 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Lazy initialisation must be after inlining, and before async lowering.
     a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
 
+    # Tail-trampoline lowering: split every [tail] function into wrapper +
+    # impl + state + callback + chain. Runs before async lowering so the
+    # generated wrappers/callbacks go through the normal async pipeline.
+    a = lowering.tail_trampoline.lower_tail_trampolines(a)
+
     a = lowering.sync_inference.infer_sync(a)
+
+    # Branch threading + copy propagation collapse the IR shapes that ternary
+    # and match lowerings leave behind (Move-into-shared-slot → Jump → Label
+    # → Return). After collapse, each branch ends in `Call(R); Return(R)`,
+    # which `__discover_tail_calls` (inside async lowering) recognises as
+    # musttail. Returns these passes introduce mid-function are handled
+    # uniformly by async lowering's Return-conversion helpers.
+    a = lowering.copy_propagation.propagate_copies(lowering.branch_threading.thread_branches(a))
+
     a = lowering.trim.removed_unused_stuff(lowering.async_lower.lower_async(a))
     lowering.uninit_check.check_application(a)
+
+    # Final SSA validation, just before C emission. The IR is still SSA at
+    # this point: async lowering only writes to heap fields (ObjectField),
+    # which don't count towards the single-definition invariant — that only
+    # constrains StackVar writes. Phi → per-edge Moves and the remaining
+    # imperative-style codegen transformations run inside `a.gen()`.
+    lowering.ssa_validate.validate(a)
+
     return a.gen(just_testing=just_testing)
 
 
@@ -244,6 +275,13 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
         stmt.search_and_replace(resolver, _find_named_specs)
     if named_spec_errors:
         return named_spec_errors
+
+    # Linear-type check: runs on the converged, type-resolved templates
+    # (pre-monomorphisation). Each `<[linear] T>` generic body is checked
+    # once here; the instantiation-site kind check lives in generics.py.
+    linearity_errors = lowering.linearity.check_linearity(new_statements, resolver)
+    if linearity_errors:
+        return linearity_errors
 
     # All ok so let's create some C code
     if optimization_level >= 2 and not disable_auto_parallel:

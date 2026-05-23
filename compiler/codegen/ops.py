@@ -39,7 +39,7 @@ class Label(Op):
         return dataclasses.replace(self, name=renames.get(self.name, self.name))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"{self.name}:\n"
+        return f"{mangle_name(self.name)}:\n"
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ class Jump(Op):
         return dataclasses.replace(self, name=renames.get(self.name, self.name))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"    goto {self.name};\n"
+        return f"    goto {mangle_name(self.name)};\n"
 
 
 @dataclass(frozen=True)
@@ -106,7 +106,7 @@ class JumpIf(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         cond = self.condition.to_c(type_cache)
         test = f"!({cond})" if self.invert else cond
-        return f"    if ({test}) goto {self.label};\n"
+        return f"    if ({test}) goto {mangle_name(self.label)};\n"
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.condition.get_live_vars(), frozenset()
@@ -162,7 +162,7 @@ class IfTask(Op):
         return (f"    if (UNLIKELY({cond})) {{\n"
                 f"        {task_dst} = ({dst_type})TASK_UNTAG({task_src});\n"
                 f"        {cid_dst} = ((int32_t){self.call_id});\n"
-                f"        goto {self.target};\n"
+                f"        goto {mangle_name(self.target)};\n"
                 f"    }}\n")
 
 
@@ -196,7 +196,7 @@ class SwitchJump(Op):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         cond  = self.condition.to_c(type_cache)
-        cases = "\n".join(f"        case {v}: goto {lbl};" for v, lbl in self.cases)
+        cases = "\n".join(f"        case {v}: goto {mangle_name(lbl)};" for v, lbl in self.cases)
         # Default aborts: idx==0 must never reach this dispatch (heap memory
         # is zero-initialised, so idx==0 would be uninitialised state). Every
         # valid resume point must have a case; anything else is a compiler
@@ -411,3 +411,60 @@ class ParallelCall(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         raise NotImplementedError("ParallelCall must be lowered by async_lower before codegen")
 
+
+
+
+@dataclass(frozen=True)
+class Phi(Op):
+    """SSA φ-node: at a control-flow join, writes `target` with the value
+    from whichever predecessor actually arrived. `sources` is a tuple of
+    (predecessor_label_name, value_from_that_predecessor) pairs.
+
+    Lives only in SSA form. The IR stays in SSA from AST generation all the
+    way through async lowering; `Function.lower_phis()` converts each Phi
+    to per-edge Moves immediately before C emission. The assert in `to_c`
+    fires if a Phi survives past that point.
+
+    `target` is any `LParam` (StackVar, ObjectField, or GlobalVar). It is
+    usually a StackVar but async lowering can promote it to an ObjectField
+    on the task-heap state object when the value spans a suspension.
+    """
+    target: LParam
+    sources: tuple[tuple[str, RParam], ...]
+
+    def all_params(self) -> list[RParam]:
+        return [p for _, v in self.sources for p in v.flatten()] + self.target.flatten(is_reader=False)
+
+    def rename_vars(self, renames: dict[str, str]) -> Phi:
+        return dataclasses.replace(self,
+            target=self.target.rename_vars(renames),
+            sources=tuple((renames.get(lbl, lbl), v.rename_vars(renames)) for lbl, v in self.sources))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> Phi:
+        new_target = replacer(self.target)
+        # The Phi target is the value's definition site; it must remain a
+        # writable location.
+        if not isinstance(new_target, LParam):
+            raise TypeError(f"Phi target must remain an LParam after replace_params; got {type(new_target).__name__}")
+        return dataclasses.replace(self,
+            target=new_target,
+            sources=tuple((lbl, v.replace_params(replacer)) for lbl, v in self.sources))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        # Phi sources are conditional: each is consumed only on the edge
+        # from its labelled predecessor. For users that need precise
+        # per-edge attribution (uninit_check) we expose `.sources` directly.
+        # For users that just need "is this variable live somewhere"
+        # (trim, etc.) we report sources as plain reads — overly broad but
+        # never wrong for liveness.
+        reads: frozenset[StackVar] = frozenset()
+        for _, v in self.sources:
+            reads = reads | v.get_live_vars()
+        target_writes = frozenset({self.target}) if isinstance(self.target, StackVar) else frozenset()
+        target_reads = frozenset() if isinstance(self.target, StackVar) else self.target.get_live_vars()
+        return reads | target_reads, target_writes
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        raise AssertionError(
+            f"Phi op reached codegen for target {self.target.name!r} — "
+            f"from_ssa must lower all Phis to per-edge Moves before codegen.")

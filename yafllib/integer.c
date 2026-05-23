@@ -146,32 +146,6 @@ EXPORT object_t* integer_create_from_int32_noalloc(int32_t value) {
     return (object_t*)_TAG_LITERAL(v);
 }
 
-EXPORT int32_t integer_to_int32_with_overflow(object_t* self, int* overflow) {
-    intptr_t result;
-    *overflow = 0;
-
-    if (_IS_LITERAL(self)) {
-        result = (int32_t)_UNTAG_LITERAL(self);
-    } else {
-        integer_t* a = (integer_t*)self;
-        result = a->array[0];
-        if (a->sign) {
-            result = -result;
-        }
-        if (a->length > 1) {
-            *overflow = 1;
-        }
-    }
-
-#if WORD_SIZE == 64
-    if (result < INT32_MIN || result > INT32_MAX) {
-        *overflow = 1;
-    }
-#endif
-
-    return (int32_t)result;
-}
-
 EXPORT int32_t integer_to_int32(object_t* self) {
     int overflow;
     return integer_to_int32_with_overflow(self, &overflow);

@@ -386,9 +386,12 @@ def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], toke
     d = {key: (value[0] if value else None) for key, value in result.value[0]} if result.value else {}
     return p.Result(d, result.tokens, result.line_ref, result.errors)
 
-def __to_generic_placeholder(result: p.Result[str], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
-    name = f"{result.value}@{result.line_ref.hash6()}"
-    statement = s.TypeAliasStatement(result.line_ref, name, None, {}, (), t.GenericPlaceholderSpec(result.line_ref, name))
+def __to_generic_placeholder(result: p.Result[tuple[dict[str, e.Expression|None], str]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
+    attributes, ident = result.value
+    name = f"{ident}@{result.line_ref.hash6()}"
+    is_linear = "linear" in attributes
+    statement = s.TypeAliasStatement(result.line_ref, name, None, attributes, (),
+                                     t.GenericPlaceholderSpec(result.line_ref, name, is_linear))
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 def __to_flat_type_list(result: p.Result[list[t.TypeSpec]], tokens: list[p.Token]) -> p.Result[list[t.TypeSpec]]:
@@ -491,7 +494,7 @@ __parse_unary   = (p.discard_sym("-") & __parse_invoke) >> __to_negate | __parse
 __parse_pipeline= (__parse_unary   & p.many(p.discard_sym("|>")    & __parse_unary    )) >> __to_pipeline
 __parse_divmul  = (__parse_pipeline & p.many(p.sym(["%", "/", "*"]) & __parse_pipeline  )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
-__parse_compare = (__parse_addsub   & p.many(p.sym(["<", "=", ">"]) & __parse_addsub    )) >> __to_call_operators
+__parse_compare = (__parse_addsub   & p.many(p.sym(["<", "==", ">"]) & __parse_addsub    )) >> __to_call_operators
 __parse_bind    = (__parse_compare  & p.many(p.sym("?>")             & __parse_compare   )) >> __to_call_operators
 __parse_ternery = (__parse_bind     & p.many(p.discard_sym("?") & __parse_bind & p.discard_sym(":") & __parse_bind)) >> __to_ternery
 
@@ -504,7 +507,7 @@ __parse_maybe_where_constraints = p.maybe(p.requires(
     "missing type constraints")) >> __to_flat_type_list
 
 __parse_maybe_generic_statement = p.maybe(p.requires(
-    p.sym("<"), p.delimited_list(p.ident() >> __to_generic_placeholder, ",") & p.discard_sym(">"),
+    p.sym("<"), p.delimited_list((__parse_attributes & p.ident()) >> __to_generic_placeholder, ",") & p.discard_sym(">"),
     "missing generics")) >> __to_flat_list
 
 __parse_action = p.block(

@@ -376,6 +376,12 @@ EXTERN object_t* task_obj_create (object_t* self);
 EXTERN object_t* task_complete   (object_t* self);
 EXTERN object_t* task_on_complete(object_t* self, fun_t callback);
 
+// Defer completion to a worker iteration. Same effect as task_complete
+// except the registered callback (if any) runs in a fresh stack frame
+// instead of synchronously. Compilers building task-trampolines call
+// this so a long completion chain doesn't recurse on the C stack.
+EXTERN object_t* task_complete_deferred(object_t* self);
+
 // Fixed-prefix layout for compiler-generated parallel join tasks.  Mirrors
 // task_t through `next`, then adds `remaining` for the join counter.  Each
 // per-callsite par_task struct (emitted by async_lower._par_task_object) is a
@@ -397,7 +403,9 @@ EXTERN void thread_work_post(object_t* task);
 // Round-robin post across workers — use when spreading parallel work.
 EXTERN object_t* thread_work_post_parallel(object_t* task);
 // Create an ad-hoc dispatch task from a fun_t and post it to the current thread.
-EXTERN void thread_dispatch(fun_t action);
+// Returns NULL; the object_t* return makes the symbol usable from the YAFL
+// compiler's `Invoke` form (which always assigns the result into a discard slot).
+EXTERN object_t* thread_dispatch(fun_t action);
 
 
 /**********************************************************
@@ -509,10 +517,42 @@ EXTERN object_t* integer_shr(object_t* self, object_t* amount);
 
 EXTERN object_t* integer_add_int32(object_t* self, int32_t value);
 EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);
-EXTERN int32_t   integer_to_int32_with_overflow(object_t* self, int* overflow);
 EXTERN int32_t   integer_to_int32(object_t* self);
 EXTERN object_t* integer_create_from_int32(int32_t value);
 EXTERN object_t* integer_create_from_int32_noalloc(int32_t value);
+
+// Tagged-pointer fast path; caller guarantees `value` fits in signed 24 bits
+// (i.e. INT24_MIN..INT24_MAX). Never allocates.  Use when the producer's
+// range is statically bounded (byte values, compare results, small counts).
+INLINE object_t* integer_create_from_int24(int32_t value) {
+    return (object_t*)((intptr_t)value * 4 + PTR_TAG_INTEGER);
+}
+
+// Both paths inline — no out-of-line fallback. A call site, even on the cold
+// path, forces the C compiler to assume caller-save clobbers across the
+// branch, spilling hot-path values it would otherwise keep in registers.
+INLINE int32_t integer_to_int32_with_overflow(object_t* self, int* overflow) {
+    intptr_t result;
+    *overflow = 0;
+    if (PTR_IS_INTEGER(self)) {
+        result = (int32_t)((intptr_t)self >> 2);
+    } else {
+        integer_t* a = (integer_t*)self;
+        result = a->array[0];
+        if (a->sign) {
+            result = -result;
+        }
+        if (a->length > 1) {
+            *overflow = 1;
+        }
+    }
+#if WORD_SIZE == 64
+    if (result < INT32_MIN || result > INT32_MAX) {
+        *overflow = 1;
+    }
+#endif
+    return (int32_t)result;
+}
 
 INLINE bool integer_test_gt(object_t* self, object_t* data) {
     intptr_t va = (intptr_t)self, vb = (intptr_t)data;
@@ -674,19 +714,48 @@ INLINE int32_t string_length(object_t* self) {
 EXTERN object_t* string_allocate(int32_t length);
 EXTERN object_t* string_from_bytes(uint8_t* data, int32_t length);
 EXTERN int32_t   string_copy_cstr(object_t* self, char* buf, int32_t buf_size);
-EXTERN char*     string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr);
+INLINE char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
+    if (!PTR_IS_STRING(self)) {
+        *len_ptr = ((string_t*)self)->length - 1;
+        return (char*)((string_t*)self)->array;
+    }
+    uintptr_t test = 1;
+    if (1 == *(uint8_t*)&test)
+         *local_buffer = (uintptr_t)self >> 8;
+    else *local_buffer = (uintptr_t)self & ~(uintptr_t)255;
+    *len_ptr = (uint32_t)((sizeof(uintptr_t)-1) & ((intptr_t)self / (PTR_TAG_MASK+1)));
+    return (char*)local_buffer;
+}
 EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
 EXTERN object_t* string_append(object_t* self, object_t* data);
 EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
 EXTERN int       string_compare(object_t* self, object_t* data);
-EXTERN object_t* string_length_int(object_t* self);
-EXTERN object_t* string_compare_int(object_t* self, object_t* data);
-EXTERN bool      string_eq(object_t* self, object_t* data);
-EXTERN bool      string_lt(object_t* self, object_t* data);
-EXTERN bool      string_gt(object_t* self, object_t* data);
-EXTERN object_t* string_at(object_t* self, object_t* index);
+
+INLINE object_t* string_length_int(object_t* self) {
+    return integer_create_from_int32(string_length(self));
+}
+INLINE object_t* string_compare_int(object_t* self, object_t* data) {
+    int r = string_compare(self, data);
+    return integer_create_from_int24(r < 0 ? -1 : r > 0 ? 1 : 0);
+}
+INLINE bool string_eq(object_t* self, object_t* data) { return string_compare(self, data) == 0; }
+INLINE bool string_lt(object_t* self, object_t* data) { return string_compare(self, data) <  0; }
+INLINE bool string_gt(object_t* self, object_t* data) { return string_compare(self, data) >  0; }
+
+INLINE object_t* string_byte_at(object_t* self, object_t* o_index) {
+    int overflow = 0;
+    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    if (overflow) return integer_create_from_int24(-1);
+    intptr_t buf; int32_t len;
+    char* cstr = string_to_cstr(self, &buf, &len);
+    if (idx < 0 || idx >= len) return integer_create_from_int24(-1);
+    return integer_create_from_int24((unsigned char)cstr[idx]);
+}
+
 EXTERN object_t* string_byte_at(object_t* self, object_t* index);
 EXTERN object_t* string_find_byte(object_t* self, object_t* byte_value, object_t* from);
+EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);
+EXTERN object_t* string_skip_any (object_t* self, object_t* accept,     object_t* from);
 EXTERN object_t* string_parse_int(object_t* self);
 EXTERN object_t* wchar_to_string(object_t* integer);
 EXTERN object_t* print_string(object_t* self, object_t* data);

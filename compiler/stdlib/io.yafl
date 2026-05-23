@@ -48,8 +48,10 @@ fun _error_from_code(code: Int): IOError
 
 # Public IO type. [final] — no subclassing, method calls dispatch directly
 # (no vtable). The wrapped _IO handle lives in the `_io` field.
+# [linear] — the compiler enforces that every IO handle is used exactly
+# once: threaded through read/write or terminally consumed by close.
 
-class [final] IO(_io: _IO)
+class [linear,final] IO(_io: _IO)
 
   fun read(length: Int): (io: IO, v: String|IOError)
     ret match(_io._read(length))
@@ -60,7 +62,9 @@ class [final] IO(_io: _IO)
   fun write(data: String): (io: IO, v: Int|IOError)
     ret _write_result(this, _io._write(data))
 
-  fun close(): IOError|None
+  # [terminal] — this method is the IO handle's terminus: it consumes
+  # `this` (the linear obligation ends here) and returns no IO.
+  fun [terminal] close(): IOError|None
     ret match(_io._close())
       (c: Int)          => _close_result(c)
       (n: System::None) => None
@@ -134,8 +138,8 @@ fun [inline] `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
 fun writeAll(io: IO, data: System::String): (io: IO, v: System::Int|IOError)
   fun _resume(p: (io: IO, v: System::Int|IOError), data: System::String): (io: IO, v: System::Int|IOError)
     ret match(p.v)
-      (n: System::Int) => n = System::length(data)
+      (n: System::Int) => n == System::length(data)
                             ? (p.io, n)
                             : writeAll(p.io, System::slice(data, n, System::length(data)))
       (e: IOError)     => (p.io, e)
-  ret System::length(data) = 0 ? (io, 0) : _resume(io.write(data), data)
+  ret System::length(data) == 0 ? (io, 0) : _resume(io.write(data), data)

@@ -412,6 +412,7 @@ class EnumSpec(TypeSpec):
 @dataclass(frozen=True)
 class GenericPlaceholderSpec(TypeSpec):
     name: str
+    is_linear: bool = False     # declared as `<[linear] T>` — body checked linearly
 
     def is_concrete(self) -> bool:
         return True

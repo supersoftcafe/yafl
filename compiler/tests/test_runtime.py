@@ -479,6 +479,79 @@ fun main(): Int
 
 
 # ---------------------------------------------------------------------------
+# Async tail-call optimization — structural fix for the case where an async
+# function has a Call(musttail=True) in its terminal block. Previously the
+# state-machine path would: (a) hang `strip_unused_operations` on the
+# resulting CFG cycle, and (b) never invoke `task_complete` because the
+# musttail Call replaced the Return that drives it.
+# ---------------------------------------------------------------------------
+
+class TestAsyncTailCall(TestCase):
+
+    def test_async_function_with_musttail_in_terminal_block(self):
+        """`outer` has a non-tail call to `inner` (which writes to IO, so it
+        genuinely becomes async — sync inference can't downgrade it). Its
+        terminal block ends with `Call(outer2) → Return(R)` — the shape
+        `__discover_tail_calls` now marks musttail (the guard on `fn.sync`
+        has been lifted).
+
+        Before the fixes:
+          - `strip_unused_operations` would hang on the musttail-induced
+            CFG cycle in the generated state machine.
+          - The terminal block would never invoke `task_complete` because
+            the original Return was consumed by the musttail expansion.
+
+        After the fixes:
+          - Hot path keeps musttail → clang emits `return outer2(...)`
+            (verified by inspecting the generated C), TCOs even at -O0.
+          - State machine re-expands musttail back to Call+Return via
+            `__unroll_musttail_for_state_machine`, so `task_complete`
+            still fires on the resumed path. The state object gains a
+            `_musttail_ret_*` field that holds the temp across suspension.
+
+        outer(stdout(), 0): inner writes "?" and returns 42; outer2(42+0)=43.
+        main returns that as the exit code."""
+        src = """\
+namespace Test
+import System
+import System::IO
+
+fun outer2(x: System::Int): System::Int
+  ret x + 1
+
+fun inner(io: IO): System::Int
+  let r = io.write("?")
+  let closed = r.io.close()
+  ret 42
+
+fun outer(io: IO, n: System::Int): System::Int
+  let s: System::Int = inner(io)
+  ret outer2(s + n)
+
+fun main(): System::Int
+  ret outer(stdout(), 0)
+"""
+        self.assertEqual(43, _compile_and_run_stdlib(src))
+
+    def test_tail_attribute_deep_recursion(self):
+        """A `[tail]`-marked function trampolines via the worker queue;
+        depth 200k completes in O(1) C stack. The same recursion without
+        `[tail]` would blow the stack inside the synchronous completion
+        chain regardless of -O level."""
+        src = """\
+namespace Test
+import System
+
+fun [tail] loop(n: System::Int, acc: System::Int): System::Int
+  ret n == 0 ? acc : loop(n - 1, acc + 1)
+
+fun main(): System::Int
+  ret loop(200000, 0) - 199999
+"""
+        self.assertEqual(1, _compile_and_run_stdlib(src, timeout=30))
+
+
+# ---------------------------------------------------------------------------
 # __parallel__ — explicit concurrent fan-out with join
 # ---------------------------------------------------------------------------
 

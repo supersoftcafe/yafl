@@ -35,43 +35,40 @@ class OperationBundle:
     operations: tuple[cg_o.Op, ...] = ()
     result_var: cg_p.RParam|None = None
 
-    def __get_new_labels(self, prefix: str, base_index: int) -> dict[str, str]:
-        return dict((name, f"ulabel_{prefix}{index}") for index, name in enumerate((l.name for l in self.operations if isinstance(l, cg_o.Label)), base_index))
+    def with_prefix(self, prefix: str|int) -> OperationBundle:
+        """Mark this bundle as living at structural path component `prefix`
+        relative to the surrounding bundle. Every internal StackVar and
+        Label name gets `{prefix}/` prepended; externally-qualified names
+        (containing '@') and `this` are left alone.
 
-    def __get_new_vars(self, prefix: str, base_index: int) -> dict[str, str]:
-        return dict( (sv.name, f"uvar_{prefix}{index}") for index, sv in enumerate(self.stack_vars, base_index) if '@' not in sv.name and sv.name != "this" )
-
-    def __rename_labels_and_vars(self, renames: dict[str, str]) -> OperationBundle:
-        stack_vars = tuple(sv.rename_vars(renames) for sv in self.stack_vars)
-        operations = tuple(op.rename_vars(renames) for op in self.operations)
-        return OperationBundle(stack_vars, operations)
-
-    # def append(self, other: OperationBundle) -> OperationBundle:
-    #     # If a var is referenced, or a jump target is used, that does not exist in the local stack
-    #     # or as a local label, it must reference something external, and so remains untouched. We
-    #     # only rename the things that are internal to this bundle.
-    #
-    #     vars1 = self.__get_new_vars(0)
-    #     labels1 = self.__get_new_labels(0)
-    #     bundle1 = self.__rename_labels_and_vars(labels1 | vars1)
-    #
-    #     vars2 = other.__get_new_vars(len(vars1))
-    #     labels2 = other.__get_new_labels(len(labels1))
-    #     bundle2 = other.__rename_labels_and_vars(labels2 | vars2)
-    #
-    #     return OperationBundle(
-    #         bundle1.stack_vars + bundle2.stack_vars,
-    #         bundle1.operations + bundle2.operations,
-    #         other.result_var and other.result_var.rename_vars(vars1 | vars2))
-
-    def rename_vars(self, prefix: str|int) -> OperationBundle:
+        The prefix is a *position*, not a counter. The same AST shape
+        composed the same way produces the same names — no monotonic
+        counter threads through generation. Integer prefixes are accepted
+        for backward compatibility with call sites that previously passed
+        position-as-int; they are rendered without further decoration.
+        """
         if isinstance(prefix, int):
-            prefix = f"{prefix}_"
-        renames = self.__get_new_vars(prefix, 0) | self.__get_new_labels(prefix, 0)
-        new_stack_vars = tuple(sv.rename_vars(renames) for sv in self.stack_vars)
-        new_result_var = self.result_var and self.result_var.rename_vars(renames)
-        new_operations = tuple(op.rename_vars(renames) for op in self.operations)
-        return OperationBundle(new_stack_vars, new_operations, new_result_var)
+            prefix = str(prefix)
+        if not prefix:
+            # Empty prefix is a no-op: callers that previously passed "" to
+            # collapse path structure into a flat `uvar_N` sequence are now
+            # explicitly opting out of any structural mark.
+            return self
+
+        def attach(name: str) -> str:
+            if "@" in name or name == "this":
+                return name
+            return f"{prefix}/{name}"
+
+        var_renames = {sv.name: attach(sv.name) for sv in self.stack_vars}
+        label_renames = {op.name: attach(op.name) for op in self.operations if isinstance(op, cg_o.Label)}
+        renames = var_renames | label_renames
+        if not renames:
+            return self
+        return OperationBundle(
+            stack_vars=tuple(sv.rename_vars(renames) for sv in self.stack_vars),
+            operations=tuple(op.rename_vars(renames) for op in self.operations),
+            result_var=self.result_var and self.result_var.rename_vars(renames))
 
     def __add__(self, other: OperationBundle) -> OperationBundle:
         return OperationBundle(

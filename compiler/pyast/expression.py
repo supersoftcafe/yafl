@@ -133,7 +133,7 @@ class NewExpression(Expression):
             raise AssertionError(f"Failed to resolve {ctype.name}")
         fields = cast(s.ClassStatement, found[0].statement).get_fields(resolver)
 
-        params_bundle = self.parameter.generate(resolver).rename_vars(1)
+        params_bundle = self.parameter.generate(resolver).with_prefix("args")
 
         params_var = cg_p.StackVar(xtype.generate(resolver), "params")
         result_var = cg_p.StackVar(ctype.generate(resolver), "result")
@@ -203,8 +203,8 @@ class CallExpression(Expression):
         ftype = self.function.get_type(resolver)
         xtype = cast(t.CallableSpec, ftype)
 
-        fun_op_bundle = self.function.generate(resolver).rename_vars(1)
-        prm_op_bundle = self.parameter.generate(resolver).rename_vars(2)
+        fun_op_bundle = self.function.generate(resolver).with_prefix("fn")
+        prm_op_bundle = self.parameter.generate(resolver).with_prefix("args")
 
         fun_ref = fun_op_bundle.result_var
         impure = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.impure
@@ -749,7 +749,7 @@ class ParallelExpression(Expression):
         return errors
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        fn_bundles = [expr.generate(resolver).rename_vars(f"par{i}_") for i, expr in enumerate(self.exprs)]
+        fn_bundles = [expr.generate(resolver).with_prefix(f"par{i}") for i, expr in enumerate(self.exprs)]
         result_types = [cast(t.CallableSpec, expr.get_type(resolver)).result for expr in self.exprs]
         result_vars = tuple(cg_p.StackVar(rt.generate(resolver), f"$par{i}") for i, rt in enumerate(result_types))
         register = cg_p.StackVar(self.get_type(resolver).generate(resolver), "$par_result")
@@ -818,7 +818,7 @@ class BlockExpression(Expression):
         nested = g.ResolverData(resolver, self._find_locals())
         bundle = g.OperationBundle()
         for i, stmt in enumerate(self.statements):
-            bundle = bundle + stmt.generate(nested, None).rename_vars(f"b{i}_")
+            bundle = bundle + stmt.generate(nested, None).with_prefix(f"s{i}")
         return bundle + self.value.generate(nested)
 
 
@@ -891,7 +891,7 @@ class TupleExpression(Expression):
         return errors or []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        param_bundles = [expr.generate(resolver).rename_vars(f"{index}_") for index, expr in enumerate(self.expressions)]
+        param_bundles = [expr.generate(resolver).with_prefix(f"e{index}") for index, expr in enumerate(self.expressions)]
         # NewStruct field-name → result_var mapping is pinned to declared positions,
         # so the resulting tuple value is unaffected by any reordering of evaluation below.
         value = cg_p.NewStruct(tuple(((f"_{idx}", x.result_var) for idx, x in enumerate(param_bundles))))
@@ -946,25 +946,51 @@ class TernaryExpression(Expression):
         return cond_err + true_err + false_err + self_err
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        # SSA shape: each branch's result has its own path-derived name
+        # (F/... and T/...). A Phi at the `join` label collects them.
+        #
+        # `F_exit` and `T_exit` are explicit labels placed immediately before
+        # each branch leaves to the join. They name the *actual* predecessor
+        # block at Phi-lowering time, which matters when a branch contains
+        # its own nested control flow (e.g. a nested ternary's `join` label
+        # is the "most recent label" right before this outer ternary's exit).
+        # Without these explicit labels, the Phi would name the start of the
+        # branch (`F_branch` / `T_branch`), but control may have passed
+        # through additional intermediate labels first.
+        cond_bundle = self.condition.generate(resolver).with_prefix("cond")
+        false_bundle = self.falseResult.generate(resolver).with_prefix("F")
+        true_bundle  = self.trueResult.generate(resolver).with_prefix("T")
+
         result_var = cg_p.StackVar(self.get_type(resolver).generate(resolver), "result")
+        phi = cg_o.Phi(
+            target=result_var,
+            sources=(
+                ("F_exit", false_bundle.result_var),
+                ("T_exit", true_bundle.result_var),
+            ))
 
-        cond_bundle = self.condition.generate(resolver).rename_vars("a")
-        cond_bundle_suffix = g.OperationBundle(
-            operations=(cg_o.JumpIf("on_true", cond_bundle.result_var),))
-
-        false_bundle = self.falseResult.generate(resolver).rename_vars("b")
-        false_bundle_suffix = g.OperationBundle(
-            operations=(cg_o.Move(result_var, false_bundle.result_var), cg_o.Jump("end"), cg_o.Label("on_true")))
-
-        true_bundle = self.trueResult.generate(resolver).rename_vars("c")
-        true_bundle_suffix = g.OperationBundle(
-            stack_vars=(result_var,),
-            operations=(cg_o.Move(result_var, true_bundle.result_var), cg_o.Label("end")),
-            result_var=result_var)
-
-        result = (cond_bundle + cond_bundle_suffix + false_bundle + false_bundle_suffix + true_bundle + true_bundle_suffix)
-
-        return result.rename_vars("")
+        return (
+            cond_bundle
+            + g.OperationBundle(operations=(
+                cg_o.JumpIf("T_branch", cond_bundle.result_var),
+                cg_o.Label("F_branch"),
+            ))
+            + false_bundle
+            + g.OperationBundle(operations=(
+                cg_o.Label("F_exit"),
+                cg_o.Jump("join"),
+                cg_o.Label("T_branch"),
+            ))
+            + true_bundle
+            + g.OperationBundle(
+                stack_vars=(result_var,),
+                operations=(
+                    cg_o.Label("T_exit"),
+                    cg_o.Label("join"),
+                    phi,
+                ),
+                result_var=result_var)
+        )
 
 
 
@@ -1105,21 +1131,43 @@ class WideExpression(Expression):
         end_label = "wide_end"
         sv = inner_bundle.result_var
 
+        # Each widening path computes a tagged-union struct value as an
+        # inline RParam expression. The Phi at the join collects one such
+        # expression per predecessor edge — codegen emits per-edge Moves
+        # into `result_var`, evaluating the expression at the right point.
+        # `wide_results` keeps the `(exit_label, expr)` pairs in the order
+        # the branches are emitted.
+        wide_results: list[tuple[str, cg_p.RParam]] = []
+
         if isinstance(src_ctype, cg_t.DataPointer):
             body = self.__widen_from_datapointer(
-                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.fields, discriminators, result_var, end_label, resolver)
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.fields,
+                discriminators, end_label, wide_results, resolver)
         else:
             assert isinstance(src_ctype, cg_t.Struct), \
                 f"WideExpression: source must be DataPointer or Struct (tagged union), got {src_ctype}"
             body = self.__widen_from_container(
-                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.fields, discriminators, result_var, end_label, resolver)
+                sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_container.fields,
+                discriminators, end_label, wide_results, resolver)
 
-        bundles = [inner_bundle] + body + [g.OperationBundle(operations=(cg_o.Label(end_label),), result_var=result_var)]
-        return reduce(lambda a, b: a + b, bundles).rename_vars("")
+        join = g.OperationBundle(
+            stack_vars=(result_var,),
+            operations=(
+                cg_o.Label(end_label),
+                cg_o.Phi(target=result_var, sources=tuple(wide_results)),
+            ),
+            result_var=result_var)
+        bundles = [inner_bundle] + body + [join]
+        return reduce(lambda a, b: a + b, bundles)
 
     def __widen_from_datapointer(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
-                                  discriminators, result_var, end_label, resolver):
-        """Widen a DataPointer union (null = unit/None, non-null = pointer variant) to a tagged-union Struct."""
+                                  discriminators, end_label, wide_results, resolver):
+        """Widen a DataPointer union (null = unit/None, non-null = pointer variant) to a tagged-union Struct.
+
+        Two paths feed the join: the non-null pointer path and the null
+        path. Each contributes a single tagged-union expression to the Phi
+        via `wide_results`; codegen emits per-edge Moves into the result.
+        """
         unit_type = cg_t.Struct(())
         src_variant_types = [v.generate(resolver) for v in self.source_spec.types]
         ptr_variant = next((v for v, vt in zip(self.source_spec.types, src_variant_types) if vt != unit_type), None)
@@ -1136,28 +1184,32 @@ class WideExpression(Expression):
 
         unit_tag = discriminators.get(unit_variant.as_unique_id_str(), 0) if unit_variant else 0
 
+        wide_results.append(("ptr_exit",  cg_p.union_struct(tgt_ctype, dict(slot_values))))
+        wide_results.append(("null_exit", cg_p.union_struct(tgt_ctype, {"$tag": cg_p.Integer(unit_tag, 32)})))
+
         return [
             g.OperationBundle(operations=(cg_o.JumpIf(null_label, cg_p.IntEqConst(sv, 0)),)),
-            g.OperationBundle(stack_vars=(result_var,),
-                              operations=(cg_o.Move(result_var, cg_p.union_struct(tgt_ctype, dict(slot_values))),)),
-            g.OperationBundle(operations=(cg_o.Jump(end_label), cg_o.Label(null_label))),
-            g.OperationBundle(operations=(cg_o.Move(result_var,
-                                                     cg_p.union_struct(tgt_ctype, {"$tag": cg_p.Integer(unit_tag, 32)})),)),
+            g.OperationBundle(operations=(cg_o.Label("ptr_exit"), cg_o.Jump(end_label), cg_o.Label(null_label))),
+            g.OperationBundle(operations=(cg_o.Label("null_exit"),)),
         ]
 
     def __widen_from_container(self, sv, src_ctype, tgt_ctype, tgt_variant_map, tgt_slot_fields,
-                                discriminators, result_var, end_label, resolver):
-        """Widen a tagged-union Struct to a wider tagged-union Struct by re-slotting each variant."""
+                                discriminators, end_label, wide_results, resolver):
+        """Widen a tagged-union Struct to a wider tagged-union Struct by re-slotting each variant.
+
+        One arm per source variant. Each contributes its tagged-union
+        expression to `wide_results`; the Phi at the join collects them.
+        """
         src_variant_types = [v.generate(resolver) for v in self.source_spec.types]
         _, src_variant_map = cg_t.compute_union_slots(src_variant_types)
         src_tag_field = cg_p.StructField(sv, "$tag")
 
         bundles = []
-        first_arm = True
         for i, src_var in enumerate(self.source_spec.types):
             var_uid = src_var.as_unique_id_str()
             var_tag = discriminators.get(var_uid, 0)
             arm_label, next_label = f"wide_arm_{i}", f"wide_next_{i}"
+            exit_label = f"wide_exit_{i}"
 
             tgt_var_idx = next(
                 (ti for ti, tv in enumerate(self.target_spec.types) if tv.as_unique_id_str() == var_uid), None)
@@ -1169,16 +1221,17 @@ class WideExpression(Expression):
                     slot_values.append((tgt_slot_fields[tgt_si][0], cg_p.StructField(sv, src_ctype.fields[src_si][0])))
             slot_values.append(("$tag", cg_p.Integer(var_tag, 32)))
 
+            wide_results.append((exit_label, cg_p.union_struct(tgt_ctype, dict(slot_values))))
+
             bundles.append(g.OperationBundle(operations=(
                 cg_o.JumpIf(arm_label, cg_p.IntEqConst(src_tag_field, var_tag)),
                 cg_o.Jump(next_label), cg_o.Label(arm_label),
             )))
-            bundles.append(g.OperationBundle(
-                stack_vars=(result_var,) if first_arm else (),
-                operations=(cg_o.Move(result_var, cg_p.union_struct(tgt_ctype, dict(slot_values))),
-                             cg_o.Jump(end_label))))
+            bundles.append(g.OperationBundle(operations=(
+                cg_o.Label(exit_label),
+                cg_o.Jump(end_label),
+            )))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
-            first_arm = False
         # All source variants are enumerated; any tag outside that set is
         # unreachable at runtime.  Make that explicit so the end-label join
         # has no uninitialised-result path.
@@ -1270,7 +1323,7 @@ class NewEnumExpression(Expression):
                 field_type = let.declared_type.generate(resolver)
                 n_prims = len(cg_t._flatten_primitives(field_type))
                 if field_name in self.field_args:
-                    arg_bundle = self.field_args[field_name].generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
+                    arg_bundle = self.field_args[field_name].generate(resolver).with_prefix(f"arg_{field_name.split('@')[0]}")
                     bundles.append(arg_bundle)
                     emit_heap(arg_bundle.result_var, field_type, prim_off)
                 prim_off += n_prims
@@ -1303,7 +1356,7 @@ class NewEnumExpression(Expression):
             let = next(l for l in leaf_fields if l.name == field_name)
             field_type = let.declared_type.generate(resolver)
             n_prims = len(cg_t._flatten_primitives(field_type))
-            arg_bundle = arg_expr.generate(resolver).rename_vars(f"arg_{field_name.split('@')[0]}_")
+            arg_bundle = arg_expr.generate(resolver).with_prefix(f"arg_{field_name.split('@')[0]}")
             bundles2.append(arg_bundle)
             def emit_flat(param, ftype, off):
                 """Recursively write ftype primitives from param to flat slot_values."""
