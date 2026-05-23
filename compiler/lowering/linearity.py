@@ -330,11 +330,23 @@ class _Checker:
     def _count_block(self, block: e.BlockExpression, env: dict[str, t.TypeSpec],
                      resolver: g.Resolver) -> Counter:
         resolver = g.ResolverData(resolver, block._find_locals())
+        return self._count_statement_list(block.statements, env, resolver,
+                                          trailing_value=block.value)
+
+    def _count_statement_list(self, stmts: list[s.Statement],
+                              env: dict[str, t.TypeSpec], resolver: g.Resolver,
+                              trailing_value: e.Expression | None = None) -> Counter:
+        """Count linearity uses across a list of statements forming a scope.
+
+        Used both for `BlockExpression` (with a trailing value) and for
+        `if`/`else` branches (no trailing value). Lets declared here are
+        local to the scope and are discharged before returning.
+        """
         local_env = dict(env)
         local_bindings: list[tuple[str, t.TypeSpec, LineRef]] = []
         total: Counter = Counter()
 
-        for stmt in block.statements:
+        for stmt in stmts:
             if isinstance(stmt, s.FunctionStatement):
                 # A nested function is its own scope; it may not capture
                 # an enclosing linear binding.
@@ -367,6 +379,17 @@ class _Checker:
                     self.errors.append(Error(stmt.line_ref,
                         "linear value is discarded; bind it and consume it"))
                 continue
+            if isinstance(stmt, s.IfStatement):
+                # Condition runs unconditionally; the two branches are
+                # alternative paths and must be merged. Each branch is its
+                # own scope — lets inside a branch are branch-local.
+                total += self._count(stmt.condition, local_env, resolver)
+                t_res = g.ResolverData(resolver, stmt._branch_finder(stmt.true_block))
+                f_res = g.ResolverData(resolver, stmt._branch_finder(stmt.false_block))
+                t_branch = self._count_statement_list(stmt.true_block, local_env, t_res)
+                f_branch = self._count_statement_list(stmt.false_block, local_env, f_res)
+                total += self._merge(t_branch, f_branch, stmt.line_ref)
+                continue
             if isinstance(stmt, (s.ClassStatement, s.EnumStatement)):
                 # A nested type declaration — check it as its own scope.
                 self.visit_toplevel(stmt)
@@ -379,9 +402,10 @@ class _Checker:
             raise AssertionError(
                 f"linearity: unhandled statement node {type(stmt).__name__}")
 
-        total += self._count(block.value, local_env, resolver)
+        if trailing_value is not None:
+            total += self._count(trailing_value, local_env, resolver)
 
-        # Discharge every linear binding declared in this block, then drop
+        # Discharge every linear binding declared in this scope, then drop
         # its obligations so they don't leak into the enclosing merge.
         for name, spec, lr in local_bindings:
             leaves = self.leaves(spec)

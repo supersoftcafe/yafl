@@ -252,6 +252,23 @@ def __to_action_statement(result: p.Result[e.Expression], tokens: list[p.Token])
     return p.Result(s.ActionStatement(result.line_ref, result.value), result.tokens, result.line_ref, result.errors)
 
 
+def __to_if_statement(result, tokens) -> p.Result[s.IfStatement]:
+    cond, body = result.value
+    return p.Result(s.IfStatement(result.line_ref, cond, body, []),
+                    result.tokens, result.line_ref, result.errors)
+
+
+def __to_else_if_statement(result, tokens) -> p.Result[s.ElseIfStatement]:
+    cond, body = result.value
+    return p.Result(s.ElseIfStatement(result.line_ref, cond, body),
+                    result.tokens, result.line_ref, result.errors)
+
+
+def __to_else_statement(result, tokens) -> p.Result[s.ElseStatement]:
+    return p.Result(s.ElseStatement(result.line_ref, result.value),
+                    result.tokens, result.line_ref, result.errors)
+
+
 def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|list[s.LetStatement], list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
     attributes, target, dtype, value = result.value
     if isinstance(target, str):
@@ -554,6 +571,25 @@ __parse_namespace = p.block(p.requires(
     p.delimited_list(p.ident(), "::") >> __to_namespace_statement,
     "invalid namespace statement"))
 
+# `if`, `else if`, `else` parse as independent sibling statements at the
+# same indent. `collapse_else_if` (in pyast/statement.py) folds proper
+# sequences into a single right-nested `IfStatement` during compile;
+# orphan `else`/`else if` are reported by their `check()`.
+__parse_if = p.block(p.requires(
+    p.discard_sym("if"),
+    (__parse_expression & p.many(__parse_statement)) >> __to_if_statement,
+    "invalid if statement"))
+
+__parse_else_if = p.block(p.requires(
+    p.discard_sym("else") & p.discard_sym("if"),
+    (__parse_expression & p.many(__parse_statement)) >> __to_else_if_statement,
+    "invalid else-if statement"))
+
+__parse_else = p.block(p.requires(
+    p.discard_sym("else"),
+    p.many(__parse_statement) >> __to_else_statement,
+    "invalid else statement"))
+
 def __to_enum(result: p.Result, tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
     name, generics, params, variants = result.value
     type_params = tuple(generics) if generics else ()
@@ -603,7 +639,11 @@ def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.Enum
     return results
 
 
-__parse_statement_any = p.block(__parse_class | __parse_interface | __parse_fun | __parse_let | __parse_type_alias | __parse_import | __parse_namespace | __parse_ret | __parse_action | __parse_enum)
+__parse_statement_any = p.block(
+    __parse_class | __parse_interface | __parse_fun | __parse_let
+    | __parse_type_alias | __parse_import | __parse_namespace | __parse_ret
+    | __parse_action | __parse_enum
+    | __parse_if | __parse_else_if | __parse_else)
 
 
 

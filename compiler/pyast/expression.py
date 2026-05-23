@@ -797,8 +797,9 @@ class BlockExpression(Expression):
         return self.value.get_type(nested)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        statements = s.collapse_else_if(self.statements)
         nested = g.ResolverData(resolver, self._find_locals())
-        stmt_results = [x.compile(nested, expected_type) for x in self.statements]
+        stmt_results = [x.compile(nested, expected_type) for x in statements]
         new_stmts = [r[0] for r in stmt_results if r[0]]
         glbs: list[s.Statement] = [glb for r in stmt_results for glb in r[1]]
         new_val, val_glbs = self.value.compile(nested, expected_type)
