@@ -319,3 +319,27 @@ EXPORT object_t* wchar_to_string(object_t* integer) {
     __builtin_unreachable();
 }
 
+
+EXPORT object_t* string_resize(object_t* self, object_t* new_size) {
+    int  overflow = 0;
+    int32_t  size = integer_to_int32_with_overflow(new_size, &overflow);
+    if (size < 0 || overflow) __abort_on_overflow();
+
+    int32_t str_length;
+    intptr_t local_buffer;
+    char* cstr = string_to_cstr(self, &local_buffer, &str_length);
+
+    // The string_t length-field convention is `string_length + 1` (the +1
+    // is the implicit NUL terminator that all heap strings carry).
+    string_t* new_str = (string_t*)array_create((vtable_t*)&STRING_VTABLE, size + 1);
+    int32_t to_copy = str_length < size ? str_length : size;
+    memcpy(new_str->array, cstr, to_copy);
+    new_str->array[size] = 0;
+    return (object_t*)new_str;
+}
+
+
+
+
+
+

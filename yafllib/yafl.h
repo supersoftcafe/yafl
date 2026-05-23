@@ -752,7 +752,32 @@ INLINE object_t* string_byte_at(object_t* self, object_t* o_index) {
     return integer_create_from_int24((unsigned char)cstr[idx]);
 }
 
-EXTERN object_t* string_byte_at(object_t* self, object_t* index);
+INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, object_t* value) {
+    // `self` must be a heap-allocated string (a packed short string would
+    // segfault on the memcpy destination cast). `value` may be packed or
+    // heap — `string_to_cstr` handles both.
+    int overflow = 0;
+    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    intptr_t local_buffer;
+    int32_t vlen;
+    char* vstr = string_to_cstr(value, &local_buffer, &vlen);
+    memcpy(((string_t*)self)->array + idx, vstr, vlen);
+    return self;
+}
+
+INLINE object_t* ascii_to_string(object_t* o_byte) {
+    // Build a one-byte packed short string in a single instruction sequence.
+    // No allocation; the byte lives in the pointer bits. Caller is expected
+    // to pass a value in [0..255]; we range-check to avoid silently corrupting
+    // the packed payload on negative or oversized inputs.
+    int overflow = 0;
+    int32_t b = integer_to_int32_with_overflow(o_byte, &overflow);
+    if (overflow || b < 0 || b > 255) __abort_on_overflow();
+    uint8_t bytes[MAX_SHORT_LEN] = { (uint8_t)b };
+    return (object_t*)SHORT_STRING(bytes, 1);
+}
+
+EXTERN object_t* string_resize(object_t* self, object_t* new_size);
 EXTERN object_t* string_find_byte(object_t* self, object_t* byte_value, object_t* from);
 EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);
 EXTERN object_t* string_skip_any (object_t* self, object_t* accept,     object_t* from);

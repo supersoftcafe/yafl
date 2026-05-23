@@ -16,11 +16,6 @@ Ranked by how blocking they are to writing the compiler in YAFL itself.
 
 ## Ergonomic blockers (possible but writing 5K lines of yafl would be brutal)
 
-- **Early return from BlockExpression** (see section below) — the
-  "validate, validate, validate, build" pattern is the entire compiler. Without
-  it every check becomes a nested `match`.
-- **Conditions / Loops** (see sections below) — every multi-line branch becomes
-  a ternary or a recursive helper. Both already designed; not implemented.
 - **String builder / chunked concat** — codegen produces tens of KB per file;
   naive `+` is quadratic. YAFL strings are immutable.  Either a `List<String>`
   builder convention or a dedicated `StringBuilder`. The chunked-list pattern

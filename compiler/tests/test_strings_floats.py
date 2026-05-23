@@ -127,6 +127,53 @@ fun main(): System::Int
 """
         self.assertEqual(0, compile_and_run_stdlib(src))
 
+    def test_asciiToString_length(self):
+        """asciiToString returns a one-byte string (length 1) regardless of
+        the input byte — including 0 (NUL), which packs the same as any
+        other byte in the pointer."""
+        src = """namespace Main
+import System
+
+fun main(): System::Int
+  ret length(asciiToString(65))
+"""
+        self.assertEqual(1, compile_and_run_stdlib(src))
+
+    def test_asciiToString_byte_value(self):
+        """The byte returned matches the input — verifies the pack layout
+        is read back consistently by byteAt (which goes through the same
+        packed-pointer decode path)."""
+        src = """namespace Main
+import System
+
+fun main(): System::Int
+  ret byteAt(asciiToString(65), 0)
+"""
+        self.assertEqual(65, compile_and_run_stdlib(src))
+
+    def test_asciiToString_zero_byte(self):
+        """A NUL byte still packs and reads back as 0 — the packed format
+        does not rely on NUL termination for length."""
+        src = """namespace Main
+import System
+
+fun main(): System::Int
+  ret byteAt(asciiToString(0), 0) + length(asciiToString(0))
+"""
+        # 0 (byte) + 1 (length) = 1
+        self.assertEqual(1, compile_and_run_stdlib(src))
+
+    def test_asciiToString_high_byte(self):
+        """A high byte (>127) packs without sign-extension corrupting the
+        pointer — the SHORT_STRING macros cast through `uint8_t` for this."""
+        src = """namespace Main
+import System
+
+fun main(): System::Int
+  ret byteAt(asciiToString(200), 0)
+"""
+        self.assertEqual(200, compile_and_run_stdlib(src))
+
 
 class TestFloatOps(TestCase):
 

@@ -28,10 +28,14 @@ class _BasicCompareString() : BasicCompare<String>
 fun Char(int: System::Int): System::String
   ret __builtin_op__<str>("wchar_to_string", int)
 
+# Fast 1-byte string: no allocation, returns a packed-pointer short string.
+# Use when you have a byte value in [0..255]; for arbitrary code points
+# that need UTF-8 encoding (>127), use `Char` instead.
+fun asciiToString(byte: System::Int): System::String
+  ret __builtin_op__<str>("ascii_to_string", byte)
+
 fun String(int: System::Int): System::String
-  ret int < 0 ? "-" + String(-int)
-    : int > 9 ? String(int / 10) + Char(48 + int % 10)
-    :           Char(48 + int)
+  ret toString(append(StringBuilder(), int))
 
 fun length(s: System::String): System::Int
   ret __builtin_op__<bigint>("string_length_int", s)
@@ -68,3 +72,33 @@ fun skipAny(s: System::String, accept: System::String, from: System::Int): Syste
 
 fun parseInt(s: System::String): System::Int|System::None
   ret __builtin_op__<bigint>("string_parse_int", s)
+
+
+class [linear,final] StringBuilder(_buffer: String, _offset: Int)
+
+fun StringBuilder(): StringBuilder => StringBuilder("", 0)
+
+fun append([terminal] sb: StringBuilder, value: String): StringBuilder
+  let new_offset = sb._offset + length(value)
+  let new_buffer = new_offset > length(sb._buffer)
+    ? __builtin_op__<str>("string_resize", sb._buffer, new_offset < 16 ? 16 : (new_offset + new_offset/2))
+    : sb._buffer
+  ret StringBuilder(__builtin_op__<str>("string_copy_to_dangerously", new_buffer, sb._offset, value), new_offset)
+
+fun append(sb: StringBuilder, value: Int): StringBuilder
+  # Walks the digits of `n` (assumed non-negative) most-significant first via
+  # recursion so they end up in left-to-right order in the builder. Each digit
+  # is appended as a packed-pointer one-byte string — no heap allocation per
+  # digit, and the only buffer growth is the StringBuilder's own.
+  fun appendDigits(sb: StringBuilder, n: Int): StringBuilder
+    ret n > 9
+      ? append(appendDigits(sb, n / 10), asciiToString(48 + n % 10))
+      : append(sb, asciiToString(48 + n))
+  ret value < 0
+    ? appendDigits(append(sb, "-"), -value)
+    : appendDigits(sb, value)
+
+fun toString([terminal] sb: StringBuilder): String
+  ret __builtin_op__<str>("string_resize", sb._buffer, sb._offset)
+
+
