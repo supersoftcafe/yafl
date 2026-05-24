@@ -631,22 +631,175 @@ def _specialization_suffix(parent_name: str) -> str:
     return parent_name[idx:] if idx >= 0 else ''
 
 
-def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], dict[str, str], list[s.FunctionStatement]]:
+def _tarjan_sccs(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]]:
+    """Tarjan's SCC algorithm.  Returns SCCs in reverse topological order
+    (callees before callers).  Each SCC is a list of node names in
+    discovery order; node order across SCCs preserves the input ordering
+    of `nodes` as the tiebreak."""
+    index_of: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    counter = [0]
+    result: list[list[str]] = []
+
+    def strongconnect(v: str) -> None:
+        index_of[v] = counter[0]
+        lowlink[v] = counter[0]
+        counter[0] += 1
+        stack.append(v)
+        on_stack.add(v)
+        for w in edges.get(v, set()):
+            if w not in index_of:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif w in on_stack:
+                lowlink[v] = min(lowlink[v], index_of[w])
+        if lowlink[v] == index_of[v]:
+            scc: list[str] = []
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                scc.append(w)
+                if w == v:
+                    break
+            result.append(scc)
+
+    for n in nodes:
+        if n not in index_of:
+            strongconnect(n)
+    return result
+
+
+def _rewrite_for_class_method(body: e.Expression, this_target: dict[str, str]) -> e.Expression:
+    """Rewrite NamedExpression(`name`) inside a class method body to
+    `this.<this_target[name]>` for any `name` in the map — used to expose
+    captured outer-scope variables (target == name) and same-class sibling
+    methods (target == renamed method) through the implicit `this`
+    parameter, mirroring lambdas.py's single-method redirect."""
+    def visit(_resolver: g.Resolver, thing: Any) -> Any:
+        if isinstance(thing, e.NamedExpression) and thing.name in this_target:
+            lr = thing.line_ref
+            return e.DotExpression(lr, e.NamedExpression(lr, "this"), this_target[thing.name])
+        return thing
+    return body.search_and_replace(g.ResolverRoot([]), visit)
+
+
+def _gather_outer_var_types(fn: s.FunctionStatement) -> dict[str, t.TypeSpec]:
+    """Map name → declared type for fn's parameters and top-level let-bindings.
+    Used to type the fields of a synthesised closure class."""
+    types: dict[str, t.TypeSpec] = {}
+    for p in fn.parameters.flatten():
+        ptype = p.declared_type or (p.get_type() if hasattr(p, 'get_type') else None)
+        if ptype is not None:
+            types[p.name] = ptype
+    if isinstance(fn.body, e.BlockExpression):
+        for stmt in fn.body.statements:
+            if isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement):
+                stype = stmt.declared_type or stmt.get_type()
+                if stype is not None:
+                    types[stmt.name] = stype
+    return types
+
+
+def _coalesce_mutual_scc(scc_fns: list[s.FunctionStatement],
+                         outer_var_types: dict[str, t.TypeSpec],
+                         sibling_fn_names: set[str],
+                         spec_suffix: str) -> tuple[s.ClassStatement, list[s.LetStatement]]:
+    """Pack a strongly-connected group of mutually-recursive capturing
+    nested functions into a single class with one method per function.
+
+    Mutual letrec across separate per-fn closure objects can't be expressed
+    safely — each closure would capture the other's still-unbound
+    let-binding at construction time, yielding null fields and a runtime
+    crash.  Coalescing makes every cross-call route through `this`, so the
+    single shared object owns all the closure fields and no
+    forward-reference is needed.  Returns the class plus the parent-scope
+    let-bindings that expose each method as a callable named after the
+    original nested function."""
+    scc_names = {fn.name for fn in scc_fns}
+    lr = scc_fns[0].line_ref
+
+    # Union captures: every outer var referenced by any SCC member, in a
+    # stable order (first encounter wins).
+    seen_captures: set[str] = set()
+    union_captures: list[tuple[str, t.TypeSpec]] = []
+    for fn in scc_fns:
+        for ref in _free_refs(fn, sibling_fn_names):
+            if ref in outer_var_types and ref not in seen_captures:
+                seen_captures.add(ref)
+                union_captures.append((ref, outer_var_types[ref]))
+
+    capture_names = {n for n, _ in union_captures}
+
+    # Give each method a class-unique name distinct from the original
+    # nested-fn name.  The let-binding in the parent body keeps the
+    # original name (so external callers in fn's body still resolve),
+    # while the class method's C symbol won't collide with the local
+    # variable for that let-binding.
+    method_renames = {fn.name: f"$mut::{fn.name}@{lr.hash6()}" + spec_suffix
+                      for fn in scc_fns}
+    this_target = {name: name for name in capture_names}
+    this_target.update(method_renames)
+
+    # Rewrite each method body so capture refs and sibling-method refs go
+    # through `this`, and rename the method itself.
+    rewritten_methods: list[s.FunctionStatement] = []
+    for fn in scc_fns:
+        new_body = _rewrite_for_class_method(fn.body, this_target)
+        rewritten_methods.append(dataclasses.replace(fn,
+                                                      name=method_renames[fn.name],
+                                                      body=new_body))
+
+    cls_name = f"$mutual::class@{lr.hash6()}" + spec_suffix
+    cls_params = [s.LetStatement(lr, name, _EMPTY_IMPORTS, {}, (), None, xtype)
+                  for name, xtype in union_captures]
+    cls_param_type = t.TupleSpec(lr, [t.TupleEntrySpec(name, xtype) for name, xtype in union_captures])
+    cls_param = s.DestructureStatement(lr, "_", _EMPTY_IMPORTS, {}, (), None,
+                                        cls_param_type, cls_params)
+    attributes = {"final": e.IntegerExpression(lr, 1, 32)}
+    cls = s.ClassStatement(lr, cls_name, _EMPTY_IMPORTS, attributes, (),
+                           cls_param, list(rewritten_methods), [], False, set(), [])
+
+    # One shared instance, then one let-binding per method.  Sharing keeps
+    # the closure object identity stable across cross-method calls; cheaper
+    # too — single allocation.
+    shared_name = f"$mutual::shared@{lr.hash6()}" + spec_suffix
+    capture_args = [e.TupleEntryExpression(name, e.NamedExpression(lr, name))
+                    for name, _ in union_captures]
+    cls_type = t.ClassSpec(lr, cls_name)
+    shared_expr = e.NewExpression(lr, cls_type, e.TupleExpression(lr, capture_args))
+    shared_let = s.LetStatement(lr, shared_name, _EMPTY_IMPORTS, {}, (),
+                                 shared_expr, cls_type)
+    method_lets: list[s.LetStatement] = [shared_let]
+    for fn in scc_fns:
+        method_expr = e.DotExpression(lr, e.NamedExpression(lr, shared_name),
+                                       method_renames[fn.name])
+        method_lets.append(s.LetStatement(lr, fn.name, _EMPTY_IMPORTS, {}, (),
+                                           method_expr, fn.get_type()))
+    return cls, method_lets
+
+
+def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], dict[str, str], list[s.Statement]]:
     """Scan fn's body for nested FunctionStatements and decide how to handle each.
 
-    Returns (new_body_stmts, renames, directly_hoisted).  A nested function is
-    hoisted directly (as a plain FunctionStatement at global scope) when it only
-    references global names or its sibling nested functions — no outer
-    parameters or let-bindings.  Otherwise it is converted to a
-    LetStatement(lambda) so that lambdas.py can apply closure capture.
+    Returns (new_body_stmts, renames, hoisted).  Strategy per
+    strongly-connected component of the sibling-call graph:
 
-    When fn is a generic specialisation (its name contains '$generic$'), each
-    directly-hoisted inner function is renamed by appending fn's specialisation
-    suffix.  This prevents name collisions when the same generic is specialised
-    with multiple concrete types (e.g. tail<JsonValue> and tail<JsonPair> both
-    have an inner function tailFull with the same hash).  renames maps the old
-    name to the new unique name; callers must apply it to all remaining
-    references inside fn's body.
+    - SCC that neither directly captures outer params/lets nor transitively
+      calls a capturing SCC → all members hoisted to global scope (no
+      closure needed; mutual references resolve via global names).
+    - SCC of size 1 that needs a closure → converted to LetStatement(lambda)
+      so lambdas.py applies the existing single-class closure capture.
+    - SCC of size >1 that needs a closure → coalesced into one class with
+      N methods; this avoids the forward-reference hazard that mutually
+      recursive single-method closures would hit at construction time.
+
+    When fn is a generic specialisation (its name contains '$generic$'),
+    directly-hoisted inner functions are renamed by appending fn's
+    specialisation suffix to prevent name collisions across instantiations.
+    renames maps old → new name; callers must apply it to all remaining
+    references in fn's body.
     """
     if not isinstance(fn.body, e.BlockExpression):
         stmts = list(fn.body.statements) if hasattr(fn.body, 'statements') else []
@@ -656,26 +809,83 @@ def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], dict[s
     outer_lets = {stmt.name for stmt in body_stmts
                   if isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement)}
     outer_var_names = outer_params | outer_lets
-    sibling_fn_names = {stmt.name for stmt in body_stmts if isinstance(stmt, s.FunctionStatement)}
+
+    nested_fns = [stmt for stmt in body_stmts
+                  if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression)]
+    sibling_fn_names = {nf.name for nf in nested_fns}
+    nested_by_name = {nf.name: nf for nf in nested_fns}
+
+    if not nested_fns:
+        return body_stmts, {}, []
 
     spec_suffix = _specialization_suffix(fn.name)
 
+    # Sibling-call edges
+    sibling_calls = {nf.name: _free_refs(nf, set()) & sibling_fn_names for nf in nested_fns}
+
+    # Direct captures: a free reference into outer params/lets (excluding
+    # sibling names, which can't be captures because they're co-resident).
+    direct_captures = {nf.name for nf in nested_fns
+                       if _free_refs(nf, sibling_fn_names) & outer_var_names}
+
+    # SCCs in reverse topological order (callees first).
+    sccs = _tarjan_sccs([nf.name for nf in nested_fns], sibling_calls)
+    scc_index = {n: i for i, scc in enumerate(sccs) for n in scc}
+
+    # Propagate "needs closure" along sibling-call edges: an SCC needs a
+    # closure when any member directly captures, or when any sibling call
+    # out of the SCC lands in a closure-needing SCC.  Reverse-topo
+    # traversal converges in one pass.
+    scc_needs_closure = [False] * len(sccs)
+    for i, scc in enumerate(sccs):
+        if any(n in direct_captures for n in scc):
+            scc_needs_closure[i] = True
+            continue
+        for n in scc:
+            for callee in sibling_calls[n]:
+                callee_scc = scc_index[callee]
+                if callee_scc != i and scc_needs_closure[callee_scc]:
+                    scc_needs_closure[i] = True
+                    break
+            if scc_needs_closure[i]:
+                break
+
+    outer_var_types = _gather_outer_var_types(fn) if any(scc_needs_closure) else {}
+
     new_body: list[s.Statement] = []
     renames: dict[str, str] = {}
-    hoisted: list[s.FunctionStatement] = []
+    hoisted: list[s.Statement] = []
+    processed_scc: set[int] = set()
+
     for stmt in body_stmts:
-        if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression):
-            if _free_refs(stmt, sibling_fn_names) & outer_var_names:
-                new_body.append(_to_let_lambda(stmt))
-            else:
-                if spec_suffix and not stmt.name.endswith(spec_suffix):
-                    unique_name = stmt.name + spec_suffix
-                    renames[stmt.name] = unique_name
-                    hoisted.append(dataclasses.replace(stmt, name=unique_name))
-                else:
-                    hoisted.append(stmt)
-        else:
+        if not (isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression)):
             new_body.append(stmt)
+            continue
+        if stmt.name not in scc_index:
+            new_body.append(stmt)
+            continue
+        idx = scc_index[stmt.name]
+        if idx in processed_scc:
+            continue
+        processed_scc.add(idx)
+        scc_member_fns = [nested_by_name[n] for n in sccs[idx]]
+
+        if not scc_needs_closure[idx]:
+            for member in scc_member_fns:
+                if spec_suffix and not member.name.endswith(spec_suffix):
+                    unique_name = member.name + spec_suffix
+                    renames[member.name] = unique_name
+                    hoisted.append(dataclasses.replace(member, name=unique_name))
+                else:
+                    hoisted.append(member)
+        elif len(scc_member_fns) == 1:
+            new_body.append(_to_let_lambda(scc_member_fns[0]))
+        else:
+            cls, lets = _coalesce_mutual_scc(scc_member_fns, outer_var_types,
+                                              sibling_fn_names, spec_suffix)
+            hoisted.append(cls)
+            new_body.extend(lets)
+
     return new_body, renames, hoisted
 
 
@@ -703,7 +913,7 @@ def _hoist_nested_fns_to_lambdas(statements: list[s.Statement]) -> list[s.Statem
                 resolver = g.ResolverRoot([])
                 new_body_stmts = [st.search_and_replace(resolver, _rename) for st in new_body_stmts]
                 new_body_value = stmt.body.value.search_and_replace(resolver, _rename)
-                hoisted = [cast(s.FunctionStatement, h.search_and_replace(resolver, _rename)) for h in hoisted]
+                hoisted = [cast(s.Statement, h.search_and_replace(resolver, _rename)) for h in hoisted]
                 new_body = dataclasses.replace(stmt.body, statements=new_body_stmts, value=new_body_value)
             else:
                 new_body = dataclasses.replace(stmt.body, statements=new_body_stmts)

@@ -103,28 +103,69 @@ functions). All 11 tests in `tests/test_set.py` should pass unchanged —
 the rewrite is purely the public surface getting closer to what the user
 wanted in the first place.
 
-## Follow-up — nested-helper combination still trips codegen in stdlib/format.yafl
+## Follow-up — optimal binding-order analysis (was: nested-fn codegen hazards)
 
-The "nested function calling its enclosing function" bug from earlier is
-*mostly* gone. Each ingredient compiles cleanly in isolation:
+The original "nested function calling its enclosing function" bug split
+into two parts: (a) the hoist mis-classification that left dangling
+references when a non-capturing sibling called a capturing one; (b) the
+runtime crash when two capturing nested fns mutually called each other
+through independent closures. The current fix (in `lowering/ast_inline.py`)
+handles both — by running an SCC analysis over the sibling-call graph,
+forcing non-capturing callers of capturing closures into closure form,
+and coalescing mutually-recursive capturing SCCs into a single class
+with one method per member so cross-calls route through `this`.
 
-- Nested helper → enclosing function recursion: works.
-- Mutual recursion / forward refs between sibling nested helpers: works.
-- Nested helpers closing over enclosing-function parameters: works.
-- Threading a linear value (StringBuilder) through nested helpers: works.
+What remains is broader than nested fns or lambdas. It's an
+**optimal-ordering / lazy-init problem** for any binding block.
 
-But the exact shape used by the `_formatScan` family — *all* of the above
-combined, with public generic overloads (`format<T1>` … `format<T4>`)
-calling the function that hosts the nested helpers — still fails codegen
-with `could not cast None to CallableSpec` (in `expression.py:204`, from
-`CallExpression.generate`). A minimal user-space program with the same
-shape compiles; only the stdlib placement reproduces it.
+A YAFL block is a series of uninterrupted `LetStatement` /
+`FunctionStatement` declarations — anything with side effects is an
+`ActionStatement` which by definition splits blocks. Within one block,
+**any binding can reference any other**; that's the language's contract,
+not a property tied to nested fns.
 
-Workaround in place: scanner helpers stay top-level (underscore-prefixed)
-in `compiler/stdlib/format.yafl`. The block-comment at the top of that
-file documents the constraint. Once narrowed to a minimal repro, the fix
-is likely in lowering (lambda-lift or generics monomorphisation
-interacting with capture).
+The hoist transform needs to honour that contract by *choosing* an
+evaluation order:
+
+1. **Reorder Let/Function statements so no recursive issue remains** —
+   then ordinary sequential evaluation suffices. Topological sort over
+   the dependency graph; works when the graph is a DAG.
+2. **Reorder so only functions form recursive cycles** — then the
+   mutual-class solution (current fix) handles those cycles; Lets stay
+   plain sequential. Works when the cycles are confined to function
+   bindings.
+3. **No reorder eliminates the cycle (recursive Let↔Let or Let↔Fn
+   cycles)** — fall back to lazy initialisation:
+   - Push all the at-risk Lets/Fns into one mutual class.
+   - Convert each at-risk Let into a member function (zero-arg
+     thunk) that performs the lazy init and returns the value.
+   - Member-function dispatch through `this` then resolves the cycle
+     uniformly.
+
+Edge cases that need (3) should be rare. The compiler should try (1)
+first, fall back to (2), and only reach (3) as a last resort —
+preferably with a diagnostic so the programmer knows they tripped it.
+
+Witness for why (1)/(2) alone are insufficient:
+
+```yafl
+fun outer(f: String): String
+  fun inner1(g: Int): String
+    ret g < 1 ? f : inner2(g - 1)
+  let x = "_x_"
+  fun inner2(g: Int): String
+    ret g < 1 ? x : inner1(g - 1)
+  ret inner1(3)
+```
+
+`inner1` and `inner2` are mutually recursive and both visible to each
+other and to the `let x`. `inner2` captures `x`. The current fix emits
+the synthesised `let shared = MutualClass(f, x)` at the position of
+the first SCC member (i.e. before `x`), so `x` is read-before-write at
+the construction site. Reordering `x` before `inner1` resolves it here
+(`x` doesn't depend on either fn), but the general case can construct
+mutually-dependent Let/Let or Let/Fn cycles where no order works — that's
+where lazy thunks land.
 
 ## Hard blockers (compiler cannot function without these)
 
@@ -153,7 +194,7 @@ interacting with capture).
 
 ## Performance / scaling
 
-- **Compiler self-throughput** — the Python compiler runs the suite in ~10 min
+- **Compiler self-throughput** — the Python compiler runs the suite in ~33 min
   today. A YAFL compiler will be slower (per-call dispatch through generics,
   allocation per AST node). It needs to compile itself in a tolerable time,
   gated on: generic monomorphisation cost, GC throughput under high

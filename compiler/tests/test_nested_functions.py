@@ -4,7 +4,7 @@ from __future__ import annotations
 from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
-from tests.testutil import compile_and_run
+from tests.testutil import compile_and_run, compile_and_run_stdlib
 
 
 _PREAMBLE = """\
@@ -127,3 +127,41 @@ fun main(): System::Int
         ret double(double(x))
     ret quadruple(3)
 """))
+
+    def test_sibling_calls_capturing_helper(self):
+        """A non-capturing nested fn that calls a capturing sibling must stay
+        in the parent body alongside it — naively hoisting it to global scope
+        leaves a dangling reference to the now-closure-bound sibling.
+        """
+        src = """\
+import System
+fun outer(f: String, pos: Int): Int
+  fun capLen(extra: Int): Int
+    ret length(f) + extra
+  fun caller(x: Int): Int
+    ret capLen(x)
+  ret caller(pos)
+
+fun main(): Int
+  ret outer("hi", 3)
+"""
+        self.assertEqual(5, compile_and_run_stdlib(src))
+
+    def test_mutual_recursion_in_capturing_nested_fns(self):
+        """Two mutually-recursive nested fns that both capture an outer var
+        must share a single closure object — independent closures would each
+        capture a null reference to the other's not-yet-constructed binding.
+        """
+        src = """\
+import System
+fun outer(limit: Int, n: Int): Int
+  fun isEven(x: Int): Int
+    ret x < 1 ? 1 : (x > limit ? 99 : isOdd(x - 1))
+  fun isOdd(x: Int): Int
+    ret x < 1 ? 0 : (x > limit ? 99 : isEven(x - 1))
+  ret isEven(n)
+
+fun main(): Int
+  ret outer(100, 4)
+"""
+        self.assertEqual(1, compile_and_run_stdlib(src))
