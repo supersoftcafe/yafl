@@ -87,7 +87,7 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
         return e.NamedExpression(lr, fnc.name)
 
 
-def __scan_function_and_export_lambdas(statement: s.Statement) -> tuple[s.Statement, list[s.Statement]]:
+def __scan_function_and_export_lambdas(statement: s.Statement, all_statements: list[s.Statement]) -> tuple[s.Statement, list[s.Statement]]:
     exported_statements = []
 
     def export_if_lambda(resolver: g.Resolver, lmd):
@@ -116,12 +116,19 @@ def __scan_function_and_export_lambdas(statement: s.Statement) -> tuple[s.Statem
             exported_statements.append(fnc)
         return result
 
-    statement = statement.search_and_replace(g.ResolverRoot([]), export_if_lambda)
+    # Pass the full statement list as the resolver root so that captured
+    # references resolved via `_find_trait_data` can find specialized
+    # (post-monomorphisation) trait classes — e.g. `Show$generic$str`.
+    # An empty root here was fine pre-monomorphisation when traits stayed
+    # generic, but after monomorphisation each `where Show<T>` constraint
+    # rewrites to a concrete `Show$generic$<concrete>` and the lookup
+    # needs the full statement list to find that class.
+    statement = statement.search_and_replace(g.ResolverRoot(all_statements), export_if_lambda)
     return statement, exported_statements
 
 
 def __convert_lambdas_to_functions(statements: list[s.Statement]) -> list[s.Statement]:
-    tmp_result = [__scan_function_and_export_lambdas(stm) for stm in statements]
+    tmp_result = [__scan_function_and_export_lambdas(stm, statements) for stm in statements]
     statements, new_statements = zip(*tmp_result) if tmp_result else ([], [])
     statements = [x for x in statements if x is not None]
     new_statements = [x for lst in new_statements for x in lst]

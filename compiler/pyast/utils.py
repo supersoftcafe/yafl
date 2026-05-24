@@ -10,13 +10,19 @@ def __to_entry(let: s.LetStatement) -> e.TupleEntryExpression:
 
 
 def create_constructor(cls: s.ClassStatement) -> s.FunctionStatement:
-    class_type = t.ClassSpec(cls.line_ref, cls.name)
+    # Carry the class's generic type params through to the synthesized
+    # constructor. Without this, `class Box<T>(value: T)` produces a
+    # constructor with zero type params, and `Box<Int>(42)` is rejected
+    # as "Excess type parameters" at the call site (and the class itself
+    # fails its self-consistency check with "Not enough").
+    type_params = tuple(tp.type for tp in cls.type_params)
+    class_type = t.ClassSpec(cls.line_ref, cls.name, type_params=type_params)
 
     parameters = [__to_entry(let) for let in cls.parameters.flatten()]
     expression = e.TupleExpression(cls.line_ref, parameters)
 
     body = e.BlockExpression(cls.line_ref, [], e.NewExpression(cls.line_ref, class_type, expression))
-    constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, (), cls.parameters, body, class_type)
+    constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, cls.type_params, cls.parameters, body, class_type)
 
     return constructor
 

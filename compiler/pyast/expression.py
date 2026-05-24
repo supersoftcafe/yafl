@@ -376,7 +376,13 @@ class DotExpression(Expression):
 def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_data: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
     if len(list_data) <= 1:
         return list_data
-    result_list = []
+    # Partition by verdict: definite matches (True) win over undecided ones
+    # (None) when both are present. The undecided bucket is only returned
+    # when no candidate matches definitively. This gives specific-beats-
+    # generic dispatch — e.g. `0 == 1` picks `BasicEquality<Int>::==` over
+    # the in-scope-but-unconstrained `BasicEquality<K>::==`.
+    truthy: list[g.Resolved[s.DataStatement]] = []
+    maybe: list[g.Resolved[s.DataStatement]] = []
     for x in list_data:
         other_type = x.statement.get_type()
         # Apply trait type param substitution so e.g. Plus<Int>.+ has effective type
@@ -392,9 +398,11 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
                     return thing
                 other_type = other_type.search_and_replace(resolver, replace_fn)
         b = t.trivially_assignable_equals(resolver, expected_type, other_type)
-        if b is None or b: # Might be assignable
-            result_list.append(x)
-    return result_list
+        if b is True:
+            truthy.append(x)
+        elif b is None:
+            maybe.append(x)
+    return truthy if truthy else maybe
 
 
 @dataclass

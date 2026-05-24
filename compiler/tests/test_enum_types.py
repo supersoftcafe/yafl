@@ -5,6 +5,7 @@ import contextlib
 import io
 import subprocess
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import _YAFLLIB_DIR
 
 import compiler as c
 from tests.testutil import compile_and_run, compile_and_run_stdlib
@@ -45,7 +46,8 @@ def _clang_check(source: str) -> None:
     c_code = _compile(source)
     assert c_code, "yafl compilation produced no output (type errors?)"
     result = subprocess.run(
-        ["clang", "-fsyntax-only", "-x", "c", "-", "-include", "yafl.h"],
+        ["clang", "-fsyntax-only", "-x", "c", "-", "-include", "yafl.h",
+         "-I", str(_YAFLLIB_DIR)],
         input=c_code, text=True, capture_output=True, timeout=30,
     )
     assert result.returncode == 0, f"clang rejected the C output:\n{result.stderr}"

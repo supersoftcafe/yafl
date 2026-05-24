@@ -3,6 +3,133 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
+## TOP PRIORITY — generic classes silently mis-type field reads
+
+`DotExpression.get_type` (`pyast/expression.py:231`) does not substitute the
+receiver's type arguments into the field's declared type. For a class
+`Box<T>(value: T)` and a binding `b: Box<Int>`, `b.value` returns Box's `T`
+placeholder verbatim instead of `Int`. So:
+
+```
+class Box<T>(value: T)
+fun main(): Int
+  let b = Box<Int>(42)
+  ret b.value      # rejected — "Incorrect type"
+```
+
+is rejected, but
+
+```
+fun unbox<T>(b: Box<T>): T = b.value     # accepted
+fun main(): Int = unbox<Int>(Box<Int>(42))
+```
+
+is accepted — *not* because the substitution worked, but because two
+different `GenericPlaceholderSpec`s compare to `None` (undecided) under
+`trivially_assignable_from`, and `BlockExpression.check` treats `None` as
+acceptable (`expression.py:814` — `is False`, not `not …`). The comment on
+`GenericPlaceholderSpec.trivially_assignable_from` defers safety to
+"instantiation time" — but for the field-read case there *is* no later
+catch, because monomorphisation rewrites generic functions and classes
+but not the DotExpression's already-computed type.
+
+Symptoms today:
+- Generic classes can be defined and used through generic helpers
+  (`unbox<T>(b: Box<T>): T`) but their fields cannot be read directly
+  from concrete-typed contexts (`main`, top-level let, anywhere with
+  concrete return types).
+- That forced `stdlib/set.yafl` into the enum-wrapper-plus-match
+  workaround instead of `class Set<T>(_d: Dict<T,()>)`. Same dodge will
+  be needed for any future generic data class until this is fixed.
+- The earlier-fixed `__find_locals` / `get_type` / `create_constructor`
+  sites for `this`/constructor type params are necessary precursors but
+  not sufficient — without DotExpression substitution, `b.value` still
+  yields the placeholder.
+
+The fix is structural, not a one-liner: `DotExpression.get_type` and
+`DotExpression.check` need to take the receiver's `ClassSpec.type_params`,
+zip them against the resolved class's `type_params`, build the same
+`GenericPlaceholderSpec → concrete` mapping that `ClassStatement.compile`
+already constructs for parent-class substitution (`statement.py:370-377`),
+and apply it via `search_and_replace` to the field's declared type before
+returning. The mapping needs to flow recursively when the field type is
+itself a `ClassSpec` whose own type params reference the receiver's
+placeholders (e.g. `class Box<T>(inner: List<T>)` → `b: Box<Int>` →
+`b.inner` must yield `List<Int>`, not `List<T>`).
+
+Two follow-up tasks once the substitution works:
+1. Audit `LetStatement.check` and `ReturnStatement.check` for `not result`
+   vs `is False` — they currently reject `None` (undecided) while
+   `BlockExpression.check` accepts it. The inconsistency is what's been
+   masking this bug.
+2. Once `DotExpression` substitutes properly, revisit `stdlib/set.yafl`
+   to use the cleaner `class Set<T>(_d: Dict<T,()>)` form.
+
+## Follow-up — rewrite `Set<T>` as a class once generic field reads work
+
+`stdlib/set.yafl` is currently a single-case enum wrapper
+(`enum Set<T> with _SetWrap(d: Dict<T,()>)`) and every public function
+(`add`, `contains`, `remove`, `size`) destructures it via `match`:
+
+```yafl
+fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
+  ret match(s)
+    (w: _SetWrap) => _SetWrap<T>(put<T,()>(w.d, value, ()))
+```
+
+The match dance is purely there to dodge the DotExpression substitution
+bug above — `s._d` from a concrete-typed call site (e.g. another stdlib
+function that calls `add<Int>(Set<Int>(), 5)`) returns the placeholder
+type instead of `Dict<Int,()>`, so direct field access fails type-check.
+Wrapping in an enum and destructuring via match coincidentally side-steps
+the bug because `match` substitutes correctly.
+
+Once `DotExpression.get_type` substitutes receiver type params (the TOP
+PRIORITY item above), rewrite `set.yafl` to:
+
+```yafl
+class Set<T>(_d: Dict<T,()>)
+
+fun Set<T>(): Set<T>
+  ret Set<T>(Dict<T,()>())
+
+fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
+  ret Set<T>(put<T,()>(s._d, value, ()))
+# ... etc ...
+```
+
+Each function drops the `match` boilerplate (3 lines → 2 lines each, four
+functions). All 11 tests in `tests/test_set.py` should pass unchanged —
+the rewrite is purely the public surface getting closer to what the user
+wanted in the first place.
+
+## Follow-up — nested function calling its enclosing function fails codegen
+
+When a nested function inside `_formatScan` (e.g. `emitSlot`) called
+`_formatScan` recursively, codegen failed with the same
+`could not cast None to CallableSpec` error. Worked around by keeping
+all scanner helpers top-level (underscore-prefixed) in `stdlib/format.yafl`
+rather than nesting them inside `_formatScan`.
+
+The pattern that fails:
+```yafl
+fun outer(...): T
+  fun helper(...): T
+    ret outer(...)        # calling enclosing function
+  ...
+```
+
+Forward references between sibling nested functions don't work either —
+which combined with this rules out mutual recursion among nested helpers.
+Both `_digitsEnd`/`_digitsEndInBounds` (mutually recursive) and the
+`_emitSlot` → `_formatScan` recursion are why every scanner helper is
+top-level in `format.yafl`.
+
+Fix likely in lambda-lifting (`lowering/lambdas.py`) — when a nested
+function is lifted to top-level, references to its (now-sibling)
+enclosing function need to be rewritten to point at the lifted version,
+which apparently isn't happening.
+
 ## Hard blockers (compiler cannot function without these)
 
 - **argv / process args** — no way to read CLI input filenames today.
@@ -57,49 +184,20 @@ from BlockExpression** and **a chunked-string builder convention**. Without
 those, the compiler code reads like a Lisp transcribed into ternaries.
 
 
-# Compiler bug — tail-call detection only enabled for sync functions
+# Tail-call optimisation — done
 
-`async_lower.__discover_tail_calls` now identifies `Call → Return(register)`
-patterns and sets `musttail`, which lets codegen emit `return foo(...)` and
-clang TCO it (even at -O0). But the optimisation is currently gated on
-`fn.sync` — async functions are skipped — because of two downstream issues
-that the state-machine pass still has:
+Both sync and async functions now get tail-call optimisation. The state
+machine path re-expands `Call(musttail=True)` back into `Call + Return` via
+`__unroll_musttail_for_state_machine` so the terminal-block writer's
+`task_complete` sequence still fires; the hot path keeps the `musttail`
+so clang emits `return foo(...)` and TCOs it. `strip_unused_operations`
+treats `Call(musttail)` as a terminator and guards its worklist against
+re-queuing seen indices, so cyclic CFGs converge.
 
-1. **State machine never completes the task.**  The terminal-block processing
-   in `__create_state_machine_func` only emits `Move(task->result, …) +
-   task_complete + ReturnVoid` when it sees a `Return` op. A tail-called
-   function whose `Return` was removed by `__discover_tail_calls` falls off
-   the end of the state machine without ever calling `task_complete`, leaking
-   the in-flight task forever.
-
-2. **CFG cycle hangs `strip_unused_operations`.**  The state machine for an
-   async function whose terminal Call is musttail looks like:
-   ```
-   SwitchJump
-   $resume$0:
-     Call(_strBody, musttail)   ← was Call+Return; now Call only
-   $case$1:
-     Move (extract result)
-     Jump $resume$0             ← cycle closes here
-   ```
-   `strip_unused_operations` walks this CFG one index at a time and treats
-   `Call` as falling through to the next op. It also has a separate latent
-   bug: it doesn't filter `to_see_indexes` against `seen_indexes`, so a
-   cyclic CFG re-adds the same indices forever.
-
-Two fixes need to land together to enable async tail calls:
-  * In `__create_state_machine_func`, before processing the terminal block,
-    expand any `Call(musttail=True)` back into `Call(register=tmp) +
-    Return(tmp)` so the existing `task_complete` logic fires. The temp var
-    needs to be added to the state object's field list.
-  * In `things.strip_unused_operations`, filter `to_see_indexes -=
-    seen_indexes` per outer iteration so cyclic CFGs converge. Also needs
-    `Call(musttail)` treated like `Return` — no successor.
-
-Workaround in `stdlib/json.yafl`: bulk-consume from a buffered lookahead so
-each recursion processes ~1 KiB at once, dropping the depth from O(N bytes)
-to O(N / 1024). Sync helpers (e.g. `_strScanDelim`) get the optimisation
-already; async parser bodies would benefit if the two fixes above land.
+Landed in `3c5f5c4`. The `stdlib/json.yafl` lookahead workaround
+(`_strBody` bulk-consume of ~1 KiB per recursion) predates the fix and is
+no longer needed for correctness — keep it as a perf win or simplify if a
+profile says it doesn't matter.
 
 
 # Another specific heap layout optimisation

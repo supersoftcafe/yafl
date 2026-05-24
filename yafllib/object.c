@@ -4,6 +4,7 @@
 #include "yafl.h"
 #include <malloc.h>
 #include <setjmp.h>
+#include <string.h>
 
 
 #define COMPACT_THRESHOLD_PERCENT   33
@@ -988,6 +989,26 @@ EXPORT void gc_start() {
 }
 
 EXPORT void object_gc_init() {
+}
+
+
+// Process-wide CLI args. Set once at startup by the emitted `main()` shim
+// (see compiler/codegen/gen.py) before `thread_start(__entrypoint__)`.
+EXPORT int     _yafl_argc = 0;
+EXPORT char**  _yafl_argv = NULL;
+
+EXPORT object_t* sys_argc(object_t* self) {
+    (void)self;
+    return integer_create_from_int32(_yafl_argc);
+}
+
+EXPORT object_t* sys_argv_at(object_t* self, object_t* o_index) {
+    (void)self;
+    int overflow = 0;
+    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    if (overflow || idx < 0 || idx >= _yafl_argc) __abort_on_overflow();
+    const char* s = _yafl_argv[idx];
+    return string_from_bytes((uint8_t*)s, (int32_t)strlen(s));
 }
 
 

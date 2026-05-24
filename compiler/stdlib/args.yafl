@@ -1,0 +1,20 @@
+namespace System
+
+import System
+
+
+# CLI arguments — the user-supplied positional args, without the program
+# path (argv[0]). For a binary invoked as `prog -O2 input.yafl`, args()
+# returns ["-O2", "input.yafl"].
+#
+# The two foreign helpers below expose the raw argv slots; user code should
+# use `args()` rather than calling them directly.
+
+fun [foreign("sys_argc"), sync] _argc(): System::Int
+
+fun [foreign("sys_argv_at"), sync] _argvAt(i: System::Int): System::String
+
+fun args(): List<System::String>
+  fun loop(i: System::Int, acc: List<System::String>): List<System::String>
+    ret i < 1 ? acc : loop(i - 1, prepend<System::String>(_argvAt(i), acc))
+  ret loop(_argc() - 1, List<System::String>())

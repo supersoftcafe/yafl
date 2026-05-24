@@ -25,6 +25,18 @@ class _BasicCompareString() : BasicCompare<String>
   fun hashOf(value: System::String): System::Int
     ret __builtin_op__<bigint>("string_hash", value)
 
+let [trait] _show_string: _ShowString = _ShowString()
+
+typealias [where] _WhereShowString : Show<System::String>
+
+# Show<String> is identity — callers (notably `format`) want the natural
+# representation, not a debug-quoted form. If a quoted/escaped variant is
+# ever needed for diagnostics, add a separate `Debug<T>` trait rather than
+# overloading Show.
+class _ShowString() : Show<System::String>
+  fun show(value: System::String): System::String
+    ret value
+
 fun Char(int: System::Int): System::String
   ret __builtin_op__<str>("wchar_to_string", int)
 

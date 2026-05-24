@@ -90,8 +90,13 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
             pass
 
 
-def compile_and_run_stdlib(source: str, timeout: int = 5) -> int:
-    """Compile yafl source with stdlib, link against libyafl, run, return exit code."""
+def compile_and_run_stdlib(source: str, timeout: int = 5,
+                           args: list[str] | None = None) -> int:
+    """Compile yafl source with stdlib, link against libyafl, run, return exit code.
+
+    `args`, when provided, are passed as the program's CLI arguments (so
+    `System::args()` in the yafl source sees them).
+    """
     c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
     assert c_code, "yafl compilation produced no output (type errors?)"
 
@@ -103,7 +108,7 @@ def compile_and_run_stdlib(source: str, timeout: int = 5) -> int:
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
-        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
+        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout, env=_RUN_ENV)
         return run.returncode
     finally:
         try:

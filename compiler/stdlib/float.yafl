@@ -63,3 +63,11 @@ fun String(f: System::Float): System::String
 fun parseFloat(s: System::String): System::Float|System::None
   let v: System::Float = __builtin_op__<float64>("float_parse_or_nan", s)
   ret isNaN(v) ? None : v
+
+let [trait] _show_float: _ShowFloat = _ShowFloat()
+
+typealias [where] _WhereShowFloat : Show<System::Float>
+
+class _ShowFloat() : Show<System::Float>
+  fun show(value: System::Float): System::String
+    ret String(value)

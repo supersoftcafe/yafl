@@ -297,9 +297,15 @@ class ClassStatement(TypeStatement):
 
 
     def __find_locals(self, resolver: g.Resolver) -> Callable[[set[str]],list[g.Resolved[DataStatement]]]:
+        # `this` inside a generic class must carry the class's type
+        # placeholders, otherwise its ClassSpec has zero type params and
+        # any later type-check against the class's declared arity fails
+        # with "Not enough type parameters".
+        this_type = t.ClassSpec(self.line_ref, self.name,
+                                type_params=tuple(tp.type for tp in self.type_params))
         def finder(names: set[str]) -> list[g.Resolved[DataStatement]]:
             m = self.find_data(resolver, names)
-            l = LetStatement(self.line_ref, "this", None, {}, (), None, t.ClassSpec(self.line_ref, self.name))
+            l = LetStatement(self.line_ref, "this", None, {}, (), None, this_type)
             s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" in names else []
             td = self._find_trait_data(resolver, names)
             return m + s + td
@@ -330,7 +336,8 @@ class ClassStatement(TypeStatement):
 
 
     def get_type(self) -> t.ClassSpec|None:
-        return t.ClassSpec(self.line_ref, self.name)
+        return t.ClassSpec(self.line_ref, self.name,
+                           type_params=tuple(tp.type for tp in self.type_params))
 
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
@@ -378,8 +385,12 @@ class ClassStatement(TypeStatement):
                 else:
                     new_all_parents.update(xcls._all_parents)
 
-        # Recurse to compile parameters and statements
-        new_parameters, prm_glb = self.parameters.compile(resolver, None)
+        # Recurse to compile parameters and statements.
+        # Both need access to the class's own generic type params (`type_resolver`)
+        # so that a `T` referenced inside the constructor destructure (e.g.
+        # `class Box<T>(value: T)`) or inside a method body resolves to the
+        # class's GenericPlaceholderSpec rather than failing the lookup.
+        new_parameters, prm_glb = self.parameters.compile(type_resolver, None)
         statement_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         new_statements, stm_glb = u.flatten_lists(x.compile(statement_resolver, None) for x in self.statements)
 
@@ -418,8 +429,12 @@ class ClassStatement(TypeStatement):
         empty_slots_err = [Error(self.line_ref, "One or more slots have no implementation")]\
             if any(1 for n,s in slots.items() if not s) else []
 
-        # Recurse to check parameters and statements
-        prm_err = self.parameters.check(resolver, None)
+        # Recurse to check parameters and statements.
+        # Parameters need the generic-aware resolver too — a constructor
+        # destructure like `class Box<T>(value: T)` must see T as a
+        # GenericPlaceholderSpec, not fail to resolve.
+        type_resolver = g.ResolverType(resolver, self._find_generic_types)
+        prm_err = self.parameters.check(type_resolver, None)
         resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         stm_err = [x for stm in self.statements for x in stm.check(resolver, None)]
 

@@ -1,0 +1,137 @@
+namespace System
+
+import System
+
+
+# Format strings — per-arity overloads of `format(template, args...)`.
+#
+# Slot syntax: `{N}` where N is the 1-indexed argument number. A `{` not
+# followed by `digits}` is emitted as a literal `{`. Each slot is filled
+# by `show(arg_N)` via the `Show<T>` trait. The template is parsed at
+# runtime (it's just a String); the type system enforces that every
+# argument has a Show instance.
+#
+# Examples:
+#   format("hello {1}", "world")        -> "hello world"
+#   format("{1} = {2}", "x", 42)        -> "x = 42"
+#   format("{2} before {1}", "a", "b")  -> "b before a"
+#
+# Indices outside [1..arity] render as "?" rather than aborting, so a
+# typo in the template degrades visibly rather than crashing.
+
+
+# ─── Internal template scanner ──────────────────────────────────────────────
+#
+# The scanner is fully concrete — it walks a String template and looks up
+# slot values in a `List<String>` of pre-rendered arguments. Keeping
+# Show<T> out of the scanner's signature means each format overload pays
+# the `_show` cost once per argument up-front and the scanner itself
+# doesn't propagate trait constraints down the call graph.
+#
+# All scanner helpers are kept top-level (underscore-prefixed) rather
+# than nested inside `_formatScan`. Nested helpers that call back into
+# the enclosing function via mutual recursion currently trip codegen
+# (`could not cast None to CallableSpec`); top-level helpers don't.
+
+# Return the position just past the longest digit run starting at `at`,
+# or `at` itself if there are no digits there.
+fun _digitsEnd(f: String, at: Int): Int
+  ret at < length(f) ? _digitsEndInBounds(f, at) : at
+
+fun _digitsEndInBounds(f: String, at: Int): Int
+  ret byteAt(f, at) < 48 ? at
+    : byteAt(f, at) > 57 ? at
+    : _digitsEnd(f, at + 1)
+
+
+# Parse decimal digits in `f[at..end)` left-to-right; `acc` is the
+# accumulator (always 0 at the call site).
+fun _parseDigits(f: String, at: Int, end: Int, acc: Int): Int
+  ret at < end ? _parseDigits(f, at + 1, end, acc * 10 + byteAt(f, at) - 48) : acc
+
+
+# Look up the pre-rendered string for slot `n` (1-indexed). Out-of-range
+# (n < 1 or beyond the parts list) renders as "?" so a typo in the
+# template degrades visibly rather than crashing.
+fun _slotValue(parts: List<String>, n: Int): String
+  ret match(get<String>(parts, n - 1))
+    (s: String) => s
+    (x: None)   => "?"
+
+
+# Emit a valid `{N}` slot: literal prefix `f[pos..open)`, then the
+# value for slot N, then continue scanning after the closing `}`.
+fun _emitSlot(sb: StringBuilder, f: String, pos: Int, open: Int, dEnd: Int, parts: List<String>): StringBuilder
+  let argN = _parseDigits(f, open + 1, dEnd, 0)
+  let sb1 = append(sb, slice(f, pos, open))
+  let sb2 = append(sb1, _slotValue(parts, argN))
+  ret _formatScan(sb2, f, dEnd + 1, parts)
+
+
+# True iff `f[open..]` is a valid `{N}` slot — i.e. one or more digits
+# between the braces. Split into two checks for cheap short-circuit.
+fun _isSlot(f: String, open: Int, dEnd: Int): Bool
+  ret dEnd > open + 1 ? _slotClosed(f, dEnd) : 0 == 1
+
+fun _slotClosed(f: String, dEnd: Int): Bool
+  ret dEnd < length(f) ? byteAt(f, dEnd) == 125 : 0 == 1
+
+
+# Saw a `{` at `open`: decide if it begins a valid `{N}` slot, or is just
+# a literal `{` to emit.
+fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: List<String>): StringBuilder
+  let dEnd = _digitsEnd(f, open + 1)
+  ret _isSlot(f, open, dEnd)
+    ? _emitSlot(sb, f, pos, open, dEnd, parts)
+    : _formatScan(append(sb, slice(f, pos, open + 1)), f, open + 1, parts)
+
+
+# Walk the template from `pos`: find the next `{` (if any), and either
+# emit the trailing literal or dispatch to `_trySlot`.
+fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: List<String>): StringBuilder
+  let open = findByte(f, 123, pos)   # 123 == '{'
+  ret open < 0
+    ? append(sb, slice(f, pos, length(f)))
+    : _trySlot(sb, f, pos, open, parts)
+
+
+# ─── Per-arity public API ───────────────────────────────────────────────────
+#
+# Each overload pre-renders its arguments to Strings via `Show<Ti>`, packs
+# them into a `List<String>`, and runs the (Show-free) scanner. The
+# `_show<T>` wrapper isolates the single-constraint dispatch even though
+# the calling overload's own where-clause may carry several Show traits.
+#
+# The parts list is built via a `|>` pipeline of one-arg lambdas, each
+# appending the next pre-rendered value. Reads top-to-bottom in argument
+# order; the inliner collapses the lambda chain into a series of direct
+# appends.
+
+fun format<T1>(f: String, p1: T1): String where Show<T1>
+  let parts = List<String>()
+    |> (l:List<String>) => append<String>(l, show(p1))
+  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+
+
+fun format<T1, T2>(f: String, p1: T1, p2: T2): String where Show<T1>|Show<T2>
+  let parts = List<String>()
+    |> (l:List<String>) => append<String>(l, show(p1))
+    |> (l:List<String>) => append<String>(l, show(p2))
+  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+
+
+fun format<T1, T2, T3>(f: String, p1: T1, p2: T2, p3: T3): String where Show<T1>|Show<T2>|Show<T3>
+  let parts = List<String>()
+    |> (l:List<String>) => append<String>(l, show(p1))
+    |> (l:List<String>) => append<String>(l, show(p2))
+    |> (l:List<String>) => append<String>(l, show(p3))
+  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+
+
+fun format<T1, T2, T3, T4>(f: String, p1: T1, p2: T2, p3: T3, p4: T4): String where Show<T1>|Show<T2>|Show<T3>|Show<T4>
+  let parts = List<String>()
+    |> (l:List<String>) => append<String>(l, show(p1))
+    |> (l:List<String>) => append<String>(l, show(p2))
+    |> (l:List<String>) => append<String>(l, show(p3))
+    |> (l:List<String>) => append<String>(l, show(p4))
+  ret toString(_formatScan(StringBuilder(), f, 0, parts))

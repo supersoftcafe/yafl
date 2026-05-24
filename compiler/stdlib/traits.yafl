@@ -18,3 +18,9 @@ interface BasicMath<TVal> : BasicPlus<TVal>|BasicCompare<TVal>
   fun `/`(left: TVal, right: TVal): TVal
   fun `%`(left: TVal, right: TVal): TVal
 
+# Render a value as a String for human-facing output.
+# Used by `format` to fill template slots; instances live alongside their
+# type's other trait instances (e.g. Show<Int> in integer.yafl).
+interface Show<TVal>
+  fun show(value: TVal): System::String
+

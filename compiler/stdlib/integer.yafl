@@ -48,3 +48,19 @@ class _BasicMathInt() : BasicMath<System::Int>
 fun abs(value: System::Int): System::Int
   ret value < 0 ? -value : value
 
+let [trait] _show_int: _ShowInt = _ShowInt()
+
+typealias [where] _WhereShowInt : Show<System::Int>
+
+class _ShowInt() : Show<System::Int>
+  fun show(value: System::Int): System::String
+    ret String(value)
+
+let [trait] _show_bool: _ShowBool = _ShowBool()
+
+typealias [where] _WhereShowBool : Show<System::Bool>
+
+class _ShowBool() : Show<System::Bool>
+  fun show(value: System::Bool): System::String
+    ret value ? "true" : "false"
+

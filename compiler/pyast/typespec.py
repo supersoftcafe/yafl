@@ -427,14 +427,13 @@ class GenericPlaceholderSpec(TypeSpec):
         raise RuntimeError("GenericPlaceholderSpec should be replaced with a concrete type")
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
-        if not isinstance(right, GenericPlaceholderSpec):
-            return False
-        if self.name == right.name:
-            return True
-        # Different-named placeholders: return None (undecided) so that generic
-        # function bodies aren't rejected when one placeholder comes from a nested
-        # generic definition (e.g. enum field) and another from the calling function.
-        # Concrete type safety is enforced at instantiation time.
+        if isinstance(right, GenericPlaceholderSpec):
+            return True if self.name == right.name else None
+        # Self is a candidate-side placeholder being asked to accept a concrete
+        # right-side. The placeholder hasn't been bound yet, so it *might*
+        # accept it after substitution — return undecided rather than a
+        # blanket False that would prematurely filter out a valid generic
+        # candidate during overload resolution.
         return None
 
     def as_unique_id_str(self) -> str|None:
@@ -569,7 +568,33 @@ class NamedSpec(TypeSpec):
         raise RuntimeError("NamedSpec should be replaced with a concrete type")
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
-        return None # Not resolved yet
+        # When the right side is itself unresolved (NamedSpec) or a generic
+        # placeholder, stay undecided — we don't have enough information yet.
+        # When the right side is structurally concrete (BuiltinSpec, or a
+        # ClassSpec/EnumSpec with an `@`-mangled name), resolve our own name
+        # and delegate to the resolved kind's assignability rule. This lets
+        # overload resolution narrow `add(1, 2)` definitively: a candidate
+        # whose parameter is `NamedSpec("Set", ...)` can never accept a
+        # `BuiltinSpec("bigint")` — no knowledge of T required.
+        if isinstance(right, (NamedSpec, GenericPlaceholderSpec)):
+            return None
+        types = resolver.find_type({self.name})
+        if len(types) != 1:
+            return None
+        stmt = types[0].statement
+        if isinstance(stmt, s.TypeAliasStatement):
+            if stmt.type is not None and stmt.type.is_concrete():
+                return stmt.type.trivially_assignable_from(resolver, right)
+            return None
+        if isinstance(stmt, s.ClassStatement):
+            cls_spec = ClassSpec(self.line_ref, stmt.name, self.type_params)
+            return cls_spec.trivially_assignable_from(resolver, right)
+        if isinstance(stmt, s.EnumStatement) and stmt._enum_spec is not None:
+            enum_spec = stmt._enum_spec
+            if self.type_params:
+                enum_spec = dataclasses.replace(enum_spec, type_params=self.type_params)
+            return enum_spec.trivially_assignable_from(resolver, right)
+        return None
 
     def as_unique_id_str(self) -> str|None:
         return None # This is 'alias', not a concrete type.

@@ -281,6 +281,12 @@ EXTERN void gc_declare_thread(thread_roots_declaration_func_t,void*); // Any thr
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 
+// CLI arguments (set by the emitted main() shim before thread_start).
+extern int    _yafl_argc;
+extern char** _yafl_argv;
+EXTERN object_t* sys_argc(object_t* self);
+EXTERN object_t* sys_argv_at(object_t* self, object_t* o_index);
+
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
 

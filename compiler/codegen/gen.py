@@ -109,7 +109,9 @@ class Application:
                 f"}}\n")
 
     def __declare_main(self) -> str:
-        return ("int main() {\n"
+        return ("int main(int argc, char** argv) {\n"
+                "    _yafl_argc = argc;\n"
+                "    _yafl_argv = argv;\n"
                 "    _previous_declare_roots = add_roots_declaration_func(_declare_roots);\n"
                 "    thread_start(__entrypoint__);\n"
                 "    return 0;\n"
