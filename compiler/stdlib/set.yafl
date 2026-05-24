@@ -7,44 +7,34 @@ import System
 # so every operation routes through the value's `BasicEquality<T>` instance
 # for hashing and key comparison. Functional / persistent: each operation
 # returns a new Set; the original is unchanged.
-#
-# Set is modeled as a single-case enum wrapping the underlying Dict
-# (classes don't accept type parameters in YAFL today — enums do, so the
-# wrapper goes here). Users only see the public functions below; the
-# `_SetWrap` case and the wrapped Dict are implementation detail.
 
-enum Set<T>
-  enum _SetWrap(d: Dict<T,()>)
+class Set<T>(_d: Dict<T,()>)
 
 
 # Public factory — an empty set.
 fun Set<T>(): Set<T>
-  ret _SetWrap<T>(Dict<T,()>())
+  ret Set<T>(Dict<T,()>())
 
 
 # Insert `value` if absent; if already present the returned set is
 # observationally identical to the input. Cost is one Dict.put.
 fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
-  ret match(s)
-    (w: _SetWrap) => _SetWrap<T>(put<T,()>(w.d, value, ()))
+  ret Set<T>(put<T,()>(s._d, value, ()))
 
 
 # True iff `value` is a member of `s`. Cost is one Dict.contains.
 fun contains<T>(s: Set<T>, value: T): Bool where BasicEquality<T>
-  ret match(s)
-    (w: _SetWrap) => contains<T,()>(w.d, value)
+  ret contains<T,()>(s._d, value)
 
 
 # Drop `value` if present; if absent the result is observationally
 # identical to the input. Cost is one Dict.remove.
 fun remove<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
-  ret match(s)
-    (w: _SetWrap) => _SetWrap<T>(remove<T,()>(w.d, value))
+  ret Set<T>(remove<T,()>(s._d, value))
 
 
 # Number of members. Cost is whatever Dict.size costs (linear in the
 # Dict structure — fine for symbol tables and seen-sets, not for hot
 # loops).
 fun size<T>(s: Set<T>): Int
-  ret match(s)
-    (w: _SetWrap) => size<T,()>(w.d)
+  ret size<T,()>(s._d)

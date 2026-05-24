@@ -234,8 +234,8 @@ class DotExpression(Expression):
             case t.TupleSpec(entries=entries):
                 entry = next((en for en in entries if en.name == self.name), None)
                 return entry.type if entry else None
-            case t.ClassSpec(_, cname):
-                cdecl = resolver.find_type({cname})
+            case t.ClassSpec() as cspec:
+                cdecl = resolver.find_type({cspec.name})
                 if not cdecl or len(cdecl) > 1:
                     raise ValueError("A resolved class is later resolving incorrectly. Probably a compiler bug.")
                 cdecl = cdecl[0].statement
@@ -243,7 +243,8 @@ class DotExpression(Expression):
                     raise ValueError("A resolved class is later resolving to a wrong type. Probably a compiler bug.")
                 datas = cdecl.find_data(resolver, {self.name})
                 if datas and len(datas) == 1:
-                    return datas[0].statement.get_type()
+                    return _substitute_class_type_params(
+                        resolver, cspec, cdecl, datas[0].statement.get_type())
             case t.EnumSpec(all_fields=fields):
                 return next((ft for fn, ft in fields if fn == self.name), None)
         return None
@@ -371,6 +372,26 @@ class DotExpression(Expression):
                 return base_bundle + g.OperationBundle((), (), result_var)
 
         raise ValueError("Could not generate dot expression")
+
+
+def _substitute_class_type_params(
+        resolver: g.Resolver,
+        receiver: t.ClassSpec,
+        cdecl: s.ClassStatement,
+        field_type: t.TypeSpec | None,
+) -> t.TypeSpec | None:
+    # Map the class's declared placeholders to the receiver's concrete
+    # type arguments and rewrite placeholders inside the field's declared
+    # type. Mirrors the parent-class substitution in ClassStatement.compile
+    # so that e.g. `b: Box<Int>` → `b.value: Int` (not the bare `T`).
+    if field_type is None or not cdecl.type_params or not receiver.type_params:
+        return field_type
+    mapping = {p.name: concrete for p, concrete in zip(cdecl.type_params, receiver.type_params)}
+    def replace_fn(_, thing, m=mapping):
+        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
+            return m[thing.name]
+        return thing
+    return field_type.search_and_replace(resolver, replace_fn)
 
 
 def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_data: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:

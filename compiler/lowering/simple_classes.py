@@ -194,6 +194,25 @@ def __exclude_standalone_method_refs(
     return kept_classes, kept_specs
 
 
+def __name_tuple_entries(param: e.Expression, tuple_spec: t.TupleSpec) -> e.Expression:
+    # A constructor call like `Set<Int>(d)` parses as a positional tuple whose
+    # entries have name=None. Downstream DotExpression on the lowered value
+    # (`Set<Int>(d)._d`) looks entries up by field name, so the positional
+    # entries must inherit the class's field names. Pre-named entries are
+    # left untouched.
+    if not isinstance(param, e.TupleExpression):
+        return param
+    new_entries = []
+    changed = False
+    for idx, entry in enumerate(param.expressions):
+        if entry.name is None and idx < len(tuple_spec.entries):
+            new_entries.append(dataclasses.replace(entry, name=tuple_spec.entries[idx].name))
+            changed = True
+        else:
+            new_entries.append(entry)
+    return dataclasses.replace(param, expressions=new_entries) if changed else param
+
+
 def __build_replace_fn(
         simple_classes: dict[str, s.ClassStatement],
         simple_tuple_specs: dict[str, t.TupleSpec],
@@ -217,12 +236,13 @@ def __build_replace_fn(
 
         # NewExpression whose type was already converted to TupleSpec → just the params
         if isinstance(thing, e.NewExpression) and isinstance(thing.type, t.TupleSpec):
-            return thing.parameter
+            return __name_tuple_entries(thing.parameter, thing.type)
 
         # Constructor calls: CallExpression(NamedExpression(cls_name), args) → flat tuple
         if isinstance(thing, e.CallExpression) and isinstance(thing.function, e.NamedExpression):
-            if thing.function.name in simple_classes:
-                return thing.parameter
+            cls_name = thing.function.name
+            if cls_name in simple_classes:
+                return __name_tuple_entries(thing.parameter, simple_tuple_specs[cls_name])
 
         # Method calls: CallExpression(DotExpression(base, method), args)
         if isinstance(thing, e.CallExpression) and isinstance(thing.function, e.DotExpression):

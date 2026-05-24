@@ -320,3 +320,40 @@ fun main(): Int
     ret defaultConfig.value
 """
         self.assertEqual(13, _run(src))
+
+
+class TestGenericClassFieldRead(TestCase):
+    """DotExpression on a generic class must substitute the receiver's type
+    arguments into the field's declared type. A read of `b.value` where
+    `b: Box<Int>` must yield `Int`, not the placeholder `T`."""
+
+    def test_direct_field_read_concrete_typed(self):
+        """`Box<Int>.value` from a concrete-typed context must type-check and run."""
+        src = _PREAMBLE + """\
+class Box<T>(value: T)
+fun main(): Int
+    let b = Box<Int>(42)
+    ret b.value
+"""
+        self.assertEqual(42, _run(src))
+
+    def test_generic_helper_still_works(self):
+        """The pre-existing `unbox` helper path must continue to work."""
+        src = _PREAMBLE + """\
+class Box<T>(value: T)
+fun unbox<T>(b: Box<T>): T
+    ret b.value
+fun main(): Int
+    ret unbox<Int>(Box<Int>(13))
+"""
+        self.assertEqual(13, _run(src))
+
+    def test_two_field_generic_class(self):
+        """Two-parameter generic class — both fields read directly."""
+        src = _PREAMBLE + _ARITH + """\
+class Pair<A, B>(left: A, right: B)
+fun main(): Int
+    let p = Pair<Int, Int>(5, 8)
+    ret p.left + p.right
+"""
+        self.assertEqual(13, _run(src))
