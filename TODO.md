@@ -103,32 +103,28 @@ functions). All 11 tests in `tests/test_set.py` should pass unchanged —
 the rewrite is purely the public surface getting closer to what the user
 wanted in the first place.
 
-## Follow-up — nested function calling its enclosing function fails codegen
+## Follow-up — nested-helper combination still trips codegen in stdlib/format.yafl
 
-When a nested function inside `_formatScan` (e.g. `emitSlot`) called
-`_formatScan` recursively, codegen failed with the same
-`could not cast None to CallableSpec` error. Worked around by keeping
-all scanner helpers top-level (underscore-prefixed) in `stdlib/format.yafl`
-rather than nesting them inside `_formatScan`.
+The "nested function calling its enclosing function" bug from earlier is
+*mostly* gone. Each ingredient compiles cleanly in isolation:
 
-The pattern that fails:
-```yafl
-fun outer(...): T
-  fun helper(...): T
-    ret outer(...)        # calling enclosing function
-  ...
-```
+- Nested helper → enclosing function recursion: works.
+- Mutual recursion / forward refs between sibling nested helpers: works.
+- Nested helpers closing over enclosing-function parameters: works.
+- Threading a linear value (StringBuilder) through nested helpers: works.
 
-Forward references between sibling nested functions don't work either —
-which combined with this rules out mutual recursion among nested helpers.
-Both `_digitsEnd`/`_digitsEndInBounds` (mutually recursive) and the
-`_emitSlot` → `_formatScan` recursion are why every scanner helper is
-top-level in `format.yafl`.
+But the exact shape used by the `_formatScan` family — *all* of the above
+combined, with public generic overloads (`format<T1>` … `format<T4>`)
+calling the function that hosts the nested helpers — still fails codegen
+with `could not cast None to CallableSpec` (in `expression.py:204`, from
+`CallExpression.generate`). A minimal user-space program with the same
+shape compiles; only the stdlib placement reproduces it.
 
-Fix likely in lambda-lifting (`lowering/lambdas.py`) — when a nested
-function is lifted to top-level, references to its (now-sibling)
-enclosing function need to be rewritten to point at the lifted version,
-which apparently isn't happening.
+Workaround in place: scanner helpers stay top-level (underscore-prefixed)
+in `compiler/stdlib/format.yafl`. The block-comment at the top of that
+file documents the constraint. Once narrowed to a minimal repro, the fix
+is likely in lowering (lambda-lift or generics monomorphisation
+interacting with capture).
 
 ## Hard blockers (compiler cannot function without these)
 
@@ -136,10 +132,6 @@ which apparently isn't happening.
 - **subprocess spawn** — need to invoke clang. Workaround: split into "yafl emits
   C, shell wrapper runs clang"; that means the YAFL binary alone isn't a
   self-contained compiler.
-- **Recursive stack depth** — non-tail recursion blows the C stack. The
-  `[tail]` attribute helps but only in tail position. The typechecker walks
-  deep AST trees through arbitrary call paths. The async-tail-detection bug
-  below is part of this.
 
 ## Ergonomic blockers (possible but writing 5K lines of yafl would be brutal)
 
@@ -168,21 +160,6 @@ which apparently isn't happening.
   allocation, and whether `[tail]` covers enough of the deep traversal paths.
 - **Compile times scale with stdlib size** — every example pulls in the whole
   stdlib. As the stdlib grows to support bootstrap, compile times balloon.
-
-## Latent design
-
-- **Linear types** (see section below) — not strictly needed, but a compiler
-  opens many file handles and the leak hazard is real.
-- **Reflection / compile-time derivation** — explicitly out of scope. Means
-  every AST node type needs hand-written equality, hash, traverse, etc.;
-  manageable but adds ~30% boilerplate to the AST module.
-
-## Highest-leverage first
-
-If picking two things to fix first to unblock real progress: **early return
-from BlockExpression** and **a chunked-string builder convention**. Without
-those, the compiler code reads like a Lisp transcribed into ternaries.
-
 
 # Tail-call optimisation — done
 
@@ -254,20 +231,6 @@ Currently the IO module tries to fill the buffer, which means that TTY input bey
 must be entered, or CTRL-D pressed before the program will respond. Ideally we need to have a read
 mode that does not fill the buffer, but rather only reads exactly what is needed to fullfil the
 request.
-
-# Linear types
-
-A linear type is a type that once initiated must be used exactly once. Each use then creates a new instance
-for the next function in the chain, finally terminating on a function that does not return a new instance.
-
-This compiler level checking ensures that some handle that represents a resource can only be used by one
-thread at a time and that it will be destroyed. The IO library is waiting for this to get language safety
-for closing file handles.
-
-# Early return from BlockExpression
-
-To support more coding styles that are not anti-functional, an early return is not just acceptable, it
-is very useful.
 
 # Tuple let grouping
 

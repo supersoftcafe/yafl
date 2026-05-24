@@ -29,9 +29,12 @@ import System
 # doesn't propagate trait constraints down the call graph.
 #
 # All scanner helpers are kept top-level (underscore-prefixed) rather
-# than nested inside `_formatScan`. Nested helpers that call back into
-# the enclosing function via mutual recursion currently trip codegen
-# (`could not cast None to CallableSpec`); top-level helpers don't.
+# than nested inside `_formatScan`. The exact shape used here — multiple
+# mutually-referencing nested helpers that close over the enclosing
+# function's parameters and recurse back into it — trips codegen with
+# `could not cast None to CallableSpec`. Each individual ingredient
+# (closure capture, sibling forward refs, calls back to the enclosing
+# function) works in isolation; only the full combination breaks.
 
 # Return the position just past the longest digit run starting at `at`,
 # or `at` itself if there are no digits there.
