@@ -583,13 +583,17 @@ class LetStatement(DataStatement):
                 init_func_name = f"{self.name}$lazy$init"
                 init_flag_name = f"{self.name}$lazy$flag"
                 set_value = cg_o.Move(cg_p.GlobalVar(xtype, self.name), init.result_var)
-                return_zero = cg_o.Return(cg_p.Integer(0, 32))
+                # Return DataPointer (NULL) so the runtime can uniformly call
+                # this under the YAFL async ABI and dispatch via PTR_IS_TASK:
+                # sync init returns NULL (non-task) → runtime fires continue
+                # inline; async init's hot path returns a tagged task pointer.
+                return_null = cg_o.Return(cg_p.NullPointer())
                 init_funcs.append(cg_x.Function(
                     init_func_name,
                     cg_t.Struct( (("this", cg_t.DataPointer()),) ),
-                    cg_t.Int(32),
+                    cg_t.DataPointer(),
                     cg_t.Struct(tuple((sv.name, sv.type) for sv in init.stack_vars)),
-                    init.operations + (set_value,return_zero)  ))
+                    init.operations + (set_value,return_null)  ))
                 global_vars.append(cg_x.Global(
                     init_flag_name,
                     cg_t.DataPointer()  ))

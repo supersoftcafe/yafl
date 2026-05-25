@@ -428,7 +428,11 @@ EXTERN object_t* thread_dispatch(fun_t action);
 
 
 INLINE bool lazy_global_init_complete(object_t* flag_ptr) {return 1==(intptr_t)flag_ptr;}
-EXPORT void lazy_global_init(object_t** self, object_t* flag_ptr, fun_t init, fun_t callback);
+// Initialise a lazy global.  `init` is a YAFL function (sync or async ABI):
+// the runtime invokes it directly and dispatches on PTR_IS_TASK of the
+// return value — a tagged task to await, or a non-task pointer signalling
+// inline completion.  Returns a tagged task_t* the caller awaits.
+EXPORT object_t* lazy_global_init(object_t** self, object_t* flag_ptr, fun_t init);
 
 
 /**********************************************************

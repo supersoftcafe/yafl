@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from codegen.param import GlobalFunction, GlobalVar, Invoke, NewStruct, NullPointer, PointerTo
+from codegen.param import GlobalFunction, GlobalVar, Invoke, NewStruct, PointerTo
 from codegen.ops import Call, Op, JumpIf, Label
 from codegen.gen import Application
 from codegen.things import Function, Global
@@ -24,11 +24,16 @@ def __create_global_init_ops(glb: Global, index: Int) -> list[Op]:
     init_params = NewStruct( (
         ("flag", PointerTo(GlobalVar(DataPointer(), glb.lazy_init_flag))),
         ("init", GlobalFunction(glb.lazy_init_function)),
-        # TODO: bridge — lazy_global_init expects a CPS callback; pass null for now
-        # (async global init will hang until yafllib is updated to use direct-return convention)
-        ("callback", NewStruct((("f", NullPointer()), ("o", NullPointer())))),
     ))
-    invoke = Call(GlobalFunction("lazy_global_init", external=True), init_params)
+    # lazy_global_init returns a tagged task_t*; result discarded but the
+    # non-tail external Call is treated by async_lower as an awaited call
+    # and woven into the enclosing function's task trampoline.
+    invoke = Call(
+        GlobalFunction("lazy_global_init", external=True),
+        init_params,
+        result_type=DataPointer(),
+        impure=True,
+    )
 
     return [check, invoke, label]
 
@@ -43,5 +48,4 @@ def add_ops_to_support_global_lazy_init(app: Application) -> Application:
     updated_functions = {name: __add_global_init_ops(app, fn) for name, fn in app.functions.items()}
 
     return dataclasses.replace(app, functions=updated_functions)
-
 
