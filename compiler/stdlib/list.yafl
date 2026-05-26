@@ -147,3 +147,39 @@ fun fold<T,U>(l: List<T>, init: U, f: (U, T): U): U
   ret match(l)
     (e: ListEmpty) => init
     (fl: ListFull) => foldNode(_listReverseNode<T>(fl.rear, _Nil<T>()), foldNode(fl.front, init))
+
+
+# Index of the first element satisfying `pred`, or None when no element
+# matches.  Always traverses the full list — once `found` is set the
+# step short-circuits to a pass-through.
+fun findIndex<T>(l: List<T>, pred: (T): Bool): Int|None
+  fun step(acc: (idx: Int, found: Int|None), x: T): (idx: Int, found: Int|None)
+    ret match(acc.found)
+      (i: Int)  => acc
+      (n: None) => pred(x)
+        ? (idx=acc.idx + 1, found=acc.idx)
+        : (idx=acc.idx + 1, found=None)
+  let r = fold<T, (idx: Int, found: Int|None)>(l, (idx=0, found=None), step)
+  ret r.found
+
+
+# Split `l` into `(yes, no)` by `pred`.  Order is preserved within each
+# output list.
+fun partition<T>(l: List<T>, pred: (T): Bool): (yes: List<T>, no: List<T>)
+  fun step(acc: (yes: List<T>, no: List<T>), x: T): (yes: List<T>, no: List<T>)
+    ret pred(x)
+      ? (yes=append<T>(acc.yes, x), no=acc.no)
+      : (yes=acc.yes, no=append<T>(acc.no, x))
+  ret fold<T, (yes: List<T>, no: List<T>)>(l, (yes=List<T>(), no=List<T>()), step)
+
+
+# Group elements by `key(x)`.  Entries appear in original list order
+# within each group.
+fun _appendToGroup<K,T>(d: Dict<K,List<T> >, k: K, v: T): Dict<K,List<T> > where BasicEquality<K>
+  ret match(get<K,List<T> >(d, k))
+    (existing: List<T>) => put<K,List<T> >(d, k, append<T>(existing, v))
+    (n: None)           => put<K,List<T> >(d, k, append<T>(List<T>(), v))
+
+fun groupBy<T,K>(l: List<T>, key: (T): K): Dict<K,List<T> > where BasicEquality<K>
+  ret fold<T,Dict<K,List<T> > >(l, Dict<K,List<T> >(),
+    (acc: Dict<K,List<T> >, x: T) => _appendToGroup<K,T>(acc, key(x), x))

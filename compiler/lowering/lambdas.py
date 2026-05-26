@@ -9,6 +9,7 @@ import pyast.resolver as g
 import pyast.typespec as t
 
 from langtools import cast
+from parsing.tokenizer import LineRef
 from pyast.statement import ImportGroup
 
 
@@ -17,8 +18,53 @@ from pyast.statement import ImportGroup
 __empty_imports = ImportGroup(tuple())
 
 
-def __create_unique_name(lmd: e.LambdaExpression) -> str:
-    return f"$lambdas::lambda@{lmd.line_ref.hash6()}"
+def __create_unique_name(lmd: e.LambdaExpression, path: tuple[str, ...] = ()) -> str:
+    # Path-based naming disambiguates lambdas that share a `line_ref` across
+    # different monomorphisations.  `generics.py` substitutes type params into
+    # a generic function's body without rewriting `line_ref`s, so the same
+    # nested-fn declaration ends up in every specialisation at the same
+    # source location.  Without the enclosing-statement names mixed in, two
+    # specialisations of `fold<T,U>` called with different `U` types collide
+    # on `lambda@<hash6>` and the second class overwrites the first.
+    prefix = "$".join(path) + "$" if path else ""
+    return f"$lambdas::lambda@{prefix}{lmd.line_ref.hash6()}"
+
+
+def __collect_lambda_paths(stmt: s.Statement) -> dict[LineRef, tuple[str, ...]]:
+    """Pre-order walk: record the path (sequence of enclosing
+    NamedStatement names) for every LambdaExpression reachable from
+    `stmt`.  Used by `__scan_function_and_export_lambdas` to assign a
+    monomorphisation-unique class name to every lifted lambda.
+
+    Generic recursion: walk every dataclass field that holds a Statement
+    or Expression (or a list/tuple of them).  Only NamedStatement nodes
+    extend the path; everything else passes through with the current
+    path."""
+    paths: dict[LineRef, tuple[str, ...]] = {}
+
+    def walk(node, path: tuple[str, ...]) -> None:
+        if isinstance(node, e.LambdaExpression):
+            # Only the first occurrence wins.  After monomorphisation a
+            # generic statement's lambdas may show up via multiple
+            # search_and_replace paths; the first wins as a deterministic
+            # tie-break.
+            paths.setdefault(node.line_ref, path)
+        new_path = path
+        if isinstance(node, s.NamedStatement) and node.name:
+            new_path = path + (node.name,)
+        if not dataclasses.is_dataclass(node):
+            return
+        for f in dataclasses.fields(node):
+            child = getattr(node, f.name, None)
+            if isinstance(child, (s.Statement, e.Expression)):
+                walk(child, new_path)
+            elif isinstance(child, (list, tuple)):
+                for item in child:
+                    if isinstance(item, (s.Statement, e.Expression)):
+                        walk(item, new_path)
+
+    walk(stmt, ())
+    return paths
 
 
 def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[tuple[str, t.TypeSpec]]:
@@ -114,12 +160,17 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
 
 def __scan_function_and_export_lambdas(statement: s.Statement, all_statements: list[s.Statement]) -> tuple[s.Statement, list[s.Statement]]:
     exported_statements = []
+    # Build the path map BEFORE search_and_replace.  search_and_replace
+    # clones nodes via `dataclasses.replace`, but `line_ref` is preserved
+    # across the clone, so the dict keyed by line_ref still resolves
+    # correctly when we receive the clone in `export_if_lambda`.
+    lambda_paths = __collect_lambda_paths(statement)
 
     def export_if_lambda(resolver: g.Resolver, lmd):
         if not isinstance(lmd, e.LambdaExpression):
             return lmd
 
-        nme = __create_unique_name(lmd)
+        nme = __create_unique_name(lmd, lambda_paths.get(lmd.line_ref, ()))
         cpt = __discover_captures(resolver, lmd)
 
         # Remove self-referential captures: a capture whose declared type is

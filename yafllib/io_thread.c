@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <errno.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define IO_THREAD_COUNT 4
 
@@ -21,7 +23,9 @@ HIDDEN struct io_job_vtable IO_JOB_VTABLE = {
                               | maskof(io_job_t, .task.result)
                               | maskof(io_job_t, .next_in_io_queue)
                               | maskof(io_job_t, .io)
-                              | maskof(io_job_t, .completion_task),
+                              | maskof(io_job_t, .completion_task)
+                              | maskof(io_job_t, .fs_aux)
+                              | maskof(io_job_t, .dir),
     .array_el_pointer_locations = 0,
     .functions_mask           = 0,
     .array_len_offset         = 0,
@@ -115,6 +119,76 @@ static void* _io_thread_main(void* arg) {
             }
             if (io->owned && fclose(io->file) != 0 && rc == 0) {
                 rc = -errno;
+            }
+            job->raw_result = rc;
+        } break;
+
+        case IO_OP_FS_EXISTS: {
+            // access() with F_OK distinguishes "exists" from "doesn't exist"
+            // and from "exists but isn't readable" (the latter still counts
+            // as existing).  Any non-zero return collapses to false.
+            job->raw_result = (access((const char*)io->buf, F_OK) == 0) ? 1 : 0;
+        } break;
+
+        case IO_OP_FS_STAT: {
+            // stat() writes a struct stat; we extract just the five fields
+            // YAFL cares about into the pre-allocated fs_aux.  No allocation,
+            // no GC interaction — fs_aux is on an is_mutable=1 page.
+            struct stat st;
+            errno = 0;
+            if (stat((const char*)io->buf, &st) == 0) {
+                fs_file_info_t* fi = job->fs_aux;
+                // off_t / time_t can exceed int32; we truncate.  Source files
+                // up to 2 GiB and mtime through 2038 fit; extending the
+                // integer API to int64 is a separate change.
+                fi->size       = (int32_t)st.st_size;
+                fi->mtime      = (int32_t)st.st_mtime;
+                fi->mode       = (int32_t)st.st_mode;
+                fi->is_dir     = S_ISDIR(st.st_mode);
+                fi->is_regular = S_ISREG(st.st_mode);
+                job->raw_result = 0;
+            } else {
+                job->raw_result = -errno;
+            }
+        } break;
+
+        case IO_OP_DIR_OPEN: {
+            dir_t* dir = job->dir;
+            errno = 0;
+            DIR* dp = opendir(dir->path_buf);
+            dir->dirp = dp;             // non-GC field; safe to write
+            job->raw_result = dp ? 0 : -errno;
+        } break;
+
+        case IO_OP_DIR_NEXT: {
+            dir_t* dir = job->dir;
+            dir->entry_ready = false;
+            dir->entry_eof   = false;
+            errno = 0;
+            struct dirent* de = readdir(dir->dirp);
+            if (de != NULL) {
+                // Copy name (NAME_MAX is the libc cap; entry_buf is NAME_MAX+2).
+                size_t n = strlen(de->d_name);
+                if (n > NAME_MAX) n = NAME_MAX;
+                memcpy(dir->entry_buf, de->d_name, n);
+                dir->entry_buf[n] = 0;
+                dir->entry_ready = true;
+                job->raw_result = (int32_t)n;
+            } else if (errno == 0) {
+                dir->entry_eof = true;
+                job->raw_result = 0;
+            } else {
+                job->raw_result = -errno;
+            }
+        } break;
+
+        case IO_OP_DIR_CLOSE: {
+            dir_t* dir = job->dir;
+            errno = 0;
+            int32_t rc = 0;
+            if (dir->dirp != NULL) {
+                if (closedir(dir->dirp) != 0) rc = -errno;
+                dir->dirp = NULL;
             }
             job->raw_result = rc;
         } break;

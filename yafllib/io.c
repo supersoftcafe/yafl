@@ -26,6 +26,38 @@ HIDDEN struct io_vtable IO_VTABLE = {
 };
 
 
+// FileInfo holds only scalar fields and has no pointer slots, so the GC
+// mask is empty.  is_mutable=1 keeps the page stable for the brief window
+// between worker-side allocation and the IO thread filling in the fields.
+HIDDEN struct fs_file_info_vtable FS_FILE_INFO_VTABLE = {
+    .object_size                = sizeof(fs_file_info_t),
+    .array_el_size              = 0,
+    .object_pointer_locations   = 0,
+    .array_el_pointer_locations = 0,
+    .functions_mask             = 0,
+    .array_len_offset           = 0,
+    .is_mutable                 = 1,
+    .name                       = "_FileInfo",
+    .implements_array           = VTABLE_IMPLEMENTS(0),
+};
+
+
+// Dir cursor vtable.  is_mutable=1 keeps the page stable so the IO thread
+// can hold raw pointers into `path_buf` / `entry_buf` across syscalls.
+// `in_flight` is the GC-tracing anchor for the currently-dispatched job.
+HIDDEN struct dir_vtable DIR_VTABLE = {
+    .object_size                = sizeof(dir_t),
+    .array_el_size              = 0,
+    .object_pointer_locations   = maskof(dir_t, .in_flight),
+    .array_el_pointer_locations = 0,
+    .functions_mask             = 0,
+    .array_len_offset           = 0,
+    .is_mutable                 = 1,
+    .name                       = "_Dir",
+    .implements_array           = VTABLE_IMPLEMENTS(0),
+};
+
+
 // --- construction helpers -------------------------------------------------
 
 static io_t* _io_alloc(FILE* file, bool owned, bool is_write) {
@@ -82,6 +114,8 @@ static io_job_t* _io_job_alloc(io_op_t op,
     task_init((object_t*)&job->task);              // sets thread_id, next, state=PENDING
     job->task.result     = NULL;
     job->io              = io;
+    job->fs_aux          = NULL;
+    job->dir             = NULL;
     job->finisher        = finisher;
     job->op              = op;
     job->open_mode[0]    = 0;
@@ -301,6 +335,86 @@ EXPORT object_t* io_write(object_t* self, object_t* data) {
 }
 
 
+// --- filesystem metadata ----------------------------------------------------
+//
+// Both ops dispatch through the IO threadpool.  The scratch io_t is reused
+// purely as a stable, non-compactable buffer for the path string — its
+// `file`/`is_write`/buffer-state fields are not touched on these paths.
+
+static void _fs_finish_exists(io_job_t* job);
+static void _fs_finish_stat   (io_job_t* job);
+
+
+static object_t* _fs_dispatch_meta(object_t* path, io_op_t op,
+                                   void (*finisher)(io_job_t*),
+                                   fs_file_info_t* aux) {
+    io_t* io = _io_alloc(NULL, false, false);
+
+    intptr_t local = 0;
+    int32_t  len   = 0;
+    const char* cstr = string_to_cstr(path, &local, &len);
+    if (len < 0) len = 0;
+    if (len >= IO_BUFFER_SIZE) len = IO_BUFFER_SIZE - 1;
+    if (len > 0) memcpy(io->buf, cstr, (size_t)len);
+    io->buf[len] = 0;
+
+    io_job_t* job = _io_job_alloc(op, io, finisher);
+    if (aux) {
+        GC_WRITE_BARRIER(job->fs_aux, 1);
+        job->fs_aux = aux;
+    }
+    _io_anchor_in_flight(io, job);
+    _io_enqueue(job);
+    return _io_as_task(job);
+}
+
+
+static void _fs_finish_exists(io_job_t* job) {
+    // raw_result is 0 or 1 — collapsed in the IO thread; never -errno on
+    // this path (exists swallows all errors as `false`).
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = integer_create_from_int32_noalloc(job->raw_result);
+    task_complete((object_t*)&job->task);
+}
+
+
+static void _fs_finish_stat(io_job_t* job) {
+    object_t* result = (job->raw_result < 0)
+        ? integer_create_from_int32_noalloc(job->raw_result)
+        : (object_t*)job->fs_aux;
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = result;
+    task_complete((object_t*)&job->task);
+}
+
+
+EXPORT object_t* fs_exists(object_t* self, object_t* path) {
+    (void)self;
+    return _fs_dispatch_meta(path, IO_OP_FS_EXISTS, _fs_finish_exists, NULL);
+}
+
+
+EXPORT object_t* fs_stat(object_t* self, object_t* path) {
+    (void)self;
+    // Pre-allocate the FileInfo so the IO thread can write its scalar
+    // fields without touching the allocator.  Zero-initialised by
+    // object_create; the IO thread fills it on success, leaves the
+    // zero-bytes alone on failure (caller will not see the object).
+    fs_file_info_t* fi = (fs_file_info_t*)object_create((vtable_t*)&FS_FILE_INFO_VTABLE);
+    return _fs_dispatch_meta(path, IO_OP_FS_STAT, _fs_finish_stat, fi);
+}
+
+
+// Sync accessors — called via [foreign, sync] from the public stat()
+// wrapper after the task resolves to a successful _FileInfo.
+
+EXPORT object_t* fs_fi_size  (object_t* self) { return integer_create_from_int32(((fs_file_info_t*)self)->size);  }
+EXPORT object_t* fs_fi_mtime (object_t* self) { return integer_create_from_int32(((fs_file_info_t*)self)->mtime); }
+EXPORT object_t* fs_fi_mode  (object_t* self) { return integer_create_from_int32(((fs_file_info_t*)self)->mode);  }
+EXPORT object_t* fs_fi_isdir (object_t* self) { return integer_create_from_int24(((fs_file_info_t*)self)->is_dir     ? 1 : 0); }
+EXPORT object_t* fs_fi_isreg (object_t* self) { return integer_create_from_int24(((fs_file_info_t*)self)->is_regular ? 1 : 0); }
+
+
 EXPORT object_t* io_close(object_t* self) {
     io_t* io = (io_t*)self;
     if (io == NULL || io->file == NULL) return NULL;
@@ -314,4 +428,101 @@ EXPORT object_t* io_close(object_t* self) {
     io->buf_tail = 0;
     io->buf_head = 0;
     return NULL;
+}
+
+
+// --- directory cursor ------------------------------------------------------
+
+static void _fs_finish_dir_open (io_job_t* job);
+static void _fs_finish_dir_next (io_job_t* job);
+static void _fs_finish_dir_close(io_job_t* job);
+
+
+static void _dir_anchor_in_flight(dir_t* dir, io_job_t* job) {
+    GC_WRITE_BARRIER(dir->in_flight, 1);
+    dir->in_flight = job;
+}
+
+
+EXPORT object_t* fs_open_dir(object_t* self, object_t* path) {
+    (void)self;
+    dir_t* dir = (dir_t*)object_create((vtable_t*)&DIR_VTABLE);
+    // dirp=NULL, in_flight=NULL by object_create zero-fill.
+
+    intptr_t local = 0;
+    int32_t  len   = 0;
+    const char* cstr = string_to_cstr(path, &local, &len);
+    if (len < 0) len = 0;
+    if (len >= (int32_t)sizeof(dir->path_buf)) len = (int32_t)sizeof(dir->path_buf) - 1;
+    if (len > 0) memcpy(dir->path_buf, cstr, (size_t)len);
+    dir->path_buf[len] = 0;
+
+    io_job_t* job = _io_job_alloc(IO_OP_DIR_OPEN, NULL, _fs_finish_dir_open);
+    GC_WRITE_BARRIER(job->dir, 1);
+    job->dir = dir;
+    _dir_anchor_in_flight(dir, job);
+    _io_enqueue(job);
+    return _io_as_task(job);
+}
+
+
+EXPORT object_t* fs_dir_next(object_t* self) {
+    dir_t* dir = (dir_t*)self;
+    if (dir == NULL || dir->dirp == NULL) return NULL;
+
+    io_job_t* job = _io_job_alloc(IO_OP_DIR_NEXT, NULL, _fs_finish_dir_next);
+    GC_WRITE_BARRIER(job->dir, 1);
+    job->dir = dir;
+    _dir_anchor_in_flight(dir, job);
+    _io_enqueue(job);
+    return _io_as_task(job);
+}
+
+
+EXPORT object_t* fs_dir_close(object_t* self) {
+    dir_t* dir = (dir_t*)self;
+    if (dir == NULL || dir->dirp == NULL) return NULL;
+
+    io_job_t* job = _io_job_alloc(IO_OP_DIR_CLOSE, NULL, _fs_finish_dir_close);
+    GC_WRITE_BARRIER(job->dir, 1);
+    job->dir = dir;
+    _dir_anchor_in_flight(dir, job);
+    _io_enqueue(job);
+    return _io_as_task(job);
+}
+
+
+static void _fs_finish_dir_open(io_job_t* job) {
+    object_t* result = (job->raw_result < 0)
+        ? integer_create_from_int32_noalloc(job->raw_result)
+        : (object_t*)job->dir;
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = result;
+    task_complete((object_t*)&job->task);
+}
+
+
+static void _fs_finish_dir_next(io_job_t* job) {
+    dir_t* dir = job->dir;
+    object_t* result;
+    if (dir->entry_eof) {
+        result = NULL;                          // None = end of stream
+    } else if (job->raw_result < 0) {
+        result = integer_create_from_int32_noalloc(job->raw_result);
+    } else {
+        result = string_from_bytes((uint8_t*)dir->entry_buf, job->raw_result);
+    }
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = result;
+    task_complete((object_t*)&job->task);
+}
+
+
+static void _fs_finish_dir_close(io_job_t* job) {
+    object_t* result = (job->raw_result < 0)
+        ? integer_create_from_int32_noalloc(job->raw_result)
+        : NULL;
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = result;
+    task_complete((object_t*)&job->task);
 }

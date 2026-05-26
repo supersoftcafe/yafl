@@ -3,106 +3,6 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
-## TOP PRIORITY — generic classes silently mis-type field reads
-
-`DotExpression.get_type` (`pyast/expression.py:231`) does not substitute the
-receiver's type arguments into the field's declared type. For a class
-`Box<T>(value: T)` and a binding `b: Box<Int>`, `b.value` returns Box's `T`
-placeholder verbatim instead of `Int`. So:
-
-```
-class Box<T>(value: T)
-fun main(): Int
-  let b = Box<Int>(42)
-  ret b.value      # rejected — "Incorrect type"
-```
-
-is rejected, but
-
-```
-fun unbox<T>(b: Box<T>): T = b.value     # accepted
-fun main(): Int = unbox<Int>(Box<Int>(42))
-```
-
-is accepted — *not* because the substitution worked, but because two
-different `GenericPlaceholderSpec`s compare to `None` (undecided) under
-`trivially_assignable_from`, and `BlockExpression.check` treats `None` as
-acceptable (`expression.py:814` — `is False`, not `not …`). The comment on
-`GenericPlaceholderSpec.trivially_assignable_from` defers safety to
-"instantiation time" — but for the field-read case there *is* no later
-catch, because monomorphisation rewrites generic functions and classes
-but not the DotExpression's already-computed type.
-
-Symptoms today:
-- Generic classes can be defined and used through generic helpers
-  (`unbox<T>(b: Box<T>): T`) but their fields cannot be read directly
-  from concrete-typed contexts (`main`, top-level let, anywhere with
-  concrete return types).
-- That forced `stdlib/set.yafl` into the enum-wrapper-plus-match
-  workaround instead of `class Set<T>(_d: Dict<T,()>)`. Same dodge will
-  be needed for any future generic data class until this is fixed.
-- The earlier-fixed `__find_locals` / `get_type` / `create_constructor`
-  sites for `this`/constructor type params are necessary precursors but
-  not sufficient — without DotExpression substitution, `b.value` still
-  yields the placeholder.
-
-The fix is structural, not a one-liner: `DotExpression.get_type` and
-`DotExpression.check` need to take the receiver's `ClassSpec.type_params`,
-zip them against the resolved class's `type_params`, build the same
-`GenericPlaceholderSpec → concrete` mapping that `ClassStatement.compile`
-already constructs for parent-class substitution (`statement.py:370-377`),
-and apply it via `search_and_replace` to the field's declared type before
-returning. The mapping needs to flow recursively when the field type is
-itself a `ClassSpec` whose own type params reference the receiver's
-placeholders (e.g. `class Box<T>(inner: List<T>)` → `b: Box<Int>` →
-`b.inner` must yield `List<Int>`, not `List<T>`).
-
-Two follow-up tasks once the substitution works:
-1. Audit `LetStatement.check` and `ReturnStatement.check` for `not result`
-   vs `is False` — they currently reject `None` (undecided) while
-   `BlockExpression.check` accepts it. The inconsistency is what's been
-   masking this bug.
-2. Once `DotExpression` substitutes properly, revisit `stdlib/set.yafl`
-   to use the cleaner `class Set<T>(_d: Dict<T,()>)` form.
-
-## Follow-up — rewrite `Set<T>` as a class once generic field reads work
-
-`stdlib/set.yafl` is currently a single-case enum wrapper
-(`enum Set<T> with _SetWrap(d: Dict<T,()>)`) and every public function
-(`add`, `contains`, `remove`, `size`) destructures it via `match`:
-
-```yafl
-fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
-  ret match(s)
-    (w: _SetWrap) => _SetWrap<T>(put<T,()>(w.d, value, ()))
-```
-
-The match dance is purely there to dodge the DotExpression substitution
-bug above — `s._d` from a concrete-typed call site (e.g. another stdlib
-function that calls `add<Int>(Set<Int>(), 5)`) returns the placeholder
-type instead of `Dict<Int,()>`, so direct field access fails type-check.
-Wrapping in an enum and destructuring via match coincidentally side-steps
-the bug because `match` substitutes correctly.
-
-Once `DotExpression.get_type` substitutes receiver type params (the TOP
-PRIORITY item above), rewrite `set.yafl` to:
-
-```yafl
-class Set<T>(_d: Dict<T,()>)
-
-fun Set<T>(): Set<T>
-  ret Set<T>(Dict<T,()>())
-
-fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
-  ret Set<T>(put<T,()>(s._d, value, ()))
-# ... etc ...
-```
-
-Each function drops the `match` boilerplate (3 lines → 2 lines each, four
-functions). All 11 tests in `tests/test_set.py` should pass unchanged —
-the rewrite is purely the public surface getting closer to what the user
-wanted in the first place.
-
 ## Follow-up — optimal binding-order analysis (was: nested-fn codegen hazards)
 
 The original "nested function calling its enclosing function" bug split
@@ -169,28 +69,9 @@ where lazy thunks land.
 
 ## Hard blockers (compiler cannot function without these)
 
-- **argv / process args** — no way to read CLI input filenames today.
 - **subprocess spawn** — need to invoke clang. Workaround: split into "yafl emits
   C, shell wrapper runs clang"; that means the YAFL binary alone isn't a
   self-contained compiler.
-
-## Ergonomic blockers (possible but writing 5K lines of yafl would be brutal)
-
-- **String builder / chunked concat** — codegen produces tens of KB per file;
-  naive `+` is quadratic. YAFL strings are immutable.  Either a `List<String>`
-  builder convention or a dedicated `StringBuilder`. The chunked-list pattern
-  from `JsonBigStr` is the model.
-
-## Stdlib gaps
-
-- **Set** — symbol tables / seen-sets. Workable via `Dict<K, None>` but ugly at
-  every call site.
-- **Format strings / printf** — for diagnostics. Every Error today is built by
-  `+`-concat.
-- **More List ops** — `groupBy`, `fold`, `partition`, `findIndex`; writable but
-  most compiler passes want them.
-- **Path / filesystem** — read a directory, stat, exists. Today only
-  `open_read` / `open_write` / `create` exist.
 
 ## Performance / scaling
 
@@ -216,6 +97,78 @@ Landed in `3c5f5c4`. The `stdlib/json.yafl` lookahead workaround
 (`_strBody` bulk-consume of ~1 KiB per recursion) predates the fix and is
 no longer needed for correctness — keep it as a perf win or simplify if a
 profile says it doesn't matter.
+
+
+# Generic class field reads — done
+
+`DotExpression.get_type` and `DotExpression.check` now substitute the
+receiver's `ClassSpec.type_params` into the field's declared type via
+`_substitute_class_type_params` (`pyast/expression.py`). The substitution
+flows recursively through nested `ClassSpec`s so `b: Box<Int>; b.inner`
+yields `List<Int>` rather than the bare `T` placeholder.
+
+`LetStatement.check` and `ReturnStatement.check` use `is False` to compare
+trivially-assignable results, matching `BlockExpression.check`'s treatment
+of `None` (undecided) as acceptable. Landed in `63f7de5`.
+
+Follow-up `Set<T>` rewrite from enum-wrapper to `class Set<T>(_d: Dict<T,()>)`
+also landed in `63f7de5`; field accesses (`s._d`) now type-check directly
+and all four public functions dropped their `match` boilerplate.
+
+
+# argv / process args — done
+
+`stdlib/args.yafl` exposes `args(): List<String>` built on the foreign
+helpers `sys_argc` / `sys_argv_at`. Callers get the user-supplied
+positional args without the program path. Landed in `f9ad565`.
+
+
+# StringBuilder — done
+
+`stdlib/string.yafl` provides a `StringBuilder` for amortised-linear
+string concatenation; `format` is the primary user. Eliminates the
+O(n²) `+`-concat hazard for code that produces tens of KB of output
+(notably codegen). Landed in `f9ad565`.
+
+
+# format / printf — done
+
+`stdlib/format.yafl` provides `format(template, args...)` with
+per-arity overloads up to four arguments; each argument's value is
+rendered via its `Show<T>` instance. Diagnostics and assertion
+messages no longer need `+`-concat. Landed in `f9ad565`.
+
+
+# Stdlib list ops & filesystem — done
+
+`stdlib/list.yafl` now provides `findIndex<T>`, `partition<T>`, and
+`groupBy<T,K>` alongside the existing `fold`/`map`/`filter`/etc.
+`groupBy` returns `Dict<K, List<T>>` with `where BasicEquality<K>`.
+All three are implemented in terms of `fold`.  An earlier draft used
+direct cons-list recursion as a workaround for a lambda-lift bug; that
+bug (collision on `lambda@<line_ref.hash6()>` across monomorphisations
+of the same template) was fixed by switching the lambda-class naming
+to a path-based scheme — `lowering/lambdas.py:__collect_lambda_paths`
+records the enclosing-statement path for every `LambdaExpression` and
+`__create_unique_name` mixes the path into the class name so two
+monomorphisations of `fold<T,U>` produce two distinct classes.
+
+`stdlib/fs.yafl` is new: `exists(path): Bool` (errors map to false),
+`stat(path): FileInfo|IOError` with a public `class FileInfo(size,
+mtime, isDir, isRegular, mode)`, plus a `[linear,final] Dir` cursor
+(`openDir` / `next` / `[terminal] close`) and a `listDir(path):
+List<String>|IOError` convenience that opens, drains, and closes the
+handle.  All ops dispatch through the existing IO threadpool —
+`io_thread.c`'s switch grew five new cases (`IO_OP_FS_EXISTS`,
+`IO_OP_FS_STAT`, `IO_OP_DIR_OPEN`, `IO_OP_DIR_NEXT`, `IO_OP_DIR_CLOSE`)
+and `io_job_t` carries a small `fs_aux: fs_file_info_t*` and `dir:
+dir_t*` for those ops.  The `FileInfo` is pre-allocated on the worker
+before STAT dispatch so the IO thread only writes scalar fields — the
+allocation boundary rule from `[[feedback_io_design]]` is preserved.
+
+Test coverage: `tests/test_runtime.py::TestListOps` (9 cases),
+`tests/test_fs.py` (9 cases). The compiler suite is now 591 tests at
+~18 min.
 
 
 # Another specific heap layout optimisation

@@ -867,4 +867,32 @@ EXPORT object_t* io_read (object_t* self, object_t* length);
 EXPORT object_t* io_write(object_t* self, object_t* data);
 EXPORT object_t* io_close(object_t* self);
 
+// Filesystem metadata.  Both ops dispatch through the IO threadpool so
+// the blocking syscalls (access/stat) never run on a worker thread.
+//
+// fs_exists returns a tagged-task wrapper whose result is a packed Int
+// (0 for false, 1 for true).  Permission errors and any other failure
+// map to false — exists never surfaces an IOError.  Use fs_stat when
+// you want errors visible.
+//
+// fs_stat returns a tagged-task wrapper whose result is either a
+// _FileInfo handle (on success) or a packed Int holding `-errno` on
+// failure.  The five accessors below read individual fields from a
+// successfully-resolved _FileInfo; all are sync (no task dispatch).
+EXPORT object_t* fs_exists   (object_t* self, object_t* path);
+EXPORT object_t* fs_stat     (object_t* self, object_t* path);
+EXPORT object_t* fs_fi_size  (object_t* self);
+EXPORT object_t* fs_fi_mtime (object_t* self);
+EXPORT object_t* fs_fi_isdir (object_t* self);
+EXPORT object_t* fs_fi_isreg (object_t* self);
+EXPORT object_t* fs_fi_mode  (object_t* self);
+
+// Directory cursor.  open returns a tagged-task wrapper resolving to
+// either a _Dir handle (success) or a packed Int holding -errno.  next
+// resolves to String (next entry name), None (end of stream), or Int
+// (-errno).  close resolves to None (success) or Int (-errno).
+EXPORT object_t* fs_open_dir (object_t* self, object_t* path);
+EXPORT object_t* fs_dir_next (object_t* self);
+EXPORT object_t* fs_dir_close(object_t* self);
+
 

@@ -984,3 +984,167 @@ fun main(): Int
     ret fold<Int,Int>(l, 0, (acc: Int, x: Int) => acc + x)
 """
         self.assertEqual(1275 % 256, _compile_and_run_stdlib(src))
+
+
+class TestGenericMultiMono(TestCase):
+    """A generic function whose body contains a nested function (lifted to
+    a closure-capturing class) used to break when called from two sites
+    with different type arguments.  Both monomorphisations produced the
+    nested function at the same source line; the lambda-lift named the
+    resulting class by `line_ref.hash6()`, so both monomorphisations
+    collided on the same class name.  After the fix the class names
+    include the path of enclosing statement names, which differs between
+    the monomorphisations."""
+
+    def test_fold_called_from_two_sites_with_different_U(self):
+        """Two `fold<Int, U>` call sites with different U types.  Before
+        the fix this aborted with `Failed to resolve $lambdas::lambda@…`
+        during codegen."""
+        src = """\
+namespace System
+import System
+
+fun useFold1(l: List<Int>): Int
+    let r = fold<Int, (idx: Int, found: Int|None)>(
+        l, (idx=0, found=None),
+        (acc: (idx: Int, found: Int|None), x: Int) =>
+            (idx=acc.idx + 1, found=acc.found))
+    ret r.idx
+
+fun useFold2(l: List<Int>): Int
+    let r = fold<Int, (yes: Int, no: Int)>(
+        l, (yes=0, no=0),
+        (acc: (yes: Int, no: Int), x: Int) =>
+            (yes=acc.yes + 1, no=acc.no))
+    ret r.yes
+
+fun main(): Int
+    let l = prepend<Int>(1, prepend<Int>(2, List<Int>()))
+    ret useFold1(l) + useFold2(l)
+"""
+        # both call sites walk a 2-element list → each returns 2 → total 4.
+        self.assertEqual(4, _compile_and_run_stdlib(src))
+
+
+class TestListOps(TestCase):
+    """findIndex / partition / groupBy from stdlib/list.yafl."""
+
+    def test_findIndex_hit(self):
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(append<Int>(List<Int>(), 10), 20), 30)
+    ret match(findIndex<Int>(l, (x: Int) => x == 20))
+      (i: Int)  => i
+      (n: None) => -1
+"""
+        self.assertEqual(1, _compile_and_run_stdlib(src))
+
+    def test_findIndex_miss(self):
+        """Predicate never matches: return code 9 on None branch."""
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(List<Int>(), 1), 2)
+    ret match(findIndex<Int>(l, (x: Int) => x == 99))
+      (i: Int)  => i
+      (n: None) => 9
+"""
+        self.assertEqual(9, _compile_and_run_stdlib(src))
+
+    def test_findIndex_empty(self):
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    ret match(findIndex<Int>(List<Int>(), (x: Int) => x == 0))
+      (i: Int)  => i
+      (n: None) => 7
+"""
+        self.assertEqual(7, _compile_and_run_stdlib(src))
+
+    def test_partition_split(self):
+        """[1..5] partitioned by `>2` → yes has 3 elements."""
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4), 5)
+    let (yes, no) = partition<Int>(l, (x: Int) => x > 2)
+    ret length<Int>(yes)
+"""
+        self.assertEqual(3, _compile_and_run_stdlib(src))
+
+    def test_partition_all_yes(self):
+        """All-true predicate: `no` is empty."""
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(List<Int>(), 5), 6)
+    let (yes, no) = partition<Int>(l, (x: Int) => x > 0)
+    ret length<Int>(no)
+"""
+        self.assertEqual(0, _compile_and_run_stdlib(src))
+
+    def test_partition_order_preserved(self):
+        """First yes-arm element is the first satisfier in input order."""
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 5), 2), 6)
+    let (yes, no) = partition<Int>(l, (x: Int) => x > 3)
+    ret match(head<Int>(yes))
+      (x: Int)  => x
+      (n: None) => -1
+"""
+        self.assertEqual(5, _compile_and_run_stdlib(src))
+
+    def test_groupBy_two_keys(self):
+        """[1..4] grouped by `x%2` → two groups."""
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4)
+    let g = groupBy<Int,Int>(l, (x: Int) => x % 2)
+    ret size<Int,List<Int> >(g)
+"""
+        self.assertEqual(2, _compile_and_run_stdlib(src))
+
+    def test_groupBy_single_key(self):
+        """All elements share a key → one group containing all entries."""
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let l = append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3)
+    let g = groupBy<Int,Int>(l, (x: Int) => 0)
+    let bucket = get<Int,List<Int> >(g, 0)
+    ret match(bucket)
+      (b: List<Int>) => length<Int>(b)
+      (n: None)      => -1
+"""
+        self.assertEqual(3, _compile_and_run_stdlib(src))
+
+    def test_groupBy_empty(self):
+        src = """\
+namespace System
+import System
+
+fun main(): Int
+    let g = groupBy<Int,Int>(List<Int>(), (x: Int) => x % 2)
+    ret size<Int,List<Int> >(g)
+"""
+        self.assertEqual(0, _compile_and_run_stdlib(src))

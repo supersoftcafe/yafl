@@ -1,0 +1,97 @@
+namespace System::IO
+
+import System
+import System::IO
+
+
+# Internal foreign layer for filesystem metadata.  Both async ops dispatch
+# through the same IO threadpool used by `_open_read` etc. (see io.c).
+# The five `_fi_*` accessors are sync — they pull fields out of an
+# already-resolved _FileInfo and never block.
+
+fun [foreign("fs_exists"),impure]   _fs_exists  (path: String): Int
+fun [foreign("fs_stat"),impure]     _fs_stat    (path: String): _FileInfo|Int
+fun [foreign("fs_open_dir"),impure] _fs_open_dir(path: String): _Dir|Int
+
+class [foreign,final] _Dir:
+  fun [foreign("fs_dir_next"),impure]  _next():  String|Int|None
+  fun [foreign("fs_dir_close"),impure] _close(): Int|None
+
+class [foreign,final] _FileInfo:
+  fun [foreign("fs_fi_size"),sync]  _size():  Int
+  fun [foreign("fs_fi_mtime"),sync] _mtime(): Int
+  fun [foreign("fs_fi_mode"),sync]  _mode():  Int
+  fun [foreign("fs_fi_isdir"),sync] _isDirRaw():     Int
+  fun [foreign("fs_fi_isreg"),sync] _isRegularRaw(): Int
+
+
+# Public FileInfo.  Field types match what the C accessors return.
+class FileInfo(size: Int, mtime: Int, isDir: Bool, isRegular: Bool, mode: Int)
+
+
+# True iff `path` names something the process can see in the filesystem.
+# All errors (permission denied, ENOENT, etc.) map to false — use `stat`
+# when you want the error visible.
+fun exists(path: String): Bool
+  ret _fs_exists(path) > 0
+
+
+# stat(path).  On success returns a FileInfo with the five core fields
+# (size, mtime, mode, isDir, isRegular).  Any syscall failure surfaces
+# as an IOError.
+fun stat(path: String): FileInfo|IOError
+  ret match(_fs_stat(path))
+    (fi: _FileInfo) => FileInfo(fi._size(), fi._mtime(), fi._isDirRaw() > 0, fi._isRegularRaw() > 0, fi._mode())
+    (c: Int)        => _error_from_code(c)
+
+
+# Public Dir handle.  [linear,final] — every Dir must be threaded through
+# `next` calls or terminally consumed by `close`; the compiler enforces
+# this at compile time.  Mirrors the [linear,final] IO type in io.yafl.
+
+class [linear,final] Dir(_dir: _Dir)
+
+  # Pull the next directory entry.  Returns the threaded handle along with
+  # one of: a String (entry name), None (end of stream), or IOError.
+  fun next(): (dir: Dir, entry: String|None|IOError)
+    ret match(_dir._next())
+      (s: String) => (this, s)
+      (n: None)   => (this, None)
+      (c: Int)    => (this, _error_from_code(c))
+
+  # Terminal — consumes the linear obligation.  Returns the error if any,
+  # else None.
+  fun [terminal] close(): IOError|None
+    ret match(_dir._close())
+      (c: Int)          => _error_from_code(c)
+      (n: System::None) => None
+
+
+fun openDir(path: String): Dir|IOError
+  ret match(_fs_open_dir(path))
+    (d: _Dir) => Dir(d)
+    (c: Int)  => _error_from_code(c)
+
+
+# Drain a Dir into a List<String>, then close it.  On a read error the
+# accumulated entries are discarded and the error is returned (the handle
+# is still closed).
+fun _listDirLoop(d: Dir, acc: List<String>): (dir: Dir, entries: List<String>|IOError)
+  let r = d.next()
+  ret match(r.entry)
+    (s: String)  => _listDirLoop(r.dir, append<String>(acc, s))
+    (n: None)    => (r.dir, acc)
+    (e: IOError) => (r.dir, e)
+
+
+fun _drainAndClose(d: Dir): List<String>|IOError
+  let r = _listDirLoop(d, List<String>())
+  ret match(r.dir.close())
+    (closeErr: IOError) => closeErr
+    (n: System::None)   => r.entries
+
+
+fun listDir(path: String): List<String>|IOError
+  ret match(openDir(path))
+    (e: IOError) => e
+    (d: Dir)     => _drainAndClose(d)
