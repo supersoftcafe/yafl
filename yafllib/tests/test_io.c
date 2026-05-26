@@ -68,7 +68,7 @@ static object_t* TMP_PATH;
 
 static void _finish(void) {
     printf("io: %d passed, %d failed\n\n", _results.passed, _results.failed);
-    object_t* status = integer_create_from_int32(_results.failed ? 1 : 0);
+    object_t* status = integer_from_int32(_results.failed ? 1 : 0);
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, status);
 }
 
@@ -132,7 +132,7 @@ static void test_create_close_roundtrip(void) {
 
 static object_t* _bad_path_obj;
 static void _bad_path_step1(object_t* result) {
-    if (!PTR_IS_INTEGER(result) || integer_to_int32(result) >= 0) {
+    if (!PTR_IS_INTEGER(result) || int32_from_integer(result) >= 0) {
         _fail("create_bad_path_returns_error", __LINE__, "expected negative int");
         return;
     }
@@ -166,14 +166,14 @@ static void _rt_step5(object_t* data) {
 static void _rt_step4(object_t* opened) {
     if (!(opened != NULL && PTR_IS_OBJECT(opened))) { _fail("write_read_roundtrip", __LINE__, "open_read failed"); return; }
     _rt_io = opened;
-    then(io_read(opened, integer_create_from_int32(11)), _rt_step5);
+    then(io_read(opened, integer_from_int32(11)), _rt_step5);
 }
 static void _rt_step3(object_t* closed_write) {
     (void)closed_write;
     then(io_open_read(NULL, TMP_PATH), _rt_step4);
 }
 static void _rt_step2(object_t* written) {
-    if (!PTR_IS_INTEGER(written) || integer_to_int32(written) != 11) {
+    if (!PTR_IS_INTEGER(written) || int32_from_integer(written) != 11) {
         _fail("write_read_roundtrip", __LINE__, "write count wrong");
         return;
     }
@@ -203,7 +203,7 @@ static void _eof_step2(object_t* data) {
 static void _eof_step1b(object_t* opened) {
     if (!(opened != NULL && PTR_IS_OBJECT(opened))) { _fail("read_eof_returns_null", __LINE__, "open_read failed"); return; }
     _eof_io = opened;
-    then(io_read(opened, integer_create_from_int32(16)), _eof_step2);
+    then(io_read(opened, integer_from_int32(16)), _eof_step2);
 }
 static void _eof_step1a(object_t* closed_write) {
     (void)closed_write;
@@ -234,14 +234,14 @@ static void _over_read_done(object_t* data) {
 static void _over_after_reopen(object_t* opened) {
     if (!(opened != NULL && PTR_IS_OBJECT(opened))) { _fail("read_oversize_clamped", __LINE__, "open_read failed"); return; }
     _over_io = opened;
-    then(io_read(opened, integer_create_from_int32(100000)), _over_read_done);
+    then(io_read(opened, integer_from_int32(100000)), _over_read_done);
 }
 static void _over_after_close_write(object_t* closed) {
     (void)closed;
     then(io_open_read(NULL, TMP_PATH), _over_after_reopen);
 }
 static void _over_after_write(object_t* written) {
-    if (!PTR_IS_INTEGER(written) || integer_to_int32(written) != 40) {
+    if (!PTR_IS_INTEGER(written) || int32_from_integer(written) != 40) {
         _fail("read_oversize_clamped", __LINE__, "write count != 40");
         return;
     }
@@ -295,7 +295,7 @@ static void _ord_step_check(object_t* write_result) {
     if (!PTR_IS_INTEGER(write_result)) {
         _fail("small_then_big_write", __LINE__, "non-integer write result"); return;
     }
-    int32_t n = integer_to_int32(write_result);
+    int32_t n = int32_from_integer(write_result);
     if (n < 0) {
         _fail("small_then_big_write", __LINE__, "negative write count"); return;
     }

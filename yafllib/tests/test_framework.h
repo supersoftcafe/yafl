@@ -51,7 +51,7 @@ struct test_results {
 /* Assert a yafl integer equals a C int32 value */
 #define ASSERT_INT_EQ_I32(actual, expected_i32) \
     do { \
-        int32_t _v = integer_to_int32(actual); \
+        int32_t _v = int32_from_integer(actual); \
         if (_v != (expected_i32)) { \
             printf("FAIL\n    line %d: expected %d, got %d\n", __LINE__, (expected_i32), _v); \
             _r->failed++; \

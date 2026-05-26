@@ -54,8 +54,13 @@ static integer_t* _integer_allocate(uint32_t length) {
     #error "Unsupported WORD_SIZE"
 #endif
 
+// The `sign` field is a boolean: 0 = positive, 1 = negative. The literal
+// macros (INTEGER_LITERAL_*) and the multiplication's `sign ^ sign` rely on
+// this. Previously _sign_of returned +1/-1, which broke cross-form equality
+// (a heap bigint from this function with sign=+1 compared unequal to a
+// literal-form bigint with sign=0). Use the boolean form consistently.
 static inline int32_t _sign_of(intptr_t x) {
-    return x < 0 ? -1 : +1;
+    return x < 0 ? 1 : 0;
 }
 
 static inline uintptr_t _abs_val(intptr_t x) {
@@ -99,8 +104,9 @@ EXTERN int32_t integer_cmp(object_t* a, object_t* b) {
     _PROMOTE_LITERAL(ha, a)
     _PROMOTE_LITERAL(hb, b)
 
-    if (ha->sign < hb->sign) return -1;
-    if (ha->sign > hb->sign) return 1;
+    // Under sign=0/1 (pos/neg) convention: larger sign field ⇒ more negative.
+    if (ha->sign > hb->sign) return -1;
+    if (ha->sign < hb->sign) return 1;
 
     int32_t cmp = _compare_abs(ha, hb);
 
@@ -134,21 +140,118 @@ static integer_t* _normalize_integer(integer_t* result) {
     return result;
 }
 
-EXPORT object_t* integer_create_from_int32(int32_t value) {
+EXPORT object_t* integer_from_int32(int32_t value) {
     return (object_t*)_integer_from_intptr(value);
 }
 
-EXPORT object_t* integer_create_from_int32_noalloc(int32_t value) {
+EXPORT object_t* integer_from_int32_noalloc(int32_t value) {
     intptr_t v = (intptr_t)value;
     if (v < INTPTR_MIN/4 || v > INTPTR_MAX/4) {
-        log_error_and_exit("integer_create_from_int32_noalloc: value out of tagged range", stderr);
+        log_error_and_exit("integer_from_int32_noalloc: value out of tagged range", stderr);
     }
     return (object_t*)_TAG_LITERAL(v);
 }
 
-EXPORT int32_t integer_to_int32(object_t* self) {
+EXPORT int32_t int32_from_integer(object_t* self) {
     int overflow;
-    return integer_to_int32_with_overflow(self, &overflow);
+    return int32_from_integer_with_overflow(self, &overflow);
+}
+
+// Wrap-on-overflow Int → Int<N>. Keeps the low N bits of the two's-complement
+// value (matches Java's `(int) longValue`, Kotlin's `.toInt()`, BigInteger.intValue()).
+// Distinct from int<N>_from_integer: that one signals overflow via an out-param
+// so callers can fall back to bigint paths; these are the user-facing truncating
+// casts.
+//
+// Implementation: route through int64 to get the low 64 bits, then narrow.
+// `int64_from_integer_truncate` is the source of truth — the smaller widths
+// just chop further. Avoids per-width sign-bit twiddling.
+EXPORT int64_t int64_from_integer_truncate(object_t* self) {
+    if (PTR_IS_INTEGER(self)) {
+        // Tagged integers hold a 2-bit-shifted intptr_t; sign-extend into 64.
+        return (int64_t)((intptr_t)self >> 2);
+    }
+    integer_t* a = (integer_t*)self;
+    // On 64-bit hosts each limb is 64 bits → low 64 bits are array[0].
+    // On 32-bit hosts each limb is 32 bits → low 64 bits = array[0] | array[1] << 32.
+#if WORD_SIZE == 64
+    uint64_t lo = (uint64_t)a->array[0];
+#else
+    uint64_t lo = (uint64_t)(uint32_t)a->array[0];
+    if (a->length > 1) {
+        lo |= ((uint64_t)(uint32_t)a->array[1]) << 32;
+    }
+#endif
+    return a->sign ? (int64_t)(0ull - lo) : (int64_t)lo;
+}
+
+EXPORT int32_t int32_from_integer_truncate(object_t* self) {
+    return (int32_t)int64_from_integer_truncate(self);
+}
+EXPORT int16_t int16_from_integer_truncate(object_t* self) {
+    return (int16_t)int64_from_integer_truncate(self);
+}
+EXPORT int8_t int8_from_integer_truncate(object_t* self) {
+    return (int8_t)int64_from_integer_truncate(self);
+}
+
+// Bigint creation from each fixed width. Int8/Int16 widen to int32 first
+// (always fits the tagged path on any host). Int64 needs the full word-size
+// branching because on 32-bit hosts values past 2^30 need a 2-limb heap object.
+EXPORT object_t* integer_from_int8(int8_t v) {
+    return integer_from_int32((int32_t)v);
+}
+EXPORT object_t* integer_from_int16(int16_t v) {
+    return integer_from_int32((int32_t)v);
+}
+EXPORT object_t* integer_from_int64(int64_t v) {
+#if WORD_SIZE == 64
+    // On 64-bit hosts an int64 always fits in an intptr_t; the tagged-pointer
+    // path handles up to ±(INTPTR_MAX/4). Larger magnitudes spill to a 1-limb
+    // bigint with the sign held separately.
+    return (object_t*)_integer_from_intptr((intptr_t)v);
+#else
+    // 32-bit host: values in tagged range (±2^30-ish) fit a literal; otherwise
+    // build a 2-limb bigint by hand, magnitude in unsigned 64-bit.
+    if (v >= (int64_t)(INTPTR_MIN/4) && v <= (int64_t)(INTPTR_MAX/4)) {
+        return (object_t*)_TAG_LITERAL((intptr_t)v);
+    }
+    int sign = v < 0;
+    uint64_t mag = sign ? (uint64_t)(0ull - (uint64_t)v) : (uint64_t)v;
+    uint32_t hi = (uint32_t)(mag >> 32);
+    integer_t* r = _integer_allocate(hi ? 2 : 1);
+    r->sign = sign;
+    r->array[0] = (uintptr_t)(uint32_t)mag;
+    if (hi) r->array[1] = (uintptr_t)hi;
+    return (object_t*)r;
+#endif
+}
+
+// Decimal render of fixed-width ints. Max width across all of these is
+// INT64_MIN's 20 bytes ("-9223372036854775808" + NUL).
+EXPORT object_t* string_from_int8(int8_t v) {
+    char buf[8];
+    int n = snprintf(buf, sizeof(buf), "%d", (int)v);
+    if (n < 0) n = 0;
+    return string_from_bytes((uint8_t*)buf, n);
+}
+EXPORT object_t* string_from_int16(int16_t v) {
+    char buf[8];
+    int n = snprintf(buf, sizeof(buf), "%d", (int)v);
+    if (n < 0) n = 0;
+    return string_from_bytes((uint8_t*)buf, n);
+}
+EXPORT object_t* string_from_int32(int32_t value) {
+    char buf[16];
+    int n = snprintf(buf, sizeof(buf), "%d", value);
+    if (n < 0) n = 0;
+    return string_from_bytes((uint8_t*)buf, n);
+}
+EXPORT object_t* string_from_int64(int64_t v) {
+    char buf[24];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long)v);
+    if (n < 0) n = 0;
+    return string_from_bytes((uint8_t*)buf, n);
 }
 
 static integer_t* _add_abs(integer_t* a, integer_t* b, int32_t sign_result) {
@@ -234,13 +337,19 @@ object_t* integer_sub_full(object_t* oa, object_t* ob) {
         return (object_t*)_add_abs(ha, hb, ha->sign);
     }
 
+    // Same sign: a - b = ±(||a| - |b||). Result keeps ha's sign when
+    // |a| >= |b|, and flips it when |a| < |b|. The previous version
+    // passed `hb->sign` for the flipped case — fine when callers
+    // synthesise sign as ±1 but wrong under the 0/1 boolean convention
+    // (then `hb->sign == ha->sign`, so the flip never happens), which
+    // made every `small - large` heap subtraction lose its negative sign.
     int cmp = _compare_abs(ha, hb);
     if (cmp == 0) {
         return (object_t*)_TAG_LITERAL(0);
     } else if (cmp > 0) {
         return (object_t*)_subtract_abs(ha, hb, ha->sign);
     } else {
-        return (object_t*)_subtract_abs(hb, ha, hb->sign);
+        return (object_t*)_subtract_abs(hb, ha, !ha->sign);
     }
 }
 
@@ -282,13 +391,15 @@ object_t* integer_mul(object_t* oa, object_t* ob) {
             return (object_t*)_TAG_LITERAL((intptr_t)rv);
         } else {
             integer_t* result = _integer_allocate(2);
-            result->sign = rv < 0 ? -1 : 0;
-            udword_t urv = -rv;
+            result->sign = rv < 0 ? 1 : 0;
+            // urv must be the magnitude: -rv when rv is negative, rv itself
+            // when positive. The previous form (`urv = -rv` unconditionally)
+            // wrapped positive products into huge unsigned values, leaving
+            // every overflowing positive multiplication with the wrong limbs.
+            udword_t urv = (udword_t)(rv < 0 ? -rv : rv);
             result->array[0] = (uintptr_t)urv;
             result->array[1] = (uintptr_t)(urv >> WORD_SIZE);
-            if (result->array[1] == 0) {
-                result->length = 1;
-            }
+            result->length = result->array[1] == 0 ? 1 : 2;
             return (object_t*)result;
         }
     }

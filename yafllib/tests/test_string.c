@@ -534,7 +534,7 @@ static void run_tests(object_t* _, fun_t continuation) {
 
     PRINT_RESULTS("string", _r);
 
-    object_t* status = integer_create_from_int32(r.failed ? 1 : 0);
+    object_t* status = integer_from_int32(r.failed ? 1 : 0);
     ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, status);
 }
 

@@ -137,7 +137,7 @@ static void _stress_close_done(object_t* close_result) {
         return;
     }
     atomic_store(&_finished, true);
-    object_t* status = integer_create_from_int32(0);
+    object_t* status = integer_from_int32(0);
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, status);
 }
 

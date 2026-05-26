@@ -184,7 +184,7 @@ import System
 
 fun main(): System::Int
   let f: System::Float = 3.5
-  ret Int(f)
+  ret truncateToInt(f)
 """
         self.assertEqual(3, compile_and_run_stdlib(src))
 
@@ -195,7 +195,7 @@ import System
 fun main(): System::Int
   let a: System::Float = 1.5
   let b: System::Float = 2.25
-  ret Int(a + b)
+  ret truncateToInt(a + b)
 """
         self.assertEqual(3, compile_and_run_stdlib(src))
 
@@ -205,7 +205,7 @@ import System
 
 fun main(): System::Int
   let f: System::Float = Float(42)
-  ret Int(f)
+  ret truncateToInt(f)
 """
         self.assertEqual(42, compile_and_run_stdlib(src))
 
@@ -216,7 +216,7 @@ import System
 fun main(): System::Int
   let a: System::Float = 7.0
   let b: System::Float = 2.0
-  ret Int(a / b)
+  ret truncateToInt(a / b)
 """
         self.assertEqual(3, compile_and_run_stdlib(src))
 
@@ -247,7 +247,7 @@ import System
 
 fun main(): System::Int
   ret match(parseFloat("2.5"))
-    (f: System::Float) => Int(f * 10.0)
+    (f: System::Float) => truncateToInt(f * 10.0)
     (x: System::None) => 99
 """
         self.assertEqual(25, compile_and_run_stdlib(src))
@@ -272,7 +272,7 @@ import System
 let [const] HALF: System::Float = 0.5
 fun main(): System::Int
   let v: System::Float = HALF
-  ret Int(v + v)
+  ret truncateToInt(v + v)
 """
         self.assertEqual(1, compile_and_run_stdlib(src))
 
@@ -284,7 +284,7 @@ fun main(): System::Int
 import System
 fun main(): System::Int
   let r: System::Float = PI * 10.0
-  ret Int(r)
+  ret truncateToInt(r)
 """
         self.assertEqual(31, compile_and_run_stdlib(src))
 
@@ -306,7 +306,7 @@ fun zero(): System::Float
   ret 0.0
 let [const] BAD: System::Float = zero()
 fun main(): System::Int
-  ret Int(BAD)
+  ret truncateToInt(BAD)
 """
         # Compilation must produce no C code (errors are emitted instead).
         import compiler as c

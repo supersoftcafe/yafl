@@ -73,7 +73,7 @@ TEST_END()
 
 
 TEST(conversions)
-    int32_t x = integer_to_int32(INTEGER_LITERAL_1(0, 0));
+    int32_t x = int32_from_integer(INTEGER_LITERAL_1(0, 0));
 TEST_END()
 
 

@@ -26,7 +26,7 @@ static object_t* _record_and_decrement(void* slot_ptr, object_t* unused_task) {
         // Success if all thread_work_post_parallel calls returned NULL.
         int bad_returns = atomic_load(&_returned_null);
         printf("completed=%d bad_returns=%d\n", N_TASKS, bad_returns);
-        object_t* result = integer_create_from_int32(bad_returns == 0 ? 0 : 1);
+        object_t* result = integer_from_int32(bad_returns == 0 ? 0 : 1);
         fun_t cb = _continuation;
         ((void(*)(void*, object_t*))cb.f)(cb.o, result);
     }

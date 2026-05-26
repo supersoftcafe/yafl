@@ -134,7 +134,7 @@ HIDDEN noreturn void __exit__(object_t* self, object_t* arg) {
     }
 
     int overflow;
-    int32_t value = integer_to_int32_with_overflow(int_status, &overflow);
+    int32_t value = int32_from_integer_with_overflow(int_status, &overflow);
     exit(value);
     __builtin_unreachable();
 }

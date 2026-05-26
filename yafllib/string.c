@@ -143,8 +143,8 @@ EXPORT object_t* string_slice_int32(object_t* self, int32_t start, int32_t end) 
 
 
 EXPORT object_t* string_slice(object_t* self, object_t* start_int, object_t* end_int) {
-    int32_t start_int32 = integer_to_int32(start_int);
-    int32_t end_int32 = integer_to_int32(end_int);
+    int32_t start_int32 = int32_from_integer(start_int);
+    int32_t end_int32 = int32_from_integer(end_int);
     return string_slice_int32(self, start_int32, end_int32);
 }
 
@@ -172,19 +172,19 @@ EXPORT int string_compare(object_t* self, object_t* data) {
 // byte (which blows the C stack on long string bodies).
 EXPORT object_t* string_find_byte(object_t* self, object_t* o_byte, object_t* o_from) {
     int overflow = 0;
-    int32_t needle = integer_to_int32_with_overflow(o_byte, &overflow);
-    if (overflow || needle < 0 || needle > 255) return integer_create_from_int32(-1);
-    int32_t from = integer_to_int32_with_overflow(o_from, &overflow);
-    if (overflow) return integer_create_from_int32(-1);
+    int32_t needle = int32_from_integer_with_overflow(o_byte, &overflow);
+    if (overflow || needle < 0 || needle > 255) return integer_from_int32(-1);
+    int32_t from = int32_from_integer_with_overflow(o_from, &overflow);
+    if (overflow) return integer_from_int32(-1);
     if (from < 0) from = 0;
 
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(self, &buf, &len);
-    if (from >= len) return integer_create_from_int32(-1);
+    if (from >= len) return integer_from_int32(-1);
 
     void* hit = memchr(cstr + from, needle, (size_t)(len - from));
-    if (hit == NULL) return integer_create_from_int32(-1);
-    return integer_create_from_int32((int32_t)((char*)hit - cstr));
+    if (hit == NULL) return integer_from_int32(-1);
+    return integer_from_int32((int32_t)((char*)hit - cstr));
 }
 
 
@@ -209,10 +209,10 @@ EXPORT object_t* string_find_any(object_t* self, object_t* o_accept, object_t* o
     char* s = string_to_cstr(self, &s_buf, &s_len);
 
     int overflow = 0;
-    int32_t from = integer_to_int32_with_overflow(o_from, &overflow);
-    if (overflow) return integer_create_from_int32(s_len);
+    int32_t from = int32_from_integer_with_overflow(o_from, &overflow);
+    if (overflow) return integer_from_int32(s_len);
     if (from < 0) from = 0;
-    if (from >= s_len) return integer_create_from_int32(s_len);
+    if (from >= s_len) return integer_from_int32(s_len);
 
     intptr_t a_buf; int32_t a_len;
     char* accept = string_to_cstr(o_accept, &a_buf, &a_len);
@@ -221,9 +221,9 @@ EXPORT object_t* string_find_any(object_t* self, object_t* o_accept, object_t* o
     _build_byteset(accept, a_len, lookup);
 
     for (int32_t i = from; i < s_len; ++i) {
-        if (lookup[(unsigned char)s[i]]) return integer_create_from_int32(i);
+        if (lookup[(unsigned char)s[i]]) return integer_from_int32(i);
     }
-    return integer_create_from_int32(s_len);
+    return integer_from_int32(s_len);
 }
 
 
@@ -237,10 +237,10 @@ EXPORT object_t* string_skip_any(object_t* self, object_t* o_accept, object_t* o
     char* s = string_to_cstr(self, &s_buf, &s_len);
 
     int overflow = 0;
-    int32_t from = integer_to_int32_with_overflow(o_from, &overflow);
-    if (overflow) return integer_create_from_int32(s_len);
+    int32_t from = int32_from_integer_with_overflow(o_from, &overflow);
+    if (overflow) return integer_from_int32(s_len);
     if (from < 0) from = 0;
-    if (from >= s_len) return integer_create_from_int32(s_len);
+    if (from >= s_len) return integer_from_int32(s_len);
 
     intptr_t a_buf; int32_t a_len;
     char* accept = string_to_cstr(o_accept, &a_buf, &a_len);
@@ -249,9 +249,9 @@ EXPORT object_t* string_skip_any(object_t* self, object_t* o_accept, object_t* o
     _build_byteset(accept, a_len, lookup);
 
     for (int32_t i = from; i < s_len; ++i) {
-        if (!lookup[(unsigned char)s[i]]) return integer_create_from_int32(i);
+        if (!lookup[(unsigned char)s[i]]) return integer_from_int32(i);
     }
-    return integer_create_from_int32(s_len);
+    return integer_from_int32(s_len);
 }
 
 
@@ -269,15 +269,15 @@ EXPORT object_t* string_parse_int(object_t* self) {
     }
     if (i >= len) return NULL;
 
-    object_t* acc = integer_create_from_int32(0);
-    object_t* ten = integer_create_from_int32(10);
+    object_t* acc = integer_from_int32(0);
+    object_t* ten = integer_from_int32(10);
     while (i < len) {
         unsigned char c = (unsigned char)cstr[i++];
         if (c < '0' || c > '9') return NULL;
         acc = integer_mul(acc, ten);
-        acc = integer_add_full(acc, integer_create_from_int32(c - '0'));
+        acc = integer_add_full(acc, integer_from_int32(c - '0'));
     }
-    if (neg) acc = integer_sub_full(integer_create_from_int32(0), acc);
+    if (neg) acc = integer_sub_full(integer_from_int32(0), acc);
     return acc;
 }
 
@@ -286,14 +286,14 @@ EXPORT object_t* print_string(object_t* self, object_t* data) {
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(data, &buf, &len);
     int32_t result = (int32_t)fwrite(cstr, 1, len, stdout);
-    return integer_create_from_int32(result);
+    return integer_from_int32(result);
 }
 
 
 EXPORT object_t* wchar_to_string(object_t* integer) {
     uint8_t utf8[4];
     int overflow = 0;
-    int32_t codepoint = integer_to_int32_with_overflow(integer, &overflow);
+    int32_t codepoint = int32_from_integer_with_overflow(integer, &overflow);
     if (codepoint >= 0 && !overflow) {
         if (codepoint <= 0x7F) {
             utf8[0] = (uint8_t)codepoint;
@@ -322,7 +322,7 @@ EXPORT object_t* wchar_to_string(object_t* integer) {
 
 EXPORT object_t* string_resize(object_t* self, object_t* new_size) {
     int  overflow = 0;
-    int32_t  size = integer_to_int32_with_overflow(new_size, &overflow);
+    int32_t  size = int32_from_integer_with_overflow(new_size, &overflow);
     if (size < 0 || overflow) __abort_on_overflow();
 
     int32_t str_length;

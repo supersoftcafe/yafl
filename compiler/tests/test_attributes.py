@@ -278,17 +278,17 @@ static VTABLE_DECLARE_STRUCT(, 1) _counter_vtable = {
 
 object_t* test_counter_create(object_t* _this, object_t* init) {
     counter_t* c = (counter_t*)object_create((vtable_t*)&_counter_vtable);
-    c->value = integer_to_int32(init);
+    c->value = int32_from_integer(init);
     return (object_t*)c;
 }
 
 object_t* test_counter_get(object_t* _this) {
-    return integer_create_from_int32(((counter_t*)_this)->value);
+    return integer_from_int32(((counter_t*)_this)->value);
 }
 
 object_t* test_counter_add(object_t* _this, object_t* n) {
-    ((counter_t*)_this)->value += integer_to_int32(n);
-    return integer_create_from_int32(((counter_t*)_this)->value);
+    ((counter_t*)_this)->value += int32_from_integer(n);
+    return integer_from_int32(((counter_t*)_this)->value);
 }
 """
 

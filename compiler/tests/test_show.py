@@ -123,7 +123,7 @@ class TestShowBool(TestCase):
 
 class TestShowFloat(TestCase):
     """The Float instance delegates to `String(f: Float)` (which goes
-    through libyafl's `string_from_float`). We don't pin the exact byte
+    through libyafl's `string_from_float64`). We don't pin the exact byte
     count — that depends on the underlying formatter — but we do check
     the result is non-empty and digit-led for a simple positive value."""
 

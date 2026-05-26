@@ -519,8 +519,8 @@ INLINE bool test_lt_int32(int32_t self, int32_t data) { return self  < data; }
 typedef struct integer {
     vtable_t* vtable;
     uint32_t length;
-    int32_t sign;
-    uintptr_t array[
+    int32_t sign;       // 0 = positive (incl. zero), 1 = negative
+    uintptr_t array[    // magnitude limbs, little-endian; length>=1
 #ifndef NDEBUG
         4
 #endif
@@ -574,21 +574,21 @@ EXTERN object_t* integer_shr(object_t* self, object_t* amount);
 
 EXTERN object_t* integer_add_int32(object_t* self, int32_t value);
 EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);
-EXTERN int32_t   integer_to_int32(object_t* self);
-EXTERN object_t* integer_create_from_int32(int32_t value);
-EXTERN object_t* integer_create_from_int32_noalloc(int32_t value);
+EXTERN int32_t   int32_from_integer(object_t* self);
+EXTERN object_t* integer_from_int32(int32_t value);
+EXTERN object_t* integer_from_int32_noalloc(int32_t value);
 
 // Tagged-pointer fast path; caller guarantees `value` fits in signed 24 bits
 // (i.e. INT24_MIN..INT24_MAX). Never allocates.  Use when the producer's
 // range is statically bounded (byte values, compare results, small counts).
-INLINE object_t* integer_create_from_int24(int32_t value) {
+INLINE object_t* integer_from_int24(int32_t value) {
     return (object_t*)((intptr_t)value * 4 + PTR_TAG_INTEGER);
 }
 
 // Both paths inline — no out-of-line fallback. A call site, even on the cold
 // path, forces the C compiler to assume caller-save clobbers across the
 // branch, spilling hot-path values it would otherwise keep in registers.
-INLINE int32_t integer_to_int32_with_overflow(object_t* self, int* overflow) {
+INLINE int32_t int32_from_integer_with_overflow(object_t* self, int* overflow) {
     intptr_t result;
     *overflow = 0;
     if (PTR_IS_INTEGER(self)) {
@@ -632,14 +632,108 @@ INLINE bool integer_test_le(object_t* self, object_t* data) {
     return LIKELY(va&vb&PTR_TAG_INTEGER && va<=vb) || integer_cmp(self, data) <= 0;
 }
 
+// Fixed-width integer math: defined wrap on overflow via unsigned cast.
+// Comparisons return bool; the _test_ infix is preserved here because the
+// bigint side (`integer_test_*`) uses it and renaming both is out of scope.
+
+INLINE int8_t   int8_add(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a + (uint8_t)b); }
+INLINE int8_t   int8_sub(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a - (uint8_t)b); }
+INLINE int8_t   int8_mul(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a * (uint8_t)b); }
+INLINE int8_t   int8_neg(int8_t a)             { return (int8_t)(0u - (uint8_t)a); }
+// Paper over INT_MIN / -1 — see int32_div below for context.
+INLINE int8_t   int8_div(int8_t a, int8_t b)   { return b == -1 ? int8_neg(a) : (int8_t)(a / b); }
+INLINE int8_t   int8_rem(int8_t a, int8_t b)   { return b == -1 ? 0           : (int8_t)(a % b); }
+INLINE bool     int8_test_lt(int8_t a, int8_t b) { return a <  b; }
+INLINE bool     int8_test_eq(int8_t a, int8_t b) { return a == b; }
+INLINE bool     int8_test_gt(int8_t a, int8_t b) { return a >  b; }
+
+INLINE int16_t  int16_add(int16_t a, int16_t b) { return (int16_t)((uint16_t)a + (uint16_t)b); }
+INLINE int16_t  int16_sub(int16_t a, int16_t b) { return (int16_t)((uint16_t)a - (uint16_t)b); }
+INLINE int16_t  int16_mul(int16_t a, int16_t b) { return (int16_t)((uint16_t)a * (uint16_t)b); }
+INLINE int16_t  int16_neg(int16_t a)            { return (int16_t)(0u - (uint16_t)a); }
+INLINE int16_t  int16_div(int16_t a, int16_t b) { return b == -1 ? int16_neg(a) : (int16_t)(a / b); }
+INLINE int16_t  int16_rem(int16_t a, int16_t b) { return b == -1 ? 0            : (int16_t)(a % b); }
+INLINE bool     int16_test_lt(int16_t a, int16_t b) { return a <  b; }
+INLINE bool     int16_test_eq(int16_t a, int16_t b) { return a == b; }
+INLINE bool     int16_test_gt(int16_t a, int16_t b) { return a >  b; }
+
 INLINE int32_t  int32_add(int32_t self, int32_t data) { return self + data; }
 INLINE int32_t  int32_sub(int32_t self, int32_t data) { return self - data; }
 INLINE int32_t  int32_mul(int32_t self, int32_t data) { return self * data; }
-INLINE int32_t  int32_div(int32_t self, int32_t data) { return self / data; }
-INLINE int32_t  int32_rem(int32_t self, int32_t data) { return self % data; }
+INLINE int32_t  int32_neg(int32_t self)                { return (int32_t)(0u - (uint32_t)self); }
+// On x86 INT_MIN / -1 raises SIGFPE because the true quotient (+2^31) overflows
+// the destination register — `idiv`'s overflow trap shares the divide-by-zero
+// signal. Paper over by defining INT_MIN / -1 = INT_MIN (Java/Kotlin convention)
+// and INT_MIN % -1 = 0. Cheap predictable branch on the cold path.
+INLINE int32_t  int32_div(int32_t self, int32_t data) { return data == -1 ? int32_neg(self) : self / data; }
+INLINE int32_t  int32_rem(int32_t self, int32_t data) { return data == -1 ? 0               : self % data; }
 INLINE bool int32_test_gt(int32_t self, int32_t data) { return self > data; }
 INLINE bool int32_test_eq(int32_t self, int32_t data) { return self ==data; }
 INLINE bool int32_test_lt(int32_t self, int32_t data) { return self < data; }
+
+INLINE int64_t  int64_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
+INLINE int64_t  int64_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
+INLINE int64_t  int64_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
+INLINE int64_t  int64_neg(int64_t a)            { return (int64_t)(0u - (uint64_t)a); }
+INLINE int64_t  int64_div(int64_t a, int64_t b) { return b == -1 ? int64_neg(a) : a / b; }
+INLINE int64_t  int64_rem(int64_t a, int64_t b) { return b == -1 ? 0            : a % b; }
+INLINE bool     int64_test_lt(int64_t a, int64_t b) { return a <  b; }
+INLINE bool     int64_test_eq(int64_t a, int64_t b) { return a == b; }
+INLINE bool     int64_test_gt(int64_t a, int64_t b) { return a >  b; }
+
+// Int↔Int width conversions. The narrowing direction wraps by taking the
+// low N bits (defined via unsigned cast); widening is sign-extending.
+INLINE int16_t  int16_from_int8 (int8_t  v) { return (int16_t)v; }
+INLINE int32_t  int32_from_int8 (int8_t  v) { return (int32_t)v; }
+INLINE int64_t  int64_from_int8 (int8_t  v) { return (int64_t)v; }
+INLINE int32_t  int32_from_int16(int16_t v) { return (int32_t)v; }
+INLINE int64_t  int64_from_int16(int16_t v) { return (int64_t)v; }
+INLINE int64_t  int64_from_int32(int32_t v) { return (int64_t)v; }
+INLINE int8_t   int8_from_int16 (int16_t v) { return (int8_t)v; }
+INLINE int8_t   int8_from_int32 (int32_t v) { return (int8_t)v; }
+INLINE int8_t   int8_from_int64 (int64_t v) { return (int8_t)v; }
+INLINE int16_t  int16_from_int32(int32_t v) { return (int16_t)v; }
+INLINE int16_t  int16_from_int64(int64_t v) { return (int16_t)v; }
+INLINE int32_t  int32_from_int64(int64_t v) { return (int32_t)v; }
+
+// Float ↔ fixed-width int. Widening to float (int32_t → double, etc.) is
+// inline cast; narrowing (float → intN) clamps + truncs and lives out-of-line.
+INLINE double   float64_from_int8 (int8_t  i) { return (double)i; }
+INLINE double   float64_from_int16(int16_t i) { return (double)i; }
+INLINE double   float64_from_int32(int32_t i) { return (double)i; }
+INLINE double   float64_from_int64(int64_t i) { return (double)i; }
+INLINE float    float32_from_int8 (int8_t  i) { return (float)i;  }
+INLINE float    float32_from_int16(int16_t i) { return (float)i;  }
+// (float32_from_int32 and float32_from_int64 declared further down with the
+//  Float32 block so they sit next to other float32 declarations.)
+
+EXTERN int8_t    int8_from_float64 (double f);
+EXTERN int16_t   int16_from_float64(double f);
+EXTERN int32_t   int32_from_float64(double f);
+EXTERN int64_t   int64_from_float64(double f);
+EXTERN int8_t    int8_from_float32 (float  f);
+EXTERN int16_t   int16_from_float32(float  f);
+EXTERN int32_t   int32_from_float32(float  f);
+EXTERN int64_t   int64_from_float32(float  f);
+
+// Bigint ↔ fixed-width int. Truncate variants take the low N bits in
+// two's-complement. The non-truncate Int↔bigint conversions are exact —
+// they preserve the value for the widening direction (int → bigint) but
+// abort on overflow for narrowing; callers that want wrap-on-overflow
+// should use the _truncate variant.
+EXTERN object_t* integer_from_int8 (int8_t  v);
+EXTERN object_t* integer_from_int16(int16_t v);
+// integer_from_int32 / integer_from_int32_noalloc declared above.
+EXTERN object_t* integer_from_int64(int64_t v);
+EXTERN int8_t    int8_from_integer_truncate (object_t* self);
+EXTERN int16_t   int16_from_integer_truncate(object_t* self);
+EXTERN int32_t   int32_from_integer_truncate(object_t* self);
+EXTERN int64_t   int64_from_integer_truncate(object_t* self);
+
+EXTERN object_t* string_from_int8 (int8_t  v);
+EXTERN object_t* string_from_int16(int16_t v);
+EXTERN object_t* string_from_int32(int32_t value);
+EXTERN object_t* string_from_int64(int64_t v);
 
 
 
@@ -655,21 +749,42 @@ INLINE bool int32_test_lt(int32_t self, int32_t data) { return self < data; }
  *****************************
  **********************************************************/
 
-INLINE double   float_add(double a, double b) { return a + b; }
-INLINE double   float_sub(double a, double b) { return a - b; }
-INLINE double   float_mul(double a, double b) { return a * b; }
-INLINE double   float_div(double a, double b) { return a / b; }
-INLINE double   float_neg(double a)            { return -a; }
-INLINE double   float_rem(double a, double b)  { return fmod(a, b); }
-INLINE bool     float_lt (double a, double b)  { return a <  b; }
-INLINE bool     float_eq (double a, double b)  { return a == b; }
-INLINE bool     float_gt (double a, double b)  { return a >  b; }
-INLINE bool     float_is_nan(double a)         { return a != a; }
+INLINE double   float64_add(double a, double b) { return a + b; }
+INLINE double   float64_sub(double a, double b) { return a - b; }
+INLINE double   float64_mul(double a, double b) { return a * b; }
+INLINE double   float64_div(double a, double b) { return a / b; }
+INLINE double   float64_neg(double a)            { return -a; }
+INLINE double   float64_rem(double a, double b)  { return fmod(a, b); }
+INLINE bool     float64_lt (double a, double b)  { return a <  b; }
+INLINE bool     float64_eq (double a, double b)  { return a == b; }
+INLINE bool     float64_gt (double a, double b)  { return a >  b; }
+INLINE bool     float64_is_nan(double a)         { return a != a; }
 
-EXTERN double    float_from_int(object_t* i);
-EXTERN object_t* int_from_float(double f);
-EXTERN object_t* string_from_float(double f);
-EXTERN double    float_parse_or_nan(object_t* s);
+EXTERN double    float64_from_integer(object_t* i);
+EXTERN object_t* integer_from_float64(double f);
+EXTERN object_t* string_from_float64(double f);
+EXTERN double    float64_parse_or_nan(object_t* s);
+
+INLINE float    float32_add(float a, float b) { return a + b; }
+INLINE float    float32_sub(float a, float b) { return a - b; }
+INLINE float    float32_mul(float a, float b) { return a * b; }
+INLINE float    float32_div(float a, float b) { return a / b; }
+INLINE float    float32_neg(float a)           { return -a; }
+INLINE float    float32_rem(float a, float b)  { return fmodf(a, b); }
+INLINE bool     float32_lt (float a, float b)  { return a <  b; }
+INLINE bool     float32_eq (float a, float b)  { return a == b; }
+INLINE bool     float32_gt (float a, float b)  { return a >  b; }
+INLINE bool     float32_is_nan(float a)        { return a != a; }
+
+INLINE float    float32_from_float64(double d) { return (float)d; }
+INLINE double   float64_from_float32(float f)  { return (double)f; }
+INLINE float    float32_from_int32(int32_t i)  { return (float)i; }
+INLINE float    float32_from_int64(int64_t i)  { return (float)i; }
+EXTERN float    float32_from_integer(object_t* i);
+EXTERN object_t* integer_from_float32(float f);
+EXTERN object_t* string_from_float32(float f);
+EXTERN float    float32_parse_or_nan(object_t* s);
+EXTERN object_t* float32_hash(float f);
 
 
 
@@ -789,11 +904,11 @@ EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
 EXTERN int       string_compare(object_t* self, object_t* data);
 
 INLINE object_t* string_length_int(object_t* self) {
-    return integer_create_from_int32(string_length(self));
+    return integer_from_int32(string_length(self));
 }
 INLINE object_t* string_compare_int(object_t* self, object_t* data) {
     int r = string_compare(self, data);
-    return integer_create_from_int24(r < 0 ? -1 : r > 0 ? 1 : 0);
+    return integer_from_int24(r < 0 ? -1 : r > 0 ? 1 : 0);
 }
 INLINE bool string_eq(object_t* self, object_t* data) { return string_compare(self, data) == 0; }
 INLINE bool string_lt(object_t* self, object_t* data) { return string_compare(self, data) <  0; }
@@ -801,12 +916,12 @@ INLINE bool string_gt(object_t* self, object_t* data) { return string_compare(se
 
 INLINE object_t* string_byte_at(object_t* self, object_t* o_index) {
     int overflow = 0;
-    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
-    if (overflow) return integer_create_from_int24(-1);
+    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
+    if (overflow) return integer_from_int24(-1);
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(self, &buf, &len);
-    if (idx < 0 || idx >= len) return integer_create_from_int24(-1);
-    return integer_create_from_int24((unsigned char)cstr[idx]);
+    if (idx < 0 || idx >= len) return integer_from_int24(-1);
+    return integer_from_int24((unsigned char)cstr[idx]);
 }
 
 INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, object_t* value) {
@@ -814,7 +929,7 @@ INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, o
     // segfault on the memcpy destination cast). `value` may be packed or
     // heap — `string_to_cstr` handles both.
     int overflow = 0;
-    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
     intptr_t local_buffer;
     int32_t vlen;
     char* vstr = string_to_cstr(value, &local_buffer, &vlen);
@@ -828,7 +943,7 @@ INLINE object_t* ascii_to_string(object_t* o_byte) {
     // to pass a value in [0..255]; we range-check to avoid silently corrupting
     // the packed payload on negative or oversized inputs.
     int overflow = 0;
-    int32_t b = integer_to_int32_with_overflow(o_byte, &overflow);
+    int32_t b = int32_from_integer_with_overflow(o_byte, &overflow);
     if (overflow || b < 0 || b > 255) __abort_on_overflow();
     uint8_t bytes[MAX_SHORT_LEN] = { (uint8_t)b };
     return (object_t*)SHORT_STRING(bytes, 1);

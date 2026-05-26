@@ -214,7 +214,7 @@ static void _io_finish_refill(io_job_t* job) {
     if (job->eof) {
         result = NULL;
     } else if (job->raw_result < 0) {
-        result = integer_create_from_int32_noalloc(job->raw_result);
+        result = integer_from_int32_noalloc(job->raw_result);
     } else {
         io->buf_head = 0;
         io->buf_tail = job->raw_result;
@@ -232,12 +232,12 @@ static void _io_finish_flush_write(io_job_t* job) {
     io_t* io = job->io;
     object_t* result;
     if (job->raw_result < 0) {
-        result = integer_create_from_int32_noalloc(job->raw_result);
+        result = integer_from_int32_noalloc(job->raw_result);
     } else {
         // Buffer drained.  The task resolves to 0 — the caller loops
         // back to io_write, which now finds an empty buffer.
         io->buf_tail = 0;
-        result = integer_create_from_int32_noalloc(0);
+        result = integer_from_int32_noalloc(0);
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
@@ -249,7 +249,7 @@ static void _io_finish_open(io_job_t* job) {
     io_t* io = job->io;
     object_t* result;
     if (job->raw_result < 0) {
-        result = integer_create_from_int32_noalloc(job->raw_result);
+        result = integer_from_int32_noalloc(job->raw_result);
     } else {
         // io->file was set by the IO thread; reset the buf state for the
         // first read or write.
@@ -269,7 +269,7 @@ static void _io_finish_close(io_job_t* job) {
     io->buf_tail = 0;
     io->buf_head = 0;
     object_t* result = (job->raw_result < 0)
-        ? integer_create_from_int32_noalloc(job->raw_result)
+        ? integer_from_int32_noalloc(job->raw_result)
         : NULL;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
@@ -291,7 +291,7 @@ EXPORT object_t* io_read(object_t* self, object_t* o_length) {
     // Clamp rather than error.  OS read() is allowed to return fewer bytes
     // than requested; we do the same.
     int overflow = 0;
-    int32_t length = integer_to_int32_with_overflow(o_length, &overflow);
+    int32_t length = int32_from_integer_with_overflow(o_length, &overflow);
     if (overflow || length > IO_READ_MAX) length = IO_READ_MAX;
     if (length < 0) length = 0;
 
@@ -326,7 +326,7 @@ EXPORT object_t* io_write(object_t* self, object_t* data) {
         int32_t n = (len < space) ? len : space;
         if (n > 0) memcpy(io->buf + io->buf_tail, bytes, (size_t)n);
         io->buf_tail += n;
-        return integer_create_from_int32_noalloc(n);
+        return integer_from_int32_noalloc(n);
     }
 
     // Buffer is full — flush it.  When the task completes, the buffer
@@ -373,14 +373,14 @@ static void _fs_finish_exists(io_job_t* job) {
     // raw_result is 0 or 1 — collapsed in the IO thread; never -errno on
     // this path (exists swallows all errors as `false`).
     GC_WRITE_BARRIER(job->task.result, 1);
-    job->task.result = integer_create_from_int32_noalloc(job->raw_result);
+    job->task.result = integer_from_int32_noalloc(job->raw_result);
     task_complete((object_t*)&job->task);
 }
 
 
 static void _fs_finish_stat(io_job_t* job) {
     object_t* result = (job->raw_result < 0)
-        ? integer_create_from_int32_noalloc(job->raw_result)
+        ? integer_from_int32_noalloc(job->raw_result)
         : (object_t*)job->fs_aux;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
@@ -408,11 +408,11 @@ EXPORT object_t* fs_stat(object_t* self, object_t* path) {
 // Sync accessors — called via [foreign, sync] from the public stat()
 // wrapper after the task resolves to a successful _FileInfo.
 
-EXPORT object_t* fs_fi_size  (object_t* self) { return integer_create_from_int32(((fs_file_info_t*)self)->size);  }
-EXPORT object_t* fs_fi_mtime (object_t* self) { return integer_create_from_int32(((fs_file_info_t*)self)->mtime); }
-EXPORT object_t* fs_fi_mode  (object_t* self) { return integer_create_from_int32(((fs_file_info_t*)self)->mode);  }
-EXPORT object_t* fs_fi_isdir (object_t* self) { return integer_create_from_int24(((fs_file_info_t*)self)->is_dir     ? 1 : 0); }
-EXPORT object_t* fs_fi_isreg (object_t* self) { return integer_create_from_int24(((fs_file_info_t*)self)->is_regular ? 1 : 0); }
+EXPORT object_t* fs_fi_size  (object_t* self) { return integer_from_int32(((fs_file_info_t*)self)->size);  }
+EXPORT object_t* fs_fi_mtime (object_t* self) { return integer_from_int32(((fs_file_info_t*)self)->mtime); }
+EXPORT object_t* fs_fi_mode  (object_t* self) { return integer_from_int32(((fs_file_info_t*)self)->mode);  }
+EXPORT object_t* fs_fi_isdir (object_t* self) { return integer_from_int24(((fs_file_info_t*)self)->is_dir     ? 1 : 0); }
+EXPORT object_t* fs_fi_isreg (object_t* self) { return integer_from_int24(((fs_file_info_t*)self)->is_regular ? 1 : 0); }
 
 
 EXPORT object_t* io_close(object_t* self) {
@@ -494,7 +494,7 @@ EXPORT object_t* fs_dir_close(object_t* self) {
 
 static void _fs_finish_dir_open(io_job_t* job) {
     object_t* result = (job->raw_result < 0)
-        ? integer_create_from_int32_noalloc(job->raw_result)
+        ? integer_from_int32_noalloc(job->raw_result)
         : (object_t*)job->dir;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
@@ -508,7 +508,7 @@ static void _fs_finish_dir_next(io_job_t* job) {
     if (dir->entry_eof) {
         result = NULL;                          // None = end of stream
     } else if (job->raw_result < 0) {
-        result = integer_create_from_int32_noalloc(job->raw_result);
+        result = integer_from_int32_noalloc(job->raw_result);
     } else {
         result = string_from_bytes((uint8_t*)dir->entry_buf, job->raw_result);
     }
@@ -520,7 +520,7 @@ static void _fs_finish_dir_next(io_job_t* job) {
 
 static void _fs_finish_dir_close(io_job_t* job) {
     object_t* result = (job->raw_result < 0)
-        ? integer_create_from_int32_noalloc(job->raw_result)
+        ? integer_from_int32_noalloc(job->raw_result)
         : NULL;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;

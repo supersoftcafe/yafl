@@ -999,13 +999,13 @@ EXPORT char**  _yafl_argv = NULL;
 
 EXPORT object_t* sys_argc(object_t* self) {
     (void)self;
-    return integer_create_from_int32(_yafl_argc);
+    return integer_from_int32(_yafl_argc);
 }
 
 EXPORT object_t* sys_argv_at(object_t* self, object_t* o_index) {
     (void)self;
     int overflow = 0;
-    int32_t idx = integer_to_int32_with_overflow(o_index, &overflow);
+    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
     if (overflow || idx < 0 || idx >= _yafl_argc) __abort_on_overflow();
     const char* s = _yafl_argv[idx];
     return string_from_bytes((uint8_t*)s, (int32_t)strlen(s));

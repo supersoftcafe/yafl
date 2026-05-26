@@ -110,7 +110,7 @@ static object_t* _async_after_complete(object_t* self, object_t* task_arg) {
     RUN(task_tagged_ptr_round_trip);
 
     PRINT_RESULTS("task", _r);
-    object_t* status = integer_create_from_int32(_r->failed ? 1 : 0);
+    object_t* status = integer_from_int32(_r->failed ? 1 : 0);
     ((void(*)(object_t*,object_t*))_async_continuation.f)(_async_continuation.o, status);
     return NULL;
 }

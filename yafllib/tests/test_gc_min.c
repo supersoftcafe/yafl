@@ -49,7 +49,7 @@
 static object_t* _do_alloc(int i) {
 #if ALLOC_TYPE == 1
     (void)i;
-    return integer_create_from_int32(i);
+    return integer_from_int32(i);
 #elif ALLOC_TYPE == 2
     (void)i;
     task_obj_t* t = (task_obj_t*)task_obj_create(NULL);
@@ -160,7 +160,7 @@ static void _step_done(object_t* result) {
         return;
     }
     atomic_store(&_finished, true);
-    object_t* status = integer_create_from_int32(0);
+    object_t* status = integer_from_int32(0);
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, status);
 }
 
@@ -194,7 +194,7 @@ static void _finisher_notask(object_t* unused) {
         return;
     }
     atomic_store(&_finished, true);
-    object_t* status = integer_create_from_int32(0);
+    object_t* status = integer_from_int32(0);
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, status);
 }
 

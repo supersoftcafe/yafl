@@ -18,50 +18,51 @@ typealias [where] _WhereBasicMathFloat : BasicMath<System::Float64>
 
 class _BasicMathFloat() : BasicMath<Float64>
   fun `+`(left: System::Float, right: System::Float): System::Float
-    ret __builtin_op__<float64>("float_add", left, right)
+    ret __builtin_op__<float64>("float64_add", left, right)
 
   fun `-`(right: System::Float): System::Float
-    ret __builtin_op__<float64>("float_neg", right)
+    ret __builtin_op__<float64>("float64_neg", right)
 
   fun `-`(left: System::Float, right: System::Float): System::Float
-    ret __builtin_op__<float64>("float_sub", left, right)
+    ret __builtin_op__<float64>("float64_sub", left, right)
 
   fun `*`(left: System::Float, right: System::Float): System::Float
-    ret __builtin_op__<float64>("float_mul", left, right)
+    ret __builtin_op__<float64>("float64_mul", left, right)
 
   fun `/`(left: System::Float, right: System::Float): System::Float
-    ret __builtin_op__<float64>("float_div", left, right)
+    ret __builtin_op__<float64>("float64_div", left, right)
 
   fun `%`(left: System::Float, right: System::Float): System::Float
-    ret __builtin_op__<float64>("float_rem", left, right)
+    ret __builtin_op__<float64>("float64_rem", left, right)
 
   fun `<`(left: System::Float, right: System::Float): System::Bool
-    ret __builtin_op__<bool>("float_lt", left, right)
+    ret __builtin_op__<bool>("float64_lt", left, right)
 
   fun `==`(left: System::Float, right: System::Float): System::Bool
-    ret __builtin_op__<bool>("float_eq", left, right)
+    ret __builtin_op__<bool>("float64_eq", left, right)
 
   fun `>`(left: System::Float, right: System::Float): System::Bool
-    ret __builtin_op__<bool>("float_gt", left, right)
+    ret __builtin_op__<bool>("float64_gt", left, right)
 
   fun hashOf(value: System::Float64): System::Int
     ret __builtin_op__<bigint>("float64_hash", value)
 
 
 fun isNaN(f: System::Float): System::Bool
-  ret __builtin_op__<bool>("float_is_nan", f)
+  ret __builtin_op__<bool>("float64_is_nan", f)
 
 fun Float(i: System::Int): System::Float
-  ret __builtin_op__<float64>("float_from_int", i)
+  ret __builtin_op__<float64>("float64_from_integer", i)
 
-fun Int(f: System::Float): System::Int
-  ret __builtin_op__<bigint>("int_from_float", f)
+# Float → Int truncates the fractional part — lossy, hence truncateToInt.
+fun truncateToInt(f: System::Float): System::Int
+  ret __builtin_op__<bigint>("integer_from_float64", f)
 
 fun String(f: System::Float): System::String
-  ret __builtin_op__<str>("string_from_float", f)
+  ret __builtin_op__<str>("string_from_float64", f)
 
 fun parseFloat(s: System::String): System::Float|System::None
-  let v: System::Float = __builtin_op__<float64>("float_parse_or_nan", s)
+  let v: System::Float = __builtin_op__<float64>("float64_parse_or_nan", s)
   ret isNaN(v) ? None : v
 
 let [trait] _show_float: _ShowFloat = _ShowFloat()
@@ -70,4 +71,87 @@ typealias [where] _WhereShowFloat : Show<System::Float>
 
 class _ShowFloat() : Show<System::Float>
   fun show(value: System::Float): System::String
+    ret String(value)
+
+
+# ─── Float32 ────────────────────────────────────────────────────────────────
+#
+# Single-precision IEEE-754 binary32. No auto-promotion to Float (=Float64) or
+# the integer types — use the explicit conversion functions below to cross.
+# `Float32(Float)` and `Float(Float32)` make the widening/narrowing explicit
+# in source.
+
+let [trait] _float32_trait: _BasicMathFloat32 = _BasicMathFloat32()
+
+typealias [where] _WhereBasicMathFloat32 : BasicMath<System::Float32>
+
+class _BasicMathFloat32() : BasicMath<System::Float32>
+  fun `+`(left: System::Float32, right: System::Float32): System::Float32
+    ret __builtin_op__<float32>("float32_add", left, right)
+
+  fun `-`(right: System::Float32): System::Float32
+    ret __builtin_op__<float32>("float32_neg", right)
+
+  fun `-`(left: System::Float32, right: System::Float32): System::Float32
+    ret __builtin_op__<float32>("float32_sub", left, right)
+
+  fun `*`(left: System::Float32, right: System::Float32): System::Float32
+    ret __builtin_op__<float32>("float32_mul", left, right)
+
+  fun `/`(left: System::Float32, right: System::Float32): System::Float32
+    ret __builtin_op__<float32>("float32_div", left, right)
+
+  fun `%`(left: System::Float32, right: System::Float32): System::Float32
+    ret __builtin_op__<float32>("float32_rem", left, right)
+
+  fun `<`(left: System::Float32, right: System::Float32): System::Bool
+    ret __builtin_op__<bool>("float32_lt", left, right)
+
+  fun `==`(left: System::Float32, right: System::Float32): System::Bool
+    ret __builtin_op__<bool>("float32_eq", left, right)
+
+  fun `>`(left: System::Float32, right: System::Float32): System::Bool
+    ret __builtin_op__<bool>("float32_gt", left, right)
+
+  fun hashOf(value: System::Float32): System::Int
+    ret __builtin_op__<bigint>("float32_hash", value)
+
+fun isNaN(f: System::Float32): System::Bool
+  ret __builtin_op__<bool>("float32_is_nan", f)
+
+fun Float32(value: System::Int): System::Float32
+  ret __builtin_op__<float32>("float32_from_integer", value)
+
+fun Float32(value: System::Int32): System::Float32
+  ret __builtin_op__<float32>("float32_from_int32", value)
+
+fun Float32(value: System::Int64): System::Float32
+  ret __builtin_op__<float32>("float32_from_int64", value)
+
+fun Float32(value: System::Float): System::Float32
+  ret __builtin_op__<float32>("float32_from_float64", value)
+
+fun Float(value: System::Float32): System::Float
+  ret __builtin_op__<float64>("float64_from_float32", value)
+
+# Float32 → Int truncates fractional part — lossy.
+fun truncateToInt(value: System::Float32): System::Int
+  ret __builtin_op__<bigint>("integer_from_float32", value)
+
+fun truncateToInt32(value: System::Float32): System::Int32
+  ret __builtin_op__<int32>("int32_from_float32", value)
+
+fun String(value: System::Float32): System::String
+  ret __builtin_op__<str>("string_from_float32", value)
+
+fun parseFloat32(s: System::String): System::Float32|System::None
+  let v: System::Float32 = __builtin_op__<float32>("float32_parse_or_nan", s)
+  ret isNaN(v) ? None : v
+
+let [trait] _show_float32: _ShowFloat32 = _ShowFloat32()
+
+typealias [where] _WhereShowFloat32 : Show<System::Float32>
+
+class _ShowFloat32() : Show<System::Float32>
+  fun show(value: System::Float32): System::String
     ret String(value)

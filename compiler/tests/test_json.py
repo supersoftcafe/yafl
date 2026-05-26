@@ -98,21 +98,21 @@ fun main(): System::Int
         # not JsonNum — JsonNum is reserved for values that need Float precision.
         body = """  ret match(v)
     (n: JsonInt) => n.intValue
-    (n: JsonNum) => System::Int(n.numValue)
+    (n: JsonNum) => System::truncateToInt(n.numValue)
     () => 99"""
         self.assertEqual(42, self._run("42", body))
 
     def test_parse_number_float(self):
         # A value with a fractional part is JsonNum (Float).
         body = """  ret match(v)
-    (n: JsonNum) => System::Int(n.numValue)
+    (n: JsonNum) => System::truncateToInt(n.numValue)
     () => 99"""
         self.assertEqual(3, self._run("3.14", body))
 
     def test_parse_number_exponent(self):
         # Exponent notation is also JsonNum.
         body = """  ret match(v)
-    (n: JsonNum) => System::Int(n.numValue)
+    (n: JsonNum) => System::truncateToInt(n.numValue)
     () => 99"""
         self.assertEqual(150, self._run("1.5e2", body))
 

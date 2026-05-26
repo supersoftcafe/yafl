@@ -1,14 +1,23 @@
 namespace System
 
+typealias Int8  : __builtin_type__<int8>
+typealias Int16 : __builtin_type__<int16>
 typealias Int32 : __builtin_type__<int32>
-typealias Int : __builtin_type__<bigint>
-typealias Bool : __builtin_type__<bool>
-typealias None : ()
+typealias Int64 : __builtin_type__<int64>
+typealias Int   : __builtin_type__<bigint>
+typealias Bool  : __builtin_type__<bool>
+typealias None  : ()
 let None:None = ()
 
 # Common integer constants. By convention constants are UPPER_SNAKE_CASE.
+let [const] INT8_MAX:  Int8  = 127i8
+let [const] INT8_MIN:  Int8  = -128i8
+let [const] INT16_MAX: Int16 = 32767i16
+let [const] INT16_MIN: Int16 = -32768i16
 let [const] INT32_MAX: Int32 = 2147483647i32
 let [const] INT32_MIN: Int32 = -2147483648i32
+let [const] INT64_MAX: Int64 = 9223372036854775807i64
+let [const] INT64_MIN: Int64 = -9223372036854775808i64
 
 let [trait] int_trait: _BasicMathInt = _BasicMathInt()
 
@@ -63,4 +72,296 @@ typealias [where] _WhereShowBool : Show<System::Bool>
 class _ShowBool() : Show<System::Bool>
   fun show(value: System::Bool): System::String
     ret value ? "true" : "false"
+
+
+# ─── Int32 ──────────────────────────────────────────────────────────────────
+#
+# Fixed-width 32-bit signed integer. Wrap-around semantics on overflow
+# (matches C/Java/Kotlin); no auto-promotion to Int — use the explicit
+# Int(_) / Int32(_) conversions to cross the boundary.
+
+let [trait] _int32_trait: _BasicMathInt32 = _BasicMathInt32()
+
+typealias [where] _WhereBasicMathInt32 : BasicMath<System::Int32>
+
+class _BasicMathInt32() : BasicMath<System::Int32>
+  fun `+`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_add", left, right)
+
+  fun `-`(right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_neg", right)
+
+  fun `-`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_sub", left, right)
+
+  fun `*`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_mul", left, right)
+
+  fun `/`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_div", left, right)
+
+  fun `%`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_rem", left, right)
+
+  fun `<`(left: System::Int32, right: System::Int32): System::Bool
+    ret __builtin_op__<bool>("int32_test_lt", left, right)
+
+  fun `==`(left: System::Int32, right: System::Int32): System::Bool
+    ret __builtin_op__<bool>("int32_test_eq", left, right)
+
+  fun `>`(left: System::Int32, right: System::Int32): System::Bool
+    ret __builtin_op__<bool>("int32_test_gt", left, right)
+
+  # Widen to bigint and abs there — avoids the -INT32_MIN wrap that would
+  # otherwise leave the hash negative.
+  fun hashOf(value: System::Int32): System::Int
+    ret abs(Int(value))
+
+# Widen Int32 → Int and Int32 → Int64. Both exact.
+fun Int(value: System::Int32): System::Int
+  ret __builtin_op__<bigint>("integer_from_int32", value)
+fun Int64(value: System::Int32): System::Int64
+  ret __builtin_op__<int64>("int64_from_int32", value)
+
+# Narrow Int → Int32 by taking the low 32 bits in two's complement (wraps).
+fun truncateToInt32(value: System::Int): System::Int32
+  ret __builtin_op__<int32>("int32_from_integer_truncate", value)
+
+# Narrow Int64 → Int32 by taking the low 32 bits.
+fun truncateToInt32(value: System::Int64): System::Int32
+  ret __builtin_op__<int32>("int32_from_int64", value)
+
+fun Float(value: System::Int32): System::Float
+  ret __builtin_op__<float64>("float64_from_int32", value)
+
+# Float → Int32: truncates toward zero, clamps on overflow, NaN → 0.
+fun truncateToInt32(value: System::Float): System::Int32
+  ret __builtin_op__<int32>("int32_from_float64", value)
+
+fun String(value: System::Int32): System::String
+  ret __builtin_op__<str>("string_from_int32", value)
+
+# Parses an Int via the existing big-integer parser, then verifies the value
+# round-trips through Int32 (i.e. fits in 32 bits). Anything out-of-range
+# becomes None.
+fun _checkFitsInt32(i: System::Int): System::Int32|System::None
+  let narrow: System::Int32 = truncateToInt32(i)
+  ret Int(narrow) == i ? narrow : None
+
+fun parseInt32(s: System::String): System::Int32|System::None
+  ret match(parseInt(s))
+    (i: System::Int)  => _checkFitsInt32(i)
+    (n: System::None) => None
+
+let [trait] _show_int32: _ShowInt32 = _ShowInt32()
+
+typealias [where] _WhereShowInt32 : Show<System::Int32>
+
+class _ShowInt32() : Show<System::Int32>
+  fun show(value: System::Int32): System::String
+    ret String(value)
+
+
+# ─── Int8 ───────────────────────────────────────────────────────────────────
+#
+# Same shape as Int32: wrap-on-overflow, no auto-promotion.
+
+let [trait] _int8_trait: _BasicMathInt8 = _BasicMathInt8()
+typealias [where] _WhereBasicMathInt8 : BasicMath<System::Int8>
+
+class _BasicMathInt8() : BasicMath<System::Int8>
+  fun `+`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_add", left, right)
+  fun `-`(right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_neg", right)
+  fun `-`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_sub", left, right)
+  fun `*`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_mul", left, right)
+  fun `/`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_div", left, right)
+  fun `%`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_rem", left, right)
+  fun `<`(left: System::Int8, right: System::Int8): System::Bool
+    ret __builtin_op__<bool>("int8_test_lt", left, right)
+  fun `==`(left: System::Int8, right: System::Int8): System::Bool
+    ret __builtin_op__<bool>("int8_test_eq", left, right)
+  fun `>`(left: System::Int8, right: System::Int8): System::Bool
+    ret __builtin_op__<bool>("int8_test_gt", left, right)
+  fun hashOf(value: System::Int8): System::Int
+    ret abs(Int(value))
+
+# Widening to bigint and bigger ints — all exact.
+fun Int(value: System::Int8): System::Int
+  ret __builtin_op__<bigint>("integer_from_int8", value)
+fun Int16(value: System::Int8): System::Int16
+  ret __builtin_op__<int16>("int16_from_int8", value)
+fun Int32(value: System::Int8): System::Int32
+  ret __builtin_op__<int32>("int32_from_int8", value)
+fun Int64(value: System::Int8): System::Int64
+  ret __builtin_op__<int64>("int64_from_int8", value)
+fun Float(value: System::Int8): System::Float
+  ret __builtin_op__<float64>("float64_from_int8", value)
+fun Float32(value: System::Int8): System::Float32
+  ret __builtin_op__<float32>("float32_from_int8", value)
+
+# Narrowing into Int8 — every source is lossy, so all spell as truncateToInt8.
+fun truncateToInt8(value: System::Int): System::Int8
+  ret __builtin_op__<int8>("int8_from_integer_truncate", value)
+fun truncateToInt8(value: System::Int16): System::Int8
+  ret __builtin_op__<int8>("int8_from_int16", value)
+fun truncateToInt8(value: System::Int32): System::Int8
+  ret __builtin_op__<int8>("int8_from_int32", value)
+fun truncateToInt8(value: System::Int64): System::Int8
+  ret __builtin_op__<int8>("int8_from_int64", value)
+fun truncateToInt8(value: System::Float): System::Int8
+  ret __builtin_op__<int8>("int8_from_float64", value)
+fun truncateToInt8(value: System::Float32): System::Int8
+  ret __builtin_op__<int8>("int8_from_float32", value)
+
+fun String(value: System::Int8): System::String
+  ret __builtin_op__<str>("string_from_int8", value)
+
+fun _checkFitsInt8(i: System::Int): System::Int8|System::None
+  let narrow: System::Int8 = truncateToInt8(i)
+  ret Int(narrow) == i ? narrow : None
+
+fun parseInt8(s: System::String): System::Int8|System::None
+  ret match(parseInt(s))
+    (i: System::Int)  => _checkFitsInt8(i)
+    (n: System::None) => None
+
+let [trait] _show_int8: _ShowInt8 = _ShowInt8()
+typealias [where] _WhereShowInt8 : Show<System::Int8>
+class _ShowInt8() : Show<System::Int8>
+  fun show(value: System::Int8): System::String
+    ret String(value)
+
+
+# ─── Int16 ──────────────────────────────────────────────────────────────────
+
+let [trait] _int16_trait: _BasicMathInt16 = _BasicMathInt16()
+typealias [where] _WhereBasicMathInt16 : BasicMath<System::Int16>
+
+class _BasicMathInt16() : BasicMath<System::Int16>
+  fun `+`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_add", left, right)
+  fun `-`(right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_neg", right)
+  fun `-`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_sub", left, right)
+  fun `*`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_mul", left, right)
+  fun `/`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_div", left, right)
+  fun `%`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_rem", left, right)
+  fun `<`(left: System::Int16, right: System::Int16): System::Bool
+    ret __builtin_op__<bool>("int16_test_lt", left, right)
+  fun `==`(left: System::Int16, right: System::Int16): System::Bool
+    ret __builtin_op__<bool>("int16_test_eq", left, right)
+  fun `>`(left: System::Int16, right: System::Int16): System::Bool
+    ret __builtin_op__<bool>("int16_test_gt", left, right)
+  fun hashOf(value: System::Int16): System::Int
+    ret abs(Int(value))
+
+fun Int(value: System::Int16): System::Int
+  ret __builtin_op__<bigint>("integer_from_int16", value)
+fun Int32(value: System::Int16): System::Int32
+  ret __builtin_op__<int32>("int32_from_int16", value)
+fun Int64(value: System::Int16): System::Int64
+  ret __builtin_op__<int64>("int64_from_int16", value)
+fun Float(value: System::Int16): System::Float
+  ret __builtin_op__<float64>("float64_from_int16", value)
+fun Float32(value: System::Int16): System::Float32
+  ret __builtin_op__<float32>("float32_from_int16", value)
+
+fun truncateToInt16(value: System::Int): System::Int16
+  ret __builtin_op__<int16>("int16_from_integer_truncate", value)
+fun truncateToInt16(value: System::Int32): System::Int16
+  ret __builtin_op__<int16>("int16_from_int32", value)
+fun truncateToInt16(value: System::Int64): System::Int16
+  ret __builtin_op__<int16>("int16_from_int64", value)
+fun truncateToInt16(value: System::Float): System::Int16
+  ret __builtin_op__<int16>("int16_from_float64", value)
+fun truncateToInt16(value: System::Float32): System::Int16
+  ret __builtin_op__<int16>("int16_from_float32", value)
+
+fun String(value: System::Int16): System::String
+  ret __builtin_op__<str>("string_from_int16", value)
+
+fun _checkFitsInt16(i: System::Int): System::Int16|System::None
+  let narrow: System::Int16 = truncateToInt16(i)
+  ret Int(narrow) == i ? narrow : None
+
+fun parseInt16(s: System::String): System::Int16|System::None
+  ret match(parseInt(s))
+    (i: System::Int)  => _checkFitsInt16(i)
+    (n: System::None) => None
+
+let [trait] _show_int16: _ShowInt16 = _ShowInt16()
+typealias [where] _WhereShowInt16 : Show<System::Int16>
+class _ShowInt16() : Show<System::Int16>
+  fun show(value: System::Int16): System::String
+    ret String(value)
+
+
+# ─── Int64 ──────────────────────────────────────────────────────────────────
+
+let [trait] _int64_trait: _BasicMathInt64 = _BasicMathInt64()
+typealias [where] _WhereBasicMathInt64 : BasicMath<System::Int64>
+
+class _BasicMathInt64() : BasicMath<System::Int64>
+  fun `+`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_add", left, right)
+  fun `-`(right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_neg", right)
+  fun `-`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_sub", left, right)
+  fun `*`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_mul", left, right)
+  fun `/`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_div", left, right)
+  fun `%`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_rem", left, right)
+  fun `<`(left: System::Int64, right: System::Int64): System::Bool
+    ret __builtin_op__<bool>("int64_test_lt", left, right)
+  fun `==`(left: System::Int64, right: System::Int64): System::Bool
+    ret __builtin_op__<bool>("int64_test_eq", left, right)
+  fun `>`(left: System::Int64, right: System::Int64): System::Bool
+    ret __builtin_op__<bool>("int64_test_gt", left, right)
+  fun hashOf(value: System::Int64): System::Int
+    ret abs(Int(value))
+
+fun Int(value: System::Int64): System::Int
+  ret __builtin_op__<bigint>("integer_from_int64", value)
+fun Float(value: System::Int64): System::Float
+  ret __builtin_op__<float64>("float64_from_int64", value)
+fun Float32(value: System::Int64): System::Float32
+  ret __builtin_op__<float32>("float32_from_int64", value)
+
+fun truncateToInt64(value: System::Int): System::Int64
+  ret __builtin_op__<int64>("int64_from_integer_truncate", value)
+fun truncateToInt64(value: System::Float): System::Int64
+  ret __builtin_op__<int64>("int64_from_float64", value)
+fun truncateToInt64(value: System::Float32): System::Int64
+  ret __builtin_op__<int64>("int64_from_float32", value)
+
+fun String(value: System::Int64): System::String
+  ret __builtin_op__<str>("string_from_int64", value)
+
+fun _checkFitsInt64(i: System::Int): System::Int64|System::None
+  let narrow: System::Int64 = truncateToInt64(i)
+  ret Int(narrow) == i ? narrow : None
+
+fun parseInt64(s: System::String): System::Int64|System::None
+  ret match(parseInt(s))
+    (i: System::Int)  => _checkFitsInt64(i)
+    (n: System::None) => None
+
+let [trait] _show_int64: _ShowInt64 = _ShowInt64()
+typealias [where] _WhereShowInt64 : Show<System::Int64>
+class _ShowInt64() : Show<System::Int64>
+  fun show(value: System::Int64): System::String
+    ret String(value)
 

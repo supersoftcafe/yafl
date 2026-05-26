@@ -55,26 +55,26 @@ TEST(literal_range_negative_boundary)
 #endif
 TEST_END()
 
-/* ---- integer_create_from_int32 / integer_to_int32 roundtrips ---- */
+/* ---- integer_from_int32 / int32_from_integer roundtrips ---- */
 
 TEST(roundtrip_zero)
-    ASSERT_INT_EQ_I32(integer_create_from_int32(0), 0);
+    ASSERT_INT_EQ_I32(integer_from_int32(0), 0);
 TEST_END()
 
 TEST(roundtrip_positive)
-    ASSERT_INT_EQ_I32(integer_create_from_int32(42), 42);
+    ASSERT_INT_EQ_I32(integer_from_int32(42), 42);
 TEST_END()
 
 TEST(roundtrip_negative)
-    ASSERT_INT_EQ_I32(integer_create_from_int32(-42), -42);
+    ASSERT_INT_EQ_I32(integer_from_int32(-42), -42);
 TEST_END()
 
 TEST(roundtrip_int32_max)
-    ASSERT_INT_EQ_I32(integer_create_from_int32(INT32_MAX), INT32_MAX);
+    ASSERT_INT_EQ_I32(integer_from_int32(INT32_MAX), INT32_MAX);
 TEST_END()
 
 TEST(roundtrip_int32_min)
-    ASSERT_INT_EQ_I32(integer_create_from_int32(INT32_MIN), INT32_MIN);
+    ASSERT_INT_EQ_I32(integer_from_int32(INT32_MIN), INT32_MIN);
 TEST_END()
 
 /* ---- addition ---- */
@@ -262,7 +262,7 @@ TEST_END()
 
 TEST(to_int32_no_overflow)
     int ov = 0;
-    int32_t v = integer_to_int32_with_overflow(I(99), &ov);
+    int32_t v = int32_from_integer_with_overflow(I(99), &ov);
     ASSERT_EQ_I32(v, 99);
     ASSERT(!ov);
 TEST_END()
@@ -271,7 +271,7 @@ TEST(to_int32_overflow)
     /* A bigint bigger than INT32_MAX should set overflow */
     object_t* big = BL2(0, 0, 0x80000000);  /* > INT32_MAX on 64-bit */
     int ov = 0;
-    integer_to_int32_with_overflow(big, &ov);
+    int32_from_integer_with_overflow(big, &ov);
     ASSERT(ov);
 TEST_END()
 
@@ -280,7 +280,7 @@ TEST(to_int32_overflow_three_word)
        because the value may exceed int32 range. */
     object_t* big = BL3(0, 0, 0, 1);   /* 3-word heap integer */
     int ov = 0;
-    integer_to_int32_with_overflow(big, &ov);
+    int32_from_integer_with_overflow(big, &ov);
     ASSERT(ov);
 TEST_END()
 
@@ -381,7 +381,7 @@ static void run_tests(object_t* _, fun_t continuation) {
 
     PRINT_RESULTS("integer", _r);
 
-    object_t* status = integer_create_from_int32(r.failed ? 1 : 0);
+    object_t* status = integer_from_int32(r.failed ? 1 : 0);
     ((void(*)(object_t*,object_t*))continuation.f)(continuation.o, status);
 }
 

@@ -13,7 +13,7 @@ EXPORT object_t* string_hash(object_t* s) {
         h ^= (uint8_t)data[i];
         h *= 16777619u;
     }
-    return integer_create_from_int32((int32_t)(h & 0x7fffffffu));
+    return integer_from_int32((int32_t)(h & 0x7fffffffu));
 }
 
 
@@ -24,5 +24,13 @@ EXPORT object_t* float64_hash(double f) {
     memcpy(&bits, &f, sizeof(bits));
     // XOR-fold to 32 bits
     uint32_t h = (uint32_t)(bits ^ (bits >> 32));
-    return integer_create_from_int32((int32_t)(h & 0x7fffffffu));
+    return integer_from_int32((int32_t)(h & 0x7fffffffu));
+}
+
+
+EXPORT object_t* float32_hash(float f) {
+    if (f == 0.0f) f = 0.0f;  // collapse -0.0 / +0.0 — see float64_hash
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return integer_from_int32((int32_t)(bits & 0x7fffffffu));
 }
