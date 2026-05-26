@@ -280,7 +280,7 @@ class ClassSpec(TypeSpec):
         return not self.type_params or all(tp.is_concrete() for tp in self.type_params)
 
     def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
-        types = resolver.find_type({self.name})
+        types = resolver.find_type(self.name)
         if len(types) == 1:
             type_params, statements = zip(*[tp.compile(resolver) for tp in self.type_params]) if self.type_params else ([],[])
             return dataclasses.replace(self, name=types[0].unique_name,  type_params=tuple(type_params)), [s for st in statements for s in st]
@@ -288,7 +288,7 @@ class ClassSpec(TypeSpec):
 
     def check(self, resolver: g.Resolver) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
-        types = resolver.find_type({self.name})
+        types = resolver.find_type(self.name)
         match types:
             case []:
                 return [Error(self.line_ref, f"Failed to resolve class {self.name}")] + tp_errors
@@ -305,7 +305,7 @@ class ClassSpec(TypeSpec):
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         def find_class(xtype: TypeSpec) -> s.ClassStatement:
             clstype = langtools.cast(ClassSpec, xtype)
-            xstmt = resolver.find_type({clstype.name})[0].statement
+            xstmt = resolver.find_type(clstype.name)[0].statement
             return langtools.cast(s.ClassStatement, xstmt)
 
         if not '@' in self.name:
@@ -371,7 +371,7 @@ class EnumSpec(TypeSpec):
         # NamedSpec → concrete. The line_ref is preserved so error
         # messages still point at the use site. Walking all_fields here
         # would recurse infinitely on self-referential enums.
-        types = resolver.find_type({self.root_name})
+        types = resolver.find_type(self.root_name)
         if len(types) == 1:
             target = types[0].statement
             if isinstance(target, s.EnumStatement) and target._enum_spec is not None:
@@ -386,7 +386,7 @@ class EnumSpec(TypeSpec):
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
         if self.is_complex:
             return cg_t.DataPointer()
-        types = resolver.find_type({self.root_name})
+        types = resolver.find_type(self.root_name)
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
             stmt = langtools.cast(s.EnumStatement, types[0].statement)
             container, _ = cg_t.compute_union_slots(enum_variant_types(stmt, resolver))
@@ -574,7 +574,7 @@ class NamedSpec(TypeSpec):
         return False
 
     def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
-        types = resolver.find_type({self.name})
+        types = resolver.find_type(self.name)
         if len(types) == 1:
             xtype = types[0].statement
             if isinstance(xtype, s.TypeAliasStatement):
@@ -597,7 +597,7 @@ class NamedSpec(TypeSpec):
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:
-        types = resolver.find_type({self.name})
+        types = resolver.find_type(self.name)
         if len(types) > 1:
             return [Error(self.line_ref, f"Ambiguous reference to '{self.name}'")]
         if len(types) == 1:
@@ -618,7 +618,7 @@ class NamedSpec(TypeSpec):
         # `BuiltinSpec("bigint")` — no knowledge of T required.
         if isinstance(right, (NamedSpec, GenericPlaceholderSpec)):
             return None
-        types = resolver.find_type({self.name})
+        types = resolver.find_type(self.name)
         if len(types) != 1:
             return None
         stmt = types[0].statement

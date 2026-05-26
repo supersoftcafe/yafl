@@ -54,16 +54,16 @@ class NamedStatement(Statement):
     type_params: tuple[TypeAliasStatement, ...]     # SomeClass<TValue1, TValue1>
     trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)   # SomeClass<TValue>() where Numeric<TValue>
 
-    def _find_trait_data(self, resolver: g.Resolver, names: set[str]) -> list[g.Resolved[DataStatement]]:
+    def _find_trait_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
         def find_in_class(tp: t.ClassSpec) -> list[g.Resolved[DataStatement]]:
-            found = [rs.statement for rs in resolver.find_type({tp.name})]
+            found = [rs.statement for rs in resolver.find_type(tp.name)]
             match found:
                 case [ClassStatement() as cls]:
                     if len(tp.type_params) != len(cls.type_params):
                         return []
                     # Search direct members first
                     direct = [x for x in cls.parameters.flatten() + cls.statements
-                              if g.match_names(x.name, names)]
+                              if g.name_matches(x.name, query)]
                     if direct:
                         return [g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls) for x in direct]
                     # Not found directly — recurse into parent interfaces with type params substituted.
@@ -94,8 +94,8 @@ class NamedStatement(Statement):
                 ordered_specs.append(iface)
         return [x for tp in ordered_specs for x in find_in_class(tp)]
 
-    def _find_generic_types(self, names: set[str]) -> list[g.Resolved[TypeStatement]]:
-        return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.match_names(tp.name, names)]
+    def _find_generic_types(self, query: str) -> list[g.Resolved[TypeStatement]]:
+        return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.name_matches(tp.name, query)]
 
     def add_namespace(self, path: str):
         return dataclasses.replace(self, name=f"{path}{self.name}")
@@ -108,8 +108,8 @@ class NamedStatement(Statement):
 
         # replace type_params with real types in a temporary type ref
         type_params = [dataclasses.replace(tp, type=ct) for ct, tp in zip(caller_type_params, self.type_params)]
-        resolver = g.ResolverType(resolver, lambda names:
-            [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in type_params if g.match_names(tp.name, names)])
+        resolver = g.ResolverType(resolver, lambda query:
+            [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in type_params if g.name_matches(tp.name, query)])
 
         # for each trait_param
         #   temporary compile, to resolve real type parameters
@@ -157,12 +157,12 @@ class FunctionStatement(DataStatement):
     def get_type(self) -> t.TypeSpec|None:
         return t.CallableSpec(self.line_ref, self.parameters.get_type(), self.return_type)
 
-    def __find_locals(self, resolver: g.Resolver) -> Callable[[set[str]],list[g.Resolved[DataStatement]]]:
-        def finder(names: set[str]) -> list[g.Resolved[DataStatement]]:
+    def __find_locals(self, resolver: g.Resolver) -> Callable[[str],list[g.Resolved[DataStatement]]]:
+        def finder(query: str) -> list[g.Resolved[DataStatement]]:
             p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
                  for let in self.parameters.flatten()
-                 if g.match_names(let.name, names)]
-            td = self._find_trait_data(resolver, names)
+                 if g.name_matches(let.name, query)]
+            td = self._find_trait_data(resolver, query)
             return p + td
         return finder
 
@@ -296,31 +296,31 @@ class ClassStatement(TypeStatement):
             raise ValueError()
 
 
-    def __find_locals(self, resolver: g.Resolver) -> Callable[[set[str]],list[g.Resolved[DataStatement]]]:
+    def __find_locals(self, resolver: g.Resolver) -> Callable[[str],list[g.Resolved[DataStatement]]]:
         # `this` inside a generic class must carry the class's type
         # placeholders, otherwise its ClassSpec has zero type params and
         # any later type-check against the class's declared arity fails
         # with "Not enough type parameters".
         this_type = t.ClassSpec(self.line_ref, self.name,
                                 type_params=tuple(tp.type for tp in self.type_params))
-        def finder(names: set[str]) -> list[g.Resolved[DataStatement]]:
-            m = self.find_data(resolver, names)
+        def finder(query: str) -> list[g.Resolved[DataStatement]]:
+            m = self.find_data(resolver, query)
             l = LetStatement(self.line_ref, "this", None, {}, (), None, this_type)
-            s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" in names else []
-            td = self._find_trait_data(resolver, names)
+            s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" == query else []
+            td = self._find_trait_data(resolver, query)
             return m + s + td
         return finder
 
-    def find_data(self, resolver: g.Resolver, names: set[str]) -> list[g.Resolved[DataStatement]]:
+    def find_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
         s1 = self.parameters.flatten()
         s2 = self.statements
         statements = s1 + s2
         # a) try to find in this class. Anything we find masks out parent matches, so no need to recurse.
         # b) if 'a' fails, search all parents and accumulate all the results.
-        matches = [g.Resolved(x.name, x, g.ResolvedScope.MEMBER) for x in statements if g.match_names(x.name, names)] \
+        matches = [g.Resolved(x.name, x, g.ResolvedScope.MEMBER) for x in statements if g.name_matches(x.name, query)] \
                or [match for xtype, parent in c.find_classes_or_error(self.implements, resolver)
                          if isinstance(parent, ClassStatement)
-                         for match in parent.find_data(resolver, names)]
+                         for match in parent.find_data(resolver, query)]
         return matches
 
 
@@ -705,7 +705,7 @@ class LetStatement(DataStatement):
             return None
         if not isinstance(dv.parameter, e.TupleExpression):
             return None
-        found = resolver.find_type({dv.function.name})
+        found = resolver.find_type(dv.function.name)
         if len(found) != 1 or not isinstance(found[0].statement, ClassStatement):
             return None
         cls = found[0].statement
@@ -1052,13 +1052,13 @@ class IfStatement(Statement):
     true_block: list[Statement]
     false_block: list[Statement]   # empty when there is no `else`
 
-    def _branch_finder(self, stmts: list[Statement]) -> Callable[[set[str]], list[g.Resolved[DataStatement]]]:
-        def finder(names: set[str]) -> list[g.Resolved[DataStatement]]:
+    def _branch_finder(self, stmts: list[Statement]) -> Callable[[str], list[g.Resolved[DataStatement]]]:
+        def finder(query: str) -> list[g.Resolved[DataStatement]]:
             lets = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
                     for x in stmts if isinstance(x, LetStatement)
-                    for let in x.flatten() if g.match_names(let.name, names)]
+                    for let in x.flatten() if g.name_matches(let.name, query)]
             funs = [g.Resolved(fun.name, fun, g.ResolvedScope.LOCAL)
-                    for fun in stmts if isinstance(fun, FunctionStatement) and g.match_names(fun.name, names)]
+                    for fun in stmts if isinstance(fun, FunctionStatement) and g.name_matches(fun.name, query)]
             return lets + funs
         return finder
 

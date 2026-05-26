@@ -375,7 +375,7 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
     def implements_trait(tr: s.LetStatement, trait_spec: t.ClassSpec) -> bool:
         if not isinstance(tr.declared_type, t.ClassSpec):
             return False
-        classes = resolver.find_type({tr.declared_type.name})
+        classes = resolver.find_type(tr.declared_type.name)
         if len(classes) != 1 or not isinstance(classes[0].statement, s.ClassStatement):
             return False
         cls = classes[0].statement
@@ -393,7 +393,7 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         if thing.resolved_trait_scope is not None:
             trait_spec = thing.resolved_trait_scope
         else:
-            datas = r.find_data({thing.name})
+            datas = r.find_data(thing.name)
             if len(datas) != 1 or datas[0].scope != g.ResolvedScope.TRAIT:
                 return thing
             trait_spec = datas[0].trait_scope
@@ -409,7 +409,7 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         if not isinstance(provider_type, t.ClassSpec):
             return thing
 
-        provider_classes = r.find_type({provider_type.name})
+        provider_classes = r.find_type(provider_type.name)
         if len(provider_classes) != 1:
             return thing
         provider_class = provider_classes[0].statement
@@ -418,17 +418,17 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
 
         # Find the concrete method on the provider class by simple name
         simple = g.simple_name(thing.name)
-        method_datas = provider_class.find_data(r, {simple})
+        method_datas = provider_class.find_data(r, simple)
         if not method_datas:
             return thing
 
         if len(method_datas) > 1:
             # Multiple overloads — disambiguate by comparing the concrete type of
             # the interface method (looked up by exact hash) against class methods.
-            iface_classes = r.find_type({trait_spec.name})
+            iface_classes = r.find_type(trait_spec.name)
             if len(iface_classes) == 1 and isinstance(iface_classes[0].statement, s.ClassStatement):
                 iface_cls = iface_classes[0].statement
-                iface_mds = iface_cls.find_data(r, {thing.name})
+                iface_mds = iface_cls.find_data(r, thing.name)
                 if len(iface_mds) == 1 and isinstance(iface_mds[0].statement, s.FunctionStatement):
                     iface_type = iface_mds[0].statement.get_type()
                     if iface_type is not None:

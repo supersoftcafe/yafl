@@ -65,18 +65,18 @@ class TestFindLocalsDestructure(TestCase):
 
         find_locals = block._find_locals()
 
-        resolved_a = find_locals({"a@abc123"})
+        resolved_a = find_locals("a@abc123")
         self.assertEqual(len(resolved_a), 1,
             "__find_locals must resolve leaf 'a' from DestructureStatement in block")
         self.assertIs(resolved_a[0].statement, leaf_a)
 
-        resolved_b = find_locals({"b@abc123"})
+        resolved_b = find_locals("b@abc123")
         self.assertEqual(len(resolved_b), 1,
             "__find_locals must resolve leaf 'b' from DestructureStatement in block")
         self.assertIs(resolved_b[0].statement, leaf_b)
 
         # The synthetic root name '_' must NOT be returned when querying for real names
-        resolved_underscore = find_locals({"_"})
+        resolved_underscore = find_locals("_")
         self.assertEqual(len(resolved_underscore), 0,
             "__find_locals must not resolve the synthetic '_' root as a real local")
 

@@ -698,292 +698,12 @@ fun main(): Int
         self.assertEqual(3, _compile_and_run_stdlib(src))
 
 
-class TestDict(TestCase):
-    """Persistent AVL tree Dict<K,V> from the System stdlib."""
-
-    def test_empty_get(self):
-        """get on an empty dict returns None."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d = Dict<Int,Int>()
-    let v = get<Int,Int>(d, 1)
-    ret match(v)
-        (x: Int)  => 1
-        (n: None) => 0
-"""
-        self.assertEqual(0, _compile_and_run_stdlib(src))
-
-    def test_put_get(self):
-        """put then get returns the stored value."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d0 = Dict<Int,Int>()
-    let d1 = put<Int,Int>(d0, 7, 42)
-    let v = get<Int,Int>(d1, 7)
-    ret match(v)
-        (x: Int)  => x
-        (n: None) => 0
-"""
-        self.assertEqual(42, _compile_and_run_stdlib(src))
-
-    def test_put_overwrites(self):
-        """Second put on the same key returns the new value."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d0 = Dict<Int,Int>()
-    let d1 = put<Int,Int>(d0, 7, 11)
-    let d2 = put<Int,Int>(d1, 7, 99)
-    let v = get<Int,Int>(d2, 7)
-    ret match(v)
-        (x: Int)  => x
-        (n: None) => 0
-"""
-        self.assertEqual(99, _compile_and_run_stdlib(src))
-
-    def test_remove(self):
-        """remove then get returns None."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d0 = Dict<Int,Int>()
-    let d1 = put<Int,Int>(d0, 5, 77)
-    let d2 = remove<Int,Int>(d1, 5)
-    let v = get<Int,Int>(d2, 5)
-    ret match(v)
-        (x: Int)  => 1
-        (n: None) => 0
-"""
-        self.assertEqual(0, _compile_and_run_stdlib(src))
-
-    def test_size(self):
-        """size equals number of distinct keys inserted."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d0 = Dict<Int,Int>()
-    let d1 = put<Int,Int>(d0, 1, 10)
-    let d2 = put<Int,Int>(d1, 2, 20)
-    let d3 = put<Int,Int>(d2, 3, 30)
-    let d4 = put<Int,Int>(d3, 4, 40)
-    let d5 = put<Int,Int>(d4, 5, 50)
-    ret size<Int,Int>(d5)
-"""
-        self.assertEqual(5, _compile_and_run_stdlib(src))
-
-    def test_contains(self):
-        """contains is true after put, false after remove."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d0 = Dict<Int,Int>()
-    let d1 = put<Int,Int>(d0, 3, 99)
-    let yes = contains<Int,Int>(d1, 3)
-    let d2 = remove<Int,Int>(d1, 3)
-    let no = contains<Int,Int>(d2, 3)
-    ret (yes ? 1 : 0) + (no ? 10 : 0)
-"""
-        self.assertEqual(1, _compile_and_run_stdlib(src))
-
-    def test_string_keys(self):
-        """Dict<String,Int> stores and retrieves by string key."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let d0 = Dict<String,Int>()
-    let d1 = put<String,Int>(d0, "hello", 7)
-    let d2 = put<String,Int>(d1, "world", 13)
-    let v1 = get<String,Int>(d2, "hello")
-    let v2 = get<String,Int>(d2, "world")
-    let r1 = match(v1)
-        (x: Int)  => x
-        (n: None) => 0
-    let r2 = match(v2)
-        (x: Int)  => x
-        (n: None) => 0
-    ret r1 + r2
-"""
-        self.assertEqual(20, _compile_and_run_stdlib(src))
-
-    def test_avl_balance(self):
-        """Insert keys in ascending order; without AVL rebalancing this degenerates."""
-        src = """\
-namespace System
-import System
-
-fun insert_range(d: Dict<Int,Int>, i: Int, n: Int): Dict<Int,Int>
-    ret i > n ? d : insert_range(put<Int,Int>(d, i, i), i + 1, n)
-
-fun main(): Int
-    let d = insert_range(Dict<Int,Int>(), 1, 20)
-    ret size<Int,Int>(d)
-"""
-        self.assertEqual(20, _compile_and_run_stdlib(src))
+# TestDict (empty_get / put_get / put_overwrites / remove / size / contains
+# / string_keys / avl_balance) is covered by test_dict_ops.TestAllDictOps.
 
 
-class TestList(TestCase):
-    """Two-stack persistent List<T> from the System stdlib."""
-
-    def test_empty_length(self):
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    ret length<Int>(List<Int>())
-"""
-        self.assertEqual(0, _compile_and_run_stdlib(src))
-
-    def test_prepend_head(self):
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l = prepend<Int>(42, List<Int>())
-    let v = head<Int>(l)
-    ret match(v)
-        (x: Int)  => x
-        (n: None) => 0
-"""
-        self.assertEqual(42, _compile_and_run_stdlib(src))
-
-    def test_append_fold_order(self):
-        """append builds list in correct left-to-right order."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l0 = List<Int>()
-    let l1 = append<Int>(l0, 1)
-    let l2 = append<Int>(l1, 2)
-    let l3 = append<Int>(l2, 3)
-    let l4 = append<Int>(l3, 4)
-    let l5 = append<Int>(l4, 5)
-    ret fold<Int,Int>(l5, 0, (acc: Int, x: Int) => acc + x)
-"""
-        self.assertEqual(15, _compile_and_run_stdlib(src))
-
-    def test_prepend_order(self):
-        """prepend adds to front; fold sees elements front-to-back."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, List<Int>())))
-    ret fold<Int,Int>(l, 0, (acc: Int, x: Int) => acc + x)
-"""
-        self.assertEqual(6, _compile_and_run_stdlib(src))
-
-    def test_mixed_prepend_append(self):
-        """prepend(0) then append(1,2,3) gives logical [0,1,2,3]."""
-        src = """\
-namespace System
-import System
-
-fun buildList(): List<Int>
-    let l0 = List<Int>()
-    let l1 = prepend<Int>(0, l0)
-    let l2 = append<Int>(l1, 1)
-    let l3 = append<Int>(l2, 2)
-    ret append<Int>(l3, 3)
-
-fun main(): Int
-    let l = buildList()
-    let s = fold<Int,Int>(l, 0, (acc: Int, x: Int) => acc + x)
-    ret length<Int>(l) + s
-"""
-        # length=4, sum=0+1+2+3=6 → 10
-        self.assertEqual(10, _compile_and_run_stdlib(src))
-
-    def test_reverse(self):
-        """reverse([1,2,3]) has 3 as its new head."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, List<Int>())))
-    let r = reverse<Int>(l)
-    let v = head<Int>(r)
-    ret match(v)
-        (x: Int)  => x
-        (n: None) => 0
-"""
-        self.assertEqual(3, _compile_and_run_stdlib(src))
-
-    def test_map(self):
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, List<Int>())))
-    let m = map<Int,Int>(l, (x: Int) => x * x)
-    ret fold<Int,Int>(m, 0, (acc: Int, x: Int) => acc + x)
-"""
-        # 1+4+9 = 14
-        self.assertEqual(14, _compile_and_run_stdlib(src))
-
-    def test_filter(self):
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, prepend<Int>(4, prepend<Int>(5, List<Int>())))))
-    let f = filter<Int>(l, (x: Int) => x > 2)
-    ret fold<Int,Int>(f, 0, (acc: Int, x: Int) => acc + x)
-"""
-        # 3+4+5 = 12
-        self.assertEqual(12, _compile_and_run_stdlib(src))
-
-    def test_get(self):
-        src = """\
-namespace System
-import System
-
-fun main(): Int
-    let l = append<Int>(append<Int>(append<Int>(List<Int>(), 10), 20), 30)
-    let v = get<Int>(l, 1)
-    ret match(v)
-        (x: Int)  => x
-        (n: None) => 0
-"""
-        self.assertEqual(20, _compile_and_run_stdlib(src))
-
-    def test_large_append(self):
-        """Build a 50-element list via repeated append; sum = 1+...+50 = 1275 → 1275%256=251."""
-        src = """\
-namespace System
-import System
-
-fun build(l: List<Int>, i: Int): List<Int>
-    ret i > 50 ? l : build(append<Int>(l, i), i + 1)
-
-fun main(): Int
-    let l = build(List<Int>(), 1)
-    ret fold<Int,Int>(l, 0, (acc: Int, x: Int) => acc + x)
-"""
-        self.assertEqual(1275 % 256, _compile_and_run_stdlib(src))
+# TestList (empty / prepend / append / fold / reverse / map / filter / get
+# / large_append) is covered by test_list_ops.TestAllListOps.
 
 
 class TestGenericMultiMono(TestCase):
@@ -1027,124 +747,62 @@ fun main(): Int
 
 
 class TestListOps(TestCase):
-    """findIndex / partition / groupBy from stdlib/list.yafl."""
+    """findIndex / partition / groupBy — 9 cases consolidated."""
 
-    def test_findIndex_hit(self):
+    def test_all_list_higher_order_ops(self):
         src = """\
 namespace System
 import System
 
-fun main(): Int
+fun unwrap(v: Int|None, fallback: Int): Int
+    ret match(v)
+      (x: Int)  => x
+      (n: None) => fallback
+
+fun s_findIndex_hit(): Int
     let l = append<Int>(append<Int>(append<Int>(List<Int>(), 10), 20), 30)
-    ret match(findIndex<Int>(l, (x: Int) => x == 20))
-      (i: Int)  => i
-      (n: None) => -1
-"""
-        self.assertEqual(1, _compile_and_run_stdlib(src))
+    ret unwrap(findIndex<Int>(l, (x: Int) => x == 20), -1)
 
-    def test_findIndex_miss(self):
-        """Predicate never matches: return code 9 on None branch."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
+fun s_findIndex_miss(): Int
     let l = append<Int>(append<Int>(List<Int>(), 1), 2)
-    ret match(findIndex<Int>(l, (x: Int) => x == 99))
-      (i: Int)  => i
-      (n: None) => 9
-"""
-        self.assertEqual(9, _compile_and_run_stdlib(src))
+    ret unwrap(findIndex<Int>(l, (x: Int) => x == 99), 9)
 
-    def test_findIndex_empty(self):
-        src = """\
-namespace System
-import System
+fun s_findIndex_empty(): Int
+    ret unwrap(findIndex<Int>(List<Int>(), (x: Int) => x == 0), 7)
 
-fun main(): Int
-    ret match(findIndex<Int>(List<Int>(), (x: Int) => x == 0))
-      (i: Int)  => i
-      (n: None) => 7
-"""
-        self.assertEqual(7, _compile_and_run_stdlib(src))
-
-    def test_partition_split(self):
-        """[1..5] partitioned by `>2` → yes has 3 elements."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
+fun s_partition_split(): Int
     let l = append<Int>(append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4), 5)
     let (yes, no) = partition<Int>(l, (x: Int) => x > 2)
     ret length<Int>(yes)
-"""
-        self.assertEqual(3, _compile_and_run_stdlib(src))
 
-    def test_partition_all_yes(self):
-        """All-true predicate: `no` is empty."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
+fun s_partition_all_yes(): Int
     let l = append<Int>(append<Int>(List<Int>(), 5), 6)
     let (yes, no) = partition<Int>(l, (x: Int) => x > 0)
     ret length<Int>(no)
-"""
-        self.assertEqual(0, _compile_and_run_stdlib(src))
 
-    def test_partition_order_preserved(self):
-        """First yes-arm element is the first satisfier in input order."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
+fun s_partition_order(): Int
     let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 5), 2), 6)
     let (yes, no) = partition<Int>(l, (x: Int) => x > 3)
-    ret match(head<Int>(yes))
-      (x: Int)  => x
-      (n: None) => -1
-"""
-        self.assertEqual(5, _compile_and_run_stdlib(src))
+    ret unwrap(head<Int>(yes), -1)
 
-    def test_groupBy_two_keys(self):
-        """[1..4] grouped by `x%2` → two groups."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
+fun s_groupBy_two(): Int
     let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4)
-    let g = groupBy<Int,Int>(l, (x: Int) => x % 2)
-    ret size<Int,List<Int> >(g)
-"""
-        self.assertEqual(2, _compile_and_run_stdlib(src))
+    ret size<Int,List<Int> >(groupBy<Int,Int>(l, (x: Int) => x % 2))
 
-    def test_groupBy_single_key(self):
-        """All elements share a key → one group containing all entries."""
-        src = """\
-namespace System
-import System
-
-fun main(): Int
+fun s_groupBy_single(): Int
     let l = append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3)
     let g = groupBy<Int,Int>(l, (x: Int) => 0)
-    let bucket = get<Int,List<Int> >(g, 0)
-    ret match(bucket)
+    ret match(get<Int,List<Int> >(g, 0))
       (b: List<Int>) => length<Int>(b)
       (n: None)      => -1
-"""
-        self.assertEqual(3, _compile_and_run_stdlib(src))
 
-    def test_groupBy_empty(self):
-        src = """\
-namespace System
-import System
+fun s_groupBy_empty(): Int
+    ret size<Int,List<Int> >(groupBy<Int,Int>(List<Int>(), (x: Int) => x % 2))
 
+# Expected: 1 + 9 + 7 + 3 + 0 + 5 + 2 + 3 + 0 = 30
 fun main(): Int
-    let g = groupBy<Int,Int>(List<Int>(), (x: Int) => x % 2)
-    ret size<Int,List<Int> >(g)
+    ret s_findIndex_hit() + s_findIndex_miss() + s_findIndex_empty()
+      + s_partition_split() + s_partition_all_yes() + s_partition_order()
+      + s_groupBy_two() + s_groupBy_single() + s_groupBy_empty()
 """
-        self.assertEqual(0, _compile_and_run_stdlib(src))
+        self.assertEqual(30, _compile_and_run_stdlib(src))

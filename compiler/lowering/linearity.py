@@ -58,7 +58,7 @@ class _Checker:
     def _class_stmt(self, spec: t.TypeSpec) -> s.ClassStatement | None:
         if not isinstance(spec, t.ClassSpec):
             return None
-        found = self.resolver.find_type({spec.name})
+        found = self.resolver.find_type(spec.name)
         if len(found) == 1 and isinstance(found[0].statement, s.ClassStatement):
             return found[0].statement
         return None
@@ -474,15 +474,15 @@ class _Checker:
     def _params_finder(self, params: list[s.LetStatement]):
         """A resolver scope exposing `params` as locals — enough for typing
         the action expressions in a body (trait data is not needed here)."""
-        def finder(names: set[str]) -> list:
+        def finder(query: str) -> list:
             return [g.Resolved(p.name, p, g.ResolvedScope.LOCAL)
-                    for p in params if g.match_names(p.name, names)]
+                    for p in params if g.name_matches(p.name, query)]
         return finder
 
     def _arm_finder(self, arm: m.MatchArm):
         """A resolver scope exposing a match arm's bound variable."""
-        def finder(names: set[str]) -> list:
-            if arm.name and arm.name != "_" and g.match_names(arm.name, names):
+        def finder(query: str) -> list:
+            if arm.name and arm.name != "_" and g.name_matches(arm.name, query):
                 let = s.LetStatement(arm.line_ref, arm.name, None, {}, (),
                                      None, arm.type_spec)
                 return [g.Resolved(arm.name, let, g.ResolvedScope.LOCAL)]
@@ -530,8 +530,8 @@ class _Checker:
 
     def _check_instantiation(self, name: str, type_args: tuple[t.TypeSpec, ...],
                              line_ref: LineRef, is_type: bool) -> None:
-        found = (self.resolver.find_type({name}) if is_type
-                 else self.resolver.find_data({name}))
+        found = (self.resolver.find_type(name) if is_type
+                 else self.resolver.find_data(name))
         if len(found) != 1:
             return
         tparams = getattr(found[0].statement, "type_params", ()) or ()

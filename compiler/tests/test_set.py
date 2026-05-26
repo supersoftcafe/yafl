@@ -1,131 +1,77 @@
-"""End-to-end tests for `System::Set<T>`.
+"""Consolidated Set<T> runtime test.
 
-`Set<T>` is a thin wrapper around `Dict<T,()>`. It inherits the AVL-tree
-shape and `BasicEquality<T>`-driven hashing of Dict. Functional /
-persistent: every operation returns a new Set; the original is unchanged.
-
-These tests exercise add/contains/remove/size for the typical cases
-(empty, single, duplicates, missing) across both Int and String keys.
+All semantics — empty/add/contains/size, duplicate-idempotence,
+remove-present/absent, persistent input invariance, String keys — in
+one program.
 """
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib
+from tests.testutil import compile_and_run_stdlib_capture
 
 
-class TestSetBasic(TestCase):
+_SRC = """\
+import System
 
-    def test_empty_size(self):
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  ret size<Int>(Set<Int>())\n"
-        )
-        self.assertEqual(0, compile_and_run_stdlib(src))
+fun emit(label: System::String, value: System::Int): System::None
+  print(label + "=" + String(value) + "\\n")
+  ret None
 
-    def test_empty_does_not_contain(self):
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  ret contains<Int>(Set<Int>(), 42) ? 1 : 0\n"
-        )
-        self.assertEqual(0, compile_and_run_stdlib(src))
+fun build3(): Set<Int>
+  ret add<Int>(add<Int>(add<Int>(Set<Int>(), 1), 2), 3)
 
-    def test_add_then_contains(self):
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = add<Int>(Set<Int>(), 42)\n"
-            "  ret contains<Int>(s, 42) ? 1 : 0\n"
-        )
-        self.assertEqual(1, compile_and_run_stdlib(src))
+fun main(): Int
+  # ─── empty ─────────────────────────────────────────────────────────────
+  emit("empty_size",            size<Int>(Set<Int>()))
+  emit("empty_contains",        contains<Int>(Set<Int>(), 42) ? 1 : 0)
 
-    def test_add_then_size(self):
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = add<Int>(add<Int>(add<Int>(Set<Int>(), 1), 2), 3)\n"
-            "  ret size<Int>(s)\n"
-        )
-        self.assertEqual(3, compile_and_run_stdlib(src))
+  # ─── add / contains / size ────────────────────────────────────────────
+  emit("after_add_contains",    contains<Int>(add<Int>(Set<Int>(), 42), 42) ? 1 : 0)
+  emit("after_3_adds_size",     size<Int>(build3()))
 
+  # ─── duplicate-add idempotence ────────────────────────────────────────
+  emit("dup_add_size",          size<Int>(add<Int>(add<Int>(Set<Int>(), 5), 5)))
 
-class TestSetSemantics(TestCase):
+  # ─── remove ───────────────────────────────────────────────────────────
+  emit("remove_present_then_contains",
+       contains<Int>(remove<Int>(add<Int>(Set<Int>(), 7), 7), 7) ? 1 : 0)
+  emit("remove_absent_size",
+       size<Int>(remove<Int>(add<Int>(Set<Int>(), 1), 99)))
+  emit("remove_one_then_size",
+       size<Int>(remove<Int>(build3(), 2)))
 
-    def test_duplicate_add_is_idempotent_for_size(self):
-        """Adding the same value twice doesn't grow the set."""
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = add<Int>(add<Int>(Set<Int>(), 5), 5)\n"
-            "  ret size<Int>(s)\n"
-        )
-        self.assertEqual(1, compile_and_run_stdlib(src))
+  # ─── persistent: removing from a copy leaves the original intact ──────
+  let s0 = add<Int>(Set<Int>(), 1)
+  let s1 = remove<Int>(s0, 1)
+  emit("original_unchanged_after_remove", contains<Int>(s0, 1) ? 1 : 0)
 
-    def test_remove_present(self):
-        """Removing a present value drops it from the set."""
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = remove<Int>(add<Int>(Set<Int>(), 7), 7)\n"
-            "  ret contains<Int>(s, 7) ? 1 : 0\n"
-        )
-        self.assertEqual(0, compile_and_run_stdlib(src))
+  # ─── String keys ──────────────────────────────────────────────────────
+  emit("string_add_then_contains",
+       contains<String>(add<String>(Set<String>(), "hello"), "hello") ? 1 : 0)
+  emit("string_two_distinct_size",
+       size<String>(add<String>(add<String>(Set<String>(), "a"), "b")))
 
-    def test_remove_absent_is_noop(self):
-        """Removing an absent value leaves the set unchanged."""
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = remove<Int>(add<Int>(Set<Int>(), 1), 99)\n"
-            "  ret size<Int>(s)\n"
-        )
-        self.assertEqual(1, compile_and_run_stdlib(src))
-
-    def test_remove_then_size(self):
-        """Remove reduces size by one when the value was present."""
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s0 = add<Int>(add<Int>(add<Int>(Set<Int>(), 1), 2), 3)\n"
-            "  let s1 = remove<Int>(s0, 2)\n"
-            "  ret size<Int>(s1)\n"
-        )
-        self.assertEqual(2, compile_and_run_stdlib(src))
-
-    def test_original_set_unchanged_after_remove(self):
-        """Persistent semantics — the input to `remove` is untouched."""
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s0 = add<Int>(Set<Int>(), 1)\n"
-            "  let s1 = remove<Int>(s0, 1)\n"
-            # s0 still contains 1 even though we removed it from s1
-            "  ret contains<Int>(s0, 1) ? 1 : 0\n"
-        )
-        self.assertEqual(1, compile_and_run_stdlib(src))
+  ret 0
+"""
 
 
-class TestSetStringKeys(TestCase):
-    """Verify `BasicEquality<String>` routes through correctly — the
-    Set machinery is generic over T, so String keys must work without
-    any per-type re-instantiation in user code."""
+_EXPECTED_LINES = [
+    "empty_size=0",
+    "empty_contains=0",
+    "after_add_contains=1",
+    "after_3_adds_size=3",
+    "dup_add_size=1",
+    "remove_present_then_contains=0",
+    "remove_absent_size=1",
+    "remove_one_then_size=2",
+    "original_unchanged_after_remove=1",
+    "string_add_then_contains=1",
+    "string_two_distinct_size=2",
+]
 
-    def test_add_string(self):
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = add<String>(Set<String>(), \"hello\")\n"
-            "  ret contains<String>(s, \"hello\") ? 1 : 0\n"
-        )
-        self.assertEqual(1, compile_and_run_stdlib(src))
 
-    def test_string_distinguishes_keys(self):
-        """Different strings are different keys; size is 2."""
-        src = (
-            "import System\n"
-            "fun main(): Int\n"
-            "  let s = add<String>(add<String>(Set<String>(), \"a\"), \"b\")\n"
-            "  ret size<String>(s)\n"
-        )
-        self.assertEqual(2, compile_and_run_stdlib(src))
+class TestAllSetOps(TestCase):
+    def test_all_set_ops(self):
+        rc, stdout = compile_and_run_stdlib_capture(_SRC, timeout=15)
+        self.assertEqual(0, rc, f"program exited with {rc}; stdout:\n{stdout}")
+        self.assertEqual(_EXPECTED_LINES, stdout.splitlines())

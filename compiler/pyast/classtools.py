@@ -65,7 +65,7 @@ def find_classes_or_error(
     def find_class_or_error(xtype: t.TypeSpec) -> tuple[t.TypeSpec, s.ClassStatement|p.Error]:
         if not isinstance(xtype, t.NamedSpec) and not isinstance(xtype, t.ClassSpec):
             return xtype, p.Error(xtype.line_ref, f"Class cannot inherit from this type \"{type(t)}\"")
-        found = resolver.find_type({xtype.name})
+        found = resolver.find_type(xtype.name)
         if not found:
             return xtype, p.Error(xtype.line_ref, f"Could not find class named \"{xtype.name}\"")
         if len(found) > 1:

@@ -94,10 +94,10 @@ class Resolved[T]:
 
 
 class Resolver:
-    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
         return []
 
-    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
         return []
 
     def get_traits(self) -> list[s.LetStatement]:
@@ -119,8 +119,11 @@ def simple_name(name: str) -> str:
 def match_name(left: str, right: str) -> bool:
     return simple_name(left) == simple_name(right)
 
-def match_names(name: str, matches: set[str]) -> bool:
-    return any(m for m in matches if m == name or name.startswith(m + '@'))
+# Match a candidate statement name (`candidate`) against a single lookup
+# `query` — true if they're identical, or if `candidate` is a fully-qualified
+# variant of `query` (i.e. starts with `query@`).
+def name_matches(candidate: str, query: str) -> bool:
+    return candidate == query or candidate.startswith(query + '@')
 
 
 def _name_prefixes(name: str) -> list[str]:
@@ -137,6 +140,10 @@ def _index_enum_variants(
         for key in _name_prefixes(v.name):
             index.setdefault(key, []).append(resolved)
         _index_enum_variants(v.variants, index)
+
+
+_EMPTY_TYPE_RESULT: list[Resolved[s.TypeStatement]] = []
+_EMPTY_DATA_RESULT: list[Resolved[s.DataStatement]] = []
 
 
 class ResolverRoot(Resolver):
@@ -165,27 +172,11 @@ class ResolverRoot(Resolver):
                 for key in _name_prefixes(st.name):
                     self.__data_index.setdefault(key, []).append(resolved_d)
 
-    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        seen: set[int] = set()
-        results: list[Resolved[s.TypeStatement]] = []
-        for name in names:
-            for resolved in self.__type_index.get(name, []):
-                rid = id(resolved)
-                if rid not in seen:
-                    seen.add(rid)
-                    results.append(resolved)
-        return results
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        return self.__type_index.get(name, _EMPTY_TYPE_RESULT)
 
-    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
-        seen: set[int] = set()
-        results: list[Resolved[s.DataStatement]] = []
-        for name in names:
-            for resolved in self.__data_index.get(name, []):
-                rid = id(resolved)
-                if rid not in seen:
-                    seen.add(rid)
-                    results.append(resolved)
-        return results
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        return self.__data_index.get(name, _EMPTY_DATA_RESULT)
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__traits
@@ -201,34 +192,51 @@ class ResolverRoot(Resolver):
 
 class AddScopeResolution(Resolver):
     __parent: Resolver
-    __scopes: set[str]
+    __scopes: tuple[str, ...]
+    # Result caches — short-lived (this resolver lives for one statement-scope
+    # walk) but a single walk does ~1k–10k lookups, most of them repeats.
+    __type_cache: dict[str, list[Resolved[s.TypeStatement]]]
+    __data_cache: dict[str, list[Resolved[s.DataStatement]]]
 
     def __init__(self, parent: Resolver, scopes: set[str] | s.ImportGroup | None):
         self.__parent = parent
-        self.__scopes = set() if scopes is None else\
-                set(x.path for x in scopes.imports) if isinstance(scopes, s.ImportGroup) else\
-                scopes
+        if scopes is None:
+            self.__scopes = ()
+        elif isinstance(scopes, s.ImportGroup):
+            self.__scopes = tuple(x.path for x in scopes.imports)
+        else:
+            self.__scopes = tuple(scopes)
+        self.__type_cache = {}
+        self.__data_cache = {}
 
-    def __expand_names(self, names: set[str]) -> set[str]:
-        def expand_names(name: str) -> list[str]:
-            if "::" in name or "@" in name:
-                return [name]
-            else:
-                return [name] + [f"{scope}::{name}" for scope in self.__scopes]
-        result = set(new_name for name in names for new_name in expand_names(name))
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        cached = self.__type_cache.get(name)
+        if cached is not None:
+            return cached
+        result = self.__parent.find_type(name)
+        if "::" not in name and "@" not in name:
+            for scope in self.__scopes:
+                result = result + self.__parent.find_type(f"{scope}::{name}")
+        self.__type_cache[name] = result
         return result
 
-    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(self.__expand_names(names))
-
-    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(self.__expand_names(names))
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        cached = self.__data_cache.get(name)
+        if cached is not None:
+            return cached
+        result = self.__parent.find_data(name)
+        if "::" not in name and "@" not in name:
+            for scope in self.__scopes:
+                result = result + self.__parent.find_data(f"{scope}::{name}")
+        self.__data_cache[name] = result
+        return result
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
 
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        merged = self.__scopes if scopes is None else (self.__scopes | scopes)
+        own = set(self.__scopes)
+        merged = own if scopes is None else (own | scopes)
         return self.__parent.get_implicit_where_specs(merged)
 
     def get_discriminators(self) -> dict[str, int]:
@@ -240,17 +248,24 @@ class AddScopeResolution(Resolver):
 
 class ResolverType(Resolver):
     __parent: Resolver
-    __find: Callable[[set[str]], list[Resolved[s.TypeStatement]]]
+    __find: Callable[[str], list[Resolved[s.TypeStatement]]]
+    __cache: dict[str, list[Resolved[s.TypeStatement]]]
 
-    def __init__(self, parent: Resolver, find: Callable[[set[str]], list[Resolved[s.TypeStatement]]]):
+    def __init__(self, parent: Resolver, find: Callable[[str], list[Resolved[s.TypeStatement]]]):
         self.__parent = parent
         self.__find = find
+        self.__cache = {}
 
-    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(names) + self.__find(names)
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        cached = self.__cache.get(name)
+        if cached is not None:
+            return cached
+        result = self.__parent.find_type(name) + self.__find(name)
+        self.__cache[name] = result
+        return result
 
-    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(names)
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        return self.__parent.find_data(name)
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
@@ -267,24 +282,29 @@ class ResolverType(Resolver):
 
 class ResolverData(Resolver):
     __parent: Resolver
-    __find: Callable[[set[str]], list[Resolved[s.DataStatement]]]
+    __find: Callable[[str], list[Resolved[s.DataStatement]]]
+    __cache: dict[str, list[Resolved[s.DataStatement]]]
 
-    def __init__(self, parent: Resolver, find: Callable[[set[str]], list[Resolved[s.DataStatement]]]):
+    def __init__(self, parent: Resolver, find: Callable[[str], list[Resolved[s.DataStatement]]]):
         self.__parent = parent
         self.__find = find
+        self.__cache = {}
 
-    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(names)
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        return self.__parent.find_type(name)
 
-    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        cached = self.__cache.get(name)
+        if cached is not None:
+            return cached
         # Lexical shadowing: a name bound at this scope hides the same name
         # in any enclosing scope. Without this, a lambda parameter named `io`
         # inside a function with a parameter also named `io` triggers an
         # ambiguity error ("Resolved too many io") instead of shadowing.
-        own = self.__find(names)
-        if own:
-            return own
-        return self.__parent.find_data(names)
+        own = self.__find(name)
+        result = own if own else self.__parent.find_data(name)
+        self.__cache[name] = result
+        return result
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()
@@ -309,11 +329,11 @@ class ResolverDiscriminators(Resolver):
         self.__discriminators = discriminators
         self.__optimization_level = optimization_level
 
-    def find_type(self, names: set[str]) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(names)
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        return self.__parent.find_type(name)
 
-    def find_data(self, names: set[str]) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(names)
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        return self.__parent.find_data(name)
 
     def get_traits(self) -> list[s.LetStatement]:
         return self.__parent.get_traits()

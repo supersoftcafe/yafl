@@ -67,13 +67,13 @@ class MatchArm:
         new_literal = self.literal.search_and_replace(resolver, replace) if self.literal else None
         return dataclasses.replace(self, type_spec=new_type, body=new_body, literal=new_literal)
 
-    def __find_bound(self, names: set[str]) -> list[g.Resolved[s.DataStatement]]:
+    def __find_bound(self, query: str) -> list[g.Resolved[s.DataStatement]]:
         if self.name and self.name != "_" and self.type_spec:
             unique = _arm_unique_name(self)
             # Match either the user-typed name (during the first compile
             # pass on the body) or the already-rewritten unique name
             # (subsequent passes and generate-time lookups).
-            if unique in names or g.match_names(self.name, names):
+            if unique == query or g.name_matches(self.name, query):
                 let = s.LetStatement(self.line_ref, unique, None, {}, (), None, self.type_spec)
                 return [g.Resolved(unique, let, g.ResolvedScope.LOCAL)]
         return []
@@ -126,8 +126,8 @@ class MatchExpression(e.Expression):
         arm_results = []
         for arm in self.arms:
             if arm.type_spec is None and arm.name and arm.name != "_" and subj_type is not None:
-                def find_else(names, a=arm, st=subj_type, uniq=_arm_unique_name(arm)):
-                    if uniq in names or g.match_names(a.name, names):
+                def find_else(query, a=arm, st=subj_type, uniq=_arm_unique_name(arm)):
+                    if uniq == query or g.name_matches(a.name, query):
                         let = s.LetStatement(a.line_ref, uniq, None, {}, (), None, st)
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
@@ -389,8 +389,8 @@ class MatchExpression(e.Expression):
         arm_unique = _arm_unique_name(arm)
 
         def make_resolver(arm_=arm, uniq=arm_unique):
-            def find(names):
-                if uniq in names or g.match_names(arm_.name, names):
+            def find(query):
+                if uniq == query or g.name_matches(arm_.name, query):
                     let = s.LetStatement(arm_.line_ref, uniq, None, {}, (), None, arm_.type_spec)
                     return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                 return []
@@ -468,8 +468,8 @@ class MatchExpression(e.Expression):
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
                 else_sv = cg_p.StackVar(subj_type.generate(resolver), else_unique)
-                def find_else(names, arm=else_arm, st=subj_type, uniq=else_unique):
-                    if uniq in names or g.match_names(arm.name, names):
+                def find_else(query, arm=else_arm, st=subj_type, uniq=else_unique):
+                    if uniq == query or g.name_matches(arm.name, query):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, st)
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
@@ -634,7 +634,7 @@ class MatchExpression(e.Expression):
         """Return True if the named class is declared `[foreign]` — its
         vtable symbol lives in an external library, so we can't emit a
         vtable-identity check against it."""
-        classes = resolver.find_type({class_name})
+        classes = resolver.find_type(class_name)
         for resolved in classes:
             stmt = resolved.statement
             if isinstance(stmt, s.ClassStatement) and "foreign" in stmt.attributes:
@@ -670,8 +670,8 @@ class MatchExpression(e.Expression):
             bound_sv = cg_p.StackVar(arm_ctype, arm_unique)
             move_value: cg_p.RParam = cg_p.ZeroOf(arm_ctype) \
                 if isinstance(arm_ctype, cg_t.Struct) and not arm_ctype.fields else sv
-            def find_bound(names, a=arm, t_spec=type_for_binding, uniq=arm_unique):
-                if uniq in names or g.match_names(a.name, names):
+            def find_bound(query, a=arm, t_spec=type_for_binding, uniq=arm_unique):
+                if uniq == query or g.name_matches(a.name, query):
                     let = s.LetStatement(a.line_ref, uniq, None, {}, (), None, t_spec)
                     return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                 return []
@@ -778,8 +778,8 @@ class MatchExpression(e.Expression):
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
                 else_sv = cg_p.StackVar(subj_type.generate(resolver), else_unique)
-                def find_else(names, arm=else_arm, uniq=else_unique):
-                    if uniq in names or g.match_names(arm.name, names):
+                def find_else(query, arm=else_arm, uniq=else_unique):
+                    if uniq == query or g.name_matches(arm.name, query):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec or subj_type)
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
@@ -838,8 +838,8 @@ class MatchExpression(e.Expression):
                 # in __plan_match_arms) where only the leaf identity matters. It is the
                 # binding side that needs the canonical subject type.
                 arm_sv = cg_p.StackVar(subj_type.generate(resolver), arm_unique)
-                def find_arm(names, arm=arm, uniq=arm_unique, st=subj_type):
-                    if uniq in names or g.match_names(arm.name, names):
+                def find_arm(query, arm=arm, uniq=arm_unique, st=subj_type):
+                    if uniq == query or g.name_matches(arm.name, query):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, st)
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []
@@ -856,8 +856,8 @@ class MatchExpression(e.Expression):
             if else_arm.name and else_arm.name != "_":
                 else_unique = _arm_unique_name(else_arm)
                 else_sv = cg_p.StackVar(subj_type.generate(resolver), else_unique)
-                def find_else(names, arm=else_arm, uniq=else_unique):
-                    if uniq in names or g.match_names(arm.name, names):
+                def find_else(query, arm=else_arm, uniq=else_unique):
+                    if uniq == query or g.name_matches(arm.name, query):
                         let = s.LetStatement(arm.line_ref, uniq, None, {}, (), None, arm.type_spec or subj_type)
                         return [g.Resolved(uniq, let, g.ResolvedScope.LOCAL)]
                     return []

@@ -126,7 +126,7 @@ def _is_trivial_expr(expr: e.Expression | None, resolver: g.Resolver) -> bool:
     if isinstance(expr, e.CallExpression) and isinstance(expr.function, e.NamedExpression):
         # Constructor call to a known class with literal args — the
         # global_codegen pattern-match emits this as a static struct.
-        found = resolver.find_type({expr.function.name})
+        found = resolver.find_type(expr.function.name)
         if len(found) == 1 and isinstance(found[0].statement, s.ClassStatement):
             return _is_trivial_expr(expr.parameter, resolver)
     return False

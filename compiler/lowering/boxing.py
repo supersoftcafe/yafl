@@ -137,8 +137,8 @@ def __arm_scope(arm, subject_type, resolver: g.Resolver) -> g.Resolver:
     name = arm.name
     line_ref = arm.line_ref
 
-    def find(names: set[str], n=name, lr=line_ref, bt=bound_type):
-        if g.match_names(n, names):
+    def find(query: str, n=name, lr=line_ref, bt=bound_type):
+        if g.name_matches(n, query):
             let = s.LetStatement(lr, n, None, {}, (), None, bt)
             return [g.Resolved(n, let, g.ResolvedScope.LOCAL)]
         return []
@@ -212,10 +212,10 @@ def __block_scope(expr: e.BlockExpression, resolver: g.Resolver) -> g.Resolver:
             if isinstance(x, s.LetStatement)
             for let in x.flatten()]
 
-    def find(names: set[str], bindings=lets):
+    def find(query: str, bindings=lets):
         return [g.Resolved(n, s.LetStatement(lr, n, None, {}, (), None, dt), g.ResolvedScope.LOCAL)
                 for n, lr, dt in bindings
-                if g.match_names(n, names)]
+                if g.name_matches(n, query)]
     return g.ResolverData(resolver, find)
 
 

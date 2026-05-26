@@ -88,11 +88,11 @@ def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[t
     references: dict[str, t.TypeSpec] = {}
     def check_if_capture(_inner_resolver: g.Resolver, thing):
         if isinstance(thing, e.NamedExpression):
-            found = resolver.find_data({thing.name})
+            found = resolver.find_data(thing.name)
             if len(found) == 1 and found[0].scope != g.ResolvedScope.GLOBAL:
                 references[thing.name] = found[0].statement.get_type()
         elif isinstance(thing, e.LazyExpression):
-            found = resolver.find_data({thing.stub_name})
+            found = resolver.find_data(thing.stub_name)
             if found and len(found) == 1 and found[0].scope != g.ResolvedScope.GLOBAL:
                 references[thing.stub_name] = t.LazyStubSpec(thing.line_ref, thing.target_type)
         return thing

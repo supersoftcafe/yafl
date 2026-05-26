@@ -110,7 +110,7 @@ class NewExpression(Expression):
         if not isinstance(ctype, t.ClassSpec):
             return [Error(self.line_ref, "type must be ClassSpec")]
 
-        types = resolver.find_type({ctype.name})
+        types = resolver.find_type(ctype.name)
         if not types:
             return [Error(self.line_ref, f"Couldn't find class named \"{ctype.name}\"")]
         if len(types) > 1:
@@ -127,9 +127,9 @@ class NewExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         xtype = cast(t.TupleSpec, self.parameter.get_type(resolver))
         ctype = cast(t.ClassSpec, self.type)
-        found = resolver.find_type({ctype.name})
+        found = resolver.find_type(ctype.name)
         if len(found) != 1:
-            resolver.find_type({ctype.name})
+            resolver.find_type(ctype.name)
             raise AssertionError(f"Failed to resolve {ctype.name}")
         fields = cast(s.ClassStatement, found[0].statement).get_fields(resolver)
 
@@ -235,13 +235,13 @@ class DotExpression(Expression):
                 entry = next((en for en in entries if en.name == self.name), None)
                 return entry.type if entry else None
             case t.ClassSpec() as cspec:
-                cdecl = resolver.find_type({cspec.name})
+                cdecl = resolver.find_type(cspec.name)
                 if not cdecl or len(cdecl) > 1:
                     raise ValueError("A resolved class is later resolving incorrectly. Probably a compiler bug.")
                 cdecl = cdecl[0].statement
                 if not isinstance(cdecl, s.ClassStatement):
                     raise ValueError("A resolved class is later resolving to a wrong type. Probably a compiler bug.")
-                datas = cdecl.find_data(resolver, {self.name})
+                datas = cdecl.find_data(resolver, self.name)
                 if datas and len(datas) == 1:
                     return _substitute_class_type_params(
                         resolver, cspec, cdecl, datas[0].statement.get_type())
@@ -259,13 +259,13 @@ class DotExpression(Expression):
             case t.TupleSpec():
                 pass  # field name is already the tuple entry name
             case t.ClassSpec(_, cname):
-                cdecl = resolver.find_type({cname})
+                cdecl = resolver.find_type(cname)
                 if not cdecl or len(cdecl) > 1:
                     raise ValueError()
                 cdecl = cdecl[0].statement
                 if not isinstance(cdecl, s.ClassStatement):
                     raise ValueError()
-                datas = _reduce_list(resolver, expected_type, cdecl.find_data(resolver, {self.name}))
+                datas = _reduce_list(resolver, expected_type, cdecl.find_data(resolver, self.name))
                 if len(datas) == 1:
                     name = datas[0].unique_name
             case t.EnumSpec(all_fields=fields):
@@ -286,13 +286,13 @@ class DotExpression(Expression):
                     return [Error(self.line_ref, f"Could not find field {self.name}")]
                 return []
             case t.ClassSpec(_, cname):
-                cdecl = resolver.find_type({cname})
+                cdecl = resolver.find_type(cname)
                 if not cdecl or len(cdecl) > 1:
                     raise ValueError()
                 cdecl = cdecl[0].statement
                 if not isinstance(cdecl, s.ClassStatement):
                     raise ValueError(self.line_ref, "Does not reference a class")
-                datas = cdecl.find_data(resolver, {self.name})
+                datas = cdecl.find_data(resolver, self.name)
                 if not datas:
                     return [Error(self.line_ref, f"Could not find a field named {self.name}")]
                 if len(datas) > 1:
@@ -315,8 +315,8 @@ class DotExpression(Expression):
                 return base_bundle + g.OperationBundle((), (), result_var)
 
             case t.ClassSpec(_, cname):
-                cdecl = cast(s.ClassStatement, resolver.find_type({cname})[0].statement)
-                data = cdecl.find_data(resolver, {self.name})[0].statement
+                cdecl = cast(s.ClassStatement, resolver.find_type(cname)[0].statement)
+                data = cdecl.find_data(resolver, self.name)[0].statement
                 xtype = data.get_type().generate(resolver)
 
                 if not isinstance(data, s.FunctionStatement):
@@ -329,7 +329,7 @@ class DotExpression(Expression):
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
             case t.EnumSpec() as es:
-                stmts = resolver.find_type({es.root_name})
+                stmts = resolver.find_type(es.root_name)
                 assert len(stmts) == 1
                 root_stmt = cast(s.EnumStatement, stmts[0].statement)
                 variant_types = t.enum_variant_types(root_stmt, resolver)
@@ -480,7 +480,7 @@ class LazyExpression(Expression):
             # Pick GlobalVar vs StackVar based on the resolved scope so
             # the same LazyExpression node works for both `[lazy]` locals
             # and `[lazy]` globals.
-            found = resolver.find_data({self.stub_name})
+            found = resolver.find_data(self.stub_name)
             if found and len(found) == 1 and found[0].scope == g.ResolvedScope.GLOBAL:
                 stub_ref = cg_p.GlobalVar(cg_t.DataPointer(), self.stub_name)
             else:
@@ -521,7 +521,7 @@ class NamedExpression(Expression):
         # The name might actually resolve to just one, or we might have gone
         # through a compile step and found the unique name of a type match.
         # Both outcomes are fine.
-        datas = resolver.find_data({self.name})
+        datas = resolver.find_data(self.name)
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
         if len(datas) > 1 and self.resolved_trait_scope is not None:
             filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
@@ -573,7 +573,7 @@ class NamedExpression(Expression):
         # generic-inference step below, because the argument types feeding
         # inference may only become known on a later iteration of the
         # compile loop.
-        datas = resolver.find_data({self.name})
+        datas = resolver.find_data(self.name)
         if '@' not in self.name:
             datas = _reduce_list(resolver, expected_type, datas)
             if len(datas) != 1:
@@ -622,7 +622,7 @@ class NamedExpression(Expression):
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
-        datas = resolver.find_data({self.name})
+        datas = resolver.find_data(self.name)
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
         if len(datas) > 1 and self.resolved_trait_scope is not None:
             filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
@@ -639,7 +639,7 @@ class NamedExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         if self.name == 'this':
             pass
-        x = resolver.find_data({self.name})
+        x = resolver.find_data(self.name)
         if not x:
             raise ValueError(f"Could not find {self.name}")
         x = x[0]
@@ -764,10 +764,10 @@ class LambdaExpression(Expression):
     expression: Expression
     return_type: t.CallableSpec | None = None
 
-    def _find_locals(self, names: set[str]) -> list[g.Resolved[s.DataStatement]]:
+    def _find_locals(self, query: str) -> list[g.Resolved[s.DataStatement]]:
         p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
              for let in self.parameters.flatten()
-             if g.match_names(let.name, names)]
+             if g.name_matches(let.name, query)]
         return p
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
@@ -890,13 +890,13 @@ class BlockExpression(Expression):
     statements: list[s.Statement]
     value: Expression
 
-    def _find_locals(self) -> Callable[[set[str]], list[g.Resolved]]:
-        def finder(names: set[str]) -> list[g.Resolved]:
+    def _find_locals(self) -> Callable[[str], list[g.Resolved]]:
+        def finder(query: str) -> list[g.Resolved]:
             lets = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
                     for x in self.statements if isinstance(x, s.LetStatement)
-                    for let in x.flatten() if g.match_names(let.name, names)]
+                    for let in x.flatten() if g.name_matches(let.name, query)]
             funs = [g.Resolved(fun.name, fun, g.ResolvedScope.LOCAL)
-                    for fun in self.statements if isinstance(fun, s.FunctionStatement) and g.match_names(fun.name, names)]
+                    for fun in self.statements if isinstance(fun, s.FunctionStatement) and g.name_matches(fun.name, query)]
             return lets + funs
         return finder
 
@@ -1381,7 +1381,7 @@ class NewEnumExpression(Expression):
     type_params: tuple[t.TypeSpec, ...] = field(default_factory=tuple)
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        types = resolver.find_type({self.root_spec_name})
+        types = resolver.find_type(self.root_spec_name)
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
             return types[0].statement._enum_spec
         return None
@@ -1407,7 +1407,7 @@ class NewEnumExpression(Expression):
         return cast(Expression, replace(resolver, dataclasses.replace(self, field_args=new_field_args, type_params=new_type_params)))
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        types = resolver.find_type({self.root_spec_name})
+        types = resolver.find_type(self.root_spec_name)
         assert len(types) == 1
         root_stmt = cast(s.EnumStatement, types[0].statement)
         root_spec = root_stmt._enum_spec

@@ -1,305 +1,77 @@
-"""End-to-end tests for the new String operations and primitive Float type.
+"""Float + Constants residual tests.
 
-Each test compiles a tiny yafl program against the stdlib, runs it, and
-asserts a specific exit code chosen so common slip-ups produce a different
-code rather than a coincidental success.
+Most of the original test_strings_floats has been consolidated into
+mega-tests (test_arithmetic, test_comparisons, test_conversions,
+test_parse, test_string_ops). What remains:
+
+  * Float runtime: isNaN(real value) + literal-truncate round-trip,
+    both rolled into one compile alongside the [const] inlining checks.
+  * [const]-with-non-literal compile-error rejection: separate test
+    because it asserts a *compile failure*, not a runtime value.
 """
 from __future__ import annotations
 
+import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_and_run_stdlib_capture
 
-from tests.testutil import compile_and_run_stdlib
 
-
-class TestStringOps(TestCase):
-
-    def test_length_of_empty(self):
-        src = """namespace Main
+_SRC = """\
+namespace Main
 import System
 
-fun main(): System::Int
-  ret length("")
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_length_short(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret length("hello")
-"""
-        self.assertEqual(5, compile_and_run_stdlib(src))
-
-    def test_length_long(self):
-        # Longer than a packed string (>7 bytes), forcing the heap path.
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret length("hello, world!!")
-"""
-        self.assertEqual(14, compile_and_run_stdlib(src))
-
-    def test_slice_round_trip(self):
-        # slice("abcdef", 1, 4) == "bcd"; length is 3.
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret length(slice("abcdef", 1, 4))
-"""
-        self.assertEqual(3, compile_and_run_stdlib(src))
-
-    def test_compare_equal(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret compare("abc", "abc") + 7
-"""
-        self.assertEqual(7, compile_and_run_stdlib(src))
-
-    def test_compare_lt(self):
-        # compare("abc", "abd") returns negative; we add 100 to make exit code positive.
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret 100 + compare("abc", "abd")
-"""
-        rc = compile_and_run_stdlib(src)
-        self.assertLess(rc, 100)
-        self.assertGreaterEqual(rc, 0)
-
-    def test_string_eq_operator(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let a: System::String = "hi"
-  let b: System::String = "hi"
-  ret a == b ? 0 : 1
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_string_lt_operator(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let a: System::String = "abc"
-  let b: System::String = "abd"
-  ret a < b ? 0 : 1
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_parseInt_valid(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret match(parseInt("42"))
-    (n: System::Int) => n
-    (x: System::None) => 99
-"""
-        self.assertEqual(42, compile_and_run_stdlib(src))
-
-    def test_parseInt_negative(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret match(parseInt("-7"))
-    (n: System::Int) => 100 + n
-    (x: System::None) => 99
-"""
-        self.assertEqual(93, compile_and_run_stdlib(src))
-
-    def test_parseInt_invalid(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret match(parseInt("notanumber"))
-    (n: System::Int) => 1
-    (x: System::None) => 0
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_asciiToString_length(self):
-        """asciiToString returns a one-byte string (length 1) regardless of
-        the input byte — including 0 (NUL), which packs the same as any
-        other byte in the pointer."""
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret length(asciiToString(65))
-"""
-        self.assertEqual(1, compile_and_run_stdlib(src))
-
-    def test_asciiToString_byte_value(self):
-        """The byte returned matches the input — verifies the pack layout
-        is read back consistently by byteAt (which goes through the same
-        packed-pointer decode path)."""
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret byteAt(asciiToString(65), 0)
-"""
-        self.assertEqual(65, compile_and_run_stdlib(src))
-
-    def test_asciiToString_zero_byte(self):
-        """A NUL byte still packs and reads back as 0 — the packed format
-        does not rely on NUL termination for length."""
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret byteAt(asciiToString(0), 0) + length(asciiToString(0))
-"""
-        # 0 (byte) + 1 (length) = 1
-        self.assertEqual(1, compile_and_run_stdlib(src))
-
-    def test_asciiToString_high_byte(self):
-        """A high byte (>127) packs without sign-extension corrupting the
-        pointer — the SHORT_STRING macros cast through `uint8_t` for this."""
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret byteAt(asciiToString(200), 0)
-"""
-        self.assertEqual(200, compile_and_run_stdlib(src))
-
-
-class TestFloatOps(TestCase):
-
-    def test_literal_round_trip(self):
-        # Float -> Int truncation
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let f: System::Float = 3.5
-  ret truncateToInt(f)
-"""
-        self.assertEqual(3, compile_and_run_stdlib(src))
-
-    def test_addition(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let a: System::Float = 1.5
-  let b: System::Float = 2.25
-  ret truncateToInt(a + b)
-"""
-        self.assertEqual(3, compile_and_run_stdlib(src))
-
-    def test_int_to_float_to_int_round_trip(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let f: System::Float = Float(42)
-  ret truncateToInt(f)
-"""
-        self.assertEqual(42, compile_and_run_stdlib(src))
-
-    def test_float_division(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let a: System::Float = 7.0
-  let b: System::Float = 2.0
-  ret truncateToInt(a / b)
-"""
-        self.assertEqual(3, compile_and_run_stdlib(src))
-
-    def test_float_comparison(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let a: System::Float = 1.5
-  let b: System::Float = 2.5
-  ret a < b ? 0 : 1
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_isNaN_on_real(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  let a: System::Float = 1.0
-  ret isNaN(a) ? 1 : 0
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_parseFloat_valid(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret match(parseFloat("2.5"))
-    (f: System::Float) => truncateToInt(f * 10.0)
-    (x: System::None) => 99
-"""
-        self.assertEqual(25, compile_and_run_stdlib(src))
-
-    def test_parseFloat_invalid(self):
-        src = """namespace Main
-import System
-
-fun main(): System::Int
-  ret match(parseFloat("not a number"))
-    (f: System::Float) => 1
-    (x: System::None) => 0
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-
-class TestConstants(TestCase):
-
-    def test_user_defined_float_const_inlines(self):
-        src = """namespace Main
-import System
 let [const] HALF: System::Float = 0.5
+
+fun emit(label: System::String, value: System::Int): System::None
+  System::print(label + "=" + System::String(value) + "\\n")
+  ret None
+
 fun main(): System::Int
+  # ─── isNaN on a real value ─────────────────────────────────────────────
+  let a: System::Float = 1.0
+  emit("isNaN_real",   System::isNaN(a) ? 1 : 0)
+
+  # ─── Float literal → Int truncation ────────────────────────────────────
+  let f: System::Float = 3.5
+  emit("trunc_3_5",    System::truncateToInt(f))     # 3
+
+  # ─── User-defined [const] inlines ──────────────────────────────────────
   let v: System::Float = HALF
-  ret truncateToInt(v + v)
-"""
-        self.assertEqual(1, compile_and_run_stdlib(src))
+  emit("HALF_plus_HALF", System::truncateToInt(v + v))   # 1
 
-    def test_stdlib_PI_is_inlined(self):
-        # PI is declared in float.yafl; multiplying it by 10 and truncating
-        # should give 31 — proves the constant is reachable and has the
-        # expected value.
-        src = """namespace Main
-import System
-fun main(): System::Int
-  let r: System::Float = PI * 10.0
-  ret truncateToInt(r)
-"""
-        self.assertEqual(31, compile_and_run_stdlib(src))
+  # ─── Stdlib PI is reachable and has the expected value ────────────────
+  let r: System::Float = System::PI * 10.0
+  emit("PI_times_10",   System::truncateToInt(r))    # 31
 
-    def test_stdlib_TAU_equals_two_PI(self):
-        # PI and TAU are both inlined literals; PI + PI must be bit-identical
-        # to TAU, so equality holds exactly.
-        src = """namespace Main
-import System
-fun main(): System::Int
-  ret PI + PI == TAU ? 0 : 1
+  # ─── TAU == 2*PI exactly (both [const] inlined literals) ──────────────
+  emit("TAU_eq_2_PI",   System::PI + System::PI == System::TAU ? 1 : 0)
+
+  ret 0
 """
-        self.assertEqual(0, compile_and_run_stdlib(src))
+
+
+_EXPECTED_LINES = [
+    "isNaN_real=0",
+    "trunc_3_5=3",
+    "HALF_plus_HALF=1",
+    "PI_times_10=31",
+    "TAU_eq_2_PI=1",
+]
+
+
+class TestFloatAndConstantsRuntime(TestCase):
+    def test_float_and_constants_runtime(self):
+        rc, stdout = compile_and_run_stdlib_capture(_SRC, timeout=15)
+        self.assertEqual(0, rc, f"program exited with {rc}; stdout:\n{stdout}")
+        self.assertEqual(_EXPECTED_LINES, stdout.splitlines())
+
+
+class TestConstWithNonLiteralRejected(TestCase):
+    """`[const]` requires a literal value; a function-call initialiser is
+    rejected at compile time. Can't share a compile with the runtime
+    tests because the compile here is *expected* to fail."""
 
     def test_const_with_non_literal_is_rejected(self):
-        # [const] requires a literal value. A function call doesn't qualify.
         src = """namespace Main
 import System
 fun zero(): System::Float
@@ -308,7 +80,5 @@ let [const] BAD: System::Float = zero()
 fun main(): System::Int
   ret truncateToInt(BAD)
 """
-        # Compilation must produce no C code (errors are emitted instead).
-        import compiler as c
         result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
         self.assertEqual("", result)

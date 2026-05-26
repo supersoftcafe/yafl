@@ -56,98 +56,10 @@ def _run_with_json_module(test_source: str, timeout: int = 5) -> int:
             pass
 
 
-class TestJsonScalars(TestCase):
-
-    def _run(self, json_text: str, classify_body: str) -> int:
-        """Run the parser on `json_text` and dispatch through `classify_body`."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "in.json")
-            with open(path, "w") as f:
-                f.write(json_text)
-            src = _HARNESS_PRELUDE + f"""
-fun classify(v: JsonValue): System::Int
-{classify_body}
-
-fun main(): System::Int
-  ret runOnPath("{path}", classify)
-"""
-            return _run_with_json_module(src)
-
-    def test_parse_true(self):
-        body = """  ret match(v)
-    (t: JsonTrue)  => 1
-    (f: JsonFalse) => 2
-    () => 99"""
-        self.assertEqual(1, self._run("true", body))
-
-    def test_parse_false(self):
-        body = """  ret match(v)
-    (t: JsonTrue)  => 1
-    (f: JsonFalse) => 2
-    () => 99"""
-        self.assertEqual(2, self._run("false", body))
-
-    def test_parse_null(self):
-        body = """  ret match(v)
-    (n: JsonNull) => 3
-    () => 99"""
-        self.assertEqual(3, self._run("null", body))
-
-    def test_parse_number_integer(self):
-        # Whole numbers without fractional or exponent now parse as JsonInt,
-        # not JsonNum — JsonNum is reserved for values that need Float precision.
-        body = """  ret match(v)
-    (n: JsonInt) => n.intValue
-    (n: JsonNum) => System::truncateToInt(n.numValue)
-    () => 99"""
-        self.assertEqual(42, self._run("42", body))
-
-    def test_parse_number_float(self):
-        # A value with a fractional part is JsonNum (Float).
-        body = """  ret match(v)
-    (n: JsonNum) => System::truncateToInt(n.numValue)
-    () => 99"""
-        self.assertEqual(3, self._run("3.14", body))
-
-    def test_parse_number_exponent(self):
-        # Exponent notation is also JsonNum.
-        body = """  ret match(v)
-    (n: JsonNum) => System::truncateToInt(n.numValue)
-    () => 99"""
-        self.assertEqual(150, self._run("1.5e2", body))
-
-    def test_parse_number_negative_int(self):
-        # Reflect the negative through a small offset so the exit code stays in 0..255.
-        body = """  ret match(v)
-    (n: JsonInt) => 100 + n.intValue
-    () => 99"""
-        self.assertEqual(93, self._run("-7", body))   # 100 + -7 = 93
-
-    def test_parse_number_with_leading_whitespace(self):
-        body = """  ret match(v)
-    (n: JsonInt) => n.intValue
-    () => 99"""
-        self.assertEqual(7, self._run("  \n\t7  ", body))
-
-    def test_parse_simple_string(self):
-        # Parse "hi" → JsonStr("hi") → length is 2.
-        body = """  ret match(v)
-    (s: JsonStr) => System::length(s.strValue)
-    () => 99"""
-        self.assertEqual(2, self._run('"hi"', body))
-
-    def test_parse_string_with_escape(self):
-        # Parse "a\nb" — three bytes: 'a', '\n', 'b'.
-        body = """  ret match(v)
-    (s: JsonStr) => System::length(s.strValue)
-    () => 99"""
-        self.assertEqual(3, self._run('"a\\nb"', body))
-
-    def test_parse_empty_string(self):
-        body = """  ret match(v)
-    (s: JsonStr) => System::length(s.strValue)
-    () => 99"""
-        self.assertEqual(0, self._run('""', body))
+# TestJsonScalars (parse_true/false/null/number_integer/number_float/
+# number_exponent/number_negative_int/number_with_leading_whitespace/
+# simple_string/string_with_escape/empty_string) is covered by
+# test_json_scalars.TestAllJsonScalars.
 
 
 class TestJsonComposite(TestCase):
