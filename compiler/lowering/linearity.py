@@ -349,7 +349,9 @@ class _Checker:
         for stmt in stmts:
             if isinstance(stmt, s.FunctionStatement):
                 # A nested function is its own scope; it may not capture
-                # an enclosing linear binding.
+                # an enclosing linear binding.  Returning a linear type
+                # is fine — each invocation mints one obligation that
+                # the caller threads (see stdlib's `?>` continuations).
                 if stmt.body is not None:
                     self._check_capture(stmt.body, local_env, stmt.line_ref)
                 self._check_function(stmt, this_type=None)
@@ -362,6 +364,23 @@ class _Checker:
                         local_bindings.append((tgt.name, tgt.declared_type, tgt.line_ref))
                 continue
             if isinstance(stmt, s.LetStatement):
+                # `[lazy]` lets defer their RHS into a closure that
+                # memoises the result across forces.  A linear value
+                # held in the stub would be readable many times via
+                # repeat forces, and free variables of linear type
+                # captured by the synthesised closure body fall under
+                # the same "captured by a nested function or lambda"
+                # rule.  Reject both at declaration.
+                if stmt.is_deferred_init():
+                    if (stmt.declared_type is not None
+                            and self.carries_linearity(stmt.declared_type)):
+                        self.errors.append(Error(stmt.line_ref,
+                            f"[lazy] let '{stmt.name}' may not hold a "
+                            f"linear value — the stub memoises across "
+                            f"forces, so multiple reads would yield "
+                            f"the same linear instance"))
+                    if stmt.default_value is not None:
+                        self._check_capture(stmt.default_value, local_env, stmt.line_ref)
                 total += self._count(stmt.default_value, local_env, resolver) if stmt.default_value else Counter()
                 if stmt.declared_type is not None and self.carries_linearity(stmt.declared_type):
                     local_env[stmt.name] = stmt.declared_type

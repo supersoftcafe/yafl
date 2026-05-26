@@ -427,6 +427,84 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
 
 
 @dataclass
+class LazyExpression(Expression):
+    """Auto-forced reference to a `[lazy]` let.
+
+    Three modes, selected by where the reference textually appears:
+
+    * **Local-scope** (default): the stub lives in a `StackVar` named
+      `stub_name` in the enclosing function.  Emitted by
+      `lower_lazy_lets` for every reference to a `[lazy]` local.
+    * **Global-scope**: the stub is a static `Lazy$<T>` instance
+      accessed as a `GlobalVar`.  Selected at `generate` time when
+      `resolver.find_data` reports `ResolvedScope.GLOBAL`.
+    * **Captured** (`captured_class` set): the reference is inside a
+      lifted lambda body and the stub is held in `this.<stub_name>`
+      on the closure class.  Set by `lambdas.__redirect_references_to_class`
+      after the lambdas pass discovers the lazy reference as a free
+      variable inside the body.
+    """
+    stub_name: str
+    target_type: t.TypeSpec
+    captured_class: str | None = None
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        return self.target_type
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        # lower_lazy_lets runs after the compile loop has converged, so
+        # there's nothing left for LazyExpression to compile.
+        return self, []
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return []
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            target_type=self.target_type.search_and_replace(resolver, replace))))
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        import lowering.lazy_thunks as lt
+        ir_t = self.target_type.generate(resolver)
+        # `_ir_mangle` raises NotImplementedError for unsupported IR types.
+        lt._ir_mangle(ir_t)
+
+        stub_ref: cg_p.RParam
+        if self.captured_class is not None:
+            # Inside a lifted lambda — the stub was captured as a field
+            # on the closure class.  `this` is the closure instance.
+            this_var = cg_p.StackVar(cg_t.DataPointer(), "this")
+            stub_ref = cg_p.ObjectField(cg_t.DataPointer(), this_var,
+                                        self.captured_class, self.stub_name, None)
+        else:
+            # Pick GlobalVar vs StackVar based on the resolved scope so
+            # the same LazyExpression node works for both `[lazy]` locals
+            # and `[lazy]` globals.
+            found = resolver.find_data({self.stub_name})
+            if found and len(found) == 1 and found[0].scope == g.ResolvedScope.GLOBAL:
+                stub_ref = cg_p.GlobalVar(cg_t.DataPointer(), self.stub_name)
+            else:
+                stub_ref = cg_p.StackVar(cg_t.DataPointer(), self.stub_name)
+
+        sv_result = cg_p.StackVar(ir_t, "$force_result")
+        # The fetch function takes `this` as its single parameter, which —
+        # under the YAFL ABI — comes from the GlobalFunction's `.object`
+        # field (the implicit self).  No additional struct args.
+        # async_lower wraps the register to wrap_return_type(ir_t) and
+        # inserts the IS_TASK + unwrap dance automatically.
+        call = cg_o.Call(
+            function=cg_p.GlobalFunction(lt.fetch_function_name(ir_t), stub_ref),
+            parameters=cg_p.NewStruct(()),
+            register=sv_result,
+        )
+        return g.OperationBundle(
+            stack_vars=(sv_result,),
+            operations=(call,),
+            result_var=sv_result,
+        )
+
+
+@dataclass
 class NamedExpression(Expression):
     name: str
     type_params: tuple[t.TypeSpec, ...] = ()
@@ -571,11 +649,18 @@ class NamedExpression(Expression):
             case (g.ResolvedScope.GLOBAL, stmt) if isinstance(stmt, s.LetStatement):
                 xtype = stmt.declared_type
                 if not xtype: raise ValueError(f"Failed to resolve {self.name} due to missing type")
-                return g.OperationBundle((), (), cg_p.GlobalVar(xtype.generate(resolver), self.name))
+                # Deferred-init lets are stored as a DataPointer to their
+                # Lazy$<T> stub — not as the user-visible value type.
+                # Any NamedExpression that survives lower_lazy_lets
+                # (lambdas-pass capture sites, class-field initialisers)
+                # needs the stub pointer, not the value.
+                storage = cg_t.DataPointer() if stmt.is_deferred_init() else xtype.generate(resolver)
+                return g.OperationBundle((), (), cg_p.GlobalVar(storage, self.name))
             case (g.ResolvedScope.LOCAL, stmt) if isinstance(stmt, s.LetStatement):
                 xtype = stmt.declared_type
                 if not xtype: raise ValueError(f"Failed to resolve {self.name} due to missing type")
-                return g.OperationBundle((), (), cg_p.StackVar(xtype.generate(resolver), self.name))
+                storage = cg_t.DataPointer() if stmt.is_deferred_init() else xtype.generate(resolver)
+                return g.OperationBundle((), (), cg_p.StackVar(storage, self.name))
             case (scope, stmt):
                 raise ValueError(f"Reference to {scope} / {type(stmt)} for named reference {self.name} not implemented yet")
 
@@ -847,8 +932,26 @@ class BlockExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         nested = g.ResolverData(resolver, self._find_locals())
         bundle = g.OperationBundle()
+        # Phase 1: hoist deferred-init stub allocations to block entry
+        # so a forward reference inside one lazy body sees the
+        # later-declared stub's slot already pointing at a real heap
+        # object.  Block-local (not function-wide) — a deferred-init
+        # let inside an if/match arm only allocates when that arm runs.
         for i, stmt in enumerate(self.statements):
-            bundle = bundle + stmt.generate(nested, None).with_prefix(f"s{i}")
+            if (isinstance(stmt, s.LetStatement)
+                    and stmt.is_deferred_init()
+                    and stmt.declared_type is not None):
+                bundle = bundle + stmt.generate_lazy_alloc(nested).with_prefix(f"alloc_s{i}")
+        # Phase 2: walk statements in order.  Deferred-init lets emit
+        # only the closure-population Move now — their stub allocation
+        # was hoisted above.
+        for i, stmt in enumerate(self.statements):
+            if (isinstance(stmt, s.LetStatement)
+                    and stmt.is_deferred_init()
+                    and stmt.declared_type is not None):
+                bundle = bundle + stmt.generate_lazy_populate(nested).with_prefix(f"s{i}")
+            else:
+                bundle = bundle + stmt.generate(nested, None).with_prefix(f"s{i}")
         return bundle + self.value.generate(nested)
 
 

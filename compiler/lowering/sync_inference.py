@@ -42,8 +42,17 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.things import Function
-from codegen.ops import Call, ParallelCall
-from codegen.param import GlobalFunction, VirtualFunction
+from codegen.ops import Call, ParallelCall, Return
+from codegen.param import GlobalFunction, VirtualFunction, TagTask
+
+
+def _returns_tagged_task(fn: Function) -> bool:
+    """A function whose body returns `TagTask(...)` produces a tagged
+    task pointer — its callers' `PTR_IS_TASK` check will fire and they
+    must enter the async path.  Such a function cannot be sync,
+    regardless of whether its ops contain `Call` nodes."""
+    return any(isinstance(op, Return) and isinstance(op.value, TagTask)
+               for op in fn.ops)
 
 
 def infer_sync(a: Application) -> Application:
@@ -68,7 +77,9 @@ def infer_sync(a: Application) -> Application:
     sync_set: set[str] = {
         name
         for name, fn in a.functions.items()
-        if fn.sync or (fn.foreign_symbol is None and _has_no_nontail_calls(fn))
+        if fn.sync or (fn.foreign_symbol is None
+                       and not _returns_tagged_task(fn)
+                       and _has_no_nontail_calls(fn))
     }
 
     # ------------------------------------------------------------------
@@ -97,6 +108,8 @@ def infer_sync(a: Application) -> Application:
             if name in sync_set:
                 continue
             if fn.foreign_symbol is not None:
+                continue
+            if _returns_tagged_task(fn):
                 continue
             non_tail_calls = [op for op in fn.ops if isinstance(op, Call) and not op.musttail]
             has_parallel = any(isinstance(op, ParallelCall) for op in fn.ops)

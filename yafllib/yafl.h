@@ -364,6 +364,7 @@ typedef struct {
     object_t*               result;
 } task_obj_t;
 
+
 EXTERN struct task_vtable TASK_VTABLE;
 EXTERN struct task_vtable TASK_OBJ_VTABLE;
 
@@ -427,12 +428,58 @@ EXTERN object_t* thread_dispatch(fun_t action);
  **********************************************************/
 
 
-INLINE bool lazy_global_init_complete(object_t* flag_ptr) {return 1==(intptr_t)flag_ptr;}
-// Initialise a lazy global.  `init` is a YAFL function (sync or async ABI):
-// the runtime invokes it directly and dispatches on PTR_IS_TASK of the
-// return value — a tagged task to await, or a non-task pointer signalling
-// inline completion.  Returns a tagged task_t* the caller awaits.
-EXPORT object_t* lazy_global_init(object_t** self, object_t* flag_ptr, fun_t init);
+// Returns 1 if the flag is the (task_t*)1 sentinel, 0 otherwise.  The
+// compiler's `Invoke` declares the call's return type as `Int(8)`, so
+// the C signature uses `int32_t` (not `_Bool`) to make the high-bit
+// state explicit and platform-independent.
+INLINE int32_t lazy_global_init_complete(object_t* flag_ptr) {return 1==(intptr_t)flag_ptr;}
+
+
+// Shared waiter-chain protocol: lazy_thunk_t is the layout prefix every
+// compiler-generated lazy stub extends with a `value: <T>` field whose
+// IR type varies per stub class.  `flag` follows the lazy_global_init
+// convention: NULL = uninitialised, task_t* chain = init in flight with
+// waiters queued, (task_t*)1 = initialised.  `closure` carries the init
+// fun_t; the compiler-emitted fetch function clears it (.f = .o = NULL)
+// after the value is stored so the GC doesn't pin the captured env.
+typedef struct {
+    vtable_t*               type;
+    _Atomic(task_t*)        flag;
+    fun_t                   closure;
+} lazy_thunk_t;
+
+// Atomically swap the waiter chain at *flag_field with the (task_t*)1
+// "init complete" sentinel; resume each waiter via task_complete_deferred.
+// Each waiter is a task_t with no result slot (used by lazy_global_init —
+// awaiters re-read the global slot themselves).
+EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
+
+// Atomic chain primitives used by compiler-emitted `lazy_drain$<mangle>`
+// — the type-aware write happens in IR via `ObjectField` on the
+// per-IR-type waiter subtype, so the runtime only needs to manage the
+// chain itself.
+//
+// Swap the waiter-chain root with the "init complete" sentinel and
+// return the previous head.  The loop body iterates from there.
+INLINE object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
+    return (object_t*)atomic_exchange((_Atomic(object_t*)*)flag_field, (object_t*)1);
+}
+
+// Atomically read head->next and clear it; returns the next chain link
+// (NULL when this is the last waiter).
+INLINE object_t* lazy_chain_step(object_t* head) {
+    _Atomic(struct task_s*)* p = &((task_t*)head)->next;
+    task_t* next = (task_t*)atomic_load(p);
+    atomic_store(p, NULL);
+    return (object_t*)next;
+}
+
+// Atomically append `waiter` to the chain at *flag_field.  Returns:
+//   0 — appended (init in flight on another thread)
+//   1 — this thread won the init race; caller must run init
+//   2 — flag was already (task_t*)1 by the time we tried; caller should
+//       task_complete(waiter) so a chained on_complete still fires
+EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter);
 
 
 /**********************************************************

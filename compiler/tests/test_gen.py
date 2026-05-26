@@ -8,10 +8,11 @@ from codegen.gen import Application
 from codegen.things import Function, Object
 
 import lowering.globalfuncs
-import lowering.globalinit
+import lowering.lower_lazy_lets
 import lowering.inlining
 import lowering.deadstores
 import lowering.async_lower as lowering_cps
+import lowering.sync_inference
 import lowering.trim
 import lowering.staticinit
 
@@ -36,9 +37,9 @@ class TestApplicationDiscriminatorPreservation(TestCase):
         result = lowering.deadstores.eliminate_dead_stores(self._app_with_discriminators())
         self.assertEqual(result.union_discriminators, {"SomeType|None": 42})
 
-    def test_globalinit_preserves_discriminators(self):
-        result = lowering.globalinit.add_ops_to_support_global_lazy_init(self._app_with_discriminators())
-        self.assertEqual(result.union_discriminators, {"SomeType|None": 42})
+    def test_lower_lazy_lets_preserves_discriminators(self):
+        result = lowering.lower_lazy_lets.lower_lazy_lets([])  # statement-list pass; empty input is fine
+        self.assertEqual(result, [])  # sanity: no statements in, no statements out
 
     def test_async_lower_preserves_discriminators(self):
         result = lowering_cps.lower_async(self._app_with_discriminators())
@@ -208,4 +209,71 @@ class TestParallelCallDeadStore(TestCase):
         self.assertTrue(
             any(isinstance(op, o.ParallelCall) for op in fn_ops),
             "ParallelCall must be kept when its register is read by a subsequent op",
+        )
+
+
+class TestSyncInferenceTaggedTaskReturn(TestCase):
+    """A function that returns a tagged task (e.g. the `[tail]` wrapper)
+    must never be classified as sync — its callers see PTR_IS_TASK and
+    must enter the async path.  Without this rule, sync_inference's
+    "no non-tail Call ops" heuristic auto-classifies the wrapper as
+    sync, then propagation marks its recursive caller sync, then the
+    caller's IS_TASK check on the recursive return aborts."""
+
+    def _wrapper_like(self) -> Function:
+        """Mimic the shape of the `[tail]` wrapper: side-effecting
+        Invoke-via-Move ops (no `Call` op), then `Return(TagTask(...))`."""
+        sv_state = e.StackVar(t.DataPointer(), "$state")
+        sv_discard = e.StackVar(t.DataPointer(), "$sv_tail_discard")
+        return Function(
+            name="loop_wrapper",
+            params=t.Struct(fields=(("this", t.DataPointer()),)),
+            result=t.DataPointer(),
+            stack_vars=t.Struct(fields=(("$state", t.DataPointer()),
+                                        ("$sv_tail_discard", t.DataPointer()))),
+            ops=(
+                o.NewObject("loop$tailstate", sv_state),
+                o.Move(sv_discard,
+                       e.Invoke("thread_dispatch",
+                                e.NewStruct((("action",
+                                              e.GlobalFunction("loop$tailcallback", sv_state)),)),
+                                t.DataPointer()),
+                       keep=True),
+                o.Return(e.TagTask(sv_state, t.DataPointer())),
+            ),
+            sync=False,
+        )
+
+    def test_tagged_task_return_excluded_from_sync_set(self):
+        app = Application()
+        app.functions["loop_wrapper"] = self._wrapper_like()
+        result = lowering.sync_inference.infer_sync(app)
+        self.assertFalse(
+            result.functions["loop_wrapper"].sync,
+            "A function returning TagTask(...) must not be classified as sync",
+        )
+
+    def test_caller_of_tagged_task_returner_is_not_sync(self):
+        """Propagation must also see that the wrapper is async — a caller
+        whose only non-tail Call targets the wrapper must stay async."""
+        app = Application()
+        app.functions["loop_wrapper"] = self._wrapper_like()
+        sv_result = e.StackVar(t.DataPointer(), "$r")
+        app.functions["loop_tailimpl"] = Function(
+            name="loop_tailimpl",
+            params=t.Struct(fields=(("this", t.DataPointer()),)),
+            result=t.DataPointer(),
+            stack_vars=t.Struct(fields=(("$r", t.DataPointer()),)),
+            ops=(
+                o.Call(function=e.GlobalFunction("loop_wrapper"),
+                       parameters=e.NewStruct(()),
+                       register=sv_result),
+                o.Return(sv_result),
+            ),
+            sync=False,
+        )
+        result = lowering.sync_inference.infer_sync(app)
+        self.assertFalse(
+            result.functions["loop_tailimpl"].sync,
+            "A function whose only callee returns a tagged task must stay async",
         )

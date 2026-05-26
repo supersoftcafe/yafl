@@ -9,8 +9,9 @@ import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
 import lowering.complex_enums
-import lowering.globalinit
 import lowering.lambdas
+import lowering.lazy_thunks
+import lowering.lower_lazy_lets
 import lowering.generics
 import lowering.inlining
 import lowering.simple_classes
@@ -35,6 +36,7 @@ from codegen.typedecl import DataPointer, FuncPointer, Struct, Int, Void
 from codegen.things import Function
 import codegen.param as cg_p
 import codegen.ops as cg_o
+import codegen.typedecl as cg_t
 
 from codegen.gen import Application
 import pyast.resolver as g
@@ -114,6 +116,26 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
 
 
 
+def __ensure_lazy_machinery(a: Application) -> None:
+    """Find every Lazy$<irmangle> class referenced in `a` — either by a
+    NewObject op (local `[lazy]`) or by a Global's `object_name`
+    (`[lazy]` global, statically initialised stub instance) — and
+    register the stub class + waiter subtype + fetch + finisher + drain
+    for the matching IR type."""
+    referenced: set[str] = set()
+    for fn in a.functions.values():
+        for op in fn.ops:
+            if isinstance(op, cg_o.NewObject) and op.name.startswith("Lazy$"):
+                referenced.add(op.name)
+    for gv in a.globals.values():
+        if gv.object_name and gv.object_name.startswith("Lazy$"):
+            referenced.add(gv.object_name)
+    for cls_name in referenced:
+        suffix = cls_name[len("Lazy$"):]
+        ir_type = lowering.lazy_thunks.ir_mangle_to_type(suffix)
+        lowering.lazy_thunks.ensure_lazy_machinery(a, ir_type)
+
+
 def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None) -> str:
     a = Application()
     resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {}, optimization_level=optimization_level)
@@ -150,6 +172,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     a.functions["__entrypoint__"] = __create_entry_point(main)
     a.union_discriminators = union_discriminators or {}
 
+    # Register per-IR-type lazy thunk machinery for every Lazy$<irmangle>
+    # class referenced by a NewObject op.  Idempotent and order-independent.
+    __ensure_lazy_machinery(a)
+
     # SSA + control-flow + Phi validation right after AST lowering, before
     # any IR-level transformations. Catches generator bugs at the source.
     lowering.ssa_validate.validate(a)
@@ -179,8 +205,13 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # lowered simple-class globals (e.g. Config(13)) become valid C static initialisers.
     a = lowering.staticinit.resolve_flat_struct_global_inits(a)
 
-    # Lazy initialisation must be after inlining, and before async lowering.
-    a = lowering.trim.removed_unused_stuff(lowering.globalinit.add_ops_to_support_global_lazy_init(a))
+    # Global lazy initialisation now flows through the per-IR-type
+    # lazy-thunk framework: `lower_lazy_lets` auto-promotes every
+    # non-literal global to `[lazy]`, `LetStatement.__global_codegen_lazy`
+    # emits the static `Lazy$<T>` stub, and `LazyExpression` rewrites
+    # references to go through `lazy_fetch$<T>`.  No more per-function-
+    # entry guard — the previous `globalinit` pass and `lazy_global_init`
+    # runtime helper are gone.
 
     # Tail-trampoline lowering: split every [tail] function into wrapper +
     # impl + state + callback + chain. Runs before async lowering so the
@@ -296,6 +327,16 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
     new_statements = lowering.boxing.insert_boxing(new_statements)
+    # Surface [lazy] forward-references-to-non-lazy as compile errors
+    # before lowering — the lowering would otherwise produce code that
+    # crashes at force time.  Block-local check.
+    lazy_fwd_errors = lowering.lower_lazy_lets.check_lazy_forward_refs(new_statements)
+    if lazy_fwd_errors:
+        return lazy_fwd_errors
+    # [lazy] let lowering: wrap RHS in a lambda and rewrite reference sites
+    # to LazyExpression.  Must run before lambdas so the synthesised
+    # closure goes through normal closure conversion.
+    new_statements = lowering.lower_lazy_lets.lower_lazy_lets(new_statements)
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
     new_statements = lowering.simple_classes.lower_simple_classes(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)

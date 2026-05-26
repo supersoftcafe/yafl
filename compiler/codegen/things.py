@@ -536,14 +536,22 @@ class Global:
         if self.object_name:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
+            # The struct's first field is its vtable slot, declared in
+            # the IR as `("type", DataPointer())` — i.e. typed
+            # `object_t*` at the C level.  `obj_<name>` is the vtable
+            # constant (`static vtable_t* const obj_<name> = ...`), and
+            # `&obj_<name>` is the address of that storage — which IS
+            # the in-memory representation of an object_t whose vtable
+            # pointer matches the class.  Cast it through `object_t*`
+            # to satisfy the struct field's declared type.
             if self.init.values and isinstance(self.init.values[-1], p.InitArray):
                 return (f"{self.__prototype(type_cache)} = {{\n"
-                 f"    (const vtable_t const *)&obj_{mangle_name(self.object_name)}\n"
+                 f"    (object_t*)&obj_{mangle_name(self.object_name)}\n"
                  + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
                  f"}};\n")
-            # Generate a named struct for the data, then a pointer to it
+            # Generate a named struct for the data, then a pointer to it.
             data_name = f"{self.to_c_name()}_data"
-            struct_body = ("    (const vtable_t const *)&obj_{}\n".format(mangle_name(self.object_name))
+            struct_body = ("    (object_t*)&obj_{}\n".format(mangle_name(self.object_name))
                            + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
             return (f"static {mangle_name(self.object_name)}_t {data_name} = {{\n"
                     f"{struct_body}"

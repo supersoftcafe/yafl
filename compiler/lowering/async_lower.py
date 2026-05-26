@@ -20,7 +20,10 @@ from typing import Iterable
 from functools import reduce
 
 import langtools
-from lowering.task_abi import TASK_FIELDS, wrap_return_type, is_task_param, task_ptr_from
+from lowering.task_abi import (
+    TASK_FIELDS, wrap_return_type, is_task_param, task_ptr_from,
+    task_subtype_name, make_task_foreign_object, make_task_subtype_object,
+)
 from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
 from codegen.things import Function, Object
@@ -420,30 +423,10 @@ def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
 # Return-type helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def __task_subtype_name(result_type: Type) -> str | None:
-    """Name of the compiler-generated task subtype, or None for Void (base task_t).
-
-    Types that store the same C value in the result field share one subtype.
-    Distinct struct layouts always get a unique name (collision probability of
-    abs(hash) is negligible within a single compilation).
-    """
-    if isinstance(result_type, Void):
-        return None
-    # DataPointer (covers bigint, str, and class pointers) — all stored as object_t*.
-    # Maps to yafllib's pre-declared task_obj_t (yafl.h).
-    if isinstance(result_type, DataPointer):
-        return "task_obj"
-    # FuncPointer: stored as fun_t
-    if isinstance(result_type, FuncPointer):
-        return "task$FuncPointer"
-    # Fixed-width integer: stored as intN_t
-    if isinstance(result_type, Int):
-        return f"task$Int{result_type.precision}"
-    # TaskWrapper: the task stores the unwrapped inner type
-    if isinstance(result_type, TaskWrapper):
-        return __task_subtype_name(result_type.inner)
-    # Struct (or any other type): unique subtype per distinct layout
-    return f"task$T{abs(hash(result_type))}"
+# `task_subtype_name` moved to `task_abi` so other passes (notably
+# `lazy_thunks`) can share the canonical naming and avoid casting one
+# task subtype to a different one with merely-matching layout.
+__task_subtype_name = task_subtype_name
 
 
 def __extract_from_task(completed_task: RParam, callee_result_type: Type,
@@ -1068,37 +1051,12 @@ def __convert_function_to_task_convention(
 # field at the same offset by construction.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _task_object() -> Object:
-    """Foreign 'task' Object — its typedef lives in yafl.h; we publish the
-    field list so subtypes can extend it via normal YAFL inheritance and
-    ObjectField accesses to inherited fields resolve at the correct offsets.
-    """
-    return Object(
-        name="task",
-        extends=(),
-        functions=(),
-        fields=ImmediateStruct(TASK_FIELDS),
-        comment="foreign task_t — declared in yafllib/yafl.h",
-        is_foreign=True,
-    )
-
-
-def _task_subtype_object(subtype_name: str, result_type: Type) -> Object:
-    # "task_obj" is pre-declared in yafllib (yafl.h + task.c: TASK_OBJ_VTABLE
-    # aliased as obj_task_obj). Mark it foreign so codegen doesn't emit a
-    # duplicate typedef/vtable; NewObject/ObjectField still reference the
-    # yafllib symbols by name.  Compiler-synthesised subtypes get a flat
-    # struct emitted by codegen with the task_t prefix followed by `result`.
-    is_foreign = subtype_name == "task_obj"
-    fields = TASK_FIELDS + (("result", result_type),)
-    return Object(
-        name=subtype_name,
-        extends=("task",),
-        functions=(),
-        fields=ImmediateStruct(fields),
-        comment=f"task subtype for result type {result_type}",
-        is_foreign=is_foreign,
-    )
+# `_task_object` and `_task_subtype_object` were moved to task_abi.py
+# (as `make_task_foreign_object` and `make_task_subtype_object`) so
+# other passes (notably `lazy_thunks`) can pre-register subtypes under
+# the canonical names without import-cycling through async_lower.
+_task_object = make_task_foreign_object
+_task_subtype_object = make_task_subtype_object
 
 
 def _par_task_object(par_task_name: str, result_types: list[Type]) -> Object:
@@ -1252,7 +1210,12 @@ def lower_async(app: Application) -> Application:
     new_functions = reduce(lambda acc, v: acc | v[0], results, {})
     new_objects   = reduce(lambda acc, v: acc | v[1], results, {}) | app.objects
 
-    # Add task-subtype objects (after conversion so return types are finalised)
+    # Add task-subtype objects (after conversion so return types are finalised).
+    # The dict union `task_subtypes | tmp_app.objects` lets `tmp_app.objects`
+    # win on key collisions — important because `lazy_thunks.ensure_lazy_machinery`
+    # pre-registers task subtypes under the same canonical names, and we must
+    # not clobber them.  Don't switch this to `.update()` or reversed-union
+    # without also updating lazy_thunks.
     tmp_app = dataclasses.replace(app, functions=new_functions, objects=new_objects)
     task_subtypes = collect_task_subtypes(tmp_app)
 

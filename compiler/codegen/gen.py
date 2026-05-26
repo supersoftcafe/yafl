@@ -98,10 +98,29 @@ class Application:
         self.__forwards.append(g.to_c_prototype(self.__type_cache))
         self.__variables.append(g.to_c_implement(self.__type_cache))
         if not g.object_name and g.lazy_init_function is not None:
+            # Old-style lazy global: the value lives directly in the
+            # global's slot.  Register the slot itself.
             self.__gc_roots.extend(g.type.get_pointer_paths(g.to_c_name()))
+        elif g.object_name and g.init is not None:
+            # Static class-instance global (`[lazy]` global lowers here):
+            # the actual storage is `<name>_data`, a static struct whose
+            # individual fields hold heap pointers the GC must trace.
+            # `<name>` is just `(object_t*)&<name>_data` and points at
+            # static memory the GC rejects — register the in-struct
+            # pointer-field addresses instead.  Skip the leading vtable
+            # `type` field (`Object.get_pointer_mask` applies the same
+            # exclusion for the live-object scan).
+            cls = self.objects.get(g.object_name)
+            if cls is not None and len(cls.fields.fields) > 1:
+                trailing = Struct(cls.fields.fields[1:])
+                self.__gc_roots.extend(
+                    trailing.get_pointer_paths(f"{g.to_c_name()}_data"))
 
     def __declare_roots(self) -> str:
-        declarations = ";\n    ".join([f"declare(&{r})" for r in self.__gc_roots])
+        # Cast each `&<path>` to `(object_t**)` so paths into fun_t's
+        # `.o` (typed `void*`) accept the declare signature too — paths
+        # already typed `object_t**` (the common case) are identity-cast.
+        declarations = ";\n    ".join([f"declare((object_t**)&{r})" for r in self.__gc_roots])
         return (f"static roots_declaration_func_t _previous_declare_roots;\n"
                 f"static void _declare_roots(void(*declare)(object_t**)) {{\n"
                 f"    _previous_declare_roots(declare);\n"

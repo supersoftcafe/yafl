@@ -344,6 +344,15 @@ def _try_inline_call_at_stmt(
     elif isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement):
         if stmt.default_value is None:
             return None
+        # A deferred-init let's RHS becomes the body of a deferred
+        # closure (currently via `lower_lazy_lets` for `[lazy]`).  Lifting
+        # an inlined call's args into outer `let`s would move references
+        # out of that body and *before* the let's textual position —
+        # defeating forward-ref-between-lazies (the references would
+        # evaluate at the wrong time).  Expression-level beta-reduction
+        # still inlines inside the RHS.
+        if stmt.is_deferred_init():
+            return None
         call = stmt.default_value
         def wrap(expr): return dataclasses.replace(stmt, default_value=expr)
     elif isinstance(stmt, s.ActionStatement):

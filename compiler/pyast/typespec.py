@@ -232,6 +232,46 @@ def Bool() -> BuiltinSpec:
 
 
 @dataclass(frozen=True)
+class LazyStubSpec(TypeSpec):
+    """Type of a captured `[lazy]` stub pointer.  Used by the lambdas pass
+    to type the closure-class field holding a captured stub reference.
+    No source-level equivalent — emitted purely as a marker so the field
+    generates to DataPointer regardless of the let's user-visible type
+    (a `let [lazy] x: Int32` is stored as a stub pointer, not as int32_t).
+
+    `target_type` is the user-visible value type so two distinct
+    captures (e.g. `[lazy] x: Int` vs `[lazy] y: Int32`) participate in
+    distinct symbol mangles via `as_unique_id_str` — even though their
+    storage shape collapses to DataPointer at C level.
+    """
+    target_type: TypeSpec | None = None
+
+    def is_concrete(self) -> bool:
+        return self.target_type is None or self.target_type.is_concrete()
+
+    def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
+        return self, []
+
+    def check(self, resolver: g.Resolver) -> list[Error]:
+        return self.target_type.check(resolver) if self.target_type else []
+
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
+        return cg_t.DataPointer()
+
+    def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
+        return isinstance(right, LazyStubSpec)
+
+    def as_unique_id_str(self) -> str | None:
+        inner = self.target_type.as_unique_id_str() if self.target_type else None
+        return f"$lazystubptr${inner}" if inner else "$lazystubptr"
+
+    def search_and_replace(self, resolver: g.Resolver, replace) -> TypeSpec:
+        tt = self.target_type.search_and_replace(resolver, replace) if self.target_type else None
+        return langtools.cast(TypeSpec, replace(resolver,
+            dataclasses.replace(self, target_type=tt)))
+
+
+@dataclass(frozen=True)
 class ClassSpec(TypeSpec):
     name: str
     type_params: tuple[TypeSpec, ...] = ()

@@ -207,6 +207,26 @@ fun main(): System::Int
   ret inner()
 """, "captured by a nested function or lambda")
 
+    def test_lazy_let_of_linear_type(self):
+        """`[lazy]` memoises its value across forces — multiple reads
+        of a linear value would each yield the cached instance,
+        breaking the use-once invariant.  Reject at declaration."""
+        self._reject("""
+fun main(): System::Int
+  let [lazy] h: H = mk()
+  ret sink(h)
+""", "linear")
+
+    def test_lazy_body_captures_linear(self):
+        """A `[lazy]` body captures linear values into its synthesised
+        closure — same rationale as the lambda-capture rejection."""
+        self._reject("""
+fun main(): System::Int
+  let a = mk()
+  let [lazy] x: System::Int = sink(a)
+  ret x
+""", "linear")
+
     def test_match_arm_leaks_linear(self):
         # The IO arm binds a linear value but never consumes it.
         self._reject("""

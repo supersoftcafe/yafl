@@ -510,6 +510,22 @@ class LetStatement(DataStatement):
     def get_type(self) -> t.TypeSpec|None:
         return self.declared_type
 
+    def is_deferred_init(self) -> bool:
+        """True if this let is initialised lazily — its RHS is wrapped in
+        a closure and evaluation is deferred until first force.  Today
+        that means `[lazy]`; future deferred-eval attributes route through
+        the same predicate so callers don't need to enumerate them.
+
+        Used to keep multiple compiler stages in lock-step:
+        `ast_inline` skips statement-level inlining; `lower_lazy_lets`
+        wraps the RHS in a `()=>expr` lambda; `NamedExpression.generate`
+        returns DataPointer-typed storage (the stub pointer);
+        `BlockExpression.generate` hoists stub allocation to block entry.
+        Any new pass that special-cases lazy lets should consult this
+        predicate rather than spelling out `"lazy" in attributes`.
+        """
+        return "lazy" in self.attributes
+
     def add_namespace(self, path: str):
         return self if self.name == '_' else super().add_namespace(path)
 
@@ -554,9 +570,28 @@ class LetStatement(DataStatement):
                 const_err.append(Error(self.line_ref, "[const] takes no arguments"))
             if not isinstance(self.default_value, (e.IntegerExpression, e.FloatExpression, e.StringExpression)):
                 const_err.append(Error(self.line_ref, "[const] requires a literal value"))
-        return err1 + err2 + const_err
+        lazy_err: list[Error] = []
+        if "lazy" in self.attributes:
+            if self.attributes.get("lazy") is not None:
+                lazy_err.append(Error(self.line_ref, "[lazy] takes no arguments"))
+            if self.default_value is None:
+                lazy_err.append(Error(self.line_ref, "[lazy] requires an initialiser"))
+        return err1 + err2 + const_err + lazy_err
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
+        # `[lazy]` lets are handled out-of-band by `BlockExpression.generate`:
+        # it hoists `generate_lazy_alloc` to block entry and emits
+        # `generate_lazy_populate` at the let's textual position.  Any
+        # other call site is a bug — silently emitting only the
+        # closure-population half would leave the stub unallocated and
+        # crash at force.  Surface the bug instead of papering over it.
+        if self.is_deferred_init():
+            raise RuntimeError(
+                f"[lazy] let {self.name!r} reached LetStatement.generate "
+                f"directly — this should only happen via "
+                f"BlockExpression.generate's two-phase emission. "
+                f"A new generate-site that holds nested LetStatements "
+                f"needs the same hoist treatment.")
         expr_bundle = self.default_value.generate(resolver).with_prefix("expr")
         sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
@@ -567,43 +602,176 @@ class LetStatement(DataStatement):
         unpack_bundle = self.to_c_destructure(None).with_prefix("unpack")
         return expr_bundle + init_bundle + unpack_bundle
 
-    def global_codegen(self, resolver: g.Resolver) -> tuple[list[cg_x.Global], list[cg_x.Function]]:
-        init_funcs: list[cg_x.Function] = []
-        global_vars: list[cg_x.Global] = []
+    def generate_lazy_alloc(self, resolver: g.Resolver) -> g.OperationBundle:
+        """Stub allocation half of a `[lazy]` local let — emit at block
+        entry so forward references inside other lazies see the stub
+        slot pointing at a real heap object.
 
-        init_func_name: str|None = None
-        init_flag_name: str|None = None
-        rparam: cg_p.RParam|None = None
+        Allocates the `Lazy$<irmangle>` stub, clears `flag` and `closure`
+        to zero.  Closure population happens later via `generate_lazy_populate`
+        at the let's original textual position.
+        """
+        import lowering.lazy_thunks as lt
+
+        ir_t = self.declared_type.generate(resolver)
+        lt._ir_mangle(ir_t)
+        cls = lt.stub_class_name(ir_t)
+
+        sv_stub   = cg_p.StackVar(cg_t.DataPointer(), self.name)
+        flag_f    = cg_p.ObjectField(cg_t.DataPointer(), sv_stub, cls, "flag",    None)
+        closure_f = cg_p.ObjectField(cg_t.FuncPointer(), sv_stub, cls, "closure", None)
+        return g.OperationBundle(
+            stack_vars=(sv_stub,),
+            operations=(
+                cg_o.NewObject(cls, sv_stub),
+                cg_o.Move(flag_f,    cg_p.NullPointer()),
+                cg_o.Move(closure_f, cg_p.ZeroOf(cg_t.FuncPointer())),
+            ),
+            result_var=None,
+        )
+
+    def generate_lazy_populate(self, resolver: g.Resolver) -> g.OperationBundle:
+        """Closure-population half of a `[lazy]` local let — emit at the
+        let's original textual position.
+
+        Pre-condition: `lower_lazy_lets` has wrapped the RHS in a
+        `() => expr` LambdaExpression, the lambdas pass has converted it
+        to a fun_t-valued expression (`DotExpression(NewExpression(...))`
+        for capturing closures, `NamedExpression` for captureless ones),
+        and `generate_lazy_alloc` has already emitted the stub allocation
+        at block entry — so the stub stack var is bound and the slot
+        points at a real heap object by the time we get here.
+        """
+        import lowering.lazy_thunks as lt
+
+        ir_t = self.declared_type.generate(resolver)
+        cls  = lt.stub_class_name(ir_t)
+
+        closure_bundle = self.default_value.generate(resolver).with_prefix("closure")
+        sv_stub   = cg_p.StackVar(cg_t.DataPointer(), self.name)
+        closure_f = cg_p.ObjectField(cg_t.FuncPointer(), sv_stub, cls, "closure", None)
+        return closure_bundle + g.OperationBundle(
+            stack_vars=(),
+            operations=(cg_o.Move(closure_f, closure_bundle.result_var),),
+            result_var=None,
+        )
+
+    def global_codegen(self, resolver: g.Resolver) -> tuple[list[cg_x.Global], list[cg_x.Function]]:
+        if self.is_deferred_init():
+            return self.__global_codegen_lazy(resolver)
+
+        # Non-`[lazy]` globals reach here only when `lower_lazy_lets` did
+        # *not* auto-promote them — meaning `_is_trivial_expr` accepted
+        # the AST shape.  Three direct-emission paths:
+        #
+        #   1. literal scalar / string → single-RParam Global.
+        #   2. `ClassName(literal, …)` → static class-instance Global
+        #      whose `init` is a NewStruct of the literal args.
+        #   3. tuple of literals → flat-struct Global.
+        #
+        # None of these go through `$lazy$init`.
+        if self.default_value is not None:
+            static = self.__try_static_class_init(resolver)
+            if static is not None:
+                return [static], []
+
         xtype = self.get_type().generate(resolver)
-        if self.default_value:
+        rparam: cg_p.RParam | None = None
+        if self.default_value is not None:
             init = self.default_value.generate(resolver)
-            if not init.operations and not init.stack_vars and init.result_var:
-                rparam = init.result_var
-            else:
-                init_func_name = f"{self.name}$lazy$init"
-                init_flag_name = f"{self.name}$lazy$flag"
-                set_value = cg_o.Move(cg_p.GlobalVar(xtype, self.name), init.result_var)
-                # Return DataPointer (NULL) so the runtime can uniformly call
-                # this under the YAFL async ABI and dispatch via PTR_IS_TASK:
-                # sync init returns NULL (non-task) → runtime fires continue
-                # inline; async init's hot path returns a tagged task pointer.
-                return_null = cg_o.Return(cg_p.NullPointer())
-                init_funcs.append(cg_x.Function(
-                    init_func_name,
-                    cg_t.Struct( (("this", cg_t.DataPointer()),) ),
-                    cg_t.DataPointer(),
-                    cg_t.Struct(tuple((sv.name, sv.type) for sv in init.stack_vars)),
-                    init.operations + (set_value,return_null)  ))
-                global_vars.append(cg_x.Global(
-                    init_flag_name,
-                    cg_t.DataPointer()  ))
-        global_vars.append(cg_x.Global(
-            self.name,
-            xtype,
-            rparam,
-            lazy_init_function=init_func_name,
-            lazy_init_flag=init_flag_name  ))
-        return global_vars, init_funcs
+            if init.operations or init.stack_vars or init.result_var is None:
+                raise RuntimeError(
+                    f"non-lazy global {self.name!r} produced a non-trivial "
+                    f"init bundle — lower_lazy_lets should have auto-promoted "
+                    f"it to [lazy].")
+            rparam = init.result_var
+        return [cg_x.Global(self.name, xtype, rparam)], []
+
+    def __try_static_class_init(self, resolver: g.Resolver) -> cg_x.Global | None:
+        """Match `let x: T = ClassName(literal, …)` and emit `x` directly
+        as a static class-instance Global with `object_name=ClassName`
+        and `init=NewStruct((field, literal_rparam), …)`.
+
+        Returns the Global on a successful match, or None to fall back
+        to the generic generate() path.  The match is the AST counterpart
+        of the legacy staticinit + resolve_flat_struct_global_inits
+        optimisations — performed upfront so we never spin up the lazy
+        framework for a global the compiler can statically initialise.
+        """
+        dv = self.default_value
+        if not isinstance(dv, e.CallExpression):
+            return None
+        if not isinstance(dv.function, e.NamedExpression):
+            return None
+        if not isinstance(dv.parameter, e.TupleExpression):
+            return None
+        found = resolver.find_type({dv.function.name})
+        if len(found) != 1 or not isinstance(found[0].statement, ClassStatement):
+            return None
+        cls = found[0].statement
+        field_defs = list(cls.parameters.flatten())
+        args = dv.parameter.expressions
+        if len(args) != len(field_defs):
+            return None
+
+        init_pairs: list[tuple[str, cg_p.RParam]] = []
+        for arg_entry, field_def in zip(args, field_defs):
+            # Any arg whose generate() produces a single RParam with no
+            # operations / stack vars is acceptable as a static
+            # initialiser — covers literals AND tuples of literals
+            # (whose generate() produces a NewStruct of literal RParams).
+            ab = arg_entry.value.generate(resolver)
+            if ab.operations or ab.stack_vars or ab.result_var is None:
+                return None
+            init_pairs.append((field_def.name, ab.result_var))
+
+        return cg_x.Global(
+            name=self.name,
+            type=cg_t.DataPointer(),
+            init=cg_p.NewStruct(tuple(init_pairs)),
+            object_name=cls.name,
+        )
+
+    def __global_codegen_lazy(self, resolver: g.Resolver) -> tuple[list[cg_x.Global], list[cg_x.Function]]:
+        """`[lazy]` global lowering — emit a static `Lazy$<irmangle>`
+        instance whose `closure` points at the lifted init function.
+
+        Pre-condition: `lower_lazy_lets` has wrapped the RHS in a
+        `() => expr` LambdaExpression, and the lambdas pass has converted
+        it to a fun_t-valued NamedExpression of the lifted captureless
+        function (globals can't reference function-locals, so the
+        closure is always captureless).
+        """
+        import lowering.lazy_thunks as lt
+
+        if self.default_value is None:
+            raise ValueError(f"[lazy] global {self.name!r} requires an initialiser")
+
+        xtype = self.get_type().generate(resolver)
+        lt._ir_mangle(xtype)  # raise NotImplementedError early for unsupported types
+        stub_cls = lt.stub_class_name(xtype)
+
+        init = self.default_value.generate(resolver)
+        if init.operations or init.stack_vars:
+            raise ValueError(
+                f"[lazy] global {self.name!r}: closure expression must reduce "
+                f"to a single fun_t value — lambdas pass should have lifted "
+                f"the captureless lambda.  Got default_value={type(self.default_value).__name__!r}, "
+                f"ops={len(init.operations)}, stack_vars={len(init.stack_vars)}")
+        closure_value = init.result_var
+        assert closure_value is not None
+
+        stub_init = cg_p.NewStruct((
+            ("flag",    cg_p.NullPointer()),
+            ("closure", closure_value),
+            ("value",   cg_p.ZeroOf(xtype)),
+        ))
+        return [cg_x.Global(
+            name=self.name,
+            type=cg_t.DataPointer(),
+            init=stub_init,
+            object_name=stub_cls,
+        )], []
 
     def flatten_to(self, path_to_thing, path):
         return [path_to_thing(path + [self])]

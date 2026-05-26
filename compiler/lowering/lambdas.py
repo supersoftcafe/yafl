@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import pyast.statement as s
 import pyast.expression as e
 
@@ -24,12 +26,29 @@ def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[t
     # Use the outer resolver (not the inner one updated by search_and_replace) so that
     # locally-defined names inside BlockExpression bodies are not mistakenly treated as
     # free variables that need to be captured.
+    #
+    # GLOBAL-scoped references (top-level functions, top-level lets, lifted
+    # lambdas) are accessible by name from any function the lambda is
+    # lifted into, so threading them through a closure object is pure
+    # overhead.  TRAIT scope still needs capture because trait instances
+    # are bound through the enclosing function's `where` clause and that
+    # context is lost on lift.
+    #
+    # LazyExpression nodes are treated as captures of the stub pointer.
+    # `lower_lazy_lets` already rewrote every NamedExpression that resolves
+    # to a `[lazy]` let into LazyExpression — so by the time we walk a
+    # lifted lambda's body, the LazyExpression is the only handle on its
+    # stub.  Capture as LazyStubSpec (always generates to DataPointer).
     references: dict[str, t.TypeSpec] = {}
     def check_if_capture(_inner_resolver: g.Resolver, thing):
         if isinstance(thing, e.NamedExpression):
             found = resolver.find_data({thing.name})
-            if len(found) == 1:
+            if len(found) == 1 and found[0].scope != g.ResolvedScope.GLOBAL:
                 references[thing.name] = found[0].statement.get_type()
+        elif isinstance(thing, e.LazyExpression):
+            found = resolver.find_data({thing.stub_name})
+            if found and len(found) == 1 and found[0].scope != g.ResolvedScope.GLOBAL:
+                references[thing.stub_name] = t.LazyStubSpec(thing.line_ref, thing.target_type)
         return thing
     lmd.search_and_replace(resolver, check_if_capture)
     params = set(p.name for p in lmd.parameters.flatten())
@@ -37,7 +56,7 @@ def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[t
     return captures
 
 
-def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]], self_ref_names: frozenset[str] = frozenset(), method_nme: str = "") -> e.Expression:
+def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]], self_ref_names: frozenset[str] = frozenset(), method_nme: str = "", cls_name: str = "") -> e.Expression:
     lr = xpr.line_ref
     capture_names = {name for name, _ in cpt}
     def redirect_reference(resolver: g.Resolver, thing):
@@ -48,6 +67,12 @@ def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.Typ
                 # Self-referential capture: reconstruct the fun_t from `this` rather
                 # than reading a captured field (which would be null at creation time).
                 return e.DotExpression(lr, e.NamedExpression(lr, "this"), method_nme)
+        elif isinstance(thing, e.LazyExpression) and thing.stub_name in capture_names:
+            # Captured stub: route stub access through `this.<stub_name>`
+            # on the closure class.  LazyExpression's `captured_class`
+            # field flips its generate path from StackVar/GlobalVar to
+            # ObjectField on `this`.
+            return dataclasses.replace(thing, captured_class=cls_name)
         return thing
     result = xpr.search_and_replace(g.ResolverRoot([]), redirect_reference)
     return result
@@ -105,7 +130,7 @@ def __scan_function_and_export_lambdas(statement: s.Statement, all_statements: l
         self_ref_names = frozenset(name for name, xtype in cpt if xtype == lmd.return_type)
         cpt = [(name, xtype) for name, xtype in cpt if name not in self_ref_names]
 
-        xpr = __redirect_references_to_class(lmd.expression, cpt, self_ref_names, nme)
+        xpr = __redirect_references_to_class(lmd.expression, cpt, self_ref_names, nme, cls_name=nme)
         fnc = __create_function_from_lambda(lmd, nme, xpr, cpt)
         cls = __create_class_from_lambda(lmd, nme, fnc, cpt)
         result = __create_new_expression(cls, fnc, cpt)
