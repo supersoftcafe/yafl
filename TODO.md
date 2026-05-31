@@ -3,6 +3,86 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
+## Lift the 16 KB per-object size cap
+
+Today `_object_alloc` (`yafllib/object.c:348`) calls `abort_on_too_large_object`
+for anything that won't fit in one 16 KB page. This puts a safety ceiling on
+`String` and any array type that the language has no way to lift — strings
+grow until they hit the cap and the program dies. The bigint analogy holds:
+just as bigint takes "integer overflow" off the safety surface, multi-page
+allocations take "string overflow" off it. Pre-requisite for subprocess
+(clang stdin/stdout payloads routinely exceed 16 KB) and therefore for
+self-hosting.
+
+**What's already there.** The scaffolding for multi-page allocations exists
+but is partly disabled. `page_head_t.pages` (line 84) explicitly counts
+"pages, including this one, in the complete allocation". `gc_page_alloc(page_count)`
+(line 272) already takes a count, calls `memory_pages_alloc(page_count)`,
+zeros all pages, stores the count. `gc_page_free` (line 312) routes
+multi-page allocations straight to `memory_pages_free`, bypassing the
+single-page quarantine. `gc_compact_page` (line 508) early-returns on
+`pages > 1` — multi-page is never moved, so `[is_mutable]` invariants
+come for free. The stubbed allocation path at lines 348–354 sketches the
+alloc branch but is replaced with `abort_on_too_large_object`.
+
+**The threat model the simple fix gets wrong.** Multi-page allocations have
+only one valid object pointer — slot 0 of the head page. There are no real
+interior pointers in YAFL data. The hazard is **spurious** interior pointers:
+a stack word during conservative scanning that happens numerically to land
+in a tail page. Today's checks fail unsafely: `memory_pages_is_heap` returns
+true (the page is part of our address space); masking gives the tail page;
+`bitmap_test(&page->head.objects, slot)` reads the first ~64 bytes of the
+tail page **as a `bitmap_t`** — but those bytes are payload (string data).
+For a long string the bit at `slot` will eventually be set by chance, and the
+GC will treat the spurious address as a live object: read `object->vtable`,
+dispatch, corrupt. In-band page validation cannot work for tail pages
+because their first bytes are user payload.
+
+**Side table for page state.** A **byte-per-page side table** maps every
+page in the reserved heap region to one of `FREE`, `HEAD`, `TAIL`.
+Validation in `gc_object_is_on_heap_slow` becomes a single lookup; the
+magic-number tag goes away. `gc_page_alloc(N)` claims a run of N `FREE`
+entries and marks `HEAD + (N-1) × TAIL`. N=1 is the normal path.
+`gc_page_free` walks N entries back to `FREE`; single-page goes through
+quarantine as today; multi-page decommits the pages and returns immediately.
+`head.tag` is removed (the side table is now the authority).
+`head.pages` stays — O(1) freeing without walking the table.
+The existing bitmap-of-mapped-pages in `memory.c` collapses into the side
+table.
+
+**Pre-allocated virtual heap region**, JVM/Node-style: at startup,
+`mmap(NULL, HEAP_VIRTUAL_MAX, PROT_NONE, MAP_NORESERVE | MAP_ANON | MAP_PRIVATE, -1, 0)`
+a fixed range. All YAFL heap pages live inside it. Real memory only gets
+billed on commit (`mprotect READ|WRITE` or `mmap(MAP_FIXED)` over the
+reserved range). On `gc_page_free` for multi-page allocations,
+`madvise(MADV_DONTNEED)` returns real RAM to the OS while keeping the
+virtual range reserved — committed footprint tracks live large objects,
+not peak. `HEAP_VIRTUAL_MAX` can be aggressive (16–64 GB on 64-bit Linux);
+reserved-but-uncommitted pages cost effectively nothing. The side table
+is then a flat `uint8_t[HEAP_VIRTUAL_MAX / GC_PAGE_SIZE]` (≤ 4 MB per GB
+of virtual heap).
+
+**Work to do.** Reserve the heap region at startup and rework `memory.c`
+so all allocations commit within it. Introduce the side table; expose
+`page_state_get(addr)` and a run-set operation. Replace
+`gc_object_is_on_heap_slow`'s magic-tag check with the side-table lookup.
+Enable the multi-page branch of `_object_alloc` — set `head.mutable`,
+mark slot 0 in `head.objects`, link the head page into `new_pages`,
+return `&page->slots[0]`. Drop `head.tag` and the existing
+bitmap-of-mapped-pages. Tests: a 1 MB / 4 MB string survives a GC cycle
+through a stack reference; a stack word whose value falls inside a tail
+page does not register as a live object; RSS returns to baseline after
+multi-page allocations are dropped; stress test interleaving single-page
+and multi-page allocations during a GC cycle.
+
+**Knock-on once this lands.** `abort_on_too_large_object` becomes
+unreachable — remove it. The "Large strings" entry further down this file
+is subsumed: `String` just works at any size, no rope wrapper needed.
+`StringBuilder` is no longer load-bearing for safety; still a perf win
+for many-concat workloads but no longer the only way to produce a large
+string.
+
+
 ## Follow-up — optimal binding-order analysis (was: nested-fn codegen hazards)
 
 The original "nested function calling its enclosing function" bug split

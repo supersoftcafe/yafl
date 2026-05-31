@@ -298,7 +298,7 @@ EXTERN void abort_on_heap_allocation_on_non_worker_thread();
 
 EXTERN void* memory_pages_alloc(size_t page_count);
 EXTERN void memory_pages_free(void* ptr, size_t page_count);
-EXTERN bool memory_pages_is_heap(void*ptr);
+EXTERN bool memory_pages_is_alloc_head(void*ptr);
 EXTERN size_t memory_count();
 
 

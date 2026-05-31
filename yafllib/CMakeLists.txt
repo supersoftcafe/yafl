@@ -84,4 +84,6 @@ add_yafl_test(test_io_stress)
 add_yafl_test(test_gc_stress)
 add_yafl_test(test_gc_min)
 add_yafl_test(test_parallel)
+add_yafl_test(test_mmap)
+add_yafl_test(test_large_objects)
 

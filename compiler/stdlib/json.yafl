@@ -14,17 +14,13 @@ class [final] JsonPair(key: String, value: JsonValue)
 # is detected by mark_complex_enums, so all three are heap-allocated.
 #
 # Numbers split into JsonInt (no fractional part / exponent) and JsonNum
-# (everything else). Strings split into JsonStr (≤_CHUNK_SOFT_LEN) and
-# JsonBigStr (a List<String> of chunks split at code-point boundaries —
-# never inside a UTF-8 multi-byte sequence and never between \r and \n,
-# so consumers can safely concatenate or process chunk-by-chunk).
+# (everything else).
 
 enum JsonValue
   enum JsonNull()
   enum JsonTrue()
   enum JsonFalse()
   enum JsonStr(strValue: String)
-  enum JsonBigStr(chunks: List<String>)
   enum JsonNum(numValue: System::Float)
   enum JsonInt(intValue: System::Int)
   enum JsonArr(elements: List<JsonValue>)
@@ -47,10 +43,10 @@ class [linear,final] ParseState(io: IO, lookahead: String, pos: Int)
 
 # ─── Internal: streaming primitives ──────────────────────────────────────
 
-# Refill threshold for the lookahead buffer.  Matches `_CHUNK_SOFT_LEN` so
-# one IO read fills exactly one `JsonBigStr` chunk's worth of input, and
-# the bulk-scan path in `_strBody` can process the whole buffer in a
-# single trampolined iteration.
+# Refill chunk size for the lookahead buffer.  The bulk-scan paths
+# (`_strBody`, `_skipWs`, `_readNumChars`) absorb the whole buffer in a
+# single trampolined iteration, so a larger refill amortises the IO
+# round-trip across more bytes of work.
 let [const] _PEEK_REFILL: Int = 14336
 
 
@@ -141,65 +137,10 @@ fun _parseNumber(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError
 
 
 # ─── Internal: string parsing ────────────────────────────────────────────
-# Per-chunk caps. Strings longer than _CHUNK_SOFT_LEN are emitted as
-# JsonBigStr(List<String>) instead of one JsonStr. Each chunk respects
-# code-point boundaries (no UTF-8 split mid-sequence) and never breaks
-# between \r and \n. _MAX_CHUNK_LEN is the hard ceiling: if a chunk
-# can't reach a safe boundary before this, the parser errors out
-# (only reachable on adversarial input — the normal headroom of
-# ~1KiB above the soft cap is far larger than any real codepoint+CRLF).
-
-let [const] _CHUNK_SOFT_LEN: Int = 14336    # 14 KiB — flush threshold
-let [const] _MAX_CHUNK_LEN:  Int = 15360    # 15 KiB — hard ceiling per chunk
-
-
-# String parsing — bulk scan-and-slice loop.
-#
-# Accumulator threading is (acc, chunks):
-#   acc     — current chunk being built (≤ _MAX_CHUNK_LEN bytes).
-#   chunks  — completed chunks in input order.
-#
-# `_strBody` is `[tail]` (queue-trampolined), so its iteration cost is
-# independent of string length.  Inside one iteration it scans the
+# Bulk scan-and-slice loop.  Inside one iteration `_strBody` scans the
 # lookahead for the next `"` or `\` via `findAny` and bulk-appends the
-# safe prefix in a single concat; per-byte concat is gone.
-
-# Build the final JsonValue from accumulated state.
-fun _strFinish(acc: String, chunks: List<String>): JsonValue
-  ret System::length<String>(chunks) == 0
-    ? JsonStr(acc)
-    : (System::length(acc) > 0
-        ? JsonBigStr(chunks=append<String>(chunks, acc))
-        : JsonBigStr(chunks=chunks))
-
-# 1 iff `b` is a UTF-8 continuation byte (0x80–0xBF), 0 otherwise.
-fun _isCont(b: Int): Int
-  ret b > 127 ? (b > 191 ? 0 : 1) : 0
-
-# Walk back from `p` to the largest safe split position:
-#   - byte AT `split` is not a UTF-8 continuation byte (don't cut mid-
-#     codepoint).
-#   - byte at `split-1` is not 0x0D (don't strand a `\r` away from a
-#     following `\n` in the next chunk).
-# `byteAt` returns -1 past the end, which `_isCont` treats as non-cont,
-# so `p == length(acc)` is a valid starting point.
-fun _safeSplit(acc: String, p: Int): Int
-  ret p == 0 ? 0
-    : _isCont(System::byteAt(acc, p)) > 0   ? _safeSplit(acc, p - 1)
-    : System::byteAt(acc, p - 1) == 13      ? _safeSplit(acc, p - 1)
-    : p
-
-# Move the safe prefix of `acc` into `chunks`; return the remainder plus
-# the updated chunks list.  Backup loop typically retreats <5 bytes
-# (max UTF-8 codepoint length + 1 for CR), well within the
-# `_MAX_CHUNK_LEN - _CHUNK_SOFT_LEN = 1024`-byte headroom.
-fun _flushChunk(acc: String, chunks: List<String>): (acc: String, chunks: List<String>)
-  let len = System::length(acc)
-  let p = _safeSplit(acc, len)
-  ret p == 0
-    ? (acc=acc, chunks=chunks)
-    : (acc    = System::slice(acc, p, len),
-       chunks = append<String>(chunks, System::slice(acc, 0, p)))
+# safe prefix in a single concat; per-byte concat is gone.  `[tail]`
+# makes the iteration cost a worker dispatch regardless of string length.
 
 # Decode the JSON escape sequence starting at `s` (the `\` is already
 # consumed).  Returns "" in `frag` for an unknown escape.
@@ -218,53 +159,40 @@ fun _strReadEscape(s: ParseState): (state: ParseState, frag: String)
 
 # Handle one escape: read the escape body, append its expansion to acc,
 # then loop back through `_strBody`.
-fun _strAfterEscape(s: ParseState, acc: String, chunks: List<String>):
+fun _strAfterEscape(s: ParseState, acc: String):
     (state: ParseState, v: JsonValue|JsonParseError)
   let e = _strReadEscape(s)
   ret System::length(e.frag) == 0
     ? (e.state, JsonParseError("unknown escape", e.state.pos))
-    : _strBody(e.state, acc + e.frag, chunks)
+    : _strBody(e.state, acc + e.frag)
 
 # The string-body loop.  One trampolined iteration absorbs the next
-# bulk-safe run from the lookahead — bounded by the nearest `"`, `\`,
-# the buffer end, or the remaining chunk-room — then dispatches on what
-# stopped it.  `[tail]` makes the iteration cost a worker dispatch
-# regardless of string length.
-fun [tail] _strBody(s: ParseState, acc: String, chunks: List<String>):
+# bulk-safe run from the lookahead — bounded by the nearest `"`, `\` or
+# the buffer end — then dispatches on what stopped it.
+fun [tail] _strBody(s: ParseState, acc: String):
     (state: ParseState, v: JsonValue|JsonParseError)
   let s1 = _peekFill(s)
   let buf = s1.lookahead
   let bufLen = System::length(buf)
   let delimAt = System::findAny(buf, "\"\\", 0)
-  let roomInChunk = _CHUNK_SOFT_LEN - System::length(acc)
-  let take = roomInChunk < delimAt ? roomInChunk : delimAt
+  let take = delimAt < bufLen ? delimAt : bufLen
   let acc1 = take > 0 ? acc + System::slice(buf, 0, take) : acc
   let s2 = take > 0 ? _advanceBy(s1, take) : s1
-  # Flush only when the chunk has actually reached the soft limit, so
-  # short concats don't trigger needless list-cons.
-  let flushed: (acc: String, chunks: List<String>) =
-    System::length(acc1) < _CHUNK_SOFT_LEN
-      ? (acc=acc1, chunks=chunks)
-      : _flushChunk(acc1, chunks)
-  # Four terminations:
+  # Three terminations:
   #   - EOF (bufLen == 0): unterminated string.
   #   - Buffer exhausted without a delim (take == bufLen): refill.
-  #   - Chunk full but delim not yet reached (take < delimAt): flushed
-  #     above, just continue scanning the rest of buf.
   #   - Delim reached (take == delimAt): dispatch on " or \.
   ret bufLen == 0
     ? (s2, JsonParseError("unterminated string", s2.pos))
     : take == bufLen
-        ? _strBody(s2, flushed.acc, flushed.chunks)
-        : take < delimAt
-            ? _strBody(s2, flushed.acc, flushed.chunks)
-            : System::byteAt(buf, take) == 34                # 0x22 == "
-                ? (_advance(s2), _strFinish(flushed.acc, flushed.chunks))
-                : _strAfterEscape(_advance(s2), flushed.acc, flushed.chunks)
+        ? _strBody(s2, acc1)
+        : System::byteAt(buf, take) == 34                # 0x22 == "
+            ? (_advance(s2), JsonStr(acc1))
+            : _strAfterEscape(_advance(s2), acc1)
 
 # Caller has peeked but not consumed the opening quote.
 fun _parseString(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  ret _strBody(_advance(s), "", List<String>())
+  ret _strBody(_advance(s), "")
 
 
 # ─── Internal: array parsing ─────────────────────────────────────────────
@@ -442,20 +370,6 @@ fun _printQuoted(io: IO, s: String): (io: IO, v: Int|IOError)
     => io.write("\"")
 
 
-# Print a chunked string as one JSON-quoted value (chunks back-to-back
-# inside a single pair of quotes), preserving the on-the-wire shape so
-# round-tripping JsonStr ↔ JsonBigStr is invisible to other parsers.
-fun _printQuotedChunks(io: IO, chunks: List<String>): (io: IO, v: Int|IOError)
-  fun _printChunkList(io: IO, chunks: List<String>): (io: IO, v: Int|IOError)
-    ret match(head<String>(chunks))
-      (n: None)   => (io, 0)
-      (h: String) => _printQuotedBody(io, h, 0) ?> (io: IO, _: Int)
-                  => _printChunkList(io, tail<String>(chunks))
-  ret io.write("\"") ?> (io: IO, _: Int)
-    => _printChunkList(io, chunks) ?> (io: IO, _: Int)
-    => io.write("\"")
-
-
 fun _printArray(io: IO, l: List<JsonValue>): (io: IO, v: Int|IOError)
   fun _printArrayBody(io: IO, l: List<JsonValue>, hasPrev: Int): (io: IO, v: Int|IOError)
     let h = head<JsonValue>(l)
@@ -499,7 +413,6 @@ fun printValue(io: IO, v: JsonValue): (io: IO, v: Int|IOError)
     (t: JsonTrue)   => io.write("true")
     (f: JsonFalse)  => io.write("false")
     (s: JsonStr)    => _printQuoted(io, s.strValue)
-    (b: JsonBigStr) => _printQuotedChunks(io, b.chunks)
     (n: JsonNum)    => io.write(String(n.numValue))
     (i: JsonInt)    => io.write(String(i.intValue))
     (a: JsonArr)    => _printArray(io, a.elements)

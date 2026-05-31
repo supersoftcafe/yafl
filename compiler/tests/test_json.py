@@ -245,10 +245,6 @@ fun firstNum(l: List<JsonPair>): System::Int
         self.assertEqual(13, self._run('{"items": [{"v": 5}, {"v": 8}]}', body))
 
 
-# Threshold inside System::Json — keep in sync with stdlib/json.yafl.
-_CHUNK_SOFT_LEN = 14336
-
-
 class TestJsonInteger(TestCase):
     """Round-trips and edge cases specific to JsonInt."""
 
@@ -296,8 +292,10 @@ fun main(): System::Int
         self.assertEqual("0.5", self._round_trip("0.5"))
 
 
-class TestJsonBigStr(TestCase):
-    """Strings exceeding the 14 KiB chunk threshold parse to JsonBigStr."""
+class TestLargeString(TestCase):
+    """Large string bodies parse to a single JsonStr regardless of size —
+    the runtime allocator now supports multi-page objects so the parser no
+    longer chunks. These tests pin that contract end-to-end."""
 
     def _classify_string(self, json_text: str, body: str) -> int:
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,78 +314,35 @@ fun main(): System::Int
     def _make_body_string(self, n: int, ch: str = "x") -> str:
         return ch * n
 
-    def test_short_string_stays_jsonstr(self):
-        # A 100-byte string is well under the threshold → JsonStr.
+    def test_short_string_is_jsonstr(self):
         body = """  ret match(v)
-    (s: JsonStr)    => 1
-    (b: JsonBigStr) => 2
+    (s: JsonStr) => 1
     () => 0"""
         text = '"' + self._make_body_string(100) + '"'
         self.assertEqual(1, self._classify_string(text, body))
 
-    def test_just_over_threshold_becomes_jsonbigstr(self):
-        # 15000 bytes > _CHUNK_SOFT_LEN (14336) → JsonBigStr.
+    def test_large_string_is_jsonstr(self):
+        # 15 KB exceeds the old chunking threshold; should still come back
+        # as a single JsonStr now that strings can span pages.
         body = """  ret match(v)
-    (s: JsonStr)    => 1
-    (b: JsonBigStr) => 2
+    (s: JsonStr) => 1
     () => 0"""
         text = '"' + self._make_body_string(15000) + '"'
-        self.assertEqual(2, self._classify_string(text, body))
+        self.assertEqual(1, self._classify_string(text, body))
 
-    def test_jsonbigstr_chunk_count(self):
-        # 30000 bytes splits into 3 chunks: ~14336 + ~14336 + remainder.
-        # Verify chunks > 1 (exact count depends on flush timing).
+    def test_large_string_length_preserved(self):
+        # 30000 bytes parse into a single JsonStr whose .strValue has the
+        # full length intact.  Exit code wraps modulo 256.
         body = """  ret match(v)
-    (b: JsonBigStr) => System::length<String>(b.chunks)
+    (s: JsonStr) => System::length(s.strValue) % 256
     () => 99"""
-        text = '"' + self._make_body_string(30000) + '"'
-        n_chunks = self._classify_string(text, body)
-        self.assertGreater(n_chunks, 1, "expected multiple chunks for a 30KB string")
-
-    def test_jsonbigstr_total_length_preserved(self):
-        # Sum of chunk lengths matches the input string body.  The exit code
-        # wraps modulo 256, so we ask the program to mod the sum itself and
-        # then assert against the expected wrap.
-        body = """  ret match(v)
-    (b: JsonBigStr) => System::abs(sumChunks(b.chunks)) % 256
-    () => 99
-
-fun sumChunks(l: List<String>): System::Int
-  let h = head<String>(l)
-  ret match(h)
-    (n: None)   => 0
-    (s: String) => System::length(s) + sumChunks(tail<String>(l))"""
         text = '"' + self._make_body_string(30000) + '"'
         self.assertEqual(30000 % 256, self._classify_string(text, body))
 
-    def test_jsonbigstr_utf8_chunks_at_codepoint_boundaries(self):
-        # Drop 3-byte UTF-8 codepoints around the chunk boundary. If chunks
-        # split correctly, no chunk's first byte will be a continuation byte
-        # (0x80–0xBF) — and that condition implies the *previous* chunk
-        # ended at a codepoint boundary, since the input itself is well-formed.
-        body = """  ret match(v)
-    (b: JsonBigStr) => allStartAtBoundary(b.chunks)
-    () => 99
-
-fun startsAtBoundary(s: System::String): System::Int
-  let bv: System::Int = System::length(s) == 0 ? 0 : System::byteAt(s, 0)
-  let lowHi: System::Int = bv > 191 ? 1 : 0
-  ret bv < 128 ? 1 : lowHi
-
-fun allStartAtBoundary(l: List<System::String>): System::Int
-  let h = head<System::String>(l)
-  ret match(h)
-    (n: None)   => 1
-    (s: System::String) => startsAtBoundary(s) > 0
-                            ? allStartAtBoundary(tail<System::String>(l))
-                            : 0"""
-        # ASCII padding + 3-byte € characters straddling the chunk boundary.
-        ascii_padding = "x" * 14000
-        text = '"' + ascii_padding + ("€" * 200) + '"'   # ≈ 14000 + 600 = 14600 bytes
-        self.assertEqual(1, self._classify_string(text, body))
-
-    def test_jsonbigstr_round_trip(self):
-        # Parse → print → re-parse → assert structurally identical content.
+    def test_large_string_round_trip(self):
+        # Parse a 30 KB string and reprint it; the output must equal the
+        # input byte-for-byte. Exercises the full read-write loop through
+        # a multi-page allocation.
         with tempfile.TemporaryDirectory() as tmp:
             in_path = os.path.join(tmp, "in.json")
             out_path = os.path.join(tmp, "out.json")

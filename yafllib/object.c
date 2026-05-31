@@ -11,7 +11,6 @@
 #define PAGES_SCANNED_PER_ALLOC     2
 #define PAGES_PRUNED_PER_ALLOC      16
 #define REPROCESS_PAGE_COUNT        16
-#define MMAP_RELEASE_PAGE_MASK      0x3f
 #undef  CLEAR_RELEASED_HEAP
 
 
@@ -81,7 +80,7 @@ typedef struct page_head {
 
     bitmap_t objects; // Starting slot of each known object
     uint32_t     tag; // Safety check
-    uint16_t   pages; // Number of pages, including this one, in the complete allocation
+    uint32_t   pages; // Number of pages, including this one, in the complete allocation
     bool     mutable; // Contains mutable objects.
     bool   compacted; // Don't compact again.
 
@@ -222,14 +221,12 @@ thread_local struct gc_thread_info {
     bool roots_scanned;
     _Atomic(enum thread_state) thread_state;
 
-    list_element_t free_pages;
-    unsigned free_pages_counter;
-
     // Quarantine: pages freed during a GC cycle are not reusable in the same
     // cycle (the scanner may still hold a stale pointer through a forwarding
     // chain, or a conservative stack pointer might still resolve to a slot in
-    // them). Pages are aged through pending_free_pages_curr → ..._prev → free
-    // across cycle boundaries; they spend at least one full cycle in pending.
+    // them). Pages age through pending_free_pages_curr → ..._prev → mmap
+    // across cycle boundaries; they spend at least one full cycle in pending
+    // before being released back to memory_pages_free.
     list_element_t pending_free_pages_curr;
     list_element_t pending_free_pages_prev;
     uint64_t       last_drained_cycle;
@@ -276,21 +273,25 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     }
 
     // Age quarantined pages whenever the GC has advanced past the cycle in
-    // which we last drained: the prev list is now ripe (it survived a full
-    // cycle in pending), so move it to free; promote curr → prev. A page
-    // freed during cycle K therefore becomes reusable no earlier than cycle
-    // K+2, which is always after any scanner active at the time of the free
-    // has finished.
+    // which we last drained: pages on `prev` have survived a full cycle in
+    // pending so any scanner active at the time of the free has finished.
+    // Release them to mmap; promote curr → prev. A page freed during cycle K
+    // therefore becomes reusable no earlier than cycle K+2.
     {
         uint64_t cur = atomic_load(&gc_cycle_count);
         if (cur != gc_thread_info.last_drained_cycle) {
-            list_move(&gc_thread_info.free_pages, &gc_thread_info.pending_free_pages_prev);
+            list_element_t *elem;
+            while ((elem = list_pop(&gc_thread_info.pending_free_pages_prev)) != NULL) {
+                gc_page_t *page = (gc_page_t*)elem;
+                page->head.tag = 0;
+                memory_pages_free(page, page->head.pages);
+            }
             list_move(&gc_thread_info.pending_free_pages_prev, &gc_thread_info.pending_free_pages_curr);
             gc_thread_info.last_drained_cycle = cur;
         }
     }
 
-    gc_page_t *page = list_pop(&gc_thread_info.free_pages) ?: memory_pages_alloc(page_count);
+    gc_page_t *page = memory_pages_alloc(page_count);
 
     memset(page, 0, GC_PAGE_SIZE * page_count);
     page->head.pages = page_count;
@@ -305,23 +306,23 @@ static NOINLINE_DEBUG void gc_page_free(gc_page_t* page) {
     assert(page->head.tag == PAGE_MAGIC_NUMBER);
     LOG(TRACE, "gc_page_free(%d) = 0x%lx", page->head.pages, (uintptr_t)page);
 
-    // Multi-page allocations and the every-Nth single-page release path go
-    // back to the OS immediately. They cannot be inspected by a stale pointer
-    // post-munmap (the read would segfault), so quarantining them buys
-    // nothing.
-    if (page->head.pages != 1 || (++gc_thread_info.free_pages_counter & MMAP_RELEASE_PAGE_MASK) == 0) {
+    // Multi-page allocations go back to mmap immediately — they are never
+    // resurrected by the conservative scanner via interior pointers (those
+    // land on BODY pages that fail memory_pages_is_alloc_head), so
+    // quarantining them buys nothing.
+    if (page->head.pages != 1) {
         page->head.tag = 0;
         memory_pages_free(page, page->head.pages);
         return;
     }
 
-    // Single-page release that stays in process memory. Park on the per-thread
-    // quarantine list. Leave page->head.tag == PAGE_MAGIC_NUMBER and the
-    // objects bitmap intact for the duration of the quarantine, so any
-    // conservative pointer that still resolves to this page passes the
-    // existing on-heap checks rather than tripping an assertion. The page
-    // becomes reusable only after gc_page_alloc ages it through curr → prev →
-    // free in a future GC cycle.
+    // Single-page release: park on the per-thread quarantine list. Leave
+    // page->head.tag == PAGE_MAGIC_NUMBER and the objects bitmap intact for
+    // the duration of the quarantine so a conservative pointer that still
+    // resolves to this page passes the existing on-heap checks rather than
+    // tripping an assertion. The page is released to mmap only after
+    // gc_page_alloc ages it through curr → prev → memory_pages_free in a
+    // future GC cycle.
     list_link(&gc_thread_info.pending_free_pages_curr, (list_element_t*)&page->head.list);
 }
 
@@ -346,11 +347,16 @@ static NOINLINE_DEBUG void *_object_alloc(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
 
     if (actual_size > MAX_OBJECT_SIZE) {
-        // size_t page_count = (sizeof(gc_page_head_t) + actual_size + GC_PAGE_SIZE - 1) / GC_PAGE_SIZE;
-        // gc_page_t* page = _gc_page_alloc(page_count);
-        // page->head.object_heads.a[0] = 1;
-        // return page->slots;
-        abort_on_too_large_object();
+        // Object exceeds a single page's slot region: allocate a dedicated
+        // multi-page run and treat the whole slot region as one object. Only
+        // bit 0 of the head page's `objects` bitmap is set; subsequent
+        // physical pages have no header of their own.
+        size_t page_count = (sizeof(page_head_t) + actual_size + GC_PAGE_SIZE - 1) / GC_PAGE_SIZE;
+        gc_page_t* page = gc_page_alloc(page_count);
+        page->head.mutable = is_mutable;
+        page->head.objects.a[0] = 1;
+        list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
+        return page->slots;
     }
 
     bump_pointers_t *bp = is_mutable
@@ -483,7 +489,6 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     gc_thread_info.thread_roots_declaration_func = thread_roots_declaration_func;
     gc_thread_info.thread_roots_context = thread_roots_context;
 
-    gc_thread_info.free_pages.next = gc_thread_info.free_pages.prev = &gc_thread_info.free_pages;
     gc_thread_info.pending_free_pages_curr.next = gc_thread_info.pending_free_pages_curr.prev = &gc_thread_info.pending_free_pages_curr;
     gc_thread_info.pending_free_pages_prev.next = gc_thread_info.pending_free_pages_prev.prev = &gc_thread_info.pending_free_pages_prev;
     gc_thread_info.last_drained_cycle = 0;
@@ -561,7 +566,7 @@ static bool gc_object_is_on_heap_slow(object_t *object) {
     gc_page_t *page = (gc_page_t*)(asint &~ (GC_PAGE_SIZE-1));
     return object != NULL                     // Must have a non-zero value
         && (asint & (GC_SLOT_SIZE-1)) == 0    // Pointer aligns with slot boundaries
-        && memory_pages_is_heap(object)       // Pointer lands on a real page on managed heap
+        && memory_pages_is_alloc_head(object)  // Pointer lands on a real page on managed heap
         && (asint & (GC_PAGE_SIZE-1)) >= offsetof(gc_page_t, slots)             // Does NOT point into the page header
         && bitmap_test(&page->head.objects, ((slot_t*)object) - page->slots)    // Is a real and exists object in this page
         && VT_TAG_GET(object->vtable) != VT_TAG_UNMANAGED;     // Must be heap managed according to the tag
