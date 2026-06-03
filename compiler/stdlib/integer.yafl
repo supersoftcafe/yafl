@@ -9,6 +9,14 @@ typealias Bool  : __builtin_type__<bool>
 typealias None  : ()
 let None:None = ()
 
+# Bool literals. The language has no true/false tokens, and operator
+# resolution (`==`/`>`) is unavailable in a global initialiser, so these name
+# the two Bool values via the underlying constant comparison directly. They are
+# [const]: the constant-folding pass reduces each comparison to a Bool literal
+# and inlines it at every use site, so no global or runtime test is emitted.
+let [const] true:  Bool = __builtin_op__<bool>("integer_test_eq", 0, 0)
+let [const] false: Bool = __builtin_op__<bool>("integer_test_gt", 0, 0)
+
 # Common integer constants. By convention constants are UPPER_SNAKE_CASE.
 let [const] INT8_MAX:  Int8  = 127i8
 let [const] INT8_MIN:  Int8  = -128i8
@@ -364,4 +372,122 @@ typealias [where] _WhereShowInt64 : Show<System::Int64>
 class _ShowInt64() : Show<System::Int64>
   fun show(value: System::Int64): System::String
     ret String(value)
+
+
+# Bitwise instances — one per integer type. `&`/`|`/`^` are operators;
+# `andNot(a, b)` is `a & ~b`. Float and String implement no Bitwise instance.
+
+let [trait] _bits_int: _BitwiseInt = _BitwiseInt()
+typealias [where] _WhereBitwiseInt : Bitwise<System::Int>
+class _BitwiseInt() : Bitwise<System::Int>
+  fun `~`(value: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_inv", value)
+  fun `&`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_and", left, right)
+  fun `|`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_or", left, right)
+  fun `^`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_xor", left, right)
+  fun andNot(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_andnot", left, right)
+
+let [trait] _bits_int8: _BitwiseInt8 = _BitwiseInt8()
+typealias [where] _WhereBitwiseInt8 : Bitwise<System::Int8>
+class _BitwiseInt8() : Bitwise<System::Int8>
+  fun `~`(value: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_inv", value)
+  fun `&`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_and", left, right)
+  fun `|`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_or", left, right)
+  fun `^`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_xor", left, right)
+  fun andNot(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_andnot", left, right)
+
+let [trait] _bits_int16: _BitwiseInt16 = _BitwiseInt16()
+typealias [where] _WhereBitwiseInt16 : Bitwise<System::Int16>
+class _BitwiseInt16() : Bitwise<System::Int16>
+  fun `~`(value: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_inv", value)
+  fun `&`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_and", left, right)
+  fun `|`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_or", left, right)
+  fun `^`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_xor", left, right)
+  fun andNot(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_andnot", left, right)
+
+let [trait] _bits_int32: _BitwiseInt32 = _BitwiseInt32()
+typealias [where] _WhereBitwiseInt32 : Bitwise<System::Int32>
+class _BitwiseInt32() : Bitwise<System::Int32>
+  fun `~`(value: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_inv", value)
+  fun `&`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_and", left, right)
+  fun `|`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_or", left, right)
+  fun `^`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_xor", left, right)
+  fun andNot(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_andnot", left, right)
+
+let [trait] _bits_int64: _BitwiseInt64 = _BitwiseInt64()
+typealias [where] _WhereBitwiseInt64 : Bitwise<System::Int64>
+class _BitwiseInt64() : Bitwise<System::Int64>
+  fun `~`(value: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_inv", value)
+  fun `&`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_and", left, right)
+  fun `|`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_or", left, right)
+  fun `^`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_xor", left, right)
+  fun andNot(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_andnot", left, right)
+
+
+# Shift instances — one per integer type. `<<` multiplies by 2^n; `>>` is an
+# arithmetic (floor) shift. Float and String implement no Shift instance.
+
+let [trait] _shift_int: _ShiftInt = _ShiftInt()
+typealias [where] _WhereShiftInt : Shift<System::Int>
+class _ShiftInt() : Shift<System::Int>
+  fun `<<`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_shl", left, right)
+  fun `>>`(left: System::Int, right: System::Int): System::Int
+    ret __builtin_op__<bigint>("integer_shr", left, right)
+
+let [trait] _shift_int8: _ShiftInt8 = _ShiftInt8()
+typealias [where] _WhereShiftInt8 : Shift<System::Int8>
+class _ShiftInt8() : Shift<System::Int8>
+  fun `<<`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_shl", left, right)
+  fun `>>`(left: System::Int8, right: System::Int8): System::Int8
+    ret __builtin_op__<int8>("int8_shr", left, right)
+
+let [trait] _shift_int16: _ShiftInt16 = _ShiftInt16()
+typealias [where] _WhereShiftInt16 : Shift<System::Int16>
+class _ShiftInt16() : Shift<System::Int16>
+  fun `<<`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_shl", left, right)
+  fun `>>`(left: System::Int16, right: System::Int16): System::Int16
+    ret __builtin_op__<int16>("int16_shr", left, right)
+
+let [trait] _shift_int32: _ShiftInt32 = _ShiftInt32()
+typealias [where] _WhereShiftInt32 : Shift<System::Int32>
+class _ShiftInt32() : Shift<System::Int32>
+  fun `<<`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_shl", left, right)
+  fun `>>`(left: System::Int32, right: System::Int32): System::Int32
+    ret __builtin_op__<int32>("int32_shr", left, right)
+
+let [trait] _shift_int64: _ShiftInt64 = _ShiftInt64()
+typealias [where] _WhereShiftInt64 : Shift<System::Int64>
+class _ShiftInt64() : Shift<System::Int64>
+  fun `<<`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_shl", left, right)
+  fun `>>`(left: System::Int64, right: System::Int64): System::Int64
+    ret __builtin_op__<int64>("int64_shr", left, right)
 

@@ -205,14 +205,14 @@ TEST_END()
 
 TEST(wchar_ascii)
     /* 'A' = 0x41, 1-byte UTF-8 */
-    object_t* s = wchar_to_string(I(0x41));
+    object_t* s = wchar_to_string(0x41);
     ASSERT_STR_EQ(s, "A");
     ASSERT_EQ_I32(string_length(s), 1);
 TEST_END()
 
 TEST(wchar_two_byte)
     /* U+00E9 = 'é', encodes as 0xC3 0xA9 */
-    object_t* s = wchar_to_string(I(0xE9));
+    object_t* s = wchar_to_string(0xE9);
     ASSERT_EQ_I32(string_length(s), 2);
     char data[8]; string_copy_cstr(s, data, sizeof(data));
     ASSERT((uint8_t)data[0] == 0xC3);
@@ -221,7 +221,7 @@ TEST_END()
 
 TEST(wchar_three_byte)
     /* U+4E2D = '中', encodes as 0xE4 0xB8 0xAD */
-    object_t* s = wchar_to_string(I(0x4E2D));
+    object_t* s = wchar_to_string(0x4E2D);
     ASSERT_EQ_I32(string_length(s), 3);
     char data[8]; string_copy_cstr(s, data, sizeof(data));
     ASSERT((uint8_t)data[0] == 0xE4);
@@ -231,7 +231,7 @@ TEST_END()
 
 TEST(wchar_four_byte)
     /* U+1F600 = emoji, encodes as 0xF0 0x9F 0x98 0x80 */
-    object_t* s = wchar_to_string(I(0x1F600));
+    object_t* s = wchar_to_string(0x1F600);
     ASSERT_EQ_I32(string_length(s), 4);
     char data[8]; string_copy_cstr(s, data, sizeof(data));
     ASSERT((uint8_t)data[0] == 0xF0);
@@ -379,7 +379,7 @@ TEST_END()
 
 TEST(wchar_boundary_1byte_max)
     /* U+007F: last codepoint with single-byte encoding (0x7F) */
-    object_t* s = wchar_to_string(I(0x7F));
+    object_t* s = wchar_to_string(0x7F);
     ASSERT_EQ_I32(string_length(s), 1);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0x7F);
@@ -387,7 +387,7 @@ TEST_END()
 
 TEST(wchar_boundary_2byte_min)
     /* U+0080: first codepoint requiring 2-byte encoding (0xC2 0x80) */
-    object_t* s = wchar_to_string(I(0x80));
+    object_t* s = wchar_to_string(0x80);
     ASSERT_EQ_I32(string_length(s), 2);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0xC2);
@@ -396,7 +396,7 @@ TEST_END()
 
 TEST(wchar_boundary_2byte_max)
     /* U+07FF: last codepoint in the 2-byte range (0xDF 0xBF) */
-    object_t* s = wchar_to_string(I(0x7FF));
+    object_t* s = wchar_to_string(0x7FF);
     ASSERT_EQ_I32(string_length(s), 2);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0xDF);
@@ -405,7 +405,7 @@ TEST_END()
 
 TEST(wchar_boundary_3byte_min)
     /* U+0800: first codepoint requiring 3-byte encoding (0xE0 0xA0 0x80) */
-    object_t* s = wchar_to_string(I(0x800));
+    object_t* s = wchar_to_string(0x800);
     ASSERT_EQ_I32(string_length(s), 3);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0xE0);
@@ -415,7 +415,7 @@ TEST_END()
 
 TEST(wchar_boundary_3byte_max)
     /* U+FFFF: last codepoint in the 3-byte range (0xEF 0xBF 0xBF) */
-    object_t* s = wchar_to_string(I(0xFFFF));
+    object_t* s = wchar_to_string(0xFFFF);
     ASSERT_EQ_I32(string_length(s), 3);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0xEF);
@@ -425,7 +425,7 @@ TEST_END()
 
 TEST(wchar_boundary_4byte_min)
     /* U+10000: first codepoint requiring 4-byte encoding (0xF0 0x90 0x80 0x80) */
-    object_t* s = wchar_to_string(I(0x10000));
+    object_t* s = wchar_to_string(0x10000);
     ASSERT_EQ_I32(string_length(s), 4);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0xF0);
@@ -436,13 +436,110 @@ TEST_END()
 
 TEST(wchar_boundary_4byte_max)
     /* U+10FFFF: last valid Unicode codepoint (0xF4 0x8F 0xBF 0xBF) */
-    object_t* s = wchar_to_string(I(0x10FFFF));
+    object_t* s = wchar_to_string(0x10FFFF);
     ASSERT_EQ_I32(string_length(s), 4);
     char data[8]; string_copy_cstr(s, data, (int32_t)sizeof(data));
     ASSERT((uint8_t)data[0] == 0xF4);
     ASSERT((uint8_t)data[1] == 0x8F);
     ASSERT((uint8_t)data[2] == 0xBF);
     ASSERT((uint8_t)data[3] == 0xBF);
+TEST_END()
+
+/* ---- codepoint decoding (string_codepoint_at / _count / valid_utf8) ---- */
+
+TEST(codepoint_at_ascii)
+    object_t* s = STR("hi");
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), 'h');
+    ASSERT_EQ_I32(string_codepoint_at(s, I(1)), 'i');
+TEST_END()
+
+TEST(codepoint_at_two_byte)
+    /* U+00E9 'é' = 0xC3 0xA9 */
+    uint8_t data[] = {0xC3, 0xA9};
+    object_t* s = string_from_bytes(data, 2);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), 0xE9);
+TEST_END()
+
+TEST(codepoint_at_three_byte)
+    /* U+20AC '€' = 0xE2 0x82 0xAC */
+    uint8_t data[] = {0xE2, 0x82, 0xAC};
+    object_t* s = string_from_bytes(data, 3);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), 0x20AC);
+TEST_END()
+
+TEST(codepoint_at_four_byte)
+    /* U+1F389 '🎉' = 0xF0 0x9F 0x8E 0x89 */
+    uint8_t data[] = {0xF0, 0x9F, 0x8E, 0x89};
+    object_t* s = string_from_bytes(data, 4);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), 0x1F389);
+TEST_END()
+
+TEST(codepoint_at_offset_advances_to_next)
+    /* "aé": byte 0 = 'a', bytes 1..2 = é */
+    uint8_t data[] = {'a', 0xC3, 0xA9};
+    object_t* s = string_from_bytes(data, 3);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), 'a');
+    ASSERT_EQ_I32(string_codepoint_at(s, I(1)), 0xE9);
+TEST_END()
+
+TEST(codepoint_at_inside_sequence_is_none)
+    /* offset 1 lands on é's continuation byte */
+    uint8_t data[] = {0xC3, 0xA9};
+    object_t* s = string_from_bytes(data, 2);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(1)), -1);
+TEST_END()
+
+TEST(codepoint_at_out_of_range_is_none)
+    object_t* s = STR("hi");
+    ASSERT_EQ_I32(string_codepoint_at(s, I(2)), -1);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(-1)), -1);
+TEST_END()
+
+TEST(codepoint_at_rejects_overlong)
+    /* 0xC0 0x80 = overlong encoding of U+0000 */
+    uint8_t data[] = {0xC0, 0x80};
+    object_t* s = string_from_bytes(data, 2);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), -1);
+TEST_END()
+
+TEST(codepoint_at_rejects_surrogate)
+    /* 0xED 0xA0 0x80 = U+D800, a UTF-16 surrogate */
+    uint8_t data[] = {0xED, 0xA0, 0x80};
+    object_t* s = string_from_bytes(data, 3);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), -1);
+TEST_END()
+
+TEST(codepoint_at_rejects_truncated)
+    /* 3-byte lead with only one continuation byte present */
+    uint8_t data[] = {0xE2, 0x82};
+    object_t* s = string_from_bytes(data, 2);
+    ASSERT_EQ_I32(string_codepoint_at(s, I(0)), -1);
+TEST_END()
+
+TEST(codepoint_count_mixed)
+    /* "aé€🎉": 1 + 2 + 3 + 4 = 10 bytes, 4 codepoints */
+    uint8_t data[] = {'a', 0xC3,0xA9, 0xE2,0x82,0xAC, 0xF0,0x9F,0x8E,0x89};
+    object_t* s = string_from_bytes(data, 10);
+    ASSERT_EQ_I32(string_length(s), 10);
+    ASSERT_INT_EQ_I32(string_codepoint_count(s), 4);
+TEST_END()
+
+TEST(codepoint_count_empty)
+    object_t* s = STR("");
+    ASSERT_INT_EQ_I32(string_codepoint_count(s), 0);
+TEST_END()
+
+TEST(valid_utf8_accepts_wellformed)
+    uint8_t data[] = {'a', 0xC3,0xA9, 0xF0,0x9F,0x8E,0x89};
+    object_t* s = string_from_bytes(data, 7);
+    ASSERT(string_valid_utf8(s));
+TEST_END()
+
+TEST(valid_utf8_rejects_split_sequence)
+    /* 'a' followed by a lone lead byte (truncated é) */
+    uint8_t data[] = {'a', 0xC3};
+    object_t* s = string_from_bytes(data, 2);
+    ASSERT(!string_valid_utf8(s));
 TEST_END()
 
 /* ---- entrypoint ---- */
@@ -531,6 +628,22 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(wchar_boundary_3byte_max);
     RUN(wchar_boundary_4byte_min);
     RUN(wchar_boundary_4byte_max);
+
+    /* codepoint decoding */
+    RUN(codepoint_at_ascii);
+    RUN(codepoint_at_two_byte);
+    RUN(codepoint_at_three_byte);
+    RUN(codepoint_at_four_byte);
+    RUN(codepoint_at_offset_advances_to_next);
+    RUN(codepoint_at_inside_sequence_is_none);
+    RUN(codepoint_at_out_of_range_is_none);
+    RUN(codepoint_at_rejects_overlong);
+    RUN(codepoint_at_rejects_surrogate);
+    RUN(codepoint_at_rejects_truncated);
+    RUN(codepoint_count_mixed);
+    RUN(codepoint_count_empty);
+    RUN(valid_utf8_accepts_wellformed);
+    RUN(valid_utf8_rejects_split_sequence);
 
     PRINT_RESULTS("string", _r);
 

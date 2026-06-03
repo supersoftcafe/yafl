@@ -40,9 +40,9 @@ fun main(): System::Int
   emit("nan_to_int32",  Int(truncateToInt32(nan)))
 
   # ─── String / Show byte checks ────────────────────────────────────────
-  emit("string_positive_first_byte", byteAt(String(3.5f32), 0))
-  emit("string_negative_first_byte", byteAt(String(-3.5f32), 0))
-  emit("format_first_byte_v",        byteAt(format<Float32>("v={1}", 7.0f32), 0))
+  emit("string_positive_first_byte", Int(byteAt(String(3.5f32), 0)))
+  emit("string_negative_first_byte", Int(byteAt(String(-3.5f32), 0)))
+  emit("format_first_byte_v",        Int(byteAt(format<Float32>("v={1}", 7.0f32), 0)))
 
   ret 0
 """

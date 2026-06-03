@@ -565,6 +565,45 @@ INLINE object_t* integer_sub(object_t* self, object_t* data) {
     return integer_sub_full(self, data);
 }
 
+EXPORT object_t* integer_inv_full(object_t* o);
+INLINE object_t* integer_inv(object_t* o) {
+    intptr_t v = (intptr_t)o;
+    if (v&PTR_TAG_INTEGER) {
+        return (object_t*)(v ^ ((intptr_t)-4));
+    }
+    return integer_inv_full(o);
+}
+
+// Bitwise binary ops. Both-tagged fast path: AND/OR preserve the tag bit
+// (x&x, x|x), but XOR cancels it and ANDNOT clears it, so those re-apply
+// PTR_TAG_INTEGER. The result of a bitwise op never exceeds the wider operand,
+// so a tagged-in result stays in range.
+EXPORT object_t* integer_and_full(object_t* a, object_t* b);
+EXPORT object_t* integer_or_full(object_t* a, object_t* b);
+EXPORT object_t* integer_xor_full(object_t* a, object_t* b);
+EXPORT object_t* integer_andnot_full(object_t* a, object_t* b);
+
+INLINE object_t* integer_and(object_t* a, object_t* b) {
+    intptr_t va = (intptr_t)a, vb = (intptr_t)b;
+    if (va & vb & PTR_TAG_INTEGER) return (object_t*)(va & vb);
+    return integer_and_full(a, b);
+}
+INLINE object_t* integer_or(object_t* a, object_t* b) {
+    intptr_t va = (intptr_t)a, vb = (intptr_t)b;
+    if (va & vb & PTR_TAG_INTEGER) return (object_t*)(va | vb);
+    return integer_or_full(a, b);
+}
+INLINE object_t* integer_xor(object_t* a, object_t* b) {
+    intptr_t va = (intptr_t)a, vb = (intptr_t)b;
+    if (va & vb & PTR_TAG_INTEGER) return (object_t*)((va ^ vb) | PTR_TAG_INTEGER);
+    return integer_xor_full(a, b);
+}
+INLINE object_t* integer_andnot(object_t* a, object_t* b) {
+    intptr_t va = (intptr_t)a, vb = (intptr_t)b;
+    if (va & vb & PTR_TAG_INTEGER) return (object_t*)((va & ~vb) | PTR_TAG_INTEGER);
+    return integer_andnot_full(a, b);
+}
+
 EXTERN object_t* integer_div(object_t* self, object_t* data);
 EXTERN object_t* integer_mul(object_t* self, object_t* data);
 EXTERN object_t* integer_rem(object_t* self, object_t* data);
@@ -640,6 +679,13 @@ INLINE int8_t   int8_add(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a + (u
 INLINE int8_t   int8_sub(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a - (uint8_t)b); }
 INLINE int8_t   int8_mul(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a * (uint8_t)b); }
 INLINE int8_t   int8_neg(int8_t a)             { return (int8_t)(0u - (uint8_t)a); }
+INLINE int8_t   int8_inv(int8_t a)             { return (int8_t)(~(uint8_t)a); }
+INLINE int8_t   int8_and(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a & (uint8_t)b); }
+INLINE int8_t   int8_or(int8_t a, int8_t b)    { return (int8_t)((uint8_t)a | (uint8_t)b); }
+INLINE int8_t   int8_xor(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a ^ (uint8_t)b); }
+INLINE int8_t   int8_andnot(int8_t a, int8_t b){ return (int8_t)((uint8_t)a & (uint8_t)~(uint8_t)b); }
+INLINE int8_t   int8_shl(int8_t a, int8_t b)   { return (int8_t)((uint8_t)a << ((uint8_t)b & 7)); }
+INLINE int8_t   int8_shr(int8_t a, int8_t b)   { return (int8_t)(a >> ((uint8_t)b & 7)); }  /* arithmetic */
 // Paper over INT_MIN / -1 — see int32_div below for context.
 INLINE int8_t   int8_div(int8_t a, int8_t b)   { return b == -1 ? int8_neg(a) : (int8_t)(a / b); }
 INLINE int8_t   int8_rem(int8_t a, int8_t b)   { return b == -1 ? 0           : (int8_t)(a % b); }
@@ -651,6 +697,13 @@ INLINE int16_t  int16_add(int16_t a, int16_t b) { return (int16_t)((uint16_t)a +
 INLINE int16_t  int16_sub(int16_t a, int16_t b) { return (int16_t)((uint16_t)a - (uint16_t)b); }
 INLINE int16_t  int16_mul(int16_t a, int16_t b) { return (int16_t)((uint16_t)a * (uint16_t)b); }
 INLINE int16_t  int16_neg(int16_t a)            { return (int16_t)(0u - (uint16_t)a); }
+INLINE int16_t  int16_inv(int16_t a)            { return (int16_t)(~(uint16_t)a); }
+INLINE int16_t  int16_and(int16_t a, int16_t b) { return (int16_t)((uint16_t)a & (uint16_t)b); }
+INLINE int16_t  int16_or(int16_t a, int16_t b)  { return (int16_t)((uint16_t)a | (uint16_t)b); }
+INLINE int16_t  int16_xor(int16_t a, int16_t b) { return (int16_t)((uint16_t)a ^ (uint16_t)b); }
+INLINE int16_t  int16_andnot(int16_t a, int16_t b) { return (int16_t)((uint16_t)a & (uint16_t)~(uint16_t)b); }
+INLINE int16_t  int16_shl(int16_t a, int16_t b) { return (int16_t)((uint16_t)a << ((uint16_t)b & 15)); }
+INLINE int16_t  int16_shr(int16_t a, int16_t b) { return (int16_t)(a >> ((uint16_t)b & 15)); }  /* arithmetic */
 INLINE int16_t  int16_div(int16_t a, int16_t b) { return b == -1 ? int16_neg(a) : (int16_t)(a / b); }
 INLINE int16_t  int16_rem(int16_t a, int16_t b) { return b == -1 ? 0            : (int16_t)(a % b); }
 INLINE bool     int16_test_lt(int16_t a, int16_t b) { return a <  b; }
@@ -661,6 +714,13 @@ INLINE int32_t  int32_add(int32_t self, int32_t data) { return self + data; }
 INLINE int32_t  int32_sub(int32_t self, int32_t data) { return self - data; }
 INLINE int32_t  int32_mul(int32_t self, int32_t data) { return self * data; }
 INLINE int32_t  int32_neg(int32_t self)                { return (int32_t)(0u - (uint32_t)self); }
+INLINE int32_t  int32_inv(int32_t self)                { return (int32_t)(~(uint32_t)self); }
+INLINE int32_t  int32_and(int32_t a, int32_t b)        { return (int32_t)((uint32_t)a & (uint32_t)b); }
+INLINE int32_t  int32_or(int32_t a, int32_t b)         { return (int32_t)((uint32_t)a | (uint32_t)b); }
+INLINE int32_t  int32_xor(int32_t a, int32_t b)        { return (int32_t)((uint32_t)a ^ (uint32_t)b); }
+INLINE int32_t  int32_andnot(int32_t a, int32_t b)     { return (int32_t)((uint32_t)a & ~(uint32_t)b); }
+INLINE int32_t  int32_shl(int32_t a, int32_t b)        { return (int32_t)((uint32_t)a << ((uint32_t)b & 31)); }
+INLINE int32_t  int32_shr(int32_t a, int32_t b)        { return (int32_t)(a >> ((uint32_t)b & 31)); }  /* arithmetic */
 // On x86 INT_MIN / -1 raises SIGFPE because the true quotient (+2^31) overflows
 // the destination register — `idiv`'s overflow trap shares the divide-by-zero
 // signal. Paper over by defining INT_MIN / -1 = INT_MIN (Java/Kotlin convention)
@@ -675,6 +735,13 @@ INLINE int64_t  int64_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a +
 INLINE int64_t  int64_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
 INLINE int64_t  int64_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
 INLINE int64_t  int64_neg(int64_t a)            { return (int64_t)(0u - (uint64_t)a); }
+INLINE int64_t  int64_inv(int64_t a)            { return (int64_t)(~(uint64_t)a); }
+INLINE int64_t  int64_and(int64_t a, int64_t b) { return (int64_t)((uint64_t)a & (uint64_t)b); }
+INLINE int64_t  int64_or(int64_t a, int64_t b)  { return (int64_t)((uint64_t)a | (uint64_t)b); }
+INLINE int64_t  int64_xor(int64_t a, int64_t b) { return (int64_t)((uint64_t)a ^ (uint64_t)b); }
+INLINE int64_t  int64_andnot(int64_t a, int64_t b) { return (int64_t)((uint64_t)a & ~(uint64_t)b); }
+INLINE int64_t  int64_shl(int64_t a, int64_t b) { return (int64_t)((uint64_t)a << ((uint64_t)b & 63)); }
+INLINE int64_t  int64_shr(int64_t a, int64_t b) { return (int64_t)(a >> ((uint64_t)b & 63)); }  /* arithmetic */
 INLINE int64_t  int64_div(int64_t a, int64_t b) { return b == -1 ? int64_neg(a) : a / b; }
 INLINE int64_t  int64_rem(int64_t a, int64_t b) { return b == -1 ? 0            : a % b; }
 INLINE bool     int64_test_lt(int64_t a, int64_t b) { return a <  b; }
@@ -914,14 +981,17 @@ INLINE bool string_eq(object_t* self, object_t* data) { return string_compare(se
 INLINE bool string_lt(object_t* self, object_t* data) { return string_compare(self, data) <  0; }
 INLINE bool string_gt(object_t* self, object_t* data) { return string_compare(self, data) >  0; }
 
-INLINE object_t* string_byte_at(object_t* self, object_t* o_index) {
+INLINE int32_t string_byte_at(object_t* self, object_t* o_index) {
+    // Returns the unsigned byte value [0..255] as an int32 (YAFL Int32), or
+    // -1 when `o_index` is out of range. The byte VALUE is Int32; the index
+    // is still an Int (object).
     int overflow = 0;
     int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
-    if (overflow) return integer_from_int24(-1);
+    if (overflow) return -1;
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(self, &buf, &len);
-    if (idx < 0 || idx >= len) return integer_from_int24(-1);
-    return integer_from_int24((unsigned char)cstr[idx]);
+    if (idx < 0 || idx >= len) return -1;
+    return (unsigned char)cstr[idx];
 }
 
 INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, object_t* value) {
@@ -937,24 +1007,25 @@ INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, o
     return self;
 }
 
-INLINE object_t* ascii_to_string(object_t* o_byte) {
+INLINE object_t* ascii_to_string(int32_t b) {
     // Build a one-byte packed short string in a single instruction sequence.
     // No allocation; the byte lives in the pointer bits. Caller is expected
     // to pass a value in [0..255]; we range-check to avoid silently corrupting
     // the packed payload on negative or oversized inputs.
-    int overflow = 0;
-    int32_t b = int32_from_integer_with_overflow(o_byte, &overflow);
-    if (overflow || b < 0 || b > 255) __abort_on_overflow();
+    if (b < 0 || b > 255) __abort_on_overflow();
     uint8_t bytes[MAX_SHORT_LEN] = { (uint8_t)b };
     return (object_t*)SHORT_STRING(bytes, 1);
 }
 
 EXTERN object_t* string_resize(object_t* self, object_t* new_size);
-EXTERN object_t* string_find_byte(object_t* self, object_t* byte_value, object_t* from);
+EXTERN object_t* string_find_byte(object_t* self, int32_t byte_value, object_t* from);
 EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);
 EXTERN object_t* string_skip_any (object_t* self, object_t* accept,     object_t* from);
 EXTERN object_t* string_parse_int(object_t* self);
-EXTERN object_t* wchar_to_string(object_t* integer);
+EXTERN int32_t   string_codepoint_at(object_t* self, object_t* from);
+EXTERN object_t* string_codepoint_count(object_t* self);
+EXTERN bool      string_valid_utf8(object_t* self);
+EXTERN object_t* wchar_to_string(int32_t codepoint);
 EXTERN object_t* print_string(object_t* self, object_t* data);
 EXTERN object_t* string_hash(object_t* s);
 EXTERN object_t* float64_hash(double f);

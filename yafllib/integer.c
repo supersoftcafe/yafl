@@ -125,6 +125,12 @@ static integer_t* _integer_from_intptr(intptr_t literal) {
 }
 
 static integer_t* _normalize_integer(integer_t* result) {
+    // A tagged literal is already canonical — and has no heap fields to read.
+    // `_divide_abs` hands back tagged 0/1 for its early-exit cases, so the
+    // div/rem callers can pass one straight in.
+    if (_IS_LITERAL(result)) {
+        return result;
+    }
     // Trim trailing zeros
     while (result->length > 1 && result->array[result->length-1] == 0) {
         result->length -= 1;
@@ -713,6 +719,127 @@ EXPORT object_t* integer_rem(object_t* oa, object_t* ob) {
 }
 
 
+EXPORT object_t* integer_inv_full(object_t* o) {
+    integer_t* i = (integer_t*)o;
+    if (_IS_LITERAL(i)) {
+        return (object_t*)(((intptr_t)i) ^ ((intptr_t)-4));
+    }
+    /* _add_abs/_subtract_abs need a real integer, not a tagged literal. */
+    _PROMOTE_LITERAL(one, INTEGER_LITERAL_1(0, 1))
+    if (i->sign) {
+        return (object_t*)_subtract_abs(i, one, 0);   /* i<0:  ~i = |i|-1 */
+    } else {
+        return (object_t*)_add_abs(i, one, 1);        /* i>=0: ~i = -(i+1) */
+    }
+}
+
+
+typedef enum { BIT_AND, BIT_OR, BIT_XOR, BIT_ANDNOT } bitop_t;
+
+static inline uintptr_t _bit_combine(bitop_t op, uintptr_t x, uintptr_t y) {
+    switch (op) {
+        case BIT_AND:    return x & y;
+        case BIT_OR:     return x | y;
+        case BIT_XOR:    return x ^ y;
+        case BIT_ANDNOT: return x & ~y;   /* a AND NOT b */
+    }
+    return 0; /* unreachable */
+}
+
+// Bitwise op over the infinite-width two's-complement view of two
+// sign-magnitude integers.  For each limb (low to high) we read the operand's
+// two's-complement form (lazily complementing a negative magnitude, ~mag + 1),
+// combine, take the result sign from the op of the operands' sign bits, and
+// convert a negative result back to sign-magnitude.  a and b are already
+// promoted (real integer_t*, never tagged literals).
+static integer_t* _integer_bitwise(integer_t* a, integer_t* b, bitop_t op) {
+    int32_t sr = (int32_t)(_bit_combine(op, (uintptr_t)a->sign, (uintptr_t)b->sign) & 1);
+
+    uint32_t la = a->length, lb = b->length;
+    uint32_t n = (la > lb ? la : lb) + 1;   // +1: headroom for the negate carry
+
+    integer_t* result = _integer_allocate(n);
+    result->sign = sr;
+
+    uintptr_t ca = 1, cb = 1, cr = 1;       // the +1 in each ~x+1 conversion
+    for (uint32_t i = 0; i < n; ++i) {
+        uintptr_t ta = i < la ? a->array[i] : 0;
+        if (a->sign) { uintptr_t t = ~ta + ca; ca = t < ca; ta = t; }
+
+        uintptr_t tb = i < lb ? b->array[i] : 0;
+        if (b->sign) { uintptr_t t = ~tb + cb; cb = t < cb; tb = t; }
+
+        uintptr_t tr = _bit_combine(op, ta, tb);
+
+        if (sr) { uintptr_t t = ~tr + cr; cr = t < cr; result->array[i] = t; }
+        else    { result->array[i] = tr; }
+    }
+    return _normalize_integer(result);
+}
+
+EXPORT object_t* integer_and_full(object_t* oa, object_t* ob) {
+    _PROMOTE_LITERAL(ha, oa)
+    _PROMOTE_LITERAL(hb, ob)
+    return (object_t*)_integer_bitwise(ha, hb, BIT_AND);
+}
+
+EXPORT object_t* integer_or_full(object_t* oa, object_t* ob) {
+    _PROMOTE_LITERAL(ha, oa)
+    _PROMOTE_LITERAL(hb, ob)
+    return (object_t*)_integer_bitwise(ha, hb, BIT_OR);
+}
+
+EXPORT object_t* integer_xor_full(object_t* oa, object_t* ob) {
+    _PROMOTE_LITERAL(ha, oa)
+    _PROMOTE_LITERAL(hb, ob)
+    return (object_t*)_integer_bitwise(ha, hb, BIT_XOR);
+}
+
+EXPORT object_t* integer_andnot_full(object_t* oa, object_t* ob) {
+    _PROMOTE_LITERAL(ha, oa)
+    _PROMOTE_LITERAL(hb, ob)
+    return (object_t*)_integer_bitwise(ha, hb, BIT_ANDNOT);
+}
+
+
+// 2^bits as a fresh positive bigint. Normalised, so a small power comes back as
+// a tagged literal — other ops assume heap integers are never a single small
+// limb (that form is always tagged), and an un-normalised one mis-divides.
+static integer_t* _pow2(uint32_t bits) {
+    uint32_t word_bits = (uint32_t)(sizeof(uintptr_t) * 8);
+    uint32_t limbs = bits / word_bits + 1;
+    integer_t* r = _integer_allocate(limbs);
+    r->sign = 0;
+    for (uint32_t i = 0; i + 1 < limbs; ++i) r->array[i] = 0;
+    r->array[limbs - 1] = (uintptr_t)1 << (bits % word_bits);
+    r->length = limbs;
+    return _normalize_integer(r);
+}
+
+// Bit shifts on the arbitrary-precision integer. `<<` is `self * 2^amount`;
+// `>>` is an *arithmetic* (floor) shift, `floor(self / 2^amount)`, matching the
+// fixed-width and Java/Python `>>`. Implemented via the (tested) multiply and
+// truncating divide rather than a bespoke limb shift — simpler and correct; a
+// shift is not a hot path. A non-positive amount is a no-op.
+EXPORT object_t* integer_shl(object_t* self, object_t* amount) {
+    int32_t k = int32_from_integer(amount);
+    if (k <= 0) return self;
+    return integer_mul(self, (object_t*)_pow2((uint32_t)k));
+}
+
+EXPORT object_t* integer_shr(object_t* self, object_t* amount) {
+    int32_t k = int32_from_integer(amount);
+    if (k <= 0) return self;
+    object_t* p = (object_t*)_pow2((uint32_t)k);
+    object_t* q = integer_div(self, p);   // truncates toward zero
+    // Arithmetic shift floors toward -inf: a negative value with any bit
+    // shifted out rounds down by one.
+    if (integer_cmp(self, INTEGER_LITERAL_1(0, 0)) < 0
+            && integer_cmp(integer_rem(self, p), INTEGER_LITERAL_1(0, 0)) != 0) {
+        q = integer_sub(q, INTEGER_LITERAL_1(0, 1));
+    }
+    return q;
+}
 
 
 

@@ -68,7 +68,7 @@ def __float() -> p.Parser[e.Expression]:
 
 _STRING_ESCAPES = {
     'n': '\n', 'r': '\r', 't': '\t', '0': '\0',
-    '\\': '\\', '"': '"',
+    '\\': '\\', '"': '"', "'": "'",
 }
 
 def _unescape_string(raw: str) -> tuple[str, str | None]:
@@ -102,6 +102,29 @@ def __string() -> p.Parser[e.Expression]:
                 if err is not None:
                     return p.Result.error(err, tail, head.line_ref)
                 return p.Result.ok(e.StringExpression(head.line_ref, decoded), tail, head.line_ref)
+        return p.Result.none(tokens, tokens[0].line_ref)
+    return p.Parser(_p)
+
+
+def __char() -> p.Parser[e.Expression]:
+    """A single-quote char literal. Decoded exactly like a string (same
+    escapes), then required to be exactly one codepoint; its value is that
+    codepoint as an Int32 — there is no `char` type, and every Unicode scalar
+    fits in Int32. `'A'` is therefore identical to `65i32`."""
+    def _p(tokens: list[p.Token]) -> p.Result[e.IntegerExpression]:
+        match tokens:
+            case[head, *tail] if head.kind == p.TokenKind.CHAR:
+                value = head.value
+                if len(value) < 2 or not value.endswith("'"):
+                    return p.Result.error("char literal missing closing quote", tail, head.line_ref)
+                decoded, err = _unescape_string(value[1:len(value)-1])
+                if err is not None:
+                    return p.Result.error(err, tail, head.line_ref)
+                if len(decoded) != 1:
+                    return p.Result.error(
+                        "char literal must contain exactly one character", tail, head.line_ref)
+                return p.Result.ok(e.IntegerExpression(head.line_ref, ord(decoded), 32),
+                                   tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -166,10 +189,40 @@ def __to_pipeline(result: p.Result[tuple[e.Expression, list[e.Expression]]], tok
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
+def __invert_operand(expr: e.Expression) -> e.Expression | None:
+    """If `expr` is a unary `~x`, return `x`, else None. Used to fold
+    `a & ~b` into the single-pass `andNot(a, b)` at parse time."""
+    if (isinstance(expr, e.CallExpression)
+            and isinstance(expr.function, e.NamedExpression)
+            and expr.function.name == "`~`"
+            and isinstance(expr.parameter, e.TupleExpression)
+            and len(expr.parameter.expressions) == 1):
+        return expr.parameter.expressions[0].value
+    return None
+
+
 def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
         op, right = entry
         line = tokens[0].line_ref
+        # `a & ~b` is andNot — recognise it here so it lowers to the runtime's
+        # single-pass andnot rather than a separate complement then and. AND is
+        # commutative, so `~a & b` is andNot(b, a) too; only fold when exactly
+        # one side is `~` (both-inverted is NOR, handled by the right side).
+        if op == "&":
+            def _andnot(x: e.Expression, y: e.Expression) -> e.Expression:
+                return e.CallExpression(line,
+                    e.NamedExpression(line, "andNot"),
+                    e.TupleExpression(line, [
+                            e.TupleEntryExpression(None, x),
+                            e.TupleEntryExpression(None, y)
+                        ]))
+            inner_right = __invert_operand(right)
+            if inner_right is not None:
+                return _andnot(left, inner_right)          # a & ~b -> andNot(a, b)
+            inner_left = __invert_operand(left)
+            if inner_left is not None:
+                return _andnot(right, inner_left)          # ~a & b -> andNot(b, a)
         return e.CallExpression(line,
             e.NamedExpression(line, f"`{op}`"),
             e.TupleExpression(line, [
@@ -193,6 +246,26 @@ def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Resu
             e.TupleEntryExpression(None, expr),
         ]))
     return p.Result(negated, result.tokens, result.line_ref, result.errors)
+
+
+def __to_not(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    line = result.line_ref
+    notted = e.CallExpression(line,
+        e.NamedExpression(line, "`!`"),
+        e.TupleExpression(line, [
+            e.TupleEntryExpression(None, result.value),
+        ]))
+    return p.Result(notted, result.tokens, result.line_ref, result.errors)
+
+
+def __to_invert(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    line = result.line_ref
+    inverted = e.CallExpression(line,
+        e.NamedExpression(line, "`~`"),
+        e.TupleExpression(line, [
+            e.TupleEntryExpression(None, result.value),
+        ]))
+    return p.Result(inverted, result.tokens, result.line_ref, result.errors)
 
 
 def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -491,7 +564,7 @@ __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __name
 
 # match arm: "(" literal ")" "=>" expr  |  "(" name ":" type ")" "=>" expr  |  "()" "=>" expr
 __parse_signed_integer = ((p.discard_sym("-") & __integer()) >> __to_negate) | __integer()
-__parse_match_literal   = __parse_signed_integer | __string()
+__parse_match_literal   = __parse_signed_integer | __char() | __string()
 __parse_match_arm_literal = p.block(
     (p.discard_sym('(') & __parse_match_literal & p.discard_sym(')')
      & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal)
@@ -503,15 +576,26 @@ __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.man
 __parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__") >> __to_parallel_expr
 
 __parse_paren_expr = __parse_expr_tuple >> __to_paren_expr
-__parse_terminal = __float() | __integer() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
+__parse_terminal = __float() | __integer() | __char() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
 __parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
-__parse_unary   = (p.discard_sym("-") & __parse_invoke) >> __to_negate | __parse_invoke
+__parse_unary   = ((p.discard_sym("-") & __parse_invoke) >> __to_negate
+                 | (p.discard_sym("!") & __parse_invoke) >> __to_not
+                 | (p.discard_sym("~") & __parse_invoke) >> __to_invert
+                 | __parse_invoke)
 __parse_pipeline= (__parse_unary   & p.many(p.discard_sym("|>")    & __parse_unary    )) >> __to_pipeline
 __parse_divmul  = (__parse_pipeline & p.many(p.sym(["%", "/", "*"]) & __parse_pipeline  )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
-__parse_compare = (__parse_addsub   & p.many(p.sym(["<", "==", ">"]) & __parse_addsub    )) >> __to_call_operators
+# Shifts bind looser than +/- but tighter than the bitwise/comparison ops
+# (C order: `a + b << c` is `(a + b) << c`).
+__parse_shift   = (__parse_addsub   & p.many(p.sym(["<<", ">>"])    & __parse_addsub    )) >> __to_call_operators
+# Bitwise operators bind tighter than comparison (so `a & b == c` is
+# `(a & b) == c`, avoiding C's footgun) with the usual & > ^ > | order.
+__parse_bitand  = (__parse_shift    & p.many(p.sym("&")             & __parse_shift     )) >> __to_call_operators
+__parse_bitxor  = (__parse_bitand   & p.many(p.sym("^")             & __parse_bitand    )) >> __to_call_operators
+__parse_bitor   = (__parse_bitxor   & p.many(p.sym("|")             & __parse_bitxor    )) >> __to_call_operators
+__parse_compare = (__parse_bitor    & p.many(p.sym(["<", "==", ">", "!=", "<=", ">="]) & __parse_bitor)) >> __to_call_operators
 __parse_bind    = (__parse_compare  & p.many(p.sym("?>")             & __parse_compare   )) >> __to_call_operators
 __parse_ternery = (__parse_bind     & p.many(p.discard_sym("?") & __parse_bind & p.discard_sym(":") & __parse_bind)) >> __to_ternery
 

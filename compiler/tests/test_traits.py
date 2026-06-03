@@ -12,7 +12,7 @@ class TestTraits(TestCase):
         content = ("import System\n"
                    "\n"
                    "fun main(): System::Int\n"
-                   "    let result = System::Char(48) + System::Char(49)\n"
+                   "    let result = System::Char('0') + System::Char('1')\n"
                    "    System::print(\"Fred\")\n"
                    "    ret 0\n")
 

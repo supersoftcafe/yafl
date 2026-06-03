@@ -18,6 +18,44 @@ interface BasicMath<TVal> : BasicPlus<TVal>|BasicCompare<TVal>
   fun `/`(left: TVal, right: TVal): TVal
   fun `%`(left: TVal, right: TVal): TVal
 
+# Derived comparison operators. Defined once over the comparison interfaces,
+# so every BasicEquality / BasicCompare type (all numerics and String) gets
+# them for free — the underlying instances need only `==`, `<` and `>`.
+# `<=`/`>=` are spelled as "less/greater OR equal" rather than negations of
+# `>`/`<` so they stay correct for Float NaN (every comparison with NaN is
+# false, so NaN is neither `<=` nor `>=` anything).
+fun [inline] `!=`<TVal>(left: TVal, right: TVal): System::Bool where BasicEquality<TVal>
+  ret left == right ? false : true
+
+fun [inline] `<=`<TVal>(left: TVal, right: TVal): System::Bool where BasicCompare<TVal>
+  ret left < right ? true : left == right
+
+fun [inline] `>=`<TVal>(left: TVal, right: TVal): System::Bool where BasicCompare<TVal>
+  ret left > right ? true : left == right
+
+# Logical negation. Bool-only, so no interface constraint.
+fun [inline] `!`(value: System::Bool): System::Bool
+  ret value ? false : true
+
+
+# Bitwise operations, implemented only by the integer types (not Float/String).
+# `~` is unary complement; `&`/`|`/`^` are the binary operators. `andNot(a, b)`
+# is `a & ~b` — the parser folds that spelling onto this single-pass method, so
+# it needs no operator symbol of its own.
+interface Bitwise<TVal>
+  fun `~`(value: TVal): TVal
+  fun `&`(left: TVal, right: TVal): TVal
+  fun `|`(left: TVal, right: TVal): TVal
+  fun `^`(left: TVal, right: TVal): TVal
+  fun andNot(left: TVal, right: TVal): TVal
+
+# Bit shifts, implemented only by the integer types. `<<` is multiply-by-2^n;
+# `>>` is an arithmetic (sign-preserving, floor) shift. The shift count is the
+# same type as the value, taken modulo the bit width for the fixed-width types.
+interface Shift<TVal>
+  fun `<<`(left: TVal, right: TVal): TVal
+  fun `>>`(left: TVal, right: TVal): TVal
+
 # Render a value as a String for human-facing output.
 # Used by `format` to fill template slots; instances live alongside their
 # type's other trait instances (e.g. Show<Int> in integer.yafl).

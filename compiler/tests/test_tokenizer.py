@@ -34,6 +34,36 @@ class Test(TestCase):
         self.assertEqual(TokenKind.STRING, tokens[0].kind)
         self.assertEqual("\"fred\"", tokens[0].value)
 
+    def test_tokenize_char(self):
+        tokens = tokenize("'A'", "file")
+        self.assertEqual(2, len(tokens))
+        self.assertEqual(TokenKind.CHAR, tokens[0].kind)
+        self.assertEqual("'A'", tokens[0].value)
+
+    def test_tokenize_char_escaped_quote(self):
+        # The escaped single quote is consumed by the \. branch, so the
+        # literal spans the whole '\'' rather than ending early.
+        tokens = tokenize(r"'\''", "file")
+        self.assertEqual(2, len(tokens))
+        self.assertEqual(TokenKind.CHAR, tokens[0].kind)
+        self.assertEqual(r"'\''", tokens[0].value)
+
+    def test_tokenize_two_chars_split(self):
+        # A quote is neither \. nor [^\\'], so the body stops at the closing
+        # quote: "'a' 'b'" is two separate char tokens, not one run.
+        tokens = tokenize("'a' 'b'", "file")
+        kinds = [tok.kind for tok in tokens]
+        self.assertEqual([TokenKind.CHAR, TokenKind.CHAR, TokenKind.EOF], kinds)
+        self.assertEqual("'a'", tokens[0].value)
+        self.assertEqual("'b'", tokens[1].value)
+
+    def test_apostrophe_in_comment_is_not_a_char(self):
+        # The comment rule runs first, so an apostrophe after '#' never starts
+        # a char literal.
+        tokens = tokenize("x  # don't tokenise this", "file")
+        self.assertEqual([TokenKind.IDENTIFIER, TokenKind.EOF],
+                         [tok.kind for tok in tokens])
+
     def test_simple_interface(self):
         tokens = tokenize("interface Simple", "file")
         self.assertEqual(3, len(tokens))

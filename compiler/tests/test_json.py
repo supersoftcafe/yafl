@@ -1,4 +1,10 @@
-"""End-to-end tests for the System::Json stdlib parser/printer."""
+"""End-to-end tests for the System::Json stdlib converter.
+
+`System::Json` is a pure String→JsonValue / JsonValue→String converter (no IO,
+no async): `parse(s)` reads, `stringify(v)` / `stringify(v, pretty)` write.
+Tests embed JSON as string literals and either return a classification exit
+code or print the stringified result and capture stdout.
+"""
 from __future__ import annotations
 
 import os
@@ -10,45 +16,40 @@ import compiler as c
 from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV
 
 
-# Shared helper functions, one set of definitions reused across tests.
 _HARNESS_PRELUDE = """namespace Main
 import System
-import System::IO
 import System::Json
 
-fun handleParse(r: (state: ParseState, v: JsonValue|JsonParseError),
-                onValue: (:JsonValue): System::Int): System::Int
-  let closed = r.state.io.close()
-  ret match(r.v)
-    (val: JsonValue)    => onValue(val)
+fun onResult(r: JsonValue|JsonParseError, f: (:JsonValue): System::Int): System::Int
+  ret match(r)
+    (v: JsonValue)      => f(v)
     (e: JsonParseError) => 90
-
-fun runOnHandle(h: IO, onValue: (:JsonValue): System::Int): System::Int
-  let r = parseValue(ParseState(h, "", 0))
-  ret handleParse(r, onValue)
-
-fun runOnPath(path: System::String, onValue: (:JsonValue): System::Int): System::Int
-  ret match(open_read(path))
-    (h: IO) => runOnHandle(h, onValue)
-    (e: IOError) => 80
 """
 
 
-def _run_with_json_module(test_source: str, timeout: int = 5) -> int:
-    c_code = c.compile(
-        [c.Input(test_source, "test.yafl")],
-        use_stdlib=True, just_testing=False)
+def _yafl_str(text: str) -> str:
+    """Embed `text` as a YAFL string literal (escape `\\` and `"`; the
+    string-literal encoder handles other bytes)."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _build(binary_src: str) -> str:
+    c_code = c.compile([c.Input(binary_src, "test.yafl")], use_stdlib=True, just_testing=False)
     assert c_code, "yafl compilation produced no output (type errors?)"
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
         binary = tmp.name
+    result = subprocess.run(
+        ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+        input=c_code, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, f"clang failed:\n{result.stderr}"
+    return binary
+
+
+def _run_exit(test_source: str, timeout: int = 5) -> int:
+    binary = _build(test_source)
     try:
-        result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
-            input=c_code, text=True, capture_output=True, timeout=30,
-        )
-        assert result.returncode == 0, f"clang failed:\n{result.stderr}"
-        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
-        return run.returncode
+        return subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV).returncode
     finally:
         try:
             os.unlink(binary)
@@ -56,27 +57,30 @@ def _run_with_json_module(test_source: str, timeout: int = 5) -> int:
             pass
 
 
-# TestJsonScalars (parse_true/false/null/number_integer/number_float/
-# number_exponent/number_negative_int/number_with_leading_whitespace/
-# simple_string/string_with_escape/empty_string) is covered by
-# test_json_scalars.TestAllJsonScalars.
+def _run_stdout(test_source: str, timeout: int = 5) -> str:
+    binary = _build(test_source)
+    try:
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
+        assert run.returncode == 0, f"program exited {run.returncode}"
+        return run.stdout.decode("utf-8", errors="replace")
+    finally:
+        try:
+            os.unlink(binary)
+        except OSError:
+            pass
 
 
 class TestJsonComposite(TestCase):
 
     def _run(self, json_text: str, classify_body: str) -> int:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "in.json")
-            with open(path, "w") as f:
-                f.write(json_text)
-            src = _HARNESS_PRELUDE + f"""
+        src = _HARNESS_PRELUDE + f"""
 fun classify(v: JsonValue): System::Int
 {classify_body}
 
 fun main(): System::Int
-  ret runOnPath("{path}", classify)
+  ret onResult(parse({_yafl_str(json_text)}), classify)
 """
-            return _run_with_json_module(src)
+        return _run_exit(src)
 
     def test_parse_empty_array(self):
         body = """  ret match(v)
@@ -87,7 +91,6 @@ fun main(): System::Int
         self.assertEqual(0, self._run("[]", body))
 
     def test_parse_array_three_numbers(self):
-        # [10, 20, 30] — sum the elements (each via the JsonInt extraction).
         body = """  ret match(v)
     (a: JsonArr) => sumArr(a.elements)
     () => 99
@@ -102,7 +105,6 @@ fun sumArr(l: List<JsonValue>): System::Int
         self.assertEqual(60, self._run("[10, 20, 30]", body))
 
     def test_parse_nested_array(self):
-        # [[1], [2, 3]] — count elements at top level (2).
         body = """  ret match(v)
     (a: JsonArr) => lenArr(a.elements)
     () => 99
@@ -115,7 +117,6 @@ fun lenArr(l: List<JsonValue>): System::Int
         self.assertEqual(2, self._run("[[1], [2, 3]]", body))
 
     def test_parse_object_with_one_entry(self):
-        # {"x": 7} — find "x" and return its number.
         body = """  ret match(v)
     (o: JsonObj) => lookupX(o.pairs)
     () => 99
@@ -144,77 +145,55 @@ fun lenObj(l: List<JsonPair>): System::Int
     (p: JsonPair) => 1 + lenObj(tail<JsonPair>(l))"""
         self.assertEqual(3, self._run('{"a": 1, "b": 2, "c": 3}', body))
 
-    def test_print_scalar_to_file(self):
-        # Print JsonNum(42) to a file and verify the bytes.
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "out.json")
-            src = _HARNESS_PRELUDE + f"""
-fun printAndClose(h: IO, v: JsonValue): System::Int
-  let r = printValue(h, v)
-  let closed = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => 0
-    (e: IOError)     => 70
+    def test_stringify_scalar(self):
+        src = _HARNESS_PRELUDE + """
+fun main(): System::Int
+  print(stringify(JsonNum(42.0)))
+  ret 0
+"""
+        self.assertEqual("42", _run_stdout(src))
+
+    def test_stringify_pretty_overload(self):
+        # stringify(v, true) indents; empty containers stay inline. Parses the
+        # printed form back with Python to assert structure plus the layout.
+        import json as pyjson
+        src = _HARNESS_PRELUDE + f"""
+fun emit(v: JsonValue): System::Int
+  print(stringify(v, true))
+  ret 0
 
 fun main(): System::Int
-  let v: JsonValue = JsonNum(42.0)
-  ret match(create("{path}"))
-    (h: IO)      => printAndClose(h, v)
-    (e: IOError) => 80
+  ret onResult(parse({_yafl_str('{"a":[1,2],"b":{}}')}), emit)
 """
-            self.assertEqual(0, _run_with_json_module(src))
-            with open(path) as f:
-                content = f.read()
-            self.assertEqual("42", content)
+        out = _run_stdout(src)
+        self.assertEqual({"a": [1, 2], "b": {}}, pyjson.loads(out))
+        self.assertIn("\n  ", out, "pretty output should be indented")
+        self.assertIn('"b": {}', out, "empty object should stay inline")
 
-    def _run_round_trip(self, original: str) -> str:
-        """Compile a parse-then-print program, run it on `original`,
-        return what came out. Caller asserts."""
-        with tempfile.TemporaryDirectory() as tmp:
-            in_path = os.path.join(tmp, "in.json")
-            out_path = os.path.join(tmp, "out.json")
-            with open(in_path, "w") as f:
-                f.write(original)
-            src = _HARNESS_PRELUDE + f"""
-fun printAndClose(h: IO, v: JsonValue): System::Int
-  let r = printValue(h, v)
-  let closed = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => 0
-    (e: IOError)     => 70
-
-fun handleParsed(v: JsonValue): System::Int
-  ret match(create("{out_path}"))
-    (h: IO)      => printAndClose(h, v)
-    (e: IOError) => 80
+    def _round_trip(self, original: str) -> str:
+        src = _HARNESS_PRELUDE + f"""
+fun emit(v: JsonValue): System::Int
+  print(stringify(v))
+  ret 0
 
 fun main(): System::Int
-  ret runOnPath("{in_path}", handleParsed)
+  ret onResult(parse({_yafl_str(original)}), emit)
 """
-            self.assertEqual(0, _run_with_json_module(src),
-                             f"round-trip program exited non-zero for input {original!r}")
-            with open(out_path) as f:
-                return f.read()
+        return _run_stdout(src, timeout=30)
 
     def test_round_trip_scalar_number(self):
-        self.assertEqual("42", self._run_round_trip("42"))
+        self.assertEqual("42", self._round_trip("42"))
 
     def test_round_trip_array(self):
-        self.assertEqual("[1, 2, 3]", self._run_round_trip("[1, 2, 3]"))
+        self.assertEqual("[1, 2, 3]", self._round_trip("[1, 2, 3]"))
 
     def test_round_trip_object_with_nested_array(self):
-        # Complex case: object with mixed types including a nested array.
-        # Originally crashed with SIGSEGV during GC due to a packed-string
-        # value in the captured peek-task's lookahead field. Fixed in
-        # yafllib/object.c:gc_object_is_on_heap_fast (alignment mask
-        # extended from 3 to PTR_TAG_MASK so PTR_TAG_STRING is filtered).
         import json as pyjson
         original = '{"name": "yafl", "values": [1, 2, 3], "ok": true}'
-        printed = self._run_round_trip(original)
+        printed = self._round_trip(original)
         self.assertEqual(pyjson.loads(original), pyjson.loads(printed))
 
     def test_parse_mixed_nested(self):
-        # {"items": [{"v": 5}, {"v": 8}]} — sum the inner v fields.
         body = """  ret match(v)
     (o: JsonObj) => sumInner(o.pairs)
     () => 99
@@ -249,31 +228,15 @@ class TestJsonInteger(TestCase):
     """Round-trips and edge cases specific to JsonInt."""
 
     def _round_trip(self, original: str) -> str:
-        with tempfile.TemporaryDirectory() as tmp:
-            in_path = os.path.join(tmp, "in.json")
-            out_path = os.path.join(tmp, "out.json")
-            with open(in_path, "w") as f:
-                f.write(original)
-            src = _HARNESS_PRELUDE + f"""
-fun printAndClose(h: IO, v: JsonValue): System::Int
-  let r = printValue(h, v)
-  let closed = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => 0
-    (e: IOError)     => 70
-
-fun handleParsed(v: JsonValue): System::Int
-  ret match(create("{out_path}"))
-    (h: IO)      => printAndClose(h, v)
-    (e: IOError) => 80
+        src = _HARNESS_PRELUDE + f"""
+fun emit(v: JsonValue): System::Int
+  print(stringify(v))
+  ret 0
 
 fun main(): System::Int
-  ret runOnPath("{in_path}", handleParsed)
+  ret onResult(parse({_yafl_str(original)}), emit)
 """
-            self.assertEqual(0, _run_with_json_module(src),
-                             f"round-trip program exited non-zero for input {original!r}")
-            with open(out_path) as f:
-                return f.read()
+        return _run_stdout(src)
 
     def test_int_round_trip_small(self):
         self.assertEqual("42", self._round_trip("42"))
@@ -286,87 +249,49 @@ fun main(): System::Int
         self.assertEqual("123456789012345", self._round_trip("123456789012345"))
 
     def test_float_round_trip(self):
-        # A value with a decimal stays Float — round-trip through printValue.
-        # Use a power-of-two-friendly value (0.5) that's exactly representable
-        # in IEEE 754 so the printer's text form matches the input exactly.
+        # 0.5 is exactly representable, so the printer's text matches the input.
         self.assertEqual("0.5", self._round_trip("0.5"))
 
 
 class TestLargeString(TestCase):
-    """Large string bodies parse to a single JsonStr regardless of size —
-    the runtime allocator now supports multi-page objects so the parser no
-    longer chunks. These tests pin that contract end-to-end."""
+    """Large string bodies parse to a single JsonStr regardless of size."""
 
     def _classify_string(self, json_text: str, body: str) -> int:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "in.json")
-            with open(path, "w") as f:
-                f.write(json_text)
-            src = _HARNESS_PRELUDE + f"""
+        src = _HARNESS_PRELUDE + f"""
 fun classify(v: JsonValue): System::Int
 {body}
 
 fun main(): System::Int
-  ret runOnPath("{path}", classify)
+  ret onResult(parse({_yafl_str(json_text)}), classify)
 """
-            return _run_with_json_module(src)
-
-    def _make_body_string(self, n: int, ch: str = "x") -> str:
-        return ch * n
+        return _run_exit(src, timeout=30)
 
     def test_short_string_is_jsonstr(self):
         body = """  ret match(v)
     (s: JsonStr) => 1
     () => 0"""
-        text = '"' + self._make_body_string(100) + '"'
-        self.assertEqual(1, self._classify_string(text, body))
+        self.assertEqual(1, self._classify_string('"' + ("x" * 100) + '"', body))
 
     def test_large_string_is_jsonstr(self):
-        # 15 KB exceeds the old chunking threshold; should still come back
-        # as a single JsonStr now that strings can span pages.
         body = """  ret match(v)
     (s: JsonStr) => 1
     () => 0"""
-        text = '"' + self._make_body_string(15000) + '"'
-        self.assertEqual(1, self._classify_string(text, body))
+        self.assertEqual(1, self._classify_string('"' + ("x" * 15000) + '"', body))
 
     def test_large_string_length_preserved(self):
-        # 30000 bytes parse into a single JsonStr whose .strValue has the
-        # full length intact.  Exit code wraps modulo 256.
         body = """  ret match(v)
     (s: JsonStr) => System::length(s.strValue) % 256
     () => 99"""
-        text = '"' + self._make_body_string(30000) + '"'
-        self.assertEqual(30000 % 256, self._classify_string(text, body))
+        self.assertEqual(30000 % 256, self._classify_string('"' + ("x" * 30000) + '"', body))
 
     def test_large_string_round_trip(self):
-        # Parse a 30 KB string and reprint it; the output must equal the
-        # input byte-for-byte. Exercises the full read-write loop through
-        # a multi-page allocation.
-        with tempfile.TemporaryDirectory() as tmp:
-            in_path = os.path.join(tmp, "in.json")
-            out_path = os.path.join(tmp, "out.json")
-            body_str = "x" * 30000
-            original = f'"{body_str}"'
-            with open(in_path, "w") as f:
-                f.write(original)
-            src = _HARNESS_PRELUDE + f"""
-fun printAndClose(h: IO, v: JsonValue): System::Int
-  let r = printValue(h, v)
-  let closed = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => 0
-    (e: IOError)     => 70
-
-fun handleParsed(v: JsonValue): System::Int
-  ret match(create("{out_path}"))
-    (h: IO)      => printAndClose(h, v)
-    (e: IOError) => 80
+        original = '"' + ("x" * 30000) + '"'
+        src = _HARNESS_PRELUDE + f"""
+fun emit(v: JsonValue): System::Int
+  print(stringify(v))
+  ret 0
 
 fun main(): System::Int
-  ret runOnPath("{in_path}", handleParsed)
+  ret onResult(parse({_yafl_str(original)}), emit)
 """
-            self.assertEqual(0, _run_with_json_module(src, timeout=30))
-            with open(out_path) as f:
-                printed = f.read()
-            self.assertEqual(original, printed)
+        self.assertEqual(original, _run_stdout(src, timeout=30))

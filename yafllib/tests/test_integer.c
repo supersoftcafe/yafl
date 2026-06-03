@@ -209,6 +209,245 @@ TEST(rem_both_negative)
     ASSERT_INT_EQ(integer_rem(I(-10), I(-3)), I(-1));
 TEST_END()
 
+/* ---- bitwise invert ---- */
+/* For two's-complement (which an arbitrary-precision integer models),
+   ~x == -x - 1.  Small values take integer_inv's tagged fast path; the
+   multi-word literals exercise integer_inv_full. */
+
+TEST(inv_zero)
+    ASSERT_INT_EQ(integer_inv(I(0)), I(-1));
+TEST_END()
+
+TEST(inv_minus_one)
+    ASSERT_INT_EQ(integer_inv(I(-1)), I(0));
+TEST_END()
+
+TEST(inv_positive_small)
+    /* ~5 == -6 */
+    ASSERT_INT_EQ(integer_inv(I(5)), I(-6));
+TEST_END()
+
+TEST(inv_negative_small)
+    /* ~(-6) == 5 */
+    ASSERT_INT_EQ(integer_inv(I(-6)), I(5));
+TEST_END()
+
+TEST(inv_involution_small)
+    /* ~~x == x */
+    ASSERT_INT_EQ(integer_inv(integer_inv(I(12345))), I(12345));
+TEST_END()
+
+TEST(inv_matches_minus_one_minus_x_small)
+    /* ~x == -1 - x, cross-checked against subtraction */
+    ASSERT_INT_EQ(integer_inv(I(100)), integer_sub(I(-1), I(100)));
+TEST_END()
+
+/* The explicit-negative checks below use the identity ~X + X == -1 rather
+   than hand-written negative literals: the BL* macros store the raw sign arg
+   (-1) in the sign field, whereas a freshly computed negative carries the
+   canonical sign (1), and integer_test_eq does not reconcile the two. */
+
+TEST(inv_big_two_word)
+    /* X = 2^63: ~X is heap (forces integer_inv_full), and ~X + X == -1 */
+    ASSERT_INT_EQ(integer_add(integer_inv(BL2(0,0,0x80000000)),
+                              BL2(0,0,0x80000000)), I(-1));
+TEST_END()
+
+TEST(inv_big_three_word)
+    /* X = 2^64: ~X + X == -1 */
+    ASSERT_INT_EQ(integer_add(integer_inv(BL3(0,0,0,1)),
+                              BL3(0,0,0,1)), I(-1));
+TEST_END()
+
+TEST(inv_big_negative)
+    /* ~(-(2^64 + 1)) == 2^64 — input sign propagates, result is canonical +ve */
+    ASSERT_INT_EQ(integer_inv(BL3(-1,1,0,1)), BL3(0,0,0,1));
+TEST_END()
+
+TEST(inv_big_involution)
+    /* ~~x == x for a genuine three-word value */
+    ASSERT_INT_EQ(integer_inv(integer_inv(BL3(0,0,1,0x12345678))),
+                  BL3(0,0,1,0x12345678));
+TEST_END()
+
+TEST(inv_big_matches_minus_one_minus_x)
+    /* ~x == -1 - x for a big value, cross-checked against subtraction */
+    object_t* x = BL3(0,0,1,0x12345678);
+    ASSERT_INT_EQ(integer_inv(x), integer_sub(I(-1), x));
+TEST_END()
+
+/* Fixed-width invert is plain ~ truncated to the type's width. */
+TEST(inv_fixed_width)
+    ASSERT_EQ_I32(int8_inv((int8_t)0),    (int8_t)-1);
+    ASSERT_EQ_I32(int8_inv((int8_t)-1),   (int8_t)0);
+    ASSERT_EQ_I32(int8_inv((int8_t)5),    (int8_t)-6);
+    ASSERT_EQ_I32(int16_inv((int16_t)0),  (int16_t)-1);
+    ASSERT_EQ_I32(int16_inv((int16_t)0x1234), (int16_t)~0x1234);
+    ASSERT_EQ_I32(int32_inv(0),           -1);
+    ASSERT_EQ_I32(int32_inv(INT32_MAX),   INT32_MIN);
+    ASSERT_EQ_I32(int32_inv(0x12345678),  ~0x12345678);
+    ASSERT(int64_inv((int64_t)0)             == (int64_t)-1);
+    ASSERT(int64_inv((int64_t)0x123456789ABCLL) == ~(int64_t)0x123456789ABCLL);
+    ASSERT(int64_inv(INT64_MAX)              == INT64_MIN);
+TEST_END()
+
+/* ---- bitwise and / or / xor / andnot ---- */
+
+/* Two-limb (length 2) heap operands for the big-value cases.
+   X.limbs = [0x12345678F0F0F0F0, 0x0BADF00D]
+   Y.limbs = [0xFFFF00000F0F0F0F, 0x00C0FFEE] */
+#define BIG_X BL3(0, 0xF0F0F0F0, 0x12345678, 0x0BADF00D)
+#define BIG_Y BL3(0, 0x0F0F0F0F, 0xFFFF0000, 0x00C0FFEE)
+#define BIG_Z BL3(-1, 1, 0, 1)               /* -(2^64 + 1): heap, negative */
+
+TEST(and_small)
+    ASSERT_INT_EQ(integer_and(I(12), I(10)), I(8));
+    ASSERT_INT_EQ(integer_and(I(-1), I(5)),  I(5));    /* all-ones & x == x */
+    ASSERT_INT_EQ(integer_and(I(-8), I(-3)), I(-8));   /* both negative */
+TEST_END()
+
+TEST(or_small)
+    ASSERT_INT_EQ(integer_or(I(12), I(10)), I(14));
+    ASSERT_INT_EQ(integer_or(I(-1), I(5)),  I(-1));
+    ASSERT_INT_EQ(integer_or(I(-8), I(-3)), I(-3));
+TEST_END()
+
+TEST(xor_small)
+    ASSERT_INT_EQ(integer_xor(I(12), I(10)), I(6));
+    ASSERT_INT_EQ(integer_xor(I(-1), I(5)),  I(-6));   /* x ^ -1 == ~x */
+    ASSERT_INT_EQ(integer_xor(I(-8), I(-3)), I(5));
+TEST_END()
+
+TEST(andnot_small)
+    ASSERT_INT_EQ(integer_andnot(I(12), I(10)), I(4)); /* 12 & ~10 */
+    ASSERT_INT_EQ(integer_andnot(I(5),  I(3)),  I(4));
+    ASSERT_INT_EQ(integer_andnot(I(-1), I(5)),  I(-6));/* ~5 */
+TEST_END()
+
+/* Concrete multi-limb results, hand-computed limb by limb (positive → the
+   BL sign field is the canonical 0, so direct comparison is safe). */
+TEST(and_big)
+    ASSERT_INT_EQ(integer_and(BIG_X, BIG_Y), BL3(0, 0, 0x12340000, 0x0080F00C));
+TEST_END()
+
+TEST(or_big)
+    ASSERT_INT_EQ(integer_or(BIG_X, BIG_Y), BL3(0, 0xFFFFFFFF, 0xFFFF5678, 0x0BEDFFEF));
+TEST_END()
+
+TEST(xor_big)
+    ASSERT_INT_EQ(integer_xor(BIG_X, BIG_Y), BL3(0, 0xFFFFFFFF, 0xEDCB5678, 0x0B6D0FE3));
+TEST_END()
+
+TEST(andnot_big)
+    ASSERT_INT_EQ(integer_andnot(BIG_X, BIG_Y), BL3(0, 0xF0F0F0F0, 0x00005678, 0x0B2D0001));
+TEST_END()
+
+/* Algebraic identities — sign-encoding-agnostic, and cover negative/mixed
+   operands (BIG_Z) where hand-written negative literals would be unreliable. */
+TEST(bitwise_identities_big)
+    ASSERT_INT_EQ(integer_and(BIG_X, BIG_X), BIG_X);
+    ASSERT_INT_EQ(integer_or(BIG_X, BIG_X),  BIG_X);
+    ASSERT_INT_EQ(integer_xor(BIG_X, BIG_X), I(0));
+    ASSERT_INT_EQ(integer_or(BIG_X, I(0)),   BIG_X);
+    ASSERT_INT_EQ(integer_and(BIG_X, I(0)),  I(0));
+    ASSERT_INT_EQ(integer_andnot(BIG_X, I(0)), BIG_X);
+    ASSERT_INT_EQ(integer_andnot(BIG_X, BIG_X), I(0));
+TEST_END()
+
+TEST(andnot_equals_and_inv_big)
+    /* a andnot b == a & ~b — including a negative left operand */
+    ASSERT_INT_EQ(integer_andnot(BIG_X, BIG_Y),
+                  integer_and(BIG_X, integer_inv(BIG_Y)));
+    ASSERT_INT_EQ(integer_andnot(BIG_Z, BIG_X),
+                  integer_and(BIG_Z, integer_inv(BIG_X)));
+TEST_END()
+
+TEST(de_morgan_big)
+    /* ~(a & b) == ~a | ~b ;  ~(a | b) == ~a & ~b (with a negative operand) */
+    ASSERT_INT_EQ(integer_inv(integer_and(BIG_X, BIG_Y)),
+                  integer_or(integer_inv(BIG_X), integer_inv(BIG_Y)));
+    ASSERT_INT_EQ(integer_inv(integer_or(BIG_Z, BIG_Y)),
+                  integer_and(integer_inv(BIG_Z), integer_inv(BIG_Y)));
+TEST_END()
+
+TEST(xor_identity_big)
+    /* a ^ b == (a | b) andnot (a & b), with a negative operand */
+    ASSERT_INT_EQ(integer_xor(BIG_X, BIG_Z),
+                  integer_andnot(integer_or(BIG_X, BIG_Z),
+                                 integer_and(BIG_X, BIG_Z)));
+TEST_END()
+
+TEST(bitwise_fixed_width)
+    ASSERT_EQ_I32(int32_and(0xF0F0, 0x0FF0),    0x00F0);
+    ASSERT_EQ_I32(int32_or(0xF0F0, 0x0FF0),     0xFFF0);
+    ASSERT_EQ_I32(int32_xor(0xF0F0, 0x0FF0),    0xFF00);
+    ASSERT_EQ_I32(int32_andnot(0xF0F0, 0x0FF0), 0xF000);
+    ASSERT_EQ_I32(int32_and(-1, 5),  5);
+    ASSERT_EQ_I32(int32_or(-1, 5),   -1);
+    ASSERT_EQ_I32(int8_and((int8_t)0x3C, (int8_t)0x0F), (int8_t)0x0C);
+    ASSERT_EQ_I32(int8_xor((int8_t)-1, (int8_t)0x0F),   (int8_t)0xF0);
+    ASSERT(int16_or((int16_t)0x00FF, (int16_t)0xFF00)  == (int16_t)0xFFFF);
+    ASSERT(int64_andnot((int64_t)0xFF, (int64_t)0x0F)  == (int64_t)0xF0);
+TEST_END()
+
+/* ---- bit shifts ---- */
+/* `<<` is multiply-by-2^k; `>>` is an arithmetic (floor) shift. */
+
+TEST(shl_small)
+    ASSERT_INT_EQ(integer_shl(I(1), I(4)), I(16));
+    ASSERT_INT_EQ(integer_shl(I(3), I(2)), I(12));
+    ASSERT_INT_EQ(integer_shl(I(5), I(0)), I(5));      /* no-op */
+TEST_END()
+
+TEST(shl_big)
+    ASSERT_INT_EQ(integer_shl(I(1), I(63)), BL2(0,0,0x80000000));  /* 2^63 */
+    ASSERT_INT_EQ(integer_shl(I(1), I(64)), BL3(0,0,0,1));         /* 2^64 */
+TEST_END()
+
+TEST(shl_negative)
+    ASSERT_INT_EQ(integer_shl(I(-1), I(4)), I(-16));
+    ASSERT_INT_EQ(integer_shl(I(-3), I(1)), I(-6));
+TEST_END()
+
+TEST(shr_small)
+    ASSERT_INT_EQ(integer_shr(I(16),  I(2)), I(4));
+    ASSERT_INT_EQ(integer_shr(I(100), I(3)), I(12));
+    ASSERT_INT_EQ(integer_shr(I(7),   I(0)), I(7));    /* no-op */
+TEST_END()
+
+TEST(shr_arithmetic_negative)
+    /* floor division by 2^k, not truncation toward zero */
+    ASSERT_INT_EQ(integer_shr(I(-5), I(1)), I(-3));
+    ASSERT_INT_EQ(integer_shr(I(-8), I(2)), I(-2));
+    ASSERT_INT_EQ(integer_shr(I(-1), I(1)), I(-1));
+    ASSERT_INT_EQ(integer_shr(I(-7), I(1)), I(-4));
+TEST_END()
+
+TEST(shr_big)
+    ASSERT_INT_EQ(integer_shr(BL3(0,0,0,1), I(64)), I(1));         /* 2^64 >> 64 */
+    ASSERT_INT_EQ(integer_shr(BL2(0,0,0x80000000), I(63)), I(1));  /* 2^63 >> 63 */
+TEST_END()
+
+TEST(shift_round_trip)
+    ASSERT_INT_EQ(integer_shr(integer_shl(I(5),  I(40)), I(40)), I(5));
+    ASSERT_INT_EQ(integer_shr(integer_shl(I(-5), I(40)), I(40)), I(-5));
+TEST_END()
+
+TEST(shift_fixed_width)
+    ASSERT_EQ_I32(int32_shl(1, 4),         16);
+    ASSERT_EQ_I32(int32_shl(0xFF, 8),      0xFF00);
+    ASSERT_EQ_I32(int32_shl(-1, 1),        -2);
+    ASSERT_EQ_I32(int32_shl(1, 32),        1);      /* count masked: 32 & 31 == 0 */
+    ASSERT_EQ_I32(int32_shr(16, 2),        4);
+    ASSERT_EQ_I32(int32_shr(-16, 2),       -4);     /* arithmetic */
+    ASSERT_EQ_I32(int32_shr(-1, 1),        -1);
+    ASSERT_EQ_I32(int32_shr(INT32_MIN, 31), -1);
+    ASSERT_EQ_I32(int8_shl((int8_t)1, (int8_t)7),   (int8_t)0x80);  /* -128 */
+    ASSERT_EQ_I32(int8_shr((int8_t)-1, (int8_t)1),  (int8_t)-1);
+    ASSERT(int64_shl((int64_t)1, (int64_t)40)      == ((int64_t)1 << 40));
+    ASSERT(int64_shr((int64_t)-1024, (int64_t)2)   == (int64_t)-256);
+TEST_END()
+
 /* ---- comparison ---- */
 
 TEST(cmp_equal)
@@ -358,6 +597,45 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(rem_negative_dividend);
     RUN(rem_negative_divisor);
     RUN(rem_both_negative);
+
+    /* bitwise invert */
+    RUN(inv_zero);
+    RUN(inv_minus_one);
+    RUN(inv_positive_small);
+    RUN(inv_negative_small);
+    RUN(inv_involution_small);
+    RUN(inv_matches_minus_one_minus_x_small);
+    RUN(inv_big_two_word);
+    RUN(inv_big_three_word);
+    RUN(inv_big_negative);
+    RUN(inv_big_involution);
+    RUN(inv_big_matches_minus_one_minus_x);
+    RUN(inv_fixed_width);
+
+    /* bitwise and/or/xor/andnot */
+    RUN(and_small);
+    RUN(or_small);
+    RUN(xor_small);
+    RUN(andnot_small);
+    RUN(and_big);
+    RUN(or_big);
+    RUN(xor_big);
+    RUN(andnot_big);
+    RUN(bitwise_identities_big);
+    RUN(andnot_equals_and_inv_big);
+    RUN(de_morgan_big);
+    RUN(xor_identity_big);
+    RUN(bitwise_fixed_width);
+
+    /* bit shifts */
+    RUN(shl_small);
+    RUN(shl_big);
+    RUN(shl_negative);
+    RUN(shr_small);
+    RUN(shr_arithmetic_negative);
+    RUN(shr_big);
+    RUN(shift_round_trip);
+    RUN(shift_fixed_width);
 
     /* comparison */
     RUN(cmp_equal);

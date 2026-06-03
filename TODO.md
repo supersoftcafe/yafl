@@ -3,6 +3,28 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
+## Language & parser features
+
+From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types) and a
+`splitLines` helper are now done; remaining:
+
+- **Arrays.** A first-class array type with literal and indexing syntax — the
+  main missing aggregate (immutable `List<T>` exists; a contiguous array does
+  not).
+- **`\u` / `\x` string escapes.** Strings are UTF-8 codepoints, but only
+  `\n \r \t \0 \\ \" \'` decode — there is no way to write a non-ASCII codepoint
+  as an escape. Add `\xNN` and `\u{…}` / `\uXXXX`.
+- **Logical `&&` / `||`.** No short-circuit boolean operators; today boolean
+  combination is only via the ternary (`a ? b : false`). Decide: add them, or
+  bless the ternary as the idiom.
+- **`map` combinator (parser simplification).** ~30 of the parser's `__to_*`
+  callbacks only transform `result.value` yet hand-thread
+  `tokens`/`line_ref`/`errors`. A `Parser.map(f)` combinator would collapse
+  them, leaving `>>` only for the few that add errors or inspect tokens.
+
+Explicitly not planned: block comments (only `#` line comments) and multi-line
+string literals.
+
 ## Lift the 16 KB per-object size cap
 
 Today `_object_alloc` (`yafllib/object.c:348`) calls `abort_on_too_large_object`
@@ -371,6 +393,18 @@ the procedural equivalent of a return statement. It still obeys the
 functional paradigm, but having it inside conditions might imply that
 else blocks are not required. I think that making the break statement
 itself a condition helps to avoid this anti-pattern.
+
+## `[tail]` on nested functions (low priority)
+
+`[tail]` is currently top-level only; on a nested function (or class method) it
+is a hard error (`lowering/tail_loop.py:check_nested_tail`), because the tail
+pass runs before closure conversion and a nested function is hoisted/closure-
+converted by later passes, losing the annotation. Supporting it would let a
+`[tail]` loop be written nested (capturing outer variables) instead of forcing a
+top-level helper that threads state through parameters. Requires either running
+the tail transform after closure conversion (and seeing through the now-indirect
+self-call) or threading the annotation through the hoist and converting the
+lifted top-level form. Ergonomic nicety, not blocking.
 
 
 

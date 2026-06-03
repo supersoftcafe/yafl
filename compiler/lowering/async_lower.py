@@ -319,25 +319,61 @@ def __discover_tail_calls(fn: Function) -> Function:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def __calculate_saved_vars(fn: Function) -> Function:
-    labels = {op.name: index for index, op in enumerate(fn.ops) if isinstance(op, Label)}
+    ops0 = fn.ops
+    n = len(ops0)
+    labels = {op.name: index for index, op in enumerate(ops0) if isinstance(op, Label)}
+
+    # Enclosing block label for each op (nearest preceding Label), so a Phi
+    # source can be attributed to the specific predecessor edge it arrives on.
+    block_label: list[str | None] = [None] * n
+    cur: str | None = None
+    for i, op in enumerate(ops0):
+        if isinstance(op, Label):
+            cur = op.name
+        block_label[i] = cur
+
+    def reads_writes(op: Op) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        # A Phi reads nothing *unconditionally* — each source is consumed only
+        # on the edge from its labelled predecessor (added per-edge in
+        # `edge_in`). Treating Phi sources as plain reads would make a loop
+        # head's entry-edge value (e.g. an incoming param) appear live on the
+        # back-edge too, forcing it to be saved across a suspension where it no
+        # longer exists. The Phi writes its target.
+        if isinstance(op, Phi):
+            w = frozenset({op.target}) if isinstance(op.target, StackVar) else frozenset()
+            return frozenset(), w
+        return op.get_live_vars()
 
     def do_a_pass(ops: tuple[Op, ...]) -> tuple[Op, ...]:
         def saved_set_at(index: int) -> frozenset[StackVar]:
-            op = ops[index]
-            next_live, _ = op.get_live_vars()
-            return next_live | op.saved_vars
+            reads, _ = reads_writes(ops[index])
+            return reads | ops[index].saved_vars
+
+        def phi_sources_into(target_index: int, pred: str | None) -> frozenset[StackVar]:
+            srcs: frozenset[StackVar] = frozenset()
+            j = target_index + 1
+            while j < n and isinstance(ops[j], Phi):
+                for lbl, v in ops[j].sources:
+                    if lbl == pred:
+                        srcs = srcs | v.get_live_vars()
+                j += 1
+            return srcs
+
+        def edge_in(from_index: int, target_index: int) -> frozenset[StackVar]:
+            return saved_set_at(target_index) | phi_sources_into(target_index, block_label[from_index])
 
         def calc(index: int) -> Op:
             op = ops[index]
-            if index >= len(ops) - 1:
+            if index >= n - 1:
                 ss1 = frozenset()
             elif isinstance(op, Jump):
-                ss1 = saved_set_at(labels[op.name]) if op.name in labels else frozenset()
+                ss1 = edge_in(index, labels[op.name]) if op.name in labels else frozenset()
             else:
-                ss1 = saved_set_at(index + 1)
-            ss2 = frozenset() if not isinstance(op, JumpIf) else saved_set_at(labels[op.label])
-            this_live, this_dead = op.get_live_vars()
-            saved_vars = (ss1 | ss2) - this_dead
+                ss1 = edge_in(index, index + 1)
+            ss2 = (edge_in(index, labels[op.label])
+                   if isinstance(op, JumpIf) and op.label in labels else frozenset())
+            _, this_writes = reads_writes(op)
+            saved_vars = (ss1 | ss2) - this_writes
             return dataclasses.replace(op, saved_vars=saved_vars)
 
         return tuple(calc(index) for index in range(len(ops)))
@@ -740,10 +776,14 @@ def __create_state_machine_func(fn: Function, state_name: str,
     #    any out-of-range value hit the default abort. ──────────────────────
     sm_ops.append(SwitchJump(idx_field, tuple((i + 1, f"$case${i + 1}") for i in range(n))))
 
-    sm_ops.append(Label(f"$resume$0"))  # resume point for first-call completion
-
-    # ── Body: bb[1]..bb[N-1] ops, with StackVar → state field substitution ──
-    for i in range(1, n):
+    # ── Body: bb[0]..bb[N-1] ops, with StackVar → state field substitution.
+    #    bb[0] (the pre-first-suspend entry block) is included even though the
+    #    dispatch never falls into it (the switch's default aborts): a [tail]
+    #    loop whose body suspends has its loop head in bb[0], and the back-edge
+    #    `recur` jumps to it, re-running the head→suspend region each iteration.
+    #    For non-loop functions bb[0] is unreachable here and is pruned. Its
+    #    `$resume$0` label is emitted by the i==0 iteration below.
+    for i in range(0, n):
         bb = non_terminal[i]
         body_ops_before_call = bb.ops[:-1]
         call_op_orig         = bb.ops[-1]

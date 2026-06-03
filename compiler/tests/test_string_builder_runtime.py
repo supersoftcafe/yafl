@@ -29,11 +29,11 @@ fun lenOf(b: System::StringBuilder): System::Int
   ret System::length(System::toString(b))
 
 fun byteOf(b: System::StringBuilder, at: System::Int): System::Int
-  ret System::byteAt(System::toString(b), at)
+  ret Int(System::byteAt(System::toString(b), at))
 
 fun lastByteOf(b: System::StringBuilder): System::Int
   let s = System::toString(b)
-  ret System::byteAt(s, System::length(s) - 1)
+  ret Int(System::byteAt(s, System::length(s) - 1))
 
 # A small recursive append loop used by the regrowth cases.
 fun loop4(sb: System::StringBuilder, n: System::Int): System::StringBuilder

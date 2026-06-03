@@ -43,7 +43,7 @@ class TestArgsContent(TestCase):
             "import System\n"
             "fun main(): System::Int\n"
             "    ret match(System::head<System::String>(System::args()))\n"
-            "        (s: System::String) => System::byteAt(s, 0)\n"
+            "        (s: System::String) => Int(System::byteAt(s, 0))\n"
             "        (n: System::None)   => 0\n"
         )
         self.assertEqual(ord('Z'), compile_and_run_stdlib(src, args=["Z"]))

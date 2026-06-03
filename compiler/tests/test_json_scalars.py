@@ -1,9 +1,8 @@
 """Consolidated JSON scalar test.
 
-The original TestJsonScalars compiled 11 separate yafl programs, each
-parsing one JSON literal (true/false/null/42/3.14/1.5e2/-7/whitespace/
-"hi"/"a\\nb"/""). A single program here parses every case from a fixed
-set of temp files and prints a labelled classification per file.
+A single program parses every scalar case (true/false/null/42/3.14/1.5e2/
+-7/whitespace/"hi"/"a\\nb"/"") with `System::Json::parse` and prints a
+labelled classification per case.
 """
 from __future__ import annotations
 
@@ -35,7 +34,6 @@ _CASES = [
 
 _PRELUDE = """namespace Main
 import System
-import System::IO
 import System::Json
 
 fun classify(v: JsonValue): System::String
@@ -48,17 +46,10 @@ fun classify(v: JsonValue): System::String
     (s: JsonStr)   => "str_len:" + System::String(System::length(s.strValue))
     ()             => "??"
 
-fun handleParse(r: (state: ParseState, v: JsonValue|JsonParseError),
-                onValue: (:JsonValue): System::String): System::String
-  let closed = r.state.io.close()
-  ret match(r.v)
-    (val: JsonValue)    => onValue(val)
+fun classifyResult(s: System::String): System::String
+  ret match(parse(s))
+    (val: JsonValue)    => classify(val)
     (e: JsonParseError) => "parse_error"
-
-fun runOnPath(path: System::String): System::String
-  ret match(System::IO::open_read(path))
-    (h: System::IO::IO) => handleParse(parseValue(ParseState(h, "", 0)), classify)
-    (e: System::IO::IOError) => "io_error"
 
 fun emit(label: System::String, result: System::String): System::None
   System::print(label + "=" + result + "\\n")
@@ -66,11 +57,19 @@ fun emit(label: System::String, result: System::String): System::None
 """
 
 
-def _build_source(label_to_path: dict[str, str]) -> str:
+_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+
+
+def _yafl_str(text: str) -> str:
+    """Embed `text` as a YAFL string literal."""
+    return '"' + "".join(_ESCAPES.get(ch, ch) for ch in text) + '"'
+
+
+def _build_source() -> str:
     """Compose the full yafl main() that runs all cases."""
     body_lines = "\n".join(
-        f'  emit("{label}", runOnPath("{path}"))'
-        for label, path in label_to_path.items()
+        f'  emit("{label}", classifyResult({_yafl_str(json_text)}))'
+        for label, json_text, _ in _CASES
     )
     return f"""{_PRELUDE}
 
@@ -102,17 +101,7 @@ def _run_yafl(source: str, timeout: int = 15) -> tuple[int, str]:
 
 class TestAllJsonScalars(TestCase):
     def test_all_json_scalar_cases(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            label_to_path: dict[str, str] = {}
-            for label, json_text, _ in _CASES:
-                path = os.path.join(tmp, f"{label}.json")
-                with open(path, "w") as f:
-                    f.write(json_text)
-                label_to_path[label] = path
-
-            source = _build_source(label_to_path)
-            rc, stdout = _run_yafl(source)
-
-            self.assertEqual(0, rc, f"program exited with {rc}; stdout:\n{stdout}")
-            expected = [f"{label}={expected}" for label, _, expected in _CASES]
-            self.assertEqual(expected, stdout.splitlines())
+        rc, stdout = _run_yafl(_build_source())
+        self.assertEqual(0, rc, f"program exited with {rc}; stdout:\n{stdout}")
+        expected = [f"{label}={expected}" for label, _, expected in _CASES]
+        self.assertEqual(expected, stdout.splitlines())

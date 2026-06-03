@@ -6,13 +6,24 @@ import System::Json
 
 
 # Pretty-print JSON read from stdin to stdout.
+# IO is used only to move bytes; the JSON conversion itself is pure
+# (System::Json is a String -> JsonValue -> String converter).
 # Exit codes:
 #   0  ok
-#   1  output IO error
+#   1  IO error
 #   2  parse error
 
-fun _emit(io: IO, val: JsonValue): System::Int
-  let r = prettyPrint(io, val) ?> (io: IO, _: Int) => io.write("\n")
+# Read the whole input into a String, accumulating fixed-size chunks until EOF.
+fun _slurp(io: IO, acc: String): (io: IO, v: String|IOError)
+  let r = io.read(4096)
+  ret match(r.v)
+    (s: String)  => _slurp(r.io, acc + s)
+    (e: IOError) => match(e)
+      (eof: EOFError) => (r.io, acc)
+      ()              => (r.io, e)
+
+fun _emit(io: IO, text: String): System::Int
+  let r = writeAll(io, text + "\n")
   # Close unconditionally so the handle is consumed on every path,
   # then decide the exit code.
   let closeResult = r.io.close()
@@ -22,11 +33,14 @@ fun _emit(io: IO, val: JsonValue): System::Int
       (n: System::None) => 0
     (e: IOError) => 1
 
-fun main(): System::Int
-  let r = parseValue(ParseState(stdin(), "", 0))
-  # parseValue threads the input handle back inside the result state;
-  # close it (linear discipline — the handle must be consumed once).
-  let _closed = r.state.io.close()
-  ret match(r.v)
-    (val: JsonValue)    => _emit(stdout(), val)
+fun _convert(input: System::String): System::Int
+  ret match(parse(input))
+    (val: JsonValue)    => _emit(stdout(), stringify(val, true))
     (e: JsonParseError) => 2
+
+fun main(): System::Int
+  let r = _slurp(stdin(), "")
+  let closeResult = r.io.close()
+  ret match(r.v)
+    (input: System::String) => _convert(input)
+    (e: IOError)            => 1

@@ -39,11 +39,11 @@ fun main(): System::Int
   emitBool("string_lt_abc_abd", "abc" < "abd")
 
   # ─── asciiToString ─────────────────────────────────────────────────────
-  emit("ascii_A_len",   length(asciiToString(65)))
-  emit("ascii_A_byte",  byteAt(asciiToString(65), 0))
-  emit("ascii_0_byte",  byteAt(asciiToString(0), 0))
-  emit("ascii_0_len",   length(asciiToString(0)))
-  emit("ascii_200_byte",byteAt(asciiToString(200), 0))
+  emit("ascii_A_len",   length(asciiToString(65i32)))
+  emit("ascii_A_byte",  Int(byteAt(asciiToString(65i32), 0)))
+  emit("ascii_0_byte",  Int(byteAt(asciiToString(0i32), 0)))
+  emit("ascii_0_len",   length(asciiToString(0i32)))
+  emit("ascii_200_byte",Int(byteAt(asciiToString(200i32), 0)))
 
   ret 0
 """

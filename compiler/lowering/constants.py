@@ -19,7 +19,7 @@ import pyast.resolver as g
 
 
 def _is_literal(expr: e.Expression | None) -> bool:
-    return isinstance(expr, (e.IntegerExpression, e.FloatExpression, e.StringExpression))
+    return isinstance(expr, (e.IntegerExpression, e.FloatExpression, e.StringExpression, e.BoolExpression))
 
 
 def inline_constants(statements: list[s.Statement]) -> list[s.Statement]:

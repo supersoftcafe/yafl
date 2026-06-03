@@ -244,7 +244,10 @@ class Function:
             if isinstance(op, IfTask):
                 return [labels[op.target]] + fallthrough
             if isinstance(op, SwitchJump):
-                return [labels[lbl] for _, lbl in op.cases] + fallthrough
+                # Codegen emits `default: abort()`, so an unmatched value never
+                # falls through — the successors are exactly the labelled cases.
+                # (Matches uninit_check's CFG model.)
+                return [labels[lbl] for _, lbl in op.cases]
             return fallthrough
 
         seen: set[int] = {0}

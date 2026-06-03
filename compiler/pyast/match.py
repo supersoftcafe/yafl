@@ -20,6 +20,20 @@ import pyast.statement as s
 import pyast.typespec as t
 
 
+# Primitive builtin types that support literal-pattern matching: arbitrary-
+# precision Int (bigint), String (str), and the fixed-width integers (int8..
+# int64). A char literal is an int32, so matching characters lands here.
+_PRIMITIVE_MATCH_INT_TYPES = ("bigint", "int8", "int16", "int32", "int64")
+
+def _is_primitive_match_type(type_name: str) -> bool:
+    return type_name == "str" or type_name in _PRIMITIVE_MATCH_INT_TYPES
+
+def _match_int_precision(type_name: str) -> int:
+    """Expected IntegerExpression.precision for an integer-like match subject:
+    0 for bigint, else the fixed width (int32 → 32)."""
+    return 0 if type_name == "bigint" else int(type_name[3:])
+
+
 def _arm_unique_name(arm: "MatchArm") -> str:
     """Per-arm unique name for the bound variable.
 
@@ -145,7 +159,7 @@ class MatchExpression(e.Expression):
 
         has_literal = any(arm.literal is not None for arm in self.arms)
         is_primitive_subject = (isinstance(subj_type, t.BuiltinSpec)
-                                and subj_type.type_name in ("bigint", "str"))
+                                and _is_primitive_match_type(subj_type.type_name))
 
         # Subjects with literal arms must contain at least one primitive
         # variant (Int or String) that the literal values can match.
@@ -198,18 +212,25 @@ class MatchExpression(e.Expression):
                 continue
 
             lit = arm.literal
-            if expected_kind == "bigint":
-                if not isinstance(lit, e.IntegerExpression):
-                    errors.append(Error(arm.line_ref,
-                        f"literal arm type mismatch: expected integer, got {type(lit).__name__}"))
-                    continue
-                key = ("int", lit.value)
-            else:  # "str"
+            if expected_kind == "str":
                 if not isinstance(lit, e.StringExpression):
                     errors.append(Error(arm.line_ref,
                         f"literal arm type mismatch: expected string, got {type(lit).__name__}"))
                     continue
                 key = ("str", lit.value)
+            else:  # integer-like: bigint or a fixed-width int (int8..int64)
+                if not isinstance(lit, e.IntegerExpression):
+                    errors.append(Error(arm.line_ref,
+                        f"literal arm type mismatch: expected integer, got {type(lit).__name__}"))
+                    continue
+                # The literal's precision must match the subject's, since there
+                # is no implicit Int/Int32 coercion. A char literal is int32, so
+                # it matches an Int32 subject; a bare `65` is bigint.
+                if lit.precision != _match_int_precision(expected_kind):
+                    errors.append(Error(arm.line_ref,
+                        f"literal arm type mismatch: subject is {expected_kind}"))
+                    continue
+                key = ("int", lit.value)
 
             if key in seen_values:
                 errors.append(Error(arm.line_ref,
@@ -323,7 +344,7 @@ class MatchExpression(e.Expression):
         result_type = self.get_type(resolver)
         result_var = cg_p.StackVar(result_type.generate(resolver), "result") if result_type else None
 
-        if isinstance(subj_type, t.BuiltinSpec) and subj_type.type_name in ("bigint", "str"):
+        if isinstance(subj_type, t.BuiltinSpec) and _is_primitive_match_type(subj_type.type_name):
             return self.__gen_primitive_match(resolver, subj_bundle, subj_type, result_var)
 
         if isinstance(subj_type, t.EnumSpec):
@@ -358,6 +379,17 @@ class MatchExpression(e.Expression):
             exit_label = f"{prefix}_exit"
             bundles.append(g.OperationBundle(operations=(cg_o.Label(exit_label),)))
             arm_results.append((exit_label, body_bundle.result_var))
+
+    def __jump_to_end(self, bundles: list, end_label: str) -> None:
+        """Emit `Jump(end_label)` after an arm body — unless that body already
+        ended in a control-transfer op (e.g. a [tail] `recur` that jumped to the
+        loop head). A dead jump after a terminator would create a spurious
+        predecessor edge into the join block that its Phi has no source for."""
+        if bundles and bundles[-1].operations and isinstance(
+                bundles[-1].operations[-1],
+                (cg_o.Jump, cg_o.Return, cg_o.ReturnVoid, cg_o.Abort, cg_o.SwitchJump)):
+            return
+        bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
 
     def __emit_phi_join(self, end_label: str, result_var: cg_p.StackVar | None,
                          arm_results: list[tuple[str, cg_p.RParam]]) -> g.OperationBundle:
@@ -430,8 +462,9 @@ class MatchExpression(e.Expression):
         return make_resolver()
 
     def __gen_primitive_match(self, resolver, subj_bundle, subj_type, result_var):
-        """Literal-arm match on a primitive (Int = bigint, String = str) subject."""
-        is_bigint = subj_type.type_name == "bigint"
+        """Literal-arm match on a primitive subject: Int (bigint), String (str),
+        or a fixed-width integer (int8..int64 — a char literal is int32)."""
+        type_name = subj_type.type_name
         sv = subj_bundle.result_var
         end_label = "match_end"
         bundles = [subj_bundle]
@@ -449,18 +482,20 @@ class MatchExpression(e.Expression):
             bundles.append(lit_bundle)
 
             args = cg_p.NewStruct((("a", sv), ("b", lit_bundle.result_var)))
-            if is_bigint:
-                test_expr = cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
-            else:
+            if type_name == "str":
                 cmp_expr = cg_p.Invoke("string_compare", args, cg_t.Int(32))
                 test_expr = cg_p.IntEqConst(cmp_expr, 0)
+            elif type_name == "bigint":
+                test_expr = cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
+            else:  # fixed-width integer: int8_test_eq … int64_test_eq
+                test_expr = cg_p.Invoke(f"{type_name}_test_eq", args, cg_t.Int(8))
 
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
 
             self.__emit_arm_body(arm, resolver, f"arm{i}", bundles, arm_results)
-            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if else_arm is not None:
@@ -573,7 +608,7 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
             self.__emit_pointer_arm_body(target_arm, sv, subj_type, resolver, f"arm_{suffix}_{idx}", bundles, arm_results)
-            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if null_target is not None:
@@ -617,7 +652,7 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
                 self.__emit_pointer_arm_body(arm, sv, subj_type, resolver, f"arm_lit_{idx}", bundles, arm_results)
-                bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+                self.__jump_to_end(bundles, end_label)
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if final_fallback is not None:
@@ -744,7 +779,7 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
                 self.__emit_arm_body(arm, resolver, f"lit{arm_index}", bundles, arm_results)
-                bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+                self.__jump_to_end(bundles, end_label)
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
                 arm_index += 1
                 continue
@@ -769,7 +804,7 @@ class MatchExpression(e.Expression):
                         bundles.append(reduce(lambda a, b: a + b, binding_local).with_prefix(arm_prefix))
 
             self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results)
-            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
             arm_index += 1
 
@@ -848,7 +883,7 @@ class MatchExpression(e.Expression):
                     stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, sv),)).with_prefix(arm_prefix))
 
             self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results)
-            bundles.append(g.OperationBundle(operations=(cg_o.Jump(end_label),)))
+            self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if else_arm:

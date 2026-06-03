@@ -25,7 +25,7 @@ import lowering.parallelize_tuples
 import lowering.ssa_validate
 import lowering.linearity
 import lowering.sync_inference
-import lowering.tail_trampoline
+import lowering.tail_loop
 import lowering.trim
 import lowering.uninit_check
 
@@ -213,11 +213,6 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # entry guard — the previous `globalinit` pass and `lazy_global_init`
     # runtime helper are gone.
 
-    # Tail-trampoline lowering: split every [tail] function into wrapper +
-    # impl + state + callback + chain. Runs before async lowering so the
-    # generated wrappers/callbacks go through the normal async pipeline.
-    a = lowering.tail_trampoline.lower_tail_trampolines(a)
-
     a = lowering.sync_inference.infer_sync(a)
 
     # Branch threading + copy propagation collapse the IR shapes that ternary
@@ -247,7 +242,15 @@ def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
         own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
         if own_ns:
             import_scopes.add(own_ns)
-        return g.AddScopeResolution(glb, import_scopes)
+        scoped = g.AddScopeResolution(glb, import_scopes)
+        # A global let's initialiser resolves like a function body: it needs the
+        # trait/interface methods (operators) in scope. FunctionStatement adds
+        # this itself; a top-level LetStatement has no such hook, so add it here.
+        # Local lets compile via BlockExpression (not this path), so they keep
+        # the enclosing function's trait scope unpolluted.
+        if isinstance(stmt, s.LetStatement):
+            return stmt._initialiser_resolver(scoped)
+        return scoped
     return glb
 
 
@@ -314,6 +317,12 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     if linearity_errors:
         return linearity_errors
 
+    # Reject `[tail]` on any non-top-level function — later passes would silently
+    # drop the annotation. Checked here while the nesting is still intact.
+    nested_tail_errors = lowering.tail_loop.check_nested_tail(new_statements)
+    if nested_tail_errors:
+        return nested_tail_errors
+
     # All ok so let's create some C code
     if optimization_level >= 2 and not disable_auto_parallel:
         # Run before generic monomorphisation: we operate on templates so
@@ -327,6 +336,14 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
     new_statements = lowering.boxing.insert_boxing(new_statements)
+    # [tail] self-recursion → loop. Runs AFTER boxing: a [tail] body may return
+    # a union (e.g. `(state, JsonValue|JsonParseError)`) whose non-recursive
+    # exits need union-widening boxes; wrapping the body in a LoopExpression
+    # before boxing would disrupt that. The recursive call returns the
+    # function's own type, so it is never boxed and stays detectable here.
+    new_statements, tail_errors = lowering.tail_loop.lower_tail_loops(new_statements, resolver)
+    if tail_errors:
+        return tail_errors
     # Surface [lazy] forward-references-to-non-lazy as compile errors
     # before lowering — the lowering would otherwise produce code that
     # crashes at force time.  Block-local check.

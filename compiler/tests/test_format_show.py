@@ -26,7 +26,7 @@ fun emit(label: System::String, value: System::Int): System::None
 fun _showLen<T>(v: T): System::Int where Show<T>
   ret length(show(v))
 fun _showByte<T>(v: T, at: System::Int): System::Int where Show<T>
-  ret byteAt(show(v), at)
+  ret Int(byteAt(show(v), at))
 """
 
 
@@ -52,11 +52,11 @@ fun main(): System::Int
   emit("show_Float_first_digit",       _showByte<Float>(3.14, 0))
   # ─── format arity 1 ────────────────────────────────────────────────────
   emit("fmt1_basic_len",        length(format<String>("hello {1}", "world")))
-  emit("fmt1_byte_at_slot",     byteAt(format<String>("a{1}b", "X"), 1))
+  emit("fmt1_byte_at_slot",     Int(byteAt(format<String>("a{1}b", "X"), 1)))
   emit("fmt1_int_arg_len",      length(format<Int>("value={1}", 42)))
   emit("fmt1_no_slot_len",      length(format<String>("no slots here", "ignored")))
-  emit("fmt1_literal_brace",    byteAt(format<String>("{not a slot}", "x"), 0))
-  emit("fmt1_out_of_range_idx", byteAt(format<String>("{2}", "x"), 0))
+  emit("fmt1_literal_brace",    Int(byteAt(format<String>("{not a slot}", "x"), 0)))
+  emit("fmt1_out_of_range_idx", Int(byteAt(format<String>("{2}", "x"), 0)))
   ret 0
 """
 
@@ -64,7 +64,7 @@ _ARITY2_SRC = _PRELUDE + """\
 
 fun main(): System::Int
   emit("fmt2_in_order_len",     length(format<String, Int>("{1}={2}", "x", 42)))
-  emit("fmt2_reordered_byte0",  byteAt(format<String, String>("{2}{1}", "A", "B"), 0))
+  emit("fmt2_reordered_byte0",  Int(byteAt(format<String, String>("{2}{1}", "A", "B"), 0)))
   emit("fmt2_repeated_idx_len", length(format<String, Int>("{1}-{1}-{2}", "x", 7)))
   ret 0
 """
@@ -81,8 +81,8 @@ _ARITY4_SRC = _PRELUDE + """\
 fun main(): System::Int
   let s: System::String = format<String, Bool, Int, Float>("{1} {2} {3} {4}", "x", 1 < 2, 42, 3.0)
   emit("fmt4_basic_len",   length(format<Int, Int, Int, Int>("{1}{2}{3}{4}", 1, 2, 3, 4)))
-  emit("fmt4_mixed_byte0", byteAt(s, 0))
-  emit("fmt4_mixed_byte2", byteAt(s, 2))
+  emit("fmt4_mixed_byte0", Int(byteAt(s, 0)))
+  emit("fmt4_mixed_byte2", Int(byteAt(s, 2)))
   ret 0
 """
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from itertools import groupby
-from itertools import chain
 from collections.abc import Mapping
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -65,17 +64,26 @@ class Type(ABC):
     def get_pointer_paths(self, path: str) -> list[str]:
         return []
 
-# Escape table for emitting YAFL string literals into C source. Control
-# bytes and high-bit bytes go to \xHH hex escapes; backslash and double-
-# quote must be backslash-escaped or the surrounding C "..." breaks.
-_str_escape_table = str.maketrans({
-    **{f'{chr(c)}': f'\\x{c:02x}' for c in chain(range(0, 32), range(128, 256))},
-    '\\': '\\\\',
-    '"':  '\\"',
-})
-
 def str_literal(value: str) -> str:
-    return f"STR(\"{value.translate(_str_escape_table)}\")"
+    # Emit the literal's UTF-8 bytes into a C string. Each byte outside the
+    # printable-ASCII range becomes a three-digit octal escape (\ooo): octal
+    # consumes at most three digits, so — unlike \xHH, which greedily eats
+    # every following hex digit — a subsequent digit can never be swallowed
+    # into the escape. This keeps multi-byte sequences intact (é → \303\251,
+    # 🎉 → \360\237\216\211), where escaping per Python codepoint instead
+    # corrupted U+0080..U+00FF into a single Latin-1 byte and let codepoints
+    # ≥ U+0100 through only by accident of the source encoding.
+    out: list[str] = []
+    for byte in value.encode("utf-8"):
+        if byte == 0x5C:                  # backslash
+            out.append("\\\\")
+        elif byte == 0x22:                # double quote
+            out.append("\\\"")
+        elif 0x20 <= byte < 0x7F:         # printable ASCII
+            out.append(chr(byte))
+        else:
+            out.append(f"\\{byte:03o}")
+    return f"STR(\"{''.join(out)}\")"
 
 
 def bigint_literal(value: int) -> str:

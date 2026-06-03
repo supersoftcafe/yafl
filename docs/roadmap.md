@@ -35,13 +35,32 @@ template <A, B>
 
 ## String operations
 
-Basic string introspection functions are planned:
+Implemented. Strings are UTF-8 byte sequences, and the operations split cleanly
+into a **byte layer** (the index currency — all O(1)) and a **codepoint layer**
+built on top. See the [reference](reference.md#string-operations) for the full
+list. The model in brief:
 
 ```
-length(s: String): Int           # Number of characters
-char_at(s: String, i: Int): Int  # Unicode codepoint at index i
-=(left: String, right: String): Bool  # Equality comparison
+# byte layer — indices and slices are byte offsets, O(1)
+length(s: String): Int                 # number of BYTES
+slice(s: String, a: Int, b: Int): String
+byteAt(s: String, i: Int): Int
+
+# codepoint layer — UTF-8 aware, built on one strict decoder
+# (a codepoint is an Int32 — every Unicode scalar fits; there is no `char`)
+codepointAt(s: String, off: Int): Int32|None   # scalar at a byte offset
+decode(s: String, off: Int): (cp: Int32, next: Int)|None
+codepoints(s: String): List<Int32>
+codepointCount(s: String): Int                 # number of characters, O(n)
+isValidUtf8(s: String): Bool
 ```
+
+`compare`/`==`/`<`/`>` are already correct at the codepoint level, because
+byte-wise comparison of UTF-8 equals codepoint lexicographic order. Random
+indexing *by codepoint* is deliberately not offered: on UTF-8 it is O(n), so the
+functional idiom is to fold over `codepoints` or step with `decode` instead.
+Normalisation-aware comparison (treating `é` and `e`+combining-accent as equal)
+remains future work.
 
 ## Standard input
 

@@ -97,6 +97,20 @@ class NamedStatement(Statement):
     def _find_generic_types(self, query: str) -> list[g.Resolved[TypeStatement]]:
         return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.name_matches(tp.name, query)]
 
+    def _initialiser_resolver(self, resolver: g.Resolver,
+                              local_lets: Sequence[DataStatement] = ()) -> g.Resolver:
+        """Resolver for a body or initialiser: this statement's generic type
+        params, any local lets (a function's parameters), and the trait /
+        interface methods — operators included — that are in scope. Function
+        bodies and global-let initialisers share it so operators resolve the
+        same in each."""
+        typed = g.ResolverType(resolver, self._find_generic_types)
+        def find_data(query: str) -> list[g.Resolved[DataStatement]]:
+            found = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                     for let in local_lets if g.name_matches(let.name, query)]
+            return found + self._find_trait_data(typed, query)
+        return g.ResolverData(typed, find_data)
+
     def add_namespace(self, path: str):
         return dataclasses.replace(self, name=f"{path}{self.name}")
 
@@ -568,7 +582,7 @@ class LetStatement(DataStatement):
         if "const" in self.attributes:
             if self.attributes.get("const") is not None:
                 const_err.append(Error(self.line_ref, "[const] takes no arguments"))
-            if not isinstance(self.default_value, (e.IntegerExpression, e.FloatExpression, e.StringExpression)):
+            if not isinstance(self.default_value, (e.IntegerExpression, e.FloatExpression, e.StringExpression, e.BoolExpression)):
                 const_err.append(Error(self.line_ref, "[const] requires a literal value"))
         lazy_err: list[Error] = []
         if "lazy" in self.attributes:

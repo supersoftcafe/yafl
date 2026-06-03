@@ -37,13 +37,16 @@ class _ShowString() : Show<System::String>
   fun show(value: System::String): System::String
     ret value
 
-fun Char(int: System::Int): System::String
-  ret __builtin_op__<str>("wchar_to_string", int)
+# Convert a Unicode codepoint to its (1–4 byte) UTF-8 string. The codepoint
+# is an Int32 — every scalar fits, and char literals are Int32, so `Char('A')`
+# works directly.
+fun Char(codepoint: System::Int32): System::String
+  ret __builtin_op__<str>("wchar_to_string", codepoint)
 
 # Fast 1-byte string: no allocation, returns a packed-pointer short string.
 # Use when you have a byte value in [0..255]; for arbitrary code points
-# that need UTF-8 encoding (>127), use `Char` instead.
-fun asciiToString(byte: System::Int): System::String
+# that need UTF-8 encoding (>127), use `Char` instead. The byte is an Int32.
+fun asciiToString(byte: System::Int32): System::String
   ret __builtin_op__<str>("ascii_to_string", byte)
 
 fun String(int: System::Int): System::String
@@ -58,32 +61,120 @@ fun slice(s: System::String, start: System::Int, end: System::Int): System::Stri
 fun compare(left: System::String, right: System::String): System::Int
   ret __builtin_op__<bigint>("string_compare_int", left, right)
 
-# Unsigned byte value at byte offset i, or -1 if i is out of range.
-# Use this for byte-level dispatch; if a 1-byte string is needed, use
-# `slice(s, i, i+1)`.
-fun byteAt(s: System::String, i: System::Int): System::Int
-  ret __builtin_op__<bigint>("string_byte_at", s, i)
+# Unsigned byte value [0..255] at byte offset i (as an Int32, so it compares
+# directly against char literals), or -1 if i is out of range. Use this for
+# byte-level dispatch; if a 1-byte string is needed, use `slice(s, i, i+1)`.
+fun byteAt(s: System::String, i: System::Int): System::Int32
+  ret __builtin_op__<int32>("string_byte_at", s, i)
 
 # Index of the first byte equal to `byte` at or after `from`, or -1 if not found.
-# Used by parsers to scan a buffer in one C call rather than recursing per byte.
-fun findByte(s: System::String, byte: System::Int, from: System::Int): System::Int
+# `byte` is the byte VALUE (an Int32, so a char literal works); `from` and the
+# returned index are byte offsets (Int). Used by parsers to scan a buffer in
+# one C call rather than recursing per byte.
+fun findByte(s: System::String, byte: System::Int32, from: System::Int): System::Int
   ret __builtin_op__<bigint>("string_find_byte", s, byte, from)
 
-# Index of the first byte at or after `from` in `s` that is a member of
-# `accept`, or `length(s)` when no such byte exists.  Building block for
-# bulk-scanning parsers (e.g. find next delimiter in a buffer).
+# Byte offset of the first CODEPOINT at or after `from` in `s` whose value is
+# one of the codepoints in `accept`, or `length(s)` when none is. `accept` is
+# a set of characters (decoded as UTF-8), and the returned offset is always a
+# codepoint boundary. Building block for bulk-scanning parsers (e.g. find the
+# next delimiter in a buffer).
 fun findAny(s: System::String, accept: System::String, from: System::Int): System::Int
   ret __builtin_op__<bigint>("string_find_any", s, accept, from)
 
-# Index of the first byte at or after `from` in `s` that is NOT a member
-# of `accept`, or `length(s)` when every remaining byte is in `accept`.
-# Counterpart to findAny — used to skip a run of characters from a fixed
-# set (whitespace, digits, etc.) in a single C call.
+# Byte offset of the first CODEPOINT at or after `from` in `s` that is NOT in
+# the character set `accept`, or `length(s)` when every remaining codepoint is.
+# Counterpart to findAny — used to skip a run of characters from a fixed set
+# (whitespace, digits, etc.) in a single C call. The result is a codepoint
+# boundary.
 fun skipAny(s: System::String, accept: System::String, from: System::Int): System::Int
   ret __builtin_op__<bigint>("string_skip_any", s, accept, from)
 
 fun parseInt(s: System::String): System::Int|System::None
   ret __builtin_op__<bigint>("string_parse_int", s)
+
+
+# ── Unicode / codepoint layer ─────────────────────────────────────────────
+# Strings are UTF-8 byte sequences. `length`, `slice`, `byteAt` and the
+# find* family all index in BYTES and stay O(1); byte-wise comparison already
+# equals codepoint order, so `compare`/`==`/`<`/`>` need no codepoint variant.
+# The functions below add a codepoint view, resting entirely on the one strict
+# C decoder behind `codepointAt`. The functional way to walk a string by
+# character is to fold over `codepoints` or step with `decode` — never O(n)
+# random indexing, which on UTF-8 would be an O(n^2) trap.
+
+# Strict UTF-8 decode of the codepoint starting at byte offset `off`. A
+# Unicode scalar always fits in Int32 (max U+10FFFF), so codepoints are typed
+# Int32 — YAFL has no `char` type. None when `off` is past the end, lands
+# inside a sequence (on a continuation byte), or the bytes there are not a
+# valid, minimally-encoded scalar (overlong, surrogate, > U+10FFFF, or
+# truncated). Use `isValidUtf8` to pre-check raw IO bytes when end-of-string
+# must be told apart from malformed input.
+#
+# The C primitive returns the scalar or -1 (an unambiguous sentinel, since
+# scalars are non-negative); we lift -1 to None here.
+fun codepointAt(s: System::String, off: System::Int): System::Int32|System::None
+  let cp: System::Int32 = __builtin_op__<int32>("string_codepoint_at", s, off)
+  ret cp < 0i32 ? None : cp
+
+# Minimal UTF-8 byte width of a codepoint. Total over the decoder's range:
+# `codepointAt` only ever yields a scalar whose minimal width matches the
+# bytes it consumed, so adding this width always lands on the next boundary.
+# The width is the byte-offset delta, hence Int; the thresholds are Int32
+# literals so the comparison stays in the Int32 domain.
+fun _utf8Width(cp: System::Int32): System::Int
+  ret cp < 0x80i32 ? 1 : cp < 0x800i32 ? 2 : cp < 0x10000i32 ? 3 : 4
+
+# Codepoint at byte offset `off` together with the byte offset of the next
+# codepoint — the building block for forward iteration (cf. Rust's
+# char_indices). None at end / on malformed bytes.
+fun decode(s: System::String, off: System::Int): (cp: System::Int32, next: System::Int)|System::None
+  ret match(codepointAt(s, off))
+    (cp: System::Int32) => (cp, off + _utf8Width(cp))
+    (n: System::None)   => None
+
+# Number of codepoints (O(n)). For valid UTF-8 this is the character count;
+# the byte length is `length`.
+fun codepointCount(s: System::String): System::Int
+  ret __builtin_op__<bigint>("string_codepoint_count", s)
+
+# True iff every byte of `s` is part of a valid, minimally-encoded UTF-8
+# sequence. Strings from literals, `Char`, concatenation and boundary slicing
+# are always valid; raw bytes read from IO may not be.
+fun isValidUtf8(s: System::String): System::Bool
+  ret __builtin_op__<bool>("string_valid_utf8", s)
+
+# All codepoints of `s`, front to back. Built purely on the strict decoder;
+# stops at the end of `s` (or, for invalid input, the first malformed byte).
+fun codepoints(s: System::String): List<System::Int32>
+  fun loop(off: System::Int, acc: List<System::Int32>): List<System::Int32>
+    ret match(codepointAt(s, off))
+      (cp: System::Int32) => loop(off + _utf8Width(cp), append(acc, cp))
+      (n: System::None)   => acc
+  ret loop(0, List<System::Int32>())
+
+
+# End of the segment [from, nl) of `s`: excludes one trailing '\r' so a CRLF
+# line is sliced once — `byteAt` peeks without allocating, no throwaway string.
+fun _splitLineEnd(s: System::String, from: System::Int, nl: System::Int): System::Int
+  ret nl > from
+    ? (byteAt(s, nl - 1) == '\r' ? nl - 1 : nl)
+    : nl
+
+# Top-level (not nested): [tail] is only supported on top-level functions, so the
+# loop lives here with `s` threaded in rather than nested inside splitLines.
+fun [tail] _splitLinesLoop(s: System::String, from: System::Int, acc: List<System::String>): List<System::String>
+  let len: System::Int = length(s)
+  let nl: System::Int = findByte(s, '\n', from)
+  ret nl < 0
+    ? append(acc, slice(s, from, _splitLineEnd(s, from, len)))
+    : _splitLinesLoop(s, nl + 1, append(acc, slice(s, from, _splitLineEnd(s, from, nl))))
+
+# Split a string into lines on '\n', dropping a trailing '\r' from each so both
+# LF and CRLF endings work. The text after the final newline is the last
+# element, so "a\nb" -> ["a", "b"] and "a\n" -> ["a", ""].
+fun splitLines(s: System::String): List<System::String>
+  ret _splitLinesLoop(s, 0, List<System::String>())
 
 
 class [linear,final] StringBuilder(_buffer: String, _offset: Int)
@@ -104,8 +195,8 @@ fun append(sb: StringBuilder, value: Int): StringBuilder
   # digit, and the only buffer growth is the StringBuilder's own.
   fun appendDigits(sb: StringBuilder, n: Int): StringBuilder
     ret n > 9
-      ? append(appendDigits(sb, n / 10), asciiToString(48 + n % 10))
-      : append(sb, asciiToString(48 + n))
+      ? append(appendDigits(sb, n / 10), asciiToString('0' + truncateToInt32(n % 10)))
+      : append(sb, asciiToString('0' + truncateToInt32(n)))
   ret value < 0
     ? appendDigits(append(sb, "-"), -value)
     : appendDigits(sb, value)

@@ -108,24 +108,61 @@ fun describe(x: System::String): System::String
 | Type | Description |
 |------|-------------|
 | `String` | UTF-8 text string, heap-allocated |
-| `Int` | Arbitrary-precision integer (no overflow) |
-| `Int32` | 32-bit signed integer (storage only) |
-| `Float` | Arbitrary-precision floating point |
-| `Float32` | 32-bit float (storage only) |
-| `Float64` | 64-bit float (storage only) |
+| `Int` | Arbitrary-precision integer (no overflow); default type of an integer literal |
+| `Int8` / `Int16` / `Int32` / `Int64` | Fixed-width signed integers; literals use a width suffix (`42i32`) |
+| `Float` | 64-bit floating point — an alias for `Float64`; default type of a float literal |
+| `Float32` | 32-bit float (literal suffix `f32`) |
+| `Float64` | 64-bit float (same type as `Float`) |
 | `Bool` | Boolean: `true` or `false` |
 | `None` | Unit type; represents the absence of a value |
 
 All are accessed as `System::String`, `System::Int`, etc. after `import System`.
 
-### Arithmetic promotion
+### Char literals
 
-The storage-only types (`Int32`, `Float32`, `Float64`) are automatically promoted to `Int` or `Float` before any arithmetic. All arithmetic therefore produces `Int` or `Float` — never a fixed-width type:
+A single-quoted char literal is a Unicode codepoint with type `Int32` (there is
+no `char` type — every scalar fits in `Int32`). It is just sugar for an `Int32`
+integer literal: `'A'` is identical to `65i32`.
 
 ```yafl
-let a: System::Int32 = 27
-let b: System::Int32 = 100
-let c: System::Int = a * b   # a and b are promoted to Int for the multiplication
+let a: System::Int32 = 'A'        # 65
+let nl: System::Int32 = '\n'      # 10
+let party: System::Int32 = '🎉'   # 127881 — non-ASCII works directly
+
+# Char literals double as match arms over an Int32 subject:
+fun isDigit(c: System::Int32): System::Bool
+  ret match(c)
+    ('0') => true
+    # … through '9'
+    (other) => false
+```
+
+Escapes match string literals (`\n \r \t \0 \\ \' \"`); the body must be exactly
+one codepoint.
+
+### Numeric types and conversions
+
+YAFL does **not** promote between numeric types. Each type has its own
+arithmetic that stays in that type, and there is no implicit conversion —
+operands of a single operation must share a type. `Int` is the
+arbitrary-precision integer (no overflow) and the default type of an integer
+literal; `Int8`/`Int16`/`Int32`/`Int64` are distinct fixed-width types whose
+literals carry a width suffix. (`Float` is an alias for `Float64`, the default
+type of a float literal; `Float32` is a distinct 32-bit type.)
+
+```yafl
+let a: System::Int32 = 27i32      # a fixed-width literal needs its suffix
+let b: System::Int32 = 100i32
+let c: System::Int32 = a * b      # Int32 arithmetic stays Int32
+```
+
+Mixing widths in one operation (`a * 100`, or `Int32` with `Int`) is a type
+error. Convert explicitly:
+
+```yafl
+let n: System::Int   = Int(a)               # widen Int32 → Int (exact)
+let m: System::Int32 = truncateToInt32(n)   # narrow Int → Int32 (wraps)
+let x: System::Float = Float(a)             # Int32 → Float
 ```
 
 ### Type aliases
@@ -399,7 +436,7 @@ The `System` namespace provides the core types, utility functions, and IO primit
 |------|-------------|
 | `System::String` | UTF-8 string |
 | `System::Int` | Arbitrary-precision integer |
-| `System::Int32` | 32-bit integer (storage only) |
+| `System::Int32` | 32-bit integer (fixed-width; literal suffix `i32`) |
 | `System::Bool` | Boolean (`true` / `false`) |
 | `System::None` | Unit type; the value `None` |
 
@@ -418,6 +455,25 @@ Both overloads are `[impure]` and `[sync]` — they have side effects but are sa
 System::String(int: System::Int): System::String   # convert an integer to its decimal string
 System::Char(int: System::Int): System::String     # convert a Unicode codepoint to a one-character string
 ```
+
+Strings are UTF-8 bytes. `length`, `slice` and `byteAt` index in **byte
+offsets** and are O(1); the **codepoint layer** sits on top for Unicode-aware
+work:
+
+```yafl
+System::length(s: System::String): System::Int            # number of bytes (O(1))
+System::codepointCount(s: System::String): System::Int    # number of characters (O(n))
+System::codepointAt(s: System::String, off: System::Int): System::Int32|System::None
+System::decode(s: System::String, off: System::Int): (cp: System::Int32, next: System::Int)|System::None
+System::codepoints(s: System::String): List<System::Int32>
+System::isValidUtf8(s: System::String): System::Bool
+```
+
+A codepoint is an `Int32` (there is no `char` type, and every Unicode scalar
+fits). To walk a string by character, fold over `codepoints` or step with
+`decode` — indexing by codepoint ordinal is O(n) on UTF-8 and deliberately not
+provided.
+`compare`/`==`/`<`/`>` are byte-wise but already give codepoint order.
 
 ### IO
 

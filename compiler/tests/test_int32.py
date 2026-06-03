@@ -36,8 +36,8 @@ fun main(): System::Int
 
   # ─── String(Int32) shape checks ────────────────────────────────────────
   emit("string_positive_len", length(String(42i32)))            # "42" → 2
-  emit("string_zero_byte0",   byteAt(String(0i32), 0))          # '0'
-  emit("string_negative_b0",  byteAt(String(-42i32), 0))        # '-'
+  emit("string_zero_byte0",   Int(byteAt(String(0i32), 0)))     # '0'
+  emit("string_negative_b0",  Int(byteAt(String(-42i32), 0)))   # '-'
   emit("string_int32_min_len", length(String(INT32_MIN)))       # "-2147483648" → 11
 
   # ─── Show<Int32> via format ────────────────────────────────────────────

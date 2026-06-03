@@ -34,6 +34,12 @@ class OperationBundle:
     stack_vars: tuple[cg_p.StackVar, ...] = ()
     operations: tuple[cg_o.Op, ...] = ()
     result_var: cg_p.RParam|None = None
+    # `[tail]`-loop back-edges produced while generating this subtree: each is
+    # `(recur-exit label, per-parameter phi-input vars)`, flowing up to the
+    # enclosing LoopExpression which consumes them to build its head Phi. The
+    # referenced names embed the mangled ('@'-bearing) function name, so they
+    # are path-immune (with_prefix leaves them alone) and need no renaming.
+    recur_sources: tuple[tuple[str, tuple[cg_p.RParam, ...]], ...] = ()
 
     def with_prefix(self, prefix: str|int) -> OperationBundle:
         """Mark this bundle as living at structural path component `prefix`
@@ -68,13 +74,15 @@ class OperationBundle:
         return OperationBundle(
             stack_vars=tuple(sv.rename_vars(renames) for sv in self.stack_vars),
             operations=tuple(op.rename_vars(renames) for op in self.operations),
-            result_var=self.result_var and self.result_var.rename_vars(renames))
+            result_var=self.result_var and self.result_var.rename_vars(renames),
+            recur_sources=self.recur_sources)  # path-immune; carried through
 
     def __add__(self, other: OperationBundle) -> OperationBundle:
         return OperationBundle(
             self.stack_vars + other.stack_vars,
             self.operations + other.operations,
-            other.result_var)
+            other.result_var,
+            self.recur_sources + other.recur_sources)
 
 
 class ResolvedScope(Enum):
@@ -111,6 +119,12 @@ class Resolver:
 
     def get_optimization_level(self) -> int:
         return 0
+
+    # The innermost in-progress [tail] loop's frame (read-only context for a
+    # nested RecurExpression), or None outside any loop. Opaque here — only the
+    # loop/recur expression nodes interpret it.
+    def get_loop_frame(self) -> object | None:
+        return None
 
 
 def simple_name(name: str) -> str:
@@ -245,6 +259,9 @@ class AddScopeResolution(Resolver):
     def get_optimization_level(self) -> int:
         return self.__parent.get_optimization_level()
 
+    def get_loop_frame(self) -> object | None:
+        return self.__parent.get_loop_frame()
+
 
 class ResolverType(Resolver):
     __parent: Resolver
@@ -278,6 +295,9 @@ class ResolverType(Resolver):
 
     def get_optimization_level(self) -> int:
         return self.__parent.get_optimization_level()
+
+    def get_loop_frame(self) -> object | None:
+        return self.__parent.get_loop_frame()
 
 
 class ResolverData(Resolver):
@@ -318,6 +338,9 @@ class ResolverData(Resolver):
     def get_optimization_level(self) -> int:
         return self.__parent.get_optimization_level()
 
+    def get_loop_frame(self) -> object | None:
+        return self.__parent.get_loop_frame()
+
 
 class ResolverDiscriminators(Resolver):
     __parent: Resolver
@@ -346,4 +369,40 @@ class ResolverDiscriminators(Resolver):
 
     def get_optimization_level(self) -> int:
         return self.__optimization_level
+
+    def get_loop_frame(self) -> object | None:
+        return self.__parent.get_loop_frame()
+
+
+class ResolverLoop(Resolver):
+    """Carries the innermost in-progress `[tail]` loop's (immutable) frame so a
+    nested RecurExpression can find its loop head and parameter ctypes. Replaces
+    a former module-level generation stack — no mutable cross-call state."""
+    __parent: Resolver
+    __frame: object
+
+    def __init__(self, parent: Resolver, frame: object):
+        self.__parent = parent
+        self.__frame = frame
+
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        return self.__parent.find_type(name)
+
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        return self.__parent.find_data(name)
+
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__parent.get_traits()
+
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs(scopes)
+
+    def get_discriminators(self) -> dict[str, int]:
+        return self.__parent.get_discriminators()
+
+    def get_optimization_level(self) -> int:
+        return self.__parent.get_optimization_level()
+
+    def get_loop_frame(self) -> object | None:
+        return self.__frame
 

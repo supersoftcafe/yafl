@@ -19,6 +19,7 @@ class TokenKind(Enum):
     NUMBER = 4
     CRAP = 5
     EOF = 6
+    CHAR = 7
 
     def __repr__(self):
         return self.name
@@ -68,8 +69,12 @@ __kinds = [
     # win over `[^\\\"]` so `"\""` tokenises as a single 4-char literal
     # rather than splitting on the escaped quote.
     (re.compile(r"\"(\\.|[^\\\"])*\"?"), TokenKind.STRING),
+    # Char literal: single quotes, same escape body as a string. The parser
+    # decodes it (reusing the string escapes) and requires exactly one
+    # codepoint, yielding an Int32 of that codepoint's value.
+    (re.compile(r"'(\\.|[^\\'])*'?"), TokenKind.CHAR),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
-    (re.compile(r"(==)|(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!()\[\]<>.;:,]"), TokenKind.SYMBOLS),
+    (re.compile(r"(==)|(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!~()\[\]<>.;:,]"), TokenKind.SYMBOLS),
     # Numeric literal: hex/bin/oct prefix forms, OR decimal with optional
     # fraction, exponent (signed or unsigned), and type suffix (i8|i16|i32|i64|f32|f64).
     (re.compile(

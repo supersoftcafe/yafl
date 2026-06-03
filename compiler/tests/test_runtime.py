@@ -534,10 +534,10 @@ fun main(): System::Int
         self.assertEqual(43, _compile_and_run_stdlib(src))
 
     def test_tail_attribute_deep_recursion(self):
-        """A `[tail]`-marked function trampolines via the worker queue;
-        depth 200k completes in O(1) C stack. The same recursion without
-        `[tail]` would blow the stack inside the synchronous completion
-        chain regardless of -O level."""
+        """A `[tail]`-marked self-recursive function compiles to a back-edge
+        loop, so depth 200k completes in O(1) C stack and returns the right
+        value. The same recursion without `[tail]` would recurse on heap
+        frames."""
         src = """\
 namespace Test
 import System

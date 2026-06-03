@@ -21,11 +21,11 @@ All built-in types live in the `System` namespace.
 | Type | Description | Notes |
 |------|-------------|-------|
 | `String` | UTF-8 string | Heap-allocated; supports `+` for concatenation |
-| `Int` | Arbitrary-precision integer | No overflow; all integer arithmetic produces `Int` |
-| `Int32` | 32-bit signed integer | Storage only; promoted to `Int` in arithmetic |
-| `Float` | Arbitrary-precision floating point | All float arithmetic produces `Float` |
-| `Float32` | 32-bit float | Storage only; promoted to `Float` in arithmetic |
-| `Float64` | 64-bit float | Storage only; promoted to `Float` in arithmetic |
+| `Int` | Arbitrary-precision integer | No overflow; the default type of an integer literal |
+| `Int8`/`Int16`/`Int32`/`Int64` | Fixed-width signed integers | Literals need a width suffix (`42i32`); arithmetic stays in-width with no implicit conversion to/from `Int` — convert with `Int(x)` / `truncateToInt32(x)` |
+| `Float` | 64-bit floating point | Alias for `Float64`; the default type of a float literal |
+| `Float32` | 32-bit float | Fixed-width; literal suffix `f32`; no implicit conversion to/from `Float64` |
+| `Float64` | 64-bit float | Same type as `Float` |
 | `Bool` | Boolean | Literals: `true`, `false` |
 | `None` | Unit type | Represents absence of a value; literal: `None` |
 
@@ -197,12 +197,22 @@ Type variables are introduced in angle brackets after the function or interface 
 
 | Kind | Examples |
 |------|---------|
-| Integer | `0`, `42`, `1000000` |
+| Integer | `0`, `42`, `1000000` (bigint `Int`); typed suffixes `42i32`, `0xFFi32`, `7i8`, `9i64` |
+| Float | `3.14`, `1e9`, `2.5f32` |
 | String | `"hello"`, `"line\n"`, `"tab\there"` |
+| Char | `'A'`, `'\n'`, `'\\'`, `'\''`, `'é'`, `'🎉'` |
 | Boolean | `true`, `false` |
 | Unit | `None` |
 
-String escape sequences: `\n` (newline), `\t` (tab), `\\` (backslash), `\"` (quote).
+String escape sequences: `\n` (newline), `\r` (return), `\t` (tab), `\0` (NUL), `\\` (backslash), `\"` (quote), `\'` (single quote).
+
+A **char literal** is a single-quoted Unicode codepoint and has type `Int32` —
+there is no `char` type, and every scalar fits in `Int32`. It is exactly an
+`Int32` integer literal: `'A'` is identical to `65i32`. The body is one
+codepoint (a literal character — non-ASCII works directly since source is
+UTF-8 — or one escape from the set above); empty (`''`) or multi-character
+(`'ab'`) literals are errors. Because a char is an `Int32`, char literals work
+as `match` arms over an `Int32` subject (e.g. dispatching on a character).
 
 ### Qualified identifier
 
@@ -338,6 +348,37 @@ Import with `import System`. All names below are qualified as `System::<Name>`.
 | `System::BasicMath<T>` | `BasicPlus<T>` | `` `*` ``, `` `-` `` (unary and binary), `` `/` ``, `` `%` ``, `` `<` ``, `` `>` ``, `` `=` `` |
 
 `System::Int` and `System::String` have built-in trait instances registered for these interfaces.
+
+### String operations
+
+Strings are UTF-8 byte sequences. Operations divide into a **byte layer** —
+where every index and slice is a byte offset and all operations are O(1) — and a
+**codepoint layer** built on a single strict UTF-8 decoder. Byte-wise comparison
+of UTF-8 already equals codepoint lexicographic order, so `compare`/`==`/`<`/`>`
+need no codepoint variant.
+
+| Signature | Description |
+|-----------|-------------|
+| `System::length(s: String): Int` | Number of **bytes** (O(1)) |
+| `System::slice(s: String, start: Int, end: Int): String` | Substring between two **byte** offsets (O(1)) |
+| `System::byteAt(s: String, i: Int): Int` | Unsigned byte `[0..255]` at byte offset `i`, or `-1` if out of range |
+| `System::compare(left: String, right: String): Int` | `-1` / `0` / `1`; byte-wise, equals codepoint order |
+| `System::findByte(s: String, byte: Int, from: Int): Int` | First byte offset `≥ from` equal to `byte`, or `-1` |
+| `System::findAny(s: String, accept: String, from: Int): Int` | First byte offset `≥ from` whose byte is in `accept`, else `length(s)` |
+| `System::skipAny(s: String, accept: String, from: Int): Int` | First byte offset `≥ from` whose byte is **not** in `accept`, else `length(s)` |
+| `System::parseInt(s: String): Int\|None` | Parse a decimal integer, `None` on failure |
+| `System::codepointAt(s: String, off: Int): Int32\|None` | Strict UTF-8 scalar starting at byte offset `off`; `None` at end, inside a sequence, or on malformed/overlong/surrogate bytes. Codepoints are `Int32` (every scalar fits) |
+| `System::decode(s: String, off: Int): (cp: Int32, next: Int)\|None` | The codepoint at `off` and the byte offset of the next one — forward-iteration step; `None` at end |
+| `System::codepoints(s: String): List<Int32>` | All codepoints, front to back |
+| `System::codepointCount(s: String): Int` | Number of codepoints, i.e. the character count (O(n)) |
+| `System::isValidUtf8(s: String): Bool` | Whether every byte is part of a valid, minimally-encoded UTF-8 sequence |
+
+A codepoint is an `Int32` — there is no `char` type, and every Unicode scalar
+(≤ U+10FFFF) fits. Random indexing *by codepoint ordinal* is intentionally
+absent: on UTF-8 it is O(n), so an indexing loop would be O(n²). To process a
+string by character, fold over `codepoints` or step with `decode`. Strings built from literals,
+`Char`, concatenation, and slicing at boundaries are always valid UTF-8; only
+raw bytes read from IO may not be, which is what `isValidUtf8` checks.
 
 ### IO (`System::IO`)
 

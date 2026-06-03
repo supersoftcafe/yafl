@@ -1,7 +1,6 @@
 namespace System::Json
 
 import System
-import System::IO
 
 
 # ─── Data model ──────────────────────────────────────────────────────────
@@ -27,99 +26,46 @@ enum JsonValue
   enum JsonObj(pairs: List<JsonPair>)
 
 
-# Parse errors carry a message and the byte position in the input
-# stream where the problem occurred.
+# Parse errors carry a message and the byte position in the input string
+# where the problem occurred.
 class [final] JsonParseError(message: String, pos: Int)
 
 
-# Parser state. Threaded functionally — every parse step takes a
-# ParseState and returns a new one along with its result. `lookahead`
-# is a buffer of unread bytes already pulled from the IO (zero or more
-# bytes; the parser consumes from the front via _advance); `pos` counts
-# consumed bytes for error reporting.
+# ─── Reader ────────────────────────────────────────────────────────────────
+# `System::Json` is a pure converter: the whole document is an in-memory
+# `String`, so there is no IO, no async, and no refill loop. The parser
+# state is just the string and a byte cursor; every step takes a `ParseState`
+# and returns a new one with its result. Because the entire input is present,
+# the bulk scans (`skipAny`/`findAny`) run over the whole remainder in a
+# single call — whitespace and number scanning need no loop at all.
 
-class [linear,final] ParseState(io: IO, lookahead: String, pos: Int)
-
-
-# ─── Internal: streaming primitives ──────────────────────────────────────
-
-# Refill chunk size for the lookahead buffer.  The bulk-scan paths
-# (`_strBody`, `_skipWs`, `_readNumChars`) absorb the whole buffer in a
-# single trampolined iteration, so a larger refill amortises the IO
-# round-trip across more bytes of work.
-let [const] _PEEK_REFILL: Int = 14336
+class [final] ParseState(s: String, pos: Int)
 
 
-fun _peekFill(s: ParseState): ParseState
-  # _fromRead takes `pos` (not the whole ParseState): the handle has
-  # already been consumed by `s.io.read(...)`, so only the non-linear
-  # position survives to carry into the refilled state.
-  fun _fromRead(pos: Int, r: (io: IO, v: String|IOError)): ParseState
-    ret match(r.v)
-      (chunk: String) => ParseState(r.io, chunk, pos)
-      (e: IOError)    => ParseState(r.io, "", pos)
-  ret System::length(s.lookahead) > 0
-    ? s
-    : _fromRead(s.pos, s.io.read(_PEEK_REFILL))
+# Peek the next byte as a one-char string without consuming it; "" at end.
+# JSON's structural characters are all ASCII, so a one-byte slice is a whole
+# codepoint here. String *contents* are handled by the bulk scans below.
+fun _peek(st: ParseState): (state: ParseState, c: String)
+  ret st.pos < System::length(st.s)
+    ? (st, System::slice(st.s, st.pos, st.pos + 1))
+    : (st, "")
 
+# Consume one byte. Caller must have peeked first.
+fun _advance(st: ParseState): ParseState
+  ret ParseState(st.s, st.pos + 1)
 
-# Peek the next byte without consuming it.  Returns "" at EOF.
-fun _peek(s: ParseState): (state: ParseState, c: String)
-  let s1 = _peekFill(s)
-  ret System::length(s1.lookahead) == 0
-    ? (s1, "")
-    : (s1, System::slice(s1.lookahead, 0, 1))
-
-
-# Consume one byte from the lookahead.  Caller must have peeked first.
-fun _advance(s: ParseState): ParseState
-  ret _advanceBy(s, 1)
-
-
-# Consume `n` bytes from the lookahead in one slice; `n` must be in
-# `[0, length(s.lookahead)]`.  The general primitive that every scan-
-# and-slice consumer (string body, whitespace skip, number scan) drives
-# through after a bulk operation.
-fun _advanceBy(s: ParseState, n: Int): ParseState
-  let len: Int = System::length(s.lookahead)
-  ret n < len
-    ? ParseState(s.io, System::slice(s.lookahead, n, len), s.pos + n)
-    : ParseState(s.io, "", s.pos + len)
-
-
-# Skip JSON whitespace: space, tab, newline, carriage return.  Bulk-skips
-# the whole run via `skipAny` in one C call, refilling and continuing
-# only when the lookahead is exhausted entirely by whitespace.  `[tail]`
-# bounds C stack across pathological whitespace runs.
-fun [tail] _skipWs(s: ParseState): ParseState
-  let s1 = _peekFill(s)
-  let buf = s1.lookahead
-  let bufLen = System::length(buf)
-  let stop = System::skipAny(buf, " \t\n\r", 0)
-  ret bufLen == 0
-    ? s1
-    : (stop < bufLen
-        ? _advanceBy(s1, stop)
-        : _skipWs(_advanceBy(s1, bufLen)))
+# Skip JSON whitespace (space, tab, newline, carriage return) in one scan —
+# `skipAny` returns the first non-whitespace offset (or end of string).
+fun _skipWs(st: ParseState): ParseState
+  ret ParseState(st.s, System::skipAny(st.s, " \t\n\r", st.pos))
 
 
 # ─── Internal: number parsing ────────────────────────────────────────────
-# Bulk-scans the digit run from the lookahead via `skipAny`, then chooses
-# parseInt or parseFloat based on whether any float-only character was
-# seen.  parseInt-first avoids precision loss for integer values.
+# Scan the maximal run of number characters in one call, then choose
+# parseInt or parseFloat by whether a float-only character appears.
 let [const] _NUMBER_CHARS: String = "0123456789+-.eE"
 
-fun _parseNumber(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  fun _readNumChars(s: ParseState, acc: String): (state: ParseState, buf: String)
-    let s1 = _peekFill(s)
-    let buf = s1.lookahead
-    let bufLen = System::length(buf)
-    let stop = System::skipAny(buf, _NUMBER_CHARS, 0)
-    let acc1 = stop > 0 ? acc + System::slice(buf, 0, stop) : acc
-    let s2 = stop > 0 ? _advanceBy(s1, stop) : s1
-    ret bufLen == 0 ? (s2, acc1)
-      : stop < bufLen ? (s2, acc1)
-      : _readNumChars(s2, acc1)
+fun _parseNumber(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
   fun _asFloat(state: ParseState, buf: String, errPos: Int): (state: ParseState, v: JsonValue|JsonParseError)
     ret match(System::parseFloat(buf))
       (f: System::Float) => (state, JsonNum(f))
@@ -128,98 +74,80 @@ fun _parseNumber(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError
     ret match(System::parseInt(buf))
       (i: System::Int)  => (state, JsonInt(i))
       (n: System::None) => (state, JsonParseError("invalid number", errPos))
-  let errPos: Int = s.pos
-  let r = _readNumChars(s, "")
-  let isFloat = System::findAny(r.buf, ".eE", 0) < System::length(r.buf)
+  let errPos: Int = st.pos
+  let end: Int = System::skipAny(st.s, _NUMBER_CHARS, st.pos)
+  let buf: String = System::slice(st.s, st.pos, end)
+  let st2: ParseState = ParseState(st.s, end)
+  let isFloat: Bool = System::findAny(buf, ".eE", 0) < System::length(buf)
   ret isFloat
-    ? _asFloat(r.state, r.buf, errPos)
-    : _asInt(r.state, r.buf, errPos)
+    ? _asFloat(st2, buf, errPos)
+    : _asInt(st2, buf, errPos)
 
 
 # ─── Internal: string parsing ────────────────────────────────────────────
-# Bulk scan-and-slice loop.  Inside one iteration `_strBody` scans the
-# lookahead for the next `"` or `\` via `findAny` and bulk-appends the
-# safe prefix in a single concat; per-byte concat is gone.  `[tail]`
-# makes the iteration cost a worker dispatch regardless of string length.
+# Expansion of the escape character that follows a `\` (e.g. 'n' → newline);
+# "" for an unknown escape (or none — a `\` at end of input).
+fun _escapeFrag(c: String): String
+  ret match(c)
+    ("\"") => "\""
+    ("\\") => "\\"
+    ("/")  => "/"
+    ("n")  => "\n"
+    ("t")  => "\t"
+    ("r")  => "\r"
+    ("b")  => System::Char(8i32)
+    ("f")  => System::Char(12i32)
+    (other) => ""
 
-# Decode the JSON escape sequence starting at `s` (the `\` is already
-# consumed).  Returns "" in `frag` for an unknown escape.
-fun _strReadEscape(s: ParseState): (state: ParseState, frag: String)
-  let r = _peek(s)
-  ret match(r.c)
-    ("\"") => (_advance(r.state), "\"")
-    ("\\") => (_advance(r.state), "\\")
-    ("/")  => (_advance(r.state), "/")
-    ("n")  => (_advance(r.state), "\n")
-    ("t")  => (_advance(r.state), "\t")
-    ("r")  => (_advance(r.state), "\r")
-    ("b")  => (_advance(r.state), System::Char(8))
-    ("f")  => (_advance(r.state), System::Char(12))
-    (other) => (r.state, "")
-
-# Handle one escape: read the escape body, append its expansion to acc,
-# then loop back through `_strBody`.
-fun _strAfterEscape(s: ParseState, acc: String):
-    (state: ParseState, v: JsonValue|JsonParseError)
-  let e = _strReadEscape(s)
-  ret System::length(e.frag) == 0
-    ? (e.state, JsonParseError("unknown escape", e.state.pos))
-    : _strBody(e.state, acc + e.frag)
-
-# The string-body loop.  One trampolined iteration absorbs the next
-# bulk-safe run from the lookahead — bounded by the nearest `"`, `\` or
-# the buffer end — then dispatches on what stopped it.
-fun [tail] _strBody(s: ParseState, acc: String):
-    (state: ParseState, v: JsonValue|JsonParseError)
-  let s1 = _peekFill(s)
-  let buf = s1.lookahead
-  let bufLen = System::length(buf)
-  let delimAt = System::findAny(buf, "\"\\", 0)
-  let take = delimAt < bufLen ? delimAt : bufLen
-  let acc1 = take > 0 ? acc + System::slice(buf, 0, take) : acc
-  let s2 = take > 0 ? _advanceBy(s1, take) : s1
-  # Three terminations:
-  #   - EOF (bufLen == 0): unterminated string.
-  #   - Buffer exhausted without a delim (take == bufLen): refill.
-  #   - Delim reached (take == delimAt): dispatch on " or \.
-  ret bufLen == 0
-    ? (s2, JsonParseError("unterminated string", s2.pos))
-    : take == bufLen
-        ? _strBody(s2, acc1)
-        : System::byteAt(buf, take) == 34                # 0x22 == "
-            ? (_advance(s2), JsonStr(acc1))
-            : _strAfterEscape(_advance(s2), acc1)
+# The string-body loop. Each iteration bulk-appends the run up to the next
+# `"` or `\` in one `findAny`+slice, then either finishes (closing quote),
+# appends an escape expansion and loops, or reports an error. The escape is
+# decoded inline so the loop is a *direct* tail self-call — `[tail]` makes a
+# string with many escapes run in constant stack.
+fun [tail] _strBody(st: ParseState, acc: String): (state: ParseState, v: JsonValue|JsonParseError)
+  let s: String = st.s
+  let lenS: Int = System::length(s)
+  let delim: Int = System::findAny(s, "\"\\", st.pos)   # next " or \, or lenS
+  let acc1: String = delim > st.pos ? acc + System::slice(s, st.pos, delim) : acc
+  let frag: String = delim < lenS ? _escapeFrag(System::slice(s, delim + 1, delim + 2)) : ""
+  ret delim < lenS
+    ? (System::byteAt(s, delim) == '"'
+        ? (ParseState(s, delim + 1), JsonStr(acc1))
+        : (System::length(frag) == 0
+            ? (ParseState(s, delim + 1), JsonParseError("unknown escape", delim + 1))
+            : _strBody(ParseState(s, delim + 2), acc1 + frag)))
+    : (ParseState(s, lenS), JsonParseError("unterminated string", delim))
 
 # Caller has peeked but not consumed the opening quote.
-fun _parseString(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  ret _strBody(_advance(s), "")
+fun _parseString(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
+  ret _strBody(_advance(st), "")
 
 
 # ─── Internal: array parsing ─────────────────────────────────────────────
-fun _parseArray(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
+fun _parseArray(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
   # caller has peeked but not consumed `[`
-  fun _parseArrayList(s: ParseState): (state: ParseState, list: List<JsonValue>|JsonParseError)
-    let r = _peek(_skipWs(s))
+  fun _parseArrayList(st: ParseState): (state: ParseState, list: List<JsonValue>|JsonParseError)
+    let r = _peek(_skipWs(st))
     ret match(r.c)
       ("]")   => (_advance(r.state), List<JsonValue>())
       (other) => _parseArrayHead(r.state)
-  fun _parseArrayHead(s: ParseState): (state: ParseState, list: List<JsonValue>|JsonParseError)
-    let h = parseValue(s)
+  fun _parseArrayHead(st: ParseState): (state: ParseState, list: List<JsonValue>|JsonParseError)
+    let h = parseValue(st)
     ret match(h.v)
       (val: JsonValue)    => _parseArrayTail(h.state, val)
       (e: JsonParseError) => (h.state, e)
-  fun _parseArrayTail(s: ParseState, head: JsonValue): (state: ParseState, list: List<JsonValue>|JsonParseError)
-    let r = _peek(_skipWs(s))
+  fun _parseArrayTail(st: ParseState, head: JsonValue): (state: ParseState, list: List<JsonValue>|JsonParseError)
+    let r = _peek(_skipWs(st))
     ret match(r.c)
       ("]")   => (_advance(r.state), prepend<JsonValue>(head, List<JsonValue>()))
       (",")   => _parseArrayMore(_advance(r.state), head)
       (other) => (r.state, JsonParseError("expected , or ] in array", r.state.pos))
-  fun _parseArrayMore(s: ParseState, head: JsonValue): (state: ParseState, list: List<JsonValue>|JsonParseError)
-    let rest = _parseArrayHead(s)
+  fun _parseArrayMore(st: ParseState, head: JsonValue): (state: ParseState, list: List<JsonValue>|JsonParseError)
+    let rest = _parseArrayHead(st)
     ret match(rest.list)
       (l: List<JsonValue>)  => (rest.state, prepend<JsonValue>(head, l))
       (e: JsonParseError)   => (rest.state, e)
-  let s1 = _advance(s)
+  let s1 = _advance(st)
   let r = _parseArrayList(s1)
   ret match(r.list)
     (l: List<JsonValue>)  => (r.state, JsonArr(l))
@@ -227,14 +155,14 @@ fun _parseArray(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
 
 
 # ─── Internal: object parsing ────────────────────────────────────────────
-fun _parseObject(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  fun _parseObjList(s: ParseState): (state: ParseState, list: List<JsonPair>|JsonParseError)
-    let r = _peek(_skipWs(s))
+fun _parseObject(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
+  fun _parseObjList(st: ParseState): (state: ParseState, list: List<JsonPair>|JsonParseError)
+    let r = _peek(_skipWs(st))
     ret match(r.c)
       ("}")   => (_advance(r.state), List<JsonPair>())
       (other) => _parseObjPair(r.state)
-  fun _parseObjPair(s: ParseState): (state: ParseState, list: List<JsonPair>|JsonParseError)
-    let r = _peek(_skipWs(s))
+  fun _parseObjPair(st: ParseState): (state: ParseState, list: List<JsonPair>|JsonParseError)
+    let r = _peek(_skipWs(st))
     ret match(r.c)
       ("\"") => _parseObjAfterKey(_parseString(r.state))
       (other) => (r.state, JsonParseError("expected string key", r.state.pos))
@@ -242,51 +170,51 @@ fun _parseObject(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError
     ret match(k.v)
       (val: JsonValue)    => _parseObjKeyDecide(k.state, val)
       (e: JsonParseError) => (k.state, e)
-  fun _parseObjKeyDecide(s: ParseState, v: JsonValue): (state: ParseState, list: List<JsonPair>|JsonParseError)
+  fun _parseObjKeyDecide(st: ParseState, v: JsonValue): (state: ParseState, list: List<JsonPair>|JsonParseError)
     ret match(v)
-      (str: JsonStr)     => _parseObjAfterColon(s, str.strValue)
-      (other: JsonValue) => (s, JsonParseError("expected string key", s.pos))
-  fun _parseObjAfterColon(s: ParseState, key: String): (state: ParseState, list: List<JsonPair>|JsonParseError)
-    let r = _peek(_skipWs(s))
+      (str: JsonStr)     => _parseObjAfterColon(st, str.strValue)
+      (other: JsonValue) => (st, JsonParseError("expected string key", st.pos))
+  fun _parseObjAfterColon(st: ParseState, key: String): (state: ParseState, list: List<JsonPair>|JsonParseError)
+    let r = _peek(_skipWs(st))
     ret match(r.c)
       (":")   => _parseObjValue(_advance(r.state), key)
       (other) => (r.state, JsonParseError("expected : after key", r.state.pos))
-  fun _parseObjValue(s: ParseState, key: String): (state: ParseState, list: List<JsonPair>|JsonParseError)
-    let v = parseValue(s)
+  fun _parseObjValue(st: ParseState, key: String): (state: ParseState, list: List<JsonPair>|JsonParseError)
+    let v = parseValue(st)
     ret match(v.v)
       (val: JsonValue)    => _parseObjTail(v.state, key, val)
       (e: JsonParseError) => (v.state, e)
-  fun _parseObjTail(s: ParseState, key: String, value: JsonValue): (state: ParseState, list: List<JsonPair>|JsonParseError)
-    let r = _peek(_skipWs(s))
+  fun _parseObjTail(st: ParseState, key: String, value: JsonValue): (state: ParseState, list: List<JsonPair>|JsonParseError)
+    let r = _peek(_skipWs(st))
     ret match(r.c)
       ("}")   => (_advance(r.state), prepend<JsonPair>(JsonPair(key, value), List<JsonPair>()))
       (",")   => _parseObjMore(_advance(r.state), key, value)
       (other) => (r.state, JsonParseError("expected , or } in object", r.state.pos))
-  fun _parseObjMore(s: ParseState, key: String, value: JsonValue): (state: ParseState, list: List<JsonPair>|JsonParseError)
-    let rest = _parseObjPair(s)
+  fun _parseObjMore(st: ParseState, key: String, value: JsonValue): (state: ParseState, list: List<JsonPair>|JsonParseError)
+    let rest = _parseObjPair(st)
     ret match(rest.list)
       (l: List<JsonPair>)   => (rest.state, prepend<JsonPair>(JsonPair(key, value), l))
       (e: JsonParseError)   => (rest.state, e)
-  let s1 = _advance(s)
+  let s1 = _advance(st)
   let r = _parseObjList(s1)
   ret match(r.list)
     (l: List<JsonPair>)   => (r.state, JsonObj(l))
     (e: JsonParseError)   => (r.state, e)
 
 
-# ─── Public: top-level value dispatch ────────────────────────────────────
-fun parseValue(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  fun _expectKeyword(s: ParseState, expected: String, val: JsonValue): (state: ParseState, v: JsonValue|JsonParseError)
+# ─── Internal: value dispatch ─────────────────────────────────────────────
+fun parseValue(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
+  fun _expectKeyword(st: ParseState, expected: String, val: JsonValue): (state: ParseState, v: JsonValue|JsonParseError)
     ret System::length(expected) == 0
-      ? (s, val)
-      : _expectKeywordStep(_peek(s), expected, val)
+      ? (st, val)
+      : _expectKeywordStep(_peek(st), expected, val)
   fun _expectKeywordStep(r: (state: ParseState, c: String),
                           expected: String, val: JsonValue): (state: ParseState, v: JsonValue|JsonParseError)
     let want: String = System::slice(expected, 0, 1)
     ret r.c == want
       ? _expectKeyword(_advance(r.state), System::slice(expected, 1, System::length(expected)), val)
       : (r.state, JsonParseError("unexpected character in keyword", r.state.pos))
-  let r = _peek(_skipWs(s))
+  let r = _peek(_skipWs(st))
   ret match(r.c)
     ("t")  => _expectKeyword(r.state, "true",  JsonTrue())
     ("f")  => _expectKeyword(r.state, "false", JsonFalse())
@@ -297,25 +225,32 @@ fun parseValue(s: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
     (other) => _parseNumber(r.state)
 
 
-# ─── Internal: pretty-printer helpers ────────────────────────────────────
-# Body of a quoted string with no surrounding quotes: writes JSON-escape
-# sequences for the special bytes (", \, \n, \r, \t) and bulk-writes
-# everything else in one go.  Bulk-writing matters for long strings —
-# byte-by-byte recursion would blow the C stack the same way the parser
-# would without its own bulk-consume path.
+# ─── Public: parse a whole document ───────────────────────────────────────
+# Parse one JSON value from `s`. Trailing whitespace is allowed; any other
+# trailing content is an error (the converter consumes the whole string).
+fun parse(s: String): JsonValue|JsonParseError
+  fun _checkTrailing(st: ParseState, v: JsonValue): JsonValue|JsonParseError
+    ret st.pos == System::length(st.s)
+      ? v
+      : JsonParseError("trailing content after value", st.pos)
+  let r = parseValue(ParseState(s, 0))
+  ret match(r.v)
+    (e: JsonParseError) => e
+    (v: JsonValue)      => _checkTrailing(_skipWs(r.state), v)
 
-# 32 = ' '. We escape any byte < 0x20 (control chars) plus " and \.
-# For simplicity, the bulk-write path treats all bytes as safe except for
-# the JSON-meaningful ones (", \). Other ASCII control chars round-trip
-# through io.write unchanged — JSON requires \uXXXX for those, but the
-# original parser doesn't decode \uXXXX either, so this matches behaviour.
 
+# ─── Writer ────────────────────────────────────────────────────────────────
+# The writer builds a String through a StringBuilder — no IO, sync, and no
+# error monad (appending never fails). Everything threads the builder.
+
+# Offset of the next byte in `s` (at or after `from`) that needs escaping
+# (`"`, `\`, newline, return, tab), or length(s) if none.
 fun _printScanSpecial(s: String, from: Int): Int
-  let q: Int = System::findByte(s, 34, from)         # 0x22 = '"'
-  let bs: Int = System::findByte(s, 92, from)        # 0x5C = '\\'
-  let nl: Int = System::findByte(s, 10, from)        # 0x0A = '\n'
-  let cr: Int = System::findByte(s, 13, from)        # 0x0D = '\r'
-  let tb: Int = System::findByte(s, 9,  from)        # 0x09 = '\t'
+  let q: Int = System::findByte(s, '"', from)
+  let bs: Int = System::findByte(s, '\\', from)
+  let nl: Int = System::findByte(s, '\n', from)
+  let cr: Int = System::findByte(s, '\r', from)
+  let tb: Int = System::findByte(s, '\t', from)
   let lenS: Int = System::length(s)
   let qIdx: Int = q < 0 ? lenS : q
   let bsIdx: Int = bs < 0 ? lenS : bs
@@ -327,7 +262,6 @@ fun _printScanSpecial(s: String, from: Int): Int
   let m3: Int = m2 < crIdx ? m2 : crIdx
   ret m3 < tbIdx ? m3 : tbIdx
 
-
 fun _printEscapeFor(c: String): String
   ret match(c)
     ("\"") => "\\\""
@@ -337,150 +271,90 @@ fun _printEscapeFor(c: String): String
     ("\t") => "\\t"
     (other) => c
 
-
-fun _printQuotedBody(io: IO, s: String, i: Int): (io: IO, v: Int|IOError)
+# Quoted-string body: bulk-append each safe run, escape each special byte.
+# `[tail]` so a string with many escapes builds in constant stack.
+fun [tail] _printQuotedBody(sb: StringBuilder, s: String, i: Int): StringBuilder
   let lenS: Int = System::length(s)
   let nextSpecial: Int = _printScanSpecial(s, i)
-  let bulkLen: Int = nextSpecial - i
   ret i == lenS
-    ? (io, 0)
-    : bulkLen > 0
-        ? _printBulkThenContinue(io, s, i, bulkLen)
-        : _printSpecialThenContinue(io, s, i)
+    ? sb
+    : nextSpecial > i
+        ? _printQuotedBody(System::append(sb, System::slice(s, i, nextSpecial)), s, nextSpecial)
+        : _printQuotedBody(System::append(sb, _printEscapeFor(System::slice(s, i, i + 1))), s, i + 1)
 
+fun _printQuoted(sb: StringBuilder, s: String): StringBuilder
+  ret System::append(_printQuotedBody(System::append(sb, "\""), s, 0), "\"")
 
-fun _printBulkThenContinue(io: IO, s: String, i: Int, bulkLen: Int): (io: IO, v: Int|IOError)
-  let safeChunk: String = System::slice(s, i, i + bulkLen)
-  # writeAll handles partial writes — io_write may return < bulkLen
-  # when the internal buffer fills mid-write, and the caller must loop
-  # to push the remaining suffix.
-  ret System::IO::writeAll(io, safeChunk) ?> (io: IO, _: Int)
-    => _printQuotedBody(io, s, i + bulkLen)
+# Formatting policy threaded through the writer. `comma` separates items at
+# the same nesting level; `indent` is one indentation unit. An empty `indent`
+# means compact (no line breaks), so the break helpers below become no-ops and
+# callers never branch on the mode:
+#   compact  Layout(", ", "")   pretty  Layout(",", "  ")
+class [final] Layout(comma: String, indent: String)
 
+# Append a newline followed by `depth` indentation units. With an empty indent
+# unit (compact mode) this is a no-op.
+fun _appendBreak(sb: StringBuilder, lay: Layout, depth: Int): StringBuilder
+  ret System::length(lay.indent) == 0
+    ? sb
+    : _appendIndent(System::append(sb, "\n"), lay.indent, depth)
 
-fun _printSpecialThenContinue(io: IO, s: String, i: Int): (io: IO, v: Int|IOError)
-  let frag: String = _printEscapeFor(System::slice(s, i, i + 1))
-  ret io.write(frag) ?> (io: IO, _: Int)
-    => _printQuotedBody(io, s, i + 1)
-
-
-fun _printQuoted(io: IO, s: String): (io: IO, v: Int|IOError)
-  ret io.write("\"") ?> (io: IO, _: Int)
-    => _printQuotedBody(io, s, 0) ?> (io: IO, _: Int)
-    => io.write("\"")
-
-
-fun _printArray(io: IO, l: List<JsonValue>): (io: IO, v: Int|IOError)
-  fun _printArrayBody(io: IO, l: List<JsonValue>, hasPrev: Int): (io: IO, v: Int|IOError)
-    let h = head<JsonValue>(l)
-    ret match(h)
-      (n: None)         => io.write("]")
-      (elem: JsonValue) => _printArrayElem(io, elem, tail<JsonValue>(l), hasPrev)
-  fun _printArrayElem(io: IO, elem: JsonValue, rest: List<JsonValue>, hasPrev: Int): (io: IO, v: Int|IOError)
-    ret hasPrev > 0
-      ? io.write(", ") ?> (io: IO, _: Int)
-        => printValue(io, elem) ?> (io: IO, _: Int)
-        => _printArrayBody(io, rest, 1)
-      : printValue(io, elem) ?> (io: IO, _: Int)
-        => _printArrayBody(io, rest, 1)
-  ret io.write("[") ?> (io: IO, _: Int)
-    => _printArrayBody(io, l, 0)
-
-
-fun _printObject(io: IO, l: List<JsonPair>): (io: IO, v: Int|IOError)
-  fun _printObjBody(io: IO, l: List<JsonPair>, hasPrev: Int): (io: IO, v: Int|IOError)
-    let h = head<JsonPair>(l)
-    ret match(h)
-      (n: None)     => io.write("}")
-      (p: JsonPair) => _printObjPair(io, p.key, p.value, tail<JsonPair>(l), hasPrev)
-  fun _printObjPair(io: IO, key: String, value: JsonValue, rest: List<JsonPair>, hasPrev: Int): (io: IO, v: Int|IOError)
-    ret hasPrev > 0
-      ? io.write(", ") ?> (io: IO, _: Int) => _printObjKeyValue(io, key, value, rest)
-      : _printObjKeyValue(io, key, value, rest)
-  fun _printObjKeyValue(io: IO, key: String, value: JsonValue, rest: List<JsonPair>): (io: IO, v: Int|IOError)
-    ret _printQuoted(io, key) ?> (io: IO, _: Int)
-      => io.write(": ") ?> (io: IO, _: Int)
-      => printValue(io, value) ?> (io: IO, _: Int)
-      => _printObjBody(io, rest, 1)
-  ret io.write("{") ?> (io: IO, _: Int)
-    => _printObjBody(io, l, 0)
-
-
-# ─── Public: compact printer ─────────────────────────────────────────────
-fun printValue(io: IO, v: JsonValue): (io: IO, v: Int|IOError)
-  ret match(v)
-    (n: JsonNull)   => io.write("null")
-    (t: JsonTrue)   => io.write("true")
-    (f: JsonFalse)  => io.write("false")
-    (s: JsonStr)    => _printQuoted(io, s.strValue)
-    (n: JsonNum)    => io.write(String(n.numValue))
-    (i: JsonInt)    => io.write(String(i.intValue))
-    (a: JsonArr)    => _printArray(io, a.elements)
-    (o: JsonObj)    => _printObject(io, o.pairs)
-
-
-# ─── Public: pretty printer ──────────────────────────────────────────────
-# Two-space indentation per nesting level.  Empty arrays and objects stay
-# on a single line; everything else expands across lines.  Scalars fall
-# through to the compact printer.
-
-fun prettyPrint(io: IO, v: JsonValue): (io: IO, v: Int|IOError)
-  ret _ppValue(io, v, 0)
-
-fun [tail] _ppIndent(io: IO, depth: Int): (io: IO, v: Int|IOError)
+fun [tail] _appendIndent(sb: StringBuilder, indent: String, depth: Int): StringBuilder
   ret depth == 0
-    ? (io, 0)
-    : io.write("  ") ?> (io: IO, _: Int)
-      => _ppIndent(io, depth - 1)
+    ? sb
+    : _appendIndent(System::append(sb, indent), indent, depth - 1)
 
-fun _ppValue(io: IO, v: JsonValue, depth: Int): (io: IO, v: Int|IOError)
-  ret match(v)
-    (a: JsonArr)       => _ppArray (io, a.elements, depth)
-    (o: JsonObj)       => _ppObject(io, o.pairs,    depth)
-    (other: JsonValue) => printValue(io, other)
+# Leader before an item at `depth`: a line break for the first item; the comma
+# separator followed by a break for later ones. In compact mode the break
+# vanishes, leaving "" for the first item and ", " between items.
+fun _itemLead(sb: StringBuilder, lay: Layout, depth: Int, hasPrev: Int): StringBuilder
+  ret hasPrev > 0
+    ? _appendBreak(System::append(sb, lay.comma), lay, depth)
+    : _appendBreak(sb, lay, depth)
 
-fun _ppArray(io: IO, l: List<JsonValue>, depth: Int): (io: IO, v: Int|IOError)
-  fun _ppArrBody(io: IO, l: List<JsonValue>, depth: Int, hasPrev: Int): (io: IO, v: Int|IOError)
-    let h = head<JsonValue>(l)
-    ret match(h)
+fun _writeArray(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout): StringBuilder
+  fun _body(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
+    ret match(head<JsonValue>(l))
       (n: None)         => hasPrev > 0
-        ? io.write("\n") ?> (io: IO, _: Int)
-          => _ppIndent(io, depth) ?> (io: IO, _: Int)
-          => io.write("]")
-        : io.write("]")
-      (elem: JsonValue) => hasPrev > 0
-        ? io.write(",\n") ?> (io: IO, _: Int)
-          => _ppIndent(io, depth + 1) ?> (io: IO, _: Int)
-          => _ppValue(io, elem, depth + 1) ?> (io: IO, _: Int)
-          => _ppArrBody(io, tail<JsonValue>(l), depth, 1)
-        : io.write("\n") ?> (io: IO, _: Int)
-          => _ppIndent(io, depth + 1) ?> (io: IO, _: Int)
-          => _ppValue(io, elem, depth + 1) ?> (io: IO, _: Int)
-          => _ppArrBody(io, tail<JsonValue>(l), depth, 1)
-  ret io.write("[") ?> (io: IO, _: Int)
-    => _ppArrBody(io, l, depth, 0)
+        ? System::append(_appendBreak(sb, lay, depth), "]")
+        : System::append(sb, "]")
+      (elem: JsonValue) =>
+        _body(_writeValue(_itemLead(sb, lay, depth + 1, hasPrev), elem, depth + 1, lay),
+              tail<JsonValue>(l), depth, lay, 1)
+  ret _body(System::append(sb, "["), l, depth, lay, 0)
 
-fun _ppObject(io: IO, l: List<JsonPair>, depth: Int): (io: IO, v: Int|IOError)
-  fun _ppObjBody(io: IO, l: List<JsonPair>, depth: Int, hasPrev: Int): (io: IO, v: Int|IOError)
-    let h = head<JsonPair>(l)
-    ret match(h)
+fun _writeObject(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout): StringBuilder
+  fun _body(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
+    ret match(head<JsonPair>(l))
       (n: None)     => hasPrev > 0
-        ? io.write("\n") ?> (io: IO, _: Int)
-          => _ppIndent(io, depth) ?> (io: IO, _: Int)
-          => io.write("}")
-        : io.write("}")
-      (p: JsonPair) => hasPrev > 0
-        ? io.write(",\n") ?> (io: IO, _: Int)
-          => _ppIndent(io, depth + 1) ?> (io: IO, _: Int)
-          => _printQuoted(io, p.key) ?> (io: IO, _: Int)
-          => io.write(": ") ?> (io: IO, _: Int)
-          => _ppValue(io, p.value, depth + 1) ?> (io: IO, _: Int)
-          => _ppObjBody(io, tail<JsonPair>(l), depth, 1)
-        : io.write("\n") ?> (io: IO, _: Int)
-          => _ppIndent(io, depth + 1) ?> (io: IO, _: Int)
-          => _printQuoted(io, p.key) ?> (io: IO, _: Int)
-          => io.write(": ") ?> (io: IO, _: Int)
-          => _ppValue(io, p.value, depth + 1) ?> (io: IO, _: Int)
-          => _ppObjBody(io, tail<JsonPair>(l), depth, 1)
-  ret io.write("{") ?> (io: IO, _: Int)
-    => _ppObjBody(io, l, depth, 0)
+        ? System::append(_appendBreak(sb, lay, depth), "}")
+        : System::append(sb, "}")
+      (p: JsonPair) =>
+        _body(_writeValue(System::append(_printQuoted(_itemLead(sb, lay, depth + 1, hasPrev), p.key), ": "),
+                          p.value, depth + 1, lay),
+              tail<JsonPair>(l), depth, lay, 1)
+  ret _body(System::append(sb, "{"), l, depth, lay, 0)
+
+fun _writeValue(sb: StringBuilder, v: JsonValue, depth: Int, lay: Layout): StringBuilder
+  ret match(v)
+    (n: JsonNull)   => System::append(sb, "null")
+    (t: JsonTrue)   => System::append(sb, "true")
+    (f: JsonFalse)  => System::append(sb, "false")
+    (s: JsonStr)    => _printQuoted(sb, s.strValue)
+    (n: JsonNum)    => System::append(sb, System::String(n.numValue))
+    (i: JsonInt)    => System::append(sb, System::String(i.intValue))
+    (a: JsonArr)    => _writeArray(sb, a.elements, depth, lay)
+    (o: JsonObj)    => _writeObject(sb, o.pairs, depth, lay)
+
+
+# ─── Public: stringify ──────────────────────────────────────────────────────
+# `pretty` selects two-space-per-level indentation — each item on its own line,
+# with empty arrays and objects kept inline and scalars compact — instead of
+# the compact ", "-separated form.
+fun stringify(v: JsonValue, pretty: Bool): String
+  let lay: Layout = pretty ? Layout(",", "  ") : Layout(", ", "")
+  ret System::toString(_writeValue(System::StringBuilder(), v, 0, lay))
+
+# Compact form — convenience overload for the common case.
+fun stringify(v: JsonValue): String
+  ret stringify(v, false)

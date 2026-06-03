@@ -42,15 +42,15 @@ fun _digitsEnd(f: String, at: Int): Int
   ret at < length(f) ? _digitsEndInBounds(f, at) : at
 
 fun _digitsEndInBounds(f: String, at: Int): Int
-  ret byteAt(f, at) < 48 ? at
-    : byteAt(f, at) > 57 ? at
+  ret byteAt(f, at) < '0' ? at
+    : byteAt(f, at) > '9' ? at
     : _digitsEnd(f, at + 1)
 
 
 # Parse decimal digits in `f[at..end)` left-to-right; `acc` is the
 # accumulator (always 0 at the call site).
 fun _parseDigits(f: String, at: Int, end: Int, acc: Int): Int
-  ret at < end ? _parseDigits(f, at + 1, end, acc * 10 + byteAt(f, at) - 48) : acc
+  ret at < end ? _parseDigits(f, at + 1, end, acc * 10 + Int(byteAt(f, at) - '0')) : acc
 
 
 # Look up the pre-rendered string for slot `n` (1-indexed). Out-of-range
@@ -77,7 +77,7 @@ fun _isSlot(f: String, open: Int, dEnd: Int): Bool
   ret dEnd > open + 1 ? _slotClosed(f, dEnd) : 0 == 1
 
 fun _slotClosed(f: String, dEnd: Int): Bool
-  ret dEnd < length(f) ? byteAt(f, dEnd) == 125 : 0 == 1
+  ret dEnd < length(f) ? byteAt(f, dEnd) == '}' : 0 == 1
 
 
 # Saw a `{` at `open`: decide if it begins a valid `{N}` slot, or is just
@@ -92,7 +92,7 @@ fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: List<Stri
 # Walk the template from `pos`: find the next `{` (if any), and either
 # emit the trailing literal or dispatch to `_trySlot`.
 fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: List<String>): StringBuilder
-  let open = findByte(f, 123, pos)   # 123 == '{'
+  let open = findByte(f, '{', pos)
   ret open < 0
     ? append(sb, slice(f, pos, length(f)))
     : _trySlot(sb, f, pos, open, parts)
