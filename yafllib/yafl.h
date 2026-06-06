@@ -295,6 +295,16 @@ EXTERN void abort_on_vtable_lookup();
 EXTERN void abort_on_out_of_memory();
 EXTERN void abort_on_too_large_object();
 EXTERN void abort_on_heap_allocation_on_non_worker_thread();
+EXTERN void abort_on_array_bounds();
+
+// Bounds-checked array access: returns `array` when 0 <= index < length and
+// aborts otherwise. The single unsigned comparison rejects negative and
+// over-length indices together. The caller casts the result to the element
+// pointer type and indexes it.
+INLINE void* array_bounds_check(int32_t index, int32_t length, void* array) {
+    if (UNLIKELY((uint32_t)index >= (uint32_t)length)) abort_on_array_bounds();
+    return array;
+}
 
 EXTERN void* memory_pages_alloc(size_t page_count);
 EXTERN void memory_pages_free(void* ptr, size_t page_count);

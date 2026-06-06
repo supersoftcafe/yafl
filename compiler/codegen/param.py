@@ -625,17 +625,23 @@ class ObjectField(LParam):
         return dataclasses.replace(self, pointer = self.pointer.rename_vars(renames), index = self.index and self.index.rename_vars(renames))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        index = f"[{self.index.to_c(type_cache)}]" if self.index is not None else ""
         pointer = self.pointer.to_c(type_cache)
-        return f"(({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}{index}"
+        base = f"(({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}"
+        # An indexed field is the trailing variable-length array, declared via
+        # `cg_t.Array` as `struct { elem a[N]; } field`, so the elements live in
+        # the `.a` member.
+        if self.index is not None:
+            return f"{base}.a[{self.index.to_c(type_cache)}]"
+        return base
 
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> LParam:
         return langtools.cast(LParam, replacer(dataclasses.replace(self, pointer=self.pointer.replace_params(replacer), index=self.index and self.index.replace_params(replacer))))
 
     def to_c_store(self, type_cache: dict[t.Type, tuple[str, str]], value: str) ->str:
-        index = f"[{self.index.to_c(type_cache)}]" if self.index is not None else ""
         pointer = self.pointer.to_c(type_cache)
-        field_ref = f"(({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}{index}"
+        field_ref = f"(({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}"
+        if self.index is not None:
+            field_ref = f"{field_ref}.a[{self.index.to_c(type_cache)}]"
         if self.type.has_pointers:
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
             return f"    GC_WRITE_BARRIER({field_ref}, {mask});\n    {field_ref} = {value};\n"
@@ -646,3 +652,54 @@ class ObjectField(LParam):
 
     def get_live_vars(self) -> frozenset[StackVar]:
         return self.pointer.get_live_vars() | (self.index.get_live_vars() if self.index else frozenset())
+
+
+@dataclass(frozen=True)
+class ArrayElement(RParam):
+    """Bounds-checked read of one element from an array class's trailing storage.
+
+    The storage is the 0-length `cg_t.Array` field (laid out as
+    `struct { elem a[N]; } array`, so the elements live in `->array.a[]`), sized
+    by the Int32 `length_field`. `array_bounds_check(index, length, base)` is the
+    runtime helper: it returns `base` when the index is in range and aborts
+    otherwise. We cast its result to the element pointer type and index it.
+
+    `pointer` and `index` are materialised into StackVars by the caller, so each
+    appears once here as a plain variable — no re-evaluation despite the helper
+    seeing both the base and the index."""
+    element_type: t.Type
+    pointer: RParam
+    object_name: str
+    field: str
+    length_field: str
+    index: RParam
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.pointer.flatten() + self.index.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.pointer.test(predicate) or self.index.test(predicate)
+
+    def get_type(self) -> t.Type:
+        return self.element_type
+
+    def rename_vars(self, renames: dict[str, str]) -> RParam:
+        return dataclasses.replace(self,
+            pointer=self.pointer.rename_vars(renames),
+            index=self.index.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self,
+            pointer=self.pointer.replace_params(replacer),
+            index=self.index.replace_params(replacer)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.pointer.get_live_vars() | self.index.get_live_vars()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        obj = f"(({mangle_name(self.object_name)}_t*){self.pointer.to_c(type_cache)})"
+        idx = self.index.to_c(type_cache)
+        base = f"{obj}->{mangle_name(self.field)}.a"
+        length = f"{obj}->{mangle_name(self.length_field)}"
+        elem_ptr = f"{self.element_type.declare(type_cache)}*"
+        return f"(({elem_ptr})array_bounds_check({idx}, {length}, {base}))[{idx}]"

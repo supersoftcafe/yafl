@@ -419,6 +419,75 @@ class NamedExpression(Expression):
 
 
 @dataclass
+class ArrayReadExpression(Expression):
+    """Read element `index` of an array class's trailing storage, aborting if the
+    index is out of range. This is the "function out" half of an array: the
+    generated accessor method `(Int32): Elem` (created alongside the constructor)
+    has this as its body. `object` is the array instance; `index` is the Int32
+    offset. Lowers to a single `cg_p.ArrayElement` — the bounds check lives in
+    the `array_bounds_check` runtime helper."""
+    object: Expression
+    index: Expression
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
+        return cast(Expression, replace(resolver, dataclasses.replace(self,
+            object=self.object.search_and_replace(resolver, replace),
+            index=self.index.search_and_replace(resolver, replace))))
+
+    def __array_info(self, resolver: g.Resolver):
+        """(class_name, element_spec, length_field_name) for `object`'s array
+        class, or None if its type isn't resolved/an array class yet."""
+        otype = self.object.get_type(resolver)
+        if not isinstance(otype, t.ClassSpec):
+            return None
+        found = resolver.find_type(otype.name)
+        if len(found) != 1 or not isinstance(found[0].statement, s.ClassStatement):
+            return None
+        classstmt = cast(s.ClassStatement, found[0].statement)
+        af = classstmt.array_field(resolver)
+        if af is None:
+            return None
+        af_spec = cast(t.ArrayFieldSpec, af.declared_type)
+        len_name = next((f.name for f in classstmt.get_fields(resolver)
+                         if g.name_matches(f.name, af_spec.length_field)), None)
+        if len_name is None:
+            return None
+        return otype.name, af_spec.element, len_name
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        info = self.__array_info(resolver)
+        return info[1] if info is not None else None
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        obj, oglb = self.object.compile(resolver, None)
+        idx, iglb = self.index.compile(resolver, t.BuiltinSpec(self.line_ref, "int32"))
+        return dataclasses.replace(self, object=obj, index=idx), oglb + iglb
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return self.object.check(resolver, None) + self.index.check(resolver, None)
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        info = self.__array_info(resolver)
+        assert info is not None, "ArrayReadExpression on a non-array-class object"
+        cname, elem_spec, len_name = info
+
+        obj_b = self.object.generate(resolver).with_prefix("arr")
+        idx_b = self.index.generate(resolver).with_prefix("idx")
+
+        # Materialise object and index into single-assignment vars so the
+        # ArrayElement param can name each once (it reads the base, the length,
+        # and the index from them).
+        obj_var = cg_p.StackVar(cg_t.DataPointer(), "aobj")
+        idx_var = cg_p.StackVar(cg_t.Int(32), "aidx")
+        elem = cg_p.ArrayElement(elem_spec.generate(resolver), obj_var, cname, "array", len_name, idx_var)
+
+        return obj_b + idx_b + g.OperationBundle(
+            stack_vars=(obj_var, idx_var),
+            operations=(cg_o.Move(obj_var, obj_b.result_var), cg_o.Move(idx_var, idx_b.result_var)),
+            result_var=elem)
+
+
+@dataclass
 class LazyExpression(Expression):
     """Auto-forced reference to a `[lazy]` let.
 

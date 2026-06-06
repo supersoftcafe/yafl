@@ -326,7 +326,12 @@ class ClassStatement(TypeStatement):
         return finder
 
     def find_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
-        s1 = self.parameters.flatten()
+        # The trailing array field is internal storage — member access to it
+        # resolves to the generated accessor method (same name, see
+        # create_array_accessor), not the raw field. Construction and codegen
+        # reach the storage directly via get_fields/parameters, not find_data.
+        array_param = self.array_field(resolver)
+        s1 = [p for p in self.parameters.flatten() if p is not array_param]
         s2 = self.statements
         statements = s1 + s2
         # a) try to find in this class. Anything we find masks out parent matches, so no need to recurse.
@@ -342,6 +347,15 @@ class ClassStatement(TypeStatement):
         s1 = self.parameters.flatten()
         s2 = [s for s in self.statements if isinstance(s, LetStatement)]
         return s1 + s2
+
+    def array_field(self, resolver: g.Resolver) -> LetStatement | None:
+        """The trailing variable-length array field (declared `name: Elem[lenField]`),
+        or None for an ordinary class. An array class has exactly one — enforced,
+        along with `[final]` and the length field's existence/type, in check()."""
+        for f in self.get_fields(resolver):
+            if isinstance(f.declared_type, t.ArrayFieldSpec):
+                return f
+        return None
 
 
     @property
@@ -481,7 +495,30 @@ class ClassStatement(TypeStatement):
         linear_tp_err = [Error(self.line_ref, "[linear] type parameters are only supported on functions")
                          for tp in self.type_params if "linear" in tp.attributes]
 
-        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err
+        # A trailing variable-length array field (`name: Elem[lenField]`) requires
+        # the class to be [final] (its storage is last in the object, so nothing
+        # may subclass past it) and that `lenField` names an Int32 field of the
+        # class. At most one such field is allowed.
+        fields = self.get_fields(resolver)
+        array_fields = [f for f in fields if isinstance(f.declared_type, t.ArrayFieldSpec)]
+        array_err: list[Error] = []
+        if array_fields:
+            if len(array_fields) > 1:
+                array_err.append(Error(self.line_ref, "a class may have at most one array field"))
+            if "final" not in self.attributes:
+                array_err.append(Error(self.line_ref, "a class with an array field must be [final]"))
+            for af in array_fields:
+                len_name = cast(t.ArrayFieldSpec, af.declared_type).length_field
+                matches = [f for f in fields if g.name_matches(f.name, len_name)]
+                if not matches:
+                    array_err.append(Error(af.line_ref,
+                        f"array length field '{len_name}' is not a field of this class"))
+                elif not (isinstance(matches[0].declared_type, t.BuiltinSpec)
+                          and matches[0].declared_type.type_name == "int32"):
+                    array_err.append(Error(af.line_ref,
+                        f"array length field '{len_name}' must be of type Int32"))
+
+        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err + array_err
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_x.Object, list[cg_x.Function]]:
@@ -495,18 +532,30 @@ class ClassStatement(TypeStatement):
         function_names = {f for s,f in functions}
         thunks = [c.create_thunk(self.name, x, resolver) for x in self.parameters.flatten() if x.name in function_names]
 
+        params = self.parameters.flatten()
+        array_param = self.array_field(resolver)
+        if array_param is None:
+            scalar_fields = tuple((p.name, p.get_type().generate(resolver)) for p in params)
+            length_field = None
+        else:
+            # The array field becomes the object's trailing storage: a 0-length
+            # `Array` named "array" (the Object IR requires that name/shape), with
+            # the scalar fields — including the length field — laid out before it.
+            af_spec = cast(t.ArrayFieldSpec, array_param.declared_type)
+            scalars = [p for p in params if p is not array_param]
+            scalar_fields = (tuple((p.name, p.get_type().generate(resolver)) for p in scalars)
+                             + (("array", cg_t.Array(af_spec.element.generate(resolver), 0)),))
+            length_field = next(p.name for p in scalars if g.name_matches(p.name, af_spec.length_field))
+
         xobject = cg_x.Object(
             name=self.name,
             extends=extends,
             functions=functions,
-            fields=cg_t.ImmediateStruct(
-                (("type", cg_t.DataPointer()),) +
-                tuple((p.name, p.get_type().generate(resolver)) for p in self.parameters.flatten())
-            ),
-            length_field=None,
+            fields=cg_t.ImmediateStruct((("type", cg_t.DataPointer()),) + scalar_fields),
+            length_field=length_field,
             comment=self.name,
             is_foreign="foreign" in self.attributes
-        ) # TODO: Array support
+        )
 
         return xobject, gen_functions+thunks
 

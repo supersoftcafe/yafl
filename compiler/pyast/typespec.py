@@ -272,6 +272,54 @@ class LazyStubSpec(TypeSpec):
 
 
 @dataclass(frozen=True)
+class ArrayFieldSpec(TypeSpec):
+    """Declared type of a `[final]` class's trailing variable-length array field:
+    `array: ElemType[lengthField]`. `element` is the element type; `length_field`
+    names the sibling `Int32` field giving the element count.
+
+    It is never a free-standing value: the array lives as the object's inline
+    trailing storage, described by the class's vtable (`array_el_size`,
+    `array_len_offset`, `array_el_pointer_locations`). The field is *presented* as
+    a function `(Int32): ElemType` — constructed by handing in such a function
+    (whose results are tabulated into the storage) and read through a generated
+    accessor method that lowers to a bounds-checked `ArrayReadExpression`. So this
+    spec only ever appears as a class field's declared type; the class codegen
+    handles its layout and the accessor/constructor handle its value side."""
+    element: TypeSpec
+    length_field: str
+
+    def is_concrete(self) -> bool:
+        return self.element.is_concrete()
+
+    def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
+        element, statements = self.element.compile(resolver)
+        return dataclasses.replace(self, element=element), statements
+
+    def check(self, resolver: g.Resolver) -> list[Error]:
+        return self.element.check(resolver)
+
+    def generate(self, resolver: g.Resolver) -> cg_t.Type:
+        # The class codegen lays out the trailing array storage; this returns the
+        # *element* C type, which is what that layout (and the vtable's
+        # array_el_size) is computed from.
+        return self.element.generate(resolver)
+
+    def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
+        if not isinstance(right, ArrayFieldSpec) or self.length_field != right.length_field:
+            return False
+        return self.element.trivially_assignable_from(resolver, right.element)
+
+    def as_unique_id_str(self) -> str | None:
+        inner = self.element.as_unique_id_str()
+        return f"$array${self.length_field}${inner}" if inner is not None else None
+
+    def search_and_replace(self, resolver: g.Resolver, replace) -> TypeSpec:
+        element = self.element.search_and_replace(resolver, replace)
+        return langtools.cast(TypeSpec, replace(resolver,
+            dataclasses.replace(self, element=element)))
+
+
+@dataclass(frozen=True)
 class ClassSpec(TypeSpec):
     name: str
     type_params: tuple[TypeSpec, ...] = ()

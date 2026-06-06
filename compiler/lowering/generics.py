@@ -186,7 +186,12 @@ def __create_specialized_statements(
     """
     specialized: list[s.Statement] = []
     all_refs = sorted(data_refs | type_refs, key=lambda item: (item[0], tuple(tp.as_unique_id_str() or "" for tp in item[1])))
-    existing_names = {stmt.name for stmt in statements}
+    # Dedup by (specialised name, statement kind), not name alone: a class and
+    # its synthesised constructor share a name, so both want the same specialised
+    # name and must each be produced. (Simple classes hide this — they're
+    # flattened away later — but an array class is never flattened, so its
+    # constructor would otherwise be dropped and the call resolve to nothing.)
+    existing_keys = {(stmt.name, type(stmt).__name__) for stmt in statements}
 
     for stmt in statements:
         if isinstance(stmt, s.NamedStatement) and stmt.type_params:
@@ -194,7 +199,8 @@ def __create_specialized_statements(
             for n, type_args in all_refs:
                 if n == stmt.name:
                     new_name = __create_unique_name(stmt.name, type_args)
-                    if new_name in existing_names:
+                    key = (new_name, type(stmt).__name__)
+                    if key in existing_keys:
                         continue  # already specialized in a prior iteration
                     specialized_stmt = __create_specialized_version(stmt, type_args)
                     # For enum statements, rebuild _enum_spec from the substituted variants
@@ -202,7 +208,7 @@ def __create_specialized_statements(
                     if isinstance(specialized_stmt, s.EnumStatement):
                         specialized_stmt = __rebuild_enum_spec(specialized_stmt)
                     specialized.append(specialized_stmt)
-                    existing_names.add(new_name)  # prevent duplicate in the same iteration
+                    existing_keys.add(key)  # prevent duplicate in the same iteration
 
     return specialized
 

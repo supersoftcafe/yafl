@@ -258,6 +258,9 @@ class _Checker:
         if isinstance(expr, e.NewExpression):
             return self._count(expr.parameter, env, resolver)
 
+        if isinstance(expr, e.ArrayReadExpression):
+            return self._count(expr.object, env, resolver) + self._count(expr.index, env, resolver)
+
         if isinstance(expr, e.NewEnumExpression):
             acc: Counter = Counter()
             for arg in expr.field_args.values():

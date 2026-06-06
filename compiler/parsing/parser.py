@@ -342,15 +342,23 @@ def __to_else_statement(result, tokens) -> p.Result[s.ElseStatement]:
                     result.tokens, result.line_ref, result.errors)
 
 
-def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|list[s.LetStatement], list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
-    attributes, target, dtype, value = result.value
+def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|list[s.LetStatement], list[t.TypeSpec], list[str], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
+    attributes, target, dtype, array_marker, value = result.value
+    errors = result.errors
+    declared_type = p.first_or_none(dtype)
+    # `name: Elem[lengthField]` — wrap the element type as the trailing array.
+    if array_marker:
+        if declared_type is None:
+            errors = errors + [p.Error(result.line_ref, "an array field needs an element type, e.g. `name: Elem[lengthField]`")]
+        else:
+            declared_type = t.ArrayFieldSpec(result.line_ref, declared_type, array_marker[0])
     if isinstance(target, str):
-        statement = s.LetStatement(tokens[0].line_ref, f"{target}@{result.line_ref.hash6()}", None, attributes or {}, (), p.first_or_none(value), p.first_or_none(dtype))
+        statement = s.LetStatement(tokens[0].line_ref, f"{target}@{result.line_ref.hash6()}", None, attributes or {}, (), p.first_or_none(value), declared_type)
     elif isinstance(target, list):
-        statement = s.DestructureStatement(tokens[0].line_ref, '_', None, attributes, (), p.first_or_none(value), p.first_or_none(dtype), target)
+        statement = s.DestructureStatement(tokens[0].line_ref, '_', None, attributes, (), p.first_or_none(value), declared_type, target)
     else:
         raise ValueError("invalid target type")
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return p.Result(statement, result.tokens, result.line_ref, errors)
 
 
 def __to_match_arm(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
@@ -548,9 +556,16 @@ def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[s.LetStatement]:
     return __parse_target_type_expr_any(tokens)
 __parse_target_type_expr = p.Parser(parse_target_type_expr)
 
+# A field declared `name: Elem[lengthField]` is its class's trailing
+# variable-length array — `[lengthField]` names the Int32 length field. Parsed
+# here (not in the type grammar) so `[` is only special in a field declaration,
+# which keeps the type grammar simple and the errors local. The field may appear
+# in any position; ClassStatement.check enforces exactly one (plus [final] and a
+# valid length field), and codegen moves it to the end of the object.
+__parse_maybe_array_marker = p.maybe(p.discard_sym("[") & p.ident() & p.discard_sym("]"))
 __parse_destructure_parts = p.discard_sym('(') & p.delimited_list(__parse_target_type_expr, ',') & p.discard_sym(')')
 __parse_maybe_destructure_parts = p.maybe(__parse_destructure_parts) >> __to_flat_list
-__parse_target_type_expr_any = (__parse_attributes & (p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_let_statement
+__parse_target_type_expr_any = (__parse_attributes & (p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_array_marker & __parse_maybe_equal_expr) >> __to_let_statement
 
 __parse_maybe_type_params = p.maybe(p.requires(
     p.sym("<"), p.delimited_list(__parse_type, ",") & p.discard_sym(">"),
@@ -761,6 +776,8 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
             case s.FunctionStatement() | s.LetStatement() | s.TypeAliasStatement() | s.ClassStatement(): # Rename and add to list
                 statement = statement.add_namespace(current_namespace)
                 statement = dataclasses.replace(statement, imports=import_group)
+                if isinstance(statement, s.ClassStatement) and not statement.is_interface:
+                    statement = pyast.utils.create_array_accessor(statement)
                 new_statements.append(statement)
                 if isinstance(statement, s.ClassStatement) and not statement.is_interface:
                     new_statements.append(pyast.utils.create_constructor(statement))

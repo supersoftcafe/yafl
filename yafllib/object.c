@@ -42,6 +42,10 @@ EXPORT void abort_on_heap_allocation_on_non_worker_thread() {
     log_error_and_exit("Aborting due to attempted allocation on uninitialised thread", stderr);
 }
 
+EXPORT void abort_on_array_bounds() {
+    log_error_and_exit("Aborting due to array index out of bounds", stderr);
+}
+
 
 
 

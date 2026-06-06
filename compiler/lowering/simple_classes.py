@@ -51,6 +51,11 @@ def __is_simple_class(
         return False
     if len(cls.parameters.flatten()) > _MAX_FLAT_STRUCT_FIELDS:
         return False
+    # A class with a trailing variable-length array field is always a heap
+    # object — its storage can't collapse to a flat value struct — so never
+    # flatten it.
+    if any(isinstance(f.declared_type, t.ArrayFieldSpec) for f in cls.parameters.flatten()):
+        return False
     return True
 
 

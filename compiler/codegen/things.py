@@ -493,7 +493,7 @@ class Object:
 
     def get_object_size(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         type_str = f"{mangle_name(self.name)}_t"
-        return f"offsetof({type_str}, {self.fields.fields[-1][0]})" if self.array_type else f"sizeof({type_str})"
+        return f"offsetof({type_str}, {mangle_name(self.fields.fields[-1][0])})" if self.array_type else f"sizeof({type_str})"
 
     def get_array_el_size(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         a = self.array_type
@@ -502,7 +502,7 @@ class Object:
     def get_array_length_offset(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         l = self.length_field
         if l is not None:
-            return f"offsetof({mangle_name(self.name)}_t, {l})"
+            return f"offsetof({mangle_name(self.name)}_t, {mangle_name(l)})"
         return "0"
 
 
