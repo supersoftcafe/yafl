@@ -1,9 +1,12 @@
 """[tail] self-recursion lowers to a back-edge loop — no trampoline.
 
-Every `[tail]` self-recursive function (sync or async) becomes a loop. A sync
-one is a plain synchronous C function; an async one is a loop *inside* the async
-state machine, with the loop-carried vars promoted to the task heap across
-suspensions. No worker-queue dispatch / task is generated for the recursion.
+Every `[tail]` self-recursive function (sync or async, top-level or nested)
+becomes a loop. A sync one is a plain synchronous C function; an async one is a
+loop *inside* the async state machine, with the loop-carried vars promoted to
+the task heap across suspensions. No worker-queue dispatch / task is generated
+for the recursion. A nested `[tail]` function is lowered before closure
+conversion (while its self-call is still direct); a capturing one then becomes a
+loop inside its closure.
 
 A `[tail]` function whose self-call is not in tail position is a compile error.
 A self-call captured in a surviving closure belongs to the closure (a normal
@@ -59,18 +62,25 @@ fun main(): System::Int
   ret countdown(5, 0)
 """
 
-# `[tail]` is top-level only, so a nested `[tail]` function is a hard error —
-# whether or not it captures an enclosing variable. Both of these are rejected.
+# `[tail]` on a *nested* function is supported: tail lowering runs before
+# closure conversion, so the recursion is turned into a constant-stack loop
+# while the self-call is still direct. A capturing nested `[tail]` function is
+# closure-converted afterwards (its captured state lives on the closure) and the
+# loop rides along. Both of these run to a large iteration count without
+# overflowing the stack — proof the recursion became a loop, not deep recursion.
+#
+# `loop` captures the enclosing parameter `s`; each iteration adds length(s)=2,
+# so outer("xy") == 2 * 1_000_000.
 _CAPTURING_NESTED_TAIL = """\
 import System
 
 fun outer(s: System::String): System::Int
   fun [tail] loop(i: System::Int, acc: System::Int): System::Int
     ret i == 0 ? acc : loop(i - 1, acc + System::length(s))
-  ret loop(5, 0)
+  ret loop(1000000, 0)
 
 fun main(): System::Int
-  ret outer("xy")
+  ret outer("xy") == 2000000 ? 0 : 1
 """
 
 _NONCAPTURING_NESTED_TAIL = """\
@@ -82,7 +92,7 @@ fun outer(n: System::Int): System::Int
   ret inner(n, 0)
 
 fun main(): System::Int
-  ret outer(7)
+  ret outer(1000000) == 1000000 ? 0 : 1
 """
 
 
@@ -152,10 +162,22 @@ fun main(): System::Int
         finally:
             os.unlink(path)
 
-    def test_nested_tail_is_an_error(self):
-        # `[tail]` is top-level only — a nested `[tail]` function is rejected at
-        # compile time rather than silently losing the annotation, whether or not
-        # it captures an enclosing variable.
-        for src in (_CAPTURING_NESTED_TAIL, _NONCAPTURING_NESTED_TAIL):
-            ccode = c.compile([c.Input(src, "t.yafl")], use_stdlib=True, just_testing=False)
-            self.assertFalse(ccode, "a nested [tail] function should fail to compile")
+    def test_noncapturing_nested_tail_runs_constant_stack(self):
+        # A nested `[tail]` function that captures nothing is hoisted to a
+        # top-level loop; outer(1_000_000) counts down without overflowing.
+        rc, out = compile_and_run_stdlib_capture(_NONCAPTURING_NESTED_TAIL, timeout=30)
+        self.assertEqual(0, rc, f"non-capturing nested [tail] failed; stdout:\n{out}")
+
+    def test_capturing_nested_tail_runs_constant_stack(self):
+        # A nested `[tail]` function that captures an enclosing parameter becomes
+        # a loop inside a closure; the loop-carried vars stay a constant-stack
+        # back-edge while the capture lives on the closure. 1_000_000 iterations.
+        rc, out = compile_and_run_stdlib_capture(_CAPTURING_NESTED_TAIL, timeout=30)
+        self.assertEqual(0, rc, f"capturing nested [tail] failed; stdout:\n{out}")
+
+    def test_nested_tail_lowers_to_loop(self):
+        # The nested `[tail]` compiles to a back-edge loop with no trampoline.
+        ccode = c.compile([c.Input(_CAPTURING_NESTED_TAIL, "t.yafl")], use_stdlib=True, just_testing=False)
+        self.assertTrue(ccode, "nested [tail] should compile")
+        self.assertIn("loophead", ccode, "expected a back-edge loop label")
+        self.assertNotIn("tailcallback", ccode, "no [tail] trampoline machinery should remain")

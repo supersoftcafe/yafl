@@ -71,6 +71,11 @@ class BlockExpression(Expression):
         return stmt_errs + val_errs
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        return self.generate_to(resolver, None)
+
+    def generate_to(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> g.OperationBundle:
+        # The block's value is in tail/value position, so the expected type flows
+        # straight through to it (statements coerce themselves at their own sinks).
         nested = g.ResolverData(resolver, self._find_locals())
         bundle = g.OperationBundle()
         # Phase 1: hoist deferred-init stub allocations to block entry
@@ -93,7 +98,7 @@ class BlockExpression(Expression):
                 bundle = bundle + stmt.generate_lazy_populate(nested).with_prefix(f"s{i}")
             else:
                 bundle = bundle + stmt.generate(nested, None).with_prefix(f"s{i}")
-        return bundle + self.value.generate(nested)
+        return bundle + self.value.generate_to(nested, expected_type)
 
 
 

@@ -72,7 +72,10 @@ class CallExpression(Expression):
         xtype = cast(t.CallableSpec, ftype)
 
         fun_op_bundle = self.function.generate(resolver).with_prefix("fn")
-        prm_op_bundle = self.parameter.generate(resolver).with_prefix("args")
+        # Coerce each argument to its declared parameter type — a narrow argument
+        # flowing into a union-typed parameter is boxed here. `self.parameter` is
+        # a tuple, so generate_to widens the matching fields (see coerce._coerce_tuple).
+        prm_op_bundle = self.parameter.generate_to(resolver, xtype.parameters).with_prefix("args")
 
         fun_ref = fun_op_bundle.result_var
         impure = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.impure

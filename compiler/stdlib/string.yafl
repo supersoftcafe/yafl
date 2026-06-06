@@ -154,27 +154,23 @@ fun codepoints(s: System::String): List<System::Int32>
   ret loop(0, List<System::Int32>())
 
 
-# End of the segment [from, nl) of `s`: excludes one trailing '\r' so a CRLF
-# line is sliced once — `byteAt` peeks without allocating, no throwaway string.
-fun _splitLineEnd(s: System::String, from: System::Int, nl: System::Int): System::Int
-  ret nl > from
-    ? (byteAt(s, nl - 1) == '\r' ? nl - 1 : nl)
-    : nl
-
-# Top-level (not nested): [tail] is only supported on top-level functions, so the
-# loop lives here with `s` threaded in rather than nested inside splitLines.
-fun [tail] _splitLinesLoop(s: System::String, from: System::Int, acc: List<System::String>): List<System::String>
-  let len: System::Int = length(s)
-  let nl: System::Int = findByte(s, '\n', from)
-  ret nl < 0
-    ? append(acc, slice(s, from, _splitLineEnd(s, from, len)))
-    : _splitLinesLoop(s, nl + 1, append(acc, slice(s, from, _splitLineEnd(s, from, nl))))
-
 # Split a string into lines on '\n', dropping a trailing '\r' from each so both
 # LF and CRLF endings work. The text after the final newline is the last
 # element, so "a\nb" -> ["a", "b"] and "a\n" -> ["a", ""].
 fun splitLines(s: System::String): List<System::String>
-  ret _splitLinesLoop(s, 0, List<System::String>())
+  # End of the segment [from, nl): excludes one trailing '\r' so a CRLF line is
+  # sliced once — `byteAt` peeks without allocating, no throwaway string.
+  fun lineEnd(from: System::Int, nl: System::Int): System::Int
+    ret nl > from
+      ? (byteAt(s, nl - 1) == '\r' ? nl - 1 : nl)
+      : nl
+  fun [tail] loop(from: System::Int, acc: List<System::String>): List<System::String>
+    let len: System::Int = length(s)
+    let nl: System::Int = findByte(s, '\n', from)
+    ret nl < 0
+      ? append(acc, slice(s, from, lineEnd(from, len)))
+      : loop(nl + 1, append(acc, slice(s, from, lineEnd(from, nl))))
+  ret loop(0, List<System::String>())
 
 
 class [linear,final] StringBuilder(_buffer: String, _offset: Int)

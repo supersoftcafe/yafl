@@ -54,7 +54,13 @@ class TernaryExpression(Expression):
         self_err = [] if self.get_type(resolver) else [Error(self.line_ref, "Failed to resolve type of ternery expression")]
         return cond_err + true_err + false_err + self_err
 
-    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+    def generate_to(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> g.OperationBundle:
+        # The branches share one result slot, so coercion to the union happens
+        # *inside* generate (each branch is widened to the slot type before the
+        # Phi); there is nothing left to coerce afterwards.
+        return self.generate(resolver, expected_type)
+
+    def generate(self, resolver: g.Resolver, expected_type: t.TypeSpec | None = None) -> g.OperationBundle:
         # SSA shape: each branch's result has its own path-derived name
         # (F/... and T/...). A Phi at the `join` label collects them.
         #
@@ -66,9 +72,15 @@ class TernaryExpression(Expression):
         # Without these explicit labels, the Phi would name the start of the
         # branch (`F_branch` / `T_branch`), but control may have passed
         # through additional intermediate labels first.
+        #
+        # `slot_type` is the shared result type. When a sink supplies it (a union
+        # the branches widen into) we use it; otherwise both branches already
+        # agree and `get_type` is exact. Each branch is generated *to* that type
+        # so a narrow branch is boxed before reaching the Phi.
+        slot_type = expected_type if expected_type is not None else self.get_type(resolver)
         cond_bundle = self.condition.generate(resolver).with_prefix("cond")
-        false_bundle = self.falseResult.generate(resolver).with_prefix("F")
-        true_bundle  = self.trueResult.generate(resolver).with_prefix("T")
+        false_bundle = self.falseResult.generate_to(resolver, slot_type).with_prefix("F")
+        true_bundle  = self.trueResult.generate_to(resolver, slot_type).with_prefix("T")
 
         # A *bottom* branch transfers control elsewhere and never reaches the
         # join (e.g. a [tail] `recur`, which jumps to the loop head). It's
@@ -101,7 +113,7 @@ class TernaryExpression(Expression):
                     + true_bundle
                     + g.OperationBundle(operations=(cg_o.Label("join"),), result_var=false_bundle.result_var))
 
-        result_var = cg_p.StackVar(self.get_type(resolver).generate(resolver), "result")
+        result_var = cg_p.StackVar(slot_type.generate(resolver), "result")
         phi = cg_o.Phi(
             target=result_var,
             sources=(

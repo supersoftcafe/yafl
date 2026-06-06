@@ -338,17 +338,26 @@ class MatchExpression(e.Expression):
 
         return errors
 
-    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+    def generate_to(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> g.OperationBundle:
+        # All arms share one result slot, so each arm body is coerced to the
+        # slot type *inside* generate (before the join Phi); nothing remains to
+        # coerce afterwards.
+        return self.generate(resolver, expected_type)
+
+    def generate(self, resolver: g.Resolver, expected_type: t.TypeSpec | None = None) -> g.OperationBundle:
         subj_bundle = self.subject.generate(resolver).with_prefix("subj")
         subj_type = self.subject.get_type(resolver)
-        result_type = self.get_type(resolver)
+        # `result_type` is the shared slot type. A sink supplies it (the union
+        # the arms widen into); otherwise the arms already agree and `get_type`
+        # is exact. Each arm body is generated *to* this type (see __emit_arm_body).
+        result_type = expected_type if expected_type is not None else self.get_type(resolver)
         result_var = cg_p.StackVar(result_type.generate(resolver), "result") if result_type else None
 
         if isinstance(subj_type, t.BuiltinSpec) and _is_primitive_match_type(subj_type.type_name):
-            return self.__gen_primitive_match(resolver, subj_bundle, subj_type, result_var)
+            return self.__gen_primitive_match(resolver, subj_bundle, subj_type, result_var, result_type)
 
         if isinstance(subj_type, t.EnumSpec):
-            return self.__gen_enum_match(resolver, subj_bundle, subj_type, result_var)
+            return self.__gen_enum_match(resolver, subj_bundle, subj_type, result_var, result_type)
 
         assert isinstance(subj_type, t.CombinationSpec)
         target_ctype = subj_type.generate(resolver)
@@ -357,23 +366,27 @@ class MatchExpression(e.Expression):
 
         # DataPointer union: null check for unit variant, pass through for pointer
         if isinstance(target_ctype, cg_t.DataPointer):
-            return self.__gen_pointer_match(resolver, subj_bundle, subj_type, result_var, discriminators)
+            return self.__gen_pointer_match(resolver, subj_bundle, subj_type, result_var, result_type, discriminators)
 
         # Struct-based tagged union: tag comparison
         assert isinstance(target_ctype, cg_t.Struct)
-        return self.__gen_tagged_match(resolver, subj_bundle, subj_type, target_ctype, result_var, discriminators)
+        return self.__gen_tagged_match(resolver, subj_bundle, subj_type, target_ctype, result_var, result_type, discriminators)
 
     def __emit_arm_body(self, arm: MatchArm, arm_resolver: g.Resolver, prefix: str,
-                        bundles: list, arm_results: list[tuple[str, cg_p.RParam]]) -> None:
+                        bundles: list, arm_results: list[tuple[str, cg_p.RParam]],
+                        result_type: t.TypeSpec | None) -> None:
         """Generate the arm body, append it (prefixed) to `bundles`, then append
         an explicit `Label({prefix}_exit)` that names the predecessor block the
         Phi at the join sees for this arm's edge. Records `(exit_label,
         body.result_var)` in `arm_results` so the caller can build the Phi.
 
+        The body is generated *to* `result_type` — the shared slot type — so a
+        narrow arm is boxed/widened to the union before reaching the Phi.
+
         The caller is responsible for emitting `Jump(end_label)` after this
         and for accumulating `arm_results` across all arms.
         """
-        body_bundle = arm.body.generate(arm_resolver).with_prefix(prefix)
+        body_bundle = arm.body.generate_to(arm_resolver, result_type).with_prefix(prefix)
         bundles.append(body_bundle)
         if body_bundle.result_var is not None:
             exit_label = f"{prefix}_exit"
@@ -461,7 +474,7 @@ class MatchExpression(e.Expression):
                                              operations=(cg_o.Move(arm_sv, arm_value),)))
         return make_resolver()
 
-    def __gen_primitive_match(self, resolver, subj_bundle, subj_type, result_var):
+    def __gen_primitive_match(self, resolver, subj_bundle, subj_type, result_var, result_type):
         """Literal-arm match on a primitive subject: Int (bigint), String (str),
         or a fixed-width integer (int8..int64 — a char literal is int32)."""
         type_name = subj_type.type_name
@@ -494,7 +507,7 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
 
-            self.__emit_arm_body(arm, resolver, f"arm{i}", bundles, arm_results)
+            self.__emit_arm_body(arm, resolver, f"arm{i}", bundles, arm_results, result_type)
             self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
@@ -511,7 +524,7 @@ class MatchExpression(e.Expression):
                 else_resolver = g.ResolverData(resolver, find_else)
                 bundles.append(g.OperationBundle(
                     stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)).with_prefix("else"))
-            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results)
+            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results, result_type)
         else:
             # No fall-through arm: control cannot reach end_label with
             # result_var uninitialised.  Emitting Abort here makes the
@@ -523,7 +536,7 @@ class MatchExpression(e.Expression):
         bundles.append(self.__emit_phi_join(end_label, result_var, arm_results))
         return reduce(lambda a, b: a + b, bundles)
 
-    def __gen_pointer_match(self, resolver, subj_bundle, subj_type, result_var, discriminators):
+    def __gen_pointer_match(self, resolver, subj_bundle, subj_type, result_var, result_type, discriminators):
         """DataPointer union dispatch.
 
         Generates:
@@ -607,7 +620,7 @@ class MatchExpression(e.Expression):
             bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
             bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-            self.__emit_pointer_arm_body(target_arm, sv, subj_type, resolver, f"arm_{suffix}_{idx}", bundles, arm_results)
+            self.__emit_pointer_arm_body(target_arm, sv, subj_type, resolver, f"arm_{suffix}_{idx}", bundles, arm_results, result_type)
             self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
@@ -651,13 +664,13 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-                self.__emit_pointer_arm_body(arm, sv, subj_type, resolver, f"arm_lit_{idx}", bundles, arm_results)
+                self.__emit_pointer_arm_body(arm, sv, subj_type, resolver, f"arm_lit_{idx}", bundles, arm_results, result_type)
                 self.__jump_to_end(bundles, end_label)
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
         if final_fallback is not None:
             self.__emit_pointer_arm_body(final_fallback, sv, subj_type, resolver, "fb",
-                                         bundles, arm_results)
+                                         bundles, arm_results, result_type)
         else:
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="pointer-union match fell through all arms"),)))
@@ -677,7 +690,8 @@ class MatchExpression(e.Expression):
         return False
 
     def __emit_pointer_arm_body(self, arm, sv, subj_type, resolver, prefix, bundles,
-                                 arm_results: list[tuple[str, cg_p.RParam]]):
+                                 arm_results: list[tuple[str, cg_p.RParam]],
+                                 result_type: t.TypeSpec | None):
         """Bind the arm's name (if any) to the subject pointer and emit the body.
 
         The bound local takes the arm's type (or subject type for an else
@@ -713,9 +727,9 @@ class MatchExpression(e.Expression):
             arm_resolver = g.ResolverData(resolver, find_bound)
             bundles.append(g.OperationBundle(stack_vars=(bound_sv,),
                                               operations=(cg_o.Move(bound_sv, move_value),)).with_prefix(prefix))
-        self.__emit_arm_body(arm, arm_resolver, prefix, bundles, arm_results)
+        self.__emit_arm_body(arm, arm_resolver, prefix, bundles, arm_results, result_type)
 
-    def __gen_tagged_match(self, resolver, subj_bundle, subj_type, container, result_var, discriminators):
+    def __gen_tagged_match(self, resolver, subj_bundle, subj_type, container, result_var, result_type, discriminators):
         """Tagged-union Struct: compare $tag for each typed arm; for literal
         arms, first test the $tag matches the variant the literal belongs to,
         then extract the primitive from its slot and compare to the literal
@@ -778,7 +792,7 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(operations=(cg_o.JumpIf(arm_label, test_expr),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Jump(next_label),)))
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(arm_label),)))
-                self.__emit_arm_body(arm, resolver, f"lit{arm_index}", bundles, arm_results)
+                self.__emit_arm_body(arm, resolver, f"lit{arm_index}", bundles, arm_results, result_type)
                 self.__jump_to_end(bundles, end_label)
                 bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
                 arm_index += 1
@@ -803,7 +817,7 @@ class MatchExpression(e.Expression):
                     if binding_local:
                         bundles.append(reduce(lambda a, b: a + b, binding_local).with_prefix(arm_prefix))
 
-            self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results)
+            self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results, result_type)
             self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
             arm_index += 1
@@ -821,7 +835,7 @@ class MatchExpression(e.Expression):
                 else_resolver = g.ResolverData(resolver, find_else)
                 bundles.append(g.OperationBundle(
                     stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)).with_prefix("else"))
-            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results)
+            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results, result_type)
         else:
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="tagged-union match fell through all arms"),)))
@@ -829,7 +843,7 @@ class MatchExpression(e.Expression):
         bundles.append(self.__emit_phi_join(end_label, result_var, arm_results))
         return reduce(lambda a, b: a + b, bundles)
 
-    def __gen_enum_match(self, resolver, subj_bundle, subj_type: t.EnumSpec, result_var):
+    def __gen_enum_match(self, resolver, subj_bundle, subj_type: t.EnumSpec, result_var, result_type):
         """EnumSpec: compare $tag for each arm using discriminator indices from the EnumSpec."""
         sv = subj_bundle.result_var
         # Complex enums lower to DataPointer; the $tag field lives on the
@@ -882,7 +896,7 @@ class MatchExpression(e.Expression):
                 bundles.append(g.OperationBundle(
                     stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, sv),)).with_prefix(arm_prefix))
 
-            self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results)
+            self.__emit_arm_body(arm, arm_resolver, arm_prefix, bundles, arm_results, result_type)
             self.__jump_to_end(bundles, end_label)
             bundles.append(g.OperationBundle(operations=(cg_o.Label(next_label),)))
 
@@ -899,7 +913,7 @@ class MatchExpression(e.Expression):
                 else_resolver = g.ResolverData(resolver, find_else)
                 bundles.append(g.OperationBundle(
                     stack_vars=(else_sv,), operations=(cg_o.Move(else_sv, sv),)).with_prefix("else"))
-            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results)
+            self.__emit_arm_body(else_arm, else_resolver, "else", bundles, arm_results, result_type)
         else:
             bundles.append(g.OperationBundle(operations=(
                 cg_o.Abort(reason="enum match fell through all arms"),)))

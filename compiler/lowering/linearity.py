@@ -267,10 +267,10 @@ class _Checker:
         if isinstance(expr, e.BuiltinOpExpression):
             return self._count(expr.params, env, resolver)
 
-        # BoxExpression / WideExpression wrap a sub-expression to widen it
-        # into a union. They may not be present this early in the pipeline,
-        # but recursing into `inner` is correct whether or not they are.
-        if isinstance(expr, (e.BoxExpression, e.WideExpression)):
+        # BoxExpression wraps a sub-expression to widen it into a union. It may
+        # not be present this early in the pipeline, but recursing into `inner`
+        # is correct whether or not it is.
+        if isinstance(expr, e.BoxExpression):
             return self._count(expr.inner, env, resolver)
 
         if isinstance(expr, e.TernaryExpression):

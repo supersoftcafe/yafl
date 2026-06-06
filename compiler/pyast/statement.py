@@ -250,7 +250,7 @@ class FunctionStatement(DataStatement):
         for index, parameter in enumerate(self.parameters.targets):
             bundle = bundle + parameter.to_c_destructure(None).with_prefix(f"p{index}")
         if self.body is not None:
-            body_bundle = self.body.generate(resolver)
+            body_bundle = self.body.generate_to(resolver, self.return_type)
             ret_bundle = g.OperationBundle((), (cg_o.Return(body_bundle.result_var),))
             bundle = bundle + (body_bundle + ret_bundle).with_prefix("body")
 
@@ -606,7 +606,7 @@ class LetStatement(DataStatement):
                 f"BlockExpression.generate's two-phase emission. "
                 f"A new generate-site that holds nested LetStatements "
                 f"needs the same hoist treatment.")
-        expr_bundle = self.default_value.generate(resolver).with_prefix("expr")
+        expr_bundle = self.default_value.generate_to(resolver, self.declared_type).with_prefix("expr")
         sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
@@ -692,7 +692,7 @@ class LetStatement(DataStatement):
         xtype = self.get_type().generate(resolver)
         rparam: cg_p.RParam | None = None
         if self.default_value is not None:
-            init = self.default_value.generate(resolver)
+            init = self.default_value.generate_to(resolver, self.declared_type)
             if init.operations or init.stack_vars or init.result_var is None:
                 raise RuntimeError(
                     f"non-lazy global {self.name!r} produced a non-trivial "
@@ -734,7 +734,7 @@ class LetStatement(DataStatement):
             # operations / stack vars is acceptable as a static
             # initialiser — covers literals AND tuples of literals
             # (whose generate() produces a NewStruct of literal RParams).
-            ab = arg_entry.value.generate(resolver)
+            ab = arg_entry.value.generate_to(resolver, field_def.declared_type)
             if ab.operations or ab.stack_vars or ab.result_var is None:
                 return None
             init_pairs.append((field_def.name, ab.result_var))
@@ -818,7 +818,7 @@ class DestructureStatement(LetStatement):
         return reduce(lambda a, b: a + b, bundles) if bundles else g.OperationBundle()
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        expr_bundle = self.default_value.generate(resolver).with_prefix("expr")
+        expr_bundle = self.default_value.generate_to(resolver, self.declared_type).with_prefix("expr")
         sv = cg_p.StackVar(self.declared_type.generate(resolver), self.name)
         init_bundle = g.OperationBundle(
             stack_vars=(sv,),
@@ -880,8 +880,9 @@ class ReturnStatement(Statement):
         return self.value.check(resolver, func_ret_type)
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        xtype = self.value.get_type(resolver)
-        op_bundle = self.value.generate(resolver)
+        # Coerce the returned value to the function's declared return type — a
+        # narrow value flowing out of a union-returning function is boxed here.
+        op_bundle = self.value.generate_to(resolver, func_ret_type)
         ret_bundle = g.OperationBundle( (), ( cg_o.Return(op_bundle.result_var), ) )
         return op_bundle + ret_bundle
 

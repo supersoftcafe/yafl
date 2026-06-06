@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 
 import lowering.ast_inline
-import lowering.boxing
 import lowering.constants
 import lowering.integers
 import lowering.strings
@@ -317,12 +316,6 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     if linearity_errors:
         return linearity_errors
 
-    # Reject `[tail]` on any non-top-level function — later passes would silently
-    # drop the annotation. Checked here while the nesting is still intact.
-    nested_tail_errors = lowering.tail_loop.check_nested_tail(new_statements)
-    if nested_tail_errors:
-        return nested_tail_errors
-
     # All ok so let's create some C code
     if optimization_level >= 2 and not disable_auto_parallel:
         # Run before generic monomorphisation: we operate on templates so
@@ -332,18 +325,21 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
     new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
     new_statements = lowering.constants.inline_constants(new_statements)
-    new_statements = lowering.ast_inline.inline_ast(new_statements)
-    new_statements = lowering.strings.fix_global_strings(new_statements)
-    new_statements = lowering.integers.fix_global_integers(new_statements)
-    new_statements = lowering.boxing.insert_boxing(new_statements)
-    # [tail] self-recursion → loop. Runs AFTER boxing: a [tail] body may return
-    # a union (e.g. `(state, JsonValue|JsonParseError)`) whose non-recursive
-    # exits need union-widening boxes; wrapping the body in a LoopExpression
-    # before boxing would disrupt that. The recursive call returns the
-    # function's own type, so it is never boxed and stays detectable here.
+    # `[tail]` self-recursion → loop. Runs before inlining / closure conversion,
+    # while every self-call is still a direct, name-resolved call so the
+    # recursion is detectable. Nested `[tail]` functions are lowered too; a
+    # capturing one is closure-converted afterwards and the LoopExpression rides
+    # along (its labels are function-local; it tracks renames). Union widening is
+    # no longer an AST pass, so there is no ordering dependency on it — a [tail]
+    # body's non-recursive exits are coerced to the return type when the
+    # LoopExpression generates its body, and the recursive call (now a
+    # RecurExpression) coerces its args to the parameter types at the back-edge.
     new_statements, tail_errors = lowering.tail_loop.lower_tail_loops(new_statements, resolver)
     if tail_errors:
         return tail_errors
+    new_statements = lowering.ast_inline.inline_ast(new_statements)
+    new_statements = lowering.strings.fix_global_strings(new_statements)
+    new_statements = lowering.integers.fix_global_integers(new_statements)
     # Surface [lazy] forward-references-to-non-lazy as compile errors
     # before lowering — the lowering would otherwise produce code that
     # crashes at force time.  Block-local check.

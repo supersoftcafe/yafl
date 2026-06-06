@@ -32,4 +32,4 @@ from pyast.expression.parallel import ParallelExpression
 from pyast.expression.block import BlockExpression
 from pyast.expression.ternary import TernaryExpression
 from pyast.expression.loop import RecurExpression, LoopExpression
-from pyast.expression.box import BoxExpression, WideExpression
+from pyast.expression.box import BoxExpression

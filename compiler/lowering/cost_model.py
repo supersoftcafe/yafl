@@ -218,8 +218,6 @@ def _direct_callees(expr: e.Expression, known: set[str]) -> set[str]:
             visit(node.condition); visit(node.trueResult); visit(node.falseResult)
         elif isinstance(node, e.BoxExpression):
             visit(node.inner)
-        elif isinstance(node, e.WideExpression):
-            visit(node.inner)
         elif isinstance(node, e.NewEnumExpression):
             for arg in node.field_args.values():
                 visit(arg)
@@ -365,9 +363,6 @@ def _weigh_expr(expr: e.Expression | None,
         return arg_w + INDIRECT_DEFAULT
 
     if isinstance(expr, e.BoxExpression):
-        return w(expr.inner)
-
-    if isinstance(expr, e.WideExpression):
         return w(expr.inner)
 
     return LITERAL_W

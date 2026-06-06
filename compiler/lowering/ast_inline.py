@@ -187,12 +187,15 @@ def _rename_let_vars(stmts: list[s.Statement], suffix: str) -> tuple[list[s.Stat
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cheap-expression test for safe beta-reduction
+# Cheap-expression test — gates *whether* a lambda application is worth inlining
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_cheap(expr: e.Expression) -> bool:
-    """True when substituting `expr` in for multiple uses of a parameter won't
-    duplicate any side effect or meaningful work."""
+    """True for a trivial argument (a name, literal, or dotted name). Used to
+    decide *whether* to inline a lambda application — inlining one whose argument
+    is a computed call would cascade into the recursive stdlib combinators and
+    blow up the inline fixpoint. (It no longer governs *how* parameters are
+    bound: they are always let-bound, never substituted.)"""
     if isinstance(expr, (e.NamedExpression, e.IntegerExpression, e.StringExpression,
                          e.NothingExpression)):
         return True
@@ -379,14 +382,111 @@ def _try_inline_call_at_stmt(
 # Stage 2 — lambda beta-reduction
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _inline_let_bound(body: e.Expression,
+                      params: list[s.LetStatement],
+                      args: list[e.Expression],
+                      return_type: "t.TypeSpec | None",
+                      resolver: "g.Resolver | None") -> e.Expression | None:
+    """Inline a function/lambda by binding each parameter to a `let` holding its
+    argument, then running the (alpha-renamed) body.
+
+    One recursive pass freshens every name *bound by the body* — the parameters
+    and every let, at any depth — with a unique suffix, rewriting both the
+    binding sites and every use. Because the parameters are renamed in that same
+    pass, turning each into a `let` is then trivial: it already has a unique name
+    that the body's references (including those held as strings inside a
+    `LoopExpression`, which tracks them through its `search_and_replace`) point
+    at. Parameters are never substituted with their argument expression, so a
+    loop-carried parameter (re-bound by a back-edge), a union-typed parameter
+    (whose let preserves the declared type for match dispatch and coercion), and
+    an argument used many times or with side effects all behave the same, with
+    no special-casing and no clashes across inline sites."""
+    if len(params) != len(args):
+        return None
+
+    suffix = _fresh_suffix()
+    root = g.ResolverRoot([])
+
+    # Every name the body binds: the parameters plus every let, collected
+    # recursively (so lets nested inside blocks, loops and match arms are caught).
+    bound: set[str] = {p.name for p in params}
+    def collect(_r, thing):
+        if isinstance(thing, s.LetStatement) and not isinstance(thing, s.DestructureStatement):
+            bound.add(thing.name)
+        return thing
+    body.search_and_replace(root, collect)
+    rename = {n: n + suffix for n in bound}
+
+    def apply_rename(_r, thing):
+        if isinstance(thing, e.NamedExpression) and thing.name in rename:
+            return dataclasses.replace(thing, name=rename[thing.name])
+        if isinstance(thing, s.LetStatement) and not isinstance(thing, s.DestructureStatement) \
+                and thing.name in rename:
+            return dataclasses.replace(thing, name=rename[thing.name])
+        return thing
+    renamed = cast(e.Expression, body.search_and_replace(root, apply_rename))
+    renamed = cast(e.Expression, _rename_match_patterns(renamed, suffix))
+
+    if isinstance(renamed, e.BlockExpression):
+        body_stmts: list[s.Statement] = list(renamed.statements)
+        body_value: e.Expression = renamed.value
+        lr = renamed.line_ref
+    else:
+        body_stmts, body_value, lr = [], renamed, renamed.line_ref
+
+    # Each parameter becomes a simple let — its uses in the body already carry
+    # the renamed name from the pass above.
+    prologue: list[s.Statement] = []
+    for p, arg in zip(params, args):
+        # The let takes the parameter's declared type — for a generic
+        # specialisation that is the concrete (monomorphised) type, whereas the
+        # argument's inferred type can still be the pruned generic. Fall back to
+        # the argument's type only when the parameter is untyped.
+        bind_type: t.TypeSpec | None = p.declared_type
+        if bind_type is None and resolver is not None:
+            bind_type = arg.get_type(resolver)
+        if bind_type is None:
+            return None
+        prologue.append(s.LetStatement(arg.line_ref, p.name + suffix, None, {}, (), arg, bind_type))
+
+    all_stmts = prologue + body_stmts
+    result: e.Expression = e.BlockExpression(lr, all_stmts, body_value) if all_stmts else body_value
+    if isinstance(return_type, t.CombinationSpec):
+        return e.BoxExpression(lr, result, return_type)
+    return result
+
+
+def _flatten_block_values(statements: list[s.Statement]) -> list[s.Statement]:
+    """Merge a `BlockExpression` whose value is itself a `BlockExpression` into a
+    single block. Let-bound inlining readily produces such nesting (e.g.
+    `length(show(v))` becomes `{let v=…; {let s=show(v); length(s)}}`), and at
+    code generation the inner block's statements would share the outer block's
+    `s{i}` prefixes — distinct stack vars then collide on one name. Merging the
+    statement sequences gives each statement its own index; all names are already
+    uniquely suffixed by inlining, so the merge cannot capture."""
+    def flatten(_resolver: g.Resolver, thing: Any) -> Any:
+        if isinstance(thing, e.BlockExpression) and isinstance(thing.value, e.BlockExpression):
+            merged = list(thing.statements)
+            value: e.Expression = thing.value
+            while isinstance(value, e.BlockExpression):
+                merged.extend(value.statements)
+                value = value.value
+            return dataclasses.replace(thing, statements=merged, value=value)
+        return thing
+    resolver = g.ResolverRoot(statements)
+    return [stmt.search_and_replace(resolver, flatten) for stmt in statements]
+
+
 def _beta_reduce_lambda(lambda_expr: e.LambdaExpression,
                         args: list[e.Expression]) -> e.Expression | None:
-    """Substitute the lambda's parameters with args in its body.
-    Returns None if any arg is not 'cheap' (avoids duplicating work), the
-    arg count is wrong, or any param's declared type is a union — the
-    latter because substituting a narrower value for a union-typed param
-    would bypass the boxing pass and break later type checks/codegen.
-    """
+    """Inline a lambda application by binding its parameters to lets (see
+    `_inline_let_bound`).
+
+    Higher-order lambdas — those taking a callable/tuple/union parameter — are
+    left alone: they are the recursive/closure combinators whose unbounded
+    inlining would not terminate. (With let-binding there is no
+    substitution-duplication concern, so the old cheap-argument restriction is
+    gone — only this termination guard remains.)"""
     params = list(lambda_expr.parameters.flatten())
     if len(params) != len(args):
         return None
@@ -396,78 +496,21 @@ def _beta_reduce_lambda(lambda_expr: e.LambdaExpression,
     for arg in args:
         if not _is_cheap(arg):
             return None
-    mapping: dict[str, e.Expression] = {
-        p.name: a for p, a in zip(params, args)
-    }
-    return _substitute_names(lambda_expr.expression, mapping)
+    ret_t = (lambda_expr.return_type.result
+             if isinstance(lambda_expr.return_type, t.CallableSpec) else None)
+    return _inline_let_bound(lambda_expr.expression, params, args, ret_t, None)
 
 
 def _expr_inline_function(
         target: s.FunctionStatement,
         args: list[e.Expression],
         resolver: "g.Resolver | None" = None) -> e.Expression | None:
-    """Inline `target` at expression position.
-
-    For each parameter:
-    - Union-typed (CombinationSpec): always bind to a let to preserve type for match dispatch.
-    - Non-cheap arg used more than once: bind to a let to avoid duplicating work.
-    - Otherwise: substitute the arg directly into the body.
-
-    Direct substitution is essential for callable-typed args (e.g. lambdas passed to
-    [inline] functions like `?>`): it leaves the call as an IIFE that the subsequent
-    beta-reduction pass can immediately eliminate, rather than wrapping it in a let
-    binding that the outer `single_use_lambdas` scan can't see."""
+    """Inline `target` at expression position by binding its parameters to lets
+    (see `_inline_let_bound`)."""
     if not isinstance(target.body, e.BlockExpression):
         return None
-    params = list(target.parameters.flatten())
-    if len(params) != len(args):
-        return None
-
-    suffix = _fresh_suffix()
-    body = target.body
-
-    # Clone body with renamed let vars and match patterns to avoid clashes.
-    body_stmts, let_rename = _rename_let_vars(list(body.statements), suffix)
-    body_stmts = cast(list[s.Statement], _rename_match_patterns(body_stmts, suffix))
-    body_value: e.Expression = body.value
-    if let_rename:
-        body_value = _substitute_names(body_value,
-            {old: e.NamedExpression(body_value.line_ref, new) for old, new in let_rename.items()})
-    body_value = cast(e.Expression, _rename_match_patterns(body_value, suffix))
-
-    mapping: dict[str, e.Expression] = {}
-    prologue: list[s.Statement] = []
-
-    for p, arg in zip(params, args):
-        use_count = (_count_name_refs(body_value, p.name)
-                     + sum(_count_name_refs(st, p.name) for st in body_stmts))
-        need_let = (isinstance(p.declared_type, t.CombinationSpec)
-                    or (not _is_cheap(arg) and use_count > 1))
-        if need_let:
-            bind_name = p.name + suffix
-            mapping[p.name] = e.NamedExpression(arg.line_ref, bind_name)
-            if isinstance(p.declared_type, t.CombinationSpec):
-                bind_type: t.TypeSpec | None = p.declared_type
-            elif resolver is not None:
-                actual = arg.get_type(resolver)
-                bind_type = actual if actual is not None else p.declared_type
-            else:
-                bind_type = p.declared_type
-            if bind_type is None:
-                return None
-            prologue.append(s.LetStatement(arg.line_ref, bind_name, None, {}, (), arg, bind_type))
-        else:
-            mapping[p.name] = arg
-
-    body_stmts = cast(list[s.Statement], _substitute_names(body_stmts, mapping))
-    body_value = cast(e.Expression, _substitute_names(body_value, mapping))
-
-    all_stmts = prologue + body_stmts
-    result: e.Expression = e.BlockExpression(target.line_ref, all_stmts, body_value) if all_stmts else body_value
-
-    if isinstance(target.return_type, t.CombinationSpec):
-        return e.BoxExpression(target.line_ref, result, target.return_type)
-    return result
+    return _inline_let_bound(target.body, list(target.parameters.flatten()),
+                             args, target.return_type, resolver)
 
 
 def _beta_reduce_expressions(stmts: list[s.Statement],
@@ -498,6 +541,18 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
             single_use_lambdas[stmt.name] = stmt.default_value
 
     def replace(_resolver, thing):
+        # A nested block carries its own let-bound single-use lambdas (e.g. the
+        # `let f = <lambda>` that let-bound `?>` inlining produces) which the
+        # outer statement scan cannot see. Re-reduce it against its own
+        # statement scope so those lambdas reach call position and beta-reduce
+        # rather than surviving to be lifted into closures. (search_and_replace
+        # visits children first, so this fires bottom-up.)
+        if isinstance(thing, e.BlockExpression):
+            inner = list(thing.statements) + [s.ReturnStatement(thing.value.line_ref, thing.value)]
+            reduced = _beta_reduce_expressions(inner, catalog_for_expr_inline, global_resolver)
+            if reduced and isinstance(reduced[-1], s.ReturnStatement):
+                return dataclasses.replace(thing, statements=reduced[:-1], value=reduced[-1].value)
+            return thing
         # IIFE
         if isinstance(thing, e.CallExpression) and isinstance(thing.function, e.LambdaExpression):
             if isinstance(thing.parameter, e.TupleExpression):
@@ -968,4 +1023,6 @@ def inline_ast(statements: list[s.Statement]) -> list[s.Statement]:
         current = new_stmts
         if not changed:
             break
-    return current
+    # Normalise away block-valued blocks created by let-bound inlining, so
+    # nested blocks don't collide on their `s{i}` generation prefixes.
+    return _flatten_block_values(current)
