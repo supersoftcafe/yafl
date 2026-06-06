@@ -23,7 +23,7 @@ import System
 # ─── Internal template scanner ──────────────────────────────────────────────
 #
 # The scanner is fully concrete — it walks a String template and looks up
-# slot values in a `List<String>` of pre-rendered arguments. Keeping
+# slot values in an `Array<String>` of pre-rendered arguments. Keeping
 # Show<T> out of the scanner's signature means each format overload pays
 # the `_show` cost once per argument up-front and the scanner itself
 # doesn't propagate trait constraints down the call graph.
@@ -54,17 +54,16 @@ fun _parseDigits(f: String, at: Int, end: Int, acc: Int): Int
 
 
 # Look up the pre-rendered string for slot `n` (1-indexed). Out-of-range
-# (n < 1 or beyond the parts list) renders as "?" so a typo in the
-# template degrades visibly rather than crashing.
-fun _slotValue(parts: List<String>, n: Int): String
-  ret match(get<String>(parts, n - 1))
-    (s: String) => s
-    (x: None)   => "?"
+# (n < 1 or beyond the parts array) renders as "?" so a typo in the
+# template degrades visibly rather than crashing. The range is checked in
+# the Int domain before indexing, so the narrowing to Int32 can't overflow.
+fun _slotValue(parts: Array<String>, n: Int): String
+  ret n >= 1 ? (n <= Int(parts.length) ? parts[truncateToInt32(n - 1)] : "?") : "?"
 
 
 # Emit a valid `{N}` slot: literal prefix `f[pos..open)`, then the
 # value for slot N, then continue scanning after the closing `}`.
-fun _emitSlot(sb: StringBuilder, f: String, pos: Int, open: Int, dEnd: Int, parts: List<String>): StringBuilder
+fun _emitSlot(sb: StringBuilder, f: String, pos: Int, open: Int, dEnd: Int, parts: Array<String>): StringBuilder
   let argN = _parseDigits(f, open + 1, dEnd, 0)
   let sb1 = append(sb, slice(f, pos, open))
   let sb2 = append(sb1, _slotValue(parts, argN))
@@ -82,7 +81,7 @@ fun _slotClosed(f: String, dEnd: Int): Bool
 
 # Saw a `{` at `open`: decide if it begins a valid `{N}` slot, or is just
 # a literal `{` to emit.
-fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: List<String>): StringBuilder
+fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: Array<String>): StringBuilder
   let dEnd = _digitsEnd(f, open + 1)
   ret _isSlot(f, open, dEnd)
     ? _emitSlot(sb, f, pos, open, dEnd, parts)
@@ -91,7 +90,7 @@ fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: List<Stri
 
 # Walk the template from `pos`: find the next `{` (if any), and either
 # emit the trailing literal or dispatch to `_trySlot`.
-fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: List<String>): StringBuilder
+fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: Array<String>): StringBuilder
   let open = findByte(f, '{', pos)
   ret open < 0
     ? append(sb, slice(f, pos, length(f)))
@@ -101,40 +100,38 @@ fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: List<String>): St
 # ─── Per-arity public API ───────────────────────────────────────────────────
 #
 # Each overload pre-renders its arguments to Strings via `Show<Ti>`, packs
-# them into a `List<String>`, and runs the (Show-free) scanner. The
-# `_show<T>` wrapper isolates the single-constraint dispatch even though
-# the calling overload's own where-clause may carry several Show traits.
-#
-# The parts list is built via a `|>` pipeline of one-arg lambdas, each
-# appending the next pre-rendered value. Reads top-to-bottom in argument
-# order; the inliner collapses the lambda chain into a series of direct
-# appends.
+# them into an `Array<String>`, and runs the (Show-free) scanner. Each
+# `show(pN)` is bound to a `String`-typed let first: that anchors the
+# single-constraint dispatch (the overload's where-clause may carry several
+# Show traits) and renders each argument exactly once. The parts array is
+# then tabulated by an init function that just selects the pre-rendered
+# value for each index.
 
 fun format<T1>(f: String, p1: T1): String where Show<T1>
-  let parts = List<String>()
-    |> (l:List<String>) => append<String>(l, show(p1))
+  let s1: String = show(p1)
+  let parts = Array<String>(1i32, (i: Int32) => s1)
   ret toString(_formatScan(StringBuilder(), f, 0, parts))
 
 
 fun format<T1, T2>(f: String, p1: T1, p2: T2): String where Show<T1>|Show<T2>
-  let parts = List<String>()
-    |> (l:List<String>) => append<String>(l, show(p1))
-    |> (l:List<String>) => append<String>(l, show(p2))
+  let s1: String = show(p1)
+  let s2: String = show(p2)
+  let parts = Array<String>(2i32, (i: Int32) => i == 0i32 ? s1 : s2)
   ret toString(_formatScan(StringBuilder(), f, 0, parts))
 
 
 fun format<T1, T2, T3>(f: String, p1: T1, p2: T2, p3: T3): String where Show<T1>|Show<T2>|Show<T3>
-  let parts = List<String>()
-    |> (l:List<String>) => append<String>(l, show(p1))
-    |> (l:List<String>) => append<String>(l, show(p2))
-    |> (l:List<String>) => append<String>(l, show(p3))
+  let s1: String = show(p1)
+  let s2: String = show(p2)
+  let s3: String = show(p3)
+  let parts = Array<String>(3i32, (i: Int32) => i == 0i32 ? s1 : i == 1i32 ? s2 : s3)
   ret toString(_formatScan(StringBuilder(), f, 0, parts))
 
 
 fun format<T1, T2, T3, T4>(f: String, p1: T1, p2: T2, p3: T3, p4: T4): String where Show<T1>|Show<T2>|Show<T3>|Show<T4>
-  let parts = List<String>()
-    |> (l:List<String>) => append<String>(l, show(p1))
-    |> (l:List<String>) => append<String>(l, show(p2))
-    |> (l:List<String>) => append<String>(l, show(p3))
-    |> (l:List<String>) => append<String>(l, show(p4))
+  let s1: String = show(p1)
+  let s2: String = show(p2)
+  let s3: String = show(p3)
+  let s4: String = show(p4)
+  let parts = Array<String>(4i32, (i: Int32) => i == 0i32 ? s1 : i == 1i32 ? s2 : i == 2i32 ? s3 : s4)
   ret toString(_formatScan(StringBuilder(), f, 0, parts))

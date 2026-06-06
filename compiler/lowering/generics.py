@@ -159,6 +159,32 @@ def __create_specialized_version(
         type_params=()  # Specialized versions have no type params
     )
 
+    # A generic class's concrete methods become top-level C functions named by
+    # the method name. Two instantiations (e.g. Array$int32 and Array$str) would
+    # otherwise emit the same symbol and collide — the last one wins, silently
+    # corrupting calls into the others. Suffix each own method (and its matching
+    # vtable slot) with the type signature so every instantiation is distinct.
+    # The '@' separator keeps the suffixed name `name_matches`-compatible, so
+    # DotExpression member lookup on the specialised class still resolves it by
+    # the original query name.
+    if isinstance(new_stmt, s.ClassStatement):
+        type_sig = "_".join(tp.as_unique_id_str() or "unknown" for tp in type_args)
+        renamed: dict[str, str] = {}
+        new_members: list[s.Statement] = []
+        for m in new_stmt.statements:
+            if isinstance(m, s.FunctionStatement) and m.body is not None:
+                renamed[m.name] = f"{m.name}@{type_sig}"
+                new_members.append(dataclasses.replace(m, name=renamed[m.name]))
+            else:
+                new_members.append(m)
+        if renamed:
+            new_slots = None if new_stmt._all_slots is None else [
+                dataclasses.replace(slot,
+                    name=renamed.get(slot.name, slot.name),
+                    provides={renamed.get(p, p) for p in slot.provides})
+                for slot in new_stmt._all_slots]
+            new_stmt = dataclasses.replace(new_stmt, statements=new_members, _all_slots=new_slots)
+
     return cast(s.NamedStatement, new_stmt)
 
 

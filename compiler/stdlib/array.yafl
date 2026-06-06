@@ -1,0 +1,15 @@
+namespace System
+import System
+
+
+# Fixed-size array with O(1) indexed access — a sibling to the persistent
+# List<T>. Where a List is a chain of cons nodes, an Array<T> is a single heap
+# object storing its `length` elements inline. Build it once from an init
+# function — `Array<T>(n, (i) => ...)` — then read by index with `a[i]`.
+class [final] Array<T>(length: Int32, array: T[length])
+
+
+# Indexed read: `a[i]` lowers to ``[]``(a, i). Aborts if `i` is out of range
+# (0 <= i < length).
+fun `[]`<T>(a: Array<T>, i: Int32): T
+  ret a.array(i)

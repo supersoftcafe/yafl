@@ -169,9 +169,29 @@ def __to_builtin_op(result: p.Result[tuple[str, e.TupleExpression]], tokens: lis
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
-def __to_invokes(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    def accumulate(left: e.Expression, entry: e.Expression):
-        return e.CallExpression(tokens[0].line_ref, left, entry)
+def __tag_call(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[tuple[str, e.Expression]]:
+    return p.Result(("call", result.value), result.tokens, result.line_ref, result.errors)
+
+
+def __tag_index(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[tuple[str, e.Expression]]:
+    return p.Result(("index", result.value), result.tokens, result.line_ref, result.errors)
+
+
+def __to_invokes(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
+        line = tokens[0].line_ref
+        kind, value = entry
+        # `left[right]` is the index operator — it lowers to ``[]``(left, right),
+        # exactly as `left + right` lowers to `+`(left, right). Nothing is
+        # auto-generated for arrays here; resolution finds whatever ``[]`` is in
+        # scope, like any other operator.
+        if kind == "index":
+            return e.CallExpression(line,
+                e.NamedExpression(line, "`[]`"),
+                e.TupleExpression(line, [
+                    e.TupleEntryExpression(None, left),
+                    e.TupleEntryExpression(None, value)]))
+        return e.CallExpression(line, left, value)
     left_expr, right_list = result.value
     expr = reduce(accumulate, right_list, left_expr)
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
@@ -593,8 +613,10 @@ __parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invali
 __parse_paren_expr = __parse_expr_tuple >> __to_paren_expr
 __parse_terminal = __float() | __integer() | __char() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
+__parse_postfix_call  = __parse_expr_tuple >> __tag_call
+__parse_postfix_index = p.requires(p.discard_sym("["), __parse_expression & p.discard_sym("]"), "invalid index expression") >> __tag_index
 __parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
-__parse_invoke  = (__parse_dot_path & p.many(                         __parse_expr_tuple)) >> __to_invokes
+__parse_invoke  = (__parse_dot_path & p.many(__parse_postfix_call | __parse_postfix_index)) >> __to_invokes
 __parse_unary   = ((p.discard_sym("-") & __parse_invoke) >> __to_negate
                  | (p.discard_sym("!") & __parse_invoke) >> __to_not
                  | (p.discard_sym("~") & __parse_invoke) >> __to_invert

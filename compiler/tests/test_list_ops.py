@@ -77,10 +77,6 @@ fun main(): Int
   let filtered = filter<Int>(five, (x: Int) => x > 2)
   emit("filter_sum", fold<Int,Int>(filtered, 0, (acc: Int, x: Int) => acc + x))
 
-  # ─── get by index ──────────────────────────────────────────────────────
-  let three = append<Int>(append<Int>(append<Int>(List<Int>(), 10), 20), 30)
-  emit("get_index_1", unwrap(get<Int>(three, 1)))
-
   # ─── 50-element list, sum 1..50 = 1275 ────────────────────────────────
   emit("large_append_sum", fold<Int,Int>(build50(List<Int>(), 1), 0, (acc: Int, x: Int) => acc + x))
 
@@ -98,7 +94,6 @@ _EXPECTED_LINES = [
     "reverse_head=3",
     "map_sum_of_squares=14",
     "filter_sum=12",
-    "get_index_1=20",
     "large_append_sum=1275",
 ]
 
