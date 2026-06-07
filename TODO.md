@@ -3,6 +3,41 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
+## TOP PRIORITY — postfix chaining after a call/index doesn't parse
+
+`f().g()` does not parse. More generally, **any postfix access (`.field`,
+`.method(...)`, `(...)`, `[...]`) applied to the result of a call or index is
+rejected** with "extra unexpected characters". So all of these fail and must be
+broken up with an intermediate `let`:
+
+```
+stdin().read(5)       # call then .method
+foo().bar             # call then .field
+makeList()[0]         # call then index
+arr[0].field          # index then .field
+f(x).y().z()          # chained method calls
+```
+
+Workaround today: bind each step to a `let` (e.g. `json_pretty` does
+`let io = stdin()` then `io.read(...)`).
+
+**Root cause** (`parsing/parser.py`): the precedence chain splits dotting and
+calling into two separate, non-interleaved layers —
+`__parse_dot_path = (__parse_terminal & many("." __parse_terminal))` runs first,
+then `__parse_invoke = (__parse_dot_path & many(postfix_call | postfix_index))`.
+Dot-paths are built from *terminals* before any call/index, and the postfix layer
+only handles `(...)` and `[...]`, never a following `.`. So the moment a call or
+index occurs, the `.`-chain has already closed and cannot resume.
+
+**Fix sketch:** collapse the two layers into one left-associative postfix loop —
+`terminal & many( ".name" | "(...)" | "[...]" )` folded left — so dot, call, and
+index can interleave arbitrarily. `__to_invokes` / `__to_dot_path` merge into a
+single reducer over a uniform postfix-op list. Mind the existing `.`-then-method
+shape (`io.read(n)` = `.read` dot then `(n)` call) keeps working, and that
+`a::b::c` qualified names (handled in `__parse_named_fully_qualified`) are not
+disturbed. This is important: fluent/method-chaining is pervasive, and the
+compiler-in-YAFL will lean on it heavily.
+
 ## Language & parser features
 
 From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types), a
@@ -284,10 +319,17 @@ enum List<T>
 Check if the ListEmpty() case uses runtime NULL in one of the fields as the signal, or if it
 uses an extra field to distinguish. There is an optimisation opportuntiy here.
 
-# JsonValue is complex
+# JsonValue is complex — resolved (note was stale)
 
-The C code backing JsonValue is super complex, and it even has been promoted to a class. In theory
-this should not have been necessary, but will need an overhaul of how enums are encoded.
+DO NOT re-investigate. Reviewed 2026-06-07: the JsonValue encoding is fine and
+not an issue. (For the record: it's the recursive `_ListNode` cons cell that gets
+heap-promoted as the cycle-breaker, not JsonValue itself — JsonValue stays a flat
+by-value tagged-union struct. The generated C looks verbose because of the
+type-segregated shared-slot packing, but it's correct and works.)
+
+There is a SEPARATE, genuine question about more efficient enum *packing* (the
+flat-tagged-union slot layout vs a sum-of-products / boxed-per-variant encoding) —
+deliberately deferred, not a bug. Don't conflate it with this stale note.
 
 # Parallel grep
 
@@ -328,12 +370,15 @@ on EOF-with-bytes (EOFError only when no bytes were read). Note this is distinct
 from the buffering issue below — readLine still goes through the buffer-filling
 `read`, so on a TTY it shares the "IO TTY input" latency problem until that lands.
 
-# IO TTY input
+# IO TTY input — done
 
-Currently the IO module tries to fill the buffer, which means that TTY input beyond what is needed
-must be entered, or CTRL-D pressed before the program will respond. Ideally we need to have a read
-mode that does not fill the buffer, but rather only reads exactly what is needed to fullfil the
-request.
+Fixed in `yafllib/io_thread.c` (IO_OP_REFILL): the read path used
+`fread(io->buf, 1, IO_BUFFER_SIZE, …)`, which loops until the 8 KB buffer is full,
+so interactive (TTY/pipe) reads blocked until 8 KB was typed or Ctrl-D. It now
+uses a single `read()` syscall, which returns as soon as any input is available —
+fixing the interactive block while preserving file read-ahead (so byte-at-a-time
+`readLine` is still served from the buffer, not one syscall per byte). Test:
+`tests/test_io_tty.py` (drives the process with a held-open stdin pipe).
 
 # Tuple let grouping
 

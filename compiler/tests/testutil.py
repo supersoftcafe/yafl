@@ -129,6 +129,23 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
             pass
 
 
+def compile_to_binary(source: str) -> str:
+    """Compile yafl source (with stdlib) to a runnable binary and return its
+    path. The caller owns the file and must unlink it. For tests that need to
+    drive the process directly — e.g. an interactive stdin pipe held open — rather
+    than the one-shot compile_and_run helpers."""
+    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    assert c_code, "yafl compilation produced no output (type errors?)"
+    with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
+        binary = tmp.name
+    result = subprocess.run(
+        ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
+        input=c_code, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, f"clang failed:\n{result.stderr}"
+    return binary
+
+
 def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5) -> int:
     """Compile yafl source alongside a C library, link, run, return exit code.
 

@@ -179,11 +179,22 @@ static void* _io_thread_main(void* arg) {
 
         switch (job->op) {
         case IO_OP_REFILL: {
-            errno = 0;
-            size_t n = fread(io->buf, 1, IO_BUFFER_SIZE, io->file);
+            // A single read() returns as soon as ANY input is available, unlike
+            // fread() which loops until the whole buffer is full — so interactive
+            // (TTY/pipe) reads come back with what's there instead of blocking for
+            // 8 KB or EOF. Regular files still get one large read, preserving the
+            // read-ahead that serves byte-at-a-time callers (e.g. readLine) from
+            // the buffer. The handle is unbuffered (setvbuf _IONBF on open; stdin
+            // is only ever read here), so bypassing stdio hides no data. 0 bytes
+            // is EOF; EINTR is retried.
+            ssize_t n;
+            do {
+                errno = 0;
+                n = read(fileno(io->file), io->buf, IO_BUFFER_SIZE);
+            } while (n < 0 && errno == EINTR);
             if (n > 0) {
                 job->raw_result = (int32_t)n;
-            } else if (feof(io->file)) {
+            } else if (n == 0) {
                 job->raw_result = 0;
                 job->eof = true;
             } else {
