@@ -3,48 +3,30 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
-## TOP PRIORITY — deep method chaining: type-resolution gap
+## Postfix method chaining — DONE
 
-The PARSER half is **done** (2026-06-07): postfix `.field` / `(...)` / `[...]`
-now form one left-associative chain (`parsing/parser.py`, `__parse_invoke` /
-`__to_invokes` / `__parse_postfix_dot`), so `f().g()`, `a().b`, `m()[0].x` etc.
-parse. End-to-end works for field-on-call (`pair().a`), method-on-constructor
-(`Box(5).get()`), and index chains. Tests: `tests/test_postfix_chaining.py`.
+Postfix `.field` / `(...)` / `[...]` form one left-associative chain
+(`parsing/parser.py`, `__parse_invoke` / `__to_invokes` / `__parse_postfix_dot`),
+so `f().g()`, `a().b`, `m()[0].x`, and full method chains all parse and run.
+Tests: `tests/test_postfix_chaining.py`.
 
-**What remains (this is the important bit):** a method call whose receiver is
-itself a *method-call result* — `Box(0).inc().get()` — still fails, crashing at
-*generate* with "could not cast None to CallableSpec". Marked as an
-`@unittest.expectedFailure` tripwire in `test_postfix_chaining.py`
-(`..._KNOWN_GAP`); remove that marker when fixed.
+The deep case (`Box(0).inc().get()` — a method call on a method-call result) is
+**fixed** (2026-06-08). Root cause was `simple_classes.lower_simple_classes`, NOT
+the async/Task lowering: it lifts a small class's methods to free functions
+(`Cls__m`) but the method-call rewrite resolved receiver types against a resolver
+that didn't include those lifted functions — so for a chained receiver that had
+just been rewritten to `Cls__m(...)`, the outer call's receiver type came back
+`None` and the outer `.m` was left as an unrewritten `DotExpression` that crashed
+at generate. Fix: the rewrite now uses `ResolverRoot(statements + lifted_pre)`, so
+a lifted-method-call receiver resolves and the next call in the chain is rewritten.
+(Two earlier wrong guesses were retracted along the way: "NamedSpec base" and
+"the Task/CPS lowering rewrites returns to unit" — `async_lower` runs *after* the
+crash point and was never involved.)
 
-**Root cause (confirmed 2026-06-07):** expression types are *recomputed* via
-`get_type()` at GENERATE time, but by then the **Task lowering** (`async_lower.py`,
-an AST pass — NOT "CPS") has rewritten every call's `return_type` to unit
-(`TupleSpec()`): the result is delivered via the completion task. So
-`DotExpression.generate`/`get_type` for the outer `.get` walks into the lowered
-inner `inc()` call, gets the unit type, picks the wrong branch, returns `None`,
-and `CallExpression.generate` casts that `None` (`call.py:72`). Verified: the
-working let-decomposed form's lowered `inc` is *also* unit-typed — it works only
-because the receiver is a `let`-bound variable whose type was pinned to
-`ClassSpec(Box)` at COMPILE time (pre-lowering), so generate reads the pinned type
-rather than recomputing through the lowered call. (My earlier "NamedSpec base"
-note was wrong — disproven by tracing.)
-
-**The proper fix is architectural (user's call):** the Task lowering runs at the
-AST stage, which is *too early* — it mutates the AST's type semantics before
-AST→IR codegen reads them. It belongs in the **IR stage** (splitting functions at
-suspension points into heap-frame state machines is a control-flow/codegen
-concern). Move it there and the AST stays cleanly typed through `check`/`generate`,
-so this bug — and the whole "recompute types at generate on a lowered AST" class
-of fragility — disappears. Large, careful project; not started.
-
-**Band-aids if we need chaining sooner** (all compensate for the early lowering):
-- (A) Pin resolved types onto nodes at compile and use them at generate instead
-  of recomputing. `get_type` is shared between the compile fixpoint (must
-  recompute) and generate (wants the pin), so separating the phases is the catch.
-- (B) ANF-normalise postfix chains into `let` temporaries during compile
-  (`a.b().c()` → `let t = a.b(); t.c()`), reusing the known-good let path.
-- (C) Carry each call's true pre-lowering result type on the lowered call.
+NOTE for future readers: the async/Task lowering is **already an IR pass**
+(`async_lower.lower_async` operates on `Application`, runs at `compiler.py:211`
+after AST→IR codegen; no async transformation exists in `pyast/`). The
+once-mooted "move async AST→IR" is a non-task — it's done.
 
 ## Language & parser features
 

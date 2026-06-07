@@ -333,14 +333,22 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
         if isinstance(method, s.FunctionStatement)
     ]
 
+    # The rewrite must resolve the type of a receiver that is *itself* a lifted
+    # method call — e.g. the chained `a.m().n()`, where rewriting `.n` needs the
+    # type of the already-rewritten `a.m()` (now `Cls__m(...)`). So the resolver
+    # used for the rewrite must know the lifted free functions. They still carry
+    # their pre-rewrite ClassSpec return types here, which is exactly what the
+    # method-call rewrite matches on to recognise the next call in the chain.
+    rewrite_resolver = g.ResolverRoot(statements + lifted_pre)
+
     # Rewrite all non-simple-class statements, then the lifted methods
     new_statements = [
-        stmt.search_and_replace(resolver, replace_fn)
+        stmt.search_and_replace(rewrite_resolver, replace_fn)
         for stmt in statements
         if not (isinstance(stmt, s.ClassStatement) and stmt.name in simple_classes)
     ]
     lifted_final = [
-        lifted.search_and_replace(resolver, replace_fn) for lifted in lifted_pre
+        lifted.search_and_replace(rewrite_resolver, replace_fn) for lifted in lifted_pre
     ]
 
     # EnumSpec.search_and_replace skips all_fields to avoid infinite recursion

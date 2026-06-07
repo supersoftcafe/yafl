@@ -9,8 +9,6 @@ is still an error.
 """
 from __future__ import annotations
 
-import unittest
-
 from parsing.tokenizer import tokenize
 from parsing.parser import parse_expression
 from tests.testutil import TimedTestCase as TestCase
@@ -85,14 +83,13 @@ fun main(): System::Int
         rc, _ = compile_and_run_stdlib_capture(src)
         self.assertEqual(5, rc)
 
-    @unittest.expectedFailure
-    def test_method_chaining_on_method_result_KNOWN_GAP(self):
-        # The parser now accepts this, but a method call whose receiver is itself
-        # a method-call result hits a SEPARATE type-resolution gap:
-        # DotExpression.get_type doesn't resolve a NamedSpec base, so the inner
-        # `inc()`'s declared return type (NamedSpec(Box)) isn't seen as a class
-        # and the outer `.get` fails at generate. Tracked in TODO. When that's
-        # fixed this xfail flips to a pass — remove the marker then.
+    def test_method_chaining_on_method_result(self):
+        # A method call whose receiver is itself a method-call result. This used
+        # to crash at generate — root cause was `simple_classes` not resolving the
+        # type of a lifted-method-call receiver during the method-call rewrite, so
+        # the outer `.get` was left unrewritten. Fixed by giving that rewrite a
+        # resolver that knows the lifted free functions. (Box is a simple class →
+        # flattened, which is the path that exercised the bug.)
         src = """\
 import System
 
