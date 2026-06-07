@@ -189,16 +189,15 @@ def __to_flat_list[_T](result: p.Result[list[list[_T]]], tokens: list[p.Token]) 
     return p.Result([Y for X in result.value for Y in X], result.tokens, result.line_ref, result.errors)
 
 
-def __to_dot_path(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    def accumulate(left: e.Expression, entry: tuple[str, e.NamedExpression]):
-        op, right = entry
-        return e.DotExpression(right.line_ref, left, right.name)
-    left_expr, right_list = result.value
-    for op, expr in right_list:
-        if not isinstance(expr, e.NamedExpression):
-            return p.Result(None, result.tokens, result.line_ref, result.errors + [e.Error(expr.line_ref, "Must be an identifier")])
-    expr = reduce(accumulate, right_list, left_expr)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+def __to_dot_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result:
+    # `.name` -> a transformer wrapping its left operand in a DotExpression. The
+    # dot target must be an identifier (this was the former __to_dot_path check).
+    name = result.value
+    if not isinstance(name, e.NamedExpression):
+        return p.Result(None, result.tokens, result.line_ref,
+                        result.errors + [e.Error(name.line_ref, "Must be an identifier")])
+    return p.Result(lambda left: e.DotExpression(name.line_ref, left, name.name),
+                    result.tokens, result.line_ref, result.errors)
 
 
 def __to_named_fully_qualified(result: p.Result[tuple[e.NamedExpression, list[e.NamedExpression], list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -216,31 +215,38 @@ def __to_builtin_op(result: p.Result[tuple[str, e.TupleExpression]], tokens: lis
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
-def __tag_call(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[tuple[str, e.Expression]]:
-    return p.Result(("call", result.value), result.tokens, result.line_ref, result.errors)
+def __to_call_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result:
+    # `(args)` -> a transformer applying its left operand as the callee.
+    args = result.value
+    line = result.line_ref
+    return p.Result(lambda left: e.CallExpression(line, left, args),
+                    result.tokens, result.line_ref, result.errors)
 
 
-def __tag_index(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[tuple[str, e.Expression]]:
-    return p.Result(("index", result.value), result.tokens, result.line_ref, result.errors)
+def __to_index_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result:
+    # `[i]` -> a transformer lowering to the `[]` operator: ``[]``(left, i),
+    # exactly as `left + right` lowers to `+`(left, right). Nothing is
+    # auto-generated for arrays here; resolution finds whatever ``[]`` is in
+    # scope, like any other operator.
+    idx = result.value
+    line = result.line_ref
+    def wrap(left: e.Expression) -> e.Expression:
+        return e.CallExpression(line,
+            e.NamedExpression(line, "`[]`"),
+            e.TupleExpression(line, [
+                e.TupleEntryExpression(None, left),
+                e.TupleEntryExpression(None, idx)]))
+    return p.Result(wrap, result.tokens, result.line_ref, result.errors)
 
 
-def __to_invokes(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
-        line = tokens[0].line_ref
-        kind, value = entry
-        # `left[right]` is the index operator — it lowers to ``[]``(left, right),
-        # exactly as `left + right` lowers to `+`(left, right). Nothing is
-        # auto-generated for arrays here; resolution finds whatever ``[]`` is in
-        # scope, like any other operator.
-        if kind == "index":
-            return e.CallExpression(line,
-                e.NamedExpression(line, "`[]`"),
-                e.TupleExpression(line, [
-                    e.TupleEntryExpression(None, left),
-                    e.TupleEntryExpression(None, value)]))
-        return e.CallExpression(line, left, value)
-    left_expr, right_list = result.value
-    expr = reduce(accumulate, right_list, left_expr)
+def __to_invokes(result: p.Result[tuple[e.Expression, list]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    # A primary expression followed by a left-associative chain of postfix
+    # operators — `.field`, `(...)`, `[...]` — that interleave freely, so
+    # `f().g()`, `a().b`, `m()[0].x` all parse. Each op parsed to an Expr->Expr
+    # closure (see __to_dot_op/__to_call_op/__to_index_op), so folding is just
+    # left-to-right application — no per-op tag or discrimination needed.
+    left_expr, ops = result.value
+    expr = reduce(lambda acc, op: op(acc), ops, left_expr)
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
@@ -680,10 +686,13 @@ __parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invali
 __parse_paren_expr = __parse_expr_tuple >> __to_paren_expr
 __parse_terminal = __float() | __integer() | __char() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
-__parse_postfix_call  = __parse_expr_tuple >> __tag_call
-__parse_postfix_index = p.requires(p.discard_sym("["), __parse_expression & p.discard_sym("]"), "invalid index expression") >> __tag_index
-__parse_dot_path= (__parse_terminal & p.many(p.sym(".")             & __parse_terminal  )) >> __to_dot_path
-__parse_invoke  = (__parse_dot_path & p.many(__parse_postfix_call | __parse_postfix_index)) >> __to_invokes
+# Postfix operators form ONE left-associative chain so dot/call/index interleave
+# freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats
+# tokenise their own `.`), so consuming it greedily here is unambiguous.
+__parse_postfix_dot   = (p.discard_sym(".") & __parse_terminal) >> __to_dot_op
+__parse_postfix_call  = __parse_expr_tuple >> __to_call_op
+__parse_postfix_index = p.requires(p.discard_sym("["), __parse_expression & p.discard_sym("]"), "invalid index expression") >> __to_index_op
+__parse_invoke  = (__parse_terminal & p.many(__parse_postfix_dot | __parse_postfix_call | __parse_postfix_index)) >> __to_invokes
 __parse_unary   = ((p.discard_sym("-") & __parse_invoke) >> __to_negate
                  | (p.discard_sym("!") & __parse_invoke) >> __to_not
                  | (p.discard_sym("~") & __parse_invoke) >> __to_invert

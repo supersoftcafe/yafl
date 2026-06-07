@@ -3,40 +3,34 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
-## TOP PRIORITY — postfix chaining after a call/index doesn't parse
+## TOP PRIORITY — deep method chaining: type-resolution gap
 
-`f().g()` does not parse. More generally, **any postfix access (`.field`,
-`.method(...)`, `(...)`, `[...]`) applied to the result of a call or index is
-rejected** with "extra unexpected characters". So all of these fail and must be
-broken up with an intermediate `let`:
+The PARSER half is **done** (2026-06-07): postfix `.field` / `(...)` / `[...]`
+now form one left-associative chain (`parsing/parser.py`, `__parse_invoke` /
+`__to_invokes` / `__parse_postfix_dot`), so `f().g()`, `a().b`, `m()[0].x` etc.
+parse. End-to-end works for field-on-call (`pair().a`), method-on-constructor
+(`Box(5).get()`), and index chains. Tests: `tests/test_postfix_chaining.py`.
 
-```
-stdin().read(5)       # call then .method
-foo().bar             # call then .field
-makeList()[0]         # call then index
-arr[0].field          # index then .field
-f(x).y().z()          # chained method calls
-```
+**What remains (this is the important bit):** a method call whose receiver is
+itself a *method-call result* — `Box(0).inc().get()` — still fails, crashing at
+*generate* with "could not cast None to CallableSpec". Marked as an
+`@unittest.expectedFailure` tripwire in `test_postfix_chaining.py`
+(`..._KNOWN_GAP`); remove that marker when fixed.
 
-Workaround today: bind each step to a `let` (e.g. `json_pretty` does
-`let io = stdin()` then `io.read(...)`).
+**Root cause:** `DotExpression.get_type` (`pyast/expression/access.py`) matches
+only `TupleSpec` / `ClassSpec` / `EnumSpec` bases. The inner `inc()`'s declared
+return type surfaces as an unresolved `NamedSpec(Box)` rather than `ClassSpec`,
+so the outer `.get` sees a `NamedSpec` base, returns `None`, and the call's
+`generate` casts that `None`. The let-decomposed form works because the `let`
+binding's type is resolved to a `ClassSpec`.
 
-**Root cause** (`parsing/parser.py`): the precedence chain splits dotting and
-calling into two separate, non-interleaved layers —
-`__parse_dot_path = (__parse_terminal & many("." __parse_terminal))` runs first,
-then `__parse_invoke = (__parse_dot_path & many(postfix_call | postfix_index))`.
-Dot-paths are built from *terminals* before any call/index, and the postfix layer
-only handles `(...)` and `[...]`, never a following `.`. So the moment a call or
-index occurs, the `.`-chain has already closed and cannot resume.
-
-**Fix sketch:** collapse the two layers into one left-associative postfix loop —
-`terminal & many( ".name" | "(...)" | "[...]" )` folded left — so dot, call, and
-index can interleave arbitrarily. `__to_invokes` / `__to_dot_path` merge into a
-single reducer over a uniform postfix-op list. Mind the existing `.`-then-method
-shape (`io.read(n)` = `.read` dot then `(n)` call) keeps working, and that
-`a::b::c` qualified names (handled in `__parse_named_fully_qualified`) are not
-disturbed. This is important: fluent/method-chaining is pervasive, and the
-compiler-in-YAFL will lean on it heavily.
+**Care needed:** simply "resolve a `NamedSpec` base to its `ClassSpec`/`EnumSpec`"
+in `get_type`/`check`/`generate` is the likely fix, BUT `NamedSpec` bases
+legitimately return `None` all over during the compile fixpoint (they're not yet
+resolved), so a naive change risks altering convergence. Needs a careful,
+suite-validated change — possibly resolving only at generate time, or ensuring
+method return types are compiled to `ClassSpec` before they're used as receivers.
+Relates to the strong-type-inference direction.
 
 ## Language & parser features
 
