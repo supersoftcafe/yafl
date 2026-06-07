@@ -6,15 +6,13 @@ Ranked by how blocking they are to writing the compiler in YAFL itself.
 ## Language & parser features
 
 From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types), a
-`splitLines` helper, and arrays (`Array<T>` + the `[]` index operator, built on
-the array-as-final-class mechanism — `stdlib/array.yafl`) are now done; remaining:
+`splitLines` helper, arrays (`Array<T>` + the `[]` index operator, built on
+the array-as-final-class mechanism — `stdlib/array.yafl`), short-circuit
+`&&` / `||`, and `if` / `else if` / `else` are now done; remaining:
 
 - **`\u` / `\x` string escapes.** Strings are UTF-8 codepoints, but only
   `\n \r \t \0 \\ \" \'` decode — there is no way to write a non-ASCII codepoint
   as an escape. Add `\xNN` and `\u{…}` / `\uXXXX`.
-- **Logical `&&` / `||`.** No short-circuit boolean operators; today boolean
-  combination is only via the ternary (`a ? b : false`). Decide: add them, or
-  bless the ternary as the idiom.
 - **`map` combinator (parser simplification).** ~30 of the parser's `__to_*`
   callbacks only transform `result.value` yet hand-thread
   `tokens`/`line_ref`/`errors`. A `Parser.map(f)` combinator would collapse
@@ -335,29 +333,30 @@ of cost. A later, separate pass will decide which grouped tuples to evaluate in
 parallel based on a weighing function. The consequence is that independent `let`
 bindings must not be assumed to have a defined evaluation order.
 
-# Conditions
-```
-fun condition(x:int): int
-  if x > 10:
-    let r = 20
-  else: # Else is required, otherwise 'r' might not be set
-    let r = 10
-  ret r
-```
-is functionally equivalent to
-```
-fun condition(x:int): int
-  let r = x > 10 ? 20 : 10
-  ret r
-```
-which suggests that condition blocks are compatible with the functional
-paradigm if each block defines the same named values with the exact same
-types, where the value is referenced downstream.
+# Conditions (if / else if / else) — done
 
-These are not mutations, but they look like mutation, and allow
-the programmer to think in classical non-functional terms.
+Implemented as `IfStatement` (`pyast/statement.py`). It is a **statement**, not
+an expression — pure control flow yielding no value (the value-producing
+conditional remains the ternary `?:`). `else` is optional; `else if` chains via
+`ElseIfStatement` + `collapse_else_if`. Branches are pure scopes (a `let` inside
+a branch is branch-local and does not escape); a branch ending in `ret` exits the
+function, otherwise control falls through. Lowers to `JumpIf`/`Label`/`Jump` (no
+Phi merge, distinct from the ternary). The condition must be `Bool`. Tests:
+`tests/test_conditionals.py`, `tests/test_conditionals_runtime.py`.
 
-# Loops
+DO NOT re-design or re-implement this — the design was re-derived from scratch in
+discussion on 2026-06-07 only to find it already existed and matched. The original
+"each block defines the same named values" sketch was NOT adopted: branch-local
+`let`s do not escape, so an `else` is not required to "set" a downstream value.
+
+# Loops — design under discussion, DO NOT implement
+
+`[tail]` recursion (`lowering/tail_loop.py`) already covers the capability. Whether
+to add surface loop syntax — and what it looks like — is an OPEN design question the
+user is actively developing; we have not reached agreement. Do not implement or
+re-propose a design until the user drives it. The sketch below is an early,
+non-final note, not an agreed spec.
+
 ```
 fun loops(x:int): int
   # Required default value if the loop is empty.
