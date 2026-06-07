@@ -325,7 +325,7 @@ class _Checker:
         # Literals carry no linear value. Any other node is unexpected —
         # fail loudly rather than silently miss a possible consumption.
         if isinstance(expr, (e.StringExpression, e.IntegerExpression,
-                             e.FloatExpression, e.NothingExpression)):
+                             e.FloatExpression, e.BoolExpression, e.NothingExpression)):
             return Counter()
         raise AssertionError(
             f"linearity: unhandled expression node {type(expr).__name__}")

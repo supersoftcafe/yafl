@@ -1,6 +1,6 @@
 # Roadmap
 
-This document lists language features that are planned but not yet implemented. The current state of the language is described in [Language Design](lang_info.md).
+This document tracks language features and their status — planned items, and recently-completed ones marked **Implemented**. The current state of the language is also described in [Language Design](lang_info.md).
 
 ## Control flow statements
 
@@ -23,14 +23,14 @@ for item in collection
 
 ## Class-level generics
 
-Generic type parameters currently work on functions and interfaces. Generic classes — where the class itself is parameterised — are planned:
+Implemented. Generic type parameters work on functions, interfaces, **and
+classes** — the class itself can be parameterised and is monomorphised per
+instantiation. `Array<T>` (`stdlib/array.yafl`) is a worked example.
 
 ```
-# Planned syntax
-template <A, B>
-    class Pair(first: A, second: B)
-        fun swap(): Pair<B, A>
-            ret Pair(second, first)
+class Pair<A, B>(first: A, second: B)
+    fun swap(): Pair<B, A>
+        ret Pair<B, A>(second, first)
 ```
 
 ## String operations
@@ -64,29 +64,38 @@ remains future work.
 
 ## Standard input
 
-Reading from stdin is planned via the console module:
-
-```
-System::Console::read_line(): String|None
-```
-
-Returns `None` at end of input.
+Implemented at the byte level through the `System::IO` module — the `json_pretty`
+example reads the whole of stdin. A higher-level line reader is still a
+nice-to-have (tracked in `TODO.md`).
 
 ## List\<T\>
 
-A generic linked-list type is planned, along with the standard higher-order functions:
+Implemented (`stdlib/list.yafl`): a persistent list with `prepend`/`append`,
+`map`/`filter`/`fold`, `reverse`, `findIndex`, `partition`, `groupBy`, etc.
+(Random indexed access was intentionally removed — use `Array<T>` for that.)
 
-```
-cons(head: T, tail: List<T>): List<T>
-map<A, B>(f: (:A):B, list: List<A>): List<B>
-filter<T>(f: (:T):Bool, list: List<T>): List<T>
-fold<A, B>(f: (:B, :A):B, init: B, list: List<A>): B
-length<T>(list: List<T>): Int
-append<T>(a: List<T>, b: List<T>): List<T>
-reverse<T>(list: List<T>): List<T>
-```
+## Arrays
 
-This feature depends on `for` loops being available first.
+Implemented. An array is a trailing variable-length field of a `[final]` class,
+sized by a named `Int32` field; the field presents as a first-class accessor
+function and reads are bounds-checked. The stdlib wraps this as `Array<T>` with
+the `[]` index operator (`a[i]` → `` `[]` ``(a, i)). See
+[arrays in the reference](reference.md) and `stdlib/array.yafl`.
+
+## Strong type inference
+
+Planned (large). The goal is that user programs rarely need to declare the type
+of anything — `let`s, parameters, and generic call sites all inferred. A concrete
+motivator: a free generic operator/function currently infers its type parameters
+only from the *expected* type, not from its argument types, so `a[i]` passed
+straight into an overloaded callee with no expected type can't disambiguate. New
+features should lean toward this rather than against it.
+
+## Build, libraries & packaging
+
+Implemented. Projects compile against discoverable libraries (manifest + `.yl`
+packages), the runtime is static-only, and `yafl` produces standalone binaries.
+The full design and status are in [Build & packaging](build-and-packaging.md).
 
 ## Linear types
 
@@ -113,6 +122,6 @@ with(openFile("data.txt"))
 
 ## JSON parser (showcase)
 
-A JSON parser and pretty-printer is a planned end-to-end showcase that will exercise most of the language: recursive union types, string inspection, stdin reading, and `List<T>`. It is primarily a validation goal — when it compiles and runs correctly, the language has reached a meaningful milestone.
-
-This feature depends on: control flow statements, string operations, stdin, and `List<T>`.
+Implemented — milestone reached. `stdlib/json.yafl` is a full streaming JSON
+parser, and `examples/json_pretty` reads JSON from stdin and pretty-prints it,
+exercising recursive union types, string inspection, stdin, and `List<T>`.

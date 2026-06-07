@@ -238,6 +238,25 @@ Arguments are comma-separated expressions. Operator expressions desugar to funct
 
 Evaluates `condition`; if true evaluates and returns `then-expr`, otherwise `else-expr`. Both branches must have compatible types.
 
+### Short-circuit logical operators
+
+```
+<a> && <b>      # a ? b : false
+<a> || <b>      # a ? true : b
+```
+
+`&&` and `||` are sugar for the ternary, so short-circuiting is a guaranteed
+semantic: in `a && b` the right operand `b` is not evaluated when `a` is false,
+and in `a || b` it is not evaluated when `a` is true. This makes them safe for
+null-guards and side-effecting right-hand sides. Both operands are `Bool`.
+
+For the *eager*, both-operands boolean operations use the bitwise `&` and `|`,
+which are defined on `Bool` as well as the integer types.
+
+Precedence, tightest to loosest among the boolean operators: comparison (`==`,
+`<`, …) binds tighter than `&&`, which binds tighter than `||`, which binds
+tighter than the ternary `?:`.
+
 ### Pipeline
 
 ```

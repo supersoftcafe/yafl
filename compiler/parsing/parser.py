@@ -303,6 +303,26 @@ def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
+def __to_logical_and(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    # `a && b` is short-circuit sugar for `a ? b : false` — guaranteed control
+    # flow, not a function call, so the right operand is never evaluated when the
+    # left is false. Left-associative; `&` stays the eager both-operands bool op.
+    def accumulate(left: e.Expression, right: e.Expression) -> e.Expression:
+        return e.TernaryExpression(left.line_ref, left, right, e.BoolExpression(left.line_ref, False))
+    left_expr, right_list = result.value
+    expr = reduce(accumulate, right_list, left_expr)
+    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+
+
+def __to_logical_or(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    # `a || b` is short-circuit sugar for `a ? true : b`; mirrors __to_logical_and.
+    def accumulate(left: e.Expression, right: e.Expression) -> e.Expression:
+        return e.TernaryExpression(left.line_ref, left, e.BoolExpression(left.line_ref, True), right)
+    left_expr, right_list = result.value
+    expr = reduce(accumulate, right_list, left_expr)
+    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+
+
 def __to_expr_tuple_entry(result: p.Result[tuple[list[str], e.Expression]], tokens: list[p.Token]) -> p.Result[e.TupleEntryExpression]:
     name, value = result.value
     return p.Result(e.TupleEntryExpression(p.first_or_none(name), value), result.tokens, result.line_ref, result.errors)
@@ -634,7 +654,13 @@ __parse_bitxor  = (__parse_bitand   & p.many(p.sym("^")             & __parse_bi
 __parse_bitor   = (__parse_bitxor   & p.many(p.sym("|")             & __parse_bitxor    )) >> __to_call_operators
 __parse_compare = (__parse_bitor    & p.many(p.sym(["<", "==", ">", "!=", "<=", ">="]) & __parse_bitor)) >> __to_call_operators
 __parse_bind    = (__parse_compare  & p.many(p.sym("?>")             & __parse_compare   )) >> __to_call_operators
-__parse_ternery = (__parse_bind     & p.many(p.discard_sym("?") & __parse_bind & p.discard_sym(":") & __parse_bind)) >> __to_ternery
+# Short-circuit logical operators: `&&` binds tighter than `||`, both looser than
+# the comparison/bind level and tighter than the ternary `?:`. They are parse-time
+# sugar for the ternary (see __to_logical_and/__to_logical_or), so short-circuit
+# is a guaranteed semantic rather than an optimiser artefact.
+__parse_logand  = (__parse_bind     & p.many(p.discard_sym("&&")     & __parse_bind      )) >> __to_logical_and
+__parse_logor   = (__parse_logand   & p.many(p.discard_sym("||")     & __parse_logand    )) >> __to_logical_or
+__parse_ternery = (__parse_logor    & p.many(p.discard_sym("?") & __parse_logor & p.discard_sym(":") & __parse_logor)) >> __to_ternery
 
 
 #############

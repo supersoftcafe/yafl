@@ -5,12 +5,10 @@ Ranked by how blocking they are to writing the compiler in YAFL itself.
 
 ## Language & parser features
 
-From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types) and a
-`splitLines` helper are now done; remaining:
+From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types), a
+`splitLines` helper, and arrays (`Array<T>` + the `[]` index operator, built on
+the array-as-final-class mechanism — `stdlib/array.yafl`) are now done; remaining:
 
-- **Arrays.** A first-class array type with literal and indexing syntax — the
-  main missing aggregate (immutable `List<T>` exists; a contiguous array does
-  not).
 - **`\u` / `\x` string escapes.** Strings are UTF-8 codepoints, but only
   `\n \r \t \0 \\ \" \'` decode — there is no way to write a non-ASCII codepoint
   as an escape. Add `\xNN` and `\u{…}` / `\uXXXX`.
@@ -25,16 +23,13 @@ From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types) and a
 Explicitly not planned: block comments (only `#` line comments) and multi-line
 string literals.
 
-## Lift the 16 KB per-object size cap
+## Lift the 16 KB per-object size cap — done
 
-Today `_object_alloc` (`yafllib/object.c:348`) calls `abort_on_too_large_object`
-for anything that won't fit in one 16 KB page. This puts a safety ceiling on
-`String` and any array type that the language has no way to lift — strings
-grow until they hit the cap and the program dies. The bigint analogy holds:
-just as bigint takes "integer overflow" off the safety surface, multi-page
-allocations take "string overflow" off it. Pre-requisite for subprocess
-(clang stdin/stdout payloads routinely exceed 16 KB) and therefore for
-self-hosting.
+`_object_alloc` (`yafllib/object.c:350`) now allocates a dedicated multi-page run
+for objects larger than one page (the `actual_size > MAX_OBJECT_SIZE` branch)
+instead of calling `abort_on_too_large_object`, so strings/arrays grow past
+16 KB. The scaffolding described below (page-count tracking, multi-page free,
+compaction skip) is all wired in now.
 
 **What's already there.** The scaffolding for multi-page allocations exists
 but is partly disabled. `page_head_t.pages` (line 84) explicitly counts
@@ -294,9 +289,11 @@ this should not have been necessary, but will need an overhaul of how enums are 
 Regex search folder hierarchy. Initially explicitly use __parallel__ but later when auto
 parallelisation is in remove explicit parallel usage.
 
-# Folder for build of examples
+# Build system, libraries & examples — done
 
-Need to start formalization of build systems and dependencies.
+Project-folder compilation, manifest-based libraries (`.yl` packages), the
+installed `yafl` toolchain (static-only runtime), and the standalone `examples/`
+project are implemented. See docs/build-and-packaging.md.
 
 # Parallel tuple construction
 
@@ -312,10 +309,11 @@ they can share the same slot. This goes for heap frames for async functions as w
 course other types. This step would reduce heap usage. Doesn't really reduce stack usage as
 the C compiler will do that anyway.
 
-# Large strings
+# Large strings — done
 
-Heap only supports smaller objects, as a design choice. Larger strings will need to be
-compound objects. Needs some thought.
+Resolved by multi-page object allocation (see "Lift the 16 KB per-object size
+cap"): a large string is a single object spanning multiple pages — no
+compound-object scheme needed.
 
 # IO readline
 
@@ -394,17 +392,11 @@ functional paradigm, but having it inside conditions might imply that
 else blocks are not required. I think that making the break statement
 itself a condition helps to avoid this anti-pattern.
 
-## `[tail]` on nested functions (low priority)
+## `[tail]` on nested functions — done
 
-`[tail]` is currently top-level only; on a nested function (or class method) it
-is a hard error (`lowering/tail_loop.py:check_nested_tail`), because the tail
-pass runs before closure conversion and a nested function is hoisted/closure-
-converted by later passes, losing the annotation. Supporting it would let a
-`[tail]` loop be written nested (capturing outer variables) instead of forcing a
-top-level helper that threads state through parameters. Requires either running
-the tail transform after closure conversion (and seeing through the now-indirect
-self-call) or threading the annotation through the hoist and converting the
-lifted top-level form. Ergonomic nicety, not blocking.
+Nested `[tail]` functions (and methods) are now lowered too (`lowering/tail_loop.py`),
+so a `[tail]` loop can be written nested — capturing outer variables — instead of
+a top-level helper that threads state through parameters.
 
 
 
