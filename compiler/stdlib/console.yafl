@@ -10,3 +10,16 @@ fun [impure] print(int: System::Int): System::None
     print(String(int))
     ret None
 
+# As print, but with a trailing newline.
+fun [impure] println(str: System::String): System::None
+    print(str + "\n")
+    ret None
+
+fun [impure] println(int: System::Int): System::None
+    println(String(int))
+    ret None
+
+fun [impure] println(): System::None
+    print("\n")
+    ret None
+

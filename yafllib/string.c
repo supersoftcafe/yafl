@@ -64,7 +64,7 @@ HIDDEN object_t* _string_append2(char* cstr1, int32_t len1, char* cstr2, int32_t
     string_t* string;
     uint8_t* ptr;
 
-    if (length < sizeof(uintptr_t)) {
+    if (length < (int64_t)sizeof(uintptr_t)) {
         uintptr_t test = 1;
         string = (string_t*)(uintptr_t)(length * (PTR_TAG_MASK+1) + PTR_TAG_STRING);
         ptr = (uint8_t*)&string + (1==*(uint8_t*)&test ? 1 : 0);
@@ -329,6 +329,7 @@ EXPORT object_t* string_parse_int(object_t* self) {
 
 
 EXPORT object_t* print_string(object_t* self, object_t* data) {
+    (void)self;   // ABI receiver, unused here
     intptr_t buf; int32_t len;
     char* cstr = string_to_cstr(data, &buf, &len);
     int32_t result = (int32_t)fwrite(cstr, 1, len, stdout);

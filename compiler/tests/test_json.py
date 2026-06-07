@@ -13,7 +13,7 @@ import tempfile
 from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
-from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV
+from tests.testutil import _CLANG_BUILD_FLAGS, _STATIC_LINK, _RUN_ENV
 
 
 _HARNESS_PRELUDE = """namespace Main
@@ -39,7 +39,7 @@ def _build(binary_src: str) -> str:
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
         binary = tmp.name
     result = subprocess.run(
-        ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+        ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
         input=c_code, text=True, capture_output=True, timeout=30,
     )
     assert result.returncode == 0, f"clang failed:\n{result.stderr}"

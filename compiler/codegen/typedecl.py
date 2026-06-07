@@ -118,7 +118,16 @@ class Int(Type):
     def _initialise(self, type_cache: dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         if not isinstance(data, int):
             raise ValueError()
-        return f"((int{self.precision}_t){data})"
+        p = self.precision
+        # 64-bit literals need an LL suffix so an in-range value near the top of
+        # the signed range isn't taken as `int`/unsigned. The minimum can't be
+        # written as `-N` (the operand N = 2^(p-1) overflows the signed type), so
+        # emit it as `-(MAX) - 1`. Both keep clang's -Wimplicitly-unsigned-literal
+        # quiet while staying standard C.
+        suffix = "LL" if p == 64 else ""
+        if data == -(1 << (p - 1)):
+            return f"((int{p}_t)(-{(1 << (p - 1)) - 1}{suffix} - 1))"
+        return f"((int{p}_t){data}{suffix})"
 
     def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
         return f"int{self.precision}_t"

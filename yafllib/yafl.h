@@ -1,5 +1,18 @@
 #pragma once
 
+// The runtime is built in strict ISO C mode (-std=c11), not gnu11. POSIX and
+// OS facilities it relies on — clock_gettime, mmap/madvise, pthreads —
+// are requested through the standard feature-test macros rather than the gnu11
+// default's implicit superset. These must be set before any system header, so
+// yafl.h must be the FIRST include in every translation unit (it is, including
+// the compiler's generated C).
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
+
 
 #include <stdatomic.h>
 #include <stdnoreturn.h>
@@ -203,7 +216,7 @@ enum {
 
 #define VT_TAG_GET(vt)      ((uintptr_t)(vt) & VT_TAG_MASK)
 #define VT_TAG_UNSET(vt)    ((vtable_t*)((uintptr_t)(vt) & ~(uintptr_t)VT_TAG_MASK))
-#define VT_TAG_SET(vt, tag) ((vtable_t*)((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK) | tag))
+#define VT_TAG_SET(vt, tag) ((vtable_t*)(((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK)) | (tag)))
 
 enum {
     PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.
@@ -530,11 +543,7 @@ typedef struct integer {
     vtable_t* vtable;
     uint32_t length;
     int32_t sign;       // 0 = positive (incl. zero), 1 = negative
-    uintptr_t array[    // magnitude limbs, little-endian; length>=1
-#ifndef NDEBUG
-        4
-#endif
-    ];
+    uintptr_t array[];  // magnitude limbs, little-endian; length>=1 (flexible array member)
 } ALIGNED integer_t;
 
 struct integer_vtable;

@@ -116,6 +116,7 @@ static bool _print_duration = false;
 static struct timespec t_start;
 static struct timespec t_end;
 HIDDEN noreturn void __exit__(object_t* self, object_t* arg) {
+    (void)self;   // ABI receiver, unused here
     if (_print_duration) {
         clock_gettime(CLOCK_MONOTONIC, &t_end);
         double seconds = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;

@@ -12,23 +12,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import _CLANG_BUILD_FLAGS, _STATIC_LINK, _RUN_ENV
 
 import compiler as c
-
-_YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
-_YAFLLIB_BUILD_DIR = _YAFLLIB_DIR / "build" / "debug-unix"
-_CLANG_BUILD_FLAGS = [
-    "-I", str(_YAFLLIB_DIR),
-    "-L", str(_YAFLLIB_BUILD_DIR),
-]
-_RUN_ENV = {
-    **os.environ,
-    "LD_LIBRARY_PATH": os.pathsep.join(filter(None, [
-        str(_YAFLLIB_DIR),
-        str(_YAFLLIB_BUILD_DIR),
-        os.environ.get("LD_LIBRARY_PATH", ""),
-    ])),
-}
 
 
 _PREAMBLE = """\
@@ -66,7 +52,7 @@ def _compile_and_run(source: str, timeout: int = 5) -> int:
 
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -624,7 +610,7 @@ def _compile_and_run_stdlib(source: str, timeout: int = 10) -> int:
         binary = tmp.name
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"

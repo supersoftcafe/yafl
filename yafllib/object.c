@@ -367,7 +367,7 @@ static NOINLINE_DEBUG void *_object_alloc(size_t size, bool is_mutable) {
         ? &gc_thread_info.region_mutable
         : &gc_thread_info.region_immutable;
 
-    if (UNLIKELY(bp->bump - bp->base < actual_size)) {
+    if (UNLIKELY((size_t)(bp->bump - bp->base) < actual_size)) {
         gc_page_t* new_page = gc_page_alloc(1);
 
         new_page->head.mutable = is_mutable;
@@ -433,14 +433,12 @@ EXPORT vtable_t *object_get_vtable(object_t *object) {
 
 EXPORT fun_t object_lookup_vtable(object_t *object, intptr_t id) {
     vtable_t* vtable = object_get_vtable(object);
-    intptr_t index = id & vtable->functions_mask;
-    vtable_entry_t* entry = (vtable_entry_t*)(((char*)&(vtable->lookup[-1])) + index);
-    do {entry++;
-        // It's important that we use signed arithmatic here.
-        // Blank entries have -1 as the id, which will cause this
-        //    loop to exit and call the abort function (from the vtable)
-        //    It's a safety feature that costs us nothing.
-    } while ((entry->i ^ id) > 0);
+    intptr_t index = id & vtable->functions_mask;   // byte offset into lookup[]
+    vtable_entry_t* entry = (vtable_entry_t*)((char*)vtable->lookup + index);
+    // Signed arithmetic is important here: blank entries hold id -1, so a miss
+    // walks on until it reaches the abort handler the vtable plants — a safety
+    // feature that costs us nothing. Probe from `index` until the ids match.
+    while ((entry->i ^ id) > 0) entry++;
     return (fun_t){.f=entry->f, .o=object};
 }
 
@@ -611,16 +609,6 @@ static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
             atomic_store(&reprocess_page_list[tail % REPROCESS_PAGE_COUNT], page);
         }
     }
-}
-
-static void gc_object_mark_as_seen(object_t *object) {
-    gc_page_t* page; ptrdiff_t slot;
-    object_get_page_and_slot(object, &page, &slot);
-    bitmap_fetch_set(&page->head.scanner.seen, slot);
-
-    vtable_t *vt = object_get_vtable(object);
-    assert(vt != NULL);
-    LOG(ULTRA, "MARK(0x%lx) -> %s", (uintptr_t)object, vt->name);
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) {
@@ -847,7 +835,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_mark_sweep() {
         memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
         reprocess_page_head = reprocess_page_tail = 0;
         list_move(&pages_to_scan, &pages_to_prune);
-        epoch = epoch==-1 ? 1 : epoch+1;
+        epoch = epoch==UINT32_MAX ? 1 : epoch+1;
         return GC_STAGE_MARK_SWEEP;
     }
 

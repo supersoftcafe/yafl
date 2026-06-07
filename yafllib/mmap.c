@@ -1,10 +1,10 @@
 
+#include "yafl.h"   // must be first: sets the POSIX feature-test macros
+
 #include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <string.h>
-
-#include "yafl.h"
 
 
 EXPORT noreturn void abort_on_out_of_memory() {
@@ -56,7 +56,7 @@ static size_t get_size_of_heap() {
         heap_size = 1024ULL * 1024ULL * 1024ULL;
     } else {
         size_t len = strlen(env_heap_size);
-        for (ptrdiff_t index = 0; index < len-1; ++index) {
+        for (size_t index = 0; index + 1 < len; ++index) {
             char chr = env_heap_size[index];
             if (chr < '0' || chr > '9')
                 abort_on_invalid_size();

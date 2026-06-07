@@ -12,7 +12,7 @@ import tempfile
 from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
-from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV
+from tests.testutil import _CLANG_BUILD_FLAGS, _STATIC_LINK, _RUN_ENV
 
 
 # Each (label, json_text, expected) entry contributes one labelled line
@@ -86,7 +86,7 @@ def _run_yafl(source: str, timeout: int = 15) -> tuple[int, str]:
         binary = tmp.name
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"

@@ -299,13 +299,13 @@ class Call(Op):
             fn = self.function
             f_ref = fn.c_symbol if fn.c_symbol else mangle_name(fn.name)
             obj = fn.object.to_c(type_cache) if fn.object else "NULL"
-            call = f"(({return_type}(*)(void*{types_str})){f_ref})({obj}{params_str})"
+            call = f"(({return_type}(*)(object_t*{types_str})){f_ref})({obj}{params_str})"
             if rg:
                 return f"    {rg.to_c(type_cache)} = {call};\n"
             return f"    {tailreturn}{call};\n"
 
         fun_decl = f"        fun_t fun = {self.function.to_c(type_cache)};\n"
-        call = f"(({return_type}(*)(void*{types_str}))fun.f)(fun.o{params_str})"
+        call = f"(({return_type}(*)(object_t*{types_str}))fun.f)(fun.o{params_str})"
         if rg:
             assign = f"        {rg.to_c(type_cache)} = {call};\n"
         else:

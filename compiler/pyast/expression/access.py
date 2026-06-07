@@ -386,7 +386,14 @@ class NamedExpression(Expression):
             case [resolved]:
                 return resolved.statement.check_caller_type_params(resolver, self.type_params, self.line_ref) + tp_errors
             case _:
-                return [Error(self.line_ref, f"Resolved too many {self.name}")] + tp_errors
+                # `name` resolves more than one way — commonly a top-level
+                # namespace versus an import-relative one (loading a library can
+                # introduce such a clash). There is no precedence rule: the user
+                # must qualify. List every candidate's fully-qualified spelling so
+                # they know which reading each one selects.
+                candidates = ", ".join(sorted({d.unique_name for d in datas}))
+                return [Error(self.line_ref,
+                    f"Ambiguous reference '{self.name}' — qualify it. Candidates: {candidates}")] + tp_errors
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         if self.name == 'this':

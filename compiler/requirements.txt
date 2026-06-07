@@ -1,0 +1,9 @@
+# Python dependencies for building the YAFL compiler.
+#
+# The compiler itself has NO third-party runtime dependencies — it runs on the
+# Python standard library (requires Python 3.12+: PEP 695 generics and tomllib).
+#
+# PyInstaller is a BUILD-TIME dependency only: it bundles the compiler into the
+# standalone `yafl` binary (see compiler/CMakeLists.txt). Install with:
+#     pip install -r compiler/requirements.txt
+pyinstaller>=6

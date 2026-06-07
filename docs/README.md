@@ -10,3 +10,4 @@ This folder contains design and reference documentation for YAFL. These document
 | [Roadmap](roadmap.md) | Planned features and upcoming language additions |
 | [Internals](internals.md) | In-progress design notes on the garbage collector and runtime internals |
 | [Parser proposal](parser-proposal.md) | Design note: a self-hosted YAFL parser in the `parselib` combinator style |
+| [Build & packaging](build-and-packaging.md) | Design note: YAFL projects, libraries, manifests, the loader, and `.yl` packaging |

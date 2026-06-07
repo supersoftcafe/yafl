@@ -226,7 +226,10 @@ class IntEqConst(RParam):
         return self.value.get_live_vars()
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"({self.value.to_c(type_cache)} == {self.const_val})"
+        # No outer parens: the only consumer is a JumpIf, which already wraps the
+        # condition in `if (...)` / `!(...)`. Wrapping here too produces
+        # `if ((x == 0))`, which clang flags as -Wparentheses-equality.
+        return f"{self.value.to_c(type_cache)} == {self.const_val}"
 
 
 @dataclass(frozen=True)

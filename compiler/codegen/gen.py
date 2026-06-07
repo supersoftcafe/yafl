@@ -25,6 +25,7 @@ class Application:
     objects: dict[str, Object] = field(default_factory=dict)
     globals: dict[str, Global] = field(default_factory=dict)
     union_discriminators: dict[str, int] = field(default_factory=dict)  # as_unique_id_str() → global discriminator ID
+    headers: tuple[str, ...] = ("yafl.h",)  # headers to #include; yafl.h is the runtime baseline, libraries append theirs
 
     def __post_init__(self):
         self.__type_cache: dict[Type, tuple[str, str]] = {}
@@ -161,8 +162,22 @@ class Application:
         for name, g in self.globals.items():
             self.__gen_global(name, g)
 
+        # Generated code is held to -Wall -Wextra -Werror, but two warning
+        # families are inherent to the lowering and not defects (verified):
+        #  - the async state-machine promotes live values to the heap state
+        #    object, leaving the function-scope locals unused; side-effecting
+        #    calls are anchored through a discarded result var (unused-*);
+        #  - aggregates are zero-initialised with the universal `{0}` idiom
+        #    (missing-braces).
+        # These are silenced here (recognised by both gcc and clang); genuine
+        # emit-quality issues are fixed in codegen, not suppressed.
+        diagnostics = "\n".join(f'#pragma GCC diagnostic ignored "{w}"' for w in (
+            "-Wunused-variable", "-Wunused-but-set-variable",
+            "-Wunused-parameter", "-Wunused-const-variable", "-Wmissing-braces"))
+
         return "\n\n".join([
-            "#include <yafl.h>",
+            "\n".join(f"#include <{h}>" for h in self.headers),
+            diagnostics,
             _gen_function_ids(global_ids),
             "\n".join(declaration for name, declaration in self.__type_cache.values()),
             "\n".join(self.__typedefs),

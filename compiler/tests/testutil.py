@@ -28,23 +28,25 @@ class TimedTestCase(unittest.TestCase):
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old_handler)
 
-# Ensure compiled test binaries can find libyafl.so at runtime.
 _YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
 _YAFLLIB_BUILD_DIR = _YAFLLIB_DIR / "build" / "debug-unix"
-# Point clang at the in-tree yafl.h and libyafl.so so tests use whatever is
-# checked out right now, not whatever is installed system-wide.
+# The static archive to link. Defaults to the in-tree preset build, but the
+# CMake `check`/CTest target overrides it via YAFL_LIBYAFL_A so the suite runs
+# against the archive that build just produced (not a stale one).
+_LIBYAFL_A = os.environ.get("YAFL_LIBYAFL_A", str(_YAFLLIB_BUILD_DIR / "libyafl.a"))
+# Compile against the in-tree yafl.h, in strict ISO C to match the build.
 _CLANG_BUILD_FLAGS = [
+    "-std=c11",   # ISO C, matching the compiler/runtime build (not gnu11)
+    "-Wall", "-Wextra", "-Werror",   # generated C is held to the strict bar too
+    "-ffunction-sections", "-fdata-sections",   # enable --gc-sections below
     "-I", str(_YAFLLIB_DIR),
-    "-L", str(_YAFLLIB_BUILD_DIR),
 ]
-_RUN_ENV = {
-    **os.environ,
-    "LD_LIBRARY_PATH": os.pathsep.join(filter(None, [
-        str(_YAFLLIB_DIR),
-        str(_YAFLLIB_DIR / "build" / "debug-unix"),
-        os.environ.get("LD_LIBRARY_PATH", ""),
-    ])),
-}
+# Link the runtime statically (there is no libyafl.so). `-x none` resets the
+# language from the `-x c -` stdin so the archive is treated as a library.
+# --gc-sections drops unreached runtime/program code, exercising that path on
+# every test (a guard against it removing something still needed).
+_STATIC_LINK = ["-x", "none", _LIBYAFL_A, "-lpthread", "-lm", "-ldl", "-Wl,--gc-sections"]
+_RUN_ENV = {**os.environ}   # static binaries need no LD_LIBRARY_PATH
 
 
 def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
@@ -55,7 +57,7 @@ def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
     assert c_code, "yafl compilation produced no output"
 
     result = subprocess.run(
-        ["clang", "-Werror", "-x", "c", "-", "-O0", "-fsyntax-only",
+        ["clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-x", "c", "-", "-O0", "-fsyntax-only",
          "-I", str(_YAFLLIB_DIR)],
         input=c_code, text=True, capture_output=True, timeout=30,
     )
@@ -76,7 +78,7 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
 
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -114,7 +116,7 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
         binary = tmp.name
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, "-l", "yafl", "-l", "m", "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -154,7 +156,7 @@ def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5
 
         result = subprocess.run(
             ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS,
-             "-x", "none", lib_obj, "-l", "yafl", "-l", "m", "-o", binary],
+             "-x", "none", lib_obj, _LIBYAFL_A, "-lpthread", "-lm", "-ldl", "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang link failed:\n{result.stderr}"

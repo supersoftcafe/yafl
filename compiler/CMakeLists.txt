@@ -9,11 +9,14 @@ set(YAFL_COMPILER_BIN ${CMAKE_CURRENT_SOURCE_DIR}/dist/${EXECUTABLE_NAME}
 
 add_custom_target(build_executable ALL
     COMMAND ${CMAKE_COMMAND} -E env
-        pyinstaller --add-data "stdlib:stdlib" --onefile --name ${EXECUTABLE_NAME} ${MAIN_SCRIPT}
+        pyinstaller --onefile --name ${EXECUTABLE_NAME} ${MAIN_SCRIPT}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     BYPRODUCTS ${YAFL_COMPILER_BIN}
     COMMENT "Building standalone executable using PyInstaller"
 )
+# The stdlib is installed under ${CMAKE_INSTALL_PREFIX}/lib/yafl/system.yl (see
+# the top-level CMakeLists), which the compiler discovers at runtime via its
+# default search path.
 
 install(PROGRAMS ${YAFL_COMPILER_BIN}
         DESTINATION bin)

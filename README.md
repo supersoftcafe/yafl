@@ -135,28 +135,51 @@ into an interrupt driven model.
 # Build and use
 
 Requirements.
-* Python 3
-* PyInstaller
+* Python 3.12+ (the compiler uses PEP 695 generics and `tomllib`)
+* PyInstaller — `pip install -r compiler/requirements.txt` (build-time only; it packages the compiler into the `yafl` binary)
 * CMake
 * A C compiler like gcc, clang or msvc
 
-Building 'compiler' and 'yafllib'. It's the same commands in each folder.
-```
-Unix like OSs                           |   Microsoft Windows
---------------------------------------------------------------------------------
-cmake --preset debug-unix               |   cmake --preset debug-windows
-cmake --build --preset debug-unix       |   cmake --build --preset debug-windows
-sudo cmake --install build/debug-unix   |   cmake --install build\debug-windows
+The compiler has no third-party *runtime* dependencies; only the build step needs
+PyInstaller. Installing also lays down the `System` library as
+`${CMAKE_INSTALL_PREFIX}/lib/yafl/system.yl`, which the `yafl` binary discovers
+automatically (override the search path with the `YAFL_PATH` environment variable).
 
-or
+Build and install everything — the `yafl` compiler and the `System` library — from
+the repository root:
+```
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build -j
+sudo cmake --install build
+```
+This installs `yafl` to `<prefix>/bin` and the `System` library to
+`<prefix>/lib/yafl/system.yl`; nothing is written to `<prefix>/include` or the
+`<prefix>/lib` root. On Windows, drop `sudo` and pick a writable
+`-DCMAKE_INSTALL_PREFIX`.
 
-cmake --preset debug-unix && cmake --build --preset debug-unix && sudo cmake --install build/debug-unix
+## Running the tests
+
+The whole test set — the Python compiler suite plus the `yafllib` C unit tests —
+is wired into CTest. From a configured build, `--target check` builds everything
+(so the runtime archive and C test binaries exist) and runs it all:
+```
+cmake -B build
+cmake --build build --target check
+```
+Or drive CTest directly after a build (`cmake --build build && ctest --test-dir build`).
+The compiler suite is run against the runtime archive *this* build produced (via
+the `YAFL_LIBYAFL_A` env var), so it never links a stale `libyafl.a`. It uses
+`unittest-parallel` if present (faster), otherwise stdlib `unittest`.
+
+To run just the Python suite by hand, build the runtime where the harness looks
+for it by default (`yafllib/build/debug-unix`) and run it from `compiler/`:
+```
+cd yafllib && cmake --preset debug-unix && cmake --build --preset debug-unix
+cd ../compiler && unittest-parallel -j 3      # or: python -m unittest discover
 ```
 
-On Unix like OSs you may have to set the library path in order to run the resulting executables like so:
-```
-export LD_LIBRARY_PATH=/usr/local/lib
-```
+Compiled programs are statically linked against the runtime, so they need no
+`LD_LIBRARY_PATH` or installed `libyafl.so` to run.
 
 You can test that the compiler is installed and working like so:
 ```

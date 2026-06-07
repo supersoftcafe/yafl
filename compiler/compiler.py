@@ -30,6 +30,7 @@ import lowering.uninit_check
 
 import pyast.statement as s
 import pyast.expression as e
+import libraries
 
 from codegen.typedecl import DataPointer, FuncPointer, Struct, Int, Void
 from codegen.things import Function
@@ -56,25 +57,10 @@ class Input:
     filename: str
 
 
-if getattr(sys, 'frozen', False):
-    # Running inside PyInstaller bundle
-    __base_path = Path(sys._MEIPASS)
-else:
-    # Running normally
-    __base_path = Path(__file__).parent
-_stdlib_code_path = __base_path / "stdlib"
-
-
-
 def _read_source(path: Path) -> Input:
     with open(path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     return Input(''.join(lines), path.name)
-
-def _read_stdlib_code(use_stdlib: bool) -> list[Input]:
-    if not use_stdlib: return []
-    libs = [_read_source(x) for x in _stdlib_code_path.glob(f"*.yafl")]
-    return libs
 
 
 def __create_entry_point(main: s.FunctionStatement) -> Function:
@@ -135,8 +121,8 @@ def __ensure_lazy_machinery(a: Application) -> None:
         lowering.lazy_thunks.ensure_lazy_machinery(a, ir_type)
 
 
-def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None) -> str:
-    a = Application()
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",)) -> str:
+    a = Application(headers=headers)
     resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {}, optimization_level=optimization_level)
     for stmt in statements:
         match stmt:
@@ -273,7 +259,7 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
 _MAX_COMPILE_ITERATIONS = 100
 
 
-def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False) -> str|list[Error]:
+def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False, headers: tuple[str, ...] = ("yafl.h",)) -> str|list[Error]:
     for iteration_count in range(1, _MAX_COMPILE_ITERATIONS + 1):
         resolver = g.ResolverRoot(statements)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
@@ -353,7 +339,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
     new_statements = lowering.simple_classes.lower_simple_classes(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
-    return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators)
+    return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers)
 
 
 def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[Error]]:
@@ -379,18 +365,111 @@ def __print_errors(errors: list[Error]) -> str:
     return ""
 
 
-def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False) -> str:
-    # Tokenize input
-    statements, errors = __tokenize_and_parse(_read_stdlib_code(use_stdlib) + source)
+def _candidate_namespaces(statements: list[s.Statement]) -> set[str]:
+    """Namespaces a set of parsed statements might reference, as an
+    over-approximation used to decide which libraries to load.
+
+    `import` is not mandatory, so we look at both the declared imports and every
+    namespace-qualified (`::`) reference in the AST, take every prefix of each, and
+    also compose each qualified reference under each import (a `A::B` reference may
+    be top-level or relative to an import `P`, giving `P::A::B`). Misses are
+    harmless — they simply match no library. See `docs/build-and-packaging.md`.
+    """
+    imports: set[str] = set()
+    quals: set[str] = set()
+
+    def collect(resolver, thing):
+        name = getattr(thing, "name", None)
+        if isinstance(name, str) and "::" in name and isinstance(thing, (e.NamedExpression, t.NamedSpec)):
+            quals.add(name)
+        return thing
+
+    for st in statements:
+        group = getattr(st, "imports", None)
+        if group is not None:
+            for imp in group.imports:
+                imports.add(imp.path)
+        st.search_and_replace(g.ResolverRoot([]), collect)
+
+    def prefixes(qualified: str) -> set[str]:
+        parts = [p.split("@")[0] for p in qualified.split("::")]
+        return {"::".join(parts[:i]) for i in range(1, len(parts) + 1)}
+
+    candidates: set[str] = set()
+    for p in imports:
+        candidates |= prefixes(p)
+    for q in quals:
+        candidates |= prefixes(q)
+    for p in imports:
+        for q in quals:
+            candidates |= prefixes(f"{p}::{q}")
+    return candidates
+
+
+def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
+    """All libraries reachable on the search path (plus the build-tree dev System
+    fallback when `use_stdlib` and no installed System is present)."""
+    if use_stdlib:
+        return libraries.available_libraries(lib_paths)
+    return libraries.discover_libraries(libraries.search_paths(lib_paths))
+
+
+def compile_project(source: list[Input], use_stdlib = False, just_testing = False,
+                    optimization_level: int = 0, disable_auto_parallel: bool = False,
+                    lib_paths: list[str] | None = None) -> tuple[str, libraries.LinkSpec | None]:
+    """Compile `source` together with every library it (transitively) references,
+    discovered on the search path. Returns the generated C and the `LinkSpec`
+    describing the headers/static libraries the loaded libraries need at link time.
+    On error returns ("", None) after printing diagnostics."""
+    user_statements, errors = __tokenize_and_parse(source)
     if errors:
-        return __print_errors(errors)
+        return __print_errors(errors), None
 
-    # Compile and find errors
-    compiled_result = __iterate_and_compile(statements, just_testing=just_testing, optimization_level=optimization_level, disable_auto_parallel=disable_auto_parallel)
+    index = libraries.namespace_index(_gather_libraries(use_stdlib, lib_paths))
+
+    # Permissive worklist: load every referenced library to a fixpoint, following
+    # the references of each newly-loaded library. Libraries are loaded as source
+    # and join the whole-program set; `trim` later drops anything unused.
+    lib_statements: list[s.Statement] = []
+    loaded_ids: set[int] = set()
+    frontier = list(user_statements)
+    while frontier:
+        next_frontier: list[s.Statement] = []
+        for ns in sorted(_candidate_namespaces(frontier)):
+            lib = index.get(ns)
+            if lib is None or id(lib) in loaded_ids:
+                continue
+            loaded_ids.add(id(lib))
+            stmts, lib_errors = __tokenize_and_parse(
+                [Input(src.content, src.filename) for src in lib.yafl_sources()])
+            if lib_errors:
+                return __print_errors(lib_errors), None
+            lib_statements += stmts
+            next_frontier += stmts
+        frontier = next_frontier
+
+    statements = lib_statements + list(user_statements)
+    seen: set[int] = set()
+    loaded_libs = [lib for lib in index.values()
+                   if id(lib) in loaded_ids and not (id(lib) in seen or seen.add(id(lib)))]
+    link_spec = libraries.link_spec_for(loaded_libs)
+
+    # yafl.h is the runtime ABI baseline (the entrypoint references it), so it is
+    # always included; loaded libraries append their own headers.
+    headers = ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h")
+
+    compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
+        optimization_level=optimization_level, disable_auto_parallel=disable_auto_parallel, headers=headers)
     if isinstance(compiled_result, list):
-        return __print_errors(compiled_result)
+        return __print_errors(compiled_result), None
 
-    return compiled_result
+    return compiled_result, link_spec
+
+
+def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False, lib_paths: list[str] | None = None) -> str:
+    c_code, _ = compile_project(source, use_stdlib=use_stdlib, just_testing=just_testing,
+        optimization_level=optimization_level, disable_auto_parallel=disable_auto_parallel, lib_paths=lib_paths)
+    return c_code
 
 
 

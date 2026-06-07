@@ -14,8 +14,6 @@
  *****************************
  **********************************************************/
 
-#include <alloca.h>
-
 EXPORT void abort_on_maths_error() {
     log_error_and_exit("Division by zero", stderr);
 }
@@ -67,12 +65,18 @@ static inline uintptr_t _abs_val(intptr_t x) {
     return x < 0 ? -x : x;
 }
 
+// Promote a tagged literal (or pass through a heap integer) to an integer_t*.
+// The literal case needs a scratch 1-limb integer; we use a properly-aligned
+// stack struct mirroring integer_t's header rather than alloca — that keeps it
+// standard C (alloca is non-ISO) and avoids the -Walloc-size false positive on
+// the variable-length integer_t.
 #define _PROMOTE_LITERAL(name, literal)\
+        struct ALIGNED { vtable_t* vtable; uint32_t length; int32_t sign; uintptr_t array[1]; } name##_stk;\
         integer_t* name;\
         if (!_IS_LITERAL(literal)) {\
             name = (integer_t*)literal;\
         } else {\
-            name = alloca(offsetof(integer_t, array[1]));\
+            name = (integer_t*)&name##_stk;\
             name->sign = _sign_of(_UNTAG_LITERAL(literal));\
             name->length = 1;\
             name->array[0] = _abs_val(_UNTAG_LITERAL(literal));\
@@ -430,78 +434,6 @@ object_t* integer_mul(object_t* oa, object_t* ob) {
     // Perform full multiplication
     integer_t* r = _multiply_abs(ha, hb, ha->sign ^ hb->sign);
     return (object_t*)r;
-}
-
-// Helper function to shift left by one bit (multiply by 2)
-static integer_t* _shift_left_one(integer_t* a) {
-    if (_IS_LITERAL(a)) {
-        intptr_t val = _UNTAG_LITERAL(a);
-        if (val <= INTPTR_MAX/4 && val >= INTPTR_MIN/4) {
-            return _TAG_LITERAL(val << 1);
-        }
-        // Need to promote to full integer
-        integer_t* result = _integer_allocate(1);
-        result->sign = _sign_of(val);
-        result->array[0] = _abs_val(val) << 1;
-        if (result->array[0] < _abs_val(val)) {
-            // Overflow occurred, need two words
-            result = _integer_allocate(2);
-            result->sign = _sign_of(val);
-            result->array[0] = 0;
-            result->array[1] = 1;
-        }
-        return result;
-    }
-
-    integer_t* result = _integer_allocate(a->length + 1);
-    result->sign = a->sign;
-
-    uintptr_t carry = 0;
-    for (uint32_t i = 0; i < a->length; i++) {
-        uintptr_t temp = (a->array[i] << 1) | carry;
-        carry = (a->array[i] >> (WORD_SIZE - 1)) & 1;
-        result->array[i] = temp;
-    }
-
-    if (carry) {
-        result->array[a->length] = 1;
-        result->length = a->length + 1;
-    } else {
-        result->length = a->length;
-    }
-
-    return _normalize_integer(result);
-}
-
-// Helper function to shift right by one bit (divide by 2)
-static integer_t* _shift_right_one(integer_t* a) {
-    if (_IS_LITERAL(a)) {
-        intptr_t val = _UNTAG_LITERAL(a);
-        return _TAG_LITERAL(val >> 1);
-    }
-
-    if (a->length == 1 && a->array[0] == 1) {
-        return _TAG_LITERAL(0);
-    }
-
-    integer_t* result = _integer_allocate(a->length);
-    result->sign = a->sign;
-
-    uintptr_t borrow = 0;
-    for (uint32_t i = a->length; i-- > 0; ) {
-        uintptr_t temp = (a->array[i] >> 1) | (borrow << (WORD_SIZE - 1));
-        borrow = a->array[i] & 1;
-        result->array[i] = temp;
-    }
-
-    // Trim leading zeros
-    uint32_t len = a->length;
-    while (len > 1 && result->array[len - 1] == 0) {
-        len--;
-    }
-    result->length = len;
-
-    return _normalize_integer(result);
 }
 
 // Helper function for absolute division using binary long division
