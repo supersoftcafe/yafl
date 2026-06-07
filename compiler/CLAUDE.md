@@ -50,7 +50,7 @@ Source (.yafl)
 4. `globalfuncs.py` — Discover global function calls.
 5. `globalinit.py` — Add lazy initialisation support for global `let` values.
 6. `inlining.py` — Inline small functions (iterated 4×).
-7. `cps.py` — CPS conversion.
+7. `async_lower.py` — Task lowering (async by default, sync when provable).
 8. `trim.py` — Dead-code elimination (run between most passes).
 
 **`codegen/`** — IR and C emission:

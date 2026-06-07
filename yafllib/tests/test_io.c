@@ -13,7 +13,7 @@ EXTERN object_t* io_read (object_t* self, object_t* length);
 EXTERN object_t* io_write(object_t* self, object_t* data);
 EXTERN object_t* io_close(object_t* self);
 
-// ---- CPS helper --------------------------------------------------------
+// ---- task continuation helper ------------------------------------------
 //
 // `then(result, next)`: if `result` is a task, register a trampoline that
 // will call `next(result_value)` when the task completes; if `result` is

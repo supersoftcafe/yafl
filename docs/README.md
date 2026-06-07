@@ -4,7 +4,7 @@ This folder contains design and reference documentation for YAFL. These document
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](architecture.md) | Runtime design decisions: the parser, CPS conversion, thread pool, virtual dispatch, and memory model |
+| [Architecture](architecture.md) | Runtime design decisions: the parser, task-based async lowering, thread pool, virtual dispatch, and memory model |
 | [Language Guide](guide.md) | Narrative walkthrough of the language, from first program to advanced features |
 | [Language Reference](reference.md) | Authoritative reference for every language construct and built-in type |
 | [Roadmap](roadmap.md) | Planned features and upcoming language additions |

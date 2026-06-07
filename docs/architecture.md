@@ -30,17 +30,33 @@ On startup a thread pool is created with exactly one thread per CPU thread. Work
 
 It's important to note that the YAFL programmer will know nothing about this thread pool, nor indeed threads. They get it all for free thanks to the compiler.
 
-## CPS (Continuation Passing Style)
+## Async lowering (task-based)
 
-Most, but not all, functions are converted to CPS, which means that most calls become jumps, and most stack frames become heap frames. In many ways it is similar to C# async functions or Kotlin co-routines.
+YAFL has a **task-based** async model, closely analogous to C# `async`/`Task`
+(or `ValueTask`) — *not* continuation-passing style. There are no `async`/`await`
+keywords in the source; the machinery is entirely inferred. The lowering lives in
+`compiler/lowering/async_lower.py`.
 
-A function call in CPS passes the usual parameters and an additional function pointer to be called on completion. The function should never return, and the compiler must emit code that uses tail calls, which the underlying C compiler should convert to jumps on the target architecture.
+Functions are **async by default**: the compiler assumes any function may suspend,
+then runs a sync-inference analysis to prove which ones cannot. A potentially-
+suspending call passes the usual parameters plus an extra **completion callback**
+(a function pointer invoked with the result); rather than returning its result on
+the C stack, such a function's frame becomes a heap-allocated state machine, and
+control returns all the way back to the worker's event loop. The compiler emits
+tail calls on the hot path, which the C compiler turns into jumps — so most calls
+become jumps and most stack frames become heap frames.
 
-Not all functions will be converted. If a function can be proved to not invoke any other CPS function, and it can be proven to be not recursive, it will be kept as a standard stack based function.
+A function that can be proven never to invoke a suspending function (and is not
+recursive) keeps the ordinary stack-based calling convention and returns its
+result directly. Leaf functions usually qualify.
 
-C# developers will recognise this pattern in large projects, where one or two async functions act like a catalyst, and they end up converting most of the code-base to async. The difference here is that it's not explicit, and we start on the assumption that everything is async and work backwards, finding those that don't need to be async.
+C# developers will recognise how a single async function tends to "infect" a call
+graph until most of it is async. The difference here is that it is implicit and
+inverted: we start from the assumption that everything is async and work backwards
+to find the functions that don't need to be.
 
-The purpose behind this is so that the runtime can have a fixed number of worker threads independent of IO. Also, it is so that we can fork some jobs to take advantage of thread pools. More on that later.
+The purpose is a fixed number of worker threads independent of IO, plus the
+ability to fork jobs across the thread pool (more on that later).
 
 ## Fat function pointers
 
@@ -64,7 +80,7 @@ We could leave all call sites doing a proper scan, in the knowledge that it'll r
 
 A mark sweep garbage collector is being developed specifically to take advantage of YAFLs runtime architecture. Ultimately I want to develop a compacting GC, but the initial version will not be. Stacks don't get scanned, only global roots and the heap. We have intimate knowledge of heap layout, so we only scan true pointers, but those pointers may in some cases point at an object that is not heap managed. Such objects will be marked in some way.
 
-The lack of stack scanning is down to the CPS conversion and thread pool approach for work management. Each thread regularly exits all the way back to an event loop, where we know that there are no object references. To move between the major stages of a GC we need to wait for each thread in the thread pool to confirm that it has iterated once, which proves that all stacks have emptied since the decision to advance the GC stage.
+The lack of stack scanning is down to the task-based async lowering and thread pool approach for work management. Each thread regularly exits all the way back to an event loop, where we know that there are no object references. To move between the major stages of a GC we need to wait for each thread in the thread pool to confirm that it has iterated once, which proves that all stacks have emptied since the decision to advance the GC stage.
 
 There are more details I want to write, but this may require a dedicated document.
 

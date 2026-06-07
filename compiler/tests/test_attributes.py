@@ -382,7 +382,7 @@ fun main(): System::Int
 """
         result = _compile(content)
         self.assertNotEqual("", result)
-        # [sync] skips CPS entirely — no $async variant is emitted for identity,
+        # [sync] skips the Task lowering entirely — no $async variant is emitted for identity,
         # and the function never wraps its return in a TaskWrapper. The AST
         # inliner may eliminate `identity` entirely at its single call site;
         # what we care about is that no sync wrapping machinery appears.

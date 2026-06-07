@@ -17,20 +17,34 @@ itself a *method-call result* — `Box(0).inc().get()` — still fails, crashing
 `@unittest.expectedFailure` tripwire in `test_postfix_chaining.py`
 (`..._KNOWN_GAP`); remove that marker when fixed.
 
-**Root cause:** `DotExpression.get_type` (`pyast/expression/access.py`) matches
-only `TupleSpec` / `ClassSpec` / `EnumSpec` bases. The inner `inc()`'s declared
-return type surfaces as an unresolved `NamedSpec(Box)` rather than `ClassSpec`,
-so the outer `.get` sees a `NamedSpec` base, returns `None`, and the call's
-`generate` casts that `None`. The let-decomposed form works because the `let`
-binding's type is resolved to a `ClassSpec`.
+**Root cause (confirmed 2026-06-07):** expression types are *recomputed* via
+`get_type()` at GENERATE time, but by then the **Task lowering** (`async_lower.py`,
+an AST pass — NOT "CPS") has rewritten every call's `return_type` to unit
+(`TupleSpec()`): the result is delivered via the completion task. So
+`DotExpression.generate`/`get_type` for the outer `.get` walks into the lowered
+inner `inc()` call, gets the unit type, picks the wrong branch, returns `None`,
+and `CallExpression.generate` casts that `None` (`call.py:72`). Verified: the
+working let-decomposed form's lowered `inc` is *also* unit-typed — it works only
+because the receiver is a `let`-bound variable whose type was pinned to
+`ClassSpec(Box)` at COMPILE time (pre-lowering), so generate reads the pinned type
+rather than recomputing through the lowered call. (My earlier "NamedSpec base"
+note was wrong — disproven by tracing.)
 
-**Care needed:** simply "resolve a `NamedSpec` base to its `ClassSpec`/`EnumSpec`"
-in `get_type`/`check`/`generate` is the likely fix, BUT `NamedSpec` bases
-legitimately return `None` all over during the compile fixpoint (they're not yet
-resolved), so a naive change risks altering convergence. Needs a careful,
-suite-validated change — possibly resolving only at generate time, or ensuring
-method return types are compiled to `ClassSpec` before they're used as receivers.
-Relates to the strong-type-inference direction.
+**The proper fix is architectural (user's call):** the Task lowering runs at the
+AST stage, which is *too early* — it mutates the AST's type semantics before
+AST→IR codegen reads them. It belongs in the **IR stage** (splitting functions at
+suspension points into heap-frame state machines is a control-flow/codegen
+concern). Move it there and the AST stays cleanly typed through `check`/`generate`,
+so this bug — and the whole "recompute types at generate on a lowered AST" class
+of fragility — disappears. Large, careful project; not started.
+
+**Band-aids if we need chaining sooner** (all compensate for the early lowering):
+- (A) Pin resolved types onto nodes at compile and use them at generate instead
+  of recomputing. `get_type` is shared between the compile fixpoint (must
+  recompute) and generate (wants the pin), so separating the phases is the catch.
+- (B) ANF-normalise postfix chains into `let` temporaries during compile
+  (`a.b().c()` → `let t = a.b(); t.c()`), reusing the known-good let path.
+- (C) Carry each call's true pre-lowering result type on the lowered call.
 
 ## Language & parser features
 

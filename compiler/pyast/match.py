@@ -697,7 +697,7 @@ class MatchExpression(e.Expression):
         The bound local takes the arm's type (or subject type for an else
         arm) so the StackVar's IR type matches the type the body sees via
         the LetStatement.  This keeps name+type identity consistent for
-        downstream passes (definite-assignment, CPS state-object field
+        downstream passes (definite-assignment, Task state-object field
         layout) — no name-aliased-different-type StackVars.
 
         Unit-typed arms in a pointer-union (e.g. the `None` arm of

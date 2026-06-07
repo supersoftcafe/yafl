@@ -86,7 +86,7 @@ def __create_entry_point(main: s.FunctionStatement) -> Function:
                 register=sv_result,
             ),
             cg_o.JumpIf("$async_entry", unlikely_chk),
-            # Sync path: invoke the CPS continuation with main's result
+            # Sync path: invoke the completion callback with main's result
             cg_o.Call(
                 function=continuation,
                 parameters=cg_p.NewStruct((("result", sv_result),)),

@@ -11,7 +11,7 @@ import lowering.globalfuncs
 import lowering.lower_lazy_lets
 import lowering.inlining
 import lowering.deadstores
-import lowering.async_lower as lowering_cps
+import lowering.async_lower as async_lower
 import lowering.sync_inference
 import lowering.trim
 import lowering.staticinit
@@ -42,7 +42,7 @@ class TestApplicationDiscriminatorPreservation(TestCase):
         self.assertEqual(result, [])  # sanity: no statements in, no statements out
 
     def test_async_lower_preserves_discriminators(self):
-        result = lowering_cps.lower_async(self._app_with_discriminators())
+        result = async_lower.lower_async(self._app_with_discriminators())
         self.assertEqual(result.union_discriminators, {"SomeType|None": 42})
 
 

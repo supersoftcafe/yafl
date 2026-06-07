@@ -1,7 +1,7 @@
 """
 Sync inference pass.
 
-After inlining and before CPS conversion, propagate the `sync` guarantee to
+After inlining and before the Task lowering, propagate the `sync` guarantee to
 functions that can be proven to never suspend:
 
   Seed
@@ -28,7 +28,7 @@ functions that can be proven to never suspend:
   Materialisation
   ---------------
   After convergence, every Function whose name is in the sync set gets
-  fn.sync = True. The CPS pass uses fn.sync to decide what the cold
+  fn.sync = True. The Task lowering uses fn.sync to decide what the cold
   $asynccommon block does: a sync function emits Abort there (it cannot
   legally suspend), an async function does the state save + task creation
   + tagged-task return. Per-Call optimisation does not exist — every
@@ -119,7 +119,7 @@ def infer_sync(a: Application) -> Application:
 
     # ------------------------------------------------------------------
     # 5. Materialise: update fn.sync only. Call ops are uniformly emitted
-    # by CPS — there is no per-Call optimisation. fn.sync only changes
+    # by the Task lowering — there is no per-Call optimisation. fn.sync only changes
     # what the cold $asynccommon block does (state save vs. abort).
     # ------------------------------------------------------------------
     new_functions: dict[str, Function] = {

@@ -15,7 +15,7 @@ Source (.yafl)
   → compile() loop       compiler.py  (iterates until AST stabilises)
   → lowering passes      lowering/     (in order: generics → strings/integers →
                                         lambdas → globalfuncs → globalinit →
-                                        inlining → cps → trim)
+                                        inlining → async_lower → trim)
   → codegen              codegen/
   → C source             (piped through clang)
 ```
@@ -30,7 +30,7 @@ Source (.yafl)
 **Critical design facts:**
 - Lowering passes operate on `list[Statement]`; codegen passes operate on `Application`. Mixing these layers is wrong.
 - The `compile()` loop in `compiler.py` re-runs `stmt.compile()` until the AST stabilises — passes must be idempotent.
-- CPS conversion is the last lowering pass before codegen. Continuation functions flatten multi-field struct return types into individual params (x86-64 ABI).
+- The Task lowering (`async_lower.py`) is the last lowering pass before codegen. Its continuation (completion-callback) functions flatten multi-field struct return types into individual params (x86-64 ABI).
 - `simple_classes.py` lowers ≤4-field, no-inheritance, no-standalone-method-ref classes to flat C structs + free functions.
 - `staticinit.py` promotes constant objects to C static initialisers; `resolve_flat_struct_global_inits` handles flat-struct globals.
 - All `Op`, `RParam`, and `Type` nodes are `frozen=True` dataclasses. `Application` is mutable (dict attributes set after construction).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-# Convert the linear calling convention to continuation passing style
+# Dead-code elimination over the IR: drop functions/objects/globals not reachable
+# from the entrypoint (run between lowering passes).
 import dataclasses
 from dataclasses import dataclass
 from collections.abc import Iterator

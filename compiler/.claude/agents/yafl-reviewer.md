@@ -28,7 +28,7 @@ Source (.yafl)
   → compile() loop       compiler.py  (iterates until AST stabilises)
   → lowering passes      lowering/     (in order: generics → strings/integers →
                                         lambdas → globalfuncs → globalinit →
-                                        inlining → cps → trim)
+                                        inlining → async_lower → trim)
   → codegen              codegen/
   → C source             (piped through clang)
 ```
@@ -42,7 +42,7 @@ Source (.yafl)
 **Important design facts:**
 - Lowering passes operate on `list[Statement]` (AST level); codegen passes operate on `Application` (IR level). These are distinct IR layers — mixing them is a red flag.
 - `simple_classes.py` lowers classes with ≤4 fields, no inheritance, no standalone method references to flat C structs + free functions.
-- `cps.py` performs CPS conversion; continuation functions must flatten multi-field struct return types into individual params for the x86-64 ABI.
+- `async_lower.py` performs the Task lowering; its continuation (completion-callback) functions must flatten multi-field struct return types into individual params for the x86-64 ABI.
 - `staticinit.py` promotes heap-allocated constant objects to C static initialisers where possible; `resolve_flat_struct_global_inits` handles flat-struct globals specifically.
 - The `compile()` loop in `compiler.py` re-runs `stmt.compile()` until the AST converges — passes that are not idempotent can cause infinite loops.
 

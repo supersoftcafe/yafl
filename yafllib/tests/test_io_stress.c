@@ -55,7 +55,7 @@ EXTERN object_t* io_write      (object_t* self, object_t* data);
 #endif
 
 
-// ---- CPS chaining helper ----------------------------------------------
+// ---- task continuation chaining helper --------------------------------
 //
 // A real YAFL state machine roots the in-flight task via its state
 // object's `my_task` field (compiler-generated, GC-traced).  This C test

@@ -28,8 +28,8 @@
     * Class virtual calls can be inlined just as nicely as global functions
       * Iface too, if not overridden
   * Remove dead statements again
-  * Do CPS conversion
-  * De-duplicate classes, because CPS will create some duplicates
+  * Do the Task lowering (async_lower)
+  * De-duplicate classes, because the Task lowering will create some duplicates
 
 ## Low priority
 

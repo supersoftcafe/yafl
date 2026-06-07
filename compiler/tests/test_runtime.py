@@ -126,7 +126,7 @@ class TestReturnValues(TestCase):
     def test_three_sequential_let_calls(self):
         """Three let-bound calls in sequence: add7(2)=9, add5(9)=14, add3(14)=17.
         Triggers an inliner bug where the second inlining pass emits a
-        direct-style call (wrong cast, no continuation) inside a CPS
+        direct-style call (wrong cast, no continuation) inside a Task
         continuation function."""
         src = _PREAMBLE + _ARITH + """\
 fun add3(x: Int): Int
@@ -314,7 +314,7 @@ fun main(): Int
 # non-tail calls (exercises __calculate_saved_vars in lowering/async_lower.py)
 # ---------------------------------------------------------------------------
 
-class TestCpsSavedVars(TestCase):
+class TestTaskSavedVars(TestCase):
 
     def test_var_live_across_two_calls(self):
         """a is bound before two non-tail calls; it must be saved across both.

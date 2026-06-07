@@ -240,7 +240,7 @@ def _emit_suspend_to_async(idx_field: LParam, idx: int, untagged_task: RParam,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tail-call detection (unchanged from old CPS pass)
+# Tail-call detection (unchanged from the old Task pass)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def __discover_tail_calls(fn: Function) -> Function:
@@ -994,7 +994,7 @@ def __convert_function_to_task_convention(
     state Object. Sync functions reuse the same hot path; their cold block
     aborts instead of creating a task.
     """
-    # Skip __entrypoint__ – it bridges thread_start (old CPS) to the new world
+    # Skip __entrypoint__ – it bridges thread_start (legacy) to the new world
     if fn.name == "__entrypoint__":
         return {fn.name: fn}, {}
 
