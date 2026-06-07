@@ -52,6 +52,7 @@ typedef enum {
     IO_OP_DIR_OPEN,     // opendir(dir->path_buf); writes dir->dirp
     IO_OP_DIR_NEXT,     // readdir(dir->dirp); writes dir->entry_buf or dir->entry_eof
     IO_OP_DIR_CLOSE,    // closedir(dir->dirp); clears dir->dirp
+    IO_OP_SPAWN,        // posix_spawnp(job->spawn->argv); captures out/err + exit
 } io_op_t;
 
 // FileInfo struct exposed to YAFL via the [foreign,final] _FileInfo class
@@ -90,6 +91,39 @@ typedef struct {
 VTABLE_DECLARE_STRUCT(dir_vtable, 0);
 HIDDEN extern struct dir_vtable DIR_VTABLE;
 
+
+// Subprocess scratch.  All non-GC: the IO thread builds argv on the worker
+// before dispatch, then captures the child's stdout/stderr into growable
+// malloc buffers (malloc, not the GC allocator, is allowed on the IO thread).
+// The finisher copies the captured bytes into GC Strings and frees all of
+// this.  `packed` owns the argv backing store; the argv entries point into it.
+typedef struct spawn_aux {
+    char*   packed;     // malloc copy of the NUL-separated argv buffer
+    char**  argv;       // malloc, argc+1 entries (NULL-terminated), into `packed`
+    int32_t argc;
+    int32_t exit_code;  // child exit status, or -signal if signalled
+    char*   out;        // growable capture of stdout
+    int32_t out_len;
+    int32_t out_cap;
+    char*   err;        // growable capture of stderr
+    int32_t err_len;
+    int32_t err_cap;
+} spawn_aux_t;
+
+
+// Result of a finished subprocess, exposed to YAFL via the [foreign,final]
+// _SpawnResult class.  Built entirely on a worker in the finisher, so unlike
+// the IO-thread-written structs it needs no is_mutable pinning.
+typedef struct {
+    object_t  parent;
+    object_t* out;        // String
+    object_t* err;        // String
+    int32_t   exit_code;
+} spawn_result_t;
+
+VTABLE_DECLARE_STRUCT(spawn_result_vtable, 0);
+HIDDEN extern struct spawn_result_vtable SPAWN_RESULT_VTABLE;
+
 // IO job.  Embeds task_obj_t as first field so (task_obj_t*)job is the
 // task the caller holds.  Allocated on a worker before suspension.
 //
@@ -109,6 +143,7 @@ typedef struct io_job {
 
     io_op_t                 op;
     void                    (*finisher)(struct io_job*);  // non-GC: runs on worker after IO
+    struct spawn_aux*       spawn;             // non-GC: SPAWN scratch, NULL otherwise
     char                    open_mode[4];      // "r", "w", "a"
     int32_t                 caller_length;     // REFILL: caller's requested length
     int32_t                 raw_result;        // bytes moved, 0 for EOF, -errno on failure

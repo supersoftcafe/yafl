@@ -53,7 +53,21 @@ class Parser(Generic[T]):
             left = self(tokens)
             if left:
                 return left
-            return other(tokens)
+            right = other(tokens)
+            if right:
+                return right
+            # Both alternatives failed. A plain non-match carries no errors; an
+            # alternative that matched its prefix and then hit a hard error (a
+            # well-formed string with a bad escape, a malformed `match`, …) does.
+            # Keep that diagnostic rather than dropping it — preferring, when both
+            # carry one, the parse that consumed the most input (most committed).
+            # When the failed left is a plain non-match this returns `right`,
+            # exactly as before.
+            if not left.errors:
+                return right
+            if not right.errors:
+                return left
+            return left if len(left.tokens) <= len(right.tokens) else right
         return Parser(p)
 
     def __and__(self, other):
@@ -201,8 +215,12 @@ def block(parser: Parser[T]) -> Parser[T]:
 
         result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref)])
 
+        # Only fall back to the generic leftover-tokens message when nothing
+        # more specific was reported — a real diagnostic (bad escape, orphan
+        # `else`, …) explains the failure better than "extra unexpected
+        # characters", which is otherwise just noise on top of it.
         errors = []
-        if not is_eof(result.tokens):
+        if not is_eof(result.tokens) and not result.errors:
             errors = [Error(result.tokens[0].line_ref, "extra unexpected characters")]
 
         return Result(result.value, tokens[index:], result.line_ref, result.errors + errors)

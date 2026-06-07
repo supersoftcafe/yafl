@@ -164,9 +164,16 @@ where lazy thunks land.
 
 ## Hard blockers (compiler cannot function without these)
 
-- **subprocess spawn** — need to invoke clang. Workaround: split into "yafl emits
-  C, shell wrapper runs clang"; that means the YAFL binary alone isn't a
-  self-contained compiler.
+- **subprocess spawn — done.** `System::IO::run(program: String, args: List<String>):
+  ProcessResult|IOError` (`stdlib/process.yafl`) spawns a PATH-resolved program
+  through the IO threadpool (`posix_spawnp`, stdin = /dev/null), capturing stdout,
+  stderr, and the exit code. A non-zero child exit is a successful `ProcessResult`,
+  not an error; only a failure to start the program is `IOError`. argv crosses the
+  foreign boundary as a single NUL-separated String (the separators double as the
+  C-string terminators), split back out in `process_run` (`io.c` / `io_thread.c`,
+  `IO_OP_SPAWN`); stdout/stderr captured into growable non-GC buffers via `poll()`
+  (deadlock-free). Tests: `tests/test_process.py`. A YAFL-written compiler can now
+  invoke clang directly.
 
 ## Performance / scaling
 
@@ -313,9 +320,13 @@ Resolved by multi-page object allocation (see "Lift the 16 KB per-object size
 cap"): a large string is a single object spanning multiple pages — no
 compound-object scheme needed.
 
-# IO readline
+# IO readline — done
 
-Just what it says
+`IO.readLine(): (io: IO, v: String|IOError)` is implemented in `stdlib/io.yafl`:
+reads one byte at a time, stops at `\n`, skips `\r`, and returns a partial line
+on EOF-with-bytes (EOFError only when no bytes were read). Note this is distinct
+from the buffering issue below — readLine still goes through the buffer-filling
+`read`, so on a TTY it shares the "IO TTY input" latency problem until that lands.
 
 # IO TTY input
 

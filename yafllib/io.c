@@ -3,6 +3,7 @@
 #include "io_internal.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 
 // io_t vtable.  is_mutable=1 means the page is never compacted, so the
@@ -117,6 +118,7 @@ static io_job_t* _io_job_alloc(io_op_t op,
     job->fs_aux          = NULL;
     job->dir             = NULL;
     job->finisher        = finisher;
+    job->spawn           = NULL;
     job->op              = op;
     job->open_mode[0]    = 0;
     job->caller_length   = 0;
@@ -526,3 +528,101 @@ static void _fs_finish_dir_close(io_job_t* job) {
     job->task.result = result;
     task_complete((object_t*)&job->task);
 }
+
+
+// --- subprocess (run an external program, capture stdout/stderr/exit) ------
+
+// _SpawnResult holds two String pointers, so the GC mask covers them; the
+// exit code is a scalar.  Built on a worker (in the finisher), never touched
+// by the IO thread, so it does not need is_mutable pinning.
+HIDDEN struct spawn_result_vtable SPAWN_RESULT_VTABLE = {
+    .object_size                = sizeof(spawn_result_t),
+    .array_el_size              = 0,
+    .object_pointer_locations   = maskof(spawn_result_t, .out)
+                                | maskof(spawn_result_t, .err),
+    .array_el_pointer_locations = 0,
+    .functions_mask             = 0,
+    .array_len_offset           = 0,
+    .is_mutable                 = 0,
+    .name                       = "_SpawnResult",
+    .implements_array           = VTABLE_IMPLEMENTS(0),
+};
+
+
+// Finisher (worker): wrap the captured bytes into Strings and free the
+// non-GC scratch.  The container is rooted via task.result *before* the
+// Strings are allocated, so a GC during string_from_bytes cannot collect it.
+static void _spawn_finish(io_job_t* job) {
+    spawn_aux_t* sx = job->spawn;
+    object_t* result;
+    if (job->raw_result < 0) {
+        result = integer_from_int32_noalloc(job->raw_result);
+    } else {
+        spawn_result_t* sr = (spawn_result_t*)object_create((vtable_t*)&SPAWN_RESULT_VTABLE);
+        sr->exit_code = sx->exit_code;
+        GC_WRITE_BARRIER(job->task.result, 1);
+        job->task.result = (object_t*)sr;     // root sr before allocating Strings
+        object_t* out = string_from_bytes((uint8_t*)(sx->out ? sx->out : (char*)""), sx->out_len);
+        GC_WRITE_BARRIER(sr->out, 1);
+        sr->out = out;
+        object_t* err = string_from_bytes((uint8_t*)(sx->err ? sx->err : (char*)""), sx->err_len);
+        GC_WRITE_BARRIER(sr->err, 1);
+        sr->err = err;
+        result = (object_t*)sr;
+    }
+    free(sx->packed);
+    free(sx->argv);
+    free(sx->out);
+    free(sx->err);
+    free(sx);
+    job->spawn = NULL;
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = result;
+    task_complete((object_t*)&job->task);
+}
+
+
+// Worker entry.  `packed` is program + args joined by NUL bytes (the YAFL
+// side builds it); `o_argc` is the element count.  We copy `packed` into a
+// stable malloc buffer and point argv entries at it — the NUL separators
+// double as the C-string terminators each argv element needs.  Returns the
+// async task; spawn/exec failure resolves to a negative errno (→ IOError),
+// while a non-zero child exit is a *success* carried in the result.
+EXPORT object_t* process_run(object_t* self, object_t* packed, object_t* o_argc) {
+    (void)self;
+    int overflow = 0;
+    int32_t argc = int32_from_integer_with_overflow(o_argc, &overflow);
+    if (overflow || argc < 1) argc = 1;
+
+    intptr_t local = 0;
+    int32_t  len   = 0;
+    const char* cstr = string_to_cstr(packed, &local, &len);
+    if (len < 0) len = 0;
+
+    spawn_aux_t* sx = (spawn_aux_t*)calloc(1, sizeof(spawn_aux_t));
+    sx->packed = (char*)malloc((size_t)len + 1);
+    if (len > 0) memcpy(sx->packed, cstr, (size_t)len);
+    sx->packed[len] = 0;
+    sx->argc = argc;
+    sx->argv = (char**)calloc((size_t)argc + 1, sizeof(char*));
+
+    // Split on NUL: argv[0] is the program, each following element starts one
+    // byte after the next separator.  Stop once we have argc entries.
+    int32_t idx = 0;
+    sx->argv[idx++] = sx->packed;
+    for (int32_t i = 0; i < len && idx < argc; i++) {
+        if (sx->packed[i] == 0) sx->argv[idx++] = &sx->packed[i + 1];
+    }
+    sx->argv[argc] = NULL;
+
+    io_job_t* job = _io_job_alloc(IO_OP_SPAWN, NULL, _spawn_finish);
+    job->spawn = sx;
+    _io_enqueue(job);
+    return _io_as_task(job);
+}
+
+
+// Sync accessors on a resolved _SpawnResult.
+EXPORT object_t* spawn_exit_code(object_t* self) { return integer_from_int32(((spawn_result_t*)self)->exit_code); }
+EXPORT object_t* spawn_out      (object_t* self) { return ((spawn_result_t*)self)->out; }
+EXPORT object_t* spawn_err      (object_t* self) { return ((spawn_result_t*)self)->err; }

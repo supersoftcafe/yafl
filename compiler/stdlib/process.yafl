@@ -1,0 +1,45 @@
+namespace System::IO
+
+import System
+import System::IO
+
+
+# Run an external program and capture its result.  This dispatches through the
+# same IO threadpool as the file ops (see io.c / io_thread.c): the child runs
+# to completion with its stdin connected to /dev/null, and its stdout and
+# stderr are captured in full.
+#
+# argv is marshalled to C as a single String with the program and each argument
+# joined by NUL bytes — a NUL can never appear inside a C argv element, so the
+# packing is lossless and the separators double as the C-string terminators the
+# child's argv needs.  `process_run` (io.c) splits it back out.
+
+fun [foreign("process_run"),impure] _run_packed(packed: String, argc: Int): _SpawnResult|Int
+
+class [foreign,final] _SpawnResult:
+  fun [foreign("spawn_exit_code"),sync] _exitCode(): Int
+  fun [foreign("spawn_out"),sync]       _out():      String
+  fun [foreign("spawn_err"),sync]       _err():      String
+
+
+# The outcome of a *successful* spawn: the program ran to completion. A
+# non-zero `exitCode` is reported here, not as an IOError — a compiler that
+# fails to compile is a normal, non-error result. Only a failure to *start*
+# the program (not found, fork failed, …) surfaces as an IOError from `run`.
+class ProcessResult(exitCode: Int, out: String, err: String)
+
+
+# Build "program\0arg0\0arg1\0…" by folding the argument list onto the program.
+fun _packArgs(program: String, args: List<String>): String
+  ret fold<String, String>(args, program, (acc: String, a: String) => acc + "\u{0}" + a)
+
+
+# Run `program` (resolved on PATH) with `args`. Returns a ProcessResult on a
+# successful spawn — including when the child exits non-zero — or an IOError if
+# the program could not be started.
+fun run(program: String, args: List<String>): ProcessResult|IOError
+  let packed = _packArgs(program, args)
+  let argc = 1 + length<String>(args)
+  ret match(_run_packed(packed, argc))
+    (r: _SpawnResult) => ProcessResult(r._exitCode(), r._out(), r._err())
+    (c: Int)          => _error_from_code(c)

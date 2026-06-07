@@ -71,8 +71,25 @@ _STRING_ESCAPES = {
     '\\': '\\', '"': '"', "'": "'",
 }
 
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+def _codepoint_char(hexpart: str) -> tuple[str, str | None]:
+    """Turn a hex codepoint into its single character, rejecting out-of-range
+    and surrogate values so the decoded string is always a valid Unicode scalar
+    sequence (and therefore valid UTF-8 once encoded)."""
+    cp = int(hexpart, 16)
+    if cp > 0x10FFFF:
+        return "", f"codepoint U+{cp:X} is out of range (max U+10FFFF)"
+    if 0xD800 <= cp <= 0xDFFF:
+        return "", f"codepoint U+{cp:X} is a UTF-16 surrogate, not a scalar value"
+    return chr(cp), None
+
 def _unescape_string(raw: str) -> tuple[str, str | None]:
-    """Decode yafl string escapes. Returns (decoded, error) — error is None on success."""
+    """Decode yafl string escapes. Returns (decoded, error) — error is None on
+    success. Beyond the simple escapes in `_STRING_ESCAPES`, three forms denote a
+    Unicode codepoint (encoded to UTF-8 downstream): `\\xNN` (exactly two hex
+    digits, U+0000–U+00FF), `\\uXXXX` (exactly four hex digits), and `\\u{…}`
+    (one to six hex digits, the full scalar range)."""
     out: list[str] = []
     i = 0
     while i < len(raw):
@@ -84,6 +101,36 @@ def _unescape_string(raw: str) -> tuple[str, str | None]:
         if i + 1 >= len(raw):
             return "", "dangling backslash in string literal"
         nxt = raw[i+1]
+        if nxt == 'x':
+            hexpart = raw[i+2:i+4]
+            if len(hexpart) != 2 or any(ch not in _HEX_DIGITS for ch in hexpart):
+                return "", "\\x escape needs exactly two hex digits"
+            out.append(chr(int(hexpart, 16)))
+            i += 4
+            continue
+        if nxt == 'u':
+            if i + 2 < len(raw) and raw[i+2] == '{':
+                close = raw.find('}', i+3)
+                if close == -1:
+                    return "", "unterminated \\u{…} escape"
+                hexpart = raw[i+3:close]
+                if not (1 <= len(hexpart) <= 6) or any(ch not in _HEX_DIGITS for ch in hexpart):
+                    return "", "\\u{…} escape needs one to six hex digits"
+                ch, err = _codepoint_char(hexpart)
+                if err is not None:
+                    return "", err
+                out.append(ch)
+                i = close + 1
+                continue
+            hexpart = raw[i+2:i+6]
+            if len(hexpart) != 4 or any(ch not in _HEX_DIGITS for ch in hexpart):
+                return "", "\\u escape needs exactly four hex digits (or use \\u{…})"
+            ch, err = _codepoint_char(hexpart)
+            if err is not None:
+                return "", err
+            out.append(ch)
+            i += 6
+            continue
         if nxt not in _STRING_ESCAPES:
             return "", f"unknown string escape: \\{nxt}"
         out.append(_STRING_ESCAPES[nxt])

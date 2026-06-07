@@ -4,8 +4,16 @@
 #include <pthread.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <spawn.h>
+#include <poll.h>
+#include <fcntl.h>
+
+extern char** environ;
 
 #define IO_THREAD_COUNT 4
 
@@ -71,6 +79,94 @@ static io_job_t* _io_dequeue(void) {
     atomic_store(&job->next_in_io_queue, NULL);
     pthread_mutex_unlock(&_io_queue_lock);
     return job;
+}
+
+
+// Append `n` bytes to a growable malloc buffer, doubling capacity as needed.
+// Non-GC memory, so this is safe to call on the IO thread.
+static void _spawn_append(char** buf, int32_t* len, int32_t* cap,
+                          const char* data, int32_t n) {
+    if (*len + n > *cap) {
+        int32_t newcap = *cap ? *cap : 4096;
+        while (*len + n > newcap) newcap *= 2;
+        *buf = (char*)realloc(*buf, (size_t)newcap);
+        *cap = newcap;
+    }
+    memcpy(*buf + *len, data, (size_t)n);
+    *len += n;
+}
+
+
+// Run the child to completion, capturing stdout/stderr in full and the exit
+// status.  stdin is /dev/null.  poll() drains both pipes concurrently so a
+// child that fills one pipe while we are reading the other cannot deadlock.
+static void _io_run_spawn(io_job_t* job) {
+    spawn_aux_t* sx = job->spawn;
+    int out_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+        job->raw_result = -errno;
+        if (out_pipe[0] >= 0) { close(out_pipe[0]); close(out_pipe[1]); }
+        if (err_pipe[0] >= 0) { close(err_pipe[0]); close(err_pipe[1]); }
+        return;
+    }
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_adddup2(&fa, out_pipe[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, err_pipe[1], 2);
+    posix_spawn_file_actions_addclose(&fa, out_pipe[0]);
+    posix_spawn_file_actions_addclose(&fa, out_pipe[1]);
+    posix_spawn_file_actions_addclose(&fa, err_pipe[0]);
+    posix_spawn_file_actions_addclose(&fa, err_pipe[1]);
+
+    pid_t pid;
+    int rc = posix_spawnp(&pid, sx->argv[0], &fa, NULL, sx->argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    if (rc != 0) {
+        close(out_pipe[0]);
+        close(err_pipe[0]);
+        job->raw_result = -rc;   // posix_spawnp returns an errno value
+        return;
+    }
+
+    struct pollfd fds[2];
+    fds[0].fd = out_pipe[0]; fds[0].events = POLLIN;
+    fds[1].fd = err_pipe[0]; fds[1].events = POLLIN;
+    int open_count = 2;
+    char tmp[4096];
+    while (open_count > 0) {
+        if (poll(fds, 2, -1) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (fds[i].fd < 0 || fds[i].revents == 0) continue;
+            ssize_t n = read(fds[i].fd, tmp, sizeof tmp);
+            if (n > 0) {
+                if (i == 0) _spawn_append(&sx->out, &sx->out_len, &sx->out_cap, tmp, (int32_t)n);
+                else        _spawn_append(&sx->err, &sx->err_len, &sx->err_cap, tmp, (int32_t)n);
+            } else if (n < 0 && errno == EINTR) {
+                continue;
+            } else {                       // EOF (0) or hard error: this fd is done
+                close(fds[i].fd);
+                fds[i].fd = -1;
+                open_count--;
+            }
+        }
+    }
+    if (fds[0].fd >= 0) close(fds[0].fd);
+    if (fds[1].fd >= 0) close(fds[1].fd);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+    if (WIFEXITED(status))        sx->exit_code = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status)) sx->exit_code = -WTERMSIG(status);
+    else                          sx->exit_code = -1;
+    job->raw_result = 0;
 }
 
 
@@ -191,6 +287,10 @@ static void* _io_thread_main(void* arg) {
                 dir->dirp = NULL;
             }
             job->raw_result = rc;
+        } break;
+
+        case IO_OP_SPAWN: {
+            _io_run_spawn(job);
         } break;
         }
 
