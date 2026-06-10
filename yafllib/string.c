@@ -193,6 +193,39 @@ EXPORT object_t* string_find_byte(object_t* self, int32_t needle, object_t* o_fr
 }
 
 
+// Byte offset of the first occurrence of `needle` in `self` at or after `from`,
+// or -1 when it does not occur. The empty needle matches at `from` (clamped to
+// [0, length]). memchr-accelerated: jump to each candidate first byte, then
+// verify the rest with memcmp — near-linear in practice and, unlike GNU memmem,
+// needs no _GNU_SOURCE. Used by the substring `indexOf`/`contains`/`split`
+// helpers so they avoid the O(n*m) of a YAFL byte loop.
+EXPORT object_t* string_index_of(object_t* self, object_t* o_needle, object_t* o_from) {
+    int overflow = 0;
+    int32_t from = int32_from_integer_with_overflow(o_from, &overflow);
+    if (overflow) return integer_from_int32(-1);
+    if (from < 0) from = 0;
+
+    intptr_t s_buf; int32_t s_len;
+    char* s = string_to_cstr(self, &s_buf, &s_len);
+    intptr_t n_buf; int32_t n_len;
+    char* needle = string_to_cstr(o_needle, &n_buf, &n_len);
+
+    if (n_len == 0) return integer_from_int32(from <= s_len ? from : s_len);
+    if (from > s_len || s_len - from < n_len) return integer_from_int32(-1);
+
+    int32_t last = s_len - n_len;   // last index a match could start at
+    for (int32_t i = from; i <= last; ) {
+        char* hit = memchr(s + i, needle[0], (size_t)(last - i + 1));
+        if (hit == NULL) break;
+        i = (int32_t)(hit - s);
+        if (memcmp(s + i, needle, (size_t)n_len) == 0)
+            return integer_from_int32(i);
+        ++i;
+    }
+    return integer_from_int32(-1);
+}
+
+
 // Codepoint membership set built from `accept`. ASCII members (cp < 0x80,
 // one byte) go in an O(1) bitset; the presence of any non-ASCII member is
 // flagged so the (rare) non-ASCII input path knows whether to bother

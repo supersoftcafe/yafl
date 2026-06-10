@@ -759,12 +759,12 @@ fun s_findIndex_empty(): Int
 fun s_partition_split(): Int
     let l = append<Int>(append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4), 5)
     let (yes, no) = partition<Int>(l, (x: Int) => x > 2)
-    ret length<Int>(yes)
+    ret fold<Int,Int>(yes, 0, (a: Int, x: Int) => a + 1)
 
 fun s_partition_all_yes(): Int
     let l = append<Int>(append<Int>(List<Int>(), 5), 6)
     let (yes, no) = partition<Int>(l, (x: Int) => x > 0)
-    ret length<Int>(no)
+    ret fold<Int,Int>(no, 0, (a: Int, x: Int) => a + 1)
 
 fun s_partition_order(): Int
     let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 5), 2), 6)
@@ -779,7 +779,7 @@ fun s_groupBy_single(): Int
     let l = append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3)
     let g = groupBy<Int,Int>(l, (x: Int) => 0)
     ret match(get<Int,List<Int> >(g, 0))
-      (b: List<Int>) => length<Int>(b)
+      (b: List<Int>) => fold<Int,Int>(b, 0, (a: Int, x: Int) => a + 1)
       (n: None)      => -1
 
 fun s_groupBy_empty(): Int

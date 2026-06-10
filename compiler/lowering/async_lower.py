@@ -28,7 +28,7 @@ from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
 from codegen.things import Function, Object
 from codegen.typedecl import (
-    FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type,
+    FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type, Array,
     TaskWrapper, first_pointer_field, is_task_check,
 )
 from codegen.param import (
@@ -394,6 +394,176 @@ def __vars_to_state_fields(vars: Iterable[StackVar], state_name: str) -> dict[St
             for var in vars}
 
 
+# ── Heap-frame layout ─────────────────────────────────────────────────────────
+# A heap state frame keeps every local that is *strictly* an object pointer
+# (`object_t*`, i.e. a bare DataPointer root variable) in a trailing `object_t*`
+# array, scanned by the GC via the array machinery — so the count is unbounded.
+# Every other frame local (primitives, and compound types like `fun_t` or
+# unboxed unions/tuples whose pointers are *members*) becomes an inline field.
+#
+# To keep the inline pointer count — and so the 64-bit `object_pointer_locations`
+# mask — small, inline locals SHARE storage: two locals of the same type whose
+# live ranges never overlap occupy one slot (a plain shared field; identical type
+# means no C union is needed). A standard interference graph (built from the
+# liveness already computed for the state machine, plus the hot-path save sets)
+# drives a greedy colouring; each colour is one slot. The save step writes only
+# the locals live at each suspension (see __create_hot_path_func), so a shared
+# slot only ever receives its one live occupant.
+
+@dataclass(frozen=True)
+class FrameLayout:
+    ptr_slots:    dict[str, int]                  # strict object_t* local → array index
+    inline_slots: dict[str, str]                  # other frame local → shared field name
+    slot_fields:  tuple[tuple[str, Type], ...]    # the distinct inline slot fields
+    n_array:      int                             # trailing array length
+
+
+def __frame_field_types(basic_blocks: list[BasicBlock]) -> dict[str, Type]:
+    """Collect every frame-resident local (saved live vars + call-result
+    registers), name → type, in first-seen order (type is last-seen, matching
+    the historical state-object collection)."""
+    fields: dict[str, Type] = {}
+    for bb in basic_blocks[:-1]:
+        for var in bb.live:
+            fields[var.name] = var.get_type()
+        if bb.result is not None and isinstance(bb.result, StackVar):
+            fields[bb.result.name] = bb.result.get_type()
+    return fields
+
+
+def __op_writes(op: Op) -> frozenset[StackVar]:
+    # Mirror __calculate_saved_vars' Phi handling: a Phi defines its target only.
+    if isinstance(op, Phi):
+        return frozenset({op.target}) if isinstance(op.target, StackVar) else frozenset()
+    return op.get_live_vars()[1]
+
+
+def __op_reads(op: Op) -> frozenset[StackVar]:
+    # Mirror __calculate_saved_vars' Phi handling: a Phi reads nothing
+    # unconditionally (each source is consumed only on its predecessor edge).
+    if isinstance(op, Phi):
+        return frozenset()
+    return op.get_live_vars()[0]
+
+
+def __build_interference(op_sequences: list[tuple[Op, ...]],
+                         frame_names: frozenset[str]) -> dict[str, set[str]]:
+    """Two frame locals interfere if they are ever simultaneously live, computed
+    over EVERY given op sequence (both the state-machine view and the hot-path
+    view — a value can live differently in each, and the shared slot layout must
+    be safe for both).
+
+    Each op carries its `saved_vars` (live-out) from __calculate_saved_vars. A
+    pair is simultaneously live when:
+      * both are in the same live-out set; or
+      * one is defined while the other is live-out (def vs live-out); or
+      * both are live *into* the same op — its operands (reads) plus any survivor
+        not (re)defined there. This catches operands that both die at the op —
+        e.g. the two arguments of `concat(left, right)` — which never share a
+        live-out set yet are simultaneously live.
+    A value read at an op does NOT interfere with the value the op defines: the
+    reads are consumed before the result is written (`slot = f(slot)` is safe),
+    which is exactly what makes `x = f(x)` coalescing sound.
+    """
+    graph: dict[str, set[str]] = {n: set() for n in frame_names}
+
+    def link(a: str, b: str) -> None:
+        if a != b and a in graph and b in graph:
+            graph[a].add(b)
+            graph[b].add(a)
+
+    def link_all_pairs(names: list[str]) -> None:
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                link(names[i], names[j])
+
+    for ops in op_sequences:
+        for op in ops:
+            live_out = [v.name for v in op.saved_vars if v.name in graph]
+            writes = {w.name for w in __op_writes(op)}
+            link_all_pairs(live_out)
+            for w in writes:
+                if w in graph:
+                    for n in live_out:
+                        link(w, n)
+            live_in = [v.name for v in __op_reads(op) if v.name in graph]
+            live_in += [n for n in live_out if n not in writes]
+            link_all_pairs(live_in)
+    return graph
+
+
+def __colour(names: list[str], graph: dict[str, set[str]]) -> dict[str, int]:
+    """Greedy interference colouring: non-overlapping same-typed frame locals
+    share a slot, shrinking the heap state frame (and its GC-scanned pointer
+    array)."""
+    colour: dict[str, int] = {}
+    for name in names:
+        used = {colour[n] for n in graph.get(name, ()) if n in colour}
+        c = 0
+        while c in used:
+            c += 1
+        colour[name] = c
+    return colour
+
+
+def __compute_frame_layout(sm_basic_blocks: list[BasicBlock],
+                           hot_basic_blocks: list[BasicBlock],
+                           liveness_ops: tuple[Op, ...]) -> FrameLayout:
+    field_types = __frame_field_types(sm_basic_blocks)
+    frame_names = frozenset(field_types)
+
+    # Build interference over BOTH the state-machine view (authoritative layout)
+    # and the hot-path view (the ops actually executed when no suspension occurs):
+    # a coalesced slot must be safe under both. The hot blocks' ops carry their
+    # own `saved_vars`, so per-op live-in/out interference covers the hot path
+    # too — including operands that both die at one op (e.g. `concat(left,right)`)
+    # which a per-suspension save set alone would miss.
+    hot_ops = tuple(op for bb in hot_basic_blocks for op in bb.ops)
+    graph = __build_interference([liveness_ops, hot_ops], frame_names)
+
+    # Coalesce FIRST, over every frame local: group by exact type and greedily
+    # colour each type-class against the interference graph, so non-overlapping
+    # same-typed locals share one slot. THEN route slots by type — a slot whose
+    # type is strictly object_t* goes to the GC-scanned trailing array (so even
+    # the pointer roots are coalesced, shrinking the array to the peak live
+    # count); every other slot is an inline field.
+    by_type: dict[Type, list[str]] = {}
+    for name, typ in field_types.items():
+        by_type.setdefault(typ, []).append(name)
+
+    ptr_slots: dict[str, int] = {}
+    inline_slots: dict[str, str] = {}
+    slot_fields: list[tuple[str, Type]] = []
+    n_array = 0
+    for type_index, (typ, names) in enumerate(by_type.items()):
+        colour = __colour(names, graph)
+        if isinstance(typ, DataPointer):
+            base = n_array
+            for name in names:
+                ptr_slots[name] = base + colour[name]
+            n_array += len(set(colour.values()))
+        else:
+            for c in sorted(set(colour.values())):
+                slot_fields.append((f"$slot${type_index}${c}", typ))
+            for name in names:
+                inline_slots[name] = f"$slot${type_index}${colour[name]}"
+
+    return FrameLayout(ptr_slots, inline_slots, tuple(slot_fields), n_array)
+
+
+def __state_field(name: str, typ: Type, state_param: RParam,
+                  state_name: str, layout: FrameLayout) -> ObjectField:
+    """Reference to a frame local: a slot in the trailing pointer array when the
+    local is strictly `object_t*`, its shared inline slot when it is a coalesced
+    inline local, otherwise a plain named field."""
+    if name in layout.ptr_slots:
+        return ObjectField(DataPointer(), state_param, state_name, "array",
+                           Integer(layout.ptr_slots[name], 32))
+    if name in layout.inline_slots:
+        return ObjectField(typ, state_param, state_name, layout.inline_slots[name], None)
+    return ObjectField(typ, state_param, state_name, name, None)
+
+
 def __convert_var_to_field_refs(ops: Iterable[Op],
                                  vars_to_fields: dict[str, LParam]) -> tuple[Op, ...]:
     # Each StackVar name within a function is unique to one declaration
@@ -487,23 +657,35 @@ def __zero_val(t: Type) -> RParam:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def __create_state_object(fn: Function, state_name: str,
-                           basic_blocks: list[BasicBlock]) -> Object:
-    """Object that stores all state needed across async suspensions."""
-    # Collect every live var and every call-result register
-    fields: dict[str, Type] = {}
-    for bb in basic_blocks[:-1]:
-        for var in bb.live:
-            fields[var.name] = var.get_type()
-        if bb.result is not None and isinstance(bb.result, StackVar):
-            fields[bb.result.name] = bb.result.get_type()
+                           layout: FrameLayout) -> Object:
+    """Object that stores all state needed across async suspensions.
+
+    Layout:
+        type, my_task                 — header pointers (low slots)
+        <inline pointer-bearing slots: fun_t, pointer-carrying structs, …>
+        idx, $ptr_count, <pure non-pointer slots>   — moved to the end
+        array[N] : object_t*          — every strictly-`object_t*` local
+    Each inline slot is a coalesced field shared by same-typed, non-overlapping
+    locals (see __compute_frame_layout). Pointer-bearing slots are kept ahead of
+    the non-pointer remainder so their offsets — and hence their
+    `object_pointer_locations` bits — stay low, independent of how many primitive
+    slots follow. The strict-pointer bulk lives in the trailing array and is
+    GC-scanned by length, not by mask bit.
+    """
+    inline_ptr = tuple((n, t) for n, t in layout.slot_fields if t.has_pointers)
+    non_ptr    = tuple((n, t) for n, t in layout.slot_fields if not t.has_pointers)
 
     heap_fields: tuple[tuple[str, Type], ...] = (
         ("type",    DataPointer()),   # vtable (required first field)
         ("my_task", DataPointer()),   # our task (what we're fulfilling)
-        ("idx",     Int(32)),         # which call site we're suspended at
+    ) + inline_ptr + (
+        ("idx",        Int(32)),      # which call site we're suspended at
+        ("$ptr_count", Int(32)),      # array length, for the GC scan
+    ) + non_ptr + (
+        ("array", Array(DataPointer(), 0)),   # strict object_t* locals
     )
-    heap_fields += tuple((name, typ) for name, typ in fields.items())
-    return Object(state_name, (), (), ImmediateStruct(heap_fields), comment=fn.comment)
+    return Object(state_name, (), (), ImmediateStruct(heap_fields),
+                  length_field="$ptr_count", comment=fn.comment)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -512,7 +694,8 @@ def __create_state_object(fn: Function, state_name: str,
 
 def __create_hot_path_func(fn: Function, state_name: str,
                             task_subtype_name: str | None,
-                            basic_blocks: list[BasicBlock]) -> Function:
+                            basic_blocks: list[BasicBlock],
+                            layout: FrameLayout) -> Function:
     """
     Original function signature (return type possibly wrapped for primitives).
     After each non-tail call, emits an UNLIKELY(IS_TASK) guard.
@@ -669,16 +852,28 @@ def __create_hot_path_func(fn: Function, state_name: str,
                                    ops=all_ops,
                                    stack_vars=fn.stack_vars + extra_stack)
 
-    # Allocate state object
-    common_ops.append(NewObject(state_name, __sv_state))
+    # Allocate state object. It carries a trailing object_t* array (one slot per
+    # strictly-pointer local), so it is allocated with an element count via
+    # array_create — hence the size argument. array_create zero-fills, so any
+    # inline slot a given call site does not write stays a GC-safe NULL.
+    common_ops.append(NewObject(state_name, __sv_state, Integer(layout.n_array, 32)))
 
-    # Save all state-tracked vars (the union across all call sites).
-    # Vars not yet assigned at this call site carry their prologue zero/null,
-    # which is GC-safe and will be overwritten by the state machine on resume.
-    for var in all_state_vars:
-        common_ops.append(Move(
-            ObjectField(var.get_type(), __sv_state, state_name, var.name, None),
-            var))
+    # Save only the locals live at the suspending call site. Because inline slots
+    # are shared between locals with disjoint live ranges, writing the whole union
+    # would let a dead local clobber a live one in a shared slot — so we dispatch
+    # on the recorded call id and save just that site's live set.
+    non_terminal = basic_blocks[:-1]
+    common_ops.append(SwitchJump(__sv_call_id,
+        tuple((i + 1, f"$save${i}") for i in range(len(non_terminal)))))
+    common_ops.append(Jump("$save$done"))   # default: unreachable (every suspend sets a known id)
+    for i, bb in enumerate(non_terminal):
+        common_ops.append(Label(f"$save${i}"))
+        for var in bb.live:
+            common_ops.append(Move(
+                __state_field(var.name, var.get_type(), __sv_state, state_name, layout),
+                var))
+        common_ops.append(Jump("$save$done"))
+    common_ops.append(Label("$save$done"))
 
     # Set my_task = NULL before task allocation so the GC sees a valid field
     # if it traces the state object during NewObject(task).
@@ -732,7 +927,8 @@ def __create_hot_path_func(fn: Function, state_name: str,
 
 def __create_state_machine_func(fn: Function, state_name: str,
                                  task_subtype_name: str | None,
-                                 basic_blocks: list[BasicBlock]) -> Function:
+                                 basic_blocks: list[BasicBlock],
+                                 layout: FrameLayout) -> Function:
     """
     void foo$async(object_t* $state, object_t* $completed_task)
 
@@ -752,12 +948,12 @@ def __create_state_machine_func(fn: Function, state_name: str,
     # to stay consistent.
     vars_to_fields: dict[str, LParam] = {}
     for bb in non_terminal:
-        for var, field in bb.live.items():
-            vars_to_fields.setdefault(var.name, field)
+        for var in bb.live:
+            vars_to_fields.setdefault(var.name, __state_field(
+                var.name, var.get_type(), __state_param_var, state_name, layout))
         if bb.result is not None and isinstance(bb.result, StackVar):
-            vars_to_fields.setdefault(bb.result.name, ObjectField(
-                bb.result.get_type(), __state_param_var, state_name,
-                bb.result.name, None))
+            vars_to_fields.setdefault(bb.result.name, __state_field(
+                bb.result.name, bb.result.get_type(), __state_param_var, state_name, layout))
 
     idx_field = ObjectField(Int(32), __state_param_var, state_name, "idx", None)
     my_task_field = ObjectField(DataPointer(), __state_param_var, state_name, "my_task", None)
@@ -1036,8 +1232,22 @@ def __convert_function_to_task_convention(
 
     task_subtype_name = __task_subtype_name(fn.result)
 
+    # The state-machine view (musttail calls unrolled to Call+Return) defines the
+    # authoritative frame layout — it may carry extra result temps the hot path
+    # never materialises. Compute the frame layout (array slots + coalesced inline
+    # slots) from it once and share it across the hot path, state object, and
+    # state machine so every local lands in the same slot everywhere.
+    if any(isinstance(op, Call) and op.musttail for op in after_tail.ops):
+        sm_fn = __unroll_musttail_for_state_machine(after_tail)
+        sm_basic_blocks = __create_basic_blocks(sm_fn, state_name)
+    else:
+        sm_fn = after_tail
+        sm_basic_blocks = basic_blocks
+    layout = __compute_frame_layout(sm_basic_blocks, basic_blocks,
+                                    __calculate_saved_vars(sm_fn).ops)
+
     hot_fn = __create_hot_path_func(after_tail, state_name,
-                                     task_subtype_name, basic_blocks)
+                                     task_subtype_name, basic_blocks, layout)
 
     # Scan for ParallelCall blocks; generate par_task structs, slot callbacks, and launcher callbacks.
     par_objects: dict[str, Object] = {}
@@ -1063,20 +1273,13 @@ def __convert_function_to_task_convention(
         # Sync function: $asynccommon aborts; no state machine, no state object.
         return {hot_fn.name: hot_fn} | par_functions, par_objects
 
-    # The state machine needs musttail Calls re-expanded back to Call+Return
-    # so the existing terminal-Return → task_complete logic fires. The hot path
-    # keeps the musttail so its terminal C codegen emits `return foo(...)`.
-    # Skip the re-expansion (and second basic-block partition) when there's
-    # nothing to unroll — most async functions hit this path.
-    if any(isinstance(op, Call) and op.musttail for op in after_tail.ops):
-        sm_fn = __unroll_musttail_for_state_machine(after_tail)
-        sm_basic_blocks = __create_basic_blocks(sm_fn, state_name)
-    else:
-        sm_fn = after_tail
-        sm_basic_blocks = basic_blocks
-    state_obj  = __create_state_object(sm_fn, state_name, sm_basic_blocks)
+    # sm_fn / sm_basic_blocks (and the shared frame layout) were computed above so
+    # the hot path and state machine agree on the frame layout. The state-machine
+    # view re-expands musttail Calls to Call+Return so the existing terminal-Return
+    # → task_complete logic fires; the hot path keeps the musttail.
+    state_obj  = __create_state_object(sm_fn, state_name, layout)
     machine_fn = __create_state_machine_func(sm_fn, state_name,
-                                              task_subtype_name, sm_basic_blocks)
+                                              task_subtype_name, sm_basic_blocks, layout)
     functions = {hot_fn.name: hot_fn, machine_fn.name: machine_fn} | par_functions
     objects   = {state_obj.name: state_obj} | par_objects
     return functions, objects

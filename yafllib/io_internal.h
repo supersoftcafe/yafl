@@ -148,6 +148,13 @@ typedef struct io_job {
     int32_t                 caller_length;     // REFILL: caller's requested length
     int32_t                 raw_result;        // bytes moved, 0 for EOF, -errno on failure
     bool                    eof;               // REFILL: 0 bytes + feof()
+
+    // Worker-managed in-flight list links (io.c). NOT GC-traced and never
+    // touched by IO threads: these keep every dispatched-but-not-finished job
+    // reachable as a GC root so the collector cannot reclaim a job whose only
+    // heap anchor (io_t.in_flight) is momentarily unscanned during a moving cycle.
+    struct io_job*          root_next;
+    struct io_job*          root_prev;
 } io_job_t;
 
 VTABLE_DECLARE_STRUCT(io_vtable, 16);

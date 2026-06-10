@@ -173,6 +173,72 @@ fun splitLines(s: System::String): List<System::String>
   ret loop(0, List<System::String>())
 
 
+# ── substring search & manipulation ───────────────────────────────────────
+# All offsets are BYTE offsets (like the find* family). Searching is anchored on
+# the strict byte sequence, which for UTF-8 coincides with codepoint matching —
+# a multi-byte character only matches its exact bytes, so no codepoint-aware
+# variant is needed.
+
+# Byte offset of the first occurrence of `needle` in `s` at or after `from`, or
+# -1 if it does not occur. The empty needle matches at `from`. memmem-style
+# search in C — O(n+m) in practice, not the O(n*m) of a byte-by-byte loop.
+fun indexOf(s: System::String, needle: System::String, from: System::Int): System::Int
+  ret __builtin_op__<bigint>("string_index_of", s, needle, from)
+
+# True if `needle` occurs anywhere in `s` (the empty needle always does).
+fun contains(s: System::String, needle: System::String): System::Bool
+  ret indexOf(s, needle, 0) >= 0
+
+fun startsWith(s: System::String, prefix: System::String): System::Bool
+  let n = length(prefix)
+  ret n > length(s) ? false : slice(s, 0, n) == prefix
+
+fun endsWith(s: System::String, suffix: System::String): System::Bool
+  let n = length(suffix)
+  let m = length(s)
+  ret n > m ? false : slice(s, m - n, m) == suffix
+
+# Split `s` on each non-overlapping occurrence of `sep`, left to right; the text
+# between separators forms the result, so "a,,b" on "," -> ["a", "", "b"] and a
+# string without `sep` yields a single-element list. An empty separator is
+# degenerate and returns the whole string unsplit.
+fun split(s: System::String, sep: System::String): List<System::String>
+  fun [tail] loop(from: System::Int, acc: List<System::String>): List<System::String>
+    let at = indexOf(s, sep, from)
+    ret at < 0
+      ? append(acc, slice(s, from, length(s)))
+      : loop(at + length(sep), append(acc, slice(s, from, at)))
+  ret length(sep) == 0 ? append(List<System::String>(), s) : loop(0, List<System::String>())
+
+# Join `parts` into one string with `sep` between adjacent elements. Builds
+# through a StringBuilder, so the cost is linear in the total size. The builder
+# is linear, so it is threaded by explicit recursion rather than `fold` (whose
+# accumulator type is unrestricted).
+fun join(parts: List<System::String>, sep: System::String): System::String
+  fun joinRest(sb: StringBuilder, rest: List<System::String>): StringBuilder
+    ret match(head<System::String>(rest))
+      (x: System::String) => joinRest(append(append(sb, sep), x), tail<System::String>(rest))
+      (e: System::None)   => sb
+  ret match(head<System::String>(parts))
+    (first: System::String) => toString(joinRest(append(StringBuilder(), first), tail<System::String>(parts)))
+    (e: System::None)       => ""
+
+fun trimStart(s: System::String): System::String
+  ret slice(s, skipAny(s, " \t\n\r", 0), length(s))
+
+# Trims by byte: whitespace is ASCII-only and UTF-8 continuation bytes are always
+# >= 0x80, so scanning bytes from the end never splits a multi-byte character.
+fun trimEnd(s: System::String): System::String
+  fun isSpace(b: System::Int32): System::Bool
+    ret b == ' ' || b == '\t' || b == '\n' || b == '\r'
+  fun [tail] back(end: System::Int): System::Int
+    ret end <= 0 ? 0 : isSpace(byteAt(s, end - 1)) ? back(end - 1) : end
+  ret slice(s, 0, back(length(s)))
+
+fun trim(s: System::String): System::String
+  ret trimEnd(trimStart(s))
+
+
 class [linear,final] StringBuilder(_buffer: String, _offset: Int)
 
 fun StringBuilder(): StringBuilder => StringBuilder("", 0)

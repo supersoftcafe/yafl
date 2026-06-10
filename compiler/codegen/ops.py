@@ -228,10 +228,14 @@ class NewObject(Op): # Create a new blank instance of the named object
                 size=self.size and self.size.replace_params(replacer))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        # Store through to_c_store so a pointer-bearing heap-slot register is
+        # write-barriered (the freshly created object is a pointer; the slot's
+        # prior value must be marked when it is a reused/coalesced slot).
         if self.size is not None:
-            return f"    {self.register.to_c(type_cache)} = array_create(obj_{mangle_name(self.name)}, {self.size.to_c(type_cache)});\n"
+            value = f"array_create(obj_{mangle_name(self.name)}, {self.size.to_c(type_cache)})"
         else:
-            return f"    {self.register.to_c(type_cache)} = object_create(obj_{mangle_name(self.name)});\n"
+            value = f"object_create(obj_{mangle_name(self.name)})"
+        return self.register.to_c_store(type_cache, value)
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         live = self.size.get_live_vars() if self.size else frozenset()
@@ -301,13 +305,17 @@ class Call(Op):
             obj = fn.object.to_c(type_cache) if fn.object else "NULL"
             call = f"(({return_type}(*)(object_t*{types_str})){f_ref})({obj}{params_str})"
             if rg:
-                return f"    {rg.to_c(type_cache)} = {call};\n"
+                # Store through to_c_store so a pointer-bearing heap-slot register
+                # gets a GC write barrier (marks the overwritten value). A raw
+                # `rg = call` is only safe for write-once slots; coalesced slots
+                # are reused, so the old value must be barrier-marked.
+                return rg.to_c_store(type_cache, call)
             return f"    {tailreturn}{call};\n"
 
         fun_decl = f"        fun_t fun = {self.function.to_c(type_cache)};\n"
         call = f"(({return_type}(*)(object_t*{types_str}))fun.f)(fun.o{params_str})"
         if rg:
-            assign = f"        {rg.to_c(type_cache)} = {call};\n"
+            assign = rg.to_c_store(type_cache, call)
         else:
             assign = f"        {tailreturn}{call};\n"
         return f"    {{\n{fun_decl}{unpack}{assign}    }}\n"

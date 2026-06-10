@@ -15,6 +15,7 @@ set(SRC_FILES
     object.c
     parallel.c
     primitive.c
+    stackguard.c
     string.c
     task.c
     thread.c
@@ -61,6 +62,7 @@ set(TEST_SRC_FILES
     object.c
     parallel.c
     primitive.c
+    stackguard.c
     string.c
     task.c
     thread.c
@@ -74,6 +76,11 @@ function(add_yafl_test name)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(${name} PRIVATE m)
     add_test(NAME ${name} COMMAND ${name})
+    # Run every C test with heap poisoning on: reclaimed objects are wiped with
+    # 0x42 and the scanner aborts on any live->reclaimed edge, so a GC
+    # use-after-free fails the suite deterministically instead of silently
+    # reading stale memory. Production default is off (YAFL_GC_POISON unset).
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1")
 endfunction()
 
 add_yafl_test(test_integer)
@@ -84,6 +91,17 @@ add_yafl_test(test_task)
 add_yafl_test(test_io_stress)
 add_yafl_test(test_gc_stress)
 add_yafl_test(test_gc_min)
+add_yafl_test(test_gc_step)
+add_yafl_test(test_gc_ring)
+# test_gc_min2: raw-pthread repro of the snapshot-smear window (a thread's
+# allocations between cycle start and its own root scan land on pages taken
+# into the current cycle, with no birth protection). Closed by the allocate-
+# black-in-window guard in _object_alloc — this test is its regression test.
+add_yafl_test(test_gc_min2)
+# test_gc_step2: single-stepped transitive (root->holder->child) scenario; it
+# PASSES, but only because the conservative stack/register scan leaks the
+# child's address — it cannot demonstrate the hazard it describes. Kept in
+# tests/ as documentation, not registered.
 add_yafl_test(test_parallel)
 add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)

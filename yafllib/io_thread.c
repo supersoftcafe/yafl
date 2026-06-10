@@ -43,9 +43,10 @@ HIDDEN struct io_job_vtable IO_JOB_VTABLE = {
 };
 
 
-// Plain mutex+condvar MPMC queue.  No GC roots are required here: every
-// in-flight job is rooted via io_t.in_flight (or, for OPEN, via the
-// task's reachability through the caller's state's my_task → task → io).
+// Plain mutex+condvar MPMC queue.  The queue linkage is NOT a GC root: in-flight
+// jobs are kept reachable by a separate worker-managed list (see _io_inflight_*
+// in io.c), so the IO threads — which are not GC-scanned and must not touch GC
+// state — only ever move plain pointers around here.
 static pthread_mutex_t _io_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  _io_queue_cond = PTHREAD_COND_INITIALIZER;
 static io_job_t*       _io_queue_head = NULL;
@@ -314,7 +315,10 @@ static void* _io_thread_main(void* arg) {
 }
 
 
+HIDDEN void _io_inflight_roots_register(void);   // io.c
+
 HIDDEN void _io_threadpool_init(void) {
+    _io_inflight_roots_register();
     for (intptr_t i = 0; i < IO_THREAD_COUNT; ++i) {
         pthread_t t;
         pthread_create(&t, NULL, _io_thread_main, (void*)i);

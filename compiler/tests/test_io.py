@@ -154,7 +154,7 @@ fun main(): System::Int
                 self.assertEqual(b"abcd", f.read())
 
     def test_read_line_reads_one_line(self):
-        """readLine returns the first line (without the newline) from a
+        """readLine returns the first line VERBATIM (newline kept) from a
         file containing several lines."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "lines.txt")
@@ -166,9 +166,9 @@ import System::IO
 
 {_DONE}
 fun pickLine(h: IO): System::Int
-  let r = h.readLine()
+  let r = readLine(h)
   ret match(r.v)
-    ("hello") => _done(r.io, 0)
+    ("hello\\n") => _done(r.io, 0)
     (s: System::String) => _done(r.io, 1)
     (e: IOError) => _done(r.io, 2)
 
@@ -178,10 +178,10 @@ fun main(): System::Int
     (e: IOError) => 88
 """
             code = compile_and_run_stdlib(src)
-            self.assertEqual(0, code, "readLine must return first line without newline")
+            self.assertEqual(0, code, "readLine must return the first line with its newline")
 
-    def test_read_line_strips_crlf(self):
-        """readLine strips both '\\r' and '\\n' from the trailing line terminator."""
+    def test_read_line_keeps_crlf(self):
+        """readLine returns the line VERBATIM, keeping a CRLF terminator as-is."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "crlf.txt")
             with open(path, "wb") as f:
@@ -192,9 +192,9 @@ import System::IO
 
 {_DONE}
 fun pickLine(h: IO): System::Int
-  let r = h.readLine()
+  let r = readLine(h)
   ret match(r.v)
-    ("hi") => _done(r.io, 0)
+    ("hi\\r\\n") => _done(r.io, 0)
     (s: System::String) => _done(r.io, 1)
     (e: IOError) => _done(r.io, 2)
 
@@ -204,7 +204,7 @@ fun main(): System::Int
     (e: IOError) => 88
 """
             code = compile_and_run_stdlib(src)
-            self.assertEqual(0, code, "readLine must strip \\r\\n")
+            self.assertEqual(0, code, "readLine must keep \\r\\n verbatim")
 
     def test_read_line_eof_on_empty_file(self):
         """readLine on an empty file returns EOFError."""
@@ -218,7 +218,7 @@ import System::IO
 
 {_DONE}
 fun pickLine(h: IO): System::Int
-  let r = h.readLine()
+  let r = readLine(h)
   ret match(r.v)
     (s: System::String) => _done(r.io, 1)
     (e: IOError) => match(e)
@@ -253,9 +253,9 @@ class Triple(a: System::String, b: System::String, c: System::String)
 
 {_DONE}
 fun readThree(io: IO): (io: IO, v: Triple|IOError)
-  ret io.readLine() ?> (io: IO, a: System::String) =>
-      io.readLine() ?> (io: IO, b: System::String) =>
-      io.readLine() ?> (io: IO, c: System::String) =>
+  ret readLine(io) ?> (io: IO, a: System::String) =>
+      readLine(io) ?> (io: IO, b: System::String) =>
+      readLine(io) ?> (io: IO, c: System::String) =>
       (io=io, v=Triple(a, b, c))
 
 fun check(h: IO): System::Int
@@ -263,9 +263,9 @@ fun check(h: IO): System::Int
   let closed = r.io.close()
   ret match(r.v)
     (t: Triple) => match(t.a)
-      ("one") => match(t.b)
-        ("two") => match(t.c)
-          ("three") => 0
+      ("one\\n") => match(t.b)
+        ("two\\n") => match(t.c)
+          ("three\\n") => 0
           (x) => 31
         (x) => 22
       (x) => 11
@@ -292,7 +292,7 @@ import System::IO
 
 {_DONE}
 fun pickLine(h: IO): System::Int
-  let r = h.readLine()
+  let r = readLine(h)
   ret match(r.v)
     ("abc") => _done(r.io, 0)
     (s: System::String) => _done(r.io, 1)

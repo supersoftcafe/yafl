@@ -1,0 +1,123 @@
+# findstr — parallel substring search over a directory tree.
+#
+#   findstr <substring> [path]      (path defaults to ".")
+#
+# Walks the tree under <path>, and prints every line of every file that
+# contains <substring> as `file:lineNo:line`. Plain substring match — no regex.
+#
+# The point of the example is to give `__parallel__` a real workout: the list of
+# files is searched divide-and-conquer, with the two halves handed to separate
+# workers at every level of the split. (Later, once automatic parallelisation
+# lands, the explicit `__parallel__` here can be removed.)
+#
+import System
+import System::IO
+
+
+# ── gather files (sequential walk) ────────────────────────────────────────────
+# Helpers are nested as siblings of their callers (not nested inside one another):
+# a closure may reference a sibling nested function or an outer variable, but not
+# a function in an *enclosing* scope.
+
+fun gatherFiles(path: String): List<String>
+  # Skip empty names and dotfiles — this also drops "." / ".." (avoiding infinite
+  # recursion) and noise like ".git".
+  fun skipEntry(name: String): Bool
+    ret length(name) == 0 || byteAt(name, 0) == '.'
+  fun gatherDir(): List<String>
+    ret match(listDir(path))
+      (names: List<String>) =>
+          fold<String, List<String> >(names, List<String>(),
+            (acc: List<String>, name: String) =>
+              skipEntry(name) ? acc : concat<String>(acc, gatherFiles(path + "/" + name)))
+      (e: IOError) => List<String>()
+  ret match(stat(path))
+    (info: FileInfo) => info.isDir ? gatherDir() : prepend<String>(path, List<String>())
+    (e: IOError)     => List<String>()
+
+
+# ── search (parallel divide-and-conquer over the file list) ───────────────────
+
+fun searchFiles(needle: String, files: List<String>): List<String>
+  # Strip a trailing line terminator for display: readLine returns lines verbatim
+  # (with their '\n'/'\r\n'), so chomp before printing to avoid double newlines.
+  fun chomp(line: String): String
+    let n = length(line)
+    ret n > 0 && byteAt(line, n - 1) == '\n'
+      ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
+      : line
+
+  # Print a matching line immediately (side effect) and return the next line
+  # number; non-matches just advance. Matches are streamed straight to stdout
+  # rather than accumulated, so nothing is held between lines.
+  fun emit(path: String, lineNo: Int, line: String): Int
+    println(path + ":" + String(lineNo) + ":" + chomp(line))
+    ret lineNo + 1
+  fun step(path: String, lineNo: Int, line: String): Int
+    ret contains(line, needle) ? emit(path, lineNo, line) : lineNo + 1
+
+  # Stream the file a line at a time, printing matches as they're found. `[tail]`
+  # so the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
+  # buffer refills. The whole file is never held in memory.
+  fun [tail] scan(io: IO, path: String, lineNo: Int): (io: IO, v: System::None)
+    let r = readLine(io)
+    ret match(r.v)
+      (line: String) => scan(r.io, path, step(path, lineNo, line))
+      (e: IOError)   => (r.io, None)
+
+  fun searchOpen(path: String, io: IO): List<String>
+    let r = scan(io, path, 1)
+    let closed = r.io.close()
+    ret List<String>()
+
+  fun searchOneFile(path: String): List<String>
+    ret match(open_read(path))
+      (io: IO)     => searchOpen(path, io)
+      (e: IOError) => List<String>()
+
+  # Divide the list (`splitHalf` finds the midpoint without a length) and search
+  # the halves in parallel.
+  fun searchSplit(): List<String>
+    let parts = splitHalf<String>(files)
+    let (left, right) = __parallel__(
+          () => searchFiles(needle, parts.left),
+          () => searchFiles(needle, parts.right))
+    ret concat<String>(left, right)
+
+  # At least one file: with a second, split and recurse; otherwise search it.
+  fun searchFrom(first: String): List<String>
+    ret match(head<String>(tail<String>(files)))
+      (second: String) => searchSplit()
+      (e: None)        => searchOneFile(first)
+
+  ret match(head<String>(files))
+    (first: String) => searchFrom(first)
+    (e: None)       => List<String>()
+
+
+# ── output ────────────────────────────────────────────────────────────────────
+
+fun printList(lines: List<String>): System::None
+  # Iterate with `fold` (a `[tail]` loop) rather than per-element recursion: there
+  # can be very many matches, and recursion that doesn't suspend would run on the
+  # C stack via the async hot path and overflow it.
+  ret fold<String, System::None>(lines, None,
+        (acc: System::None, line: String) => println(line))
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+fun main(): System::Int
+  fun usage(): System::Int
+    println("usage: findstr <substring> [path]")
+    ret 2
+  fun run(needle: String, rest: List<String>): System::Int
+    fun pathArg(): String
+      ret match(head<String>(rest))
+        (p: String) => p
+        (e: None)   => "."
+    printList(searchFiles(needle, gatherFiles(pathArg())))
+    ret 0
+  ret match(head<String>(args()))
+    (needle: String) => run(needle, tail<String>(args()))
+    (e: None)        => usage()

@@ -151,8 +151,15 @@ class CallableSpec(TypeSpec):
         else:
             result_result = False
 
-        # Direction swaps for parameters
-        params_result = trivially_assignable_equals(resolver, right.parameters, self.parameters)
+        # Direction swaps for parameters. Compare the parameter lists DIRECTLY
+        # (not via trivially_assignable_equals, which unwraps a 1-tuple to its
+        # element): a parameter list's arity is significant, so a 1-parameter
+        # callable must stay a length-1 TupleSpec, not collapse to its bare
+        # element. Without this, an N-vs-1 arity mismatch whose lone parameter is
+        # an as-yet-unresolved NamedSpec comes back undecided (None) instead of
+        # False, so overload resolution can't reject the wrong-arity candidate on
+        # its arguments alone and stalls waiting on the (here unknowable) result.
+        params_result = right.parameters.trivially_assignable_from(resolver, self.parameters)
 
         if result_result == False or params_result == False:
             return False

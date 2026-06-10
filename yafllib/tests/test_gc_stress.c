@@ -110,6 +110,8 @@ static void _finisher(task_obj_t* task) {
 
     GC_WRITE_BARRIER(task->result, 1);
     task->result = result;
+    GC_MARK_SEEN(result);   // insertion barrier — mirrors the io.c finishers: once we
+                            // return, task->result is the only reference to `result`.
     task_complete((object_t*)task);
 }
 

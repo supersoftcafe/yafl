@@ -199,6 +199,18 @@ static size_t scan_within(size_t snapshot, size_t page_count, size_t step_budget
 }
 
 
+// Pages handed out by memory_pages_alloc are guaranteed ZERO. Virgin pages
+// exposed by a watermark extension are zero already (MAP_ANONYMOUS), so only
+// REUSED runs pay a memset — and callers (the GC page allocator, and through
+// it every object allocation) never need to zero anything themselves.
+static void* claimed_run(size_t idx, size_t page_count, bool reused) {
+    atomic_fetch_add_explicit(&alloc_count, page_count, memory_order_relaxed);
+    char* run = pages_heap + idx * GC_PAGE_SIZE;
+    if (reused)
+        memset(run, 0, page_count * GC_PAGE_SIZE);
+    return run;
+}
+
 EXPORT void* memory_pages_alloc(size_t page_count) {
     assert(page_count > 0);
 
@@ -211,8 +223,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
         size_t snapshot = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
         size_t idx = scan_within(snapshot, page_count, MAX_SCAN_PROBES);
         if (idx != SIZE_MAX) {
-            atomic_fetch_add_explicit(&alloc_count, page_count, memory_order_relaxed);
-            return pages_heap + idx * GC_PAGE_SIZE;
+            return claimed_run(idx, page_count, true);
         }
 
         // Phase 2: no reusable run inside the probe budget; extend the active
@@ -230,8 +241,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
                 // unbounded scan before declaring OOM.
                 size_t last = scan_within(cur, page_count, SIZE_MAX);
                 if (last != SIZE_MAX) {
-                    atomic_fetch_add_explicit(&alloc_count, page_count, memory_order_relaxed);
-                    return pages_heap + last * GC_PAGE_SIZE;
+                    return claimed_run(last, page_count, true);
                 }
                 abort_on_out_of_memory();
             }
@@ -247,9 +257,9 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
             // it just past where it gave up; preserving that lets the next
             // allocation resume the walk and find any free region further
             // along, instead of redoing the same fruitless probes from the
-            // bump location.
-            atomic_fetch_add_explicit(&alloc_count, page_count, memory_order_relaxed);
-            return pages_heap + cur * GC_PAGE_SIZE;
+            // bump location. Freshly exposed pages are virgin mmap — already
+            // zero — so this path skips the memset entirely.
+            return claimed_run(cur, page_count, false);
         }
         // A concurrent scanner that observed our new watermark snuck in and
         // claimed the freshly exposed pages first. The watermark advance is

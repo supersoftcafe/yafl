@@ -15,7 +15,7 @@ from tests.testutil import compile_and_run_stdlib
 _LEN_PROG = (
     "import System\n"
     "fun main(): System::Int\n"
-    "    ret System::length<System::String>(System::args())\n"
+    "    ret System::fold<System::String, System::Int>(System::args(), 0, (a: System::Int, x: System::String) => a + 1)\n"
 )
 
 

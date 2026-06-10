@@ -69,6 +69,11 @@ EXPORT int32_t thread_current_id(void) {
 
 // Push `task` onto `queue` and wake any consumer waiting on it.
 static void _queue_push(worker_queue_t* queue, task_t* task) {
+    // Insertion barrier (same hazard as task_on_complete): once pushed, the
+    // queue linkage may be this task's only reference, and the poster's stack
+    // — the marker's only other way to see it — may already have been scanned
+    // this cycle. Tell the marker directly or it prunes a queued task.
+    GC_MARK_SEEN((object_t*)task);
     atomic_store(&task->next, (task_t*)NULL);
     pthread_mutex_lock(&queue->lock);
     if (queue->tail) {
@@ -88,6 +93,12 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
     if (task) {
         queue->head = atomic_load(&task->next);
         if (queue->head == NULL) queue->tail = NULL;
+        // Deletion barrier before clearing the chain link: the successor's
+        // snapshot reachability runs through task->next, and after this store
+        // its only reference is queue->head. Erasing the edge unbarriered lets
+        // the marker lose the rest of the queue if `task` is walked after the
+        // clear — the successor is then pruned while still queued.
+        GC_WRITE_BARRIER(task->next, 1);
         atomic_store(&task->next, (task_t*)NULL);
     }
     pthread_mutex_unlock(&queue->lock);
@@ -158,12 +169,17 @@ HIDDEN void* _thread_main_loop(void* param) {
     _my_queue     = queue;
     _my_thread_id = (int32_t)thread_id;
 
-    if (thread_id == 0) {
-        __entrypoint__(NULL, (fun_t){ .f=__exit__, .o=NULL });
-    }
-
+    // Start the GC once every worker has registered its stack — but BEFORE
+    // thread 0 runs the entry point. A fully-synchronous main() never returns
+    // from __entrypoint__ (it runs to completion and exits there), so decrementing
+    // after the entry-point call left the countdown stuck at 1 and the collector
+    // never started — the heap then just filled until OOM.
     if (atomic_fetch_sub(&_thread_countdown_to_gc_start, 1) == 1) {
         gc_start();
+    }
+
+    if (thread_id == 0) {
+        __entrypoint__(NULL, (fun_t){ .f=__exit__, .o=NULL });
     }
 
     intptr_t length = _queues->length;

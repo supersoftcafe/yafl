@@ -139,7 +139,7 @@ fun keep(s: String): Bool
 
 fun main(): System::Int
   ret match(listDir("{tmp}"))
-    (l: List<String>) => length<String>(filter<String>(l, keep))
+    (l: List<String>) => fold<String,Int>(filter<String>(l, keep), 0, (a: Int, x: String) => a + 1)
     (e: IOError)      => -1
 """
             self.assertEqual(3, compile_and_run_stdlib(src))

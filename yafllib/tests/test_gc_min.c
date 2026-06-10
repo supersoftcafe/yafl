@@ -139,6 +139,7 @@ static void _do_iteration(void);
 static void _finisher(task_obj_t* task) {
     object_t* result = NULL;
     for (int i = 0; i < ALLOCS_PER_ITER; ++i) {
+        GC_SAFE_POINT();   // loop backedge safe-point, as generated YAFL code has
         result = _do_alloc(i);
     }
     GC_WRITE_BARRIER(task->result, 1);

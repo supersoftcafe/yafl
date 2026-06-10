@@ -13,6 +13,7 @@ build/**
 **/__pycache__
 **/.*.swp
 examples/test
+examples/build/**
 examples/*.c
 examples/*.asm
 examples/*.a

@@ -31,3 +31,4 @@ function(add_yafl_program name)
 endfunction()
 
 add_yafl_program(json_pretty)
+add_yafl_program(findstr)

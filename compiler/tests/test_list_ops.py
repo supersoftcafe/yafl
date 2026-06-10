@@ -44,8 +44,8 @@ fun build50(l: List<Int>, i: Int): List<Int>
   ret i > 50 ? l : build50(append<Int>(l, i), i + 1)
 
 fun main(): Int
-  # ─── empty ─────────────────────────────────────────────────────────────
-  emit("empty_length", length<Int>(List<Int>()))
+  # ─── empty (count via fold; List has no length by design) ──────────────
+  emit("empty_length", fold<Int,Int>(List<Int>(), 0, (a: Int, x: Int) => a + 1))
 
   # ─── prepend / head ────────────────────────────────────────────────────
   let single = prepend<Int>(42, List<Int>())
@@ -59,9 +59,9 @@ fun main(): Int
   let prepended = buildPrepend()
   emit("prepend_fold_sum", fold<Int,Int>(prepended, 0, (acc: Int, x: Int) => acc + x))
 
-  # ─── mixed prepend/append: length + fold sum ───────────────────────────
+  # ─── mixed prepend/append: count + fold sum ────────────────────────────
   let mixed = buildMixed()
-  emit("mixed_length",   length<Int>(mixed))
+  emit("mixed_length",   fold<Int,Int>(mixed, 0, (a: Int, x: Int) => a + 1))
   emit("mixed_fold_sum", fold<Int,Int>(mixed, 0, (acc: Int, x: Int) => acc + x))
 
   # ─── reverse ───────────────────────────────────────────────────────────

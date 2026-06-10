@@ -17,6 +17,8 @@ fun [foreign("io_open_write"),impure] _open_write(path: String, truncate: Bool):
 
 class [foreign,final] _IO:
   fun [foreign("io_read"),impure]  _read(length: Int): String|Int|None
+  fun [foreign("io_take_line"),impure] _take_line(max: Int): String
+  fun [foreign("io_refill"),impure] _refill(): Int|None
   fun [foreign("io_write"),impure] _write(data: String): Int
   fun [foreign("io_close"),impure] _close(): Int|None
 
@@ -69,24 +71,56 @@ class [linear,final] IO(_io: _IO)
       (c: Int)          => _close_result(c)
       (n: System::None) => None
 
-  # Read one byte at a time, stop at '\n', skip '\r', accumulate other bytes.
-  # EOF with some bytes already read returns those bytes as a successful
-  # partial line; EOF before any bytes propagates EOFError.
-  fun readLine(): (io: IO, v: String|IOError)
-    ret _read_line_loop(this, "")
+  # Pull the next line fragment out of the buffer: bytes up to and including the
+  # next '\n', or up to `maxLen` bytes, or whatever remains buffered — verbatim.
+  # Synchronous (never blocks); "" when the buffer is empty.
+  fun takeLine(maxLen: Int): (io: IO, v: String)
+    ret (this, _io._take_line(maxLen))
+
+  # Top up the buffer from the file. None on EOF, the new byte count on success,
+  # a negative errno on failure. Async — may suspend on disk IO.
+  fun refill(): (io: IO, v: Int|System::None)
+    ret (this, _io._refill())
 
 
-fun _read_line_loop(io: IO, acc: String): (io: IO, v: String|IOError)
-  let r = io.read(1)
+# Read one line, returned VERBATIM — the trailing '\n' (and any '\r') are kept,
+# exactly as found. Reads at most `maxLen` bytes, so an over-long line (or a file
+# with no newlines at all, e.g. binary data) comes back in `maxLen`-sized pieces
+# and memory stays bounded regardless of file content. EOF before any bytes
+# yields EOFError; EOF after some bytes yields the final partial line.
+fun readLine(io: IO, maxLen: Int): (io: IO, v: String|IOError)
+  ret _read_line_loop(io, System::StringBuilder(), maxLen)
+
+# readLine with a default 4K cap.
+fun readLine(io: IO): (io: IO, v: String|IOError)
+  ret readLine(io, 4096)
+
+fun _read_line_loop(io: IO, sb: System::StringBuilder, remaining: Int): (io: IO, v: String|IOError)
+  let r = io.takeLine(remaining)
+  let chunk = r.v
+  let n = System::length(chunk)
+  # Complete when the chunk ends in '\n' (true end of line) or the maxLen budget
+  # is spent (forced break). Otherwise the buffer drained mid-line — refill.
+  ret n >= remaining || (n > 0 && System::byteAt(chunk, n - 1) == '\n')
+    ? (r.io, System::toString(System::append(sb, chunk)))
+    : _read_line_refill(r.io, System::append(sb, chunk), remaining - n)
+
+fun _read_line_refill(io: IO, sb: System::StringBuilder, remaining: Int): (io: IO, v: String|IOError)
+  let r = io.refill()
   ret match(r.v)
-    ("\n") => (r.io, acc)
-    ("\r") => _read_line_loop(r.io, acc)
-    (s: String) => _read_line_loop(r.io, acc + s)
-    (e: IOError) => match(e)
-      (eof: EOFError) => match(acc)
-        ("") => (r.io, e)
-        (x)  => (r.io, acc)
-      ()              => (r.io, e)
+    (c: Int)          => c < 0 ? _read_line_failed(r.io, sb, c) : _read_line_loop(r.io, sb, remaining)
+    (e: System::None) => _read_line_eof(r.io, sb)
+
+# EOF: whatever was accumulated is the final line; nothing accumulated means the
+# stream is exhausted.
+fun _read_line_eof(io: IO, sb: System::StringBuilder): (io: IO, v: String|IOError)
+  let s = System::toString(sb)
+  ret System::length(s) == 0 ? (io, EOFError(0)) : (io, s)
+
+# Error mid-line: consume the linear builder and surface the errno.
+fun _read_line_failed(io: IO, sb: System::StringBuilder, code: Int): (io: IO, v: String|IOError)
+  let dropped = System::toString(sb)
+  ret (io, _error_from_code(code))
 
 
 fun _write_result(io: IO, n: Int): (io: IO, v: Int|IOError)

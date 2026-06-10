@@ -147,8 +147,13 @@ EXTERN noreturn void log_error_and_exit(char const* format, ...);
 #endif
 
 
+// Bitmask of which pointer-sized slots of an object/array-element are GC
+// pointers, indexed by slot = byteoffset/sizeof(void*). 64 bits: heap state
+// frames are kept within this width by slot coalescing (see async_lower).
+typedef uint64_t ptr_mask_t;
+
 #define maskof(type, field)\
-        ((uint64_t)(((uint64_t)1)<<(offsetof(struct {type o;}, o field)/sizeof(void*))))
+        ((ptr_mask_t)(((ptr_mask_t)1)<<(offsetof(struct {type o;}, o field)/sizeof(void*))))
 
 typedef struct {
     void* f;
@@ -242,7 +247,7 @@ EXTERN volatile bool gc_write_barrier_requested;
 
 
 EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
-EXTERN void _gc_write_barrier2(object_t **field, uint32_t mask);
+EXTERN void _gc_write_barrier2(object_t **field, ptr_mask_t mask);
 EXTERN void _gc_mark_as_seen2(object_t *object);
 
 #define GC_SAFE_POINT()\
@@ -291,6 +296,7 @@ EXTERN void object_gc_init();
 EXTERN void gc_io_begin();   // Start of potentially thread pausing IO
 EXTERN void gc_io_end();     // End of potentially thread pausing IO
 EXTERN void gc_declare_thread(thread_roots_declaration_func_t,void*); // Any thread that can do allocation must call this early on
+EXTERN void yafl_stack_guard_init(void); // Install the per-thread stack-overflow guard (called from gc_declare_thread)
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 
@@ -1038,6 +1044,7 @@ INLINE object_t* ascii_to_string(int32_t b) {
 
 EXTERN object_t* string_resize(object_t* self, object_t* new_size);
 EXTERN object_t* string_find_byte(object_t* self, int32_t byte_value, object_t* from);
+EXTERN object_t* string_index_of (object_t* self, object_t* needle,     object_t* from);
 EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);
 EXTERN object_t* string_skip_any (object_t* self, object_t* accept,     object_t* from);
 EXTERN object_t* string_parse_int(object_t* self);

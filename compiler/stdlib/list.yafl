@@ -18,16 +18,12 @@ enum List<T>
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
 
-fun _listReverseNode<T>(src: _ListNode<T>, acc: _ListNode<T>): _ListNode<T>
+# [tail]: tail-recursive, so it must lower to a loop — a long list would otherwise
+# recurse on the C stack (the async hot path runs synchronous recursion there).
+fun [tail] _listReverseNode<T>(src: _ListNode<T>, acc: _ListNode<T>): _ListNode<T>
   ret match(src)
     (nil: _Nil) => acc
     (c: _Cons)  => _listReverseNode<T>(c.next, _Cons<T>(c.value, acc))
-
-
-fun _listNodeLen<T>(n: _ListNode<T>): Int
-  ret match(n)
-    (nil: _Nil) => 0
-    (c: _Cons)  => 1 + _listNodeLen<T>(c.next)
 
 
 fun _listHeadNode<T>(n: _ListNode<T>): T|None
@@ -83,10 +79,90 @@ fun tail<T>(l: List<T>): List<T>
     (fl: ListFull) => tailFull(fl.front, fl.rear)
 
 
-fun length<T>(l: List<T>): Int
+# O(1) emptiness test. There is deliberately no `length`: a list is a sequence,
+# not an indexable buffer, and asking for its size invites the O(n) `length == 0`
+# / index-by-count patterns that walk the whole list. Match on the structure
+# (`head`/`tail`/`isEmpty`), fold to a count when you genuinely need one, or use
+# `splitHalf` to divide for parallel/recursive work.
+fun isEmpty<T>(l: List<T>): Bool
   ret match(l)
-    (e: ListEmpty) => 0
-    (fl: ListFull) => _listNodeLen<T>(fl.front) + _listNodeLen<T>(fl.rear)
+    (e: ListEmpty) => true
+    (fl: ListFull) => false
+
+
+# Last element, or None when empty. O(1) when the list has pending appends (the
+# rear holds them newest-first, so its head is the true last element); otherwise
+# O(n), walking to the end of the front.
+fun last<T>(l: List<T>): T|None
+  fun [tail] lastNode(n: _ListNode<T>): T|None
+    ret match(n)
+      (nil: _Nil) => None
+      (c: _Cons)  => match(c.next)
+        (next: _Cons) => lastNode(c.next)
+        (e: _Nil)     => c.value
+  ret match(l)
+    (e: ListEmpty) => None
+    (fl: ListFull) => match(fl.rear)
+      (c: _Cons)  => c.value
+      (nil: _Nil) => lastNode(fl.front)
+
+
+# Concatenate two lists, preserving order: every element of `a` then every
+# element of `b`. O(length b) — each of b's elements is appended onto `a`.
+fun concat<T>(a: List<T>, b: List<T>): List<T>
+  ret fold<T, List<T> >(b, a, (acc: List<T>, x: T) => append<T>(acc, x))
+
+
+# First `n` elements (fewer if the list is shorter); `n <= 0` gives the empty
+# list. Counterpart `drop` discards them. Order is preserved.
+fun take<T>(l: List<T>, n: Int): List<T>
+  ret n <= 0 ? List<T>()
+    : match(head<T>(l))
+        (h: T)    => prepend<T>(h, take<T>(tail<T>(l), n - 1))
+        (e: None) => List<T>()
+
+fun drop<T>(l: List<T>, n: Int): List<T>
+  ret n <= 0 ? l
+    : match(head<T>(l))
+        (h: T)    => drop<T>(tail<T>(l), n - 1)
+        (e: None) => l
+
+
+# Split a list into two near-equal halves in a single pass, WITHOUT computing a
+# length: a slow pointer advances one element for every two the fast pointer
+# takes, so when the fast pointer reaches the end the slow one is at the middle.
+# `left` keeps the leading elements in order, `right` the trailing ones. For a
+# list of n >= 2 both halves are non-empty (left = floor(n/2)); this is the
+# length-free way to divide work for recursion or `__parallel__`.
+fun splitHalf<T>(l: List<T>): (left: List<T>, right: List<T>)
+  fun walk(slow: List<T>, fast: List<T>, acc: List<T>): (left: List<T>, right: List<T>)
+    ret match(head<T>(fast))
+      (f1: T) => match(head<T>(tail<T>(fast)))
+        (f2: T) => match(head<T>(slow))
+          (s: T)    => walk(tail<T>(slow), tail<T>(tail<T>(fast)), append<T>(acc, s))
+          (e: None) => (left=acc, right=slow)
+        (e2: None) => (left=acc, right=slow)
+      (f0: None) => (left=acc, right=slow)
+  ret walk(l, l, List<T>())
+
+
+# True if any / every element satisfies `pred`. Both fold the whole list, but the
+# short-circuiting `||`/`&&` skip `pred` once the answer is settled.
+fun any<T>(l: List<T>, pred: (T): Bool): Bool
+  ret fold<T, Bool>(l, false, (acc: Bool, x: T) => acc || pred(x))
+
+fun all<T>(l: List<T>, pred: (T): Bool): Bool
+  ret fold<T, Bool>(l, true, (acc: Bool, x: T) => acc && pred(x))
+
+
+# Membership test, for any element type with an equality instance.
+fun contains<T>(l: List<T>, x: T): Bool where BasicEquality<T>
+  ret any<T>(l, (y: T) => y == x)
+
+
+# Map each element to a list and concatenate the results, in order.
+fun flatMap<T,U>(l: List<T>, f: (T): List<U>): List<U>
+  ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => concat<U>(acc, f(x)))
 
 
 # O(1) when rear is non-empty (swap); O(n) otherwise (must reverse front)
@@ -119,7 +195,7 @@ fun filter<T>(l: List<T>, f: (T): Bool): List<T>
 
 
 fun fold<T,U>(l: List<T>, init: U, f: (U, T): U): U
-  fun foldNode(n: _ListNode<T>, acc: U): U
+  fun [tail] foldNode(n: _ListNode<T>, acc: U): U
     ret match(n)
       (nil: _Nil) => acc
       (c: _Cons)  => foldNode(c.next, f(acc, c.value))

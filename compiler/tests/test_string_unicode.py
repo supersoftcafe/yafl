@@ -56,7 +56,7 @@ fun main(): System::Int
   emit("cp_at_neg", cpOr(s, -1))  # out of range → -1
 
   # ─── codepoints / round-trip ─────────────────────────────────────────
-  emit("codepoints_len", length<System::Int32>(codepoints(s)))
+  emit("codepoints_len", codepointCount(s))
   emitBool("rebuild_round_trips", rebuild(s) == s)
 
   # ─── validation: full string valid, a split multibyte slice is not ───

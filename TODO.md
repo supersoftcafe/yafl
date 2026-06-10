@@ -210,6 +210,10 @@ where lazy thunks land.
 - **Compile times scale with stdlib size** — every example pulls in the whole
   stdlib. As the stdlib grows to support bootstrap, compile times balloon.
 
+# String ops efficiency
+
+String::startsWith and String::endsWith needlessly do heap allocations
+
 # Tail-call optimisation — done
 
 Both sync and async functions now get tail-call optimisation. The state
@@ -321,10 +325,14 @@ There is a SEPARATE, genuine question about more efficient enum *packing* (the
 flat-tagged-union slot layout vs a sum-of-products / boxed-per-variant encoding) —
 deliberately deferred, not a bug. Don't conflate it with this stale note.
 
-# Parallel grep
+# Parallel grep — done (as `examples/findstr`)
 
-Regex search folder hierarchy. Initially explicitly use __parallel__ but later when auto
-parallelisation is in remove explicit parallel usage.
+`examples/findstr.yafl`: substring search (no regex yet) over a folder hierarchy,
+giving `__parallel__` a real workout — the file list is searched divide-and-conquer,
+each half on a separate worker. Walks the tree with `fs.stat`/`listDir`, reads each
+file, and prints `file:lineNo:line` for matching lines. Built by `examples/CMakeLists.txt`;
+guarded by `tests/test_findstr.py`. Future: regex instead of substring, and once auto
+parallelisation lands, drop the explicit `__parallel__`.
 
 # Build system, libraries & examples — done
 

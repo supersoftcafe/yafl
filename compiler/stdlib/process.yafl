@@ -14,7 +14,7 @@ import System::IO
 # packing is lossless and the separators double as the C-string terminators the
 # child's argv needs.  `process_run` (io.c) splits it back out.
 
-fun [foreign("process_run"),impure] _run_packed(packed: String, argc: Int): _SpawnResult|Int
+fun [foreign("process_run"),impure] _run_packed(packed: String): _SpawnResult|Int
 
 class [foreign,final] _SpawnResult:
   fun [foreign("spawn_exit_code"),sync] _exitCode(): Int
@@ -39,7 +39,6 @@ fun _packArgs(program: String, args: List<String>): String
 # the program could not be started.
 fun run(program: String, args: List<String>): ProcessResult|IOError
   let packed = _packArgs(program, args)
-  let argc = 1 + length<String>(args)
-  ret match(_run_packed(packed, argc))
+  ret match(_run_packed(packed))
     (r: _SpawnResult) => ProcessResult(r._exitCode(), r._out(), r._err())
     (c: Int)          => _error_from_code(c)

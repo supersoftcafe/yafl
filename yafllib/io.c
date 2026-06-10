@@ -4,6 +4,59 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
+
+
+// ─── In-flight job GC roots ───────────────────────────────────────────────────
+// A job handed to the IO threads must stay reachable, but its references
+// otherwise leave the GC's view: the IO queue and the IO threads' stacks are not
+// scanned, and io_t.in_flight is a single heap field a moving cycle can miss if
+// its container is marked-but-not-yet-scanned at prune time. So every job is held
+// in this doubly-linked list from creation until its completion finisher runs,
+// and the list is declared a GC root.
+//
+// Mutated ONLY by worker threads (dispatch creates the job; the completion
+// dispatcher removes it — both run on workers), never by the IO threads, so the
+// collector's worker-thread-only invariants hold. The lock serialises concurrent
+// workers and the root walk.
+static pthread_mutex_t _io_inflight_lock = PTHREAD_MUTEX_INITIALIZER;
+static io_job_t*       _io_inflight_head = NULL;
+
+static void _io_inflight_add(io_job_t* job) {
+    pthread_mutex_lock(&_io_inflight_lock);
+    job->root_prev = NULL;
+    job->root_next = _io_inflight_head;
+    if (_io_inflight_head) _io_inflight_head->root_prev = job;
+    _io_inflight_head = job;
+    pthread_mutex_unlock(&_io_inflight_lock);
+}
+
+static void _io_inflight_remove(io_job_t* job) {
+    pthread_mutex_lock(&_io_inflight_lock);
+    if (job->root_prev) job->root_prev->root_next = job->root_next;
+    else                _io_inflight_head         = job->root_next;
+    if (job->root_next) job->root_next->root_prev = job->root_prev;
+    job->root_prev = job->root_next = NULL;
+    pthread_mutex_unlock(&_io_inflight_lock);
+}
+
+static roots_declaration_func_t _io_prev_roots;
+static void _io_declare_roots(void(*declare)(object_t**)) {
+    _io_prev_roots(declare);
+    // Mark each in-flight job directly (rather than chaining through root_next,
+    // which is not GC-traced) so a job removed mid-cycle by another worker stays
+    // marked for this cycle and newly added ones are simply caught next cycle.
+    pthread_mutex_lock(&_io_inflight_lock);
+    for (io_job_t* j = _io_inflight_head; j != NULL; j = j->root_next) {
+        io_job_t* t = j;
+        declare((object_t**)&t);
+    }
+    pthread_mutex_unlock(&_io_inflight_lock);
+}
+
+HIDDEN void _io_inflight_roots_register(void) {
+    _io_prev_roots = add_roots_declaration_func(_io_declare_roots);
+}
 
 
 // io_t vtable.  is_mutable=1 means the page is never compacted, so the
@@ -104,6 +157,9 @@ static object_t* _io_finisher_dispatcher(void* job_ptr, object_t* unused) {
     (void)unused;
     io_job_t* job = (io_job_t*)job_ptr;
     job->finisher(job);
+    // The job's result has been consumed; drop it from the in-flight roots.
+    // Runs on a worker thread (this is a worker-queue callback).
+    _io_inflight_remove(job);
     return NULL;
 }
 
@@ -113,7 +169,10 @@ static io_job_t* _io_job_alloc(io_op_t op,
                                void (*finisher)(io_job_t*)) {
     io_job_t* job = (io_job_t*)object_create((vtable_t*)&IO_JOB_VTABLE);
     task_init((object_t*)&job->task);              // sets thread_id, next, state=PENDING
+    // job is freshly object_create'd (all fields zeroed → NULL), so each store's
+    // overwritten value is NULL; the barriers are uniform no-ops here.
     job->task.result     = NULL;
+    GC_WRITE_BARRIER(job->io, 1);
     job->io              = io;
     job->fs_aux          = NULL;
     job->dir             = NULL;
@@ -130,7 +189,12 @@ static io_job_t* _io_job_alloc(io_op_t op,
     // reachable from the completion_task's pointer mask.
     task_t* ct = (task_t*)task_create(NULL);
     task_on_complete((object_t*)ct, (fun_t){.f = (void*)_io_finisher_dispatcher, .o = (object_t*)job});
+    GC_WRITE_BARRIER(job->completion_task, 1);
     job->completion_task = ct;
+
+    // Root the job for its whole in-flight lifetime (until the finisher above
+    // runs). Done last so the job is fully constructed first. Worker thread.
+    _io_inflight_add(job);
     return job;
 }
 
@@ -226,6 +290,35 @@ static void _io_finish_refill(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
+    task_complete((object_t*)&job->task);
+}
+
+
+// Like _io_finish_refill, but resolves to the refilled byte count rather than
+// consuming bytes into a string: the buffer is left full (buf_head = 0) for a
+// following io_take_line. None = EOF (0 bytes); a negative Int = errno.
+static void _io_finish_refill_status(io_job_t* job) {
+    io_t* io = job->io;
+    object_t* result;
+    if (job->eof) {
+        result = NULL;
+    } else if (job->raw_result < 0) {
+        result = integer_from_int32_noalloc(job->raw_result);
+    } else {
+        io->buf_head = 0;
+        io->buf_tail = job->raw_result;
+        result = integer_from_int32(job->raw_result);
+    }
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -243,6 +336,10 @@ static void _io_finish_flush_write(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -261,6 +358,10 @@ static void _io_finish_open(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -275,6 +376,10 @@ static void _io_finish_close(io_job_t* job) {
         : NULL;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -306,6 +411,53 @@ EXPORT object_t* io_read(object_t* self, object_t* o_length) {
     }
 
     return _io_dispatch_refill(io, length);
+}
+
+
+// Pull the next line out of the handle's buffer, synchronously (no refill). Scans
+// for '\n' within the first min(avail, max) bytes; returns the bytes up to AND
+// INCLUDING the '\n' when found, otherwise the whole window (a buffer-end partial
+// line, or a max-length cap). Bytes are returned verbatim — the '\n'/'\r' are
+// kept — and consumed from the buffer. Returns "" when the buffer is empty (the
+// caller then refills via io_refill). The line accumulation across refills, and
+// the max-length budget, live in the YAFL `readLine` loop.
+EXPORT object_t* io_take_line(object_t* self, object_t* o_max) {
+    io_t* io = (io_t*)self;
+    if (io == NULL || io->file == NULL) return NULL;
+
+    int overflow = 0;
+    int32_t max = int32_from_integer_with_overflow(o_max, &overflow);
+    if (overflow || max > IO_READ_MAX) max = IO_READ_MAX;
+
+    int32_t avail = io->buf_tail - io->buf_head;
+    if (max <= 0 || avail <= 0) return string_from_bytes(io->buf + io->buf_head, 0);
+
+    int32_t window = max < avail ? max : avail;
+    void* nl = memchr(io->buf + io->buf_head, '\n', (size_t)window);
+    int32_t take = (nl != NULL)
+        ? (int32_t)((char*)nl - (char*)(io->buf + io->buf_head)) + 1   // include the '\n'
+        : window;
+    object_t* s = string_from_bytes(io->buf + io->buf_head, take);
+    io->buf_head += take;
+    return s;
+}
+
+
+// Refill the handle's buffer for io_take_line. Returns the new byte count (Int),
+// None on EOF, or a negative Int on error. Async (dispatched to the IO thread)
+// unless bytes are already buffered, in which case it reports them immediately.
+EXPORT object_t* io_refill(object_t* self) {
+    io_t* io = (io_t*)self;
+    if (io == NULL || io->file == NULL) return NULL;
+
+    int32_t avail = io->buf_tail - io->buf_head;
+    if (avail > 0) return integer_from_int32(avail);
+
+    io_job_t* job = _io_job_alloc(IO_OP_REFILL, io, _io_finish_refill_status);
+    job->caller_length = 0;
+    _io_anchor_in_flight(io, job);
+    _io_enqueue(job);
+    return _io_as_task(job);
 }
 
 
@@ -386,6 +538,10 @@ static void _fs_finish_stat(io_job_t* job) {
         : (object_t*)job->fs_aux;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -500,6 +656,10 @@ static void _fs_finish_dir_open(io_job_t* job) {
         : (object_t*)job->dir;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -516,6 +676,10 @@ static void _fs_finish_dir_next(io_job_t* job) {
     }
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -526,6 +690,10 @@ static void _fs_finish_dir_close(io_job_t* job) {
         : NULL;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
@@ -565,9 +733,12 @@ static void _spawn_finish(io_job_t* job) {
         object_t* out = string_from_bytes((uint8_t*)(sx->out ? sx->out : (char*)""), sx->out_len);
         GC_WRITE_BARRIER(sr->out, 1);
         sr->out = out;
+        GC_MARK_SEEN(out);   // insertion barrier: sr is marked-seen but not necessarily
+                             // WALKED this cycle, so its children must publish themselves.
         object_t* err = string_from_bytes((uint8_t*)(sx->err ? sx->err : (char*)""), sx->err_len);
         GC_WRITE_BARRIER(sr->err, 1);
         sr->err = err;
+        GC_MARK_SEEN(err);
         result = (object_t*)sr;
     }
     free(sx->packed);
@@ -578,26 +749,32 @@ static void _spawn_finish(io_job_t* job) {
     job->spawn = NULL;
     GC_WRITE_BARRIER(job->task.result, 1);
     job->task.result = result;
+    GC_MARK_SEEN(result);   // insertion barrier: once the finisher returns, task.result
+                            // is the only reference to a freshly-allocated result, so an
+                            // incremental marker that has already scanned this worker's
+                            // roots (or won't walk the birth-protected task) must be told.
     task_complete((object_t*)&job->task);
 }
 
 
 // Worker entry.  `packed` is program + args joined by NUL bytes (the YAFL
-// side builds it); `o_argc` is the element count.  We copy `packed` into a
-// stable malloc buffer and point argv entries at it — the NUL separators
-// double as the C-string terminators each argv element needs.  Returns the
-// async task; spawn/exec failure resolves to a negative errno (→ IOError),
-// while a non-zero child exit is a *success* carried in the result.
-EXPORT object_t* process_run(object_t* self, object_t* packed, object_t* o_argc) {
+// side builds it).  We copy `packed` into a stable malloc buffer and point argv
+// entries at it — the NUL separators double as the C-string terminators each
+// argv element needs.  argc is derived here as the separator count plus one (a
+// NUL never appears inside an element, so the count is exact), sparing the YAFL
+// side an O(n) list length.  Returns the async task; spawn/exec failure resolves
+// to a negative errno (→ IOError), while a non-zero child exit is a *success*
+// carried in the result.
+EXPORT object_t* process_run(object_t* self, object_t* packed) {
     (void)self;
-    int overflow = 0;
-    int32_t argc = int32_from_integer_with_overflow(o_argc, &overflow);
-    if (overflow || argc < 1) argc = 1;
 
     intptr_t local = 0;
     int32_t  len   = 0;
     const char* cstr = string_to_cstr(packed, &local, &len);
     if (len < 0) len = 0;
+
+    int32_t argc = 1;
+    for (int32_t i = 0; i < len; i++) if (cstr[i] == 0) argc++;
 
     spawn_aux_t* sx = (spawn_aux_t*)calloc(1, sizeof(spawn_aux_t));
     sx->packed = (char*)malloc((size_t)len + 1);
