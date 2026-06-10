@@ -91,6 +91,7 @@ class Application:
             f"    .object_pointer_locations = {ptr_mask_str},\n"
             f"    .array_el_pointer_locations = {arr_el_ptr_mask_str},\n"
             f"    .array_len_offset = {arr_len_offset_str},\n"
+            f"    .is_mutable = {1 if o.is_mutable else 0},\n"
             f"    .implements_array = VTABLE_IMPLEMENTS({len(implements_array)}, {implements_str}),\n"
             f"    .lookup = {{ {vtable_str} }},\n"
             f"}};\n")

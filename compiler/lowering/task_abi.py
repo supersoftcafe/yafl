@@ -100,6 +100,7 @@ def make_task_subtype_object(subtype_name: str, result_type: Type) -> Object:
         fields=ImmediateStruct(TASK_FIELDS + (("result", result_type),)),
         comment=f"task subtype for result type {result_type}",
         is_foreign=subtype_name == "task_obj",
+        is_mutable=True,   # state/result/next written after construction — not compactable
     )
 
 

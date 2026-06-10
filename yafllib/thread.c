@@ -67,6 +67,22 @@ EXPORT int32_t thread_current_id(void) {
 }
 
 
+// Tasks currently sitting in worker queues, waiting to run. Suspended tasks
+// (parked on a callback) deliberately do NOT count: backpressure is about
+// runnable backlog, not about how much work is in flight overall.
+static _Atomic(int_fast32_t) _queued_count = 0;
+static int_fast32_t          _backlog_limit = 0;   // set in _thread_init
+
+// Advisory backpressure signal for __parallel__ call sites: true while the
+// runnable backlog is below ~YAFL_TASK_BACKLOG (default 4) tasks per worker.
+// Callers fork new parallel work when it returns true and fall back to plain
+// chained evaluation when it returns false. Purely advisory — a stale answer
+// costs one extra fork or one extra sequential step, and recursive call sites
+// re-ask at every level.
+EXPORT bool thread_work_accepting(void) {
+    return atomic_load_explicit(&_queued_count, memory_order_relaxed) <= _backlog_limit;
+}
+
 // Push `task` onto `queue` and wake any consumer waiting on it.
 static void _queue_push(worker_queue_t* queue, task_t* task) {
     // Insertion barrier (same hazard as task_on_complete): once pushed, the
@@ -75,6 +91,7 @@ static void _queue_push(worker_queue_t* queue, task_t* task) {
     // this cycle. Tell the marker directly or it prunes a queued task.
     GC_MARK_SEEN((object_t*)task);
     atomic_store(&task->next, (task_t*)NULL);
+    atomic_fetch_add_explicit(&_queued_count, 1, memory_order_relaxed);
     pthread_mutex_lock(&queue->lock);
     if (queue->tail) {
         atomic_store(&queue->tail->next, task);
@@ -100,6 +117,7 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
         // clear — the successor is then pruned while still queued.
         GC_WRITE_BARRIER(task->next, 1);
         atomic_store(&task->next, (task_t*)NULL);
+        atomic_fetch_sub_explicit(&_queued_count, 1, memory_order_relaxed);
     }
     pthread_mutex_unlock(&queue->lock);
     return task;
@@ -139,7 +157,8 @@ HIDDEN noreturn void __exit__(object_t* self, object_t* arg) {
     // Distinguish: tasks are untagged heap objects with TASK_OBJ_VTABLE.
     object_t* int_status = arg;
     if (arg != NULL && !((uintptr_t)arg & PTR_TAG_MASK)) {
-        vtable_t* vt = VT_TAG_UNSET(arg->vtable);
+        // Forwarding-aware vtable read (compaction may have relocated arg).
+        vtable_t* vt = object_get_vtable(arg);
         if (vt == (vtable_t*)&TASK_OBJ_VTABLE) {
             int_status = ((task_obj_t*)arg)->result;
         }
@@ -226,6 +245,19 @@ static intptr_t _detect_thread_count(void) {
 static void _thread_init() {
     intptr_t thread_count = _detect_thread_count();
     _thread_countdown_to_gc_start = thread_count;
+
+    // Backpressure threshold: YAFL_TASK_BACKLOG (default 4) queued tasks per
+    // worker. Above this, thread_work_accepting() asks __parallel__ sites to
+    // evaluate sequentially instead of forking.
+    {
+        int_fast32_t per_worker = 4;
+        const char* env = getenv("YAFL_TASK_BACKLOG");
+        if (env && *env) {
+            long n = strtol(env, NULL, 10);
+            if (n >= 1) per_worker = (int_fast32_t)n;
+        }
+        _backlog_limit = per_worker * (int_fast32_t)thread_count;
+    }
 
     object_gc_init();
 

@@ -685,7 +685,8 @@ def __create_state_object(fn: Function, state_name: str,
         ("array", Array(DataPointer(), 0)),   # strict object_t* locals
     )
     return Object(state_name, (), (), ImmediateStruct(heap_fields),
-                  length_field="$ptr_count", comment=fn.comment)
+                  length_field="$ptr_count", comment=fn.comment,
+                  is_mutable=True)   # idx + live vars rewritten at every suspension
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1320,6 +1321,7 @@ def _par_task_object(par_task_name: str, result_types: list[Type]) -> Object:
         fields=ImmediateStruct(fields),
         comment=f"parallel join task with {N} slots",
         is_foreign=False,
+        is_mutable=True,   # remaining counter + per-slot results written after construction
     )
 
 
@@ -1443,12 +1445,112 @@ def collect_task_subtypes(app: Application) -> dict[str, Object]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Backpressure: outline each __parallel__ site behind a runtime fork/chain choice
+# ─────────────────────────────────────────────────────────────────────────────
+
+def __outline_parallel_sites(fn: Function) -> tuple[Function, dict[str, Function]]:
+    """Replace each ParallelCall with a call to a synthesised dispatch helper.
+
+    The helper asks the runtime's advisory backpressure signal and takes one
+    of two arms:
+
+        if (thread_work_accepting())     // queues hungry: spread the work
+            <the original ParallelCall>  // par_task + launchers, suspend on join
+        else                             // backlog full: stop fanning out
+            r0 = slot0(closure0)         // ordinary chained calls — each may
+            r1 = slot1(closure1)         //   suspend via the standard machinery,
+            ...                          //   but no tasks are created or posted
+            return (r0, r1, ...)
+
+    Both arms produce the same tuple; in a pure language the choice is
+    unobservable. The sequential arm allocates NO task machinery, so under
+    load a recursive divide-and-conquer site degrades from breadth-first
+    task explosion to depth-first chains — bounding queue length and the
+    heap pinned by it. The helper is converted by the same async lowering
+    as any other function, so both arms reuse the existing suspension and
+    state-machine machinery unchanged.
+    """
+    if not any(isinstance(op, ParallelCall) for op in fn.ops):
+        return fn, {}
+
+    helpers: dict[str, Function] = {}
+    new_ops: list[Op] = []
+    for op_index, op in enumerate(fn.ops):
+        # Only outline the well-formed shape (named slot functions, a result
+        # tuple). Anything else keeps today's always-parallel lowering.
+        if (not isinstance(op, ParallelCall)
+                or op.register is None
+                or not all(isinstance(c, GlobalFunction) for c in op.calls)):
+            new_ops.append(op)
+            continue
+
+        helper_name = f"{fn.name}$par_site${op_index}"
+        n_slots     = len(op.calls)
+
+        # Helper params: the unused receiver slot, then one closure per slot.
+        closure_params = tuple(StackVar(DataPointer(), f"$c{k}") for k in range(n_slots))
+        helper_calls   = tuple(dataclasses.replace(c, object=closure_params[k])
+                               for k, c in enumerate(op.calls))
+
+        sv_accepting = StackVar(Int(32), "$accepting")
+        seq_calls: list[Op] = [
+            Call(helper_calls[k], NewStruct(()), op.results[k])
+            for k in range(n_slots)
+        ]
+        helper_ops: tuple[Op, ...] = (
+            Move(sv_accepting,
+                 Invoke("thread_work_accepting", NewStruct(()), Int(32))),
+            JumpIf("$fork", sv_accepting),
+            # Sequential arm — falls through when the task system is busy.
+            *seq_calls,
+            Move(op.register,
+                 NewStruct(tuple((f"_{k}", op.results[k]) for k in range(n_slots)))),
+            Return(op.register),
+            # Parallel arm.
+            Label("$fork"),
+            ParallelCall(calls=helper_calls, results=op.results, register=op.register),
+            Return(op.register),
+        )
+        helpers[helper_name] = Function(
+            name=helper_name,
+            params=Struct((("$unused_self", DataPointer()),)
+                          + tuple((p.name, DataPointer()) for p in closure_params)),
+            result=op.register.get_type(),
+            stack_vars=Struct(tuple((v.name, v.get_type())
+                                    for v in (*op.results, op.register, sv_accepting))),
+            ops=helper_ops,
+            comment=f"__parallel__ backpressure dispatch for {fn.name} site {op_index}",
+        )
+
+        # The original site becomes an ordinary (suspendable) call.
+        new_ops.append(Call(
+            GlobalFunction(helper_name),
+            NewStruct(tuple(
+                (f"$c{k}", c.object if c.object is not None else NullPointer())
+                for k, c in enumerate(op.calls))),
+            op.register))
+
+    return dataclasses.replace(fn, ops=tuple(new_ops)), helpers
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
 def lower_async(app: Application) -> Application:
+    # Outline every __parallel__ site behind the backpressure choice first, so
+    # the synthesised helpers are converted by the very same pass below.
+    outlined: dict[str, Function] = {}
+    for name, fn in app.functions.items():
+        if fn.bypass_async or name == "__entrypoint__":
+            outlined[name] = fn
+            continue
+        new_fn, helpers = __outline_parallel_sites(fn)
+        outlined[name] = new_fn
+        outlined |= helpers
+
     results = [__convert_function_to_task_convention(fn)
-               for fn in app.functions.values()]
+               for fn in outlined.values()]
 
     new_functions = reduce(lambda acc, v: acc | v[0], results, {})
     new_objects   = reduce(lambda acc, v: acc | v[1], results, {}) | app.objects

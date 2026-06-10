@@ -211,17 +211,17 @@ typedef struct {
 #define rotate_function_id(id)\
         ((id * sizeof(intptr_t) * 2) | (id / (134217728 / sizeof(intptr_t) * 8)))
 
-enum {
-    VT_TAG_UNMANAGED = 0x0,    // Out of managed heap
-    VT_TAG_MANAGED   = 0x1,    // Heap allocated object, not a static defined object
-    VT_TAG_FORWARD   = 0x2,    // VTable is really a forwarding pointer
-    VT_TAG_UNUSED    = 0x3,    // Unused
-    VT_TAG_MASK      = 0x3
-};
+// The vtable word is an ordinary, untagged pointer. Real vtables are static C
+// globals and therefore live OUTSIDE the managed mmap heap; when compaction
+// relocates an object it stores the new object's address — a heap address —
+// in the old object's vtable word. So "is this word a forwarding pointer?"
+// is exactly the managed-heap range check, no tag bits needed.
+EXTERN char*  _memory_heap_base;    // set once at heap init (mmap.c)
+EXTERN size_t _memory_heap_bytes;
 
-#define VT_TAG_GET(vt)      ((uintptr_t)(vt) & VT_TAG_MASK)
-#define VT_TAG_UNSET(vt)    ((vtable_t*)((uintptr_t)(vt) & ~(uintptr_t)VT_TAG_MASK))
-#define VT_TAG_SET(vt, tag) ((vtable_t*)(((uintptr_t)(vt) & ~((uintptr_t)VT_TAG_MASK)) | (tag)))
+INLINE bool vtable_is_forward(vtable_t* vt) {
+    return (size_t)((char*)vt - _memory_heap_base) < _memory_heap_bytes;
+}
 
 enum {
     PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.
@@ -279,7 +279,14 @@ INLINE bool object_is_instance(object_t* obj, vtable_t* target) {
     if (raw & PTR_TAG_INTEGER) return target == (vtable_t*)&INTEGER_VTABLE;
     if ((raw & PTR_TAG_MASK) == PTR_TAG_STRING) return target == (vtable_t*)&STRING_VTABLE;
     if (raw & PTR_TAG_TASK) return false;
-    vtable_t* vt = VT_TAG_UNSET(obj->vtable);
+    // Follow any forwarding pointers left by compaction: a relocated object's
+    // old slot holds the new object's (heap) address, not a vtable. Mirrors
+    // object_get_vtable.
+    vtable_t* vt = obj->vtable;
+    while (UNLIKELY(vtable_is_forward(vt))) {
+        obj = (object_t*)vt;
+        vt = obj->vtable;
+    }
     if (vt == target) return true;
     for (vtable_t** p = vt->implements_array; *p != NULL; p++) {
         if (*p == target) return true;
@@ -438,6 +445,10 @@ EXTERN object_t* task_par_decrement(object_t* par_task);
 EXTERN void thread_work_post(object_t* task);
 // Round-robin post across workers — use when spreading parallel work.
 EXTERN object_t* thread_work_post_parallel(object_t* task);
+// Advisory backpressure: true while the runnable backlog is small enough that
+// __parallel__ sites should fork; false asks them to evaluate sequentially.
+// Threshold = YAFL_TASK_BACKLOG (default 4) queued tasks per worker.
+EXTERN bool thread_work_accepting(void);
 // Create an ad-hoc dispatch task from a fun_t and post it to the current thread.
 // Returns NULL; the object_t* return makes the symbol usable from the YAFL
 // compiler's `Invoke` form (which always assigns the result into a discard slot).

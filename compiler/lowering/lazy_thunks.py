@@ -216,6 +216,7 @@ def make_stub_object(value_type: Type) -> Object:
             ("value",   value_type),
         )),
         comment=f"lazy stub for {_ir_mangle(value_type)}",
+        is_mutable=True,   # flag/value memoised after construction — not compactable
     )
 
 

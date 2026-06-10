@@ -9,7 +9,7 @@
 #include <time.h>
 
 
-#define COMPACT_THRESHOLD_PERCENT   0
+#define COMPACT_THRESHOLD_PERCENT   33
 #define REPROCESS_PAGE_COUNT        16
 
 // --- GC pacing --------------------------------------------------------------
@@ -283,16 +283,6 @@ thread_local struct gc_thread_info {
     bool roots_scanned;
     _Atomic(enum thread_state) thread_state;
 
-    // Quarantine: pages freed during a GC cycle are not reusable in the same
-    // cycle (the scanner may still hold a stale pointer through a forwarding
-    // chain, or a conservative stack pointer might still resolve to a slot in
-    // them). Pages age through pending_free_pages_curr → ..._prev → mmap
-    // across cycle boundaries; they spend at least one full cycle in pending
-    // before being released back to memory_pages_free.
-    list_element_t pending_free_pages_curr;
-    list_element_t pending_free_pages_prev;
-    uint64_t       last_drained_cycle;
-
     list_element_t  new_pages; // Circular list of pages waiting for next GC
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
@@ -307,15 +297,23 @@ static enum gc_stage         stage = GC_STAGE_NOT_STARTED;
 static uint32_t              epoch = 0; // Must never be 0, except now
 
 // Bumped each time gc_fsa_prune drains pages_to_prune to empty (i.e., a full
-// GC cycle has completed). Per-thread allocation paths consult this to age
-// quarantined free pages: a page freed when this counter == K only becomes
-// reusable when the counter has advanced past K.
+// GC cycle has completed). Diagnostic only.
 static _Atomic(uint64_t)     gc_cycle_count = 0;
 
 static _Atomic(gc_page_t*) reprocess_page_list[REPROCESS_PAGE_COUNT];
 static atomic_size_t       reprocess_page_head;
 static atomic_size_t       reprocess_page_tail;
 static atomic_bool         reprocess_overflow_flag;
+
+// Mark worklist: objects discovered on ALREADY-PROCESSED pages are queued here
+// and scanned directly, instead of re-queueing their whole page and re-diffing
+// its bitmaps to find them. Only touched under fsa_lock (the scanner's own
+// marking); the mutator-side barrier keeps its reprocess ring. On overflow we
+// fall back to the page-requeue path, so this is purely an optimisation.
+#define MARK_WORKLIST_SIZE  4096
+#define MARK_DRAIN_PER_STEP 512   // bound per-step latency like the page budget
+static object_t* mark_worklist[MARK_WORKLIST_SIZE];
+static unsigned  mark_worklist_count = 0;
 
 
 /**
@@ -326,6 +324,23 @@ static atomic_bool         reprocess_overflow_flag;
 static list_element_t pages_to_scan  = {&pages_to_scan, &pages_to_scan};
 static list_element_t pages_to_prune = {&pages_to_prune, &pages_to_prune};
 
+
+// --- Idle dwell: how long the collector rests between cycles ----------------
+//
+// Without a dwell the FSA chains PRUNE -> IDLE -> START on the very next
+// allocation, re-marking the whole live heap back-to-back — total GC work
+// then scales with cycle frequency rather than with garbage. Instead, after
+// each cycle the next one starts only once the allocated page count exceeds
+//     min( 3 x survivors of the last cycle's scan set,  total heap / 2 )
+// where "survivors" counts pages that came through PRUNE alive (pages
+// allocated during the cycle are birth-protected, never enter the prune
+// list, and so are deliberately excluded). The half-heap cap means a live
+// set approaching half the heap degrades gracefully to continuous
+// collection rather than risking OOM. Starts at zero, so the first cycle
+// begins with the first page allocation.
+extern size_t memory_total_pages(void);
+static size_t gc_cycle_survivors  = 0;   // pages surviving PRUNE this cycle
+static size_t gc_dwell_threshold  = 0;   // allocated-pages level that starts the next cycle
 
 // --- GC diagnostics (set YAFL_GC_STATS to enable; prints to stderr).
 // A sampled progress line every 512 page allocations, plus a [GC TIME]
@@ -421,25 +436,6 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
         }
     }
 
-    // Age quarantined pages whenever the GC has advanced past the cycle in
-    // which we last drained: pages on `prev` have survived a full cycle in
-    // pending so any scanner active at the time of the free has finished.
-    // Release them to mmap; promote curr → prev. A page freed during cycle K
-    // therefore becomes reusable no earlier than cycle K+2.
-    {
-        uint64_t cur = atomic_load(&gc_cycle_count);
-        if (cur != gc_thread_info.last_drained_cycle) {
-            list_element_t *elem;
-            while ((elem = list_pop(&gc_thread_info.pending_free_pages_prev)) != NULL) {
-                gc_page_t *page = (gc_page_t*)elem;
-                page->head.tag = 0;
-                memory_pages_free(page, page->head.pages);
-            }
-            list_move(&gc_thread_info.pending_free_pages_prev, &gc_thread_info.pending_free_pages_curr);
-            gc_thread_info.last_drained_cycle = cur;
-        }
-    }
-
     // memory_pages_alloc guarantees zeroed pages (virgin mmap pages are zero
     // already; reused runs are zeroed on the reuse path), so the header
     // bitmaps, the slot region and every future object's fields start NULL
@@ -458,25 +454,12 @@ static NOINLINE_DEBUG void gc_page_free(gc_page_t* page) {
     assert(page->head.tag == PAGE_MAGIC_NUMBER);
     LOG(TRACE, "gc_page_free(%d) = 0x%lx", page->head.pages, (uintptr_t)page);
 
-    // Multi-page allocations go back to mmap immediately — they are never
-    // resurrected by the conservative scanner via interior pointers (those
-    // land on BODY pages that fail memory_pages_is_alloc_head), so
-    // quarantining them buys nothing.
-    if (page->head.pages != 1) {
-        page->head.tag = 0;
-        memory_pages_free(page, page->head.pages);
-        return;
-    }
-
-    // Single-page release: park on the per-thread quarantine list. Leave
-    // page->head.tag == PAGE_MAGIC_NUMBER and the objects bitmap intact for
-    // the duration of the quarantine so a conservative pointer that still
-    // resolves to this page passes the existing on-heap checks rather than
-    // tripping an assertion. The page is released to mmap only after
-    // gc_page_alloc ages it through curr → prev → memory_pages_free in a
-    // future GC cycle.
-    //
-    list_link(&gc_thread_info.pending_free_pages_curr, (list_element_t*)&page->head.list);
+    // Straight back to mmap. A stale conservative stack slot that still
+    // resolves into this page is handled by the scanner's own checks (FREE
+    // marker, zeroed tag during re-initialisation, zeroed objects bitmap on
+    // reuse) — see gc_object_is_on_heap_slow.
+    page->head.tag = 0;
+    memory_pages_free(page, page->head.pages);
 }
 
 
@@ -556,7 +539,7 @@ EXPORT void* object_create(vtable_t *vtable) {
     // is load-bearing — the generated code writes each pointer field through
     // the GC write barrier, which marks the field's PRIOR value, and a
     // partially-initialised object may be scanned; NULL is safe, garbage is not.
-    object->vtable = VT_TAG_SET(vtable, VT_TAG_MANAGED);
+    object->vtable = vtable;
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);
     return object;
 }
@@ -570,7 +553,7 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
     // memory_pages_alloc; slots are bumped at most once per page lifetime).
     // That matters: a pointer-bearing object (e.g. a heap state frame) may be
     // scanned before every field is written — NULL is safe, garbage is not.
-    object->vtable = VT_TAG_SET(vtable, VT_TAG_MANAGED);
+    object->vtable = vtable;
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);
     return object;
@@ -596,11 +579,11 @@ EXPORT size_t object_get_size(object_t* ptr) {
 
 EXPORT vtable_t *object_get_vtable(object_t *object) {
     vtable_t *vt = object->vtable;
-    while (UNLIKELY(VT_TAG_GET(vt) == VT_TAG_FORWARD)) {
-        object_t *next_object = (object_t*)VT_TAG_UNSET(vt);
+    while (UNLIKELY(vtable_is_forward(vt))) {
+        object_t *next_object = (object_t*)vt;
         vt = next_object->vtable;
     }
-    return VT_TAG_UNSET(vt);
+    return vt;
 }
 
 EXPORT fun_t object_lookup_vtable(object_t *object, intptr_t id) {
@@ -671,10 +654,6 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     gc_thread_info.thread_roots_declaration_func = thread_roots_declaration_func;
     gc_thread_info.thread_roots_context = thread_roots_context;
 
-    gc_thread_info.pending_free_pages_curr.next = gc_thread_info.pending_free_pages_curr.prev = &gc_thread_info.pending_free_pages_curr;
-    gc_thread_info.pending_free_pages_prev.next = gc_thread_info.pending_free_pages_prev.prev = &gc_thread_info.pending_free_pages_prev;
-    gc_thread_info.last_drained_cycle = 0;
-
     gc_thread_info.next = threads;
     gc_thread_info.thread_state = THREAD_STATE_RUNNING;
 
@@ -740,7 +719,8 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
 
         object_t *target = _object_alloc(size, false);       // Allocate new object
         memcpy(target, object, size);                        // Copy contents across
-        object->vtable = VT_TAG_SET(target, VT_TAG_FORWARD); // Set forwarding pointer
+        object->vtable = (vtable_t*)target;                  // Forwarding pointer: a heap
+                                                             // address here means "moved"
     }
 }
 #endif
@@ -765,14 +745,16 @@ static bool gc_object_is_on_heap_slow(object_t *object) {
         // page holds no live objects, so rejecting it is always correct.
         && page->head.tag == PAGE_MAGIC_NUMBER
         && (asint & (GC_PAGE_SIZE-1)) >= offsetof(gc_page_t, slots)             // Does NOT point into the page header
-        && bitmap_test(&page->head.objects, ((slot_t*)object) - page->slots)    // Is a real and exists object in this page
-        && VT_TAG_GET(object->vtable) != VT_TAG_UNMANAGED;     // Must be heap managed according to the tag
+        && bitmap_test(&page->head.objects, ((slot_t*)object) - page->slots);   // Is a real and exists object in this page
 }
 
 static bool gc_object_is_on_heap_fast(object_t *object) {
-    return object != NULL                                  // Must have a non-zero value
-        && ((intptr_t)object & PTR_TAG_MASK) == 0          // No packed data: rejects PTR_TAG_TASK (0x1), PTR_TAG_INTEGER (0x2), and PTR_TAG_STRING (0x4)
-        && VT_TAG_GET(object->vtable) != VT_TAG_UNMANAGED; // Must be heap managed according to the tag
+    // One unsigned compare covers NULL (wraps to huge), static objects
+    // (outside the mmap region) and wild values — WITHOUT touching the
+    // candidate object's memory. This range check is also what lets the
+    // vtable word be an ordinary pointer: heap-vs-static needs no tag bit.
+    return ((intptr_t)object & PTR_TAG_MASK) == 0          // No packed data: rejects PTR_TAG_TASK (0x1), PTR_TAG_INTEGER (0x2), and PTR_TAG_STRING (0x4)
+        && (size_t)((char*)object - _memory_heap_base) < _memory_heap_bytes;
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
@@ -810,8 +792,8 @@ static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) 
     object_t *object = *field_ptr;
     while (gc_object_is_on_heap_fast(object)) {
         atomic_gc_object_mark_as_seen(object);
-        if (LIKELY(VT_TAG_GET(object->vtable) != VT_TAG_FORWARD)) break;
-        *field_ptr = object = (object_t*)VT_TAG_UNSET(object->vtable);
+        if (LIKELY(!vtable_is_forward(object->vtable))) break;
+        *field_ptr = object = (object_t*)object->vtable;
     }
 }
 
@@ -823,6 +805,9 @@ static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) 
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
+
+    gc_cycle_survivors = 0;   // accumulated through this cycle's PRUNE stage
+    mark_worklist_count = 0;  // stale entries must not leak across cycles
 
     gc_write_barrier_requested = true;
     reprocess_page_head = reprocess_page_tail = 0;
@@ -852,13 +837,14 @@ static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, ob
         object_t *object = *range_ptr;
         if (gc_object_is_on_heap_slow(object)) {
             // Conservative candidate: a stale stack slot can point into a
-            // quarantined page whose header the (lock-free, concurrent)
-            // quarantine drain is clearing under us, so mark it tolerantly —
-            // no asserting helpers. A spurious mark on a dying page is
-            // harmless; missing a REAL object is impossible because live
-            // pages are never drained. The reprocess-queue handling that
-            // atomic_gc_object_mark_as_seen does is not needed here: during
-            // SCAN_ROOTS no page has been mark-swept this epoch yet.
+            // freed page that a concurrent gc_page_alloc is re-initialising
+            // under us, so mark it tolerantly — no asserting helpers. A
+            // spurious mark lands either on a dying page (harmless) or on a
+            // real live object (over-retention, also harmless); missing a
+            // REAL object is impossible because live pages are never freed.
+            // The reprocess-queue handling that atomic_gc_object_mark_as_seen
+            // does is not needed here: during SCAN_ROOTS no page has been
+            // mark-swept this epoch yet.
             gc_page_t* page = (gc_page_t*)((uintptr_t)object &~ (uintptr_t)(GC_PAGE_SIZE-1));
             ptrdiff_t  slot = (slot_t*)object - page->slots;
             page->head.scanner.pinned = true;
@@ -931,6 +917,11 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
 // one step, so schedule the remainder onto the thread's safe-points via
 // lag_counter. See the pacing comment at the top of this file.
 static int_fast32_t gc_catch_up_credit(void) {
+    // No catch-up debt while the collector is dwelling between cycles — the
+    // racy read of `stage` is fine (advisory; a cycle starting concurrently
+    // just means this allocation credits nothing and the next one credits).
+    if (stage == GC_STAGE_IDLE)
+        return 0;
     size_t rate  = memory_count() / gc_pace_div;
     size_t steps = rate / GC_PACE_STEP_PAGES;
     if (steps > GC_PACE_LAG_MAX) steps = GC_PACE_LAG_MAX;
@@ -950,19 +941,37 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
     object_get_page_and_slot(object, &page, &slot);
     bool was_set = bitmap_fetch_set(&page->head.scanner.seen, slot);
 
-    // Might need to move page ahead of the scanner for a re-scan
+    // Newly marked on a page the scanner already processed this epoch: queue
+    // the OBJECT for a direct scan; re-queue the whole page only if the
+    // worklist is full.
     if (!was_set && page->head.scanner.processed_by_epoch == epoch) {
-        GC_STAT_BUMP(gc_stat_rq_mark);
-        gc_fsa_mark_sweep$page_needs_scan(page);
+        if (mark_worklist_count < MARK_WORKLIST_SIZE) {
+            mark_worklist[mark_worklist_count++] = object;
+        } else {
+            GC_STAT_BUMP(gc_stat_rq_mark);
+            gc_fsa_mark_sweep$page_needs_scan(page);
+        }
     }
 }
 
 static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t pointer_locations) {
-    while (pointer_locations) {
-        // Get the object reference
-        unsigned index = __builtin_ctzll(pointer_locations);
-        pointer_locations &= pointer_locations - 1;
-        object_t **ptr_ptr = &base_ptr[index];
+    // Two passes: first gather the heap children and prefetch their page
+    // headers (where the mark bitmaps live), then mark them. The gather pass
+    // issues all the independent loads up front so the header misses overlap
+    // instead of serialising one per child.
+    object_t **batch[64];
+    unsigned   count = 0;
+    for (ptr_mask_t m = pointer_locations; m; m &= m - 1) {
+        unsigned index = __builtin_ctzll(m);
+        object_t *object = base_ptr[index];
+        if (gc_object_is_on_heap_fast(object)) {
+            __builtin_prefetch(&((gc_page_t*)((uintptr_t)object &~ (uintptr_t)(GC_PAGE_SIZE-1)))->head.scanner, 1);
+            batch[count++] = &base_ptr[index];
+        }
+    }
+
+    for (unsigned i = 0; i < count; ++i) {
+        object_t **ptr_ptr = batch[i];
         object_t *object = *ptr_ptr;
 
         while (gc_object_is_on_heap_fast(object)) {
@@ -970,11 +979,10 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
 
             // Apply any forwarding pointer if found
             vtable_t *vt = object->vtable;
-            if (LIKELY(VT_TAG_GET(vt) != VT_TAG_FORWARD))
+            if (LIKELY(!vtable_is_forward(vt)))
                 break;
 
-            *ptr_ptr = object = (object_t*)VT_TAG_UNSET(vt);
-            vt = object->vtable;
+            *ptr_ptr = object = (object_t*)vt;
         }
     }
 }
@@ -983,7 +991,12 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
 // scanned whose GC pointer field references a reclaimed (poisoned) object.
 // Aborts with the offending edge instead of faulting deep in the scanner.
 static void _dbg_dangle_check(object_t* object) {
-    vtable_t* vt = VT_TAG_UNSET(object->vtable);
+    // Follow forwarding to the real vtable; the field walk below still reads
+    // the payload at `object` itself (a forwarder's old payload mirrors the
+    // copy's layout until fixup rewrites it).
+    vtable_t* vt = object->vtable;
+    while (UNLIKELY(vtable_is_forward(vt)))
+        vt = ((object_t*)vt)->vtable;
     uint64_t m = vt->object_pointer_locations;
     while (m) {
         unsigned i = (unsigned)__builtin_ctzll(m); m &= m-1;
@@ -1004,14 +1017,13 @@ static void _dbg_dangle_check(object_t* object) {
 static void gc_fsa_mark_sweep$scan_object(object_t *object) {
     if (UNLIKELY(gc_poison_enabled))
         _dbg_dangle_check(object);
-    // Find the real vtable pointer
+    // Find the real vtable pointer (forwarding-aware; targets get marked too)
     vtable_t *vt = object->vtable;
-    for (object_t *ptr = object; UNLIKELY(VT_TAG_GET(vt) == VT_TAG_FORWARD); ) {
-        ptr = (object_t*)VT_TAG_UNSET(vt);
+    for (object_t *ptr = object; UNLIKELY(vtable_is_forward(vt)); ) {
+        ptr = (object_t*)vt;
         gc_fsa_mark_sweep$mark_object(ptr);
         vt = ptr->vtable;
     }
-    vt = VT_TAG_UNSET(vt);
 
     // Scan references
     if (vt->object_pointer_locations) {
@@ -1053,6 +1065,20 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_mark_sweep() {
     // size_t x = page_count;
 
     GC_STAT_BUMP(gc_stat_mark_steps);
+
+    // Drain the mark worklist first: scan queued objects directly (LIFO, so
+    // chains are followed depth-first while hot). Mark their scanned bit so a
+    // later pop of their page skips them in the seen&~scanned diff. Bounded
+    // per step to keep fsa_lock hold times short; scanning may push more.
+    for (unsigned drained = 0;
+         mark_worklist_count > 0 && drained < MARK_DRAIN_PER_STEP; ++drained) {
+        object_t *object = mark_worklist[--mark_worklist_count];
+        gc_page_t *pg; ptrdiff_t sl;
+        object_get_page_and_slot(object, &pg, &sl);
+        bitmap_fetch_set(&pg->head.scanner.scanned, sl);
+        gc_fsa_mark_sweep$scan_object(object);
+    }
+
     for (unsigned count = 0; count < GC_PACE_STEP_PAGES; ++count) {
         gc_page_t *page = (gc_page_t*)list_pop(&pages_to_scan);
         if (page == NULL) break;
@@ -1086,7 +1112,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_mark_sweep() {
     }
 
     // More work needs to happen
-    if (!list_empty(&pages_to_scan)) {
+    if (!list_empty(&pages_to_scan) || mark_worklist_count > 0) {
         return GC_STAGE_MARK_SWEEP;
     }
 
@@ -1125,20 +1151,37 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_prune() {
             // Debug (YAFL_GC_POISON): wipe each reclaimed object with 0x42 so
             // any surviving reference to it fails loudly instead of silently
             // reading stale data. Paired with the poison check in scan_object.
+            //
+            // Sizes come from the objects bitmap alone — bump allocation packs
+            // objects contiguously, so an object extends from its start bit to
+            // the next start bit (or the end of the page). Never read vtables
+            // here: a dead slot can be a forwarder left by compaction, and
+            // following its chain can land on a target poisoned moments ago.
             if (UNLIKELY(gc_poison_enabled)) {
+                unsigned prev_slot = 0;
+                bool     prev_dead = false;
                 for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
-                    mask_bits_t value = page->head.objects.a[index] &~ page->head.scanner.seen.a[index];
-                    unsigned offset = index * GC_MASK_SIZE;
-                    while (value) {
-                        unsigned slot = __builtin_ctzll(value) + offset;
-                        value &= value-1;
-                        object_t *object = (object_t*)&page->slots[slot];
-                        LOG(ULTRA, "RELEASE(0x%lx) -> %s", (uintptr_t)object, object_get_vtable(object)->name);
-                        size_t size = object_get_size(object);
-                        memset(object, 0x42, size);
+                    mask_bits_t starts = page->head.objects.a[index];
+                    unsigned    offset = index * GC_MASK_SIZE;
+                    while (starts) {
+                        unsigned slot = __builtin_ctzll(starts) + offset;
+                        starts &= starts-1;
+                        if (prev_dead) {
+                            LOG(ULTRA, "RELEASE(0x%lx)", (uintptr_t)&page->slots[prev_slot]);
+                            memset(&page->slots[prev_slot], 0x42,
+                                   (size_t)(slot - prev_slot) * sizeof(slot_t));
+                        }
+                        prev_slot = slot;
+                        prev_dead = !bitmap_test(&page->head.scanner.seen, slot);
                     }
                 }
+                if (prev_dead) {
+                    LOG(ULTRA, "RELEASE(0x%lx)", (uintptr_t)&page->slots[prev_slot]);
+                    memset(&page->slots[prev_slot], 0x42,
+                           (size_t)(SLOTS_PER_PAGE - prev_slot) * sizeof(slot_t));
+                }
             }
+            gc_cycle_survivors += page->head.pages;
             page->head.objects = page->head.scanner.seen;
             bitmap_reset_all(&page->head.scanner.seen);
             bitmap_reset_all(&page->head.scanner.scanned);
@@ -1158,9 +1201,14 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_prune() {
     }
 
     if (list_empty(&pages_to_prune)) {
-        // End of a full GC cycle: pages quarantined during this cycle now
-        // age one step toward reuse. Other threads observe this bump on
-        // their next gc_page_alloc and drain their own pending lists.
+        // Set the dwell for the next cycle: rest until the allocated page
+        // count exceeds 3x this cycle's survivors, capped at half the heap
+        // (see the idle-dwell comment near the top of this file).
+        size_t cap = memory_total_pages() / 2;
+        size_t threshold = gc_cycle_survivors * 3;
+        gc_dwell_threshold = (cap != 0 && threshold > cap) ? cap : threshold;
+
+        // End of a full GC cycle.
         atomic_fetch_add(&gc_cycle_count, 1);
         return GC_STAGE_IDLE; // All done
     }
@@ -1189,8 +1237,13 @@ static NOINLINE_DEBUG bool gc_fsa() {
             break;
 
         case GC_STAGE_IDLE:
-            LOG(TRACE, "GC_STAGE_IDLE");
-            stage = GC_STAGE_START;
+            // Idle dwell: rest until allocation crosses the threshold set at
+            // the end of the previous cycle. Driven by gc_page_alloc, so the
+            // check runs once per page allocated — not per safe-point.
+            if (memory_count() > gc_dwell_threshold) {
+                LOG(TRACE, "GC_STAGE_IDLE");
+                stage = GC_STAGE_START;
+            }
             break;
 
         case GC_STAGE_START:

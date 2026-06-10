@@ -36,6 +36,15 @@ static pthread_once_t   pages_once = PTHREAD_ONCE_INIT;
 static _Atomic(uint8_t)*pages_info = NULL;
 static char*            pages_heap = NULL;
 static size_t           total_page_count;       // Total mmap size of the heap allocation
+
+// Heap bounds for the is-this-a-heap-pointer range check (declared in yafl.h):
+// used by the GC's hot marking paths AND by vtable_is_forward — a vtable word
+// holding a heap address is a compaction forwarding pointer, since real
+// vtables are statics outside this range. Written once in init(); read racily
+// thereafter — both are zero until then, rejecting everything, which is
+// correct because no heap object can exist before the heap does.
+EXPORT char*  _memory_heap_base  = NULL;
+EXPORT size_t _memory_heap_bytes = 0;
 static _Atomic(size_t)  upper_watermark = 0;    // Highest page index ever part of an allocation
 static _Atomic(size_t)  alloc_count = 0;        // Track real heap usage
 static _Atomic(size_t)  madvise_count = 0;      // Countdown to the next madvise, unmap pages
@@ -106,6 +115,9 @@ static void init() {
 
     pages_heap = allocate_lazy_heap(heap_size);
     pages_info = allocate_lazy_heap(total_page_count);
+
+    _memory_heap_base  = pages_heap;
+    _memory_heap_bytes = heap_size;
 }
 
 
@@ -316,6 +328,12 @@ EXPORT size_t memory_count() {
 
 EXPORT size_t memory_watermark() {
     return atomic_load_explicit(&upper_watermark, memory_order_relaxed);
+}
+
+// Capacity of the whole managed heap in pages (YAFL_HEAP_SIZE / GC_PAGE_SIZE).
+// Zero until the first allocation initialises the heap.
+EXPORT size_t memory_total_pages() {
+    return total_page_count;
 }
 
 

@@ -435,6 +435,12 @@ class Object:
     length_field: str|None = None           # Name of field that is the Int(32) length
     comment: str = ""
     is_foreign: bool = False
+    # True for objects MUTATED after construction (state machines, task
+    # subtypes, par_tasks, lazy stubs). The GC places them on mutable pages,
+    # which are exempt from compaction — relocating an object that is still
+    # being written loses the writes that land in the stale copy. Ordinary
+    # YAFL objects are immutable after construction and stay compactable.
+    is_mutable: bool = False
 
     def __post_init__(self):
         if not isinstance(self.fields, t.ImmediateStruct):
