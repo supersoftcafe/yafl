@@ -134,16 +134,18 @@ fun drop<T>(l: List<T>, n: Int): List<T>
 # `left` keeps the leading elements in order, `right` the trailing ones. For a
 # list of n >= 2 both halves are non-empty (left = floor(n/2)); this is the
 # length-free way to divide work for recursion or `__parallel__`.
+# [tail]: the walk advances one element per step, so on a long list it MUST
+# lower to a loop — plain recursion here overflows the C stack via the async
+# hot path (found by sorting a half-million-word dictionary).
+fun [tail] _splitWalk<T>(slow: List<T>, fast: List<T>, acc: List<T>): (left: List<T>, right: List<T>)
+  ret match(head<T>(slow))
+    (s: T) => isEmpty<T>(fast) || isEmpty<T>(tail<T>(fast))
+        ? (left=acc, right=slow)
+        : _splitWalk<T>(tail<T>(slow), tail<T>(tail<T>(fast)), append<T>(acc, s))
+    (e: None) => (left=acc, right=slow)
+
 fun splitHalf<T>(l: List<T>): (left: List<T>, right: List<T>)
-  fun walk(slow: List<T>, fast: List<T>, acc: List<T>): (left: List<T>, right: List<T>)
-    ret match(head<T>(fast))
-      (f1: T) => match(head<T>(tail<T>(fast)))
-        (f2: T) => match(head<T>(slow))
-          (s: T)    => walk(tail<T>(slow), tail<T>(tail<T>(fast)), append<T>(acc, s))
-          (e: None) => (left=acc, right=slow)
-        (e2: None) => (left=acc, right=slow)
-      (f0: None) => (left=acc, right=slow)
-  ret walk(l, l, List<T>())
+  ret _splitWalk<T>(l, l, List<T>())
 
 
 # True if any / every element satisfies `pred`. Both fold the whole list, but the

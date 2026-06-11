@@ -20,7 +20,7 @@ Each method is lifted to a top-level FunctionStatement whose first explicit para
 from __future__ import annotations
 
 import dataclasses
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import pyast.statement as s
 import pyast.expression as e
@@ -116,7 +116,47 @@ def __find_simple_classes(
         for name, cls in all_classes.items()
         if __is_simple_class(cls, base_class_names)
     }
-    return simple_classes, base_class_names
+    return __prune_recursive(simple_classes), base_class_names
+
+
+def __prune_recursive(
+        simple_classes: dict[str, s.ClassStatement]) -> dict[str, s.ClassStatement]:
+    """Drop candidates that reach themselves through candidate field types.
+
+    A recursive class (directly, `class W(next: W|None)`, or mutually through
+    other candidates) cannot collapse to a finite flat struct: the nested-field
+    fixpoint would inline the class into its own spec forever (it previously
+    diverged — RecursionError at -O0, unbounded memory at -O2). Such classes
+    stay ordinary heap classes. Removing nodes cannot create new cycles, so a
+    single pass suffices.
+    """
+    def referenced(cls: s.ClassStatement) -> set[str]:
+        names: set[str] = set()
+        def visit(_, thing):
+            if isinstance(thing, (t.ClassSpec, t.NamedSpec)) and thing.name in simple_classes:
+                names.add(thing.name)
+            return thing
+        for f in cls.parameters.flatten():
+            if f.declared_type is not None:
+                f.declared_type.search_and_replace(None, visit)
+        return names
+
+    edges = {name: referenced(cls) for name, cls in simple_classes.items()}
+
+    def reaches_self(start: str) -> bool:
+        seen: set[str] = set()
+        stack = list(edges[start])
+        while stack:
+            n = stack.pop()
+            if n == start:
+                return True
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(edges.get(n, ()))
+        return False
+
+    return {name: cls for name, cls in simple_classes.items() if not reaches_self(name)}
 
 
 def __build_tuple_specs(
@@ -197,6 +237,62 @@ def __exclude_standalone_method_refs(
     kept_specs = {n: ts for n, ts in simple_tuple_specs.items()
                   if n in kept_classes}
     return kept_classes, kept_specs
+
+
+def __exclude_union_collisions(
+        simple_classes: dict[str, s.ClassStatement],
+        simple_tuple_specs: dict[str, t.TupleSpec],
+        statements: list[s.Statement],
+        resolver: g.Resolver,
+) -> tuple[dict[str, s.ClassStatement], dict[str, t.TupleSpec]]:
+    """Remove classes whose flattening would collapse a union's nominal variants.
+
+    A simple class flattens to its field tuple — a purely structural spec. Two
+    nominally distinct classes with the same field shape (`Cat(name: String)`,
+    `Dog(name: String)`) therefore flatten to the SAME spec: same unique id,
+    same discriminator tag. If they meet as members of one union, coercion and
+    match dispatch can no longer tell them apart — the checker approved nominal
+    semantics that flattening would silently destroy. Any simple class whose
+    flattened spec would equal another member of a union it appears in (be that
+    another flattened class, or a genuine tuple of the same shape) must stay a
+    heap class.
+
+    Exclusion changes the flattened spec of classes whose fields reference the
+    excluded class, which can resolve or expose further collisions — so iterate
+    to a fixpoint. Exclusions only grow, so this terminates.
+    """
+    unions: list[t.CombinationSpec] = []
+
+    def _collect(_, thing):
+        if isinstance(thing, t.CombinationSpec):
+            unions.append(thing)
+        return thing
+
+    for stmt in statements:
+        stmt.search_and_replace(resolver, _collect)
+
+    classes = dict(simple_classes)
+    specs = dict(simple_tuple_specs)
+    changed = True
+    while changed:
+        changed = False
+        colliding: set[str] = set()
+        for union in unions:
+            mapped: list[tuple[str | None, str | None]] = []
+            for member in union.types:
+                if isinstance(member, (t.ClassSpec, t.NamedSpec)) and member.name in classes:
+                    mapped.append((member.name, specs[member.name].as_unique_id_str()))
+                else:
+                    mapped.append((None, member.as_unique_id_str()))
+            counts = Counter(uid for _, uid in mapped if uid is not None)
+            colliding |= {name for name, uid in mapped
+                          if name is not None and uid is not None and counts[uid] > 1}
+        if colliding:
+            classes = {n: c for n, c in classes.items() if n not in colliding}
+            specs = __lower_nested_field_types(
+                classes, __build_tuple_specs(classes), resolver)
+            changed = True
+    return classes, specs
 
 
 def __name_tuple_entries(param: e.Expression, tuple_spec: t.TupleSpec) -> e.Expression:
@@ -313,6 +409,11 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
     simple_tuple_specs = __lower_nested_field_types(simple_classes, simple_tuple_specs, resolver)
 
     simple_classes, simple_tuple_specs = __exclude_standalone_method_refs(
+        simple_classes, simple_tuple_specs, statements, resolver)
+    if not simple_classes:
+        return statements
+
+    simple_classes, simple_tuple_specs = __exclude_union_collisions(
         simple_classes, simple_tuple_specs, statements, resolver)
     if not simple_classes:
         return statements

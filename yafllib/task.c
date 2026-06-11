@@ -38,10 +38,25 @@ EXPORT struct task_vtable TASK_OBJ_VTABLE = {
 // VTABLE_IMPLEMENTS' static initializer.
 
 
-HIDDEN void _task_call_complete(void* self) {
+// Fire a queued task's callback exactly once. This is the WORKER LOOP's
+// entry — continuations only ever run from a clean dispatch frame. Keying on
+// callback presence (not task state) lets one queue carry both spawned tasks
+// (callback = the body) and deferred completions (state already COMPLETE).
+HIDDEN void _task_fire(void* self) {
     task_t* task = (task_t*)self;
+    atomic_store(&task->state, TASK_COMPLETE);
     fun_t cb = task->callback;
-    ((object_t*(*)(object_t*,object_t*))cb.f)(cb.o, (object_t*)task);
+    if (cb.f) {
+        // Single-fire: clear the stored copy before invoking. A fired
+        // callback left in place RETAINS the whole continuation graph (the
+        // state object, its captured locals, and through them every
+        // intermediate structure the suspended function ever held —
+        // observed: a returned function's state object keeping two
+        // 480k-cell lists alive for the process lifetime).
+        GC_WRITE_BARRIER(task->callback.o, 1);
+        task->callback = (fun_t){ NULL, NULL };
+        ((object_t*(*)(object_t*,object_t*))cb.f)(cb.o, (object_t*)task);
+    }
 }
 
 
@@ -76,8 +91,18 @@ EXPORT object_t* task_obj_create(object_t* self) {
 EXPORT object_t* task_complete(object_t* self) {
     task_t* task = (task_t*)self;
     int32_t old = atomic_exchange(&task->state, TASK_COMPLETE);
+    // DEFERRED resumption: the continuation is queued, never called nested
+    // inside the completer's frame. A synchronous cascade keeps the entire
+    // await-resumption ancestry alive on the C stack — every ancestor's
+    // callback locals (state objects, and everything they captured) become
+    // conservatively pinned for as long as the continuation runs, and a
+    // deep chain can overflow the stack outright. Suspensions go through
+    // the queue; so do resumptions. (Exchange BEFORE post closes the lost
+    // wake-up race the old load-then-store deferred path had: an awaiter
+    // registering concurrently either sees COMPLETE and posts itself, or
+    // its CALLBACK state is seen here.)
     if (old == TASK_CALLBACK)
-        _task_call_complete(task);
+        thread_work_post(self);
     return NULL;
 }
 
@@ -89,14 +114,7 @@ EXPORT object_t* task_complete(object_t* self) {
 // would cascade through the callback chain and overflow the C stack on
 // deep trampoline recursion.
 EXPORT object_t* task_complete_deferred(object_t* self) {
-    task_t* task = (task_t*)self;
-    int32_t old = atomic_load(&task->state);
-    if (old == TASK_CALLBACK) {
-        thread_work_post(self);   // worker will task_complete; that fires the callback
-    } else {
-        atomic_store(&task->state, TASK_COMPLETE);
-    }
-    return NULL;
+    return task_complete(self);   // completion always defers now
 }
 
 
@@ -114,5 +132,9 @@ EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     int32_t expected = TASK_PENDING;
     if (atomic_compare_exchange_strong(&task->state, &expected, TASK_CALLBACK))
         return NULL;
-    return ((object_t*(*)(object_t*,object_t*))callback.f)(callback.o, (object_t*)task);
+    // Task already complete: defer all the same — running the continuation
+    // here would nest it in the REGISTRANT's frames with the same pinned
+    // ancestry problem as a completion-side cascade.
+    thread_work_post(self);
+    return NULL;
 }

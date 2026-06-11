@@ -108,6 +108,17 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
     pthread_mutex_lock(&queue->lock);
     task_t* task = queue->head;
     if (task) {
+        // Deletion barrier for the POPPED TASK ITSELF: the store below
+        // deletes the queue->head edge to it, after which its only
+        // references are C locals in the dispatch path. The current cycle's
+        // snapshot can pre-date both of those: the per-thread stack scan may
+        // already have run, and the global roots scan (which walks the
+        // queues) runs after it — a pop landing between the two hides the
+        // task, and its context, from the whole cycle. Shade it so the
+        // snapshot keeps it. Under continuous collection that window recurs
+        // thousands of times a second. (Found by test_gc_ring: a live
+        // in-flight ctx was pruned and poison-wiped mid-step.)
+        GC_MARK_SEEN((object_t*)task);
         queue->head = atomic_load(&task->next);
         if (queue->head == NULL) queue->tail = NULL;
         // Deletion barrier before clearing the chain link: the successor's
@@ -177,7 +188,10 @@ static atomic_intptr_t _thread_countdown_to_gc_start;
 
 static void(*__entrypoint__)(object_t*, fun_t);
 HIDDEN void* _thread_main_loop(void* param) {
-    gc_declare_thread((void*)declare_local_roots_thread, NULL);
+    // The anchor lives in THIS frame, above every dispatched callback's frame,
+    // so the conservative scan window covers them all.
+    object_t* stack_anchor = NULL;
+    gc_declare_thread((void*)declare_local_roots_thread, NULL, &stack_anchor);
 
     if (param == (void*)0) {
         _thread_init();
@@ -203,10 +217,18 @@ HIDDEN void* _thread_main_loop(void* param) {
 
     intptr_t length = _queues->length;
     for (;;) {
+        // A worker that processes a long run of short, straight-line callbacks
+        // (no loops of their own, so no backedge safe-points) would otherwise
+        // never pass a safe-point: this dispatch loop is its only recurring
+        // backedge, so it carries one. ([tail] functions do NOT come through
+        // here per iteration — they lower to in-function loops; the queue is
+        // involved only across suspensions.)
+        GC_SAFE_POINT();
+
         // Fast path: pop one from our own queue.
         task_t* task = _queue_try_pop(queue);
         if (task) {
-            task_complete((object_t*)task);
+            _task_fire(task);   // clean-stack fire: spawned body or deferred continuation
             continue;
         }
 
@@ -217,7 +239,7 @@ HIDDEN void* _thread_main_loop(void* param) {
             if (task) break;
         }
         if (task) {
-            task_complete((object_t*)task);
+            _task_fire(task);
             continue;
         }
 

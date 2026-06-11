@@ -243,7 +243,6 @@ fun main(): System::Int
                     [c.Input(content, "file.yafl")],
                     use_stdlib=True, just_testing=False,
                     optimization_level=level,
-                    disable_auto_parallel=True,
                 )
                 self.assertNotEqual("", result, f"compilation failed at -O{level}")
                 # The buggy emit was `(struct_anon_1_t){._0 = ...}` wrapping

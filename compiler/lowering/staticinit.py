@@ -7,7 +7,7 @@ import lowering.trim
 from codegen.gen import Application
 from codegen.things import Function, Global
 from codegen.ops import Op, NewObject, Move, Return, Label, Jump, JumpIf, Call
-from codegen.param import RParam, LParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField
+from codegen.param import RParam, LParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField, ZeroOf
 from codegen.typedecl import DataPointer
 
 
@@ -33,6 +33,9 @@ def _trace_to_constant(val: RParam, value_map: dict[str, RParam], globals: dict)
         return val
     if isinstance(val, String):
         return val
+    if isinstance(val, ZeroOf):
+        return val  # zero-fill — renders as a zero initialiser; unit enum
+                    # variants are built entirely from $tag + ZeroOf slots
     if isinstance(val, NewStruct):
         return val  # Intermediate: allows StructField to extract fields
     if isinstance(val, StackVar):

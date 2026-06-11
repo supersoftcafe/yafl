@@ -302,7 +302,7 @@ EXTERN roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
 EXTERN void object_gc_init();
 EXTERN void gc_io_begin();   // Start of potentially thread pausing IO
 EXTERN void gc_io_end();     // End of potentially thread pausing IO
-EXTERN void gc_declare_thread(thread_roots_declaration_func_t,void*); // Any thread that can do allocation must call this early on
+EXTERN void gc_declare_thread(thread_roots_declaration_func_t,void*,object_t** stack_anchor); // Any thread that can do allocation must call this early on; the anchor must be a local in the calling frame — it bounds the conservative stack scan
 EXTERN void yafl_stack_guard_init(void); // Install the per-thread stack-overflow guard (called from gc_declare_thread)
 
 EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
@@ -418,6 +418,7 @@ EXTERN object_t* task_create     (object_t* self);
 EXTERN object_t* task_obj_create (object_t* self);
 EXTERN object_t* task_complete   (object_t* self);
 EXTERN object_t* task_on_complete(object_t* self, fun_t callback);
+EXTERN void _task_fire(void* self); // worker-loop entry: fire a queued task's callback once, on a clean dispatch frame
 
 // Defer completion to a worker iteration. Same effect as task_complete
 // except the registered callback (if any) runs in a fresh stack frame

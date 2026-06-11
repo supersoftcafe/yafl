@@ -98,6 +98,20 @@ add_yafl_test(test_gc_ring)
 # into the current cycle, with no birth protection). Closed by the allocate-
 # black-in-window guard in _object_alloc — this test is its regression test.
 add_yafl_test(test_gc_min2)
+# test_gc_gen: stepped test of immutability-based generations — promotion after
+# GC_PROMOTE_AFTER prunes, exemption from minors, reclamation by a major.
+add_yafl_test(test_gc_gen)
+# test_gc_pressure: a ratcheting live set plus churn whose objects live a few
+# cycles before dying, in a deliberately small heap. Guards the near-full
+# machinery: the pressure backstop in gc_page_alloc, the relocation reserve,
+# and majors demoting DIRTY old pages (whose force-mark otherwise retains
+# their garbage forever — the bug that made yspell abort in any heap < 1 GiB).
+add_yafl_test(test_gc_pressure)
+# test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
+# pinned by a conservative stack slot) must path-compress when scanned — the
+# head's forward word snaps to the tail and the bypassed middle stub's page
+# is reclaimed.
+add_yafl_test(test_gc_fwd_chain)
 # test_gc_step2: single-stepped transitive (root->holder->child) scenario; it
 # PASSES, but only because the conservative stack/register scan leaks the
 # child's address — it cannot demonstrate the hazard it describes. Kept in

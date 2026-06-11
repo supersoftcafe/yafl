@@ -720,22 +720,49 @@ def _is_pointer_union_distinguishable(variant_types: list[cg_t.Type]) -> bool:
     return len(non_unit) >= 1
 
 
+def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
+    """Associativity of `|`: a member that is itself a union contributes its
+    members directly — `(Word|None)|IOError` IS `Word|None|IOError` under set
+    semantics (exactly what a generic `T|E` instantiated with a union T
+    produces). Nesting is spelling, not structure: discriminator tags are
+    global per LEAF type, so there is no representation for a nested member.
+
+    Duplicates are deliberately NOT dropped: a duplicate member is an
+    ambiguity, reported by CombinationSpec.check — silent dedupe at a
+    representation stage could merge nominally distinct variants.
+    """
+    flat: list[TypeSpec] = []
+    for tp in types:
+        if isinstance(tp, CombinationSpec):
+            flat.extend(_flatten_union_members(tp.types))
+        else:
+            flat.append(tp)
+    return tuple(flat)
+
+
 @dataclass(frozen=True)
 class CombinationSpec(TypeSpec):
     types: tuple[TypeSpec, ...]
-
-    def __post_init__(self):
-        object.__setattr__(self, 'types', tuple(self.types))
 
     def is_concrete(self) -> bool:
         return all(x.is_concrete() for x in self.types)
 
     def _compile(self, resolver: g.Resolver) ->  tuple[CombinationSpec, list[s.Statement]]:
         new_types, new_errors = zip(*[x.compile(resolver) for x in self.types])
-        return dataclasses.replace(self, types = new_types), [x for stm in new_errors for x in stm]
+        return dataclasses.replace(self, types = _flatten_union_members(new_types)), [x for stm in new_errors for x in stm]
 
     def check(self, resolver: g.Resolver) -> list[Error]:
-        return [y for x in self.types for y in x.check(resolver)]
+        errors = [y for x in self.types for y in x.check(resolver)]
+        seen: set[str] = set()
+        for tp in self.types:
+            uid = tp.as_unique_id_str()
+            if uid is None:
+                continue  # unresolved member — cannot judge yet
+            if uid in seen:
+                errors.append(Error(self.line_ref,
+                    f"Ambiguous union: duplicate member type {uid}"))
+            seen.add(uid)
+        return errors
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
         variant_types = [v.generate(resolver) for v in self.types]
@@ -773,7 +800,11 @@ class CombinationSpec(TypeSpec):
         return None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
-        new_self = dataclasses.replace(self, types=[tp.search_and_replace(resolver, replace) for tp in self.types])
+        # Re-flatten after rebuilding: replacement can substitute a union for a
+        # member (generics instantiating `T|E` with a union T), and lowering
+        # passes assume flat member lists.
+        new_self = dataclasses.replace(self, types=_flatten_union_members(
+            [tp.search_and_replace(resolver, replace) for tp in self.types]))
         return langtools.cast(TypeSpec, replace(resolver, new_self))
 
 

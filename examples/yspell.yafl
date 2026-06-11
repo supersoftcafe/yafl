@@ -1,0 +1,321 @@
+# yspell — spell-check text files against a system dictionary, with suggestions.
+#
+#   yspell [-d dictionary] <file> [file...]
+#
+# Loads the dictionary (default /usr/share/dict/words) into an immutable set,
+# then checks every word of every file. Unknown words are reported once per
+# file as `file:line: 'word' -> suggestion, ...`, where suggestions are the
+# dictionary words one edit away (deletion, substitution, insertion or
+# transposition). Exit code: 0 = clean, 1 = misspellings found, 2 = usage.
+#
+# As a YAFL showcase: the dictionary is a large immutable structure built once
+# and queried millions of times — it promotes into the collector's old
+# generation and is never traced again by minor cycles — while candidate
+# generation allocates dozens of short-lived strings per unknown word, all of
+# which die young. Files are checked in parallel (`__parallel__`,
+# divide-and-conquer over the file list) with reports collected and printed in
+# file order, so output stays deterministic.
+#
+import System
+import System::IO
+
+
+# ── small string helpers ──────────────────────────────────────────────────────
+
+fun isLetter(b: Int32): Bool
+  ret (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+
+fun lowerByte(b: Int32): Int32
+  ret b >= 'A' && b <= 'Z' ? b + ('a' - 'A') : b
+
+fun upperByte(b: Int32): Int32
+  ret b >= 'a' && b <= 'z' ? b - ('a' - 'A') : b
+
+fun toLower(s: String): String
+  fun [tail] walk(i: Int, acc: String): String
+    ret i >= length(s) ? acc : walk(i + 1, acc + asciiToString(lowerByte(byteAt(s, i))))
+  ret walk(0, "")
+
+fun capitalised(s: String): String
+  ret length(s) == 0 ? s : asciiToString(upperByte(byteAt(s, 0))) + slice(s, 1, length(s))
+
+# Strip the line terminator readLine leaves in place.
+fun chomp(line: String): String
+  let n = length(line)
+  ret n > 0 && byteAt(line, n - 1) == '\n'
+    ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
+    : line
+
+
+# ── dictionary: a balanced immutable binary search tree ──────────────────────
+#
+# Half a million words live here for the whole run: the classic large, stable,
+# immutable structure. Built once — sorted with a list mergesort, then turned
+# into a perfectly balanced tree bottom-up — and only ever read afterwards.
+
+enum WordTree
+  enum NoWord()
+  enum Word(text: String, left: WordTree, right: WordTree)
+
+# Merge two byte-sorted lists. Accumulates reversed ([tail]) and flips once.
+fun [tail] mergeRev(a: List<String>, b: List<String>, acc: List<String>): List<String>
+  ret match(head<String>(a))
+    (x: String) =>
+        match(head<String>(b))
+          (y: String) => compare(x, y) <= 0
+              ? mergeRev(tail<String>(a), b, prepend<String>(x, acc))
+              : mergeRev(a, tail<String>(b), prepend<String>(y, acc))
+          (e: None)   => mergeRev(tail<String>(a), b, prepend<String>(x, acc))
+    (e: None) =>
+        match(head<String>(b))
+          (y: String) => mergeRev(a, tail<String>(b), prepend<String>(y, acc))
+          (e2: None)  => acc
+
+# Bottom-up mergesort: seed one run per word, then repeatedly merge adjacent
+# pairs of runs until one remains. Every loop is [tail] (flat, iterative), so
+# unlike a top-down divide-and-conquer no recursion frames pin half the data
+# while the other half sorts — peak retention stays ~2x the input.
+
+fun headRun(rs: List<List<String> >): List<String>
+  ret match(head<List<String> >(rs))
+    (r: List<String>) => r
+    (e: None)         => List<String>()
+
+fun [tail] seedRuns(words: List<String>, acc: List<List<String> >): List<List<String> >
+  ret match(head<String>(words))
+    (w: String) => seedRuns(tail<String>(words),
+                            prepend<List<String> >(prepend<String>(w, List<String>()), acc))
+    (e: None)   => acc
+
+fun [tail] mergePairs(runs: List<List<String> >, acc: List<List<String> >): List<List<String> >
+  ret isEmpty<List<String> >(runs) ? acc
+    : isEmpty<List<String> >(tail<List<String> >(runs))
+      ? prepend<List<String> >(headRun(runs), acc)
+      : mergePairs(tail<List<String> >(tail<List<String> >(runs)),
+          prepend<List<String> >(
+            reverse<String>(mergeRev(headRun(runs), headRun(tail<List<String> >(runs)), List<String>())),
+            acc))
+
+fun [tail] sortRuns(runs: List<List<String> >): List<String>
+  ret isEmpty<List<String> >(runs) ? List<String>()
+    : isEmpty<List<String> >(tail<List<String> >(runs))
+      ? headRun(runs)
+      : sortRuns(mergePairs(runs, List<List<String> >()))
+
+fun sortWords(l: List<String>): List<String>
+  ret sortRuns(seedRuns(l, List<List<String> >()))
+
+# Balanced tree from a sorted list: middle element on top, halves below.
+fun buildTree(sorted: List<String>): WordTree
+  fun node(mid: String, left: List<String>, rest: List<String>): WordTree
+    ret Word(mid, buildTree(left), buildTree(rest))
+  fun split(): WordTree
+    let parts = splitHalf<String>(sorted)
+    ret match(head<String>(parts.right))
+      (mid: String) => node(mid, parts.left, tail<String>(parts.right))
+      (e: None)     => NoWord()
+  ret match(head<String>(sorted))
+    (first: String) => split()
+    (e: None)       => NoWord()
+
+fun [tail] hasWord(t: WordTree, w: String): Bool
+  ret match(t)
+    (n: Word) =>
+        compare(w, n.text) == 0 ? true
+          : compare(w, n.text) < 0 ? hasWord(n.left, w) : hasWord(n.right, w)
+    (e: NoWord) => false
+
+fun loadDictionary(path: String): WordTree|IOError
+  fun [tail] load(io: IO, words: List<String>): (io: IO, words: List<String>)
+    let r = readLine(io)
+    ret match(r.v)
+      (line: String) => load(r.io, prepend<String>(chomp(line), words))
+      (e: IOError)   => (r.io, words)
+  fun loadOpen(io: IO): WordTree
+    let r = load(io, List<String>())
+    let closed = r.io.close()
+    ret buildTree(sortWords(r.words))
+  ret match(open_read(path))
+    (io: IO)     => loadOpen(io)
+    (e: IOError) => e
+
+# A word is known if the dictionary has it exactly, lowercased ("The" -> "the"),
+# or capitalised-from-lower ("linux" -> "Linux").
+fun isKnown(dict: WordTree, word: String): Bool
+  fun knownLower(lower: String): Bool
+    ret hasWord(dict, lower) || hasWord(dict, capitalised(lower))
+  ret hasWord(dict, word) || knownLower(toLower(word))
+
+
+# ── suggestions: dictionary words one edit away ───────────────────────────────
+#
+# Generates every deletion, substitution, insertion and transposition of the
+# (lowercased) word, keeps those present in the dictionary, dedupes, and caps
+# the list at five. This is the deliberately allocation-heavy part: every
+# candidate is a fresh short-lived string that dies as soon as it is tested.
+
+fun suggest(dict: WordTree, word: String): List<String>
+  let w = toLower(word)
+  let n = length(w)
+  let alphabet = "abcdefghijklmnopqrstuvwxyz"
+
+  fun consider(acc: (found: List<String>, seen: Set<String>), cand: String): (found: List<String>, seen: Set<String>)
+    ret hasWord(dict, cand)
+      ? (contains<String>(acc.seen, cand)
+          ? acc
+          : (append<String>(acc.found, cand), add<String>(acc.seen, cand)))
+      : acc
+
+  fun [tail] deletions(i: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+    ret i >= n ? acc
+      : deletions(i + 1, consider(acc, slice(w, 0, i) + slice(w, i + 1, n)))
+
+  fun [tail] transposes(i: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+    ret i + 1 >= n ? acc
+      : transposes(i + 1, consider(acc,
+          slice(w, 0, i) + asciiToString(byteAt(w, i + 1)) + asciiToString(byteAt(w, i)) + slice(w, i + 2, n)))
+
+  fun [tail] substitutions(i: Int, j: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+    ret i >= n ? acc
+      : j >= 26 ? substitutions(i + 1, 0, acc)
+      : substitutions(i, j + 1, consider(acc,
+          slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i + 1, n)))
+
+  fun [tail] insertions(i: Int, j: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+    ret i > n ? acc
+      : j >= 26 ? insertions(i + 1, 0, acc)
+      : insertions(i, j + 1, consider(acc,
+          slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i, n)))
+
+  let start = (List<String>(), Set<String>())
+  let result = insertions(0, 0, substitutions(0, 0, transposes(0, deletions(0, start))))
+  ret take<String>(result.found, 5)
+
+
+# ── checking one file ─────────────────────────────────────────────────────────
+#
+# Words are maximal runs of ASCII letters, optionally containing an internal
+# apostrophe ("don't"). Runs containing digits or other bytes are split at
+# those bytes; one-letter words are ignored.
+
+fun isWordByte(b: Int32): Bool
+  ret isLetter(b) || b == '\''    # apostrophe, for words like don't
+
+# A word must contain at least one letter (an apostrophe run alone is noise).
+fun [tail] anyLetter(word: String, i: Int): Bool
+  ret i >= length(word) ? false
+    : isLetter(byteAt(word, i)) ? true
+    : anyLetter(word, i + 1)
+
+fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: Int)
+  # All helpers sit at this level so closures only ever capture one enclosing
+  # scope (dict/path); per-line state travels as explicit parameters.
+
+  fun reportLine(lineNo: Int, word: String, suggestions: List<String>): String
+    ret isEmpty<String>(suggestions)
+      ? path + ":" + String(lineNo) + ": '" + word + "' (no suggestions)"
+      : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
+
+  fun report(lineNo: Int, word: String,
+             a: (reports: List<String>, reported: Set<String>, count: Int))
+      : (reports: List<String>, reported: Set<String>, count: Int)
+    ret (append<String>(a.reports, reportLine(lineNo, word, suggest(dict, word))),
+         add<String>(a.reported, word), a.count + 1)
+
+  fun checkWord(lineNo: Int, word: String,
+                a: (reports: List<String>, reported: Set<String>, count: Int))
+      : (reports: List<String>, reported: Set<String>, count: Int)
+    ret length(word) < 2 || contains<String>(a.reported, word) || isKnown(dict, word)
+      ? a
+      : report(lineNo, word, a)
+
+  fun [tail] wordEnd(line: String, j: Int): Int
+    ret j < length(line) && isWordByte(byteAt(line, j)) ? wordEnd(line, j + 1) : j
+
+  fun [tail] scanLine(lineNo: Int, line: String, i: Int,
+                      a: (reports: List<String>, reported: Set<String>, count: Int))
+      : (reports: List<String>, reported: Set<String>, count: Int)
+    ret i >= length(line) ? a
+      : isWordByte(byteAt(line, i))
+        ? scanLine(lineNo, line, wordEnd(line, i + 1),
+               anyLetter(slice(line, i, wordEnd(line, i + 1)), 0)
+                 ? checkWord(lineNo, slice(line, i, wordEnd(line, i + 1)), a)
+                 : a)
+        : scanLine(lineNo, line, i + 1, a)
+
+  fun [tail] perLine(io: IO, lineNo: Int,
+                     acc: (reports: List<String>, reported: Set<String>, count: Int))
+      : (io: IO, acc: (reports: List<String>, reported: Set<String>, count: Int))
+    let r = readLine(io)
+    ret match(r.v)
+      (line: String) => perLine(r.io, lineNo + 1, scanLine(lineNo, chomp(line), 0, acc))
+      (e: IOError)   => (r.io, acc)
+
+  fun checkOpen(io: IO): (reports: List<String>, misspelt: Int)
+    let r = perLine(io, 1, (List<String>(), Set<String>(), 0))
+    let closed = r.io.close()
+    ret (r.acc.reports, r.acc.count)
+
+  ret match(open_read(path))
+    (io: IO)     => checkOpen(io)
+    (e: IOError) => (prepend<String>("yspell: cannot open " + path, List<String>()), 1)
+
+
+# ── parallel check over the file list ─────────────────────────────────────────
+
+fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String>, misspelt: Int)
+  fun joinResults(l: (reports: List<String>, misspelt: Int),
+                  r: (reports: List<String>, misspelt: Int))
+      : (reports: List<String>, misspelt: Int)
+    ret (concat<String>(l.reports, r.reports), l.misspelt + r.misspelt)
+
+  fun checkSplit(): (reports: List<String>, misspelt: Int)
+    let parts = splitHalf<String>(files)
+    let (left, right) = __parallel__(
+          () => checkFiles(dict, parts.left),
+          () => checkFiles(dict, parts.right))
+    ret joinResults(left, right)
+
+  fun checkFrom(first: String): (reports: List<String>, misspelt: Int)
+    ret match(head<String>(tail<String>(files)))
+      (second: String) => checkSplit()
+      (e: None)        => checkFile(dict, first)
+
+  ret match(head<String>(files))
+    (first: String) => checkFrom(first)
+    (e: None)       => (List<String>(), 0)
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+fun main(): System::Int
+  fun usage(): System::Int
+    println("usage: yspell [-d dictionary] <file> [file...]")
+    ret 2
+
+  fun printAll(lines: List<String>): System::None
+    ret fold<String, System::None>(lines, None,
+          (acc: System::None, line: String) => println(line))
+
+  fun run(dictPath: String, files: List<String>): System::Int
+    fun check(dict: WordTree): System::Int
+      let result = checkFiles(dict, files)
+      printAll(result.reports)
+      ret result.misspelt > 0 ? 1 : 0
+    fun dictError(): System::Int
+      println("yspell: cannot read dictionary " + dictPath)
+      ret 2
+    ret match(loadDictionary(dictPath))
+      (dict: WordTree) => isEmpty<String>(files) ? usage() : check(dict)
+      (e: IOError)     => dictError()
+
+  fun dispatch(first: String, rest: List<String>): System::Int
+    fun withDict(): System::Int
+      ret match(head<String>(rest))
+        (d: String) => run(d, tail<String>(rest))
+        (e: None)   => usage()
+    ret compare(first, "-d") == 0 ? withDict() : run("/usr/share/dict/words", args())
+
+  ret match(head<String>(args()))
+    (first: String) => dispatch(first, tail<String>(args()))
+    (e: None)       => usage()

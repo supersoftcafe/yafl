@@ -32,3 +32,4 @@ endfunction()
 
 add_yafl_program(json_pretty)
 add_yafl_program(findstr)
+add_yafl_program(yspell)

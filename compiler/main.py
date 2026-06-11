@@ -35,14 +35,6 @@ def main():
         help="Output file name"
     )
 
-    # Disable the auto-parallelise tuple lowering (only takes effect at -O>=2)
-    parser.add_argument(
-        "--no-auto-parallel",
-        dest="disable_auto_parallel",
-        action="store_true",
-        help="Disable auto-parallelisation of tuple constructions"
-    )
-
     # Extra library search paths (highest precedence), repeatable.
     parser.add_argument(
         "-L", "--lib-path", dest="lib_path", action="append", metavar="DIR",
@@ -60,7 +52,7 @@ def main():
     files = _gather_inputs(args.files)
     c_code, link_spec = c.compile_project(
         files, use_stdlib=True, just_testing=False,
-        optimization_level=int(args.O), disable_auto_parallel=args.disable_auto_parallel,
+        optimization_level=int(args.O),
         lib_paths=args.lib_path)
 
     if not c_code:

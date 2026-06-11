@@ -88,7 +88,12 @@ def _tuple_into_union(value, source: t.TupleSpec, target: t.CombinationSpec,
     matching = [v for v in target.types
                 if isinstance(v, t.TupleSpec)
                 and v.trivially_assignable_from(resolver, source) is True]
-    if len(matching) != 1:
+    assert len(matching) <= 1, (
+        f"ambiguous union boxing: tuple value fits {len(matching)} variants of "
+        f"{target.as_unique_id_str()} — nominally distinct variants have collapsed "
+        f"to one structural spec (simple_classes union-collision pruning should "
+        f"have prevented this)")
+    if not matching:
         return _passthrough(value)
     variant = matching[0]
     tuple_bundle = coerce(value, source, variant, resolver)

@@ -20,7 +20,6 @@ import lowering.unions
 import lowering.async_lower
 import lowering.branch_threading
 import lowering.copy_propagation
-import lowering.parallelize_tuples
 import lowering.ssa_validate
 import lowering.linearity
 import lowering.sync_inference
@@ -259,7 +258,7 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
 _MAX_COMPILE_ITERATIONS = 100
 
 
-def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False, headers: tuple[str, ...] = ("yafl.h",)) -> str|list[Error]:
+def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",)) -> str|list[Error]:
     for iteration_count in range(1, _MAX_COMPILE_ITERATIONS + 1):
         resolver = g.ResolverRoot(statements)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
@@ -303,11 +302,6 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
         return linearity_errors
 
     # All ok so let's create some C code
-    if optimization_level >= 2 and not disable_auto_parallel:
-        # Run before generic monomorphisation: we operate on templates so
-        # synthesised lambdas inherit the same generic context the surrounding
-        # code uses, and monomorphisation copies them into each instantiation.
-        new_statements = lowering.parallelize_tuples.parallelize_heavy_tuples(new_statements)
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
     new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
     new_statements = lowering.constants.inline_constants(new_statements)
@@ -415,7 +409,7 @@ def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
 
 
 def compile_project(source: list[Input], use_stdlib = False, just_testing = False,
-                    optimization_level: int = 0, disable_auto_parallel: bool = False,
+                    optimization_level: int = 0,
                     lib_paths: list[str] | None = None) -> tuple[str, libraries.LinkSpec | None]:
     """Compile `source` together with every library it (transitively) references,
     discovered on the search path. Returns the generated C and the `LinkSpec`
@@ -459,16 +453,16 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     headers = ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h")
 
     compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
-        optimization_level=optimization_level, disable_auto_parallel=disable_auto_parallel, headers=headers)
+        optimization_level=optimization_level, headers=headers)
     if isinstance(compiled_result, list):
         return __print_errors(compiled_result), None
 
     return compiled_result, link_spec
 
 
-def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, disable_auto_parallel: bool = False, lib_paths: list[str] | None = None) -> str:
+def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, lib_paths: list[str] | None = None) -> str:
     c_code, _ = compile_project(source, use_stdlib=use_stdlib, just_testing=just_testing,
-        optimization_level=optimization_level, disable_auto_parallel=disable_auto_parallel, lib_paths=lib_paths)
+        optimization_level=optimization_level, lib_paths=lib_paths)
     return c_code
 
 

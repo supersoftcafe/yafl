@@ -64,7 +64,8 @@ static void _noop_roots(void* c, void(*d)(object_t**)) { (void)c; (void)d; }
 
 static void* _worker(void* arg) {
     (void)arg;
-    gc_declare_thread(_noop_roots, NULL);
+    object_t* stack_anchor = NULL;
+    gc_declare_thread(_noop_roots, NULL, &stack_anchor);
     // Barrier: do not touch shared objects until every mutator is registered with
     // the GC, so no thread starts sharing while the collector is unaware of it.
     atomic_fetch_add(&_registered, 1);
