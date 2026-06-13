@@ -9,7 +9,7 @@ class [final] JsonPair(key: String, value: JsonValue)
 
 # JsonValue is the DOM node type. JsonArr and JsonObj hold stdlib List<T>
 # instead of hand-rolled cons enums. The cycle
-#   JsonValue → List<JsonValue> → _ListNode<JsonValue> → JsonValue
+#   JsonValue → List<JsonValue> → Chain<JsonValue> → JsonValue
 # is detected by mark_complex_enums, so all three are heap-allocated.
 #
 # Numbers split into JsonInt (no fractional part / exponent) and JsonNum

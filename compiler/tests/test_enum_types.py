@@ -563,11 +563,12 @@ fun main(): System::Int
         self.assertEqual(3, compile_and_run_stdlib(src))
 
     def test_recursive_enum_object_typedef_emitted(self):
-        # System::_ListNode<T> is a recursive enum (its Cons variant references
-        # _ListNode<T> via `next`); its root must appear as a heap Object in
-        # the C output (typedef'd struct), not a flat anon struct.  The empty
-        # constructor alone wouldn't materialise _ListNode (trim removes the
-        # unused typedef), so prepend an element to force a _Cons allocation.
+        # System::Chain<T> is a recursive enum (its ChainLink variant
+        # references Chain<T> via `next`); its root must appear as a heap
+        # Object in the C output (typedef'd struct), not a flat anon struct.
+        # The empty constructor alone wouldn't materialise the chain (trim
+        # removes the unused typedef), so prepend an element to force a
+        # ChainLink allocation.
         src = """namespace Test
 import System
 
@@ -578,8 +579,8 @@ fun main(): System::Int
 """
         result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
-        # The Object name '_ListNode@hash' or 'List@hash' is mangled to a C identifier.
-        self.assertIn("List", result)
+        # The Object name 'Chain@hash' is mangled to a C identifier.
+        self.assertIn("Chain", result)
         # The heap allocator must be invoked (recursive enum uses object_create).
         self.assertIn("object_create", result)
 

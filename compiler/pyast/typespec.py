@@ -474,8 +474,14 @@ class EnumSpec(TypeSpec):
         # DO recurse into type_params so that generics substitution can
         # replace GenericPlaceholderSpec(K) → Int, etc., preserving the
         # concrete type arguments for the generics redirect pass.
+        # Change detection must be by IDENTITY: TypeSpec equality is
+        # deliberately shallow (EnumSpec ignores type_params/all_fields), so
+        # `!=` judged a substituted nested spec "unchanged" and kept the stale
+        # one — the placeholder inside List<_N<T>>'s inner _N spec survived
+        # call-site substitution exactly that way.
         new_type_params = tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params)
-        new_self = dataclasses.replace(self, type_params=new_type_params) if new_type_params != self.type_params else self
+        changed = any(n is not o for n, o in zip(new_type_params, self.type_params))
+        new_self = dataclasses.replace(self, type_params=new_type_params) if changed else self
         return langtools.cast(TypeSpec, replace(resolver, new_self))
 
     def walk_all_fields(self,
@@ -502,6 +508,22 @@ class EnumSpec(TypeSpec):
         if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, self.all_fields)):
             return self
         return dataclasses.replace(self, all_fields=new_fields)
+
+
+def enum_leaf_object_name(root_name: str, leaf_name: str) -> str:
+    """The per-variant Object/vtable name for a complex-enum leaf.
+
+    Specialised enum STATEMENTS keep their nested variant names (and the
+    spec's all_leaf_names) unsuffixed, while redirected spec INSTANCES carry
+    `__create_unique_name`-suffixed leaves. Per-variant codegen needs one
+    canonical spelling: qualify the leaf with the root's `$generic$` suffix
+    (the root was renamed by the same `__create_unique_name` with the same
+    type args, so the suffix strings agree), leaving already-suffixed names
+    untouched. Without this, every instantiation's variants collide on the
+    bare leaf name — one struct layout overwriting another."""
+    if '$generic$' in leaf_name or '$generic$' not in root_name:
+        return leaf_name
+    return leaf_name + '$generic$' + root_name.split('$generic$', 1)[1]
 
 
 @dataclass(frozen=True)

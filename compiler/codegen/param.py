@@ -243,6 +243,40 @@ class NullPointer(RParam):
 
 
 @dataclass(frozen=True)
+class VtableDiscriminator(RParam):
+    """Reads `value->vtable->discriminator` — the globally unique variant id
+    stored once per TYPE in the vtable (see Object.discriminator). Complex
+    enum match dispatch compares this against the arm leaves' registry ids;
+    the per-instance $tag byte it replaces no longer exists. `value` must be
+    a real heap object pointer (complex enum values always are)."""
+    value: RParam
+
+    def get_type(self) -> t.Int:
+        return t.Int(32)
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.value.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.value.test(predicate)
+
+    def rename_vars(self, renames: dict[str, str]) -> RParam:
+        return dataclasses.replace(self, value=self.value.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, value=self.value.replace_params(replacer)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.value.get_live_vars()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        # object_get_vtable, NOT a raw ->vtable read: a compacted object's
+        # vtable word holds the forwarding address (a heap pointer), and the
+        # accessor follows it — the same contract object_is_instance uses.
+        return f"(object_get_vtable({self.value.to_c(type_cache)})->discriminator)"
+
+
+@dataclass(frozen=True)
 class ObjVtableEq(RParam):
     """Emits `object_is_instance(p, target)` — libyafl's tag-aware "is-a"
     test that handles NULL, tagged integer/string pointers, exact vtable
@@ -461,10 +495,14 @@ class TagTask(RParam):
             if fname is None:
                 raise ValueError(f"TagTask: struct {typ} has no pointer field")
             type_name = typ.declare(type_cache)
+            # Non-tagged fields zero via ZeroOf: a bare `= 0` is wrong when
+            # the field is itself a struct (e.g. a tuple member holding an
+            # enum container) — it initialises only the first sub-field and
+            # -Wmissing-field-initializers rejects it.
             fields = ", ".join(
                 f".{mangle_name(n)} = (object_t*)((uintptr_t){task_c} | PTR_TAG_TASK)" if n == fname
-                else f".{mangle_name(n)} = 0"
-                for n, _ in typ.fields
+                else f".{mangle_name(n)} = {ZeroOf(ft).to_c(type_cache)}"
+                for n, ft in typ.fields
             )
             return f"(({type_name}){{{fields}}})"
         raise ValueError(f"TagTask: unsupported target type {typ}")

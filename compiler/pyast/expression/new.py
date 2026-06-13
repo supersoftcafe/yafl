@@ -207,52 +207,32 @@ class NewEnumExpression(Expression):
         assert root_spec is not None
         leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
 
-        variant_types = t.enum_variant_types(root_stmt, resolver)
-        container, variant_map = cg_t.compute_union_slots(variant_types)
         leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
         leaf_fields = leaf_field_sets[leaf_idx]
-        this_vm = variant_map[leaf_idx]
-        tag_slot_name, tag_slot_type = container.fields[-1]  # $tag is always last
-        tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
 
         if root_spec.is_complex:
-            # Heap-allocated path: NewObject, write $tag and shared slots.
+            # Heap-allocated path: allocate THE VARIANT's own object (its own
+            # vtable carries the discriminator; its own layout carries just
+            # this variant's fields — no $tag, no shared max-size container).
+            # Unwritten fields get an explicit ZeroOf so staticinit can
+            # promote all-constant constructions (unit variants trivially so)
+            # to static singletons.
+            obj_name = t.enum_leaf_object_name(root_spec.root_name, self.leaf_name)
             result_var = cg_p.StackVar(cg_t.DataPointer(), "result")
-            ops: list[cg_o.Op] = [
-                cg_o.NewObject(root_spec.root_name, result_var),
-                cg_o.Move(
-                    cg_p.ObjectField(tag_slot_type, result_var, root_spec.root_name, tag_slot_name, None),
-                    tag_const),
-            ]
-            # Zero-fill all non-$tag slots so unused pointer slots are null.
-            for slot_name, slot_type in container.fields[:-1]:
-                ops.append(cg_o.Move(
-                    cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
-                    cg_p.ZeroOf(slot_type)))
-            def emit_heap(param, ftype, off):
-                """Recursively write ftype primitives from param to heap object slots."""
-                if isinstance(ftype, cg_t.Struct):
-                    for fname, ft in ftype.fields:
-                        off = emit_heap(cg_p.StructField(param, fname), ft, off)
-                    return off
-                si, _ = this_vm[off]
-                slot_name, slot_type = container.fields[si]
-                ops.append(cg_o.Move(
-                    cg_p.ObjectField(slot_type, result_var, root_spec.root_name, slot_name, None),
-                    param))
-                return off + 1
-
+            ops: list[cg_o.Op] = [cg_o.NewObject(obj_name, result_var)]
             bundles: list[g.OperationBundle] = []
-            prim_off = 0
             for let in leaf_fields:
                 field_name = let.name
                 field_type = let.declared_type.generate(resolver)
-                n_prims = len(cg_t._flatten_primitives(field_type))
                 if field_name in self.field_args:
                     arg_bundle = self.field_args[field_name].generate(resolver).with_prefix(f"arg_{field_name.split('@')[0]}")
                     bundles.append(arg_bundle)
-                    emit_heap(arg_bundle.result_var, field_type, prim_off)
-                prim_off += n_prims
+                    source: cg_p.RParam = arg_bundle.result_var
+                else:
+                    source = cg_p.ZeroOf(field_type)
+                ops.append(cg_o.Move(
+                    cg_p.ObjectField(field_type, result_var, obj_name, field_name, None),
+                    source))
             ctor_bundle = g.OperationBundle(
                 stack_vars=(result_var,),
                 operations=tuple(ops),
@@ -262,6 +242,11 @@ class NewEnumExpression(Expression):
             return ctor_bundle
 
         # Non-recursive: flat by-value struct using the shared slot layout.
+        variant_types = t.enum_variant_types(root_stmt, resolver)
+        container, variant_map = cg_t.compute_union_slots(variant_types)
+        _, tag_slot_type = container.fields[-1]  # $tag is always last
+        tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
+
         # Map each field name to its starting primitive index within this leaf's flattened type.
         prim_start: dict[str, int] = {}
         offset = 0

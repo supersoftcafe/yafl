@@ -57,66 +57,42 @@ enum WordTree
   enum NoWord()
   enum Word(text: String, left: WordTree, right: WordTree)
 
-# Merge two byte-sorted lists. Accumulates reversed ([tail]) and flips once.
-fun [tail] mergeRev(a: List<String>, b: List<String>, acc: List<String>): List<String>
-  ret match(head<String>(a))
-    (x: String) =>
-        match(head<String>(b))
-          (y: String) => compare(x, y) <= 0
-              ? mergeRev(tail<String>(a), b, prepend<String>(x, acc))
-              : mergeRev(a, tail<String>(b), prepend<String>(y, acc))
-          (e: None)   => mergeRev(tail<String>(a), b, prepend<String>(x, acc))
-    (e: None) =>
-        match(head<String>(b))
-          (y: String) => mergeRev(a, tail<String>(b), prepend<String>(y, acc))
-          (e2: None)  => acc
-
-# Bottom-up mergesort: seed one run per word, then repeatedly merge adjacent
-# pairs of runs until one remains. Every loop is [tail] (flat, iterative), so
-# unlike a top-down divide-and-conquer no recursion frames pin half the data
-# while the other half sorts — peak retention stays ~2x the input.
-
-fun headRun(rs: List<List<String> >): List<String>
-  ret match(head<List<String> >(rs))
-    (r: List<String>) => r
-    (e: None)         => List<String>()
-
-fun [tail] seedRuns(words: List<String>, acc: List<List<String> >): List<List<String> >
-  ret match(head<String>(words))
-    (w: String) => seedRuns(tail<String>(words),
-                            prepend<List<String> >(prepend<String>(w, List<String>()), acc))
-    (e: None)   => acc
-
-fun [tail] mergePairs(runs: List<List<String> >, acc: List<List<String> >): List<List<String> >
-  ret isEmpty<List<String> >(runs) ? acc
-    : isEmpty<List<String> >(tail<List<String> >(runs))
-      ? prepend<List<String> >(headRun(runs), acc)
-      : mergePairs(tail<List<String> >(tail<List<String> >(runs)),
-          prepend<List<String> >(
-            reverse<String>(mergeRev(headRun(runs), headRun(tail<List<String> >(runs)), List<String>())),
-            acc))
-
-fun [tail] sortRuns(runs: List<List<String> >): List<String>
-  ret isEmpty<List<String> >(runs) ? List<String>()
-    : isEmpty<List<String> >(tail<List<String> >(runs))
-      ? headRun(runs)
-      : sortRuns(mergePairs(runs, List<List<String> >()))
-
+# Sorted with the stdlib natural mergesort: a dictionary file is usually
+# already byte-sorted, so the run-detecting sort costs ~one pass and ~2n
+# cells — the old example-local mergesort allocated 2n cells per pass for
+# ~19 passes (a merge that accumulates reversed, plus a flip), which at half
+# a million words was hundreds of MB of churn for one sort.
 fun sortWords(l: List<String>): List<String>
-  ret sortRuns(seedRuns(l, List<List<String> >()))
+  ret sort<String>(l)
 
-# Balanced tree from a sorted list: middle element on top, halves below.
+# Balanced tree from a sorted list, BY COUNT: build(n) consumes the next n
+# elements — left subtree, then root, then right subtree — walking the list
+# linearly, once. The old splitHalf divide-and-conquer re-materialised half
+# the list at every level (~5 allocations per element per level, n·log n
+# churn — hundreds of MB on a half-million-word dictionary); this allocates
+# only the tree nodes plus one walk. Recursion depth is log2(n): fine on the
+# C stack.
+fun buildAt(n: Int, c: Chain<String>): (tree: WordTree, rest: Chain<String>)
+  fun done(left: WordTree, mid: String, rt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
+    ret (tree=Word(mid, left, rt.tree), rest=rt.rest)
+  fun rootOn(left: WordTree, mid: String|None, rest: Chain<String>): (tree: WordTree, rest: Chain<String>)
+    ret match(mid)
+      (m: String) => done(left, m, buildAt(n - n / 2 - 1, rest))
+      # Unreachable while n is honest (count and chain come from the same
+      # list); kept total so a broken count degrades to a short tree rather
+      # than a crash.
+      (e: None)   => (tree=left, rest=rest)
+  fun root2(left: WordTree, nx: (head: String|None, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
+    ret rootOn(left, nx.head, nx.rest)
+  fun root(lt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
+    ret root2(lt.tree, chainNext<String>(lt.rest))
+  ret n <= 0 ? (tree=NoWord(), rest=c) : root(buildAt(n / 2, c))
+
+fun buildTreeChain(c: Chain<String>): WordTree
+  ret buildAt(chainLength<String>(c), c).tree
+
 fun buildTree(sorted: List<String>): WordTree
-  fun node(mid: String, left: List<String>, rest: List<String>): WordTree
-    ret Word(mid, buildTree(left), buildTree(rest))
-  fun split(): WordTree
-    let parts = splitHalf<String>(sorted)
-    ret match(head<String>(parts.right))
-      (mid: String) => node(mid, parts.left, tail<String>(parts.right))
-      (e: None)     => NoWord()
-  ret match(head<String>(sorted))
-    (first: String) => split()
-    (e: None)       => NoWord()
+  ret buildTreeChain(chain<String>(sorted))
 
 fun [tail] hasWord(t: WordTree, w: String): Bool
   ret match(t)

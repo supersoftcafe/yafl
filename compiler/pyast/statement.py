@@ -1051,25 +1051,44 @@ class EnumStatement(TypeStatement):
                    for tp in self.type_params if "linear" in tp.attributes]
         return errors
 
-    def global_codegen(self, resolver: g.Resolver) -> cg_x.Object | None:
+    def global_codegen(self, resolver: g.Resolver) -> list[cg_x.Object]:
         # Simple enums lower to flat by-value structs and need no heap
-        # object. Complex enums (recursive or many-fielded) register a
-        # single Object keyed by the root name; emit only at the root
-        # statement (skip variants nested in `variants`, which carry the
-        # same root_name).
+        # objects. Complex enums (recursive or many-fielded) emit one Object
+        # PER VARIANT — each with its own vtable, its own (variant-sized)
+        # field layout, and the variant's global discriminator id — plus a
+        # never-instantiated MARKER Object for the root, which every variant
+        # `extends` so union membership tests (`object_is_instance` against
+        # the root) keep working. There is no $tag in the payload: the
+        # discriminant lives in the vtable, once per type. Emit only at the
+        # root statement (variants nested in `variants` carry the same
+        # root_name).
         if self._enum_spec is None or not self._enum_spec.is_complex:
-            return None
+            return []
         if self._root_name is not None and self._root_name != self.name:
-            return None
-        # First field MUST be ("type", DataPointer()) per Object's contract.
-        # Remaining fields are the shared primitive slots from compute_union_slots().
-        container, _ = cg_t.compute_union_slots(t.enum_variant_types(self, resolver))
-        fields = (("type", cg_t.DataPointer()),) + container.fields
-        return cg_x.Object(
+            return []
+        discriminators = resolver.get_discriminators()
+        marker = cg_x.Object(
             name=self.name,
             extends=(),
             functions=(),
-            fields=cg_t.ImmediateStruct(fields))
+            fields=cg_t.ImmediateStruct((("type", cg_t.DataPointer()),)),
+            comment=f"{self.name} — enum root marker (never instantiated)")
+        objects = [marker]
+        leaf_field_sets = t._collect_leaf_field_sets(self, [])
+        for leaf_name, leaf_fields in zip(self._enum_spec.all_leaf_names, leaf_field_sets):
+            obj_name = t.enum_leaf_object_name(self.name, leaf_name)
+            fields = (("type", cg_t.DataPointer()),) + tuple(
+                (let.name, let.declared_type.generate(resolver)) for let in leaf_fields)
+            objects.append(cg_x.Object(
+                name=obj_name,
+                extends=(self.name,),
+                functions=(),
+                fields=cg_t.ImmediateStruct(fields),
+                # Strict lookup: the registry enumerates leaves from these
+                # same root statements, so a miss is a compiler bug — fail
+                # here, not as a runtime dispatch fall-through.
+                discriminator=discriminators[f"enumleaf({obj_name})"]))
+        return objects
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
         # Expose generic type params so variant field types resolve correctly.

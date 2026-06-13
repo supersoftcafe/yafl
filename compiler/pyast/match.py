@@ -588,21 +588,31 @@ class MatchExpression(e.Expression):
                     "primitive match fell through all arms")
 
     def __gen_enum_match(self, em: _Emitter, subj_bundle, subj_type: t.EnumSpec) -> None:
-        """EnumSpec: compare $tag for each arm, one guard per covered leaf."""
+        """EnumSpec: one guard per covered leaf. Complex enums lower to
+        DataPointer and each VARIANT carries its own vtable: the guard
+        compares `vt->discriminator` against the leaf's global registry id —
+        the discriminant lives once per type, not as a tag byte per object.
+        Simple (non-complex) enums are flat structs with a local $tag."""
         sv = subj_bundle.result_var
-        # Complex enums lower to DataPointer; the $tag field lives on the
-        # heap object and is read via ObjectField. Simple (non-complex)
-        # enums are flat structs and read via StructField.
         if subj_type.is_complex:
-            tag = cg_p.ObjectField(cg_t._tag_type(len(subj_type.all_leaf_names)),
-                                   sv, subj_type.root_name, "$tag", None)
+            tag = cg_p.VtableDiscriminator(sv)
+            discriminators = em.resolver.get_discriminators()
+            def leaf_id(leaf: str) -> int:
+                # Strict lookup: a missing leaf would otherwise guard against
+                # 0 (matches nothing) and surface as a runtime fall-through
+                # abort instead of a compiler bug.
+                key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
+                assert key in discriminators, f"no discriminator for {key!r}"
+                return discriminators[key]
         else:
             tag = cg_p.StructField(sv, "$tag")
+            def leaf_id(leaf: str) -> int:
+                return subj_type.all_leaf_names.index(leaf)
 
         for arm in (a for a in self.arms if a.type_spec is not None):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)
-            guards = [cg_p.IntEqConst(tag, arm_type.all_leaf_names.index(leaf))
+            guards = [cg_p.IntEqConst(tag, leaf_id(leaf))
                       for leaf in arm_type.valid_leaf_names]
             # Bind at subj_type (always concrete), not arm.type_spec: an
             # EnumSpec built by _assign_specs never carries type_params, so

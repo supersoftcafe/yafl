@@ -2,10 +2,17 @@ namespace System
 import System
 
 
-# Internal cons node — heap-allocated (self-referential).
-enum _ListNode<T>
-  enum _Nil()
-  enum _Cons(value: T, next: _ListNode<T>)
+# A bare cons chain: the zero-overhead CONSUMPTION view of a sequence.
+# List<T> below is the BUILDING structure (O(1) at both ends, paid for with a
+# wrapper allocation per operation — element-at-a-time consumption through
+# head/tail churns one wrapper per step). Code that walks a sequence should
+# take a Chain once (see `chain` below) and match ChainLink/ChainEnd
+# directly: nothing is allocated per step, and whatever the walk builds packs
+# densely instead of interleaving with wrapper garbage. fold and sort already
+# work this way internally.
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 
 
 # Public list: front stores elements in traversal order,
@@ -13,34 +20,34 @@ enum _ListNode<T>
 # Invariant: when non-empty, front is always non-empty.
 enum List<T>
   enum ListEmpty()
-  enum ListFull(front: _ListNode<T>, rear: _ListNode<T>)
+  enum ListFull(front: Chain<T>, rear: Chain<T>)
 
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
 
 # [tail]: tail-recursive, so it must lower to a loop — a long list would otherwise
 # recurse on the C stack (the async hot path runs synchronous recursion there).
-fun [tail] _listReverseNode<T>(src: _ListNode<T>, acc: _ListNode<T>): _ListNode<T>
+fun [tail] _chainReverse<T>(src: Chain<T>, acc: Chain<T>): Chain<T>
   ret match(src)
-    (nil: _Nil) => acc
-    (c: _Cons)  => _listReverseNode<T>(c.next, _Cons<T>(c.value, acc))
+    (nil: ChainEnd) => acc
+    (c: ChainLink)  => _chainReverse<T>(c.next, ChainLink<T>(c.value, acc))
 
 
-fun _listHeadNode<T>(n: _ListNode<T>): T|None
+fun _chainHead<T>(n: Chain<T>): T|None
   ret match(n)
-    (nil: _Nil) => None
-    (c: _Cons)  => c.value
+    (nil: ChainEnd) => None
+    (c: ChainLink)  => c.value
 
 
 # Normalize: if new front is empty and rear is non-empty, rotate rear → front.
-fun _listNormalize<T>(front: _ListNode<T>, rear: _ListNode<T>): List<T>
-  fun whenEmpty(r: _ListNode<T>): List<T>
+fun _listFromChains<T>(front: Chain<T>, rear: Chain<T>): List<T>
+  fun whenEmpty(r: Chain<T>): List<T>
     ret match(r)
-      (rnil: _Nil) => ListEmpty<T>()
-      (rc: _Cons)  => ListFull<T>(_listReverseNode<T>(r, _Nil<T>()), _Nil<T>())
+      (rnil: ChainEnd) => ListEmpty<T>()
+      (rc: ChainLink)  => ListFull<T>(_chainReverse<T>(r, ChainEnd<T>()), ChainEnd<T>())
   ret match(front)
-    (c: _Cons)  => ListFull<T>(front, rear)
-    (nil: _Nil) => whenEmpty(rear)
+    (c: ChainLink)  => ListFull<T>(front, rear)
+    (nil: ChainEnd) => whenEmpty(rear)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -49,31 +56,71 @@ fun List<T>(): List<T>
   ret ListEmpty<T>()
 
 
+# The list's elements as a Chain, in traversal order. Zero-copy when no
+# appends are pending (the front IS the chain); otherwise materialised once —
+# the reversed rear becomes the tail and the front is copied onto it (≤ n
+# cells, one-off) — after which the walk itself allocates nothing.
+fun chain<T>(l: List<T>): Chain<T>
+  fun whole(front: Chain<T>, rear: Chain<T>): Chain<T>
+    ret match(rear)
+      (nil: ChainEnd) => front
+      (rc: ChainLink) => _chainReverse<T>(_chainReverse<T>(front, ChainEnd<T>()),
+                                          _chainReverse<T>(rear, ChainEnd<T>()))
+  ret match(l)
+    (e: ListEmpty) => ChainEnd<T>()
+    (fl: ListFull) => whole(fl.front, fl.rear)
+
+
+# A List over an existing chain: O(1), the chain becomes the front.
+fun List<T>(c: Chain<T>): List<T>
+  ret _listFromChains<T>(c, ChainEnd<T>())
+
+
+# Allocation-free uncons: the first element (None when exhausted) and the
+# remaining chain, returned by value. The Chain itself can be matched
+# directly inside generic code; from non-generic code use this. (Matching a
+# CONCRETE Chain<X>'s variants from outside currently mistypes the binder's
+# fields as the enum's placeholders — a known generics gap.)
+fun chainNext<T>(c: Chain<T>): (head: T|None, rest: Chain<T>)
+  ret match(c)
+    (link: ChainLink) => (head=link.value, rest=link.next)
+    (e: ChainEnd)     => (head=None, rest=c)
+
+
+# Number of elements in a chain: O(n), allocation-free.
+fun chainLength<T>(c: Chain<T>): Int
+  fun [tail] walk(n: Chain<T>, acc: Int): Int
+    ret match(n)
+      (link: ChainLink) => walk(link.next, acc + 1)
+      (e: ChainEnd)     => acc
+  ret walk(c, 0)
+
+
 # Add element to the front: O(1)
 fun prepend<T>(x: T, l: List<T>): List<T>
   ret match(l)
-    (e: ListEmpty) => ListFull<T>(_Cons<T>(x, _Nil<T>()), _Nil<T>())
-    (fl: ListFull) => ListFull<T>(_Cons<T>(x, fl.front), fl.rear)
+    (e: ListEmpty) => ListFull<T>(ChainLink<T>(x, ChainEnd<T>()), ChainEnd<T>())
+    (fl: ListFull) => ListFull<T>(ChainLink<T>(x, fl.front), fl.rear)
 
 
 # Add element to the back: O(1)
 fun append<T>(l: List<T>, x: T): List<T>
   ret match(l)
-    (e: ListEmpty) => ListFull<T>(_Cons<T>(x, _Nil<T>()), _Nil<T>())
-    (fl: ListFull) => ListFull<T>(fl.front, _Cons<T>(x, fl.rear))
+    (e: ListEmpty) => ListFull<T>(ChainLink<T>(x, ChainEnd<T>()), ChainEnd<T>())
+    (fl: ListFull) => ListFull<T>(fl.front, ChainLink<T>(x, fl.rear))
 
 
 fun head<T>(l: List<T>): T|None
   ret match(l)
     (e: ListEmpty) => None
-    (fl: ListFull) => _listHeadNode<T>(fl.front)
+    (fl: ListFull) => _chainHead<T>(fl.front)
 
 
 fun tail<T>(l: List<T>): List<T>
-  fun tailFull(front: _ListNode<T>, rear: _ListNode<T>): List<T>
+  fun tailFull(front: Chain<T>, rear: Chain<T>): List<T>
     ret match(front)
-      (nil: _Nil) => ListEmpty<T>()
-      (c: _Cons)  => _listNormalize<T>(c.next, rear)
+      (nil: ChainEnd) => ListEmpty<T>()
+      (c: ChainLink)  => _listFromChains<T>(c.next, rear)
   ret match(l)
     (e: ListEmpty) => ListEmpty<T>()
     (fl: ListFull) => tailFull(fl.front, fl.rear)
@@ -94,17 +141,17 @@ fun isEmpty<T>(l: List<T>): Bool
 # rear holds them newest-first, so its head is the true last element); otherwise
 # O(n), walking to the end of the front.
 fun last<T>(l: List<T>): T|None
-  fun [tail] lastNode(n: _ListNode<T>): T|None
+  fun [tail] lastNode(n: Chain<T>): T|None
     ret match(n)
-      (nil: _Nil) => None
-      (c: _Cons)  => match(c.next)
-        (next: _Cons) => lastNode(c.next)
-        (e: _Nil)     => c.value
+      (nil: ChainEnd) => None
+      (c: ChainLink)  => match(c.next)
+        (next: ChainLink) => lastNode(c.next)
+        (e: ChainEnd)     => c.value
   ret match(l)
     (e: ListEmpty) => None
     (fl: ListFull) => match(fl.rear)
-      (c: _Cons)  => c.value
-      (nil: _Nil) => lastNode(fl.front)
+      (c: ChainLink)  => c.value
+      (nil: ChainEnd) => lastNode(fl.front)
 
 
 # Concatenate two lists, preserving order: every element of `a` then every
@@ -171,39 +218,39 @@ fun flatMap<T,U>(l: List<T>, f: (T): List<U>): List<U>
 fun reverse<T>(l: List<T>): List<T>
   ret match(l)
     (e: ListEmpty) => ListEmpty<T>()
-    (fl: ListFull) => _listNormalize<T>(fl.rear, fl.front)
+    (fl: ListFull) => _listFromChains<T>(fl.rear, fl.front)
 
 
 fun map<T,U>(l: List<T>, f: (T): U): List<U>
-  fun mapNode(n: _ListNode<T>): _ListNode<U>
+  fun mapNode(n: Chain<T>): Chain<U>
     ret match(n)
-      (nil: _Nil) => _Nil<U>()
-      (c: _Cons)  => _Cons<U>(f(c.value), mapNode(c.next))
+      (nil: ChainEnd) => ChainEnd<U>()
+      (c: ChainLink)  => ChainLink<U>(f(c.value), mapNode(c.next))
   ret match(l)
     (e: ListEmpty) => ListEmpty<U>()
     (fl: ListFull) => ListFull<U>(mapNode(fl.front), mapNode(fl.rear))
 
 
 fun filter<T>(l: List<T>, f: (T): Bool): List<T>
-  fun filterNode(n: _ListNode<T>): _ListNode<T>
+  fun filterNode(n: Chain<T>): Chain<T>
     ret match(n)
-      (nil: _Nil) => _Nil<T>()
-      (c: _Cons)  => f(c.value)
-        ? _Cons<T>(c.value, filterNode(c.next))
+      (nil: ChainEnd) => ChainEnd<T>()
+      (c: ChainLink)  => f(c.value)
+        ? ChainLink<T>(c.value, filterNode(c.next))
         : filterNode(c.next)
   ret match(l)
     (e: ListEmpty) => ListEmpty<T>()
-    (fl: ListFull) => _listNormalize<T>(filterNode(fl.front), filterNode(fl.rear))
+    (fl: ListFull) => _listFromChains<T>(filterNode(fl.front), filterNode(fl.rear))
 
 
 fun fold<T,U>(l: List<T>, init: U, f: (U, T): U): U
-  fun [tail] foldNode(n: _ListNode<T>, acc: U): U
+  fun [tail] foldNode(n: Chain<T>, acc: U): U
     ret match(n)
-      (nil: _Nil) => acc
-      (c: _Cons)  => foldNode(c.next, f(acc, c.value))
+      (nil: ChainEnd) => acc
+      (c: ChainLink)  => foldNode(c.next, f(acc, c.value))
   ret match(l)
     (e: ListEmpty) => init
-    (fl: ListFull) => foldNode(_listReverseNode<T>(fl.rear, _Nil<T>()), foldNode(fl.front, init))
+    (fl: ListFull) => foldNode(_chainReverse<T>(fl.rear, ChainEnd<T>()), foldNode(fl.front, init))
 
 
 # Index of the first element satisfying `pred`, or None when no element
@@ -240,3 +287,127 @@ fun _appendToGroup<K,T>(d: Dict<K,List<T> >, k: K, v: T): Dict<K,List<T> > where
 fun groupBy<T,K>(l: List<T>, key: (T): K): Dict<K,List<T> > where BasicEquality<K>
   ret fold<T,Dict<K,List<T> > >(l, Dict<K,List<T> >(),
     (acc: Dict<K,List<T> >, x: T) => _appendToGroup<K,T>(acc, key(x), x))
+
+
+# ─── Sort ────────────────────────────────────────────────────────────────────
+#
+# Stable natural mergesort, after GHC's Data.List.sort, adapted to a strict
+# language. Three ideas keep the heap cost low:
+#
+#   * NATURAL RUNS: the seed pass cuts the input into maximal already-ordered
+#     stretches instead of singletons — sorted or reverse-sorted input becomes
+#     ONE run and the merge phase vanishes (O(n), ~2n cells total).
+#   * PING-PONG: merge passes alternate direction. A [tail] merge can only
+#     accumulate by prepending, which REVERSES; rather than paying a second
+#     pass to reverse back (the doubling that motivated this design), the next
+#     pass simply consumes runs in the direction the previous one produced.
+#     This is the strict-world substitute for the lazy `a : merge as' bs`.
+#   * BARE CONS CELLS: passes work on Chain chains directly — one fresh
+#     cell per element per pass, none of the List queue-wrapper churn.
+#
+# Allocation: ~n cells for seeding (+1 cell per element of each DESCENDING
+# input stretch, reversed to normalise), then n cells per merge pass over
+# ceil(log2 runs) passes, then at most one final reversal. Peak live stays
+# ~2x the input throughout.
+#
+# Stability: equal elements keep their original order. Ties take from the
+# EARLIER run — `b < a` / `a > b` are both false on ties, and the pop rules
+# below are arranged so that case always pops the run whose elements came
+# first. (Descending input stretches are cut on `<` strictly, so equal
+# elements never enter a reversed run out of order.)
+
+# Merge two runs into one, prepend-accumulated (so the output direction is
+# the REVERSE of the input direction). `descIn` says which way the inputs
+# run; `a`'s elements all precede `b`'s in the original list.
+fun [tail] _mergeRuns<T>(a: Chain<T>, b: Chain<T>, acc: Chain<T>, descIn: Bool): Chain<T> where BasicCompare<T>
+  ret match(a)
+    (anil: ChainEnd) => match(b)
+      (bnil: ChainEnd) => acc
+      (bc: ChainLink)  => _mergeRuns<T>(a, bc.next, ChainLink<T>(bc.value, acc), descIn)
+    (ac: ChainLink) => match(b)
+      (bnil: ChainEnd) => _mergeRuns<T>(ac.next, b, ChainLink<T>(ac.value, acc), descIn)
+      (bc: ChainLink)  => descIn
+        # Descending inputs: emit the larger head first (output ascending).
+        # A tie pops b, so a's equal element is prepended later = nearer the
+        # front = still first in the ascending result.
+        ? (ac.value > bc.value
+            ? _mergeRuns<T>(ac.next, b, ChainLink<T>(ac.value, acc), descIn)
+            : _mergeRuns<T>(a, bc.next, ChainLink<T>(bc.value, acc), descIn))
+        # Ascending inputs: emit the smaller head first (output descending).
+        # A tie pops a, putting a's equal element deeper in the descending
+        # output — and the next pass (descending inputs, tie pops b) emits
+        # the deeper-running a LAST into its ascending output, i.e. nearest
+        # the front: original order restored.
+        : (bc.value < ac.value
+            ? _mergeRuns<T>(a, bc.next, ChainLink<T>(bc.value, acc), descIn)
+            : _mergeRuns<T>(ac.next, b, ChainLink<T>(ac.value, acc), descIn))
+
+# One bottom-up pass: merge adjacent run pairs. The runs queue preserves run
+# order (O(1) append), so "earlier run" stays meaningful for stability. An
+# odd run at the end cannot keep its direction (the next pass expects every
+# run flipped), so it pays one reversal — the only place ping-pong ever
+# reverses anything.
+fun [tail] _mergePass<T>(runs: List<Chain<T> >, acc: List<Chain<T> >, descIn: Bool): List<Chain<T> > where BasicCompare<T>
+  ret match(head<Chain<T> >(runs))
+    (e: None) => acc
+    (a: Chain<T>) => match(head<Chain<T> >(tail<Chain<T> >(runs)))
+      (e: None) => append<Chain<T> >(acc, _chainReverse<T>(a, ChainEnd<T>()))
+      (b: Chain<T>) => _mergePass<T>(
+          tail<Chain<T> >(tail<Chain<T> >(runs)),
+          append<Chain<T> >(acc, _mergeRuns<T>(a, b, ChainEnd<T>(), descIn)),
+          descIn)
+
+# Merge passes until one run remains; the final chain must read ASCENDING,
+# so a lone descending run is reversed on the way out.
+fun [tail] _sortRuns<T>(runs: List<Chain<T> >, descIn: Bool): Chain<T> where BasicCompare<T>
+  ret match(head<Chain<T> >(runs))
+    (e: None) => ChainEnd<T>()
+    (only: Chain<T>) => isEmpty<Chain<T> >(tail<Chain<T> >(runs))
+      ? (descIn ? _chainReverse<T>(only, ChainEnd<T>()) : only)
+      : _sortRuns<T>(_mergePass<T>(runs, List<Chain<T> >(), descIn), !descIn)
+
+# Seed pass: cut the input into maximal ordered stretches, every run emitted
+# DESCENDING. Prepend-collecting an ascending stretch yields it descending
+# for free; a descending stretch (entered only while the run is a singleton,
+# and extended on strict `<` so equal elements never reorder) lands ascending
+# and pays one reversal. `cur` then `then` supplies the elements — the public
+# list's front, then its reversed rear — without materialising one big chain.
+# A finished run is appended to the queue normalised to DESCENDING: an
+# ascending stretch was prepend-collected (already descending, free); a
+# descending stretch landed ascending and pays its one reversal here.
+fun _finishRun<T>(runs: List<Chain<T> >, run: Chain<T>, desc: Bool): List<Chain<T> >
+  ret append<Chain<T> >(runs, desc ? _chainReverse<T>(run, ChainEnd<T>()) : run)
+
+# State: `lone` = the run is a single element whose direction is not yet
+# committed; `desc` = the run is a committed descending stretch. They are
+# never both true — `lone || desc` reads "the new element may still extend
+# descending".
+fun [tail] _seedRuns<T>(cur: Chain<T>, then: Chain<T>, run: Chain<T>, lone: Bool, desc: Bool, runs: List<Chain<T> >): List<Chain<T> > where BasicCompare<T>
+  ret match(cur)
+    (nil: ChainEnd) => match(then)
+      (tnil: ChainEnd) => match(run)
+        (rnil: ChainEnd) => runs
+        (rc: ChainLink)  => _finishRun<T>(runs, run, desc)
+      (tc: ChainLink) => _seedRuns<T>(then, ChainEnd<T>(), run, lone, desc, runs)
+    (c: ChainLink) => match(run)
+      (rnil: ChainEnd) => _seedRuns<T>(c.next, then, ChainLink<T>(c.value, ChainEnd<T>()), true, false, runs)
+      (rc: ChainLink)  => c.value < rc.value
+        ? (lone || desc
+            ? _seedRuns<T>(c.next, then, ChainLink<T>(c.value, run), false, true, runs)
+            : _seedRuns<T>(c.next, then, ChainLink<T>(c.value, ChainEnd<T>()), true, false, _finishRun<T>(runs, run, desc)))
+        : (desc
+            ? _seedRuns<T>(c.next, then, ChainLink<T>(c.value, ChainEnd<T>()), true, false, _finishRun<T>(runs, run, desc))
+            : _seedRuns<T>(c.next, then, ChainLink<T>(c.value, run), false, false, runs))
+
+# Sort ascending, STABLE (equal elements keep their original order).
+# O(n log n) worst case; O(n) when the input is already sorted or
+# reverse-sorted (one natural run). See the design notes above.
+fun sort<T>(l: List<T>): List<T> where BasicCompare<T>
+  ret match(l)
+    (e: ListEmpty) => l
+    (fl: ListFull) => _listFromChains<T>(
+        _sortRuns<T>(
+          _seedRuns<T>(fl.front, _chainReverse<T>(fl.rear, ChainEnd<T>()),
+                       ChainEnd<T>(), true, false, List<Chain<T> >()),
+          true),
+        ChainEnd<T>())

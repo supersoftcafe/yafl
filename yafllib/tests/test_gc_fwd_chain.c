@@ -26,6 +26,7 @@
 #include "../yafl.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
@@ -137,6 +138,11 @@ static void __attribute__((noinline)) check_final(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
+    /* gc_start() fires when the LAST thread registers — a countdown this
+       entrypoint can outrun. Stepping through NOT_STARTED is a no-op, so a
+       fast spin exhausts the step guard before the collector exists: wait
+       for it (yielding, so the registering threads get scheduled). */
+    while (gc_debug_stage() == 0) usleep(1000);
 
     /* (1) A's page sparse; A unpinned for this one cycle -> compacts. */
     create_and_bury();

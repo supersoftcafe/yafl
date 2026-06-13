@@ -147,8 +147,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 pass
             case s.EnumStatement() as en:
                 resolver2 = g.AddScopeResolution(resolver, en.imports)
-                obj = en.global_codegen(resolver2)
-                if obj is not None:
+                for obj in en.global_codegen(resolver2):
                     a.objects[obj.name] = obj
             case _:
                 raise ValueError(f"Unexpected type {type(stmt)}")

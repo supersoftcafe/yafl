@@ -3,6 +3,63 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
+## OPEN BUG: non-deterministic codegen + layout-dependent race (found 2026-06-12)
+
+Two coupled problems, discovered while benchmarking findstr:
+
+1. **The compiler emits different C on every run.** State-slot indices
+   (`_slot_N_M`), anonymous-struct numbering and task-subtype order shuffle
+   between invocations of `main.py`. `PYTHONHASHSEED=0` makes output fully
+   deterministic, so a set/dict iterated in hash order feeds slot/struct
+   assignment somewhere. Violates the path-based-naming principle and makes
+   builds unreproducible.
+
+2. **Some codegen draws contain a real multi-thread race.** ~2 of 6 findstr
+   builds abort with "Aborting due to integer overflow" on 30–50% of runs;
+   the backtrace is a deep recursion of one generated frame. Single-threaded
+   (`YAFL_THREADS=1`) never aborts; no single file reproduces — several files
+   must be in flight. Suspicion: state-struct slot ordering vs
+   pointer-location mask inconsistency, or a runtime hole only some layouts
+   expose (a corrupted value tripping checked arithmetic).
+
+Repro: build N variants of `examples/findstr.yafl` (`-O2`, save `-c` output
+per variant); run each 10× over
+`~/.cargo/registry/src/*/aho-corasick-*/src/packed` — poisoned variants abort
+about half their runs. Diff a clean vs poisoned `.c` to see the shuffles.
+A binary is "clean" after 10 abort-free runs there.
+
+Consequences while open: benchmark binaries must be screened clean and exit
+codes always checked (an aborting run looks like a fast run); any program may
+be one unlucky compile away from the race. Fix order: make codegen
+deterministic first (sort the offending iteration; `PYTHONHASHSEED=0` as a
+stopgap pins one ordering), then diff clean-vs-poisoned slot/mask assignment
+for the layout inconsistency.
+
+## OPEN BUG: match arms on a concrete generic enum mistype the binder (found 2026-06-12)
+
+Matching a CONCRETE instantiation's variants from non-generic code leaves the
+binder's fields typed as the enum's placeholders:
+
+```yafl
+fun probe(c: Chain<String>): Int
+  ret match(c)
+    (link: ChainLink) => shout(link.value)   # error: Parameters are not
+    (e: ChainEnd)     => 0                   # assignment compatible
+```
+
+`link.value` should be `String`; it keeps the enum's `T`. Explicit
+`ChainLink<String>` arm types don't help. Matching works fine in GENERIC
+context (the stdlib's own `sort`/`chainNext` do it), which is why it went
+unnoticed — user code matching a generic stdlib enum was simply never
+exercised. Workaround: consume through `chainNext<T>` (allocation-free
+uncons) instead of matching the Chain directly.
+
+Fix shape: the arm's binder type is compiled without subject context
+(`MatchArm.compile` → `self.type_spec.compile(resolver)`); when the subject
+is a generic instantiation, the subject's `type_params` must be substituted
+into the variant's field types. Minimal repro above belongs in a test next
+to `tests/test_generic_nesting.py`.
+
 ## Postfix method chaining — DONE
 
 Postfix `.field` / `(...)` / `[...]` form one left-associative chain
@@ -307,8 +364,13 @@ Test coverage: `tests/test_runtime.py::TestListOps` (9 cases),
 ```
 enum List<T>
   enum ListEmpty()
-  enum ListFull(front: _ListNode<T>, rear: _ListNode<T>)
+  enum ListFull(front: Chain<T>, rear: Chain<T>)
 ```
+
+(`_ListNode`/`_Nil`/`_Cons` were renamed to the public `Chain`/`ChainEnd`/
+`ChainLink` on 2026-06-12 — List is the build structure, Chain the zero-
+allocation consumption view; see `chain`/`chainNext`/`chainLength` in
+`stdlib/list.yafl`.)
 
 Check if the ListEmpty() case uses runtime NULL in one of the fields as the signal, or if it
 uses an extra field to distinguish. There is an optimisation opportuntiy here.

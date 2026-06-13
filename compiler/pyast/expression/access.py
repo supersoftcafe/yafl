@@ -213,15 +213,29 @@ class DotExpression(Expression):
                 stmts = resolver.find_type(es.root_name)
                 assert len(stmts) == 1
                 root_stmt = cast(s.EnumStatement, stmts[0].statement)
-                variant_types = t.enum_variant_types(root_stmt, resolver)
-                container, variant_map = cg_t.compute_union_slots(variant_types)
                 leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
                 ptr = base_bundle.result_var
 
+                root_spec = root_stmt._enum_spec
+                assert root_spec is not None, f"enum {es.root_name} reached generate uncompiled"
+                if root_spec.is_complex:
+                    # Per-variant heap object: the field lives under its own
+                    # name on the variant whose declaration carries it (field
+                    # names are @hash-unique to one variant).
+                    for leaf_name, leaf_fields in zip(root_spec.all_leaf_names, leaf_field_sets):
+                        for let in leaf_fields:
+                            if let.name == self.name:
+                                ftype = let.declared_type.generate(resolver)
+                                obj_name = t.enum_leaf_object_name(root_spec.root_name, leaf_name)
+                                result_var = cg_p.ObjectField(ftype, ptr, obj_name, let.name, None)
+                                return base_bundle + g.OperationBundle((), (), result_var)
+                    raise AssertionError(f"Field '{self.name}' not found in enum {es.root_name}")
+
+                variant_types = t.enum_variant_types(root_stmt, resolver)
+                container, variant_map = cg_t.compute_union_slots(variant_types)
+
                 def read_slot(si: int) -> cg_p.RParam:
-                    slot_name, slot_type = container.fields[si]
-                    if es.is_complex:
-                        return cg_p.ObjectField(slot_type, ptr, es.root_name, slot_name, None)
+                    slot_name, _ = container.fields[si]
                     return cg_p.StructField(ptr, slot_name)
 
                 def reconstruct_from_slots(ftype, slot_assigns, off):

@@ -441,6 +441,11 @@ class Object:
     # being written loses the writes that land in the stale copy. Ordinary
     # YAFL objects are immutable after construction and stay compactable.
     is_mutable: bool = False
+    # Globally unique discriminator id (the union/variant registry). Enum
+    # variants carry their own vtables, so match dispatch reads this — once
+    # per TYPE — instead of a tag byte stored in every instance. 0 for
+    # objects that never appear in a dispatch.
+    discriminator: int = 0
 
     def __post_init__(self):
         if not isinstance(self.fields, t.ImmediateStruct):
@@ -545,22 +550,26 @@ class Global:
         if self.object_name:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
-            # The struct's first field is its vtable slot, declared in
-            # the IR as `("type", DataPointer())` — i.e. typed
-            # `object_t*` at the C level.  `obj_<name>` is the vtable
-            # constant (`static vtable_t* const obj_<name> = ...`), and
-            # `&obj_<name>` is the address of that storage — which IS
-            # the in-memory representation of an object_t whose vtable
-            # pointer matches the class.  Cast it through `object_t*`
-            # to satisfy the struct field's declared type.
+            # The struct's first field is its vtable slot, declared in the IR
+            # as `("type", DataPointer())` — i.e. typed `object_t*` at the C
+            # level. It must hold the VALUE of `obj_<name>` (the vtable
+            # pointer), so `static->vtable` reads the real vtable — exactly
+            # what a heap instance holds. (It previously stored `&obj_<name>`,
+            # the address of the pointer VARIABLE: a static whose vtable was
+            # garbage. Latent while enum statics were matched via a payload
+            # tag; fatal once the vtable's discriminator became the
+            # dispatch.) Reading another static const's value in an
+            # initializer is the same clang constant-expression extension the
+            # vtables' implements_array uses — valid because vtables are
+            # emitted before globals, in extends order.
             if self.init.values and isinstance(self.init.values[-1], p.InitArray):
                 return (f"{self.__prototype(type_cache)} = {{\n"
-                 f"    (object_t*)&obj_{mangle_name(self.object_name)}\n"
+                 f"    (object_t*)obj_{mangle_name(self.object_name)}\n"
                  + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
                  f"}};\n")
             # Generate a named struct for the data, then a pointer to it.
             data_name = f"{self.to_c_name()}_data"
-            struct_body = ("    (object_t*)&obj_{}\n".format(mangle_name(self.object_name))
+            struct_body = ("    (object_t*)obj_{}\n".format(mangle_name(self.object_name))
                            + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
             return (f"static {mangle_name(self.object_name)}_t {data_name} = {{\n"
                     f"{struct_body}"

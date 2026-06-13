@@ -24,8 +24,20 @@ def __create_unique_name(base_name: str, type_args: tuple[t.TypeSpec, ...]) -> s
 
 
 def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
-    """Check if all type arguments are concrete (not GenericPlaceholderSpec)."""
-    return all(not isinstance(tp, t.GenericPlaceholderSpec) for tp in type_args)
+    """Check if all type arguments are concrete AND ready to name an
+    instantiation. A bare GenericPlaceholderSpec is obviously not; neither is
+    a spec still carrying its own type_params (e.g. the EnumSpec for _N<T> —
+    or _N<Int> before ITS redirect has landed): its unique-id ignores the
+    pending arguments, so using it would name the instantiation after the raw
+    template (List$generic$enum(_N) for every _N<...>, colliding them all and
+    feeding templates back in as arguments — observed as a runaway
+    _N$generic$enum(_N$generic$enum(...)) cascade). Such an argument becomes
+    usable on a later iteration, once its own specialisation is redirected
+    and its type_params are cleared."""
+    return all(not isinstance(tp, t.GenericPlaceholderSpec)
+               and not (isinstance(tp, (t.EnumSpec, t.ClassSpec, t.NamedSpec))
+                        and tp.type_params)
+               for tp in type_args)
 
 
 def __find_concrete_instantiations(
@@ -104,6 +116,20 @@ def __substitute_type_params(
         bare = gp.name.rpartition("@")[0] or gp.name
         return name_map.get(bare, gp)
 
+    def _substitute_enum(es: t.EnumSpec, visited: frozenset[str]) -> t.TypeSpec:
+        # Substitute the spec's own type_params as well as its all_fields.
+        # Without this, an EnumSpec embedded as a type ARGUMENT of another
+        # generic (e.g. the _N<T> inside List<_N<T>>) keeps placeholder
+        # type_params after T is bound: __find_concrete_instantiations never
+        # sees a concrete (root_name, params) pair, no specialisation or
+        # redirect happens, and the generic TEMPLATE spec — placeholder
+        # fields, self-reference and all — leaks into codegen.
+        if es.type_params:
+            new_tp = tuple(_substitute_in_field(tp, visited) for tp in es.type_params)
+            if any(n is not o for n, o in zip(new_tp, es.type_params)):
+                es = dataclasses.replace(es, type_params=new_tp)
+        return es.walk_all_fields(_substitute_in_field, visited)
+
     def _substitute_in_field(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:
         if isinstance(ft, t.GenericPlaceholderSpec):
             return _resolve_gp(ft)
@@ -118,14 +144,14 @@ def __substitute_type_params(
                     return dataclasses.replace(ft, name=new_name, type_params=())
                 return dataclasses.replace(ft, type_params=new_tp)
         if isinstance(ft, t.EnumSpec):
-            return ft.walk_all_fields(_substitute_in_field, visited)
+            return _substitute_enum(ft, visited)
         return ft
 
     def substitute(resolver: g.Resolver, thing):
         if isinstance(thing, t.GenericPlaceholderSpec):
             return _resolve_gp(thing)
         if isinstance(thing, t.EnumSpec):
-            return thing.walk_all_fields(_substitute_in_field)
+            return _substitute_enum(thing, frozenset())
         return thing
 
     # Use search_and_replace to recursively substitute throughout the tree

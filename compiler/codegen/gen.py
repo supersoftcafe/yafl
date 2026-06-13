@@ -92,10 +92,41 @@ class Application:
             f"    .array_el_pointer_locations = {arr_el_ptr_mask_str},\n"
             f"    .array_len_offset = {arr_len_offset_str},\n"
             f"    .is_mutable = {1 if o.is_mutable else 0},\n"
+            f"    .discriminator = {o.discriminator},\n"
             f"    .name = \"{name}\",\n"
             f"    .implements_array = VTABLE_IMPLEMENTS({len(implements_array)}, {implements_str}),\n"
             f"    .lookup = {{ {vtable_str} }},\n"
             f"}};\n")
+
+    def __objects_in_extends_order(self) -> list[tuple[str, "Object"]]:
+        """Objects ordered so that everything an object `extends` is emitted
+        before it. A vtable's `.implements_array` reads the interface
+        objects' `obj_*` const-pointer VALUES inside a static initializer;
+        clang only treats that as a constant expression once the referenced
+        definition has been seen, so a use-before-definition is a compile
+        error ("initializer element is not a compile-time constant").
+        Depth-first over `extends` with the original insertion order as the
+        tie-break — deterministic, no hash-order dependence."""
+        emitted: set[str] = set()
+        ordered: list[tuple[str, Object]] = []
+
+        def visit(name: str) -> None:
+            if name in emitted:
+                return
+            # Pre-mark so extends cycles terminate; this also covers parents
+            # not in the registry (foreign/extern vtables), which are marked
+            # and skipped rather than emitted.
+            emitted.add(name)
+            o = self.objects.get(name)
+            if o is None:
+                return
+            for parent in o.extends:
+                visit(parent)
+            ordered.append((name, o))
+
+        for name in self.objects:
+            visit(name)
+        return ordered
 
     def __gen_global(self, name: str, g: Global):
         self.__forwards.append(g.to_c_prototype(self.__type_cache))
@@ -158,7 +189,7 @@ class Application:
                 self.__forwards.append(f.to_c_extern(self.__type_cache))
             else:
                 self.__gen_function(name, f)
-        for name, o in self.objects.items():
+        for name, o in self.__objects_in_extends_order():
             if not o.is_foreign:
                 self.__gen_object(name, o, global_ids, vtable_sizes)
         for name, g in self.globals.items():

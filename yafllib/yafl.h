@@ -174,6 +174,11 @@ typedef struct vtable {
     uint64_t array_el_pointer_locations;
     uint16_t array_len_offset;   // Offset of uint32_t array length field
     uint16_t is_mutable:1;
+    // Globally unique variant/union-member id (the compiler's discriminator
+    // registry). Enum variants carry their own vtables, so the discriminant
+    // lives here — once per TYPE — instead of a tag byte in every object.
+    // 0 for types that never appear in a match dispatch.
+    int32_t discriminator;
     const char *name;
     struct vtable** implements_array; // Array of all classes that this class extends
 #ifdef NDEBUG
@@ -192,6 +197,7 @@ typedef struct vtable {
             uint64_t array_el_pointer_locations;\
             uint16_t array_len_offset;\
             uint16_t is_mutable:1;\
+            int32_t discriminator;\
             const char* name;\
             struct vtable** implements_array;\
             vtable_entry_t lookup[LOOKUP_COUNT];\
@@ -336,6 +342,11 @@ EXTERN void* memory_pages_alloc(size_t page_count);
 EXTERN void memory_pages_free(void* ptr, size_t page_count);
 EXTERN bool memory_pages_is_alloc_head(void*ptr);
 EXTERN size_t memory_count();
+// GC-clocked scavenger: returns excess free pages to the OS, retaining `retain`
+// warm free pages as allocation slack. fsa_lock holders only — see mmap.c.
+EXTERN void memory_scavenge(size_t retain, size_t max_pages);
+EXTERN void memory_scavenge_stats(size_t* returned, size_t* reclaimed, size_t* cold_now,
+                                  size_t* reclaimed_runs);
 
 
 /**********************************************************
