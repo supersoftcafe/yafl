@@ -3,37 +3,64 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
-## OPEN BUG: non-deterministic codegen + layout-dependent race (found 2026-06-12)
+## "findstr integer overflow" — ROOT-CAUSED & FIXED 2026-06-13 (two bugs, both fixed)
 
-Two coupled problems, discovered while benchmarking findstr:
+The long-standing findstr `Aborting due to integer overflow` was **two unrelated
+bugs**, both now fixed: a deterministic CSE value-routing bug (PRIMARY) and a
+multi-thread-only GC fixup-vs-mutator race on mutable objects (SECONDARY).
 
-1. **The compiler emits different C on every run.** State-slot indices
-   (`_slot_N_M`), anonymous-struct numbering and task-subtype order shuffle
-   between invocations of `main.py`. `PYTHONHASHSEED=0` makes output fully
-   deterministic, so a set/dict iterated in hash order feeds slot/struct
-   assignment somewhere. Violates the path-based-naming principle and makes
-   builds unreproducible.
+### PRIMARY (FIXED): CSE did not invalidate heap reads on a heap write
+`codegen/things.py eliminate_common_subexpressions` invalidated cached
+`StructField` reads on a Call / NewObject / `ObjectField`-write, but NOT cached
+`ObjectField` / `ArrayElement` (heap dereference) reads. An async state object's
+coalesced array slot is read, overwritten with a *different* logical variable,
+then read again; CSE reused the first read for the second, substituting the
+slot's previous occupant. In `searchFiles`, `array[3]` holds `path` then `lineNo`
+(coalesced, disjoint live ranges); CSE made `String(lineNo)` append `path`
+instead, so the integer-append helper read a string's length as a bignum limb
+count and overflowed. Fix: invalidate `StructField`, `ObjectField` AND
+`ArrayElement` on any heap-mutating op (one-liner at things.py:~412).
+- DETERMINISTIC + SERIAL (the GC was a red herring): `YAFL_THREADS=1
+  YAFL_HEAP_SIZE=256m ./findstr fn <aho-corasick>/src/packed` aborted 100% before,
+  0/50 after. Hot path was immune (there `path`/`lineNo` are plain StackVars; CSE
+  doesn't cache StackVar sources) — only the SM, where they become `array[]`
+  ObjectFields, hit it. This is why it masqueraded as an async/SM/coalescing/GC bug.
+- Regression test: `tests/test_things.py::TestCseHeapInvalidation` (fails without
+  the fix, and a second case asserts genuine duplicate reads are still coalesced).
+- Earlier mis-diagnoses (all WRONG, recorded so we don't repeat): "GC-root slot
+  coalescing", "moving-GC compaction race / TSAN gc_compact_page" (real race but
+  NOT this abort), "interference/liveness", "phi-copy ordering". The repro needs a
+  needle with MANY matches (`fn`, not `needle`) so `emit`/`String(lineNo)` runs.
 
-2. **Some codegen draws contain a real multi-thread race.** ~2 of 6 findstr
-   builds abort with "Aborting due to integer overflow" on 30–50% of runs;
-   the backtrace is a deep recursion of one generated frame. Single-threaded
-   (`YAFL_THREADS=1`) never aborts; no single file reproduces — several files
-   must be in flight. Suspicion: state-struct slot ordering vs
-   pointer-location mask inconsistency, or a runtime hole only some layouts
-   expose (a corrupted value tripping checked arithmetic).
+### SECONDARY (FIXED 2026-06-13): GC rewrote pointers inside MUTABLE objects
+After the CSE fix a rarer multi-thread-only abort remained (~1/60; THREADS=1
+0/120). Cause: `gc_fsa_mark_sweep$scan_elements` snapped a relocated child's
+field to its forwarding target (`*ptr_ptr = fwd`) even when the CONTAINING object
+is mutable. An async state object rewrites its own coalesced `array[]` slots as
+it runs; the GC's fixup write races the mutator's store and clobbers it with the
+slot's previous occupant → `lineNo` reads a stale string → overflow. Fix (user's
+hypothesis): the GC must not rewrite pointers in a mutable object — `scan_object`
+computes `fixup = !page->head.mutable` and `scan_elements` takes a `fixup` flag;
+for mutable containers it still marks through the whole forward chain (so the
+original stays live and the mutator follows forwarding lazily on read) but never
+stores back. Mutable pages are never compacted, so the object is never a
+forwarder itself and its page flag is authoritative.
+- Verified: release -O2 multi 0/150; debug+poison multi 0/250; THREADS=1 0/120;
+  output identical single vs multi; ctest 17/17; yspell (500k-word immutable BST
+  + compaction) correct + stable.
+- Remaining TSAN reports are the GC's by-design lock-free SATB marking READ races
+  (bitmap_test/fetch_set, scan_elements reads, object_get_vtable, gc_compact_page
+  forwarding-install-vs-reader). No abort in 250+ runs — these are the accepted
+  benign class ("spurious mark harmless"; reader follows forwarding, original data
+  intact). NOT fixed (and not the cause of any observed failure).
 
-Repro: build N variants of `examples/findstr.yafl` (`-O2`, save `-c` output
-per variant); run each 10× over
-`~/.cargo/registry/src/*/aho-corasick-*/src/packed` — poisoned variants abort
-about half their runs. Diff a clean vs poisoned `.c` to see the shuffles.
-A binary is "clean" after 10 abort-free runs there.
-
-Consequences while open: benchmark binaries must be screened clean and exit
-codes always checked (an aborting run looks like a fast run); any program may
-be one unlucky compile away from the race. Fix order: make codegen
-deterministic first (sort the offending iteration; `PYTHONHASHSEED=0` as a
-stopgap pins one ordering), then diff clean-vs-poisoned slot/mask assignment
-for the layout inconsistency.
+### Codegen non-determinism — FIXED (4 hash-ordered sources), uncommitted:
+- `lowering/async_lower.py __frame_field_types` + 2 save sites: iterate `bb.live`
+  (a frozenset) as `sorted(..., key=lambda v: v.name)`.
+- `lowering/task_abi.py task_subtype_name`: `blake2b(repr(result_type))` not `hash()`.
+- `lowering/strings.py`: `enumerate(sorted(all_string_literals))`.
+- `pyast/match.py`: iterate `valid_leaf_names` as `sorted(..., key=leaf_id)`.
+Byte-identical across runs with random seed. Orthogonal to the bugs above.
 
 ## OPEN BUG: match arms on a concrete generic enum mistype the binder (found 2026-06-12)
 

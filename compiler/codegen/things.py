@@ -406,11 +406,17 @@ class Function:
             elif isinstance(op, (Call, NewObject)) or (
                     isinstance(op, Move) and isinstance(op.target, p.ObjectField)):
                 # A call, heap allocation, or heap field write may mutate object
-                # state. Invalidate all cached StructField reads — they may now
-                # be stale. Other pure computations that don't involve StructField
-                # reads remain valid.
+                # state. Invalidate every cached expression that READS memory —
+                # StructField as well as heap dereferences (ObjectField,
+                # ArrayElement). Mutable heap slots (e.g. an async state object's
+                # coalesced array slots) are read AND written through ObjectField,
+                # so a cached read becomes stale the moment the slot is rewritten;
+                # reusing it would substitute the slot's previous occupant (a
+                # different logical variable) for its current one. Pure
+                # computations over plain values remain valid.
                 available = {k: v for k, v in available.items()
-                             if not k.test(lambda x: isinstance(x, p.StructField))}
+                             if not k.test(lambda x: isinstance(
+                                 x, (p.StructField, p.ObjectField, p.ArrayElement)))}
                 new_ops.append(op)
 
             else:

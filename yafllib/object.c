@@ -1646,7 +1646,15 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
         mark_worklist_push(object);
 }
 
-static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t pointer_locations) {
+// `fixup` controls whether a relocated child's field is snapped to the
+// forwarding target. For an IMMUTABLE container the GC owns the field and snaps
+// it (true). For a MUTABLE container the mutator may be writing the same slot in
+// parallel (async state objects rewrite their coalesced array slots as they
+// run); the GC must NOT store into it — a fixup write races the mutator and can
+// clobber its update with the slot's previous occupant. It still marks through
+// the whole forward chain so the original stays live; the mutator follows
+// forwarding lazily on read.
+static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t pointer_locations, bool fixup) {
     // Single-pointer fast path — list nodes and other one-child shapes
     // dominate chain-heavy heaps; skip the batch machinery for them.
     if ((pointer_locations & (pointer_locations - 1)) == 0) {
@@ -1659,7 +1667,8 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
             vtable_t *vt = object->vtable;
             if (LIKELY(!vtable_is_forward(vt)))
                 break;
-            *ptr_ptr = object = (object_t*)vt;
+            object = (object_t*)vt;
+            if (fixup) *ptr_ptr = object;
         }
         return;
     }
@@ -1692,7 +1701,8 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
             if (LIKELY(!vtable_is_forward(vt)))
                 break;
 
-            *ptr_ptr = object = (object_t*)vt;
+            object = (object_t*)vt;
+            if (fixup) *ptr_ptr = object;
         }
     }
 }
@@ -1756,16 +1766,24 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
         }
     }
 
+    // A mutable container's pointer slots may be written by the mutator in
+    // parallel with this scan, so the GC must not snap them to forwarding
+    // targets (it would race / clobber the mutator's store). Mark through but
+    // don't rewrite. `vt` is the resolved (forwarding-followed) vtable and
+    // carries the same mutability bit object_create used to place the object on
+    // a mutable page, so it is authoritative without a separate page lookup.
+    bool fixup = !vt->is_mutable;
+
     // Scan references
     if (vt->object_pointer_locations) {
-        gc_fsa_mark_sweep$scan_elements((object_t**)object, vt->object_pointer_locations);
+        gc_fsa_mark_sweep$scan_elements((object_t**)object, vt->object_pointer_locations, fixup);
     }
 
     if (vt->array_el_pointer_locations) {
         uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
         char*  array = ((char*)object) + vt->object_size;
         for (; len-- > 0; array += vt->array_el_size) {
-            gc_fsa_mark_sweep$scan_elements((object_t**)array, vt->array_el_pointer_locations);
+            gc_fsa_mark_sweep$scan_elements((object_t**)array, vt->array_el_pointer_locations, fixup);
         }
     }
 }

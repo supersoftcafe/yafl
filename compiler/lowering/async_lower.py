@@ -424,7 +424,11 @@ def __frame_field_types(basic_blocks: list[BasicBlock]) -> dict[str, Type]:
     the historical state-object collection)."""
     fields: dict[str, Type] = {}
     for bb in basic_blocks[:-1]:
-        for var in bb.live:
+        # bb.live is a frozenset; iterate it in a fixed order (SSA names are
+        # unique, so name order is total) or the field-collection order — and
+        # everything downstream that numbers slots and anonymous structs from
+        # it — becomes hash-seed dependent, making codegen non-reproducible.
+        for var in sorted(bb.live, key=lambda v: v.name):
             fields[var.name] = var.get_type()
         if bb.result is not None and isinstance(bb.result, StackVar):
             fields[bb.result.name] = bb.result.get_type()
@@ -715,11 +719,12 @@ def __create_hot_path_func(fn: Function, state_name: str,
 
     # ── Collect all vars that end up as state-object fields ──────────────────
     # Used both for the prologue null-inits and for the common save block.
-    # Preserve insertion order so the generated C is deterministic.
+    # bb.live is a frozenset; iterate by SSA name (unique → total order) so the
+    # collection order — and the generated C built from it — is deterministic.
     seen_state_var_names: set[str] = set()
     all_state_vars: list[StackVar] = []
     for bb in basic_blocks[:-1]:
-        for var in bb.live:
+        for var in sorted(bb.live, key=lambda v: v.name):
             if var.name not in seen_state_var_names:
                 all_state_vars.append(var)
                 seen_state_var_names.add(var.name)
@@ -869,7 +874,9 @@ def __create_hot_path_func(fn: Function, state_name: str,
     common_ops.append(Jump("$save$done"))   # default: unreachable (every suspend sets a known id)
     for i, bb in enumerate(non_terminal):
         common_ops.append(Label(f"$save${i}"))
-        for var in bb.live:
+        # Deterministic store order (bb.live is a frozenset); each save is
+        # independent, so SSA-name order is as valid as any and reproducible.
+        for var in sorted(bb.live, key=lambda v: v.name):
             common_ops.append(Move(
                 __state_field(var.name, var.get_type(), __sv_state, state_name, layout),
                 var))
@@ -949,7 +956,10 @@ def __create_state_machine_func(fn: Function, state_name: str,
     # to stay consistent.
     vars_to_fields: dict[str, LParam] = {}
     for bb in non_terminal:
-        for var in bb.live:
+        # Name-keyed lookup map; iterate the frozenset deterministically for
+        # consistency with the other bb.live walks (first-wins by unique name,
+        # so the result is order-independent regardless).
+        for var in sorted(bb.live, key=lambda v: v.name):
             vars_to_fields.setdefault(var.name, __state_field(
                 var.name, var.get_type(), __state_param_var, state_name, layout))
         if bb.result is not None and isinstance(bb.result, StackVar):

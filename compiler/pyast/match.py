@@ -612,8 +612,11 @@ class MatchExpression(e.Expression):
         for arm in (a for a in self.arms if a.type_spec is not None):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)
+            # valid_leaf_names is a frozenset; sort by the leaf's discriminant
+            # so the OR-ed guards emit in a fixed (ascending) order — the set's
+            # iteration order is hash-seeded and would vary the generated C.
             guards = [cg_p.IntEqConst(tag, leaf_id(leaf))
-                      for leaf in arm_type.valid_leaf_names]
+                      for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
             # Bind at subj_type (always concrete), not arm.type_spec: an
             # EnumSpec built by _assign_specs never carries type_params, so
             # the generics redirect pass can leave arm_type pointing at the

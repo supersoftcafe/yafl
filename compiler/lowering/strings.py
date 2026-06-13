@@ -30,7 +30,10 @@ def fix_global_strings(statements: list[s.Statement]) -> list[s.Statement]:
                               ImportGroup(()), {}, (),
                               e.StringExpression(lr, value),
                               t.BuiltinSpec(lr, "str"))
-    global_statements = {value: create_string(index, value) for index,value in enumerate(all_string_literals)}
+    # Sort before numbering: all_string_literals is a set, whose iteration
+    # order is hash-seed dependent — without this the per-string index (and so
+    # every $strings::string@N name) differs on each compile.
+    global_statements = {value: create_string(index, value) for index,value in enumerate(sorted(all_string_literals))}
 
     # For each string generate a global reference
     global_references = {value: e.NamedExpression(statement.line_ref, statement.name)  for value, statement in global_statements.items()}

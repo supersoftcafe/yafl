@@ -11,6 +11,8 @@ truth for the ABI.
 """
 from __future__ import annotations
 
+import hashlib
+
 from codegen.param import RParam, StructField, Invoke, NewStruct
 from codegen.things import Object
 from codegen.typedecl import (
@@ -69,8 +71,15 @@ def task_subtype_name(result_type: Type) -> str | None:
         return f"task$Int{result_type.precision}"
     if isinstance(result_type, TaskWrapper):
         return task_subtype_name(result_type.inner)
-    # Struct (and any other type): unique subtype per distinct layout.
-    return f"task$T{abs(hash(result_type))}"
+    # Struct (and any other type): unique subtype per distinct layout. The
+    # digest is taken over the type's structural repr with a STABLE hash —
+    # NOT Python's built-in hash(), which is per-process randomised for
+    # anything containing strings (the struct's field names), and would make
+    # both this name and the anonymous-struct numbering it drives differ on
+    # every compile. Distinct layouts get distinct reprs; 64 bits makes
+    # collision negligible within one compilation.
+    digest = hashlib.blake2b(repr(result_type).encode(), digest_size=8).hexdigest()
+    return f"task$T{digest}"
 
 
 def make_task_foreign_object() -> Object:
