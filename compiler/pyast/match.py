@@ -18,6 +18,7 @@ import pyast.expression as e
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+from pyast import union_repr
 
 
 # Primitive builtin types that support literal-pattern matching: arbitrary-
@@ -61,7 +62,7 @@ def _arm_unique_name(arm: "MatchArm") -> str:
 def _wrap_pointer_into(ctype: cg_t.Type, ptr_value: cg_p.RParam) -> cg_p.RParam:
     """Rebuild a single-field newtype wrapper (a chain of one-field structs
     ending in a DataPointer) from a bare pointer word — the inverse of
-    coerce._unwrap_to_pointer_word, used when binding a newtype arm out of a
+    union_repr._unwrap_to_pointer_word, used when binding a newtype arm out of a
     collapsed pointer union."""
     if isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
         fname, ftype = ctype.fields[0]
@@ -89,17 +90,6 @@ def _binding_resolver(resolver: g.Resolver, arm: "MatchArm",
     if not arm.name or arm.name == "_" or bound_type is None:
         return resolver
     return g.ResolverData(resolver, _binding_finder(arm, bound_type))
-
-
-def _literal_eq_test(lit_type_name: str, value: cg_p.RParam,
-                     literal: cg_p.RParam) -> cg_p.RParam:
-    """Boolean IR expression comparing a primitive `value` to a `literal`."""
-    args = cg_p.NewStruct((("a", value), ("b", literal)))
-    if lit_type_name == "str":
-        return cg_p.IntEqConst(cg_p.Invoke("string_compare", args, cg_t.Int(32)), 0)
-    if lit_type_name == "bigint":
-        return cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
-    return cg_p.Invoke(f"{lit_type_name}_test_eq", args, cg_t.Int(8))  # int8..int64
 
 
 @dataclass
@@ -304,7 +294,7 @@ class _Emitter:
             value = cg_p.ZeroOf(arm_ctype)
         # A single-field newtype arm in a COLLAPSED pointer union: the subject
         # is the bare pointer word, so re-wrap it into the tuple struct the arm
-        # binds (the inverse of coerce._unwrap_to_pointer_word).
+        # binds (the inverse of union_repr._unwrap_to_pointer_word).
         elif (isinstance(arm_ctype, cg_t.Struct)
               and cg_t._flatten_primitives(arm_ctype) == [cg_t.DataPointer()]):
             value = _wrap_pointer_into(arm_ctype, value)
@@ -596,18 +586,11 @@ class MatchExpression(e.Expression):
 
         if isinstance(subj_type, t.BuiltinSpec) and _is_primitive_match_type(subj_type.type_name):
             self.__gen_primitive_match(em, subj_bundle, subj_type)
-        elif isinstance(subj_type, t.EnumSpec):
-            self.__gen_enum_match(em, subj_bundle, subj_type)
         else:
-            assert isinstance(subj_type, t.CombinationSpec)
-            target_ctype = subj_type.generate(resolver)
-            discriminators = resolver.get_discriminators()
-            if isinstance(target_ctype, cg_t.DataPointer):
-                self.__gen_pointer_match(em, subj_bundle, subj_type, resolver)
-            else:
-                assert isinstance(target_ctype, cg_t.Struct)
-                self.__gen_tagged_match(em, subj_bundle, subj_type, target_ctype,
-                                        discriminators, resolver)
+            # Enum or union subject: classify once, the repr emits its dispatch.
+            assert isinstance(subj_type, (t.EnumSpec, t.CombinationSpec))
+            union_repr.classify(subj_type, resolver).generate_match(
+                em, subj_bundle, self.arms, self.__else_arm(), resolver)
         return em.finish(result_var)
 
     def __else_arm(self) -> MatchArm | None:
@@ -621,266 +604,8 @@ class MatchExpression(e.Expression):
         for arm in (a for a in self.arms if a.literal is not None):
             idx = em.counter  # peek for the literal bundle prefix only
             lit_bundle = arm.literal.generate(em.resolver).with_prefix(f"lit{idx}")
-            test = _literal_eq_test(subj_type.type_name, sv, lit_bundle.result_var)
+            test = union_repr.literal_eq_test(subj_type.type_name, sv, lit_bundle.result_var)
             em.arm(arm, [[test]], pre=(lit_bundle,))
         em.fallback(self.__else_arm(),
                     em.bind_subject(self.__else_arm(), subj_type, sv) if self.__else_arm() else None,
                     "primitive match fell through all arms")
-
-    def __gen_enum_match(self, em: _Emitter, subj_bundle, subj_type: t.EnumSpec) -> None:
-        """EnumSpec: one guard per covered leaf. Complex enums lower to
-        DataPointer and each VARIANT carries its own vtable: the guard
-        compares `vt->discriminator` against the leaf's global registry id —
-        the discriminant lives once per type, not as a tag byte per object.
-        Simple (non-complex) enums are flat structs with a local $tag."""
-        sv = subj_bundle.result_var
-        if subj_type.is_complex:
-            tag = cg_p.VtableDiscriminator(sv)
-            discriminators = em.resolver.get_discriminators()
-            def leaf_id(leaf: str) -> int:
-                # Strict lookup: a missing leaf would otherwise guard against
-                # 0 (matches nothing) and surface as a runtime fall-through
-                # abort instead of a compiler bug.
-                key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
-                assert key in discriminators, f"no discriminator for {key!r}"
-                return discriminators[key]
-        else:
-            tag = cg_p.StructField(sv, "$tag")
-            def leaf_id(leaf: str) -> int:
-                return subj_type.all_leaf_names.index(leaf)
-
-        for arm in (a for a in self.arms if a.type_spec is not None):
-            arm_type = arm.type_spec
-            assert isinstance(arm_type, t.EnumSpec)
-            # valid_leaf_names is a frozenset; sort by the leaf's discriminant
-            # so the OR-ed guards emit in a fixed (ascending) order — the set's
-            # iteration order is hash-seeded and would vary the generated C.
-            guards = [cg_p.IntEqConst(tag, leaf_id(leaf))
-                      for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
-            # Bind at subj_type (always concrete), not arm.type_spec: an
-            # EnumSpec built by _assign_specs never carries type_params, so
-            # the generics redirect pass can leave arm_type pointing at the
-            # pruned generic EnumSpec with stale all_fields. The subject's
-            # fully-resolved type is the canonical type of the matched value;
-            # arm.type_spec still drives the leaf guards above, where only
-            # leaf identity matters.
-            em.arm(arm, [guards], bind=em.bind_subject(arm, subj_type, sv))
-        else_arm = self.__else_arm()
-        em.fallback(else_arm,
-                    em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
-                    "enum match fell through all arms")
-
-    # -- pointer (DataPointer) unions ------------------------------------------
-
-    def __gen_pointer_match(self, em: _Emitter, subj_bundle, subj_type, resolver) -> None:
-        """DataPointer union dispatch.
-
-          1. `sv == NULL` → the None arm (or a union arm covering None, via
-             its own guards in source order; or the else arm when the
-             subject can be None at all).
-          2. Typed arms test vtable identity (`object_is_instance` semantics
-             via ObjVtableEq — handles tagged-pointer and heap-vtable
-             representations and walks implements_array for inheritance).
-             A union-typed arm is the disjunction of its members' tests.
-          3. Literal arms test the vtable kind first, then value equality.
-          4. Foreign classes can't be vtable-checked from generated code
-             (their symbol lives in an external library), so at most one
-             foreign class per union is allowed and it acts as the implicit
-             fallback alongside the else arm.
-        """
-        unit_type = cg_t.Struct(())
-        sv = subj_bundle.result_var
-        subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.types)
-
-        def member_guard(member: t.TypeSpec) -> cg_p.RParam | None:
-            """The pointer-shape test for one (non-unit) union member; None for
-            foreign classes (untestable) and units (handled via the NULL test).
-            Uses pointer_word_kind so single-field newtype wrappers dispatch by
-            their inner pointer-word's kind (e.g. `A(x: T)` -> T's vtable)."""
-            kind = t.pointer_word_kind(member, resolver)
-            if kind == ('INT',):
-                return cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
-            if kind == ('STR',):
-                return cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
-            if kind is not None and kind[0] in ('CLASS', 'ENUM'):
-                # CLASS: the class's own vtable; ENUM: the complex-enum root
-                # marker, shared by every leaf via implements_array.
-                return cg_p.ObjVtableEq(sv, class_name=kind[1])
-            return None  # FOREIGN (fallback) / UNIT / non-pointer-word
-
-        # Classify the arms, preserving source order for the guarded ones.
-        null_arm = None
-        foreign_fallback = None
-        guarded: list[MatchArm] = []
-        union_arm_covers_none = False
-        for arm in self.arms:
-            if arm.literal is not None:
-                guarded.append(arm)
-            elif arm.type_spec is None:
-                pass  # else arm: the fallback, handled at the end
-            elif arm.type_spec.generate(resolver) == unit_type:
-                null_arm = arm
-            elif isinstance(arm.type_spec, t.ClassSpec) and self.__class_is_foreign(resolver, arm.type_spec.name):
-                foreign_fallback = arm
-            else:
-                if isinstance(arm.type_spec, t.CombinationSpec) and any(
-                        m.generate(resolver) == unit_type for m in arm.type_spec.types):
-                    union_arm_covers_none = True
-                guarded.append(arm)
-
-        else_arm = self.__else_arm()
-        # NULL routes to: an explicit None arm; else a union arm covering None
-        # (that arm's own null guard, in source order); else the else arm when
-        # the subject can be None at all.
-        null_target = (null_arm if null_arm is not None
-                       else (else_arm if subj_has_none and not union_arm_covers_none else None))
-        if null_target is not None:
-            em.arm(null_target, [[cg_p.IntEqConst(sv, 0)]],
-                   bind=em.bind_subject(null_target,
-                                        null_target.type_spec or subj_type, sv))
-
-        for arm in guarded:
-            if arm.literal is not None:
-                self.__pointer_literal_arm(em, arm, sv, resolver)
-            elif isinstance(arm.type_spec, t.CombinationSpec):
-                # Union-typed arm: one body guarded by the OR of its members'
-                # tests; a unit member contributes the NULL test (and claimed
-                # NULL routing above, so the else arm doesn't steal it).
-                guards = []
-                for member in arm.type_spec.types:
-                    if member.generate(resolver) == unit_type:
-                        guards.append(cg_p.IntEqConst(sv, 0))
-                    else:
-                        guard = member_guard(member)
-                        if guard is not None:
-                            guards.append(guard)
-                em.arm(arm, [guards], bind=em.bind_subject(arm, arm.type_spec, sv))
-            else:
-                guard = member_guard(arm.type_spec)
-                if guard is None:
-                    continue  # untestable arm kind; check() rejects these
-                em.arm(arm, [[guard]], bind=em.bind_subject(arm, arm.type_spec, sv))
-
-        final_fallback = foreign_fallback if foreign_fallback is not None else else_arm
-        em.fallback(final_fallback,
-                    em.bind_subject(final_fallback,
-                                    final_fallback.type_spec or subj_type, sv)
-                    if final_fallback else None,
-                    "pointer-union match fell through all arms")
-
-    def __pointer_literal_arm(self, em: _Emitter, arm: MatchArm, sv, resolver) -> None:
-        """A literal arm on a pointer union: two guard stages — is the subject
-        the literal's primitive kind at all, then does the value match. The
-        AST type selects the comparison (earlier passes rewrite literals to
-        global refs, so the codegen type is DataPointer for both kinds)."""
-        lit_ast_type = arm.literal.get_type(resolver)
-        if not isinstance(lit_ast_type, t.BuiltinSpec):
-            return  # unreachable — check() already validated
-        if lit_ast_type.type_name == "str":
-            kind_guard = cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
-        elif lit_ast_type.type_name == "bigint":
-            kind_guard = cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
-        else:
-            return  # unreachable — check() already validated
-        lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{em.counter}")
-        value_test = _literal_eq_test(lit_ast_type.type_name, sv, lit_bundle.result_var)
-        em.arm(arm, [[kind_guard], [value_test]], pre=(lit_bundle,))
-
-    def __class_is_foreign(self, resolver: g.Resolver, class_name: str) -> bool:
-        """Return True if the named class is declared `[foreign]` — its
-        vtable symbol lives in an external library, so we can't emit a
-        vtable-identity check against it."""
-        classes = resolver.find_type(class_name)
-        for resolved in classes:
-            stmt = resolved.statement
-            if isinstance(stmt, s.ClassStatement) and "foreign" in stmt.attributes:
-                return True
-        return False
-
-    # -- tagged (Struct) unions -------------------------------------------------
-
-    def __gen_tagged_match(self, em: _Emitter, subj_bundle, subj_type, container,
-                           discriminators, resolver) -> None:
-        """Tagged-union Struct: compare $tag for each typed arm; literal arms
-        first guard the $tag of the variant the literal belongs to, then
-        compare the value extracted from its slot; union-typed arms enter on
-        any member's tag and bind the value narrowed for that member."""
-        sv = subj_bundle.result_var
-        tag = cg_p.StructField(sv, "$tag")
-        variant_types = [v.generate(resolver) for v in subj_type.types]
-        _, variant_map = cg_t.compute_union_slots(variant_types)
-        slot_fields = container.fields
-
-        def variant_index(uid: str | None) -> int | None:
-            if uid is None:
-                return None
-            return next((i for i, v in enumerate(subj_type.types)
-                         if v.as_unique_id_str() == uid), None)
-
-        for arm in self.arms:
-            if arm.type_spec is None and arm.literal is None:
-                continue  # else arm: the fallback, handled at the end
-
-            if arm.literal is not None:
-                lit_ast_type = arm.literal.get_type(resolver)
-                lit_type_name = lit_ast_type.type_name if isinstance(lit_ast_type, t.BuiltinSpec) else None
-                vi = next((i for i, v in enumerate(subj_type.types)
-                           if isinstance(v, t.BuiltinSpec) and v.type_name == lit_type_name), None)
-                if vi is None:
-                    continue  # check() prevents this; skip to be safe
-                tag_value = discriminators.get(subj_type.types[vi].as_unique_id_str(), 0)
-                si, _ = variant_map[vi][0]
-                slot_val = cg_p.StructField(sv, slot_fields[si][0])
-                lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{em.counter}")
-                em.arm(arm,
-                       [[cg_p.IntEqConst(tag, tag_value)],
-                        [_literal_eq_test(lit_type_name, slot_val, lit_bundle.result_var)]],
-                       pre=(lit_bundle,))
-
-            elif isinstance(arm.type_spec, t.CombinationSpec):
-                # Union-typed arm, e.g. `(w: Word|None)` over Word|None|IOError.
-                # Discriminator ids are GLOBAL per leaf type, so each member's
-                # tag test is the same constant it has in the wide union; the
-                # bound value is the NARROWED representation, rebuilt from the
-                # wide slots (tags carry over unchanged for the same reason).
-                narrow_ctype = arm.type_spec.generate(resolver)
-                narrow_map = None
-                if isinstance(narrow_ctype, cg_t.Struct):
-                    _, narrow_map = cg_t.compute_union_slots(
-                        [m.generate(resolver) for m in arm.type_spec.types])
-
-                entries: list[tuple[cg_p.RParam, cg_p.RParam]] = []
-                for k, member in enumerate(arm.type_spec.types):
-                    uid = member.as_unique_id_str()
-                    vi = variant_index(uid)
-                    if vi is None or uid not in discriminators:
-                        continue  # check() validated coverage; skip defensively
-                    member_tag = discriminators[uid]
-                    if narrow_map is None:
-                        # DataPointer narrow union: NULL for the unit member,
-                        # else the member's single pointer slot.
-                        if member.generate(resolver) == cg_t.Struct(()):
-                            value: cg_p.RParam = cg_p.NullPointer()
-                        else:
-                            wsi, _ = variant_map[vi][0]
-                            value = cg_p.StructField(sv, slot_fields[wsi][0])
-                    else:
-                        fields = {"$tag": cg_p.Integer(member_tag, 32)}
-                        for (nsi, _nt), (wsi, _wt) in zip(narrow_map[k], variant_map[vi]):
-                            fields[narrow_ctype.fields[nsi][0]] = cg_p.StructField(sv, slot_fields[wsi][0])
-                        value = cg_p.union_struct(narrow_ctype, fields)
-                    entries.append((cg_p.IntEqConst(tag, member_tag), value))
-                em.multi_entry_arm(arm, entries, narrow_ctype)
-
-            else:
-                arm_ctype = arm.type_spec.generate(resolver)
-                tag_value = discriminators.get(arm.type_spec.as_unique_id_str(), 0)
-                vi = next((i for i, vt in enumerate(variant_types) if vt == arm_ctype), None)
-                bind = (em.bind_from_slots(arm, arm_ctype, variant_map[vi], slot_fields, sv)
-                        if vi is not None else None)
-                em.arm(arm, [[cg_p.IntEqConst(tag, tag_value)]], bind=bind)
-
-        else_arm = self.__else_arm()
-        em.fallback(else_arm,
-                    em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
-                    "tagged-union match fell through all arms")

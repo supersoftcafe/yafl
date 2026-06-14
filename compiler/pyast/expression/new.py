@@ -18,6 +18,7 @@ import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.utils as u
+from pyast import union_repr
 from pyast.expression.base import Expression
 
 
@@ -205,86 +206,9 @@ class NewEnumExpression(Expression):
         root_stmt = cast(s.EnumStatement, types[0].statement)
         root_spec = root_stmt._enum_spec
         assert root_spec is not None
-        leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
-
-        leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
-        leaf_fields = leaf_field_sets[leaf_idx]
-
-        if root_spec.is_complex:
-            # Heap-allocated path: allocate THE VARIANT's own object (its own
-            # vtable carries the discriminator; its own layout carries just
-            # this variant's fields — no $tag, no shared max-size container).
-            # Unwritten fields get an explicit ZeroOf so staticinit can
-            # promote all-constant constructions (unit variants trivially so)
-            # to static singletons.
-            obj_name = t.enum_leaf_object_name(root_spec.root_name, self.leaf_name)
-            result_var = cg_p.StackVar(cg_t.DataPointer(), "result")
-            ops: list[cg_o.Op] = [cg_o.NewObject(obj_name, result_var)]
-            bundles: list[g.OperationBundle] = []
-            for let in leaf_fields:
-                field_name = let.name
-                field_type = let.declared_type.generate(resolver)
-                if field_name in self.field_args:
-                    arg_bundle = self.field_args[field_name].generate(resolver).with_prefix(f"arg_{field_name.split('@')[0]}")
-                    bundles.append(arg_bundle)
-                    source: cg_p.RParam = arg_bundle.result_var
-                else:
-                    source = cg_p.ZeroOf(field_type)
-                ops.append(cg_o.Move(
-                    cg_p.ObjectField(field_type, result_var, obj_name, field_name, None),
-                    source))
-            ctor_bundle = g.OperationBundle(
-                stack_vars=(result_var,),
-                operations=tuple(ops),
-                result_var=result_var)
-            if bundles:
-                return reduce(lambda a, b: a + b, bundles + [ctor_bundle])
-            return ctor_bundle
-
-        # Non-recursive: flat by-value struct using the shared slot layout.
-        variant_types = t.enum_variant_types(root_stmt, resolver)
-        container, variant_map = cg_t.compute_union_slots(variant_types)
-        _, tag_slot_type = container.fields[-1]  # $tag is always last
-        tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
-
-        # Map each field name to its starting primitive index within this leaf's flattened type.
-        prim_start: dict[str, int] = {}
-        offset = 0
-        for let in leaf_fields:
-            prim_start[let.name] = offset
-            offset += len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
-
-        # Start with zero for every slot, then fill $tag and each provided field.
-        slot_values: list[tuple[str, cg_p.RParam]] = [
-            (sname, cg_p.ZeroOf(stype)) for sname, stype in container.fields
-        ]
-        tag_slot_idx = next(i for i, (n, _) in enumerate(container.fields) if n == "$tag")
-        slot_values[tag_slot_idx] = ("$tag", tag_const)
-
-        bundles2: list[g.OperationBundle] = []
-        for field_name, arg_expr in self.field_args.items():
-            pi = prim_start[field_name]
-            let = next(l for l in leaf_fields if l.name == field_name)
-            field_type = let.declared_type.generate(resolver)
-            n_prims = len(cg_t._flatten_primitives(field_type))
-            arg_bundle = arg_expr.generate(resolver).with_prefix(f"arg_{field_name.split('@')[0]}")
-            bundles2.append(arg_bundle)
-            def emit_flat(param, ftype, off):
-                """Recursively write ftype primitives from param to flat slot_values."""
-                if isinstance(ftype, cg_t.Struct):
-                    for fname, ft in ftype.fields:
-                        off = emit_flat(cg_p.StructField(param, fname), ft, off)
-                    return off
-                si, _ = variant_map[leaf_idx][off]
-                sname, _ = container.fields[si]
-                slot_values[si] = (sname, param)
-                return off + 1
-
-            emit_flat(arg_bundle.result_var, field_type, pi)
-
-        result_param = cg_p.union_struct(container, dict(slot_values))
-        final_bundle = g.OperationBundle((), (), result_param)
-        if bundles2:
-            return reduce(lambda a, b: a + b, bundles2 + [final_bundle])
-        return final_bundle
+        # The repr (complex enum -> heap object; flat enum -> tagged struct)
+        # owns the construction; it generates the field-arg expressions in its
+        # own order, so the emitted C stays byte-identical.
+        return union_repr.classify(root_spec, resolver).construct_enum_value(
+            self.leaf_name, self.field_args, resolver)
 

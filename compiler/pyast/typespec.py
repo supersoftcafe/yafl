@@ -439,14 +439,8 @@ class EnumSpec(TypeSpec):
         return [err for _, ftype in self.all_fields for err in ftype.check(resolver)]
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
-        if self.is_complex:
-            return cg_t.DataPointer()
-        types = resolver.find_type(self.root_name)
-        if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
-            stmt = langtools.cast(s.EnumStatement, types[0].statement)
-            container, _ = cg_t.compute_union_slots(enum_variant_types(stmt, resolver))
-            return container
-        return cg_t.Struct(tuple((name, ftype.generate(resolver)) for name, ftype in self.all_fields))
+        from pyast import union_repr  # lazy: union_repr imports this module
+        return union_repr.classify(self, resolver).ctype()
 
     def as_unique_id_str(self) -> str | None:
         if '@' not in self.root_name:
@@ -717,73 +711,6 @@ class NamedSpec(TypeSpec):
         return None # This is 'alias', not a concrete type.
 
 
-def _classspec_is_foreign(member: ClassSpec, resolver: g.Resolver) -> bool:
-    """A `[foreign]` class's vtable symbol lives in an external library, so it
-    can't be vtable-identity-tested from generated code (it acts as the at-most-
-    one implicit fallback in a pointer-union dispatch)."""
-    for resolved in resolver.find_type(member.name):
-        stmt = resolved.statement
-        if isinstance(stmt, s.ClassStatement) and "foreign" in stmt.attributes:
-            return True
-    return False
-
-
-def pointer_word_kind(member: TypeSpec, resolver: g.Resolver) -> tuple | None:
-    """The runtime dispatch kind of a union member IF it is representable as a
-    single pointer-word (a heap pointer or a tagged immediate), looking through
-    single-field newtype tuples (a simple class lowers to `(field)`, which is
-    layout-identical to its field). `None` if the member is genuinely multi-word
-    (scalar, multi-field tuple/struct, flat enum).
-
-    Kinds are hashable tokens; two members that share a kind are NOT runtime-
-    distinguishable, so a union containing them must stay a tagged struct:
-      ('UNIT',)        empty tuple / None        -> NULL sentinel
-      ('INT',)         bigint                    -> PTR_TAG_INTEGER / INTEGER_VTABLE
-      ('STR',)         str                       -> PTR_TAG_STRING / STRING_VTABLE
-      ('CLASS', name)  heap class                -> its own vtable
-      ('ENUM', root)   complex enum              -> the root marker vtable
-      ('FOREIGN',)     foreign class             -> untestable; the fallback
-    """
-    if member.generate(resolver) == cg_t.Struct(()):     # unit / None
-        return ('UNIT',)
-    if (isinstance(member, TupleSpec) and len(member.entries) == 1
-            and member.entries[0].type is not None):     # newtype wrapper
-        return pointer_word_kind(member.entries[0].type, resolver)
-    if isinstance(member, BuiltinSpec):
-        if member.type_name == "bigint":
-            return ('INT',)
-        if member.type_name == "str":
-            return ('STR',)
-        return None                                       # int32, float, bool, ...
-    if isinstance(member, ClassSpec):
-        # A ClassSpec surviving to generate() is a non-simple class (simple ones
-        # are already TupleSpec). All heap classes are a single pointer-word.
-        return ('FOREIGN',) if _classspec_is_foreign(member, resolver) else ('CLASS', member.name)
-    if isinstance(member, EnumSpec):
-        # Complex enums use per-variant vtables (a pointer-word); flat enums are
-        # a tagged struct, so not pointer-representable here.
-        return ('ENUM', member.root_name) if member.is_complex else None
-    return None
-
-
-def _union_collapses_to_pointer(members: list[TypeSpec], resolver: g.Resolver) -> bool:
-    """A union collapses to a single pointer-word iff every member is a pointer-
-    word AND the members are mutually runtime-distinguishable: at most one unit
-    (NULL), at most one foreign class (the fallback), and the remaining testable
-    kinds all distinct. This also rejects two newtypes over the same inner type
-    (e.g. `Id=(str)` and `Name=(str)`) and 2+ distinct unit variants, both of
-    which would be indistinguishable as a bare pointer."""
-    kinds = [pointer_word_kind(m, resolver) for m in members]
-    if any(k is None for k in kinds):
-        return False
-    if not any(k != ('UNIT',) for k in kinds):
-        return False  # all-unit: a compact int tag (compute_union_slots) is smaller
-    if kinds.count(('UNIT',)) > 1 or kinds.count(('FOREIGN',)) > 1:
-        return False
-    testable = [k for k in kinds if k not in (('UNIT',), ('FOREIGN',))]
-    return len(testable) == len(set(testable))
-
-
 def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
     """Associativity of `|`: a member that is itself a union contributes its
     members directly — `(Word|None)|IOError` IS `Word|None|IOError` under set
@@ -829,16 +756,8 @@ class CombinationSpec(TypeSpec):
         return errors
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
-        # A union of mutually-distinguishable pointer-words (heap pointers,
-        # tagged immediates, single-field newtype wrappers, complex enums) plus
-        # at most one unit collapses to one machine word — None is the NULL
-        # sentinel, every other member dispatches by its pointer tag/vtable. See
-        # pointer_word_kind / _union_collapses_to_pointer.
-        if _union_collapses_to_pointer(list(self.types), resolver):
-            return cg_t.DataPointer()
-        variant_types = [v.generate(resolver) for v in self.types]
-        container, _ = cg_t.compute_union_slots(variant_types)
-        return container
+        from pyast import union_repr  # lazy: union_repr imports this module
+        return union_repr.classify(self, resolver).ctype()
 
     def as_unique_id_str(self) -> str|None:
         ids = [x.as_unique_id_str() for x in self.types]

@@ -18,6 +18,7 @@ import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.utils as u
+from pyast import union_repr
 from pyast.expression.base import Expression
 from pyast.expression.literal import StringExpression
 from pyast.expression.tuple_expr import TupleExpression
@@ -237,60 +238,11 @@ class DotExpression(Expression):
                 return base_bundle + g.OperationBundle(stack_vars=(), operations=(), result_var=result_var)
 
             case t.EnumSpec() as es:
-                stmts = resolver.find_type(es.root_name)
-                assert len(stmts) == 1
-                root_stmt = cast(s.EnumStatement, stmts[0].statement)
-                leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
-                ptr = base_bundle.result_var
-
-                root_spec = root_stmt._enum_spec
-                assert root_spec is not None, f"enum {es.root_name} reached generate uncompiled"
-                if root_spec.is_complex:
-                    # Per-variant heap object: the field lives under its own
-                    # name on the variant whose declaration carries it (field
-                    # names are @hash-unique to one variant).
-                    for leaf_name, leaf_fields in zip(root_spec.all_leaf_names, leaf_field_sets):
-                        for let in leaf_fields:
-                            if let.name == self.name:
-                                ftype = let.declared_type.generate(resolver)
-                                obj_name = t.enum_leaf_object_name(root_spec.root_name, leaf_name)
-                                result_var = cg_p.ObjectField(ftype, ptr, obj_name, let.name, None)
-                                return base_bundle + g.OperationBundle((), (), result_var)
-                    raise AssertionError(f"Field '{self.name}' not found in enum {es.root_name}")
-
-                variant_types = t.enum_variant_types(root_stmt, resolver)
-                container, variant_map = cg_t.compute_union_slots(variant_types)
-
-                def read_slot(si: int) -> cg_p.RParam:
-                    slot_name, _ = container.fields[si]
-                    return cg_p.StructField(ptr, slot_name)
-
-                def reconstruct_from_slots(ftype, slot_assigns, off):
-                    """Recursively rebuild ftype from union slots; returns (RParam, new_off)."""
-                    if isinstance(ftype, cg_t.Struct):
-                        fvs = []
-                        for fname, ft in ftype.fields:
-                            val, off = reconstruct_from_slots(ft, slot_assigns, off)
-                            fvs.append((fname, val))
-                        return cg_p.NewStruct(tuple(fvs)), off
-                    si, _ = slot_assigns[off]
-                    return read_slot(si), off + 1
-
-                result_var = None
-                for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
-                    offset = 0
-                    for let in leaf_fields:
-                        field_type = let.declared_type.generate(resolver)
-                        n_prims = len(cg_t._flatten_primitives(field_type))
-                        if let.name == self.name:
-                            slots_for_field = [variant_map[leaf_idx][offset + p] for p in range(n_prims)]
-                            result_var, _ = reconstruct_from_slots(field_type, slots_for_field, 0)
-                            break
-                        offset += n_prims
-                    else:
-                        continue
-                    break
-                assert result_var is not None, f"Field '{self.name}' not found in enum {es.root_name}"
+                # The union's repr owns the field read (complex enum -> heap
+                # object field; flat enum -> slot reconstruction from the tagged
+                # struct).
+                result_var = union_repr.classify(es, resolver).read_field(
+                    base_bundle.result_var, self.name, resolver)
                 return base_bundle + g.OperationBundle((), (), result_var)
 
         raise ValueError("Could not generate dot expression")

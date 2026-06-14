@@ -15,6 +15,7 @@ from __future__ import annotations
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 import compiler as c
+from pyast import union_repr
 
 
 def _c_for(source: str) -> str:
@@ -164,3 +165,25 @@ fun main(): System::Int
         # The composite-payload (a,b)|None case is covered behaviourally in
         # test_tuple_and_scalar_unions; its small function inlines away at -O2 so
         # there is no standalone prototype to inspect here.
+
+
+class TestReprPartialOperationContract(TestCase):
+    """The four representation-*partial* operations (box_value/widen_from are
+    combination-only; read_field/construct_enum_value are enum-only) inherit a
+    base default that fails loudly, naming the repr, rather than a bare
+    AttributeError. This pins that contract so a future miswiring (or a 4th
+    repr that forgets to override) surfaces a clear error."""
+
+    def test_pointer_repr_rejects_enum_operations(self):
+        rep = union_repr.PointerRepr(union_type=None)
+        with self.assertRaisesRegex(NotImplementedError, "PointerRepr"):
+            rep.read_field(None, "x", None)
+        with self.assertRaisesRegex(NotImplementedError, "PointerRepr"):
+            rep.construct_enum_value("Leaf", {}, None)
+
+    def test_complex_enum_repr_rejects_combination_operations(self):
+        rep = union_repr.ComplexEnumRepr(union_type=None)
+        with self.assertRaisesRegex(NotImplementedError, "ComplexEnumRepr"):
+            rep.box_value(None, None, None)
+        with self.assertRaisesRegex(NotImplementedError, "ComplexEnumRepr"):
+            rep.widen_from(None, None, None)
