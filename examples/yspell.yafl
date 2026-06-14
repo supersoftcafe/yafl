@@ -75,17 +75,15 @@ fun sortWords(l: List<String>): List<String>
 fun buildAt(n: Int, c: Chain<String>): (tree: WordTree, rest: Chain<String>)
   fun done(left: WordTree, mid: String, rt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
     ret (tree=Word(mid, left, rt.tree), rest=rt.rest)
-  fun rootOn(left: WordTree, mid: String|None, rest: Chain<String>): (tree: WordTree, rest: Chain<String>)
-    ret match(mid)
-      (m: String) => done(left, m, buildAt(n - n / 2 - 1, rest))
+  # After the left subtree, the next chain element is this node's root; the
+  # remainder feeds the right subtree. Match the chain directly.
+  fun root(lt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
+    ret match(lt.rest)
+      (link: ChainLink) => done(lt.tree, link.value, buildAt(n - n / 2 - 1, link.next))
       # Unreachable while n is honest (count and chain come from the same
       # list); kept total so a broken count degrades to a short tree rather
       # than a crash.
-      (e: None)   => (tree=left, rest=rest)
-  fun root2(left: WordTree, nx: (head: String|None, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
-    ret rootOn(left, nx.head, nx.rest)
-  fun root(lt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
-    ret root2(lt.tree, chainNext<String>(lt.rest))
+      (e: ChainEnd)     => (tree=lt.tree, rest=lt.rest)
   ret n <= 0 ? (tree=NoWord(), rest=c) : root(buildAt(n / 2, c))
 
 fun buildTreeChain(c: Chain<String>): WordTree

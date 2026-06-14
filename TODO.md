@@ -62,30 +62,30 @@ forwarder itself and its page flag is authoritative.
 - `pyast/match.py`: iterate `valid_leaf_names` as `sorted(..., key=leaf_id)`.
 Byte-identical across runs with random seed. Orthogonal to the bugs above.
 
-## OPEN BUG: match arms on a concrete generic enum mistype the binder (found 2026-06-12)
+## FIXED 2026-06-14: match arms on a concrete generic enum mistyped the binder
 
-Matching a CONCRETE instantiation's variants from non-generic code leaves the
-binder's fields typed as the enum's placeholders:
+Matching a CONCRETE instantiation's variants from non-generic code left the
+binder's fields typed as the enum's placeholders — `match(c: Chain<String>)
+(link: ChainLink) => link.value` had `link.value: T` not `String`.
 
-```yafl
-fun probe(c: Chain<String>): Int
-  ret match(c)
-    (link: ChainLink) => shout(link.value)   # error: Parameters are not
-    (e: ChainEnd)     => 0                   # assignment compatible
-```
+Two-part fix (uncommitted):
+- `pyast/expression/access.py` `_substitute_enum_type_params`: reading a field
+  off a concrete generic-enum instantiation maps the enum's declared
+  placeholders to the receiver's type arguments (the enum analogue of the
+  existing `_substitute_class_type_params`). Fixes the *explicit*
+  `ChainLink<String>` case. Only `get_type` (the type-check path) needed it;
+  the compile/check/generate enum cases are name-only or post-monomorphisation.
+- `pyast/match.py` `MatchExpression.compile`: propagate the subject's
+  *resolved concrete* type arguments onto variant arms that didn't spell them
+  out. Guard: skip when any arg is a placeholder (GenericPlaceholderSpec) or
+  unresolved (NamedSpec) — otherwise generic-context matches (the stdlib's own
+  `Dict<K,V>` etc.) get placeholder type_params pushed onto their arms and fail
+  to resolve. The iterate-to-fixpoint loop fires this once args resolve.
 
-`link.value` should be `String`; it keeps the enum's `T`. Explicit
-`ChainLink<String>` arm types don't help. Matching works fine in GENERIC
-context (the stdlib's own `sort`/`chainNext` do it), which is why it went
-unnoticed — user code matching a generic stdlib enum was simply never
-exercised. Workaround: consume through `chainNext<T>` (allocation-free
-uncons) instead of matching the Chain directly.
-
-Fix shape: the arm's binder type is compiled without subject context
-(`MatchArm.compile` → `self.type_spec.compile(resolver)`); when the subject
-is a generic instantiation, the subject's `type_params` must be substituted
-into the variant's field types. Minimal repro above belongs in a test next
-to `tests/test_generic_nesting.py`.
+Tests: `compiler/tests/test_generic_match_binder.py` (was failing, now passes).
+Full suite 620 OK. The `chainNext` workaround in `examples/yspell.yafl`
+(`buildAt`) is REMOVED — it now matches `Chain<String>` directly (the formerly-
+broken pattern); yspell test 11 OK, output unchanged.
 
 ## Postfix method chaining — DONE
 

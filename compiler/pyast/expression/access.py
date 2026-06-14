@@ -66,6 +66,32 @@ def _substitute_class_type_params(
     return field_type.search_and_replace(resolver, replace_fn)
 
 
+def _substitute_enum_type_params(
+        resolver: g.Resolver,
+        receiver: t.EnumSpec,
+        field_type: t.TypeSpec | None,
+) -> t.TypeSpec | None:
+    # The enum analogue of _substitute_class_type_params: a generic enum's
+    # variant fields are stored against the enum's placeholders (`value: T`), so
+    # reading a field off a concrete instantiation (`Chain<String>`) must map the
+    # enum's declared placeholders to the receiver's type arguments. Without this,
+    # match-arm binders kept the placeholder type (`link.value: T`, not String).
+    if field_type is None or not receiver.type_params:
+        return field_type
+    decl = resolver.find_type(receiver.root_name)
+    if not decl or len(decl) != 1:
+        return field_type
+    placeholders = getattr(decl[0].statement, "type_params", ()) or ()
+    if len(placeholders) != len(receiver.type_params):
+        return field_type
+    mapping = {ph.name: concrete for ph, concrete in zip(placeholders, receiver.type_params)}
+    def replace_fn(_, thing, m=mapping):
+        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
+            return m[thing.name]
+        return thing
+    return field_type.search_and_replace(resolver, replace_fn)
+
+
 
 def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_data: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
     if len(list_data) <= 1:
@@ -126,8 +152,9 @@ class DotExpression(Expression):
                 if datas and len(datas) == 1:
                     return _substitute_class_type_params(
                         resolver, cspec, cdecl, datas[0].statement.get_type())
-            case t.EnumSpec(all_fields=fields):
-                return next((ft for fn, ft in fields if fn == self.name), None)
+            case t.EnumSpec() as espec:
+                ft = next((ft for fn, ft in espec.all_fields if fn == self.name), None)
+                return _substitute_enum_type_params(resolver, espec, ft)
         return None
 
 

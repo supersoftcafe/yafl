@@ -357,6 +357,25 @@ class MatchExpression(e.Expression):
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
         new_subject, subj_stmts = self.subject.compile(resolver, None)
         subj_type = new_subject.get_type(resolver)
+        # When the subject is a concrete generic-enum instantiation (e.g.
+        # Chain<String>), its variant arms (e.g. `(link: ChainLink)`) bind the
+        # variant WITHOUT the type arguments, so a field like `link.value` keeps
+        # the enum placeholder T instead of String. Propagate the subject's type
+        # arguments onto each variant arm that didn't spell them out — the arms
+        # share the enum's placeholder list in declaration order, so the same
+        # type_params apply. Field substitution then happens in
+        # access._substitute_enum_type_params.
+        subj_tparams = getattr(subj_type, "type_params", ()) or ()
+        # Only propagate RESOLVED CONCRETE type arguments. In generic context the
+        # subject's args are still placeholders (GenericPlaceholderSpec) or
+        # unresolved (NamedSpec); pushing those onto an arm binder breaks
+        # resolution and is unnecessary (the field correctly stays the
+        # placeholder, matching the generic body). The iterate-to-fixpoint
+        # compile loop fires this once the args resolve to real types.
+        subj_tparams_concrete = (
+            bool(subj_tparams)
+            and not any(isinstance(tp, (t.NamedSpec, t.GenericPlaceholderSpec))
+                        for tp in subj_tparams))
         arm_results = []
         for arm in self.arms:
             # A bound else arm receives the whole subject: its binding type
@@ -364,6 +383,10 @@ class MatchExpression(e.Expression):
             if arm.type_spec is None and subj_type is not None:
                 arm_results.append(arm.compile(_binding_resolver(resolver, arm, subj_type), expected_type))
             else:
+                if (subj_tparams_concrete and isinstance(arm.type_spec, (t.NamedSpec, t.EnumSpec))
+                        and not arm.type_spec.type_params):
+                    arm = dataclasses.replace(
+                        arm, type_spec=dataclasses.replace(arm.type_spec, type_params=tuple(subj_tparams)))
                 arm_results.append(arm.compile(resolver, expected_type))
         new_arms = [arm for arm, _ in arm_results]
         arm_stmts = [stmt for _, stmts in arm_results for stmt in stmts]
