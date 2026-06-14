@@ -717,29 +717,71 @@ class NamedSpec(TypeSpec):
         return None # This is 'alias', not a concrete type.
 
 
-def _is_pointer_union_distinguishable(variant_types: list[cg_t.Type]) -> bool:
-    """True if all variants are pointer-representable AND each variant is runtime-
-    distinguishable by pointer tag bits, null check, or vtable identity.
+def _classspec_is_foreign(member: ClassSpec, resolver: g.Resolver) -> bool:
+    """A `[foreign]` class's vtable symbol lives in an external library, so it
+    can't be vtable-identity-tested from generated code (it acts as the at-most-
+    one implicit fallback in a pointer-union dispatch)."""
+    for resolved in resolver.find_type(member.name):
+        stmt = resolved.statement
+        if isinstance(stmt, s.ClassStatement) and "foreign" in stmt.attributes:
+            return True
+    return False
 
-    Rules per variant:
-      * Unit (empty Struct): null pointer.
-      * Int (bigint, precision 0): PTR_IS_INTEGER or vtable == INTEGER_VTABLE.
-      * Str: PTR_IS_STRING or vtable == STRING_VTABLE.
-      * Class (DataPointer / class object pointer): unique vtable.
-      * Anything else (scalars, composite structs): not pointer-representable.
 
-    Classes are disambiguated by their own vtable, so multiple class variants
-    are allowed — the dispatch generates a vtable-identity test per class.
+def pointer_word_kind(member: TypeSpec, resolver: g.Resolver) -> tuple | None:
+    """The runtime dispatch kind of a union member IF it is representable as a
+    single pointer-word (a heap pointer or a tagged immediate), looking through
+    single-field newtype tuples (a simple class lowers to `(field)`, which is
+    layout-identical to its field). `None` if the member is genuinely multi-word
+    (scalar, multi-field tuple/struct, flat enum).
+
+    Kinds are hashable tokens; two members that share a kind are NOT runtime-
+    distinguishable, so a union containing them must stay a tagged struct:
+      ('UNIT',)        empty tuple / None        -> NULL sentinel
+      ('INT',)         bigint                    -> PTR_TAG_INTEGER / INTEGER_VTABLE
+      ('STR',)         str                       -> PTR_TAG_STRING / STRING_VTABLE
+      ('CLASS', name)  heap class                -> its own vtable
+      ('ENUM', root)   complex enum              -> the root marker vtable
+      ('FOREIGN',)     foreign class             -> untestable; the fallback
     """
-    for vt in variant_types:
-        if isinstance(vt, cg_t.Struct) and not vt.fields:
-            continue  # unit / None — null sentinel
-        if isinstance(vt, cg_t.DataPointer):
-            continue  # bigint, str, class — vtable/tag-bits identify at runtime
-        return False  # scalar or composite struct — needs tagged-union Struct
-    non_unit = [vt for vt in variant_types
-                if not (isinstance(vt, cg_t.Struct) and not vt.fields)]
-    return len(non_unit) >= 1
+    if member.generate(resolver) == cg_t.Struct(()):     # unit / None
+        return ('UNIT',)
+    if (isinstance(member, TupleSpec) and len(member.entries) == 1
+            and member.entries[0].type is not None):     # newtype wrapper
+        return pointer_word_kind(member.entries[0].type, resolver)
+    if isinstance(member, BuiltinSpec):
+        if member.type_name == "bigint":
+            return ('INT',)
+        if member.type_name == "str":
+            return ('STR',)
+        return None                                       # int32, float, bool, ...
+    if isinstance(member, ClassSpec):
+        # A ClassSpec surviving to generate() is a non-simple class (simple ones
+        # are already TupleSpec). All heap classes are a single pointer-word.
+        return ('FOREIGN',) if _classspec_is_foreign(member, resolver) else ('CLASS', member.name)
+    if isinstance(member, EnumSpec):
+        # Complex enums use per-variant vtables (a pointer-word); flat enums are
+        # a tagged struct, so not pointer-representable here.
+        return ('ENUM', member.root_name) if member.is_complex else None
+    return None
+
+
+def _union_collapses_to_pointer(members: list[TypeSpec], resolver: g.Resolver) -> bool:
+    """A union collapses to a single pointer-word iff every member is a pointer-
+    word AND the members are mutually runtime-distinguishable: at most one unit
+    (NULL), at most one foreign class (the fallback), and the remaining testable
+    kinds all distinct. This also rejects two newtypes over the same inner type
+    (e.g. `Id=(str)` and `Name=(str)`) and 2+ distinct unit variants, both of
+    which would be indistinguishable as a bare pointer."""
+    kinds = [pointer_word_kind(m, resolver) for m in members]
+    if any(k is None for k in kinds):
+        return False
+    if not any(k != ('UNIT',) for k in kinds):
+        return False  # all-unit: a compact int tag (compute_union_slots) is smaller
+    if kinds.count(('UNIT',)) > 1 or kinds.count(('FOREIGN',)) > 1:
+        return False
+    testable = [k for k in kinds if k not in (('UNIT',), ('FOREIGN',))]
+    return len(testable) == len(set(testable))
 
 
 def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
@@ -787,13 +829,14 @@ class CombinationSpec(TypeSpec):
         return errors
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
+        # A union of mutually-distinguishable pointer-words (heap pointers,
+        # tagged immediates, single-field newtype wrappers, complex enums) plus
+        # at most one unit collapses to one machine word — None is the NULL
+        # sentinel, every other member dispatches by its pointer tag/vtable. See
+        # pointer_word_kind / _union_collapses_to_pointer.
+        if _union_collapses_to_pointer(list(self.types), resolver):
+            return cg_t.DataPointer()
         variant_types = [v.generate(resolver) for v in self.types]
-        unit = cg_t.Struct(())
-        non_unit = [vt for vt in variant_types if vt != unit]
-        if len(non_unit) == 1 and non_unit[0].get_pointer_paths("x") == ["x"]:
-            return cg_t.DataPointer()  # null sentinel for unit (None) variant(s)
-        if _is_pointer_union_distinguishable(variant_types):
-            return cg_t.DataPointer()  # dispatch via pointer tag bits at runtime
         container, _ = cg_t.compute_union_slots(variant_types)
         return container
 

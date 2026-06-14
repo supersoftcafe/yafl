@@ -58,6 +58,17 @@ def _arm_unique_name(arm: "MatchArm") -> str:
     return f"{arm.name}@arm{arm.line_ref.hash6()}"
 
 
+def _wrap_pointer_into(ctype: cg_t.Type, ptr_value: cg_p.RParam) -> cg_p.RParam:
+    """Rebuild a single-field newtype wrapper (a chain of one-field structs
+    ending in a DataPointer) from a bare pointer word — the inverse of
+    coerce._unwrap_to_pointer_word, used when binding a newtype arm out of a
+    collapsed pointer union."""
+    if isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
+        fname, ftype = ctype.fields[0]
+        return cg_p.NewStruct(((fname, _wrap_pointer_into(ftype, ptr_value)),))
+    return ptr_value
+
+
 def _binding_finder(arm: "MatchArm", bound_type: t.TypeSpec) -> Callable[[str], list]:
     """The one way an arm's bound name resolves: a LetStatement of
     `bound_type` under the arm's unique name. Matches either the user-typed
@@ -291,6 +302,12 @@ class _Emitter:
         # struct{}, so synthesise the empty value instead.
         if isinstance(arm_ctype, cg_t.Struct) and not arm_ctype.fields:
             value = cg_p.ZeroOf(arm_ctype)
+        # A single-field newtype arm in a COLLAPSED pointer union: the subject
+        # is the bare pointer word, so re-wrap it into the tuple struct the arm
+        # binds (the inverse of coerce._unwrap_to_pointer_word).
+        elif (isinstance(arm_ctype, cg_t.Struct)
+              and cg_t._flatten_primitives(arm_ctype) == [cg_t.DataPointer()]):
+            value = _wrap_pointer_into(arm_ctype, value)
         arm_sv = cg_p.StackVar(arm_ctype, _arm_unique_name(arm))
         bundle = g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, value),))
         return bundle, _binding_resolver(self.resolver, arm, bound_type)
@@ -653,21 +670,20 @@ class MatchExpression(e.Expression):
         subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.types)
 
         def member_guard(member: t.TypeSpec) -> cg_p.RParam | None:
-            """The pointer-shape test for one (non-unit) union member; None
-            for foreign classes, which cannot be tested and fall through."""
-            if isinstance(member, t.BuiltinSpec) and member.type_name == "bigint":
+            """The pointer-shape test for one (non-unit) union member; None for
+            foreign classes (untestable) and units (handled via the NULL test).
+            Uses pointer_word_kind so single-field newtype wrappers dispatch by
+            their inner pointer-word's kind (e.g. `A(x: T)` -> T's vtable)."""
+            kind = t.pointer_word_kind(member, resolver)
+            if kind == ('INT',):
                 return cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
-            if isinstance(member, t.BuiltinSpec) and member.type_name == "str":
+            if kind == ('STR',):
                 return cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
-            if isinstance(member, t.ClassSpec):
-                if self.__class_is_foreign(resolver, member.name):
-                    return None
-                return cg_p.ObjVtableEq(sv, class_name=member.name)
-            if isinstance(member, t.EnumSpec):
-                # Complex-enum leaf: the parent enum's vtable is shared by
-                # every leaf object; implements_array makes leaves match it.
-                return cg_p.ObjVtableEq(sv, class_name=member.root_name)
-            return None
+            if kind is not None and kind[0] in ('CLASS', 'ENUM'):
+                # CLASS: the class's own vtable; ENUM: the complex-enum root
+                # marker, shared by every leaf via implements_array.
+                return cg_p.ObjVtableEq(sv, class_name=kind[1])
+            return None  # FOREIGN (fallback) / UNIT / non-pointer-word
 
         # Classify the arms, preserving source order for the guarded ones.
         null_arm = None

@@ -31,6 +31,18 @@ def _passthrough(value) -> g.OperationBundle:
     return g.OperationBundle((), (), value)
 
 
+def _unwrap_to_pointer_word(value, ctype):
+    """Peel single-field newtype wrappers down to the bare pointer word stored
+    in a collapsed pointer-union. A single-field struct is layout-identical to
+    its field, so reading the field yields the pointer (e.g. a simple class
+    `A(x: T)` lowered to the tuple `(T)` -> `value._0`). A value that is already
+    a bare DataPointer passes through unchanged."""
+    while isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
+        fname, ctype = ctype.fields[0]
+        value = cg_p.StructField(value, fname)
+    return value
+
+
 def coerce(value, source: t.TypeSpec | None, target: t.TypeSpec | None,
            resolver: g.Resolver) -> g.OperationBundle:
     """Coerce already-generated `value` from TypeSpec `source` to `target`."""
@@ -121,11 +133,13 @@ def _box_variant(value, source: t.TypeSpec, target: t.CombinationSpec,
     target_ctype = target.generate(resolver)
     inner_ctype = source.generate(resolver)
 
-    # DataPointer union: exactly one non-unit pointer variant + optional unit (None).
+    # Collapsed pointer union: every member is a distinguishable pointer-word.
     if isinstance(target_ctype, cg_t.DataPointer):
         if inner_ctype == cg_t.Struct(()):  # unit / None variant
             return g.OperationBundle((), (), cg_p.NullPointer())
-        return _passthrough(value)  # already a DataPointer — pass through
+        # Unwrap a single-field newtype value to its bare pointer; a value that
+        # is already a DataPointer (class / immediate) passes straight through.
+        return g.OperationBundle((), (), _unwrap_to_pointer_word(value, inner_ctype))
 
     assert isinstance(target_ctype, cg_t.Struct), \
         f"Expected Struct (tagged union), got {target_ctype}"
