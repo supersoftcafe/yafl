@@ -52,15 +52,24 @@ forwarder itself and its page flag is authoritative.
   (bitmap_test/fetch_set, scan_elements reads, object_get_vtable, gc_compact_page
   forwarding-install-vs-reader). No abort in 250+ runs — these are the accepted
   benign class ("spurious mark harmless"; reader follows forwarding, original data
-  intact). NOT fixed (and not the cause of any observed failure).
+  intact). NOT a bug — rewriting a pointer to its forward while in use is part of
+  the design: compaction COPIES, the original object stays live and valid for
+  in-flight readers, and a later GC cycle reclaims it only once provably
+  unreferenced. Do NOT chase `gc_compact_page` under TSAN.
+- **Re-verified 2026-06-14 (both bugs stay closed):** 650 abort-free findstr runs
+  on the aho-corasick `packed` dir — 80× (-O2, 8m heap), 200× (-O2, 4m heap / 4
+  threads), 120× (-O0 + `YAFL_GC_POISON`, 4m heap / 4 threads). A TSAN rebuild
+  still reports only the by-design races above (incl. `gc_compact_page`).
 
-### Codegen non-determinism — FIXED (4 hash-ordered sources), uncommitted:
+### Codegen non-determinism — FIXED (4 hash-ordered sources), committed:
 - `lowering/async_lower.py __frame_field_types` + 2 save sites: iterate `bb.live`
   (a frozenset) as `sorted(..., key=lambda v: v.name)`.
 - `lowering/task_abi.py task_subtype_name`: `blake2b(repr(result_type))` not `hash()`.
 - `lowering/strings.py`: `enumerate(sorted(all_string_literals))`.
 - `pyast/match.py`: iterate `valid_leaf_names` as `sorted(..., key=leaf_id)`.
 Byte-identical across runs with random seed. Orthogonal to the bugs above.
+Committed and re-confirmed 2026-06-14 (findstr/json_pretty/yspell byte-identical
+across random `PYTHONHASHSEED`).
 
 ## FIXED 2026-06-14: match arms on a concrete generic enum mistyped the binder
 
@@ -68,7 +77,7 @@ Matching a CONCRETE instantiation's variants from non-generic code left the
 binder's fields typed as the enum's placeholders — `match(c: Chain<String>)
 (link: ChainLink) => link.value` had `link.value: T` not `String`.
 
-Two-part fix (uncommitted):
+Two-part fix (committed f823aeb):
 - `pyast/expression/access.py` `_substitute_enum_type_params`: reading a field
   off a concrete generic-enum instantiation maps the enum's declared
   placeholders to the receiver's type arguments (the enum analogue of the
