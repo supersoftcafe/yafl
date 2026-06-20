@@ -1097,7 +1097,7 @@ EXPORT object_t* io_stdout(object_t* self);
 EXPORT object_t* io_stderr(object_t* self);
 EXPORT object_t* io_create    (object_t* self, object_t* path);
 EXPORT object_t* io_open_read (object_t* self, object_t* path);
-EXPORT object_t* io_open_write(object_t* self, object_t* path, bool truncate);
+EXPORT object_t* io_open_write(object_t* self, object_t* path, int8_t truncate);  // YAFL Bool ABI is int8_t
 EXPORT object_t* io_read (object_t* self, object_t* length);
 EXPORT object_t* io_write(object_t* self, object_t* data);
 EXPORT object_t* io_close(object_t* self);

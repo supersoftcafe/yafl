@@ -93,23 +93,28 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
 
 
 def compile_and_run_stdlib(source: str, timeout: int = 5,
-                           args: list[str] | None = None) -> int:
+                           args: list[str] | None = None,
+                           optimization_level: int = 0) -> int:
     """Compile yafl source with stdlib, link against libyafl, run, return exit code.
 
     `args`, when provided, are passed as the program's CLI arguments (so
-    `System::args()` in the yafl source sees them).
-    """
-    rc, _ = compile_and_run_stdlib_capture(source, timeout=timeout, args=args)
+    `System::args()` in the yafl source sees them). `optimization_level` selects
+    the yafl optimisation level (>0 enables inlining etc.)."""
+    rc, _ = compile_and_run_stdlib_capture(source, timeout=timeout, args=args,
+                                           optimization_level=optimization_level)
     return rc
 
 
 def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
-                                   args: list[str] | None = None) -> tuple[int, str]:
+                                   args: list[str] | None = None,
+                                   optimization_level: int = 0) -> tuple[int, str]:
     """Same as compile_and_run_stdlib but also returns the program's stdout
     (decoded as UTF-8). Used by tests that batch several checks into one
     program and verify the printed output, sidestepping the per-test
-    compile+link wall-clock."""
-    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    compile+link wall-clock. `optimization_level` selects the yafl optimisation
+    level (>0 enables inlining etc.)."""
+    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
+                       optimization_level=optimization_level)
     assert c_code, "yafl compilation produced no output (type errors?)"
 
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
@@ -129,12 +134,14 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
             pass
 
 
-def compile_to_binary(source: str) -> str:
+def compile_to_binary(source: str, optimization_level: int = 0) -> str:
     """Compile yafl source (with stdlib) to a runnable binary and return its
     path. The caller owns the file and must unlink it. For tests that need to
     drive the process directly — e.g. an interactive stdin pipe held open — rather
-    than the one-shot compile_and_run helpers."""
-    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    than the one-shot compile_and_run helpers. `optimization_level` selects the
+    yafl optimisation level (>0 enables inlining etc.)."""
+    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
+                       optimization_level=optimization_level)
     assert c_code, "yafl compilation produced no output (type errors?)"
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
         binary = tmp.name

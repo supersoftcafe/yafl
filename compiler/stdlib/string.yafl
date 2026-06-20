@@ -90,6 +90,15 @@ fun findAny(s: System::String, accept: System::String, from: System::Int): Syste
 fun skipAny(s: System::String, accept: System::String, from: System::Int): System::Int
   ret __builtin_op__<bigint>("string_skip_any", s, accept, from)
 
+# True if `s` contains any codepoint from the set `accept`. (`contains` above is
+# substring containment; this is the any-of-these-characters test.)
+fun containsAny(s: System::String, accept: System::String): System::Bool
+  ret findAny(s, accept, 0) < System::length(s)
+
+# True if `s` contains the byte `byte`.
+fun containsByte(s: System::String, byte: System::Int32): System::Bool
+  ret findByte(s, byte, 0) >= 0
+
 fun parseInt(s: System::String): System::Int|System::None
   ret __builtin_op__<bigint>("string_parse_int", s)
 

@@ -8,7 +8,7 @@ EXTERN object_t* io_stdout(object_t* self);
 EXTERN object_t* io_stderr(object_t* self);
 EXTERN object_t* io_create    (object_t* self, object_t* path);
 EXTERN object_t* io_open_read (object_t* self, object_t* path);
-EXTERN object_t* io_open_write(object_t* self, object_t* path, bool truncate);
+EXTERN object_t* io_open_write(object_t* self, object_t* path, int8_t truncate);
 EXTERN object_t* io_read (object_t* self, object_t* length);
 EXTERN object_t* io_write(object_t* self, object_t* data);
 EXTERN object_t* io_close(object_t* self);

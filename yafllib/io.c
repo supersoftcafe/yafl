@@ -388,7 +388,7 @@ static void _io_finish_close(io_job_t* job) {
 
 EXPORT object_t* io_create    (object_t* self, object_t* path)                 { (void)self; return _io_dispatch_open(path, "w", true);  }
 EXPORT object_t* io_open_read (object_t* self, object_t* path)                 { (void)self; return _io_dispatch_open(path, "r", false); }
-EXPORT object_t* io_open_write(object_t* self, object_t* path, bool truncate)  { (void)self; return _io_dispatch_open(path, truncate ? "w" : "a", true); }
+EXPORT object_t* io_open_write(object_t* self, object_t* path, int8_t truncate)  { (void)self; return _io_dispatch_open(path, truncate ? "w" : "a", true); }
 
 
 EXPORT object_t* io_read(object_t* self, object_t* o_length) {
