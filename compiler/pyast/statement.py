@@ -913,6 +913,10 @@ class DestructureStatement(LetStatement):
 @dataclass
 class ReturnStatement(Statement):
     value: e.Expression
+    # Per-block ordinal assigned by the `block_exits` lowering pass, making this
+    # return's exit-label and value-var names unique among the returns sharing
+    # an enclosing block — the block-exit analogue of RecurExpression.index.
+    index: int = 0
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return cast(Statement, replace(resolver, dataclasses.replace(self,
@@ -929,11 +933,38 @@ class ReturnStatement(Statement):
         return self.value.check(resolver, func_ret_type)
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
-        # Coerce the returned value to the function's declared return type — a
-        # narrow value flowing out of a union-returning function is boxed here.
-        op_bundle = self.value.generate_to(resolver, func_ret_type)
-        ret_bundle = g.OperationBundle( (), ( cg_o.Return(op_bundle.result_var), ) )
-        return op_bundle + ret_bundle
+        # A `return` never emits a function `Return` — only the function's own
+        # tail does that. It branches to the end of the nearest enclosing
+        # BlockExpression, supplying its value as one source of that block's end
+        # Phi. The value is coerced to the *block's* result type (a narrow value
+        # flowing out of a union-typed block is boxed here); the (exit-label,
+        # value) pair flows up to the block via exit_sources. Because the block
+        # is substituted whole when a call is inlined, this makes an inlined
+        # early return behave correctly with no special handling — the jump
+        # targets the inlined block, not the surrounding function.
+        frame = resolver.get_block_frame()
+        assert frame is not None, "ReturnStatement generated outside any BlockExpression"
+        # No coercion here: by code generation the value already has the block's
+        # result type exactly (a mismatch is an upstream inference/checking bug,
+        # not something to widen over here).
+        vb = self.value.generate(resolver)
+        exit_label = f"blockexit${frame.tag}${self.index}"
+        tail = (cg_o.Label(exit_label), cg_o.Jump(frame.end_label))
+        if vb.result_var is None:
+            # Unit / control-only block: no value to carry to the merge.
+            return g.OperationBundle(
+                stack_vars=vb.stack_vars,
+                operations=vb.operations + tail,
+                result_var=None,
+                recur_sources=vb.recur_sources,
+                exit_sources=vb.exit_sources + ((exit_label, None),))
+        valvar = cg_p.StackVar(vb.result_var.get_type(), f"blockval${frame.tag}${self.index}")
+        return g.OperationBundle(
+            stack_vars=vb.stack_vars + (valvar,),
+            operations=vb.operations + (cg_o.Move(valvar, vb.result_var),) + tail,
+            result_var=None,
+            recur_sources=vb.recur_sources,
+            exit_sources=vb.exit_sources + ((exit_label, valvar),))
 
 
 @dataclass

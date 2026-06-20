@@ -40,6 +40,12 @@ class OperationBundle:
     # referenced names embed the mangled ('@'-bearing) function name, so they
     # are path-immune (with_prefix leaves them alone) and need no renaming.
     recur_sources: tuple[tuple[str, tuple[cg_p.RParam, ...]], ...] = ()
+    # `return`-statement block exits produced while generating this subtree:
+    # each is `(exit label, value)` for one ReturnStatement, flowing up to the
+    # enclosing BlockExpression which consumes them into its end Phi. The names
+    # embed the block's '@'-bearing tag, so they are path-immune exactly like
+    # recur_sources. `value` is None for a `return` in a unit-typed block.
+    exit_sources: tuple[tuple[str, cg_p.RParam | None], ...] = ()
 
     def with_prefix(self, prefix: str|int) -> OperationBundle:
         """Mark this bundle as living at structural path component `prefix`
@@ -75,14 +81,16 @@ class OperationBundle:
             stack_vars=tuple(sv.rename_vars(renames) for sv in self.stack_vars),
             operations=tuple(op.rename_vars(renames) for op in self.operations),
             result_var=self.result_var and self.result_var.rename_vars(renames),
-            recur_sources=self.recur_sources)  # path-immune; carried through
+            recur_sources=self.recur_sources,   # path-immune; carried through
+            exit_sources=self.exit_sources)     # path-immune; carried through
 
     def __add__(self, other: OperationBundle) -> OperationBundle:
         return OperationBundle(
             self.stack_vars + other.stack_vars,
             self.operations + other.operations,
             other.result_var,
-            self.recur_sources + other.recur_sources)
+            self.recur_sources + other.recur_sources,
+            self.exit_sources + other.exit_sources)
 
 
 class ResolvedScope(Enum):
@@ -124,6 +132,12 @@ class Resolver:
     # nested RecurExpression), or None outside any loop. Opaque here — only the
     # loop/recur expression nodes interpret it.
     def get_loop_frame(self) -> object | None:
+        return None
+
+    # The innermost in-progress BlockExpression's frame (read-only context for
+    # a nested ReturnStatement, which branches to the block's end), or None
+    # outside any block. Opaque here — only block/return nodes interpret it.
+    def get_block_frame(self) -> object | None:
         return None
 
 
@@ -262,6 +276,9 @@ class AddScopeResolution(Resolver):
     def get_loop_frame(self) -> object | None:
         return self.__parent.get_loop_frame()
 
+    def get_block_frame(self) -> object | None:
+        return self.__parent.get_block_frame()
+
 
 class ResolverType(Resolver):
     __parent: Resolver
@@ -298,6 +315,9 @@ class ResolverType(Resolver):
 
     def get_loop_frame(self) -> object | None:
         return self.__parent.get_loop_frame()
+
+    def get_block_frame(self) -> object | None:
+        return self.__parent.get_block_frame()
 
 
 class ResolverData(Resolver):
@@ -341,6 +361,9 @@ class ResolverData(Resolver):
     def get_loop_frame(self) -> object | None:
         return self.__parent.get_loop_frame()
 
+    def get_block_frame(self) -> object | None:
+        return self.__parent.get_block_frame()
+
 
 class ResolverDiscriminators(Resolver):
     __parent: Resolver
@@ -373,6 +396,9 @@ class ResolverDiscriminators(Resolver):
     def get_loop_frame(self) -> object | None:
         return self.__parent.get_loop_frame()
 
+    def get_block_frame(self) -> object | None:
+        return self.__parent.get_block_frame()
+
 
 class ResolverLoop(Resolver):
     """Carries the innermost in-progress `[tail]` loop's (immutable) frame so a
@@ -404,5 +430,47 @@ class ResolverLoop(Resolver):
         return self.__parent.get_optimization_level()
 
     def get_loop_frame(self) -> object | None:
+        return self.__frame
+
+    def get_block_frame(self) -> object | None:
+        return self.__parent.get_block_frame()
+
+
+class ResolverBlock(Resolver):
+    """Carries the innermost in-progress BlockExpression's (immutable) frame so a
+    nested ReturnStatement can find the block's end label and result type and
+    branch there. The block-exit analogue of ResolverLoop: the frame flows
+    *down* (read-only), the exit phi-sources flow *up* via
+    OperationBundle.exit_sources, so no mutable state crosses calls. A nested
+    block shadows an outer one, so `return` always targets the nearest block."""
+    __parent: Resolver
+    __frame: object
+
+    def __init__(self, parent: Resolver, frame: object):
+        self.__parent = parent
+        self.__frame = frame
+
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        return self.__parent.find_type(name)
+
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        return self.__parent.find_data(name)
+
+    def get_traits(self) -> list[s.LetStatement]:
+        return self.__parent.get_traits()
+
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return self.__parent.get_implicit_where_specs(scopes)
+
+    def get_discriminators(self) -> dict[str, int]:
+        return self.__parent.get_discriminators()
+
+    def get_optimization_level(self) -> int:
+        return self.__parent.get_optimization_level()
+
+    def get_loop_frame(self) -> object | None:
+        return self.__parent.get_loop_frame()
+
+    def get_block_frame(self) -> object | None:
         return self.__frame
 

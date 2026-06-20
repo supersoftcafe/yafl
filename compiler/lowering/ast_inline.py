@@ -4,10 +4,12 @@ Two transformations applied to fixpoint:
 
 1. **Function inlining.** A direct call `f(a1, …, an)` that appears as the
    whole value of a `ret`, `let`, or `action` statement is replaced with the
-   callee's body: its parameters become fresh `let` statements, and the
-   body's intermediate statements are spliced in before the original,
-   with the body's final `ret` supplying the value that replaces the
-   original call site.
+   callee's body nested as a `BlockExpression`: its parameters become fresh
+   `let` statements at the head of the block, its statements follow, and its
+   trailing value is the block's value. Nesting (rather than splicing the
+   statements into the caller) keeps a callee's early `return` scoped to the
+   inlined block — a `return` branches to the end of its nearest enclosing
+   block, so it behaves as the call's value with no special handling.
 
    A function is inlinable when it is a free (non-class-member) function,
    not foreign, not part of a call-graph cycle, and either carries an
@@ -375,7 +377,15 @@ def _try_inline_call_at_stmt(
     if result is None:
         return None
     prologue, final_expr = result
-    return prologue + [wrap(final_expr)]
+    # Nest the callee body as a BlockExpression rather than splicing its
+    # statements into the caller. A `return` inside the callee then branches to
+    # the end of *this* inlined block (not the caller's body), so an early
+    # return is scoped correctly with no special handling — the same way
+    # expression-position inlining already nests. A callee that is a single
+    # value (no prologue) needs no block.
+    inlined: e.Expression = (e.BlockExpression(stmt.line_ref, prologue, final_expr)
+                             if prologue else final_expr)
+    return [wrap(inlined)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 import lowering.ast_inline
+import lowering.block_exits
 import lowering.constants
 import lowering.integers
 import lowering.strings
@@ -331,6 +332,9 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements = lowering.lower_lazy_lets.lower_lazy_lets(new_statements)
     new_statements = lowering.lambdas.convert_lambdas_to_functions(new_statements)
     new_statements = lowering.simple_classes.lower_simple_classes(new_statements)
+    # Stamp every block/return with its exit identifiers, last — after every
+    # pass that can create or copy blocks — so each block instance is unique.
+    new_statements = lowering.block_exits.assign_block_exits(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
     return __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers)
 
