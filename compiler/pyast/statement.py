@@ -70,13 +70,9 @@ class NamedStatement(Statement):
                     # E.g. if cls is Math<TVal> : Plus<TVal> and tp is Math<Int>,
                     # substitute TVal→Int to get Plus<Int>, preserving the correct trait_scope.
                     mapping = {p.name: c for p, c in zip(cls.type_params, tp.type_params)}
-                    def replace_fn(_, thing, m=mapping):
-                        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
-                            return m[thing.name]
-                        return thing
                     result = []
                     for parent_type in cls.implements:
-                        substituted = parent_type.search_and_replace(resolver, replace_fn)
+                        substituted = t.substitute_placeholders(parent_type, mapping, resolver)
                         if isinstance(substituted, t.ClassSpec) and substituted.is_concrete():
                             result.extend(find_in_class(substituted))
                     return result
@@ -404,12 +400,8 @@ class ClassStatement(TypeStatement):
             if xcls._all_parents:
                 if isinstance(xtype, t.ClassSpec) and xcls.type_params and xtype.type_params:
                     mapping = {p.name: concrete for p, concrete in zip(xcls.type_params, xtype.type_params)}
-                    def replace_fn(_, thing, m=mapping):
-                        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
-                            return m[thing.name]
-                        return thing
                     for parent in xcls._all_parents:
-                        new_all_parents.add(parent.search_and_replace(resolver, replace_fn))
+                        new_all_parents.add(t.substitute_placeholders(parent, mapping, resolver))
                 else:
                     new_all_parents.update(xcls._all_parents)
 

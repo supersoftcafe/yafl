@@ -554,6 +554,22 @@ class GenericPlaceholderSpec(TypeSpec):
     # which is where mappings like GenericPlaceholderSpec -> concrete type are applied.
 
 
+def substitute_placeholders(spec: "TypeSpec | None", mapping: dict[str, "TypeSpec"],
+                            resolver: g.Resolver) -> "TypeSpec | None":
+    """Replace every GenericPlaceholderSpec whose name is in `mapping` with its
+    mapped concrete type, throughout `spec`. Identity when `spec` is None or
+    `mapping` is empty. The single home for the placeholder-to-concrete rewrite
+    that generic substitution (class/enum fields, parent interfaces, trait
+    dispatch, call-site type params) performs."""
+    if spec is None or not mapping:
+        return spec
+    def replace_fn(_, thing):
+        if isinstance(thing, GenericPlaceholderSpec) and thing.name in mapping:
+            return mapping[thing.name]
+        return thing
+    return spec.search_and_replace(resolver, replace_fn)
+
+
 def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
                   placeholder_names: set[str],
                   mapping: dict[str, "TypeSpec"] | None = None) -> dict[str, "TypeSpec"] | None:

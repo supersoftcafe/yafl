@@ -60,11 +60,7 @@ def _substitute_class_type_params(
     if field_type is None or not cdecl.type_params or not receiver.type_params:
         return field_type
     mapping = {p.name: concrete for p, concrete in zip(cdecl.type_params, receiver.type_params)}
-    def replace_fn(_, thing, m=mapping):
-        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
-            return m[thing.name]
-        return thing
-    return field_type.search_and_replace(resolver, replace_fn)
+    return t.substitute_placeholders(field_type, mapping, resolver)
 
 
 def _substitute_enum_type_params(
@@ -86,11 +82,7 @@ def _substitute_enum_type_params(
     if len(placeholders) != len(receiver.type_params):
         return field_type
     mapping = {ph.name: concrete for ph, concrete in zip(placeholders, receiver.type_params)}
-    def replace_fn(_, thing, m=mapping):
-        if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
-            return m[thing.name]
-        return thing
-    return field_type.search_and_replace(resolver, replace_fn)
+    return t.substitute_placeholders(field_type, mapping, resolver)
 
 
 
@@ -112,12 +104,7 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
                 and x.trait_scope is not None
                 and x.owner_class is not None):
             mapping = {p.name: c for p, c in zip(x.owner_class.type_params, x.trait_scope.type_params)}
-            if mapping and other_type:
-                def replace_fn(_, thing, m=mapping):
-                    if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in m:
-                        return m[thing.name]
-                    return thing
-                other_type = other_type.search_and_replace(resolver, replace_fn)
+            other_type = t.substitute_placeholders(other_type, mapping, resolver)
         b = t.trivially_assignable_equals(resolver, expected_type, other_type)
         if b is True:
             truthy.append(x)
@@ -296,13 +283,7 @@ class NamedExpression(Expression):
                                              resolved.trait_scope.type_params):
                 mapping[placeholder.name] = concrete
 
-        if not mapping:
-            return raw_type
-        def replace_fn(_, thing):
-            if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in mapping:
-                return mapping[thing.name]
-            return thing
-        return raw_type.search_and_replace(resolver, replace_fn)
+        return t.substitute_placeholders(raw_type, mapping, resolver)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         rts = self.resolved_trait_scope.search_and_replace(resolver, replace) if self.resolved_trait_scope is not None else None
