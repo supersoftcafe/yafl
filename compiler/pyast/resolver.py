@@ -141,6 +141,43 @@ class Resolver:
         return None
 
 
+class DelegatingResolver(Resolver):
+    """A resolver layered over a `parent`, forwarding every query to it by
+    default. Each scope a compilation enters (a set of imports, a function's
+    type params, a block's locals, the active loop/block frame) adds one such
+    layer that overrides only the single aspect it changes — see the subclasses
+    below. Centralising the pass-through here keeps each layer's intent visible:
+    what it declares is exactly what it does."""
+    _parent: Resolver
+
+    def __init__(self, parent: Resolver):
+        self._parent = parent
+
+    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+        return self._parent.find_type(name)
+
+    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
+        return self._parent.find_data(name)
+
+    def get_traits(self) -> list[s.LetStatement]:
+        return self._parent.get_traits()
+
+    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return self._parent.get_implicit_where_specs(scopes)
+
+    def get_discriminators(self) -> dict[str, int]:
+        return self._parent.get_discriminators()
+
+    def get_optimization_level(self) -> int:
+        return self._parent.get_optimization_level()
+
+    def get_loop_frame(self) -> object | None:
+        return self._parent.get_loop_frame()
+
+    def get_block_frame(self) -> object | None:
+        return self._parent.get_block_frame()
+
+
 def simple_name(name: str) -> str:
     return name.rpartition('@')[0] or name
 
@@ -218,8 +255,7 @@ class ResolverRoot(Resolver):
                 and st.name.rpartition('::')[0] in scopes]
 
 
-class AddScopeResolution(Resolver):
-    __parent: Resolver
+class AddScopeResolution(DelegatingResolver):
     __scopes: tuple[str, ...]
     # Result caches — short-lived (this resolver lives for one statement-scope
     # walk) but a single walk does ~1k–10k lookups, most of them repeats.
@@ -227,7 +263,7 @@ class AddScopeResolution(Resolver):
     __data_cache: dict[str, list[Resolved[s.DataStatement]]]
 
     def __init__(self, parent: Resolver, scopes: set[str] | s.ImportGroup | None):
-        self.__parent = parent
+        super().__init__(parent)
         if scopes is None:
             self.__scopes = ()
         elif isinstance(scopes, s.ImportGroup):
@@ -241,10 +277,10 @@ class AddScopeResolution(Resolver):
         cached = self.__type_cache.get(name)
         if cached is not None:
             return cached
-        result = self.__parent.find_type(name)
+        result = self._parent.find_type(name)
         if "::" not in name and "@" not in name:
             for scope in self.__scopes:
-                result = result + self.__parent.find_type(f"{scope}::{name}")
+                result = result + self._parent.find_type(f"{scope}::{name}")
         self.__type_cache[name] = result
         return result
 
@@ -252,41 +288,25 @@ class AddScopeResolution(Resolver):
         cached = self.__data_cache.get(name)
         if cached is not None:
             return cached
-        result = self.__parent.find_data(name)
+        result = self._parent.find_data(name)
         if "::" not in name and "@" not in name:
             for scope in self.__scopes:
-                result = result + self.__parent.find_data(f"{scope}::{name}")
+                result = result + self._parent.find_data(f"{scope}::{name}")
         self.__data_cache[name] = result
         return result
-
-    def get_traits(self) -> list[s.LetStatement]:
-        return self.__parent.get_traits()
 
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         own = set(self.__scopes)
         merged = own if scopes is None else (own | scopes)
-        return self.__parent.get_implicit_where_specs(merged)
-
-    def get_discriminators(self) -> dict[str, int]:
-        return self.__parent.get_discriminators()
-
-    def get_optimization_level(self) -> int:
-        return self.__parent.get_optimization_level()
-
-    def get_loop_frame(self) -> object | None:
-        return self.__parent.get_loop_frame()
-
-    def get_block_frame(self) -> object | None:
-        return self.__parent.get_block_frame()
+        return self._parent.get_implicit_where_specs(merged)
 
 
-class ResolverType(Resolver):
-    __parent: Resolver
+class ResolverType(DelegatingResolver):
     __find: Callable[[str], list[Resolved[s.TypeStatement]]]
     __cache: dict[str, list[Resolved[s.TypeStatement]]]
 
     def __init__(self, parent: Resolver, find: Callable[[str], list[Resolved[s.TypeStatement]]]):
-        self.__parent = parent
+        super().__init__(parent)
         self.__find = find
         self.__cache = {}
 
@@ -294,44 +314,19 @@ class ResolverType(Resolver):
         cached = self.__cache.get(name)
         if cached is not None:
             return cached
-        result = self.__parent.find_type(name) + self.__find(name)
+        result = self._parent.find_type(name) + self.__find(name)
         self.__cache[name] = result
         return result
 
-    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(name)
 
-    def get_traits(self) -> list[s.LetStatement]:
-        return self.__parent.get_traits()
-
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs(scopes)
-
-    def get_discriminators(self) -> dict[str, int]:
-        return self.__parent.get_discriminators()
-
-    def get_optimization_level(self) -> int:
-        return self.__parent.get_optimization_level()
-
-    def get_loop_frame(self) -> object | None:
-        return self.__parent.get_loop_frame()
-
-    def get_block_frame(self) -> object | None:
-        return self.__parent.get_block_frame()
-
-
-class ResolverData(Resolver):
-    __parent: Resolver
+class ResolverData(DelegatingResolver):
     __find: Callable[[str], list[Resolved[s.DataStatement]]]
     __cache: dict[str, list[Resolved[s.DataStatement]]]
 
     def __init__(self, parent: Resolver, find: Callable[[str], list[Resolved[s.DataStatement]]]):
-        self.__parent = parent
+        super().__init__(parent)
         self.__find = find
         self.__cache = {}
-
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(name)
 
     def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
         cached = self.__cache.get(name)
@@ -342,50 +337,19 @@ class ResolverData(Resolver):
         # inside a function with a parameter also named `io` triggers an
         # ambiguity error ("Resolved too many io") instead of shadowing.
         own = self.__find(name)
-        result = own if own else self.__parent.find_data(name)
+        result = own if own else self._parent.find_data(name)
         self.__cache[name] = result
         return result
 
-    def get_traits(self) -> list[s.LetStatement]:
-        return self.__parent.get_traits()
 
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs(scopes)
-
-    def get_discriminators(self) -> dict[str, int]:
-        return self.__parent.get_discriminators()
-
-    def get_optimization_level(self) -> int:
-        return self.__parent.get_optimization_level()
-
-    def get_loop_frame(self) -> object | None:
-        return self.__parent.get_loop_frame()
-
-    def get_block_frame(self) -> object | None:
-        return self.__parent.get_block_frame()
-
-
-class ResolverDiscriminators(Resolver):
-    __parent: Resolver
+class ResolverDiscriminators(DelegatingResolver):
     __discriminators: dict[str, int]
     __optimization_level: int
 
     def __init__(self, parent: Resolver, discriminators: dict[str, int], optimization_level: int = 0):
-        self.__parent = parent
+        super().__init__(parent)
         self.__discriminators = discriminators
         self.__optimization_level = optimization_level
-
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(name)
-
-    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(name)
-
-    def get_traits(self) -> list[s.LetStatement]:
-        return self.__parent.get_traits()
-
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs(scopes)
 
     def get_discriminators(self) -> dict[str, int]:
         return self.__discriminators
@@ -393,83 +357,33 @@ class ResolverDiscriminators(Resolver):
     def get_optimization_level(self) -> int:
         return self.__optimization_level
 
-    def get_loop_frame(self) -> object | None:
-        return self.__parent.get_loop_frame()
 
-    def get_block_frame(self) -> object | None:
-        return self.__parent.get_block_frame()
-
-
-class ResolverLoop(Resolver):
+class ResolverLoop(DelegatingResolver):
     """Carries the innermost in-progress `[tail]` loop's (immutable) frame so a
     nested RecurExpression can find its loop head and parameter ctypes. Replaces
     a former module-level generation stack — no mutable cross-call state."""
-    __parent: Resolver
     __frame: object
 
     def __init__(self, parent: Resolver, frame: object):
-        self.__parent = parent
+        super().__init__(parent)
         self.__frame = frame
-
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(name)
-
-    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(name)
-
-    def get_traits(self) -> list[s.LetStatement]:
-        return self.__parent.get_traits()
-
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs(scopes)
-
-    def get_discriminators(self) -> dict[str, int]:
-        return self.__parent.get_discriminators()
-
-    def get_optimization_level(self) -> int:
-        return self.__parent.get_optimization_level()
 
     def get_loop_frame(self) -> object | None:
         return self.__frame
 
-    def get_block_frame(self) -> object | None:
-        return self.__parent.get_block_frame()
 
-
-class ResolverBlock(Resolver):
+class ResolverBlock(DelegatingResolver):
     """Carries the innermost in-progress BlockExpression's (immutable) frame so a
     nested ReturnStatement can find the block's end label and result type and
     branch there. The block-exit analogue of ResolverLoop: the frame flows
     *down* (read-only), the exit phi-sources flow *up* via
     OperationBundle.exit_sources, so no mutable state crosses calls. A nested
     block shadows an outer one, so `return` always targets the nearest block."""
-    __parent: Resolver
     __frame: object
 
     def __init__(self, parent: Resolver, frame: object):
-        self.__parent = parent
+        super().__init__(parent)
         self.__frame = frame
-
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return self.__parent.find_type(name)
-
-    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return self.__parent.find_data(name)
-
-    def get_traits(self) -> list[s.LetStatement]:
-        return self.__parent.get_traits()
-
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return self.__parent.get_implicit_where_specs(scopes)
-
-    def get_discriminators(self) -> dict[str, int]:
-        return self.__parent.get_discriminators()
-
-    def get_optimization_level(self) -> int:
-        return self.__parent.get_optimization_level()
-
-    def get_loop_frame(self) -> object | None:
-        return self.__parent.get_loop_frame()
 
     def get_block_frame(self) -> object | None:
         return self.__frame
