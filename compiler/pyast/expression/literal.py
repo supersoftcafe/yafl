@@ -21,6 +21,23 @@ import pyast.utils as u
 from pyast.expression.base import Expression
 
 
+_INT_PRECISION = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
+
+
+def _resolve_int_precision(expected: t.TypeSpec | None, resolver: g.Resolver) -> int:
+    """Bit-width of `expected` if it is (or aliases) a fixed-width integer
+    builtin, else 0. Peels a single typealias layer (`System::Int32` ->
+    `int32`) by name lookup — deliberately *not* via `.compile`, so it never
+    spawns globals or recurses into generic instantiation."""
+    if isinstance(expected, t.NamedSpec):
+        found = resolver.find_type(expected.name)
+        if len(found) == 1 and isinstance(found[0].statement, s.TypeAliasStatement):
+            expected = found[0].statement.type
+    if isinstance(expected, t.BuiltinSpec):
+        return _INT_PRECISION.get(expected.type_name, 0)
+    return 0
+
+
 @dataclass
 class StringExpression(Expression):
     value: str
@@ -49,6 +66,18 @@ class IntegerExpression(Expression):
         return t.BuiltinSpec(self.line_ref, f"int{self.precision}" if self.precision else "bigint")
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        # Context-type an unsuffixed literal: a bare `0` flowing into an
+        # `Int32` slot becomes `0i32`, so the user need not write the width.
+        # An explicit `i32`/`i64` suffix (precision != 0) is authoritative and
+        # never overridden. Only a concrete fixed-width integer builtin is
+        # adopted — `bigint` (precision 0) leaves the literal unchanged, and
+        # non-integer expected types are ignored (a genuine mismatch is caught
+        # by the assignability check). The resolution is pure: it peels a
+        # typealias (`System::Int32`) to its builtin without spawning work.
+        if self.precision == 0:
+            prec = _resolve_int_precision(expected_type, resolver)
+            if prec:
+                return dataclasses.replace(self, precision=prec), []
         return self, []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
