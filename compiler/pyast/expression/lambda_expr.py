@@ -48,8 +48,28 @@ class LambdaExpression(Expression):
         # Include parameters in data resolution hierarchy
         resolver = g.ResolverData(resolver, self._find_locals)
 
+        # Infer untyped parameters from the expected callable's parameter types:
+        # a lambda flowing into a slot of known signature lets an undeclared
+        # `(n) =>` adopt that parameter's type. Threading the expected parameter
+        # tuple as the destructure's type reuses DestructureStatement's existing
+        # propagation to fill each still-untyped target; explicitly-typed params
+        # are left untouched. Re-thread on every pass (rather than only when no
+        # type is present): across compile iterations the expected signature can
+        # arrive empty before it arrives concrete, so a one-shot gate would lock
+        # in the empty one. Two guards: matching arity (a mismatch is left for
+        # the call's parameter check to report), and *concreteness* — the
+        # expected types are re-compiled in this lambda's scope, so a callee
+        # generic param (`T`) that has not yet been substituted would resolve to
+        # an unresolved name here; wait for the concrete signature.
+        params = self.parameters
+        if (isinstance(expected_type, t.CallableSpec)
+                and isinstance(expected_type.parameters, t.TupleSpec)
+                and expected_type.parameters.is_concrete()
+                and len(expected_type.parameters.entries) == len(params.targets)):
+            params = dataclasses.replace(params, declared_type=expected_type.parameters)
+
         # Compile the parameter types
-        new_prm, new_prm_glb = self.parameters.compile(resolver, None)
+        new_prm, new_prm_glb = params.compile(resolver, None)
 
         # Compile the expression
         sub_expected_type = expected_type.result if isinstance(expected_type, t.CallableSpec) else None

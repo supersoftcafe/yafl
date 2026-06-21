@@ -197,10 +197,10 @@ fun splitHalf<T>(l: List<T>): (left: List<T>, right: List<T>)
 
 # True if any / every element satisfies `pred`. Both fold the whole list, but the
 # short-circuiting `||`/`&&` skip `pred` once the answer is settled.
-fun any<T>(l: List<T>, pred: (T): Bool): Bool
+fun any<T>(l: List<T>, pred: (:T): Bool): Bool
   ret fold<T, Bool>(l, false, (acc: Bool, x: T) => acc || pred(x))
 
-fun all<T>(l: List<T>, pred: (T): Bool): Bool
+fun all<T>(l: List<T>, pred: (:T): Bool): Bool
   ret fold<T, Bool>(l, true, (acc: Bool, x: T) => acc && pred(x))
 
 
@@ -210,7 +210,7 @@ fun contains<T>(l: List<T>, x: T): Bool where BasicEquality<T>
 
 
 # Map each element to a list and concatenate the results, in order.
-fun flatMap<T,U>(l: List<T>, f: (T): List<U>): List<U>
+fun flatMap<T,U>(l: List<T>, f: (:T): List<U>): List<U>
   ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => concat<U>(acc, f(x)))
 
 
@@ -221,7 +221,7 @@ fun reverse<T>(l: List<T>): List<T>
     (fl: ListFull) => _listFromChains<T>(fl.rear, fl.front)
 
 
-fun map<T,U>(l: List<T>, f: (T): U): List<U>
+fun map<T,U>(l: List<T>, f: (:T): U): List<U>
   fun mapNode(n: Chain<T>): Chain<U>
     ret match(n)
       (nil: ChainEnd) => ChainEnd<U>()
@@ -231,7 +231,7 @@ fun map<T,U>(l: List<T>, f: (T): U): List<U>
     (fl: ListFull) => ListFull<U>(mapNode(fl.front), mapNode(fl.rear))
 
 
-fun filter<T>(l: List<T>, f: (T): Bool): List<T>
+fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
   fun filterNode(n: Chain<T>): Chain<T>
     ret match(n)
       (nil: ChainEnd) => ChainEnd<T>()
@@ -243,7 +243,7 @@ fun filter<T>(l: List<T>, f: (T): Bool): List<T>
     (fl: ListFull) => _listFromChains<T>(filterNode(fl.front), filterNode(fl.rear))
 
 
-fun fold<T,U>(l: List<T>, init: U, f: (U, T): U): U
+fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
   fun [tail] foldNode(n: Chain<T>, acc: U): U
     ret match(n)
       (nil: ChainEnd) => acc
@@ -256,7 +256,7 @@ fun fold<T,U>(l: List<T>, init: U, f: (U, T): U): U
 # Index of the first element satisfying `pred`, or None when no element
 # matches.  Always traverses the full list — once `found` is set the
 # step short-circuits to a pass-through.
-fun findIndex<T>(l: List<T>, pred: (T): Bool): Int|None
+fun findIndex<T>(l: List<T>, pred: (:T): Bool): Int|None
   fun step(acc: (idx: Int, found: Int|None), x: T): (idx: Int, found: Int|None)
     ret match(acc.found)
       (i: Int)  => acc
@@ -269,7 +269,7 @@ fun findIndex<T>(l: List<T>, pred: (T): Bool): Int|None
 
 # Split `l` into `(yes, no)` by `pred`.  Order is preserved within each
 # output list.
-fun partition<T>(l: List<T>, pred: (T): Bool): (yes: List<T>, no: List<T>)
+fun partition<T>(l: List<T>, pred: (:T): Bool): (yes: List<T>, no: List<T>)
   fun step(acc: (yes: List<T>, no: List<T>), x: T): (yes: List<T>, no: List<T>)
     ret pred(x)
       ? (yes=append<T>(acc.yes, x), no=acc.no)
@@ -284,7 +284,7 @@ fun _appendToGroup<K,T>(d: Dict<K,List<T> >, k: K, v: T): Dict<K,List<T> > where
     (existing: List<T>) => put<K,List<T> >(d, k, append<T>(existing, v))
     (n: None)           => put<K,List<T> >(d, k, append<T>(List<T>(), v))
 
-fun groupBy<T,K>(l: List<T>, key: (T): K): Dict<K,List<T> > where BasicEquality<K>
+fun groupBy<T,K>(l: List<T>, key: (:T): K): Dict<K,List<T> > where BasicEquality<K>
   ret fold<T,Dict<K,List<T> > >(l, Dict<K,List<T> >(),
     (acc: Dict<K,List<T> >, x: T) => _appendToGroup<K,T>(acc, key(x), x))
 
