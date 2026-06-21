@@ -50,13 +50,16 @@ def __float() -> p.Parser[e.Expression]:
                 ends_f64 = value.endswith("f64")
                 if not (has_dot or has_exp or ends_f32 or ends_f64):
                     return p.Result.none(tokens, tokens[0].line_ref)
-                # Strip the precision suffix; default to 64 bits.
+                # Strip the precision suffix. An unsuffixed literal carries the
+                # `0` "unspecified" sentinel (defaults to float64, but may be
+                # narrowed to its context by FloatExpression.compile); an
+                # explicit suffix is authoritative.
                 if ends_f32:
                     precision, num_str = 32, value[:-3]
                 elif ends_f64:
                     precision, num_str = 64, value[:-3]
                 else:
-                    precision, num_str = 64, value
+                    precision, num_str = 0, value
                 try:
                     return p.Result.ok(
                         e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision),

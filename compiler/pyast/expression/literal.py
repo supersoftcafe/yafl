@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Any
+from typing import Callable, Any, ClassVar
 import dataclasses
 import random
 from dataclasses import dataclass, field
@@ -21,20 +21,22 @@ import pyast.utils as u
 from pyast.expression.base import Expression
 
 
-_INT_PRECISION = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
+_INT_WIDTHS = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
+_FLOAT_WIDTHS = {"float32": 32, "float64": 64}
 
 
-def _resolve_int_precision(expected: t.TypeSpec | None, resolver: g.Resolver) -> int:
-    """Bit-width of `expected` if it is (or aliases) a fixed-width integer
-    builtin, else 0. Peels a single typealias layer (`System::Int32` ->
-    `int32`) by name lookup — deliberately *not* via `.compile`, so it never
-    spawns globals or recurses into generic instantiation."""
+def _resolve_numeric_precision(expected: t.TypeSpec | None, resolver: g.Resolver,
+                               widths: dict[str, int]) -> int:
+    """Bit-width of `expected` if it is (or aliases) one of `widths`' builtins,
+    else 0. Peels a single typealias layer (`System::Int32` -> `int32`) by name
+    lookup — deliberately *not* via `.compile`, so it never spawns globals or
+    recurses into generic instantiation."""
     if isinstance(expected, t.NamedSpec):
         found = resolver.find_type(expected.name)
         if len(found) == 1 and isinstance(found[0].statement, s.TypeAliasStatement):
             expected = found[0].statement.type
     if isinstance(expected, t.BuiltinSpec):
-        return _INT_PRECISION.get(expected.type_name, 0)
+        return widths.get(expected.type_name, 0)
     return 0
 
 
@@ -58,24 +60,31 @@ class StringExpression(Expression):
 
 
 @dataclass
-class IntegerExpression(Expression):
-    value: int
+class _NumericLiteral(Expression):
+    """A numeric literal. `precision == 0` means *unspecified*: the literal
+    defaults to the wide builtin (`bigint` / `float64`) but is narrowed to its
+    context by `compile`. An explicit suffix (`i32`, `f32`, ...) gives a
+    non-zero precision and is authoritative — never re-narrowed."""
+    value: int | float
     precision: int = 0
 
+    # Subclass contract.
+    _KIND: ClassVar[str]               # builtin family: "int" / "float"
+    _WIDE: ClassVar[str]               # builtin used when precision == 0
+    _WIDTHS: ClassVar[dict[str, int]]  # narrowable builtin name -> bit width
+
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        return t.BuiltinSpec(self.line_ref, f"int{self.precision}" if self.precision else "bigint")
+        name = self._WIDE if self.precision == 0 else f"{self._KIND}{self.precision}"
+        return t.BuiltinSpec(self.line_ref, name)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        # Context-type an unsuffixed literal: a bare `0` flowing into an
-        # `Int32` slot becomes `0i32`, so the user need not write the width.
-        # An explicit `i32`/`i64` suffix (precision != 0) is authoritative and
-        # never overridden. Only a concrete fixed-width integer builtin is
-        # adopted — `bigint` (precision 0) leaves the literal unchanged, and
-        # non-integer expected types are ignored (a genuine mismatch is caught
-        # by the assignability check). The resolution is pure: it peels a
-        # typealias (`System::Int32`) to its builtin without spawning work.
+        # Context-type an unsuffixed literal: a bare `0` / `1.5` flowing into an
+        # `Int32` / `Float32` slot adopts that width, so the user need not spell
+        # it. Explicit suffixes (precision != 0) are never overridden, and a
+        # context of the wrong family (or none) is ignored — a genuine mismatch
+        # is caught by the assignability check.
         if self.precision == 0:
-            prec = _resolve_int_precision(expected_type, resolver)
+            prec = _resolve_numeric_precision(expected_type, resolver, self._WIDTHS)
             if prec:
                 return dataclasses.replace(self, precision=prec), []
         return self, []
@@ -83,29 +92,33 @@ class IntegerExpression(Expression):
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
 
-    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        xexpr = cg_p.Integer(self.value, self.precision)
-        return g.OperationBundle( (), (), xexpr )
+    def _emit(self) -> cg_p.RParam:
+        raise NotImplementedError()
 
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        return g.OperationBundle((), (), self._emit())
 
 
 @dataclass
-class FloatExpression(Expression):
-    value: float
-    precision: int = 64
+class IntegerExpression(_NumericLiteral):
+    _KIND = "int"
+    _WIDE = "bigint"
+    _WIDTHS = _INT_WIDTHS
 
-    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        return t.BuiltinSpec(self.line_ref, f"float{self.precision}")
+    def _emit(self) -> cg_p.RParam:
+        # precision 0 -> bigint in codegen (lowered to a heap value by integers.py).
+        return cg_p.Integer(self.value, self.precision)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
 
-    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
-        return []
+@dataclass
+class FloatExpression(_NumericLiteral):
+    _KIND = "float"
+    _WIDE = "float64"
+    _WIDTHS = _FLOAT_WIDTHS
 
-    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        xexpr = cg_p.Float(self.value, self.precision)
-        return g.OperationBundle( (), (), xexpr )
+    def _emit(self) -> cg_p.RParam:
+        # precision 0 -> float64, the natural machine default (no lowering needed).
+        return cg_p.Float(self.value, self.precision or 64)
 
 
 

@@ -70,3 +70,30 @@ class Test(TestCase):
                    "    ret 0\n")
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
+
+    # ── Float literals: same context-typing, symmetric with integers ──────
+
+    def test_suffixed_float_baseline(self):
+        # Control: the explicit `f32` suffix works today.
+        content = ("import System\n"
+                   "\n"
+                   "fun takesF32(x: System::Float32): System::Int\n"
+                   "    ret 0\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "    ret takesF32(1.5f32)\n")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+
+    def test_bare_float_into_float32_param(self):
+        # A bare `1.5` should take Float32 from the parameter's expected type
+        # rather than defaulting to Float64 and failing to assign.
+        content = ("import System\n"
+                   "\n"
+                   "fun takesF32(x: System::Float32): System::Int\n"
+                   "    ret 0\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "    ret takesF32(1.5)\n")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)

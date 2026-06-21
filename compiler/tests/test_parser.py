@@ -106,7 +106,9 @@ class Test(TestCase):
         result = p.parse_expression(tokenize("1.5", "file"))
         self.assertIsInstance(result.value, e.FloatExpression)
         self.assertEqual(1.5, result.value.value)
-        self.assertEqual(64, result.value.precision)
+        # Unsuffixed literals carry the `0` "unspecified" sentinel — they
+        # default to float64 but may be narrowed to their context by compile.
+        self.assertEqual(0, result.value.precision)
 
     def test_float_scientific(self):
         result = p.parse_expression(tokenize("1e10", "file"))
