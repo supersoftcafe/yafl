@@ -77,6 +77,35 @@ fun main(): System::Int
 """)
         self.assertTrue(code, "using the handle once in every branch must compile")
 
+    def test_early_return_consumes_consistently(self):
+        # An `if` whose body early-returns makes the fall-through the *else*
+        # path. The handle is consumed exactly once on each path, so this is
+        # the early-return equivalent of test_branch_consumes_consistently and
+        # must compile — the analysis must not count both uses on one path.
+        code, _ = _compile("""
+fun pick(h: H, c: System::Bool): System::Int
+  if c
+    ret sink(h)
+  ret sink(h)
+fun main(): System::Int
+  ret pick(mk(), 1 < 2)
+""")
+        self.assertTrue(code, "early-return branches each consuming once must compile")
+
+    def test_early_return_then_thread(self):
+        # The realistic loop shape: a guard early-returns the handle, and the
+        # fall-through threads it on and consumes it.
+        code, _ = _compile("""
+fun step(h: H, stop: System::Bool): System::Int
+  if stop
+    ret sink(h)
+  let h2 = thread(h)
+  ret sink(h2)
+fun main(): System::Int
+  ret step(mk(), 1 < 2)
+""")
+        self.assertTrue(code, "guard early-return plus fall-through thread must compile")
+
     def test_linear_lambda_parameter(self):
         code, _ = _compile("""
 fun run(f: (:H): System::Int): System::Int

@@ -177,3 +177,108 @@ fun writeAll(io: IO, data: System::String): (io: IO, v: System::Int|IOError)
                             : writeAll(p.io, System::slice(data, n, System::length(data)))
       (e: IOError)     => (p.io, e)
   ret System::length(data) == 0 ? (io, 0) : _resume(io.write(data), data)
+
+
+# Copy every remaining byte of `src` into `dst`, in `chunkSize`-sized reads,
+# until the source is depleted. Both handles are linear, so both are threaded
+# through and returned in the result tuple alongside the total bytes copied (or
+# the first IOError). Source EOF is normal completion, not an error — neither
+# handle is closed here; the caller still owns and must discharge both.
+fun copy(src: IO, dst: IO, chunkSize: System::Int): (src: IO, dst: IO, v: System::Int|IOError)
+  ret _copy_loop(src, dst, chunkSize, 0)
+
+fun copy(src: IO, dst: IO): (src: IO, dst: IO, v: System::Int|IOError)
+  ret copy(src, dst, 4096)
+
+# `[tail]`: the loop runs once per chunk, so a large file would otherwise
+# accumulate a heap continuation frame per chunk (each read/write suspends).
+# A single self-recursive `[tail]` function lowers to a loop — constant frames.
+# The read result is destructured by guard helpers below rather than a `match`
+# whose arms can't host the intervening `writeAll`; the EOF/error cases
+# early-return, leaving the data path at body level where the write binds.
+fun [tail] _copy_loop(src: IO, dst: IO, chunkSize: System::Int, total: System::Int): (src: IO, dst: IO, v: System::Int|IOError)
+  let r = src.read(chunkSize)
+  if _readEnded(r.v)
+    ret (src=r.io, dst=dst, v=_readEndValue(r.v, total))
+  let w = writeAll(dst, _readChunk(r.v))
+  ret match(w.v)
+    (n: System::Int) => _copy_loop(r.io, w.io, chunkSize, total + n)
+    (e: IOError)     => (src=r.io, dst=w.io, v=e)
+
+# A read yields data (a String) or ends the stream (EOF, surfaced as EOFError,
+# or a real error). These three project that union for the loop above.
+fun _readEnded(v: System::String|IOError): System::Bool
+  ret match(v)
+    (s: System::String) => false
+    (e: IOError)        => true
+
+# Loop result for an ended read: the byte total on EOF (normal completion),
+# otherwise the error.
+fun _readEndValue(v: System::String|IOError, total: System::Int): System::Int|IOError
+  ret match(v)
+    (s: System::String) => total
+    (e: IOError) => match(e)
+      (eof: EOFError) => total
+      ()              => e
+
+# The data chunk — meaningful only when `_readEnded` is false.
+fun _readChunk(v: System::String|IOError): System::String
+  ret match(v)
+    (s: System::String) => s
+    (e: IOError)        => ""
+
+
+# ── Brackets ───────────────────────────────────────────────────────────────
+#
+# Acquire-use-release for linear handles. A handle must be consumed exactly
+# once; on any error path the caller would otherwise have to remember to close
+# whatever it already holds. `withFile`/`withFiles` own that discharge: they run
+# `use` with the live handle(s) and close everything on every path, so callers
+# express acquire/use/release as a single expression.
+#
+# `use` threads the handle(s) back out in its result tuple (the library's
+# standard shape) so the bracket can close them. The returned `T|IOError`
+# prefers the user's own error; failing that, a close error; otherwise the
+# value.
+
+# Single handle. `resource` is an open result (`open_read`/`create`/…); on a
+# failed open there is nothing to close and the open error passes through.
+fun withFile<T>(resource: IO|IOError, use: (:IO): (io: IO, v: T|IOError)): T|IOError
+  ret match(resource)
+    (e: IOError) => e
+    (io: IO)     => _release<T>(use(io))
+
+fun _release<T>(r: (io: IO, v: T|IOError)): T|IOError
+  ret match(r.io.close())
+    (n: System::None) => r.v
+    (ce: IOError)     => match(r.v)
+      (e: IOError) => e        # use already failed — keep its error
+      (ok: T)      => ce       # use succeeded but close failed — surface that
+
+# Two handles, e.g. a copy source and destination. Opens are validated in turn
+# (closing the first if the second fails), `use` runs with both live, then both
+# are closed. The result tuple's `(src, dst, v)` shape matches `copy`, so
+# `withFiles(open_read(a), create(b), copy)` is the whole story.
+fun withFiles<T>(src: IO|IOError, dst: IO|IOError,
+                 use: (:IO, :IO): (src: IO, dst: IO, v: T|IOError)): T|IOError
+  ret match(src)
+    (es: IOError) => _withFiles_drop_src<T>(dst, es)
+    (s: IO)       => _withFiles_have_src<T>(s, dst, use)
+
+# Source open failed: nothing to close for it; close the dest if it opened, and
+# surface the source error.
+fun _withFiles_drop_src<T>(dst: IO|IOError, es: IOError): T|IOError
+  ret match(dst)
+    (ed: IOError) => es
+    (d: IO)       => _release<T>((io=d, v=es))
+
+fun _withFiles_have_src<T>(s: IO, dst: IO|IOError,
+                           use: (:IO, :IO): (src: IO, dst: IO, v: T|IOError)): T|IOError
+  ret match(dst)
+    (ed: IOError) => _release<T>((io=s, v=ed))   # close source, return dest open error
+    (d: IO)       => _release2<T>(use(s, d))
+
+# Close both handles, folding each close through the single-handle release so
+# the error-priority rule (use error > close error > value) holds uniformly.
+fun _release2<T>(r: (src: IO, dst: IO, v: T|IOError)): T|IOError
+  ret _release<T>((io=r.src, v=_release<T>((io=r.dst, v=r.v))))

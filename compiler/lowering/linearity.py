@@ -347,85 +347,8 @@ class _Checker:
         """
         local_env = dict(env)
         local_bindings: list[tuple[str, t.TypeSpec, LineRef]] = []
-        total: Counter = Counter()
-
-        for stmt in stmts:
-            if isinstance(stmt, s.FunctionStatement):
-                # A nested function is its own scope; it may not capture
-                # an enclosing linear binding.  Returning a linear type
-                # is fine — each invocation mints one obligation that
-                # the caller threads (see stdlib's `?>` continuations).
-                if stmt.body is not None:
-                    self._check_capture(stmt.body, local_env, stmt.line_ref)
-                self._check_function(stmt, this_type=None)
-                continue
-            if isinstance(stmt, s.DestructureStatement):
-                total += self._count(stmt.default_value, local_env, resolver) if stmt.default_value else Counter()
-                for tgt in stmt.targets:
-                    if tgt.declared_type is not None and self.carries_linearity(tgt.declared_type):
-                        local_env[tgt.name] = tgt.declared_type
-                        local_bindings.append((tgt.name, tgt.declared_type, tgt.line_ref))
-                continue
-            if isinstance(stmt, s.LetStatement):
-                # `[lazy]` lets defer their RHS into a closure that
-                # memoises the result across forces.  A linear value
-                # held in the stub would be readable many times via
-                # repeat forces, and free variables of linear type
-                # captured by the synthesised closure body fall under
-                # the same "captured by a nested function or lambda"
-                # rule.  Reject both at declaration.
-                if stmt.is_deferred_init():
-                    if (stmt.declared_type is not None
-                            and self.carries_linearity(stmt.declared_type)):
-                        self.errors.append(Error(stmt.line_ref,
-                            f"[lazy] let '{stmt.name}' may not hold a "
-                            f"linear value — the stub memoises across "
-                            f"forces, so multiple reads would yield "
-                            f"the same linear instance"))
-                    if stmt.default_value is not None:
-                        self._check_capture(stmt.default_value, local_env, stmt.line_ref)
-                total += self._count(stmt.default_value, local_env, resolver) if stmt.default_value else Counter()
-                if stmt.declared_type is not None and self.carries_linearity(stmt.declared_type):
-                    local_env[stmt.name] = stmt.declared_type
-                    local_bindings.append((stmt.name, stmt.declared_type, stmt.line_ref))
-                continue
-            if isinstance(stmt, s.ReturnStatement):
-                total += self._count(stmt.value, local_env, resolver)
-                continue
-            if isinstance(stmt, s.ActionStatement):
-                # A statement-expression may consume a linear binding (e.g.
-                # `io.close()`) — that is fine. But a *fresh* linear value
-                # produced and dropped here leaks: bind and consume it.
-                total += self._count(stmt.action, local_env, resolver)
-                if self._expr_is_linear(stmt.action, resolver):
-                    self.errors.append(Error(stmt.line_ref,
-                        "linear value is discarded; bind it and consume it"))
-                continue
-            if isinstance(stmt, s.IfStatement):
-                # Condition runs unconditionally; the two branches are
-                # alternative paths and must be merged. Each branch is its
-                # own scope — lets inside a branch are branch-local.
-                total += self._count(stmt.condition, local_env, resolver)
-                t_res = g.ResolverData(resolver, stmt._branch_finder(stmt.true_block))
-                f_res = g.ResolverData(resolver, stmt._branch_finder(stmt.false_block))
-                t_branch = self._count_statement_list(stmt.true_block, local_env, t_res)
-                f_branch = self._count_statement_list(stmt.false_block, local_env, f_res)
-                total += self._merge(t_branch, f_branch, stmt.line_ref)
-                continue
-            if isinstance(stmt, (s.ClassStatement, s.EnumStatement)):
-                # A nested type declaration — check it as its own scope.
-                self.visit_toplevel(stmt)
-                continue
-            if isinstance(stmt, (s.TypeAliasStatement, s.ImportStatement,
-                                 s.NamespaceStatement)):
-                continue  # carries no linear-consuming expression
-            # Any other statement kind could silently miss a linear use —
-            # fail loudly so a new node type is handled deliberately.
-            raise AssertionError(
-                f"linearity: unhandled statement node {type(stmt).__name__}")
-
-        if trailing_value is not None:
-            total += self._count(trailing_value, local_env, resolver)
+        total = self._count_suffix(stmts, 0, local_env, resolver, trailing_value,
+                                   local_bindings)
 
         # Discharge every linear binding declared in this scope, then drop
         # its obligations so they don't leak into the enclosing merge.
@@ -435,6 +358,129 @@ class _Checker:
             for leaf in leaves:
                 total.pop((name, leaf), None)
         return total
+
+    @staticmethod
+    def _terminates(stmts: list[s.Statement]) -> bool:
+        """True if `stmts` always exits via `return`, so anything after it in
+        the enclosing list is unreachable from this path. An `if` terminates
+        only when *both* its branches do."""
+        if not stmts:
+            return False
+        last = stmts[-1]
+        if isinstance(last, s.ReturnStatement):
+            return True
+        if isinstance(last, s.IfStatement):
+            return (_Checker._terminates(last.true_block)
+                    and _Checker._terminates(last.false_block))
+        return False
+
+    def _count_suffix(self, stmts: list[s.Statement], i: int,
+                      local_env: dict[str, t.TypeSpec], resolver: g.Resolver,
+                      trailing_value: e.Expression | None,
+                      local_bindings: list[tuple[str, t.TypeSpec, LineRef]]) -> Counter:
+        """Per-path consumption of `stmts[i:]` (plus `trailing_value`).
+
+        Statements run in sequence (their counts add) until an `if` whose body
+        early-returns: there the statements that follow are the *else*
+        continuation, reachable only from the falling-through branch, so they
+        are folded into that branch and merged — never charged to a path that
+        already returned. `local_bindings` collects the lets declared directly
+        in this scope (before any such split) for the caller to discharge."""
+        if i >= len(stmts):
+            return (self._count(trailing_value, local_env, resolver)
+                    if trailing_value is not None else Counter())
+
+        stmt = stmts[i]
+
+        def rest() -> Counter:
+            return self._count_suffix(stmts, i + 1, local_env, resolver,
+                                      trailing_value, local_bindings)
+
+        if isinstance(stmt, s.FunctionStatement):
+            # A nested function is its own scope; it may not capture an
+            # enclosing linear binding. Returning a linear type is fine — each
+            # invocation mints one obligation that the caller threads (see
+            # stdlib's `?>` continuations).
+            if stmt.body is not None:
+                self._check_capture(stmt.body, local_env, stmt.line_ref)
+            self._check_function(stmt, this_type=None)
+            return rest()
+
+        if isinstance(stmt, s.DestructureStatement):
+            c = self._count(stmt.default_value, local_env, resolver) if stmt.default_value else Counter()
+            for tgt in stmt.targets:
+                if tgt.declared_type is not None and self.carries_linearity(tgt.declared_type):
+                    local_env[tgt.name] = tgt.declared_type
+                    local_bindings.append((tgt.name, tgt.declared_type, tgt.line_ref))
+            return c + rest()
+
+        if isinstance(stmt, s.LetStatement):
+            # `[lazy]` lets defer their RHS into a closure that memoises the
+            # result across forces. A linear value held in the stub would be
+            # readable many times via repeat forces, and free variables of
+            # linear type captured by the synthesised closure body fall under
+            # the same "captured by a nested function or lambda" rule. Reject
+            # both at declaration.
+            if stmt.is_deferred_init():
+                if (stmt.declared_type is not None
+                        and self.carries_linearity(stmt.declared_type)):
+                    self.errors.append(Error(stmt.line_ref,
+                        f"[lazy] let '{stmt.name}' may not hold a "
+                        f"linear value — the stub memoises across "
+                        f"forces, so multiple reads would yield "
+                        f"the same linear instance"))
+                if stmt.default_value is not None:
+                    self._check_capture(stmt.default_value, local_env, stmt.line_ref)
+            c = self._count(stmt.default_value, local_env, resolver) if stmt.default_value else Counter()
+            if stmt.declared_type is not None and self.carries_linearity(stmt.declared_type):
+                local_env[stmt.name] = stmt.declared_type
+                local_bindings.append((stmt.name, stmt.declared_type, stmt.line_ref))
+            return c + rest()
+
+        if isinstance(stmt, s.ReturnStatement):
+            # Terminates this path; any following statements are unreachable.
+            return self._count(stmt.value, local_env, resolver)
+
+        if isinstance(stmt, s.ActionStatement):
+            # A statement-expression may consume a linear binding (e.g.
+            # `io.close()`) — that is fine. But a *fresh* linear value produced
+            # and dropped here leaks: bind and consume it.
+            c = self._count(stmt.action, local_env, resolver)
+            if self._expr_is_linear(stmt.action, resolver):
+                self.errors.append(Error(stmt.line_ref,
+                    "linear value is discarded; bind it and consume it"))
+            return c + rest()
+
+        if isinstance(stmt, s.IfStatement):
+            # The condition runs unconditionally; the branches are alternative
+            # paths. Statements after the `if` continue only the branches that
+            # fall through (don't return), so fold the continuation into those
+            # and merge. Counting the continuation as its own scope discharges
+            # its lets there, keeping the merge over outer obligations alone.
+            cond = self._count(stmt.condition, local_env, resolver)
+            t_res = g.ResolverData(resolver, stmt._branch_finder(stmt.true_block))
+            f_res = g.ResolverData(resolver, stmt._branch_finder(stmt.false_block))
+            t_branch = self._count_statement_list(stmt.true_block, local_env, t_res)
+            f_branch = self._count_statement_list(stmt.false_block, local_env, f_res)
+            cont = self._count_statement_list(stmts[i + 1:], local_env, resolver,
+                                              trailing_value)
+            t_path = t_branch if self._terminates(stmt.true_block) else t_branch + cont
+            f_path = f_branch if self._terminates(stmt.false_block) else f_branch + cont
+            return cond + self._merge(t_path, f_path, stmt.line_ref)
+
+        if isinstance(stmt, (s.ClassStatement, s.EnumStatement)):
+            # A nested type declaration — check it as its own scope.
+            self.visit_toplevel(stmt)
+            return rest()
+
+        if isinstance(stmt, (s.TypeAliasStatement, s.ImportStatement,
+                             s.NamespaceStatement)):
+            return rest()  # carries no linear-consuming expression
+
+        # Any other statement kind could silently miss a linear use — fail
+        # loudly so a new node type is handled deliberately.
+        raise AssertionError(
+            f"linearity: unhandled statement node {type(stmt).__name__}")
 
     def _count_path(self, expr: e.Expression, env: dict[str, t.TypeSpec]) -> Counter:
         resolved = _resolve_path(expr)
