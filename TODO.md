@@ -552,3 +552,44 @@ a top-level helper that threads state through parameters.
 
 
 
+
+
+## Fusible stream transformers via generic trait instances
+
+StreamIO (stdlib/io.yafl) is a working but interim design: a single concrete
+`StreamIO(_thunk: (): _Step)` closure type, with the transformers (`toLines`,
+`prependLineNumbers`) building more such closures. Every node memoises, which is
+only actually needed at the IO *leaf* (re-reading IO is not repeatable); the pure
+transformers memoise needlessly and, being runtime closures, defeat fusion.
+
+The intended design is type-level: a carrier trait
+
+```
+interface Stream<S, U>
+  fun next(stream: S): (stream: S, value: U|None)
+```
+
+with each transformer a dedicated generic type that wraps its source and is
+itself a Stream:
+
+```
+fun toLines<T>(in: T): StreamLines<T> where Stream<T, String>
+# StreamLines<T>(source: T, pending: String) : Stream<StreamLines<T>, String>
+```
+
+No memoisation in transformers (state lives in fields); composition is the
+static type `StreamNumbered<StreamLines<StreamIO>>`, whose monomorphic `next`
+chain the inliner can later fuse into one allocation-free loop.
+
+WHAT WORKS TODAY (probed 2026-06-23): the carrier trait `Stream<S,U>` with a
+concrete leaf, a generic consumer (`drain<S> ... where Stream<S, Int>`), and a
+union-returning `next` compiles and runs.
+
+THE BLOCKER: a generic trait *instance*. A wrapping transformer needs
+`StreamLines<T>` to witness `Stream<StreamLines<T>, String>` for *every* `T`,
+but there is no syntax for a generic `[trait]` instance — `let [trait] _x<S>:
+...` fails to parse, and the `typealias [where] _W : Trait<Concrete>` constraint
+registration has no parameterised form either (all stdlib instances are
+concrete). Building generic trait instances (parse + resolve a `where`
+constraint by unifying against a parameterised instance + monomorphise per
+concrete chain) is the unlock, and is its own distinct piece of work.

@@ -46,16 +46,24 @@ install(FILES ${YAFL_SYSTEM_YL} DESTINATION lib/yafl)
 # unittest. `ctest` also runs the yafllib C unit tests registered in yafllib/.
 enable_testing()
 find_program(UNITTEST_PARALLEL unittest-parallel)
+# Discovery is pinned to `-s tests -t .` (the suite lives in compiler/tests) so
+# it never depends on the runner's default start directory or the cwd.
 if(UNITTEST_PARALLEL)
-    set(YAFL_SUITE_CMD ${UNITTEST_PARALLEL} -j 3)
+    set(YAFL_SUITE_CMD ${UNITTEST_PARALLEL} -j 3 -s tests -t .)
 else()
-    set(YAFL_SUITE_CMD ${Python3_EXECUTABLE} -m unittest discover)
+    set(YAFL_SUITE_CMD ${Python3_EXECUTABLE} -m unittest discover -s tests -t .)
 endif()
 
 add_test(NAME compiler_suite
     COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static> ${YAFL_SUITE_CMD}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
-set_tests_properties(compiler_suite PROPERTIES TIMEOUT 1800)
+# `unittest-parallel` exits 0 even when it discovers *zero* tests (printing
+# "(0 total tests)" / "Ran 0 test"), which would silently report success if the
+# suite ever failed to be found. Treat an empty run as a failure regardless of
+# exit code — this is what makes a misdiscovered suite show up as a failure.
+set_tests_properties(compiler_suite PROPERTIES
+    TIMEOUT 1800
+    FAIL_REGULAR_EXPRESSION "Ran 0 test;NO TESTS RAN;\\(0 total tests\\)")
 
 # Convenience: `cmake --build build --target check` builds everything (so the
 # runtime archive and the C test executables exist) then runs the whole CTest set.

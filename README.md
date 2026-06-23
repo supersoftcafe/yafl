@@ -175,7 +175,7 @@ To run just the Python suite by hand, build the runtime where the harness looks
 for it by default (`yafllib/build/debug-unix`) and run it from `compiler/`:
 ```
 cd yafllib && cmake --preset debug-unix && cmake --build --preset debug-unix
-cd ../compiler && unittest-parallel -j 3      # or: python -m unittest discover
+cd ../compiler && unittest-parallel -j 3 -s tests -t .   # or: python -m unittest discover -s tests -t .
 ```
 
 Compiled programs are statically linked against the runtime, so they need no

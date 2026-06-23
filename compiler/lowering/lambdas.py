@@ -147,8 +147,18 @@ def __create_class_from_lambda(lmd: e.LambdaExpression, nme: str, fnc: s.Functio
 
 def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement, cpt: list[tuple[str, t.TypeSpec]]) -> e.Expression:
     lr = fnc.line_ref
+
+    def _capture_read(name: str, xtype: t.TypeSpec) -> e.Expression:
+        # A captured `[lazy]` stub must be read as the raw stub pointer, not
+        # forced and not read as its (possibly struct-shaped) value type — the
+        # slot holds a DataPointer stub regardless of the let's declared type.
+        if isinstance(xtype, t.LazyStubSpec):
+            return e.LazyExpression(lr, stub_name=name, target_type=xtype.target_type,
+                                    stub_only=True)
+        return e.NamedExpression(lr, name)
+
     if cpt:
-        captures = [e.TupleEntryExpression(name, e.NamedExpression(lr, name)) for name, xtype in cpt]
+        captures = [e.TupleEntryExpression(name, _capture_read(name, xtype)) for name, xtype in cpt]
         parameters = e.TupleExpression(lr, captures)                 # Capture parameters for class constructor
         clstype = t.ClassSpec(lr, cls.name)                          # Reference to class type
         newexpression = e.NewExpression(lr, clstype, parameters)     # Construct class with captured variables

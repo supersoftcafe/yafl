@@ -485,12 +485,22 @@ class LazyExpression(Expression):
       on the closure class.  Set by `lambdas.__redirect_references_to_class`
       after the lambdas pass discovers the lazy reference as a free
       variable inside the body.
+
+    Orthogonally, `stub_only` selects the *raw stub pointer* instead of
+    the forced value: `generate` hands back the stub slot without the
+    `lazy_fetch` call.  Used at a closure's capture site so a lambda can
+    capture an as-yet-unforced `[lazy]` value of *any* shape — the stub
+    is always a DataPointer, whereas reading the value would (for a
+    struct-shaped let) read the slot as the wrong, value-shaped type.
     """
     stub_name: str
     target_type: t.TypeSpec
     captured_class: str | None = None
+    stub_only: bool = False
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        if self.stub_only:
+            return t.LazyStubSpec(self.line_ref, self.target_type)
         return self.target_type
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
@@ -527,6 +537,16 @@ class LazyExpression(Expression):
                 stub_ref = cg_p.GlobalVar(cg_t.DataPointer(), self.stub_name)
             else:
                 stub_ref = cg_p.StackVar(cg_t.DataPointer(), self.stub_name)
+
+        # Capture-site read: hand back the raw stub pointer without forcing
+        # it, so a closure can capture an unforced `[lazy]` value of any
+        # shape (the stub is always a DataPointer).
+        if self.stub_only:
+            return g.OperationBundle(
+                stack_vars=(),
+                operations=(),
+                result_var=stub_ref,
+            )
 
         sv_result = cg_p.StackVar(ir_t, "$force_result")
         # The fetch function takes `this` as its single parameter, which —

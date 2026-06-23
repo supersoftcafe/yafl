@@ -37,6 +37,12 @@ typedef struct {
     FILE*           file;            // owned libc handle (NULL until OPEN succeeds)
     bool            owned;           // do we fclose on io_close?
     bool            is_write;        // direction fixed at open (no seek)
+    _Atomic(int8_t) closed;          // set (release) by io_close before file=NULL.
+                                     // A StreamIO alias (stream_read) reads it
+                                     // (acquire) to surface a closed backing handle
+                                     // as an IOError instead of EOF — the linear IO
+                                     // owner and the non-linear stream may run on
+                                     // different tasks/threads.
     int32_t         buf_head;        // read: first unconsumed byte; write: 0
     int32_t         buf_tail;        // read: one past last valid; write: next free slot
     uint8_t         buf[IO_BUFFER_SIZE];
