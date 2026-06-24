@@ -1,0 +1,77 @@
+namespace System
+
+# Pure, lazy stream transducers built on generic trait instances.
+#
+# A Stream is a coalgebra: a state value `S` together with a `next` that returns
+# the successor state and an optional element (`None` = end of stream). Each
+# combinator (`Map`, `Filter`) is a dedicated generic type that wraps its source
+# and is itself a Stream, conditional on the source being one — so a pipeline is
+# a single static type like `Map<Filter<Src>>` whose `next` chain is monomorphic
+# (and, in time, fusible). No allocation-per-element beyond the immutable state
+# structs; no memoisation (that belongs only at an IO leaf — see System::IO).
+#
+# A concrete source supplies the leaf instance, e.g.
+#   class [final] Count(cur: Int, hi: Int)
+#   class _SC() : Stream<Count, Int>
+#     fun next(self: Count): (stream: Count, value: Int|None) ...
+#   let [trait] _sc: _SC = _SC()
+# The `[trait]` let registers the instance; there is deliberately NO
+# `typealias [where]`, so `Stream<S,T>` is never ambiently in scope — a function
+# that drives a stream must declare `where Stream<S,T>` explicitly. Then wrap and
+# drive with `streamNext`, e.g.
+#   let pipe = Map<Filter<Count, Int>, Int, Int>(
+#                Filter<Count, Int>(Count(1, 5), isOdd), times10)
+# (the combinators are constructed directly — see the NB on `map`/`filter` below).
+
+interface Stream<S, T>
+  fun next(self: S): (stream: S, value: T|System::None)
+
+# Advance any constrained stream by one step. Use this rather than calling `next`
+# directly from inside a combinator's own `next` method: a same-named member call
+# there binds to the enclosing method, not the trait method, so the free helper
+# is the reliable dispatch. Consumers may use it too.
+fun streamNext<S, T>(s: S): (stream: S, value: T|System::None) where Stream<S, T>
+  ret next(s)
+
+
+# ── map: apply `f` to every element ──────────────────────────────────────────
+class [final] Map<S, A, B>(inner: S, f: (A): B)
+
+class _StreamMap<S, A, B>() : Stream<Map<S, A, B>, B>
+  fun next(self: Map<S, A, B>): (stream: Map<S, A, B>, value: B|System::None) where Stream<S, A>
+    let r = streamNext<S, A>(self.inner)
+    ret match(r.value)
+      (n: System::None) => (Map<S, A, B>(r.stream, self.f), None)
+      (x: A)            => (Map<S, A, B>(r.stream, self.f), self.f(x))
+
+let [trait] _stream_map<S, A, B>: _StreamMap<S, A, B> = _StreamMap<S, A, B>() where Stream<S, A>
+
+# NB no free `map(source, f)` constructor: a type param appearing only in the
+# function value (`B`) can't be inferred from the arguments yet, so it would need
+# explicit `<S,A,B>` — no better than `Map<S,A,B>(source, f)` — and a free `map`
+# would also overload-clash with `System::map` over List (whose `source: S` an
+# unconstrained instance accepts). Construct `Map` directly for now.
+
+
+# ── filter: keep only elements satisfying `keep` ─────────────────────────────
+class [final] Filter<S, T>(inner: S, keep: (T): System::Bool)
+
+class _StreamFilter<S, T>() : Stream<Filter<S, T>, T>
+  fun next(self: Filter<S, T>): (stream: Filter<S, T>, value: T|System::None) where Stream<S, T>
+    ret _filterAdvance<S, T>(self.inner, self.keep)
+
+# The skip-loop is a free [tail] helper: it recurses past rejected elements, and
+# being free (not the combinator's `next` member) it can dispatch the inner pull
+# and call itself without member shadowing.
+fun [tail] _filterAdvance<S, T>(inner: S, keep: (T): System::Bool): (stream: Filter<S, T>, value: T|System::None) where Stream<S, T>
+  let r = streamNext<S, T>(inner)
+  ret match(r.value)
+    (n: System::None) => (Filter<S, T>(r.stream, keep), None)
+    (x: T)            => keep(x)
+      ? (Filter<S, T>(r.stream, keep), x)
+      : _filterAdvance<S, T>(r.stream, keep)
+
+let [trait] _stream_filter<S, T>: _StreamFilter<S, T> = _StreamFilter<S, T>() where Stream<S, T>
+
+# No free `filter(source, keep)` for the same reasons as `map` above (it would
+# clash with `System::filter` over List). Construct `Filter` directly.

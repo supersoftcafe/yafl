@@ -342,6 +342,121 @@ def __finalize_specialized_enum_specs(statements: list[s.Statement], specialized
     return result
 
 
+def __generic_instance_providers(
+    statements: list[s.Statement]
+) -> list[tuple[s.LetStatement, t.ClassSpec]]:
+    """Generic trait INSTANCES, each paired with the trait pattern it implements
+    expressed over the witness LET's placeholders.
+
+    A generic instance — `let [trait] _w<S,T>: _W<S,T> where Box<S,T>`, whose
+    witness class `_W<S,T>` implements `Box<Wrap<S,T>,T>` — is never *referenced*
+    with explicit type params, so __find_concrete_instantiations never sees it.
+    It is selected by constraint discharge: when some monomorphised `where`-clause
+    needs `Box<Wrap<Leaf,Int>,Int>`, unifying it against the pattern recovers
+    S=Leaf/T=Int (see __generic_instance_refs)."""
+    resolver = g.ResolverRoot(statements)
+    providers: list[tuple[s.LetStatement, t.ClassSpec]] = []
+    for st in statements:
+        if not (isinstance(st, s.LetStatement) and st.type_params and 'trait' in st.attributes):
+            continue
+        dt = st.declared_type
+        if not isinstance(dt, t.ClassSpec):
+            continue
+        found = resolver.find_type(dt.name)
+        if len(found) != 1 or not isinstance(found[0].statement, s.ClassStatement):
+            continue
+        cls = found[0].statement
+        if cls._all_parents is None:
+            continue
+        # The class declares its parents over its OWN placeholders; the let passes
+        # its placeholders as the class's args, so remap class→let placeholders.
+        remap = ({p.name: c for p, c in zip(cls.type_params, dt.type_params)}
+                 if cls.type_params and len(cls.type_params) == len(dt.type_params) else {})
+        for parent in cls._all_parents:
+            if not isinstance(parent, t.ClassSpec):
+                continue
+            pattern = t.substitute_placeholders(parent, remap, resolver) if remap else parent
+            if isinstance(pattern, t.ClassSpec):
+                providers.append((st, pattern))
+    return providers
+
+
+def __collect_concrete_constraints(statements: list[s.Statement]) -> set[t.ClassSpec]:
+    """Every concrete trait constraint appearing in a `where` clause anywhere in
+    `statements` (top-level functions and nested method bodies alike). Inner types
+    may be in either structural (`Box<Wrap<Leaf,Int>,Int>`) or already-mangled
+    (`Box<Wrap$generic$Leaf_Int,Int>`) form depending on how far redirection has
+    progressed; __generic_instance_refs re-inflates the latter before unifying."""
+    resolver = g.ResolverRoot(statements)
+    found: set[t.ClassSpec] = set()
+    def collect(_, thing):
+        if isinstance(thing, s.NamedStatement):
+            for tp in thing.trait_params:
+                if isinstance(tp, t.ClassSpec) and tp.is_concrete():
+                    found.add(tp)
+        return thing
+    for st in statements:
+        st.search_and_replace(resolver, collect)
+    return found
+
+
+def __reinflate(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t.TypeSpec, ...]]]) -> t.TypeSpec:
+    """Undo monomorphisation name-mangling structurally: a bare `Wrap$generic$Leaf`
+    ClassSpec becomes `Wrap<Leaf>` again (recursively). The constraint we must
+    discharge only ever exists with its inner types already mangled — the
+    concreteness gate specialises `Wrap<Leaf,Int>` to its opaque name *before*
+    the wrapping `useBox`/instance is even instantiable — so we rebuild the
+    structure the unifier needs from the (name, type_args) of each specialisation."""
+    if isinstance(spec, t.ClassSpec):
+        if not spec.type_params and spec.name in mono_map:
+            base_name, base_args = mono_map[spec.name]
+            return dataclasses.replace(
+                spec, name=base_name,
+                type_params=tuple(__reinflate(a, mono_map) for a in base_args))
+        if spec.type_params:
+            return dataclasses.replace(
+                spec, type_params=tuple(__reinflate(a, mono_map) for a in spec.type_params))
+    return spec
+
+
+def __remangle(spec: t.TypeSpec) -> t.TypeSpec:
+    """Inverse of __reinflate: a structural `Wrap<Leaf,Int>` recovered by the
+    unifier becomes the bare monomorphic name `Wrap$generic$Leaf_Int` (no type
+    params). The witness must be specialised against that bare name — the form
+    __is_concrete_type_args accepts and the form its already-monomorphised class
+    actually has."""
+    if isinstance(spec, t.ClassSpec) and spec.type_params:
+        args = tuple(__remangle(a) for a in spec.type_params)
+        return dataclasses.replace(spec, name=__create_unique_name(spec.name, args), type_params=())
+    return spec
+
+
+def __generic_instance_refs(
+    providers: list[tuple[s.LetStatement, t.ClassSpec]],
+    constraints: set[t.ClassSpec],
+    mono_refs: set[tuple[str, tuple[t.TypeSpec, ...]]],
+) -> set[tuple[str, tuple[t.TypeSpec, ...]]]:
+    """Witness-let instantiations (name, type_args) needed to satisfy `constraints`
+    via the generic `providers`. The witness's own `where` becomes a fresh, more
+    concrete constraint that a later loop iteration discharges — so nested wrappers
+    resolve by recursion."""
+    mono_map = {__create_unique_name(n, ta): (n, ta) for n, ta in mono_refs if ta}
+    extra: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
+    for st, pattern in providers:
+        names = {p.name for p in st.type_params}
+        for constraint in constraints:
+            if pattern.name != constraint.name:
+                continue
+            inflated = __reinflate(constraint, mono_map)
+            mapping = t.unify_generic(pattern, inflated, names)
+            if mapping is None or not all(p.name in mapping for p in st.type_params):
+                continue
+            type_args = tuple(__remangle(mapping[p.name]) for p in st.type_params)
+            if __is_concrete_type_args(type_args):
+                extra.add((st.name, type_args))
+    return extra
+
+
 def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statement]:
     """
     Iteratively convert generics to concrete specialized versions.
@@ -355,10 +470,24 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statem
     # ensures all_fields stays current as new redirections become available,
     # which is critical for mark_complex_enums to detect recursive cycles.
     all_specialized_enum_names: set[str] = set()
+    # Concrete `where` constraints seen so far, accumulated across iterations so a
+    # generic instance can be discharged once its constraint first appears.
+    seen_constraints: set[t.ClassSpec] = set()
+    # Every (generic-name, concrete type_args) ever specialised, so a mangled
+    # name in a constraint can be re-inflated to the structure the unifier needs.
+    seen_mono_refs: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
 
     while True:
         # Step 1: Find all concrete instantiations
         data_refs, type_refs = __find_concrete_instantiations(statements)
+        seen_mono_refs |= data_refs | type_refs
+
+        # Step 1b: Generic trait instances are selected by constraint discharge,
+        # not by an explicit type-param reference. Discharge the constraints seen
+        # so far against the generic instances, seeding witness-let refs.
+        seen_constraints |= __collect_concrete_constraints(statements)
+        data_refs = data_refs | __generic_instance_refs(
+            __generic_instance_providers(statements), seen_constraints, seen_mono_refs)
 
         if not data_refs and not type_refs:
             # No concrete instantiations found - we're done iterating

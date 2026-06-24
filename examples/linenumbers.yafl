@@ -1,0 +1,27 @@
+namespace Main
+
+import System
+import System::IO
+
+# Copy stdin to stdout, prefixing each line with its 1-based line number.
+#
+# The whole job is one streaming pipeline: view stdin as a byte stream, split it
+# into lines, number them, and drain the result to stdout. No buffering of the
+# whole input, no hand-written read loop — `toLines` and `prependLineNumbers` are
+# the stream transformers; `writeToFile` drains a string stream into any IO.
+#
+# Exit codes:
+#   0  ok
+#   1  IO error
+
+fun main(): System::Int
+  let (inputIo, stream) = stdin().asStream()
+  let (outputIo, outErr) = writeToFile(stdout(), stream |> toLines |> prependLineNumbers)
+  ret shutdown(inputIo, outputIo, outErr)
+
+# Close both linear handles (stdin and stdout), then report the outcome: the
+# pipeline's own error wins, otherwise a failed close, otherwise success.
+fun shutdown(inp: IO, out: IO, v: IOError|None): System::Int
+  let inClosed = inp.close()
+  let outClosed = out.close()
+  ret v !is None || inClosed !is None || outClosed !is None ? 1 : 0

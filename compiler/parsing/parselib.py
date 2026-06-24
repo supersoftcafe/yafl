@@ -169,6 +169,27 @@ def discard_sym(w: Optional[str | List[str]]) -> Parser[Tuple]:
     return sym(w) >> to_nothing
 
 
+def close_angle() -> Parser[Tuple]:
+    """Consume a single closing `>` of a type-argument list.
+
+    The tokeniser greedily fuses a run of `>` into one token (`>>`, `>>>`) and
+    pairs `>=` together, so a nested generic like `A<B<C>>` arrives with its two
+    closing brackets as a single `>>`. This peels one `>` off the front of such a
+    token and pushes the remainder (`>`, `=`, …) back into the stream for the
+    enclosing list to close against, so `A<B<C, D>>` and `A<B<C<D>>>` parse.
+    Used only where a type-arg list expects its terminator, so the operator
+    readings of `>>`/`>=` elsewhere are untouched."""
+    def p(tokens: List[Token]) -> Result[Tuple]:
+        head = tokens[0]
+        if head.kind == TokenKind.SYMBOLS and head.value.startswith(">"):
+            if head.value == ">":
+                return Result((), tokens[1:], head.line_ref, [])
+            remainder = Token(head.kind, head.value[1:], head.indent, head.line_ref)
+            return Result((), [remainder, *tokens[1:]], head.line_ref, [])
+        return Result.none(tokens, head.line_ref)
+    return Parser(p)
+
+
 def many(parser: Parser[T], skip: Optional[Callable[[List[Token]],Result]] = None) -> Parser[list[T]]:
     def p(tokens: List[Token]) -> Result[list[T]]:
         items = []

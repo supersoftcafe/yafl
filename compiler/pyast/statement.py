@@ -597,6 +597,12 @@ class LetStatement(DataStatement):
             return g.OperationBundle()
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
+        # A generic trait-instance let (`let [trait] _x<S,T>: … where Box<S,T>`)
+        # carries a `where` clause that must be compiled. The generic scope
+        # itself (S/T) is supplied by the caller via _initialiser_resolver
+        # (see compiler.__stmt_scope_resolver), so do NOT re-wrap here — that
+        # would shadow each placeholder and make references ambiguous.
+        trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
         # Refine declared_type from the default value while it is not yet
@@ -609,10 +615,11 @@ class LetStatement(DataStatement):
             inferred = dv.get_type(resolver)
             if inferred is not None and inferred.is_concrete():
                 dt = inferred
-        stmt = dataclasses.replace(self, default_value=dv, declared_type=dt)
-        return stmt, dv_glb+dt_glb
+        stmt = dataclasses.replace(self, default_value=dv, declared_type=dt, trait_params=tuple(trts))
+        return stmt, dv_glb+dt_glb+trts_glb
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
+        # Generic scope (S/T) is supplied by _initialiser_resolver, as in compile.
         if self.default_value and self.declared_type:
             xtype = self.default_value.get_type(resolver)
             if xtype is not None and t.trivially_assignable_equals(resolver, self.declared_type, xtype) is False:
@@ -631,7 +638,8 @@ class LetStatement(DataStatement):
                 lazy_err.append(Error(self.line_ref, "[lazy] takes no arguments"))
             if self.default_value is None:
                 lazy_err.append(Error(self.line_ref, "[lazy] requires an initialiser"))
-        return err1 + err2 + const_err + lazy_err
+        where_err = [e for x in self.trait_params for e in x.check(resolver)]
+        return err1 + err2 + const_err + lazy_err + where_err
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         # `[lazy]` lets are handled out-of-band by `BlockExpression.generate`:
@@ -993,11 +1001,20 @@ class TypeAliasStatement(TypeStatement):
         return self.type if self.type.is_concrete() else None
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
+        # A generic `where`-alias (`typealias [where] _W<S,T> : Box<Wrap<S,T>,T>
+        # where Box<S,T>`) binds S/T over both its body and its constraints.
+        trts: list[t.TypeSpec] = list(self.trait_params)
+        trts_glb: list[Statement] = []
+        if self.type_params or self.trait_params:
+            resolver = g.ResolverType(resolver, self._find_generic_types)
+            trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
         new_type, new_statements = self.type.compile(resolver)
-        return dataclasses.replace(self, type=new_type), new_statements
+        return dataclasses.replace(self, type=new_type, trait_params=tuple(trts)), new_statements + trts_glb
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
-        return self.type.check(resolver)
+        if self.type_params or self.trait_params:
+            resolver = g.ResolverType(resolver, self._find_generic_types)
+        return self.type.check(resolver) + [e for x in self.trait_params for e in x.check(resolver)]
 
 
 @dataclass

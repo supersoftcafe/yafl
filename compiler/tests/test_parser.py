@@ -281,6 +281,98 @@ class Test(TestCase):
         self.assertIsInstance(type_params[0], t.NamedSpec)
         self.assertEqual("Int", type_params[0].name)
 
+    def test_generic_trait_instance_let(self):
+        # A generic trait instance: register `_BoxWrap<S,T>` as the witness for
+        # `Box<Wrap<S,T>, T>` whenever `S` is itself a Box. Needs generic params
+        # on the `let` name AND a trailing `where` clause.
+        tokens = tokenize(
+            "let [trait] _box_wrap<S, T>: _BoxWrap<S, T> = _BoxWrap() where Box<S, T>\n"
+            , "file")
+
+        result = p.parse(tokens)
+        lets = [x for x in result.value if isinstance(x, s.LetStatement)]
+        self.assertEqual(0, len(result.errors))
+        self.assertEqual(1, len(lets))
+        statement = lets[0]
+
+        self.assertIn("trait", statement.attributes)
+
+        type_params = statement.type_params
+        self.assertEqual(2, len(type_params))
+        self.assertIn("S@", type_params[0].name)
+        self.assertIn("T@", type_params[1].name)
+
+        trait_params = statement.trait_params
+        self.assertEqual(1, len(trait_params))
+        self.assertEqual("Box", trait_params[0].name)
+
+    def test_generic_where_alias(self):
+        # The conditional instance advertisement: `Wrap<S,T>` is a `Box` only
+        # when `S` is. Needs generic params on the alias name AND a `where`.
+        tokens = tokenize(
+            "typealias [where] _WhereBoxWrap<S, T> : Box<Wrap<S, T>, T> where Box<S, T>\n"
+            , "file")
+
+        result = p.parse(tokens)
+        aliases = [x for x in result.value if isinstance(x, s.TypeAliasStatement)]
+        self.assertEqual(0, len(result.errors))
+        self.assertEqual(1, len(aliases))
+        statement = aliases[0]
+
+        self.assertIn("where", statement.attributes)
+
+        type_params = statement.type_params
+        self.assertEqual(2, len(type_params))
+        self.assertIn("S@", type_params[0].name)
+        self.assertIn("T@", type_params[1].name)
+
+        self.assertEqual("Box", statement.type.name)
+
+        trait_params = statement.trait_params
+        self.assertEqual(1, len(trait_params))
+        self.assertEqual("Box", trait_params[0].name)
+
+    def test_nested_generic_closes_double_angle(self):
+        # `A<B<C>>` — the inner and outer `>` tokenise as one `>>` token. The
+        # close-angle parser must peel it so this reads as a nested generic type,
+        # not fail. Type position has no operator fallback, so this is the honest
+        # test (an expression `f<g<x>>` could otherwise mis-parse as `f < g < …`).
+        tokens = tokenize("let x: A<B<C>> = y\n", "file")
+        result = p.parse(tokens)
+        lets = [s_ for s_ in result.value if isinstance(s_, s.LetStatement)]
+        self.assertEqual(0, len(result.errors))
+        self.assertEqual(1, len(lets))
+        outer = lets[0].declared_type
+        self.assertIsInstance(outer, t.NamedSpec)
+        self.assertEqual("A", outer.name)
+        self.assertEqual(1, len(outer.type_params))
+        inner = outer.type_params[0]
+        self.assertIsInstance(inner, t.NamedSpec)
+        self.assertEqual("B", inner.name)
+        self.assertEqual("C", inner.type_params[0].name)
+
+    def test_nested_generic_multiarg_double_angle(self):
+        # The case the operator mis-parse can't fake: a comma inside the inner
+        # args. `Map<Count, Int>` nested then closed with `>>`.
+        tokens = tokenize("let x: A<B<C, D>> = y\n", "file")
+        result = p.parse(tokens)
+        lets = [s_ for s_ in result.value if isinstance(s_, s.LetStatement)]
+        self.assertEqual(0, len(result.errors))
+        inner = lets[0].declared_type.type_params[0]
+        self.assertEqual("B", inner.name)
+        self.assertEqual(["C", "D"], [tp.name for tp in inner.type_params])
+
+    def test_triple_nested_generic_closes_triple_angle(self):
+        # `A<B<C<D>>>` closes with a `>>>` token — peel twice then a plain `>`.
+        tokens = tokenize("let x: A<B<C<D>>> = y\n", "file")
+        result = p.parse(tokens)
+        lets = [s_ for s_ in result.value if isinstance(s_, s.LetStatement)]
+        self.assertEqual(0, len(result.errors))
+        b = lets[0].declared_type.type_params[0]
+        c = b.type_params[0]
+        self.assertEqual(["A", "B", "C", "D"],
+                         [lets[0].declared_type.name, b.name, c.name, c.type_params[0].name])
+
     def test_function_with_generics(self):
         tokens = tokenize(
             "fun doNothing<TValue>(value: TValue): TValue where Number<TValue>\n"

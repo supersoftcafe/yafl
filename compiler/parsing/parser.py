@@ -379,6 +379,24 @@ def __to_logical_or(result: p.Result[tuple[e.Expression, list[e.Expression]]], t
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
+def __to_is(result: p.Result, tokens: list[p.Token]) -> p.Result[e.Expression]:
+    # `L is R` / `L !is R` — a type test. R is a TYPE, so this is sugar for the
+    # variant match `match(L) (_: R) => true; () => false` (negated for `!is`),
+    # reusing the same subset dispatch a hand-written match would. The right
+    # operand is a type, so this never chains: at most one `[!] is R` per L.
+    left, clause = result.value
+    if not clause:
+        return p.Result(left, result.tokens, result.line_ref, result.errors)
+    bang, _is_kw, rtype = clause[0]
+    neg = len(bang) > 0
+    lr = left.line_ref
+    arms = [
+        m.MatchArm(lr, None, rtype, e.BoolExpression(lr, not neg)),  # (_: R) => true / false
+        m.MatchArm(lr, None, None, e.BoolExpression(lr, neg)),       # ()     => false / true
+    ]
+    return p.Result(m.MatchExpression(lr, left, arms), result.tokens, result.line_ref, result.errors)
+
+
 def __to_expr_tuple_entry(result: p.Result[tuple[list[str], e.Expression]], tokens: list[p.Token]) -> p.Result[e.TupleEntryExpression]:
     name, value = result.value
     return p.Result(e.TupleEntryExpression(p.first_or_none(name), value), result.tokens, result.line_ref, result.errors)
@@ -454,6 +472,26 @@ def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|
         statement = s.DestructureStatement(tokens[0].line_ref, '_', None, attributes, (), p.first_or_none(value), declared_type, target)
     else:
         raise ValueError("invalid target type")
+    return p.Result(statement, result.tokens, result.line_ref, errors)
+
+
+def __to_generic_let_statement(result: p.Result, tokens: list[p.Token]) -> p.Result[s.LetStatement]:
+    """A single-name `let` that may carry generic params and a `where` clause —
+    the form used to declare a GENERIC trait instance, e.g.
+    `let [trait] _box_wrap<S,T>: _BoxWrap<S,T> = _BoxWrap() where Box<S,T>`.
+    Destructuring `let (a,b) = …` falls through to __to_let_statement."""
+    attributes, ident, generics, dtype, array_marker, value, where_traits = result.value
+    errors = result.errors
+    declared_type = p.first_or_none(dtype)
+    if array_marker:
+        if declared_type is None:
+            errors = errors + [p.Error(result.line_ref, "an array field needs an element type, e.g. `name: Elem[lengthField]`")]
+        else:
+            declared_type = t.ArrayFieldSpec(result.line_ref, declared_type, array_marker[0])
+    statement = s.LetStatement(
+        tokens[0].line_ref, f"{ident}@{result.line_ref.hash6()}", None, attributes or {},
+        tuple(generics), p.first_or_none(value), declared_type,
+        trait_params=tuple(where_traits))
     return p.Result(statement, result.tokens, result.line_ref, errors)
 
 
@@ -571,9 +609,14 @@ def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, lis
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
-def __to_type_alias(result: p.Result[tuple[dict, str, t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
-    attributes, name, typespec = result.value
-    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, (), typespec)
+def __to_type_alias(result: p.Result[tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec, list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
+    # Generic params and a `where` clause are optional: a plain alias has empty
+    # lists for both. A generic `where`-alias (`typealias [where] _W<S,T> :
+    # Box<Wrap<S,T>,T> where Box<S,T>`) advertises a CONDITIONAL trait instance.
+    attributes, name, generics, typespec, where_traits = result.value
+    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None,
+                                     attributes or {}, tuple(generics), typespec,
+                                     trait_params=tuple(where_traits))
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression|None]]:
@@ -618,7 +661,7 @@ __parse_maybe_colon_type = p.maybe(p.requires(p.sym(":"), __parse_type, "missing
 __parse_maybe_equal_expr = p.maybe(p.requires(p.sym("="), __parse_expression, "missing default value"))
 
 __parse_maybe_generic_spec = p.maybe(p.requires(
-    p.sym("<"), p.delimited_list(__parse_type, ",") & p.discard_sym(">"),
+    p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
     "missing generics")) >> __to_flat_list
 
 __parse_type_builtin = (p.discard_sym("__builtin_type__") & p.discard_sym("<") & p.ident() & p.discard_sym(">")) >> __to_builtin_spec
@@ -664,7 +707,7 @@ __parse_maybe_destructure_parts = p.maybe(__parse_destructure_parts) >> __to_fla
 __parse_target_type_expr_any = (__parse_attributes & (p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_array_marker & __parse_maybe_equal_expr) >> __to_let_statement
 
 __parse_maybe_type_params = p.maybe(p.requires(
-    p.sym("<"), p.delimited_list(__parse_type, ",") & p.discard_sym(">"),
+    p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
     "missing generics")) >> __to_flat_list
 
 __parse_expr_tuple_entry = (p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression) >> __to_expr_tuple_entry
@@ -712,7 +755,11 @@ __parse_bitand  = (__parse_shift    & p.many(p.sym("&")             & __parse_sh
 __parse_bitxor  = (__parse_bitand   & p.many(p.sym("^")             & __parse_bitand    )) >> __to_call_operators
 __parse_bitor   = (__parse_bitxor   & p.many(p.sym("|")             & __parse_bitxor    )) >> __to_call_operators
 __parse_compare = (__parse_bitor    & p.many(p.sym(["<", "==", ">", "!=", "<=", ">="]) & __parse_bitor)) >> __to_call_operators
-__parse_bind    = (__parse_compare  & p.many(p.sym("?>")             & __parse_compare   )) >> __to_call_operators
+# `is`/`!is` type test: binds looser than the comparison operators, tighter than
+# `?>`/`&&`/`||`. The right operand is a TYPE (so `is` is a contextual keyword —
+# an identifier in operator position — needing no tokeniser change).
+__parse_is      = (__parse_compare  & p.maybe(p.maybe(p.sym("!")) & p.ident("is") & __parse_type)) >> __to_is
+__parse_bind    = (__parse_is       & p.many(p.sym("?>")             & __parse_is        )) >> __to_call_operators
 # Short-circuit logical operators: `&&` binds tighter than `||`, both looser than
 # the comparison/bind level and tighter than the ternary `?:`. They are parse-time
 # sugar for the ternary (see __to_logical_and/__to_logical_or), so short-circuit
@@ -757,14 +804,23 @@ __parse_interface = p.block(p.requires(
     (__parse_attributes & p.ident() & __parse_maybe_generic_statement                             & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_interface,
     "invalid interface statement"))
 
+# A single-name let may carry generic params and a trailing `where` (generic
+# trait instances); the destructuring form falls through to the plain target
+# parser. The generic form is tried first — for a plain `let x = …` it matches
+# with empty generics/where and yields the same statement.
+__parse_let_generic = (__parse_attributes & p.ident() & __parse_maybe_generic_statement
+                       & __parse_maybe_colon_type & __parse_maybe_array_marker & __parse_maybe_equal_expr
+                       & __parse_maybe_where_constraints) >> __to_generic_let_statement
+
 __parse_let = p.block(p.requires(
     p.discard_sym("let"),
-    __parse_target_type_expr,
+    __parse_let_generic | __parse_target_type_expr,
     "invalid let statement"))
 
 __parse_type_alias = p.block(p.requires(
     p.discard_sym("typealias"),
-    (__parse_attributes & p.ident() & p.discard_sym(":") & __parse_type) >> __to_type_alias,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & p.discard_sym(":")
+     & __parse_type & __parse_maybe_where_constraints) >> __to_type_alias,
     "invalid typealias statement"))
 
 __parse_import = p.block(p.requires(

@@ -585,11 +585,65 @@ WHAT WORKS TODAY (probed 2026-06-23): the carrier trait `Stream<S,U>` with a
 concrete leaf, a generic consumer (`drain<S> ... where Stream<S, Int>`), and a
 union-returning `next` compiles and runs.
 
-THE BLOCKER: a generic trait *instance*. A wrapping transformer needs
+THE BLOCKER (was): a generic trait *instance*. A wrapping transformer needs
 `StreamLines<T>` to witness `Stream<StreamLines<T>, String>` for *every* `T`,
-but there is no syntax for a generic `[trait]` instance — `let [trait] _x<S>:
-...` fails to parse, and the `typealias [where] _W : Trait<Concrete>` constraint
-registration has no parameterised form either (all stdlib instances are
-concrete). Building generic trait instances (parse + resolve a `where`
-constraint by unifying against a parameterised instance + monomorphise per
-concrete chain) is the unlock, and is its own distinct piece of work.
+but there was no syntax for a generic `[trait]` instance.
+
+SHIPPED TO STDLIB 2026-06-24 (stdlib/stream.yafl, tests in
+test_generic_trait_instance.py). The REAL design compiles and runs as library
+code: a `System::Stream<S,T>` carrier trait with `Map<S,A,B>` and `Filter<S,T>`
+as generic instances, composed into the static type `Map<Filter<Count>>` —
+`Count 1..5 |> filter odd |> map *10 |> sum` = 90. Plus a `Box`/`Wrap` test
+case incl. recursively-nested wrappers. What landed:
+  * Parse: `let [trait] _x<S,T>: … = … where C` and `typealias [where] _W<S,T>
+    : P where C` (parser.py: __parse_let_generic, extended typealias rule).
+    AST already carried type_params/trait_params on Let/TypeAliasStatement.
+  * Scope: those declarations enter their generic scope on check/compile
+    (statement.py — Let via the existing _initialiser_resolver, TypeAlias gets
+    its own ResolverType wrap).
+  * Monomorphise by constraint discharge (generics.py): a generic `[trait]` let
+    is never referenced with explicit type args, so __generic_instance_refs
+    unifies its implemented pattern `Box<Wrap<S,T>,T>` against each concrete
+    `where` constraint to recover S/T and seed the witness instantiation. The
+    constraint's inner types are already name-mangled by the concreteness gate,
+    so __reinflate rebuilds structure from the recorded (name,type_args) and
+    __remangle puts the recovered args back into bare monomorphic form. The
+    witness's own `where` then becomes a fresh constraint — nested wrappers
+    recurse.
+
+STILL OPEN before this is stdlib-grade ergonomics (both pre-existing, separately
+tracked — NOT specific to generic instances):
+  * Member shadowing: a same-named trait call inside the witness method binds to
+    the enclosing method; the prototype routes the recursive call through a free
+    helper. Fixing resolution to prefer the `where`-constraint method by argument
+    type is the clean fix.
+  * Phantom type-param inference: a `T` appearing only in the return/`where` (not
+    in any argument) can't be inferred, so calls need explicit `<S,T>`. Needs
+    inference from the expected return type to thread through.
+  * Witness boilerplate: the carrier-trait witness class + paired `typealias
+    [where]` is verbose; a sugar that derives both from the instance `where`
+    clause would make this usable in stdlib.
+  * No `map`/`filter` constructor functions in stdlib/stream.yafl: they'd need
+    explicit `<S,A,B>` anyway (phantom B), AND a free `map(source: S, …)` with an
+    unconstrained `S` overload-clashes with `System::map` over List (the `where`
+    constraint doesn't filter during overload resolution). Users construct
+    `System::Map<…>` / `System::Filter<…>` directly for now. The clean endgame is
+    List (and StreamIO) BECOMING `Stream` instances so there is one `map`/`filter`
+    over the trait — fold the existing concrete StreamIO (io.yafl) onto this once
+    the ergonomics land.
+
+stream.yafl uses NO `typealias [where]` (user decision 2026-06-24): the `[trait]`
+let alone registers an instance for monomorphisation discharge; the alias's only
+extra effect is making a CONCRETE instance an AMBIENT implicit where-spec
+(get_implicit_where_specs), so callers could use the trait without declaring
+`where Stream<S,T>`. Streams want that obligation explicit, so the aliases are
+gone (and a GENERIC alias was always a no-op — never concrete, never registered).
+The operator instances in integer.yafl KEEP their aliases — that ambient path is
+exactly what makes `1+2`/`show(x)` work without an explicit where.
+
+FIXED 2026-06-24 — nested generic type args ending in `>>`/`>>>`
+(`sumStream<Map<Count,Int,Int>>`) now parse. The tokeniser fuses a `>` run into
+one token; parselib.close_angle() peels a single `>` off the front (pushing the
+remainder back) and replaces discard_sym(">") in the two type-arg-list rules.
+Shift/comparison operators are untouched (close_angle only fires after a matched
+`<` opening a type-arg list). Tests in test_parser.py.
