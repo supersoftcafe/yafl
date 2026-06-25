@@ -58,6 +58,8 @@ class _BlockFrame:
     flow the other way, *up* through OperationBundle.exit_sources, so no mutable
     state crosses calls — the block-exit analogue of `_LoopFrame`."""
     tag: str
+    result_type: t.TypeSpec | None = None   # the block's slot type; a `return`
+                                            # coerces its value to it (union widen)
 
     @property
     def end_label(self) -> str:
@@ -135,7 +137,7 @@ class BlockExpression(Expression):
         # (exit-label, value) pairs back up via OperationBundle.exit_sources.
         slot_type = expected_type if expected_type is not None else self.get_type(resolver)
         tag = self.tag if self.tag is not None else f"blk@{self.line_ref.hash6()}"
-        frame = _BlockFrame(tag)
+        frame = _BlockFrame(tag, slot_type)
         nested = g.ResolverData(g.ResolverBlock(resolver, frame), self._find_locals())
         bundle = g.OperationBundle()
         # Phase 1: hoist deferred-init stub allocations to block entry

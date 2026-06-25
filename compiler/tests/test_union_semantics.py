@@ -124,3 +124,34 @@ fun main(): System::Int
     ? 0 : 9
 """, timeout=120)
         self.assertEqual(0, rc)
+
+    def test_early_return_widens_to_block_union(self):
+        # An early `ret` of a NARROW value (a single member, and a subset
+        # union) flowing into a wider block result union must widen exactly
+        # like the trailing fall-through value and the match arms do. A
+        # `return` is not special: A|B|C accepts A, and accepts A|C.
+        rc, out = compile_and_run_stdlib_capture("""
+import System
+import System::IO
+
+class Word(text: String)
+
+fun choose(n: System::Int): Word|None|IOError
+  if n == 0
+    ret Word("hi")             # single member widened at an early ret
+  if n == 1
+    let sub: Word|None = None
+    ret sub                    # subset union widened at an early ret
+  ret EOFError(0)              # trailing value (already coerced)
+
+fun pick(v: Word|None|IOError): System::Int
+  ret match(v)
+    (w: Word)    => 0
+    (n: None)    => 1
+    (e: IOError) => 2
+
+fun main(): System::Int
+  ret pick(choose(0)) == 0 && pick(choose(1)) == 1 && pick(choose(2)) == 2
+    ? 0 : 9
+""", timeout=120)
+        self.assertEqual(0, rc)

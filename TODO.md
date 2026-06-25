@@ -556,6 +556,21 @@ a top-level helper that threads state through parameters.
 
 ## Fusible stream transformers via generic trait instances
 
+STATUS 2026-06-25: DELIVERED end to end. Generic trait instances + `Stream<S,T,E>`
+= `Result<T|None,E>` + StreamIO folded onto the trait + generic Lines/Numbered +
+nested-generic-call inference + `[inline(always)]` fusion. examples/linenumbers
+runs `stream |> toLines |> prependLineNumbers` over fully-generic instances, and
+at -O3 the ENTIRE transform pipeline fuses into ONE async state machine (the
+drain absorbs every `next` stage AND the recursive line-assembly loop — `[tail]`
+lowers to a loop in the AST before the codegen inliner, so recursive loops inline
+as loops, no unrolling), collapsing per-element continuation allocations. The
+notes below are the ORIGINAL design write-up, kept for context.
+
+OPEN (smaller): residual field-access-source inference (typed-let workaround);
+promote Result/Never to a base module; `impl Trait` sugar for witness boilerplate;
+automatic fusion (inliner ordering/budget) as the general alternative to the
+opt-in `[inline(always)]`.
+
 StreamIO (stdlib/io.yafl) is a working but interim design: a single concrete
 `StreamIO(_thunk: (): _Step)` closure type, with the transformers (`toLines`,
 `prependLineNumbers`) building more such closures. Every node memoises, which is
@@ -631,6 +646,65 @@ tracked — NOT specific to generic instances):
     List (and StreamIO) BECOMING `Stream` instances so there is one `map`/`filter`
     over the trait — fold the existing concrete StreamIO (io.yafl) onto this once
     the ergonomics land.
+
+GENERIC ERROR CHANNEL 2026-06-24: `Stream<S,T,E>` — element
+`Result<T | None, E>`: `Ok(value)` | `Ok(None)` (clean end) | `Error(e)`
+(failure, terminal). Error and "done" are orthogonal: Error is forwarded
+uninterpreted by transformers and terminates; the inner `T|None` is the shared
+protocol every stage knows and can originate (a sentinel filter emits `Ok(None)`
+to stop early). New stdlib types in stream.yafl: `enum Result<T,E> = Ok(value:T)
+| Error(error:E)` and uninhabited `enum Never` (so `Stream<S,T,Never>` cannot
+fail). Map/Filter forward Ok(None)/Error. This needed the generic-enum
+variant-match bug fixed first (done — see below).
+
+DONE — StreamIO folded onto the generic trait (io.yafl): the IO byte stream is
+now `System::Stream<StreamIO, String, IOError>`, element `Result<String|None,
+IOError>`. The `StreamIO.next()` method is gone — step via
+`System::streamNext<StreamIO, String, IOError>(s)`. Proven: the generic
+`System::Map` composes over a real file's line stream
+(test_io_stream.test_generic_map_over_io_lines).
+
+DONE — generic stateful transducers `System::Lines<S>` (line splitter, stateful
+many-to-many) and `System::Numbered<S>` (1-based line numbering) over ANY
+`Stream<S, String, E>` (stream.yafl). Lines<S> tested over a pure source
+(test_generic_trait_instance.test_generic_lines_splitter). Constructed directly
+(`Lines<S>(src, "")`), like Map/Filter. io.yafl keeps its CONCRETE
+toLines/prependLineNumbers (StreamIO→StreamIO) so the example pipeline stays one
+type and infers cleanly; the generic versions are the general primitives.
+
+FIXED 2026-06-25 — generic inference through NESTED generic calls. The root
+cause was ordering in CallExpression.compile: it compiled the FUNCTION (and
+inferred its generic params) before the ARGUMENT, so for `c(wrap(x))` the
+argument's type was still `Wrap<S>` (placeholder) when c's S was inferred — c's S
+came out non-concrete and never monomorphised. Fix: compile the argument first,
+then infer the function's params from its now-resolved type (one reorder in
+pyast/expression/call.py). Proven: generic transformer FUNCTIONS now chain via
+`|>` with full inference (`Feed |> mapped` → 60). Tests:
+test_nested_generic_inference.py. Full suite 673 green.
+
+DONE — toLines/prependLineNumbers are now GENERIC (`System::toLines<S>`/
+`prependLineNumbers<S>` returning Lines<S>/Numbered<S>); io.yafl's concrete
+versions removed. examples/linenumbers.yafl runs the fully-generic pipeline:
+`stream |> toLines |> prependLineNumbers` drained by generic `writeToFile`.
+
+RESIDUAL inference edge (minor): a FIELD-ACCESS source into a generic `|>` chain
+(`a.stream |> toLines |> …`, or an untyped `let s = a.stream`) doesn't infer —
+pin it with a type (`let stream: StreamIO = a.stream`) and the whole chain
+infers. The nested-call fix covers constructor/call sources; only a
+DotExpression / untyped-let source still needs the hint. Same family as the
+nested-call fix — worth chasing the field-access/untyped-let case down to make
+even that explicit-type hint unnecessary.
+
+NEXT: that residual field-access-source inference case; promote Result/Never out
+of stream.yafl to a base module.
+
+FIXED 2026-06-24 — generic-enum VARIANT match at a concrete instantiation
+(`fun f(x: End<Int>) ret match(x) (d: Done)/(f: Failed)`) crashed codegen: the
+subject's all_leaf_names were un-mangled while the arm's were `$generic$`-mangled
+(two monomorphisation passes disagreed). union_repr.leaf_id now matches leaves by
+BASE identity (strip `$generic$…`), correct-by-construction on tag indices.
+Test: test_generic_enum_concrete_match.py. (Whole-enum match and generic-position
+variant match — Chain/List/Dict — were always fine.)
 
 stream.yafl uses NO `typealias [where]` (user decision 2026-06-24): the `[trait]`
 let alone registers an instance for monomorphisation discharge; the alias's only

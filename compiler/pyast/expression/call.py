@@ -37,13 +37,20 @@ class CallExpression(Expression):
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
         func_type = self.function.get_type(resolver)
-        prtr_type = self.parameter.get_type(resolver)
+
+        # Compile the ARGUMENT before inferring the function's generic type
+        # params. The argument may itself be a generic call (e.g. `c(wrap(x))`);
+        # only once it is compiled does its result type become concrete
+        # (`Wrap<Leaf>` rather than the still-generic `Wrap<S>`). Inferring the
+        # outer function's params from the un-compiled argument would bind them
+        # to a placeholder-bearing type that never monomorphises.
+        parameter, pglb = self.parameter.compile(resolver, func_type.parameters if isinstance(func_type, t.CallableSpec) else None)
+        prtr_type = parameter.get_type(resolver)
 
         if not isinstance(prtr_type, t.TupleSpec):
-            return self, []
+            return dataclasses.replace(self, parameter=parameter), pglb
 
-        function , fglb = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
-        parameter, pglb = self.parameter.compile(resolver, func_type.parameters if isinstance(func_type, t.CallableSpec) else None)
+        function, fglb = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
 
         expr = dataclasses.replace(self, function=function, parameter=parameter)
         return expr, fglb+pglb

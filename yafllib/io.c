@@ -543,6 +543,38 @@ EXPORT object_t* io_write(object_t* self, object_t* data) {
     return _io_dispatch_flush(io);
 }
 
+// Write a sub-range `data[offset .. offset+length)` without allocating a slice.
+// Same protocol as io_write: copies as many bytes as fit and returns that count
+// (0 + a flush task when the buffer is full); the caller advances `offset` by the
+// returned count and retries. `offset`/`length` are clamped to the string bounds.
+EXPORT object_t* io_write_range(object_t* self, object_t* data, object_t* o_offset, object_t* o_length) {
+    io_t* io = (io_t*)self;
+    if (io == NULL || io->file == NULL) return NULL;
+
+    intptr_t local = 0; int32_t total = 0;
+    const char* bytes = string_to_cstr(data, &local, &total);
+    if (total < 0) total = 0;
+
+    int overflow = 0;
+    int32_t offset = int32_from_integer_with_overflow(o_offset, &overflow);
+    int32_t length = int32_from_integer_with_overflow(o_length, &overflow);
+    if (overflow) return integer_from_int32_noalloc(0);
+    if (offset < 0) offset = 0;
+    if (offset > total) offset = total;
+    if (length < 0) length = 0;
+    if (length > total - offset) length = total - offset;
+
+    int32_t space = IO_BUFFER_SIZE - io->buf_tail;
+    if (space > 0) {
+        int32_t n = (length < space) ? length : space;
+        if (n > 0) memcpy(io->buf + io->buf_tail, bytes + offset, (size_t)n);
+        io->buf_tail += n;
+        return integer_from_int32_noalloc(n);
+    }
+
+    return _io_dispatch_flush(io);
+}
+
 
 // --- filesystem metadata ----------------------------------------------------
 //

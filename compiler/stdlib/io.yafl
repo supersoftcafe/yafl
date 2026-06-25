@@ -20,6 +20,8 @@ class [foreign,final] _IO:
   fun [foreign("io_take_line"),impure] _take_line(max: Int): String
   fun [foreign("io_refill"),impure] _refill(): Int|None
   fun [foreign("io_write"),impure] _write(data: String): Int
+  # Write data[offset .. offset+length) without slicing — used by writeAll's loop.
+  fun [foreign("io_write_range"),impure] _write_range(data: String, offset: Int, length: Int): Int
   fun [foreign("io_close"),impure] _close(): Int|None
   # Returns the same handle typed as the non-linear stream alias (see
   # io_as_stream in io.c). Sync — it does no IO, just retypes the pointer.
@@ -72,6 +74,11 @@ class [linear,final] IO(_io: _IO)
 
   fun write(data: String): (io: IO, v: Int|IOError)
     ret _write_result(this, _io._write(data))
+
+  # Write a sub-range of `data` without slicing it. Like write(), the result is
+  # the byte count accepted (may be partial); the caller advances the offset.
+  fun write(data: String, offset: Int, length: Int): (io: IO, v: Int|IOError)
+    ret _write_result(this, _io._write_range(data, offset, length))
 
   # [terminal] — this method is the IO handle's terminus: it consumes
   # `this` (the linear obligation ends here) and returns no IO.
@@ -182,12 +189,24 @@ fun create(path: String): IO|IOError
 # so the stream itself carries no linear obligation and can be freely captured,
 # returned, and shared.
 
-class [final] _Step(value: String|IOError|None, next: StreamIO)
+class [final] _Step(value: Result<String|None, IOError>, next: StreamIO)
 
+# StreamIO is the IO-backed leaf of the generic stream world: a
+# `System::Stream<StreamIO, String, IOError>` whose elements are
+# `Result<String|None, IOError>` — Ok(chunk) | Ok(None) (end) | Error (terminal).
+# The memoised successor lives behind the `[lazy]` thunk; `_streamStep` forces it.
+# There is no `next` method — the trait instance below provides `next`, and the
+# io-internal transformers step via `_streamStep` directly.
 class [final] StreamIO(_thunk: (): _Step)
-  fun next(): (stream: StreamIO, value: String|IOError|None)
-    let step = _thunk()
-    ret (step.next, step.value)
+
+fun [inline(always)] _streamStep(s: StreamIO): (stream: StreamIO, value: Result<String|None, IOError>)
+  let step = s._thunk()
+  ret (step.next, step.value)
+
+class _StreamIOStream() : Stream<StreamIO, String, IOError>
+  fun [inline(always)] next(self: StreamIO): (stream: StreamIO, value: Result<String|None, IOError>)
+    ret _streamStep(self)
+let [trait] _stream_io_stream: _StreamIOStream = _StreamIOStream()
 
 # Wrap one pending read as a memoised node. `_streamPull` is deferred behind the
 # `[lazy]` let and captured (unforced) by the thunk, so building a node performs
@@ -198,127 +217,56 @@ fun _streamNode(raw: _StreamIO): StreamIO
 
 fun _streamPull(raw: _StreamIO): _Step
   ret match(raw._read(4096))
-    (s: String) => _Step(s, _streamNode(raw))
-    (n: None)   => _Step(None, _streamEnd())
-    (c: Int)    => _Step(_error_from_code(c), _streamEnd())
+    (s: String) => _Step(Ok<String|None, IOError>(s), _streamNode(raw))
+    (n: None)   => _Step(Ok<String|None, IOError>(None), _streamEnd())
+    (c: Int)    => _Step(Error<String|None, IOError>(_error_from_code(c)), _streamEnd())
 
-# Sticky terminal: every next() on an ended stream yields (terminal, None).
+# Sticky terminal: every step on an ended stream yields (terminal, Ok(None)).
 fun _streamEnd(): StreamIO
-  let [lazy] step: _Step = _Step(None, _streamEnd())
+  let [lazy] step: _Step = _Step(Ok<String|None, IOError>(None), _streamEnd())
   ret StreamIO(() => step)
 
 
-# ── Stream transformers ───────────────────────────────────────────────────────
+# ── Stream sink ──────────────────────────────────────────────────────────────
 #
-# Each takes a StreamIO and returns a new StreamIO, so they compose with `|>`:
-#   stream |> toLines |> prependLineNumbers
-# Transformers preserve the monad's contract: `None` ends the stream, an
-# `IOError` element is propagated and terminal.
-#
-# INTERIM DESIGN. These are concrete StreamIO→StreamIO functions reusing the
-# leaf's lazy node. The transformers do NOT actually need memoisation (only the
-# IO leaf does, since re-reading IO is not repeatable) — and being runtime
-# closures they cannot be fused. The intended design is a `Stream<S, U>` carrier
-# trait with a dedicated generic type per transformer (`toLines<T>(in: T):
-# StreamLines<T> where Stream<T, String>`), no memoisation, fusible. That is
-# blocked on generic trait *instances*; see TODO.md "Fusible stream
-# transformers via generic trait instances".
+# `writeToFile` drains any String stream whose error type is IOError into a
+# handle — including the generic System combinators over an IO source.
 
-# Split an unstructured byte-chunk stream into lines, with the trailing newline
-# (and any preceding '\r') removed. Lines are assembled across chunk boundaries;
-# a final unterminated line is emitted at EOF.
-fun toLines(source: StreamIO): StreamIO
-  ret _linesNode(source, "")
+# Drain a String stream into `io`, writing each value in order. Stops at the first
+# Error (from the stream or a write) and returns it; otherwise None at end of
+# stream. `io` is threaded through and returned — the caller still owns close.
+fun writeToFile<S>(io: IO, source: S): (io: IO, v: IOError|System::None) where System::Stream<S, System::String, IOError>
+  ret _writeStream<S>(io, source)
 
-fun _linesNode(src: StreamIO, pending: System::String): StreamIO
-  let [lazy] step: _Step = _pullLine(src, pending)
-  ret StreamIO(() => step)
-
-fun _pullLine(src: StreamIO, pending: System::String): _Step
-  let nl = System::findByte(pending, '\n', 0)
-  ret nl >= 0 ? _emitLine(src, pending, nl) : _pullLineMore(src, pending)
-
-# A newline sits at `nl`: emit the line before it (trailing '\r' stripped) and
-# carry the remainder forward for the next line.
-fun _emitLine(src: StreamIO, pending: System::String, nl: System::Int): _Step
-  let line = _stripCR(System::slice(pending, 0, nl))
-  let rest = System::slice(pending, nl + 1, System::length(pending))
-  ret _Step(line, _linesNode(src, rest))
-
-# No newline buffered yet — pull another source chunk and retry.
-fun _pullLineMore(src: StreamIO, pending: System::String): _Step
-  let r = src.next()
-  ret match(r.value)
-    (chunk: System::String) => _pullLine(r.stream, pending + chunk)
-    (e: IOError)            => _Step(e, _streamEnd())
-    (n: System::None)       => _linesEOF(pending)
-
-# Source exhausted: a non-empty pending is the final, unterminated line.
-fun _linesEOF(pending: System::String): _Step
-  ret System::length(pending) == 0
-    ? _Step(None, _streamEnd())
-    : _Step(_stripCR(pending), _streamEnd())
-
-fun _stripCR(s: System::String): System::String
-  let n = System::length(s)
-  ret n > 0 && System::byteAt(s, n - 1) == '\r' ? System::slice(s, 0, n - 1) : s
-
-
-# Prefix each incoming string with its 1-based position ("N: ") and re-terminate
-# it with a newline, so a numbered, line-structured stream comes out.
-fun prependLineNumbers(source: StreamIO): StreamIO
-  ret _numberNode(source, 1)
-
-fun _numberNode(src: StreamIO, n: System::Int): StreamIO
-  let [lazy] step: _Step = _pullNumber(src, n)
-  ret StreamIO(() => step)
-
-fun _pullNumber(src: StreamIO, n: System::Int): _Step
-  let r = src.next()
-  ret match(r.value)
-    (line: System::String) => _Step(_numberLine(n, line), _numberNode(r.stream, n + 1))
-    (e: IOError)           => _Step(e, _streamEnd())
-    (no: System::None)     => _Step(None, _streamEnd())
-
-# "N: <line>\n".  The number is anchored to a String-typed let first so the
-# `+` overloads resolve unambiguously (see the same idiom in format.yafl).
-fun _numberLine(n: System::Int, line: System::String): System::String
-  let num: System::String = System::String(n)
-  ret num + ": " + line + "\n"
-
-
-# Drain a string stream into `io`, writing each element in order. Stops at the
-# first IOError (from the stream or a write) and returns it; otherwise None at
-# end of stream. `io` is threaded through and returned — the caller still owns
-# the close.
-fun writeToFile(io: IO, source: StreamIO): (io: IO, v: IOError|System::None)
-  ret _writeStream(io, source)
-
-fun [tail] _writeStream(io: IO, s: StreamIO): (io: IO, v: IOError|System::None)
-  let r = s.next()
+fun [tail] _writeStream<S>(io: IO, s: S): (io: IO, v: IOError|System::None) where System::Stream<S, System::String, IOError>
+  let r = System::streamNext<S, System::String, IOError>(s)
   if _streamIsEnd(r.value)
     ret (io, _streamEndErr(r.value))
   let w = writeAll(io, _streamStr(r.value))
   ret match(w.v)
-    (n: System::Int) => _writeStream(w.io, r.stream)
+    (n: System::Int) => _writeStream<S>(w.io, r.stream)
     (e: IOError)     => (w.io, e)
 
 # Projectors over a stream element for the [tail] loop above (mirrors the
 # _readEnded/_readChunk helpers used by copy()).
-fun _streamIsEnd(v: System::String|IOError|System::None): System::Bool
+fun _streamIsEnd(v: Result<System::String|System::None, IOError>): System::Bool
   ret match(v)
-    (s: System::String) => false
-    ()                  => true
+    (ok: Ok<System::String|System::None, IOError>) => match(ok.value)
+      (s: System::String) => false
+      ()                  => true
+    (er: Error<System::String|System::None, IOError>) => true
 
-fun _streamEndErr(v: System::String|IOError|System::None): IOError|System::None
+fun _streamEndErr(v: Result<System::String|System::None, IOError>): IOError|System::None
   ret match(v)
-    (e: IOError) => e
-    ()           => None
+    (ok: Ok<System::String|System::None, IOError>) => None
+    (er: Error<System::String|System::None, IOError>) => er.error
 
-fun _streamStr(v: System::String|IOError|System::None): System::String
+fun _streamStr(v: Result<System::String|System::None, IOError>): System::String
   ret match(v)
-    (s: System::String) => s
-    ()                  => ""
+    (ok: Ok<System::String|System::None, IOError>) => match(ok.value)
+      (s: System::String) => s
+      ()                  => ""
+    (er: Error<System::String|System::None, IOError>) => ""
 
 
 # Monadic bind for IO chains. `pair ?> f` calls f(io, v) when `pair` is a
@@ -338,13 +286,17 @@ fun [inline] `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
 # loops over the unwritten suffix until the entire payload is sent (or an
 # error occurs), so callers don't need to deal with partial writes.
 fun writeAll(io: IO, data: System::String): (io: IO, v: System::Int|IOError)
-  fun _resume(p: (io: IO, v: System::Int|IOError), data: System::String): (io: IO, v: System::Int|IOError)
+  # Write `data` in full, looping over partial writes. A single self-`[tail]`
+  # loop that advances an OFFSET into `data` rather than slicing — `write(data,
+  # offset, …)` writes the sub-range directly, so no String per chunk.
+  fun [tail] loop(io: IO, offset: System::Int, total: System::Int): (io: IO, v: System::Int|IOError)
+    if offset >= total
+      ret (io, total)
+    let p = io.write(data, offset, total - offset)
     ret match(p.v)
-      (n: System::Int) => n == System::length(data)
-                            ? (p.io, n)
-                            : writeAll(p.io, System::slice(data, n, System::length(data)))
+      (n: System::Int) => loop(p.io, offset + n, total)
       (e: IOError)     => (p.io, e)
-  ret System::length(data) == 0 ? (io, 0) : _resume(io.write(data), data)
+  ret loop(io, 0, System::length(data))
 
 
 # Copy every remaining byte of `src` into `dst`, in `chunkSize`-sized reads,

@@ -15,9 +15,10 @@ import System::IO
 #   1  IO error
 
 fun main(): System::Int
-  let (inputIo, stream) = stdin().asStream()
-  let (outputIo, outErr) = writeToFile(stdout(), stream |> toLines |> prependLineNumbers)
-  ret shutdown(inputIo, outputIo, outErr)
+  let src = stdin().asStream()
+  let stream: StreamIO = src.stream
+  let done = writeToFile(stdout(), stream |> toLines |> prependLineNumbers)
+  ret shutdown(src.io, done.io, done.v)
 
 # Close both linear handles (stdin and stdout), then report the outcome: the
 # pipeline's own error wins, otherwise a failed close, otherwise success.

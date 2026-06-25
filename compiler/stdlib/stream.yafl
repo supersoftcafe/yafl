@@ -2,76 +2,178 @@ namespace System
 
 # Pure, lazy stream transducers built on generic trait instances.
 #
-# A Stream is a coalgebra: a state value `S` together with a `next` that returns
-# the successor state and an optional element (`None` = end of stream). Each
-# combinator (`Map`, `Filter`) is a dedicated generic type that wraps its source
-# and is itself a Stream, conditional on the source being one — so a pipeline is
-# a single static type like `Map<Filter<Src>>` whose `next` chain is monomorphic
-# (and, in time, fusible). No allocation-per-element beyond the immutable state
-# structs; no memoisation (that belongs only at an IO leaf — see System::IO).
+# A Stream is just a state value `S` plus a `next` function: given the current
+# state it hands back the next state and one element. It's pull-based and lazy —
+# you generate items one at a time, on demand. The element is a `Result<T|None, E>`:
+#   * Ok(value: T)  — a value,
+#   * Ok(None)      — a clean end of stream,
+#   * Error(e: E)   — a failure (also terminal).
+# Two orthogonal axes. The Ok/Error axis is error handling, identical to a
+# Result-returning bind chain: an Error is forwarded by every transformer without
+# being interpreted (a `map` over Strings can't make sense of an IO error, it
+# just passes it on) and ends the stream. The inner `T | None` axis is the stream
+# protocol every stage shares: `None` means "I'm done", and a stage may ORIGINATE
+# it — a filter hunting for a sentinel line can emit `Ok(None)` and stop the whole
+# pipeline even though the source still had input. So the stream system is not
+# tied to IO: `E` is a parameter (`IOError`, `ParseError`, …), and a source that
+# cannot fail uses `E = Never`, whose emptiness makes `Error` unconstructable.
+#
+# Each combinator (`Map`, `Filter`) is a dedicated generic type that wraps its
+# source and is itself a Stream, conditional on the source being one — so a
+# pipeline is a single static type like `Map<Filter<Src>>` whose `next` chain is
+# monomorphic (and, in time, fusible). No allocation-per-element beyond the
+# immutable state structs; no memoisation (that belongs only at an IO leaf — see
+# System::IO). `Ok(None)` and `Error` pass straight through Map/Filter.
 #
 # A concrete source supplies the leaf instance, e.g.
 #   class [final] Count(cur: Int, hi: Int)
-#   class _SC() : Stream<Count, Int>
-#     fun next(self: Count): (stream: Count, value: Int|None) ...
+#   class _SC() : Stream<Count, Int, Never>
+#     fun next(self: Count): (stream: Count, value: Result<Int|None, Never>) ...
 #   let [trait] _sc: _SC = _SC()
 # The `[trait]` let registers the instance; there is deliberately NO
-# `typealias [where]`, so `Stream<S,T>` is never ambiently in scope — a function
-# that drives a stream must declare `where Stream<S,T>` explicitly. Then wrap and
-# drive with `streamNext`, e.g.
-#   let pipe = Map<Filter<Count, Int>, Int, Int>(
-#                Filter<Count, Int>(Count(1, 5), isOdd), times10)
-# (the combinators are constructed directly — see the NB on `map`/`filter` below).
+# `typealias [where]`, so `Stream<S,T,E>` is never ambiently in scope — a
+# function that drives a stream must declare `where Stream<S,T,E>` explicitly.
 
-interface Stream<S, T>
-  fun next(self: S): (stream: S, value: T|System::None)
+# Success-or-failure, the standard two-variant result. (General enough to deserve
+# a home outside the stream module eventually, alongside Never.)
+enum Result<T, E>
+  enum Ok(value: T)
+  enum Error(error: E)
+
+# The uninhabited type: no values, so `Error<_, Never>` cannot be constructed — a
+# `Stream<S,T,Never>` cannot fail, and the type says so.
+enum Never
+
+interface Stream<S, T, E>
+  fun next(self: S): (stream: S, value: Result<T | System::None, E>)
 
 # Advance any constrained stream by one step. Use this rather than calling `next`
 # directly from inside a combinator's own `next` method: a same-named member call
 # there binds to the enclosing method, not the trait method, so the free helper
 # is the reliable dispatch. Consumers may use it too.
-fun streamNext<S, T>(s: S): (stream: S, value: T|System::None) where Stream<S, T>
+fun [inline(always)] streamNext<S, T, E>(s: S): (stream: S, value: Result<T | System::None, E>) where Stream<S, T, E>
   ret next(s)
 
 
-# ── map: apply `f` to every element ──────────────────────────────────────────
+# ── map: apply `f` to every value; Ok(None) and Error pass through ───────────
 class [final] Map<S, A, B>(inner: S, f: (A): B)
 
-class _StreamMap<S, A, B>() : Stream<Map<S, A, B>, B>
-  fun next(self: Map<S, A, B>): (stream: Map<S, A, B>, value: B|System::None) where Stream<S, A>
-    let r = streamNext<S, A>(self.inner)
+class _StreamMap<S, A, B, E>() : Stream<Map<S, A, B>, B, E>
+  fun [inline(always)] next(self: Map<S, A, B>): (stream: Map<S, A, B>, value: Result<B | System::None, E>) where Stream<S, A, E>
+    let r = streamNext<S, A, E>(self.inner)
     ret match(r.value)
-      (n: System::None) => (Map<S, A, B>(r.stream, self.f), None)
-      (x: A)            => (Map<S, A, B>(r.stream, self.f), self.f(x))
+      (ok: Ok<A | System::None, E>) => match(ok.value)
+        (v: A)            => (Map<S, A, B>(r.stream, self.f), Ok<B | System::None, E>(self.f(v)))
+        (n: System::None) => (Map<S, A, B>(r.stream, self.f), Ok<B | System::None, E>(None))
+      (er: Error<A | System::None, E>) => (Map<S, A, B>(r.stream, self.f), Error<B | System::None, E>(er.error))
 
-let [trait] _stream_map<S, A, B>: _StreamMap<S, A, B> = _StreamMap<S, A, B>() where Stream<S, A>
+let [trait] _stream_map<S, A, B, E>: _StreamMap<S, A, B, E> = _StreamMap<S, A, B, E>() where Stream<S, A, E>
 
 # NB no free `map(source, f)` constructor: a type param appearing only in the
 # function value (`B`) can't be inferred from the arguments yet, so it would need
 # explicit `<S,A,B>` — no better than `Map<S,A,B>(source, f)` — and a free `map`
-# would also overload-clash with `System::map` over List (whose `source: S` an
-# unconstrained instance accepts). Construct `Map` directly for now.
+# would also overload-clash with `System::map` over List. Construct `Map`
+# directly for now.
 
 
-# ── filter: keep only elements satisfying `keep` ─────────────────────────────
+# ── filter: keep only values satisfying `keep`; Ok(None)/Error pass through ───
 class [final] Filter<S, T>(inner: S, keep: (T): System::Bool)
 
-class _StreamFilter<S, T>() : Stream<Filter<S, T>, T>
-  fun next(self: Filter<S, T>): (stream: Filter<S, T>, value: T|System::None) where Stream<S, T>
-    ret _filterAdvance<S, T>(self.inner, self.keep)
+class _StreamFilter<S, T, E>() : Stream<Filter<S, T>, T, E>
+  fun [inline(always)] next(self: Filter<S, T>): (stream: Filter<S, T>, value: Result<T | System::None, E>) where Stream<S, T, E>
+    ret _filterAdvance<S, T, E>(self.inner, self.keep)
 
-# The skip-loop is a free [tail] helper: it recurses past rejected elements, and
+# The skip-loop is a free [tail] helper: it recurses past rejected values, and
 # being free (not the combinator's `next` member) it can dispatch the inner pull
-# and call itself without member shadowing.
-fun [tail] _filterAdvance<S, T>(inner: S, keep: (T): System::Bool): (stream: Filter<S, T>, value: T|System::None) where Stream<S, T>
-  let r = streamNext<S, T>(inner)
+# and call itself without member shadowing. Ok(None) and Error stop the skip and
+# are forwarded unchanged.
+fun [tail,inline(always)] _filterAdvance<S, T, E>(inner: S, keep: (T): System::Bool): (stream: Filter<S, T>, value: Result<T | System::None, E>) where Stream<S, T, E>
+  let r = streamNext<S, T, E>(inner)
   ret match(r.value)
-    (n: System::None) => (Filter<S, T>(r.stream, keep), None)
-    (x: T)            => keep(x)
-      ? (Filter<S, T>(r.stream, keep), x)
-      : _filterAdvance<S, T>(r.stream, keep)
+    (ok: Ok<T | System::None, E>) => match(ok.value)
+      (v: T) => keep(v)
+        ? (Filter<S, T>(r.stream, keep), Ok<T | System::None, E>(v))
+        : _filterAdvance<S, T, E>(r.stream, keep)
+      (n: System::None) => (Filter<S, T>(r.stream, keep), Ok<T | System::None, E>(None))
+    (er: Error<T | System::None, E>) => (Filter<S, T>(r.stream, keep), Error<T | System::None, E>(er.error))
 
-let [trait] _stream_filter<S, T>: _StreamFilter<S, T> = _StreamFilter<S, T>() where Stream<S, T>
+let [trait] _stream_filter<S, T, E>: _StreamFilter<S, T, E> = _StreamFilter<S, T, E>() where Stream<S, T, E>
 
 # No free `filter(source, keep)` for the same reasons as `map` above (it would
 # clash with `System::filter` over List). Construct `Filter` directly.
+
+
+# ── toLines: split a String stream into lines ────────────────────────────────
+#
+# A stateful, many-to-many transducer over ANY `Stream<S, String, E>` (not just
+# IO): it buffers a partial line in `pending` and assembles lines across input
+# chunks. The trailing '\n' (and any preceding '\r') is removed; a final
+# unterminated line is emitted at end of stream. `toLines(source)` infers S from
+# the argument — `Lines<S>` carries only S, so no explicit type args are needed.
+class [final] Lines<S>(inner: S, pending: System::String)
+
+class _StreamLines<S, E>() : Stream<Lines<S>, System::String, E>
+  fun [inline(always)] next(self: Lines<S>): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+    ret _linesStep<S, E>(self.inner, self.pending)
+
+# Emit a buffered line if one is complete, otherwise pull a chunk and retry. A
+# single self-`[tail]` loop (the `if` early-returns the emit case, the recursion
+# is a direct self-call), so it lowers to a loop and is inlinable into callers.
+fun [tail,inline(always)] _linesStep<S, E>(inner: S, pending: System::String): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  let nl = System::findByte(pending, '\n', 0)
+  if nl >= 0
+    ret _linesEmit<S, E>(inner, pending, nl)
+  let r = streamNext<S, System::String, E>(inner)
+  ret match(r.value)
+    (ok: Ok<System::String|System::None, E>) => match(ok.value)
+      (chunk: System::String) => _linesStep<S, E>(r.stream, pending + chunk)
+      (n: System::None)       => _linesEOF<S, E>(r.stream, pending)
+    (er: Error<System::String|System::None, E>) => (Lines<S>(r.stream, ""), Error<System::String|System::None, E>(er.error))
+
+fun [inline(always)] _linesEmit<S, E>(inner: S, pending: System::String, nl: System::Int): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  let line = _stripCR(System::slice(pending, 0, nl))
+  let rest = System::slice(pending, nl + 1, System::length(pending))
+  ret (Lines<S>(inner, rest), Ok<System::String|System::None, E>(line))
+
+fun [inline(always)] _linesEOF<S, E>(inner: S, pending: System::String): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  ret System::length(pending) == 0
+    ? (Lines<S>(inner, ""), Ok<System::String|System::None, E>(None))
+    : (Lines<S>(inner, ""), Ok<System::String|System::None, E>(_stripCR(pending)))
+
+fun _stripCR(s: System::String): System::String
+  let n = System::length(s)
+  ret n > 0 && System::byteAt(s, n - 1) == '\r' ? System::slice(s, 0, n - 1) : s
+
+let [trait] _stream_lines<S, E>: _StreamLines<S, E> = _StreamLines<S, E>() where Stream<S, System::String, E>
+
+# `source |> toLines` over any String stream. S is inferred from the argument.
+fun toLines<S>(source: S): Lines<S>
+  ret Lines<S>(source, "")
+
+
+# ── prependLineNumbers: prefix each line with its 1-based number ─────────────
+#
+# A stateful 1:1 transducer over any `Stream<S, String, E>`: each value becomes
+# "N: <value>\n" with N counting from 1. Errors and end pass through.
+class [final] Numbered<S>(inner: S, n: System::Int)
+
+class _StreamNumbered<S, E>() : Stream<Numbered<S>, System::String, E>
+  fun [inline(always)] next(self: Numbered<S>): (stream: Numbered<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+    let r = streamNext<S, System::String, E>(self.inner)
+    ret match(r.value)
+      (ok: Ok<System::String|System::None, E>) => match(ok.value)
+        (line: System::String) => (Numbered<S>(r.stream, self.n + 1), Ok<System::String|System::None, E>(_numberLine(self.n, line)))
+        (no: System::None)     => (Numbered<S>(r.stream, self.n), Ok<System::String|System::None, E>(None))
+      (er: Error<System::String|System::None, E>) => (Numbered<S>(r.stream, self.n), Error<System::String|System::None, E>(er.error))
+
+# "N: <line>\n". The number is anchored to a String-typed let first so the `+`
+# overloads resolve unambiguously (see the same idiom in format.yafl).
+fun _numberLine(n: System::Int, line: System::String): System::String
+  let num: System::String = System::String(n)
+  ret num + ": " + line + "\n"
+
+let [trait] _stream_numbered<S, E>: _StreamNumbered<S, E> = _StreamNumbered<S, E>() where Stream<S, System::String, E>
+
+# `source |> prependLineNumbers` over any String stream. S inferred from the arg.
+fun prependLineNumbers<S>(source: S): Numbered<S>
+  ret Numbered<S>(source, 1)

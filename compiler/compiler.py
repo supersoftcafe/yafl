@@ -24,6 +24,7 @@ import lowering.copy_propagation
 import lowering.ssa_validate
 import lowering.linearity
 import lowering.sync_inference
+import lowering.sroa
 import lowering.tail_loop
 import lowering.trim
 import lowering.uninit_check
@@ -167,10 +168,34 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     a = lowering.trim.removed_unused_stuff(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
 
-    # Inlining with trimming is done iteratively (skipped at -O0)
+    # Inlining (skipped at -O0/-O1): -O2 inlines small functions only; -O3 also
+    # inlines `[inline(always)]` functions regardless of size, recursively (to a
+    # fixpoint) so a chain of marked stages fuses fully into its consumer.
     if optimization_level > 0:
-        for _ in range(4):
-            a = lowering.trim.removed_unused_stuff(lowering.inlining.inline_small_functions(a))
+        if optimization_level >= 2:
+            inline_always = optimization_level >= 3
+            prev_shape: tuple | None = None
+            for _ in range(16):  # bounded; converges as inlined-away functions are trimmed
+                a = lowering.trim.removed_unused_stuff(
+                    lowering.inlining.inline_small_functions(a, inline_always))
+                shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
+                if shape == prev_shape:
+                    break
+                prev_shape = shape
+
+        # Single-caller fold (-O3): inline any function referenced exactly once
+        # into its sole call site regardless of size — no code growth — then
+        # trim the now-unreferenced original. Runs after the small/always passes
+        # so it mops up the residual one-shot helpers a fused pipeline leaves.
+        if optimization_level >= 3:
+            prev_shape = None
+            for _ in range(16):  # bounded; recount each round as chains collapse
+                a = lowering.trim.removed_unused_stuff(
+                    lowering.inlining.inline_single_caller_functions(a))
+                shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
+                if shape == prev_shape:
+                    break
+                prev_shape = shape
 
         # Dead store elimination: remove StackVar assignments whose value is never read.
         # After inlining, trait-object `this` variables often become dead; removing them
@@ -206,6 +231,12 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # musttail. Returns these passes introduce mid-function are handled
     # uniformly by async lowering's Return-conversion helpers.
     a = lowering.copy_propagation.propagate_copies(lowering.branch_threading.thread_branches(a))
+
+    # Scalar-replace projection-only aggregate locals before async lowering, so a
+    # tuple held across a suspension only because one field is needed afterwards
+    # no longer roots its other (dead) fields. Runs at every -O level — this is a
+    # space-correctness fix (see lowering/sroa.py), not an optimisation.
+    a = lowering.sroa.split_projected_aggregates(a)
 
     a = lowering.trim.removed_unused_stuff(lowering.async_lower.lower_async(a))
     lowering.uninit_check.check_application(a)
@@ -317,7 +348,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements, tail_errors = lowering.tail_loop.lower_tail_loops(new_statements, resolver)
     if tail_errors:
         return tail_errors
-    new_statements = lowering.ast_inline.inline_ast(new_statements)
+    new_statements = lowering.ast_inline.inline_ast(new_statements, optimization_level)
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
     # Surface [lazy] forward-references-to-non-lazy as compile errors

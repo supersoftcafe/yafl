@@ -41,6 +41,8 @@ class Function:
     sync: bool = False
     tail: bool = False          # `[tail]`: queue-dispatch trampoline lowering applies.
     bypass_async: bool = False  # Skip async_lower; ops are already in their final hand-crafted form.
+    always_inline: bool = False # `[inline(always)]`: inline at every call site regardless of size,
+                                # so a chain of marked functions fuses into its consumer (pre-async).
 
     def __post_init__(self):
         if len(self.params.fields) == 0:

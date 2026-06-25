@@ -21,11 +21,12 @@ _PRELUDE = "namespace Main\nimport System\nimport System::IO\n\n"
 
 # Length of a stream element, or a distinct negative sentinel for the non-data
 # cases so a test can tell them apart through the exit code.
-_LEN = """fun _len(v: System::String|IOError|System::None): System::Int
+_LEN = """fun _len(v: System::Result<System::String|System::None, IOError>): System::Int
   ret match(v)
-    (s: System::String) => System::length(s)
-    (e: IOError)        => 100
-    (n: System::None)   => 90
+    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
+      (s: System::String) => System::length(s)
+      (n: System::None)   => 90
+    (er: System::Error<System::String|System::None, IOError>) => 100
 """
 
 
@@ -46,11 +47,12 @@ class TestStreamIO(TestCase):
     # ── draining ─────────────────────────────────────────────────────────────
 
     _DRAIN = """fun [tail] drain(s: StreamIO, total: System::Int): System::Int
-  let r = s.next()
+  let r = System::streamNext<StreamIO, System::String, IOError>(s)
   ret match(r.value)
-    (chunk: System::String) => drain(r.stream, total + System::length(chunk))
-    (e: IOError)            => 200
-    (n: System::None)       => total
+    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
+      (chunk: System::String) => drain(r.stream, total + System::length(chunk))
+      (n: System::None)       => total
+    (er: System::Error<System::String|System::None, IOError>) => 200
 fun run(io: IO): System::Int
   let a = io.asStream()
   let total = drain(a.stream, 0)
@@ -63,11 +65,12 @@ fun run(io: IO): System::Int
         self.assertEqual(11, self._run(b"hello world", self._DRAIN))
 
     _DRAIN_BIG = """fun [tail] drain(s: StreamIO, total: System::Int): System::Int
-  let r = s.next()
+  let r = System::streamNext<StreamIO, System::String, IOError>(s)
   ret match(r.value)
-    (chunk: System::String) => drain(r.stream, total + System::length(chunk))
-    (e: IOError)            => 200
-    (n: System::None)       => total
+    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
+      (chunk: System::String) => drain(r.stream, total + System::length(chunk))
+      (n: System::None)       => total
+    (er: System::Error<System::String|System::None, IOError>) => 200
 fun run(io: IO): System::Int
   let a = io.asStream()
   let total = drain(a.stream, 0)
@@ -90,8 +93,8 @@ fun run(io: IO): System::Int
 
     _MEMO = _LEN + """fun run(io: IO): System::Int
   let a = io.asStream()
-  let r1 = a.stream.next()
-  let r2 = a.stream.next()
+  let r1 = System::streamNext<StreamIO, System::String, IOError>(a.stream)
+  let r2 = System::streamNext<StreamIO, System::String, IOError>(a.stream)
   let n = _len(r1.value) + _len(r2.value)
   ret match(a.io.close())
     (e: IOError)      => 201
@@ -107,11 +110,12 @@ fun run(io: IO): System::Int
     # ── closed backing handle -> IOError (the escape case) ───────────────────
 
     _CLOSED = """fun _afterClose(s: StreamIO): System::Int
-  let r = s.next()
+  let r = System::streamNext<StreamIO, System::String, IOError>(s)
   ret match(r.value)
-    (chunk: System::String) => 1
-    (e: IOError)            => 42
-    (n: System::None)       => 2
+    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
+      (chunk: System::String) => 1
+      (n: System::None)       => 2
+    (er: System::Error<System::String|System::None, IOError>) => 42
 fun run(io: IO): System::Int
   let a = io.asStream()
   ret match(a.io.close())
@@ -124,6 +128,38 @@ fun run(io: IO): System::Int
         # the closed handle must surface as IOError, not EOF.
         self.assertEqual(42, self._run(b"hello", self._CLOSED))
 
+    # ── StreamIO IS a System::Stream: compose the GENERIC combinators over IO ──
+
+    # StreamIO now witnesses System::Stream<StreamIO, String, IOError>, so the
+    # IO line stream drops straight into the generic transducers. Here a real
+    # file is read, split into lines, then run through the *generic* System::Map
+    # (the same one that works over Count in test_generic_trait_instance) — the
+    # IO leaf and the generic stream world meeting on one trait.
+    _GENERIC_MAP = """fun tag(s: System::String): System::String
+  ret s + "X"
+
+fun [tail] count<S>(s: S, acc: System::Int): System::Int where System::Stream<S, System::String, IOError>
+  let r = System::streamNext<S, System::String, IOError>(s)
+  ret match(r.value)
+    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
+      (line: System::String) => count<S>(r.stream, acc + System::length(line))
+      (n: System::None)       => acc
+    (er: System::Error<System::String|System::None, IOError>) => 0 - 1
+
+fun run(io: IO): System::Int
+  let a = io.asStream()
+  let stream: StreamIO = a.stream
+  let mapped = System::Map<System::Lines<StreamIO>, System::String, System::String>(stream |> toLines, tag)
+  let total = count<System::Map<System::Lines<StreamIO>, System::String, System::String>>(mapped, 0)
+  ret match(a.io.close())
+    (e: IOError)      => 201
+    (n: System::None) => total
+"""
+
+    def test_generic_map_over_io_lines(self):
+        # "ab\\ncd\\n" -> lines "ab","cd" -> tagged "abX","cdX" -> 3+3 = 6.
+        self.assertEqual(6, self._run(b"ab\ncd\n", self._GENERIC_MAP))
+
     # ── pipeline: source |> toLines |> prependLineNumbers |> writeToFile ──────
 
     # A whole-file transform built by piping the StreamIO through transformers
@@ -132,8 +168,8 @@ fun run(io: IO): System::Int
     # writeToFile together.
     _PIPELINE = r'''fun processFile(ioIn: IO, ioOut: IO): (ioIn: IO, ioOut: IO, v: IOError|System::None)
   let a = ioIn.asStream()
-  let m = a.stream |> toLines |> prependLineNumbers
-  let w = writeToFile(ioOut, m)
+  let stream: StreamIO = a.stream
+  let w = writeToFile(ioOut, stream |> toLines |> prependLineNumbers)
   ret (a.io, w.io, w.v)
 
 fun _closeOne(io: IO, code: System::Int): System::Int

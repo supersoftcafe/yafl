@@ -210,7 +210,7 @@ def _is_cheap(expr: e.Expression) -> bool:
 # Inlinability
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _is_inlinable_function(fn: s.FunctionStatement, class_members: set[str]) -> bool:
+def _is_inlinable_function(fn: s.FunctionStatement, class_members: set[str], optimization_level: int) -> bool:
     if fn.name in class_members:
         return False
     if "foreign" in fn.attributes:
@@ -220,7 +220,16 @@ def _is_inlinable_function(fn: s.FunctionStatement, class_members: set[str]) -> 
     if fn.type_params:
         return False  # still generic — monomorphisation should have run first
     if "inline" in fn.attributes:
-        return True
+        # Bare `[inline]` (no argument) is an always-on structural hint, e.g. the
+        # operators in traits.yafl. `[inline(always)]` (with an argument) is NOT
+        # handled here: it is left for the codegen inliner, which is gated by the
+        # optimisation level (only -O3 inlines it), so it stays out of -O0/-O1/-O2.
+        return fn.attributes["inline"] is None
+    # Size-heuristic inlining of ordinary small functions runs at all levels: it
+    # is structurally load-bearing (gating it regresses -O0). The optimisation-
+    # level gate applies to the codegen inliner (-O2 small, -O3 always); the AST
+    # inliner here only EXCLUDES [inline(always)] (handled above) so the codegen
+    # gate governs it. `optimization_level` is unused but kept for symmetry.
     return _node_count(fn.body) < _SIZE_THRESHOLD
 
 
@@ -234,13 +243,13 @@ def _find_class_member_names(statements: list[s.Statement]) -> set[str]:
     return names
 
 
-def _build_catalog(statements: list[s.Statement]) -> dict[str, s.FunctionStatement]:
+def _build_catalog(statements: list[s.Statement], optimization_level: int) -> dict[str, s.FunctionStatement]:
     """Map of inlinable function name → FunctionStatement. Excludes any
     function that is part of a call-graph cycle."""
     class_members = _find_class_member_names(statements)
     candidates: dict[str, s.FunctionStatement] = {}
     for stmt in statements:
-        if isinstance(stmt, s.FunctionStatement) and _is_inlinable_function(stmt, class_members):
+        if isinstance(stmt, s.FunctionStatement) and _is_inlinable_function(stmt, class_members, optimization_level):
             candidates[stmt.name] = stmt
 
     # Prune cycles (including self-recursion). Build call graph over
@@ -1008,16 +1017,18 @@ def _hoist_nested_fns_to_lambdas(statements: list[s.Statement]) -> list[s.Statem
 _MAX_ITERATIONS = 10
 
 
-def inline_ast(statements: list[s.Statement]) -> list[s.Statement]:
+def inline_ast(statements: list[s.Statement], optimization_level: int = 0) -> list[s.Statement]:
     """Run function inlining and lambda beta-reduction to fixpoint.
 
     Runs before lambda lifting so that lambdas inlined away here never
-    become heap-allocated closure classes.
+    become heap-allocated closure classes. Size-heuristic FUNCTION inlining is
+    gated at -O2+ (see _is_inlinable_function); lambda beta-reduction runs at all
+    levels regardless.
     """
     _inline_counter[0] = 0
     current = _hoist_nested_fns_to_lambdas(list(statements))
     for _ in range(_MAX_ITERATIONS):
-        catalog = _build_catalog(current)
+        catalog = _build_catalog(current, optimization_level)
         if not catalog:
             break
         changed = False

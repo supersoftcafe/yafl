@@ -277,6 +277,9 @@ class FunctionStatement(DataStatement):
             foreign_symbol = foreign_symbol,
             sync = "sync" in self.attributes,
             tail = "tail" in self.attributes,
+            # `[inline(always)]` — the inline attribute carrying an argument (vs the
+            # bare `[inline]` hint). Forces inlining regardless of size.
+            always_inline = self.attributes.get("inline") is not None,
         )
 
 
@@ -944,10 +947,11 @@ class ReturnStatement(Statement):
         # targets the inlined block, not the surrounding function.
         frame = resolver.get_block_frame()
         assert frame is not None, "ReturnStatement generated outside any BlockExpression"
-        # No coercion here: by code generation the value already has the block's
-        # result type exactly (a mismatch is an upstream inference/checking bug,
-        # not something to widen over here).
-        vb = self.value.generate(resolver)
+        # Coerce the value to the block's result type, exactly like the trailing
+        # fall-through value and every other recipient (let, parameter, match arm).
+        # A narrow value or a subset union flowing into a wider union is widened
+        # here — `return` is not special.
+        vb = self.value.generate_to(resolver, frame.result_type)
         exit_label = f"blockexit${frame.tag}${self.index}"
         tail = (cg_o.Label(exit_label), cg_o.Jump(frame.end_label))
         if vb.result_var is None:

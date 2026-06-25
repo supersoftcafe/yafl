@@ -226,8 +226,18 @@ class TaggedRepr(UnionRepr):
         subj_type = self.union_type
         sv = subj_bundle.result_var
         tag = cg_p.StructField(sv, "$tag")
+        # A leaf's tag is its position in the subject's leaf list. Match by BASE
+        # identity (name before any `$generic$…` monomorphisation suffix): when a
+        # generic enum is matched at a concrete instantiation, the subject's
+        # all_leaf_names and an arm's valid_leaf_names can be specialised through
+        # different passes and disagree only on that suffix — but a leaf's
+        # identity within its enum is its base name, and the suffix is uniform
+        # across all leaves of one instantiation, so base names stay unique.
+        def _base(name: str) -> str:
+            return name.split("$generic$", 1)[0]
+        leaf_index = {_base(n): i for i, n in enumerate(subj_type.all_leaf_names)}
         def leaf_id(leaf: str) -> int:
-            return subj_type.all_leaf_names.index(leaf)
+            return leaf_index[_base(leaf)]
         for arm in (a for a in arms if a.type_spec is not None):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)

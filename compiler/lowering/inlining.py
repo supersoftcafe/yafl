@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Callable
+
 import pyast.statement as s
 import pyast.expression as e
 
 import pyast.resolver as g
 import pyast.typespec as t
+import lowering.trim as trim
 from codegen.typedecl import Type, Struct
 from codegen.ops import Call, Op, Move, Label, Return, Jump, ParallelCall
 from codegen.gen import Application
@@ -21,9 +24,24 @@ __CUTOFF_COMPLEXITY = 10
 
 
 
-def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
+def __do_inlining(fn: Function, others: dict[str, Function],
+                  should_inline: Callable[[Function], bool]) -> Function:
+    """Inline eligible call sites within `fn`. The structural guards (must be a
+    direct call to an internal global function with struct args, not a self-call,
+    not musttail, target non-empty and ParallelCall-free) are fixed; the policy
+    `should_inline(target)` decides *which* eligible targets to pull in — size
+    cutoff / `[inline(always)]` for the general pass, single-caller for the
+    fold-away pass. `fn` is never an inlining SINK if it is `__entrypoint__` or
+    `bypass_async`: async_lower passes those through untouched, so a suspending
+    body inlined into them would never get its state machine."""
     new_ops: list[Op] = []
     new_vars: list[tuple[str, Type]] = []
+
+    # __entrypoint__ / bypass_async functions are emitted as-is by async_lower
+    # (no IS_TASK insertion, no state machine), so nothing may be inlined into
+    # them — a suspending callee would be left un-lowered at codegen.
+    if fn.name == "__entrypoint__" or fn.bypass_async:
+        return fn
 
     def replace_op_with_func(op: Op, unique_id: str):
         if (not isinstance(op, Call) or
@@ -32,7 +50,8 @@ def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
                 fn.name == op.function.name or op.musttail or
                 op.function.name not in others or
                 not (target := others[op.function.name]).ops or
-                len(target.ops) >= __CUTOFF_COMPLEXITY or
+                # The size cutoff / `[inline(always)]` / single-caller decision.
+                not should_inline(target) or
                 # __entrypoint__ is hand-built and skipped by async_lower;
                 # inlining a body with ParallelCall here would leave that op
                 # un-lowered at codegen. Refuse inlining of any body that
@@ -86,7 +105,32 @@ def __do_inlining(fn: Function, others: dict[str, Function]) -> Function:
     return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=stack_vars)
 
 
-def inline_small_functions(app: Application) -> Application:
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions) for name, func in app.functions.items()}
+def inline_small_functions(app: Application, inline_always: bool = True) -> Application:
+    # Inline a small function (under the cutoff) always; inline an
+    # `[inline(always)]` target regardless of size only when `inline_always` is
+    # set (-O3), so a chain of marked stream `next` stages fuses into its
+    # consumer. The self-recursion/musttail guards in the engine still apply
+    # (loops/tail back-edges preserved, not unrolled).
+    def policy(target: Function) -> bool:
+        return (len(target.ops) < __CUTOFF_COMPLEXITY
+                or (inline_always and target.always_inline))
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy) for name, func in app.functions.items()}
+    return dataclasses.replace(app, functions=functions)
+
+
+def inline_single_caller_functions(app: Application) -> Application:
+    """Inline every function referenced exactly once into that sole call site,
+    regardless of its size — folding it away costs no code growth (the original
+    becomes unreferenced and is removed by the next trim). Runs after the small/
+    always passes (-O3) so it collapses the residual one-shot helpers a pipeline
+    leaves behind. The `== 1` count already guarantees the single reference IS
+    the call being inlined; address-taken or vtable-bound functions have a count
+    above one (or no call site at all) and are left alone by the engine."""
+    refcounts = trim.function_reference_counts(app)
+
+    def policy(target: Function) -> bool:
+        return refcounts[target.name] == 1
+
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy) for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)
 

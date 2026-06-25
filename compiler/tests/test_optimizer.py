@@ -51,6 +51,9 @@ class TestOptimiser(TestCase):
         time. After inlining, the `this` StackVar holding the trait object becomes dead.
         Dead store elimination should remove it, which lets trim cascade and eliminate the
         entire vtable and all method implementations except the inlined call site.
+
+        The cascade is predicated on inlining, which now runs only at -O>=2 (-O0/-O1 do no
+        inlining), so this is exercised at -O2.
         """
         content = """namespace System
 typealias Int : __builtin_type__<bigint>
@@ -72,7 +75,7 @@ let [trait] int_trait: _BasicMathInt = _BasicMathInt()
 fun main(): System::Int where BasicMath<System::Int>
     ret 1 + 3
 """
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False, optimization_level=1)
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=False, just_testing=False, optimization_level=2)
         self.assertNotEqual("", result)
         self.assertNotIn("VTABLE_DECLARE", result)
         self.assertNotIn("integer_sub", result)
@@ -247,10 +250,14 @@ fun main(): System::Int
                 self.assertNotEqual("", result, f"compilation failed at -O{level}")
                 # The buggy emit was `(struct_anon_1_t){._0 = ...}` wrapping
                 # a scalar argument before passing it to integer_sub. The fix
-                # must keep the args as scalars.
-                self.assertNotIn(
-                    "(struct_anon_1_t){._0 =", result,
-                    f"-O{level}: scalar argument was wrapped in a 1-tuple struct")
+                # must keep the args as scalars. The wrap only arose from
+                # inlining, which runs at -O>=2; at -O1 (no inlining) the
+                # genuine `(a, b)` 2-tuple legitimately appears as a struct, so
+                # the assertion only applies once inlining is in play.
+                if level >= 2:
+                    self.assertNotIn(
+                        "(struct_anon_1_t){._0 =", result,
+                        f"-O{level}: scalar argument was wrapped in a 1-tuple struct")
 
     def test_builtin_side_effect_survives_dead_store_elimination(self):
         """A __builtin_op__ call whose result is discarded must not be eliminated by DSE.
