@@ -1068,10 +1068,18 @@ def __create_stub_launch_func(fn: Function, state_name: str,
         parameters=NewStruct((("$completed_task", NullPointer()),)),
         register=None))
     ops.append(Return(TagTask(__sv_task, wrapped_result)))
+    # `_emit_task_alloc`'s synthesised-subtype path discards the `task_init`
+    # result through `$sv_discard` (a `keep=True` write kept only for its side
+    # effect). Declare that local exactly when the ops actually write it — so
+    # clang neither hits an undeclared identifier (when the write is present)
+    # nor warns on an unused local (the base task_t / `task_obj` paths omit it).
+    sv_fields = [("$sv_state", DataPointer()), ("$sv_task", DataPointer())]
+    if any(isinstance(op, Move) and isinstance(op.target, StackVar)
+           and op.target.name == __sv_discard.name for op in ops):
+        sv_fields.append(("$sv_discard", DataPointer()))
     return dataclasses.replace(
         fn, result=wrapped_result, ops=tuple(ops),
-        stack_vars=Struct((("$sv_state", DataPointer()),
-                           ("$sv_task", DataPointer()))))
+        stack_vars=Struct(tuple(sv_fields)))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
