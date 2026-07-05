@@ -5,7 +5,7 @@ import itertools
 
 import lowering.trim
 from codegen.gen import Application
-from codegen.things import Function, Global
+from codegen.ir import Function, Global
 from codegen.ops import Op, NewObject, Move, Return, Label, Jump, JumpIf, Call
 from codegen.param import RParam, LParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField, ZeroOf
 from codegen.typedecl import DataPointer

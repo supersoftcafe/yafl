@@ -149,8 +149,7 @@ fun [tail] count<S>(s: S, acc: System::Int): System::Int where System::Stream<S,
 fun run(io: IO): System::Int
   let a = io.asStream()
   let stream: StreamIO = a.stream
-  let mapped = System::Map<System::Lines<StreamIO>, System::String, System::String>(stream |> toLines, tag)
-  let total = count<System::Map<System::Lines<StreamIO>, System::String, System::String>>(mapped, 0)
+  let total = count(System::Map(stream |> toLines, tag), 0)
   ret match(a.io.close())
     (e: IOError)      => 201
     (n: System::None) => total

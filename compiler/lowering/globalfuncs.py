@@ -5,7 +5,7 @@ import dataclasses
 from codegen.param import GlobalFunction, VirtualFunction
 from codegen.ops import Call
 from codegen.gen import Application
-from codegen.things import Object, Function
+from codegen.ir import Object, Function
 from langtools import group_by_key
 
 

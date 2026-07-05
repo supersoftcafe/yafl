@@ -104,23 +104,27 @@ fun _escapeFrag(c: String): String
 # appends an escape expansion and loops, or reports an error. The escape is
 # decoded inline so the loop is a *direct* tail self-call — `[tail]` makes a
 # string with many escapes run in constant stack.
-fun [tail] _strBody(st: ParseState, acc: String): (state: ParseState, v: JsonValue|JsonParseError)
+fun _dropSb(sb: System::StringBuilder, e: JsonParseError): JsonParseError
+  System::discard(sb)
+  ret e
+
+fun [tail] _strBody(st: ParseState, sb: System::StringBuilder): (state: ParseState, v: JsonValue|JsonParseError)
   let s: String = st.s
   let lenS: Int = System::length(s)
   let delim: Int = System::findAny(s, "\"\\", st.pos)   # next " or \, or lenS
-  let acc1: String = delim > st.pos ? acc + System::slice(s, st.pos, delim) : acc
+  let sb1: System::StringBuilder = delim > st.pos ? System::appendSlice(sb, s, st.pos, delim) : sb
   let frag: String = delim < lenS ? _escapeFrag(System::slice(s, delim + 1, delim + 2)) : ""
   ret delim < lenS
     ? (System::byteAt(s, delim) == '"'
-        ? (ParseState(s, delim + 1), JsonStr(acc1))
+        ? (ParseState(s, delim + 1), JsonStr(System::toString(sb1)))
         : (System::length(frag) == 0
-            ? (ParseState(s, delim + 1), JsonParseError("unknown escape", delim + 1))
-            : _strBody(ParseState(s, delim + 2), acc1 + frag)))
-    : (ParseState(s, lenS), JsonParseError("unterminated string", delim))
+            ? (ParseState(s, delim + 1), _dropSb(sb1, JsonParseError("unknown escape", delim + 1)))
+            : _strBody(ParseState(s, delim + 2), System::append(sb1, frag))))
+    : (ParseState(s, lenS), _dropSb(sb1, JsonParseError("unterminated string", delim)))
 
 # Caller has peeked but not consumed the opening quote.
 fun _parseString(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  ret _strBody(_advance(st), "")
+  ret _strBody(_advance(st), System::StringBuilder())
 
 
 # ─── Internal: array parsing ─────────────────────────────────────────────
@@ -358,3 +362,235 @@ fun stringify(v: JsonValue, pretty: Bool): String
 # Compact form — convenience overload for the common case.
 fun stringify(v: JsonValue): String
   ret stringify(v, false)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Streaming JSON: a token stream decoupled from IO.
+#
+# A `Stream<S, String, E>` of bytes is tokenised into a `Stream<_, JsonToken,
+# E | JsonParseError>` — forwarding the source's errors and adding lexical ones —
+# and a token stream is serialised back into a String stream. Whitespace is
+# preserved (TokSpace) and numbers/strings carry their RAW source text, so the
+# token level alone is enough to reformat or round-trip without a DOM. The error
+# type GROWS along the pipeline and is surfaced by whatever consumes the stream.
+# ════════════════════════════════════════════════════════════════════════════
+
+enum JsonToken
+  enum TokLBrace()
+  enum TokRBrace()
+  enum TokLBracket()
+  enum TokRBracket()
+  enum TokColon()
+  enum TokComma()
+  enum TokNull()
+  enum TokTrue()
+  enum TokFalse()
+  enum TokString(raw: String)    # content between the quotes, escapes intact
+  enum TokNumber(text: String)   # raw numeric lexeme (validated)
+  enum TokSpace(text: String)    # a run of JSON whitespace
+
+# ── byte predicates ──────────────────────────────────────────────────────────
+fun _isWs(c: System::Int32): System::Bool
+  ret c == ' ' || c == '\t' || c == '\n' || c == '\r'
+
+fun _isNumStart(c: System::Int32): System::Bool
+  ret c == '-' || (c >= '0' && c <= '9')
+
+# Index of the closing quote for a string whose content starts at `i` (just past
+# the opening quote), honouring backslash escapes; -1 if no close is in `s` yet.
+fun [tail] _scanStringEnd(s: System::String, i: System::Int): System::Int
+  let n = System::length(s)
+  let nxt = System::findAny(s, "\"\\", i)
+  ret nxt >= n
+    ? -1
+    : System::byteAt(s, nxt) == '"'
+        ? nxt
+        : _scanStringEnd(s, nxt + 2)   # backslash → skip the escaped byte
+
+fun _validNumber(text: System::String): System::Bool
+  ret match(System::parseInt(text))
+    (i: System::Int)  => true
+    (n: System::None) => match(System::parseFloat(text))
+      (f: System::Float) => true
+      (m: System::None)  => false
+
+# ── lexer ────────────────────────────────────────────────────────────────────
+# `pending[pos..]` is the unconsumed input: tokens advance the INDEX, never
+# slice the carry (slicing copies by design — a per-token carry slice recopied
+# up to a whole chunk per ~10-byte token). The consumed prefix is compacted
+# away once per REFILL, so memory stays bounded by one chunk + one token.
+# `atEnd` means the inner source is exhausted, so no refill can extend a token.
+class [final] Lexer<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool) where System::Stream<S, System::String, E>
+
+class _StreamLexer<S, E>() : System::Stream<Lexer<S, E>, JsonToken, E | JsonParseError>
+  fun next(self: Lexer<S, E>): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+    ret _lexStep<S, E>(self.inner, self.pending, self.pos, self.atEnd)
+
+let [trait] _stream_lexer<S, E>: _StreamLexer<S, E> = _StreamLexer<S, E>() where System::Stream<S, System::String, E>
+
+fun tokenize<S, E>(source: S): Lexer<S, E> where System::Stream<S, System::String, E>
+  ret Lexer<S, E>(source, "", 0, false)
+
+# Does the first token in `pending` run to the buffer end (so more input might
+# extend it)? Only meaningful when not yet atEnd. `pending` is non-empty.
+fun _needMore(pending: System::String, pos: System::Int): System::Bool
+  let n = System::length(pending)
+  let c = System::byteAt(pending, pos)
+  ret _isWs(c)        ? System::skipAny(pending, " \t\n\r", pos) >= n
+    : c == '"'        ? _scanStringEnd(pending, pos + 1) < 0
+    : _isNumStart(c)  ? System::skipAny(pending, "-+0123456789.eE", pos) >= n
+    : c == 't'        ? n - pos < 4
+    : c == 'f'        ? n - pos < 5
+    : c == 'n'        ? n - pos < 4
+    : false
+
+# One self-`[tail]` loop. The non-refill cases (a complete token is buffered, or
+# the source is exhausted) early-return; the refill is the trailing top-level
+# `ret match` whose self-calls are in tail position — the same shape as
+# `_linesStep`. (`[tail]` rejects a self-call nested inside an `if`'s `ret`.) The
+# `length > 0` test short-circuits ahead of `_needMore`, which reads byte 0.
+fun [tail] _lexStep<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  if atEnd || (System::length(pending) > pos && !_needMore(pending, pos))
+    ret System::length(pending) == pos
+      ? (Lexer<S, E>(inner, "", 0, true), Ok<JsonToken | System::None, E | JsonParseError>(None))
+      : _lexEmit<S, E>(inner, pending, pos, atEnd)
+  let r = System::streamNext<S, System::String, E>(inner)
+  ret match(r.value)
+    (ok: Ok<System::String | System::None, E>) => match(ok.value)
+      (chunk: System::String) => _lexStep<S, E>(r.stream, (pos == 0 ? pending : System::slice(pending, pos, System::length(pending))) + chunk, 0, false)
+      (x: System::None)       => _lexStep<S, E>(r.stream, pending, pos, true)
+    (er: Error<System::String | System::None, E>) => (Lexer<S, E>(r.stream, "", 0, true), Error<JsonToken | System::None, E | JsonParseError>(er.error))
+
+# Emit the single complete token at the front of `pending`.
+fun _lexEmit<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  let c = System::byteAt(pending, pos)
+  ret c == '{'      ? _emit1<S, E>(inner, pending, pos, atEnd, TokLBrace())
+    : c == '}'      ? _emit1<S, E>(inner, pending, pos, atEnd, TokRBrace())
+    : c == '['      ? _emit1<S, E>(inner, pending, pos, atEnd, TokLBracket())
+    : c == ']'      ? _emit1<S, E>(inner, pending, pos, atEnd, TokRBracket())
+    : c == ':'      ? _emit1<S, E>(inner, pending, pos, atEnd, TokColon())
+    : c == ','      ? _emit1<S, E>(inner, pending, pos, atEnd, TokComma())
+    : _isWs(c)      ? _emitSpace<S, E>(inner, pending, atEnd, System::skipAny(pending, " \t\n\r", pos))
+    : _isNumStart(c)? _emitNumber<S, E>(inner, pending, pos, atEnd, System::skipAny(pending, "-+0123456789.eE", pos))
+    : c == '"'      ? _emitString<S, E>(inner, pending, pos, atEnd)
+    : c == 't'      ? _emitKeyword<S, E>(inner, pending, pos, atEnd, "true", TokTrue())
+    : c == 'f'      ? _emitKeyword<S, E>(inner, pending, pos, atEnd, "false", TokFalse())
+    : c == 'n'      ? _emitKeyword<S, E>(inner, pending, pos, atEnd, "null", TokNull())
+    : (Lexer<S, E>(inner, pending, pos, atEnd), Error<JsonToken | System::None, E | JsonParseError>(JsonParseError("unexpected character", 0)))
+
+fun _emit1<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool, tok: JsonToken): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  ret (Lexer<S, E>(inner, pending, pos + 1, atEnd),
+       Ok<JsonToken | System::None, E | JsonParseError>(tok))
+
+# Emit the whitespace run `pending[pos..end)` as TokSpace. The formatter drops
+# it, so no text is carried — the run is skipped by index alone.
+fun _emitSpace<S, E>(inner: S, pending: System::String, atEnd: System::Bool, end: System::Int): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  ret (Lexer<S, E>(inner, pending, end, atEnd),
+       Ok<JsonToken | System::None, E | JsonParseError>(TokSpace("")))
+
+fun _emitNumber<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool, end: System::Int): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  let text = System::slice(pending, pos, end)
+  ret _validNumber(text)
+    ? (Lexer<S, E>(inner, pending, end, atEnd),
+       Ok<JsonToken | System::None, E | JsonParseError>(TokNumber(text)))
+    : (Lexer<S, E>(inner, pending, pos, atEnd),
+       Error<JsonToken | System::None, E | JsonParseError>(JsonParseError("invalid number", 0)))
+
+fun _emitString<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  let endq = _scanStringEnd(pending, pos + 1)
+  ret endq < 0
+    ? (Lexer<S, E>(inner, pending, pos, atEnd),
+       Error<JsonToken | System::None, E | JsonParseError>(JsonParseError("unterminated string", 0)))
+    : (Lexer<S, E>(inner, pending, endq + 1, atEnd),
+       Ok<JsonToken | System::None, E | JsonParseError>(TokString(System::slice(pending, pos + 1, endq))))
+
+fun _emitKeyword<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool, kw: System::String, tok: JsonToken): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  let klen = System::length(kw)
+  let n = System::length(pending)
+  ret n - pos >= klen && System::slice(pending, pos, pos + klen) == kw
+    ? (Lexer<S, E>(inner, pending, pos + klen, atEnd),
+       Ok<JsonToken | System::None, E | JsonParseError>(tok))
+    : (Lexer<S, E>(inner, pending, pos, atEnd),
+       Error<JsonToken | System::None, E | JsonParseError>(JsonParseError("invalid literal", 0)))
+
+# ── pretty-printer at the token level (no DOM, constant memory) ──────────────
+# A 1-to-1 token→String transducer: each token maps to its formatted text given
+# the current nesting depth and a `pending` flag (we owe a newline+indent before
+# the next non-close token, so empty `{}`/`[]` stay inline). Source whitespace
+# (TokSpace) is dropped; fresh two-space indentation is inserted.
+# Depths 0..12 are string literals (static — emitting indentation allocates
+# NOTHING); deeper nesting falls back to the builder. Indentation is written
+# once per structural token, and building it fresh cost two allocations a call.
+fun _indent(n: System::Int): System::String
+  ret n <= 0  ? ""
+    : n == 1  ? "  "
+    : n == 2  ? "    "
+    : n == 3  ? "      "
+    : n == 4  ? "        "
+    : n == 5  ? "          "
+    : n == 6  ? "            "
+    : n == 7  ? "              "
+    : n == 8  ? "                "
+    : n == 9  ? "                  "
+    : n == 10 ? "                    "
+    : n == 11 ? "                      "
+    : n == 12 ? "                        "
+    : _indentBuild(n)
+
+fun _indentBuild(n: System::Int): System::String
+  fun [tail] go(n: System::Int, sb: System::StringBuilder): System::StringBuilder
+    ret n <= 0 ? sb : go(n - 1, System::append(sb, "  "))
+  ret System::toString(go(n, System::StringBuilder()))
+
+fun _prefixVal(pending: System::Bool, depth: System::Int): System::String
+  ret pending ? "\n" + _indent(depth) : ""
+
+fun _prettyOut(tok: JsonToken, depth: System::Int, pending: System::Bool): (out: System::String, depth: System::Int, pending: System::Bool)
+  ret match(tok)
+    (x: TokLBrace)   => ("{", depth + 1, true)
+    (x: TokLBracket) => ("[", depth + 1, true)
+    (x: TokRBrace)   => pending ? ("}", depth - 1, false) : ("\n" + _indent(depth - 1) + "}", depth - 1, false)
+    (x: TokRBracket) => pending ? ("]", depth - 1, false) : ("\n" + _indent(depth - 1) + "]", depth - 1, false)
+    (x: TokColon)    => (": ", depth, false)
+    (x: TokComma)    => (",\n" + _indent(depth), depth, false)
+    (x: TokSpace)    => ("", depth, pending)
+    (x: TokString)   => (_prefixVal(pending, depth) + "\"" + x.raw + "\"", depth, false)
+    (x: TokNumber)   => (_prefixVal(pending, depth) + x.text, depth, false)
+    (x: TokNull)     => (_prefixVal(pending, depth) + "null", depth, false)
+    (x: TokTrue)     => (_prefixVal(pending, depth) + "true", depth, false)
+    (x: TokFalse)    => (_prefixVal(pending, depth) + "false", depth, false)
+
+class [final] Pretty<S, E>(inner: S, depth: System::Int, pending: System::Bool) where System::Stream<S, JsonToken, E>
+
+class _StreamPretty<S, E>() : System::Stream<Pretty<S, E>, System::String, E>
+  fun next(self: Pretty<S, E>): (stream: Pretty<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
+    let r = System::streamNext<S, JsonToken, E>(self.inner)
+    ret match(r.value)
+      (ok: Ok<JsonToken | System::None, E>) => match(ok.value)
+        (tok: JsonToken)  => _prettyNext<S, E>(r.stream, self.depth, self.pending, tok)
+        (x: System::None) => (Pretty<S, E>(r.stream, self.depth, self.pending), Ok<System::String | System::None, E>(None))
+      (er: Error<JsonToken | System::None, E>) => (Pretty<S, E>(r.stream, self.depth, self.pending), Error<System::String | System::None, E>(er.error))
+
+let [trait] _stream_pretty<S, E>: _StreamPretty<S, E> = _StreamPretty<S, E>() where System::Stream<S, JsonToken, E>
+
+fun _prettyNext<S, E>(inner: S, depth: System::Int, pending: System::Bool, tok: JsonToken): (stream: Pretty<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
+  let o = _prettyOut(tok, depth, pending)
+  ret (Pretty<S, E>(inner, o.depth, o.pending), Ok<System::String | System::None, E>(o.out))
+
+fun prettyEmit<S, E>(source: S): Pretty<S, E> where System::Stream<S, JsonToken, E>
+  ret Pretty<S, E>(source, 0, false)
+
+# Writing a token/String stream to IO is not done here: this library stays free
+# of any IO dependency. Use `System::IO::writeStream<S, E>` directly, spelling the
+# error type (e.g. `IOError | JsonParseError` for a tokenizer over an IO source).
+
+
+# ── JSON of a String ─────────────────────────────────────────────────────────
+# The same pipeline as the IO example over a one-shot in-memory source: a
+# String is a stream of one chunk (`System::once`), so tokenising and
+# pretty-printing a String is pure composition. The signature tells the whole
+# truth: the source cannot fail (`Never`), only the lexer can. Consumers owe
+# no arm for the uninhabited member — exhaustiveness counts inhabited members
+# only — so `match` with String and JsonParseError arms is complete.
+fun prettyString(s: System::String): System::String | JsonParseError | System::Never
+  ret System::collect(prettyEmit(tokenize(System::once(s))))

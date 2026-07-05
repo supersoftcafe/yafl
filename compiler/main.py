@@ -50,10 +50,12 @@ def main():
     args = parser.parse_args()
 
     files = _gather_inputs(args.files)
-    c_code, link_spec = c.compile_project(
+    c_code, link_spec, warnings = c.compile_project(
         files, use_stdlib=True, just_testing=False,
         optimization_level=int(args.O),
         lib_paths=args.lib_path)
+    for w in sorted(set(warnings)):
+        print(w, file=sys.stderr)
 
     if not c_code:
         # compile_project printed diagnostics; exit non-zero so build systems see

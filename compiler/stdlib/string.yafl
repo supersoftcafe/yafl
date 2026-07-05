@@ -198,14 +198,21 @@ fun indexOf(s: System::String, needle: System::String, from: System::Int): Syste
 fun contains(s: System::String, needle: System::String): System::Bool
   ret indexOf(s, needle, 0) >= 0
 
+# Byte-wise in-place comparison — no slice, no allocation, just peeks.
+fun _matchesAt(s: System::String, at: System::Int, needle: System::String): System::Bool
+  fun [tail] go(i: System::Int, n: System::Int): System::Bool
+    ret i >= n ? true
+      : byteAt(s, at + i) != byteAt(needle, i) ? false
+      : go(i + 1, n)
+  ret go(0, length(needle))
+
 fun startsWith(s: System::String, prefix: System::String): System::Bool
-  let n = length(prefix)
-  ret n > length(s) ? false : slice(s, 0, n) == prefix
+  ret length(prefix) > length(s) ? false : _matchesAt(s, 0, prefix)
 
 fun endsWith(s: System::String, suffix: System::String): System::Bool
   let n = length(suffix)
   let m = length(s)
-  ret n > m ? false : slice(s, m - n, m) == suffix
+  ret n > m ? false : _matchesAt(s, m - n, suffix)
 
 # Split `s` on each non-overlapping occurrence of `sep`, left to right; the text
 # between separators forms the result, so "a,,b" on "," -> ["a", "", "b"] and a
@@ -253,11 +260,12 @@ class [linear,final] StringBuilder(_buffer: String, _offset: Int)
 fun StringBuilder(): StringBuilder => StringBuilder("", 0)
 
 fun append([terminal] sb: StringBuilder, value: String): StringBuilder
-  let new_offset = sb._offset + length(value)
-  let new_buffer = new_offset > length(sb._buffer)
-    ? __builtin_op__<str>("string_resize", sb._buffer, new_offset < 16 ? 16 : (new_offset + new_offset/2))
-    : sb._buffer
-  ret StringBuilder(__builtin_op__<str>("string_copy_to_dangerously", new_buffer, sb._offset, value), new_offset)
+  # Growth policy lives in ONE place — string_builder_reserve (yafllib) —
+  # shared with the compiler's accumulation-loop rewrite: 1.5x growth,
+  # perfect-filled to the allocator's 32-byte granule, packed inits
+  # heapified. Returns the buffer unchanged when capacity suffices.
+  let new_buffer = __builtin_op__<str>("string_builder_reserve", sb._buffer, sb._offset, length(value))
+  ret StringBuilder(__builtin_op__<str>("string_copy_to_dangerously", new_buffer, sb._offset, value), sb._offset + length(value))
 
 fun append(sb: StringBuilder, value: Int): StringBuilder
   # Walks the digits of `n` (assumed non-negative) most-significant first via
@@ -274,5 +282,18 @@ fun append(sb: StringBuilder, value: Int): StringBuilder
 
 fun toString([terminal] sb: StringBuilder): String
   ret __builtin_op__<str>("string_resize", sb._buffer, sb._offset)
+
+# Append `value[from .. end)` without materialising the slice — the range
+# copies straight from the source into the builder's buffer.
+fun appendSlice([terminal] sb: StringBuilder, value: String, from: System::Int, end: System::Int): StringBuilder
+  let n = end > from ? end - from : 0
+  let new_buffer = __builtin_op__<str>("string_builder_reserve", sb._buffer, sb._offset, n)
+  ret StringBuilder(__builtin_op__<str>("string_copy_range_to_dangerously", new_buffer, sb._offset, value, from, end), sb._offset + n)
+
+# Consume a builder without producing its string — the error-path terminus,
+# where partial output is meaningless and the linear builder still must be
+# used exactly once.
+fun discard([terminal] sb: StringBuilder): System::None
+  ret None
 
 

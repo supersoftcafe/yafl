@@ -8,8 +8,8 @@ from pathlib import Path
 from codegen.tools import mangle_name
 
 from codegen.perfecthash import create_perfect_lookups
-from codegen.things import *
-from codegen.typedecl import *
+from codegen.ir import Function, Global, Object
+from codegen.typedecl import DataPointer, FuncPointer, Struct, Type, Void
 
 
 

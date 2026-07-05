@@ -17,7 +17,7 @@ from codegen.ops import (
     Call, Return, ReturnVoid, Abort, Phi,
 )
 from codegen.param import StackVar
-from codegen.things import Function
+from codegen.ir import Function
 from codegen.gen import Application
 
 

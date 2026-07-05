@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -97,9 +97,9 @@ class BlockExpression(Expression):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
         nested = g.ResolverData(resolver, self._find_locals())
-        new_stmts = [x.search_and_replace(nested, replace) for x in self.statements]
-        new_val = self.value.search_and_replace(nested, replace)
-        return cast(Expression, replace(resolver, dataclasses.replace(self, statements=new_stmts, value=new_val)))
+        return rw.rewrite(self, replace, resolver,
+            statements=rw.seq(self.statements, nested, replace),
+            value=self.value.search_and_replace(nested, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         nested = g.ResolverData(resolver, self._find_locals())
@@ -122,7 +122,24 @@ class BlockExpression(Expression):
             xtype = self.value.get_type(nested)
             if xtype is not None and t.trivially_assignable_equals(nested, expected_type, xtype) is False:
                 val_errs = [Error(self.value.line_ref, "Incorrect type")]
-        return stmt_errs + val_errs
+        return stmt_errs + val_errs + self.__unused_binding_warnings()
+
+    def __unused_binding_warnings(self) -> list[Error]:
+        # No value vanishes silently: a block-local binding that is never read
+        # discards its value into the ether — in a pure language that is dead
+        # computation, and for an effect-carrying value possibly a lost error.
+        # A `_`-prefixed name is the explicit opt-out.
+        declared = [(let.name, let.line_ref)
+                    for let in u.binding_lets(self.statements)
+                    if not g.bare_name(let.name).startswith("_")]
+        if not declared:
+            return []
+        referenced: set[str] = set()
+        for stmt in self.statements:
+            referenced |= u.referenced_names(stmt)
+        referenced |= u.referenced_names(self.value)
+        return [Error.warning(lr, f"'{g.bare_name(name)}' is never used")
+                for name, lr in declared if name not in referenced]
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         return self.generate_to(resolver, None)

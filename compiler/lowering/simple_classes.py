@@ -20,6 +20,7 @@ Each method is lifted to a top-level FunctionStatement whose first explicit para
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 from collections import Counter, defaultdict
 
 import pyast.statement as s
@@ -27,7 +28,7 @@ import pyast.expression as e
 import pyast.typespec as t
 import pyast.resolver as g
 
-from langtools import cast
+from langtools import checked_cast
 from pyast.statement import ImportGroup
 
 __empty_imports = ImportGroup(tuple())
@@ -75,9 +76,9 @@ def __lift_method(
     def rename_this(_, thing):
         if isinstance(thing, e.NamedExpression) and thing.name == "this":
             return dataclasses.replace(thing, name="$this")
-        return thing
+        return rw.UNCHANGED
 
-    new_body = method.body.search_and_replace(g.ResolverRoot([]), rename_this) if method.body is not None else None
+    new_body = rw.resolved(method.body.search_and_replace(g.ResolverRoot([]), rename_this), method.body) if method.body is not None else None
 
     this_let = s.LetStatement(lr, "$this", __empty_imports, {}, (), None, tuple_spec)
     new_targets = [this_let] + list(method.parameters.targets)
@@ -135,7 +136,7 @@ def __prune_recursive(
         def visit(_, thing):
             if isinstance(thing, (t.ClassSpec, t.NamedSpec)) and thing.name in simple_classes:
                 names.add(thing.name)
-            return thing
+            return rw.UNCHANGED
         for f in cls.parameters.flatten():
             if f.declared_type is not None:
                 f.declared_type.search_and_replace(None, visit)
@@ -227,7 +228,7 @@ def __exclude_standalone_method_refs(
                 method_names = {m.name for m in cls.statements if isinstance(m, s.FunctionStatement)}
                 if dot.name in method_names:
                     called_dot[base_type.name] += 1
-        return thing
+        return rw.UNCHANGED
 
     for stmt in statements:
         stmt.search_and_replace(resolver, _dot_scan)
@@ -266,7 +267,7 @@ def __exclude_union_collisions(
     def _collect(_, thing):
         if isinstance(thing, t.CombinationSpec):
             unions.append(thing)
-        return thing
+        return rw.UNCHANGED
 
     for stmt in statements:
         stmt.search_and_replace(resolver, _collect)
@@ -279,7 +280,7 @@ def __exclude_union_collisions(
         colliding: set[str] = set()
         for union in unions:
             mapped: list[tuple[str | None, str | None]] = []
-            for member in union.types:
+            for member in union.repr_members():
                 if isinstance(member, (t.ClassSpec, t.NamedSpec)) and member.name in classes:
                     mapped.append((member.name, specs[member.name].as_unique_id_str()))
                 else:
@@ -314,26 +315,41 @@ def __name_tuple_entries(param: e.Expression, tuple_spec: t.TupleSpec) -> e.Expr
     return dataclasses.replace(param, expressions=new_entries) if changed else param
 
 
+def __flatten_class_rule(
+        simple_classes: dict[str, s.ClassStatement],
+        simple_tuple_specs: dict[str, t.TupleSpec],
+):
+    """The leaf rewrite for simple-class lowering: a qualifying class's ClassSpec
+    becomes its flat field tuple. Handed to EnumSpec.replace_in_all_fields, which
+    adds the structural descent and nested-enum recursion, so a class buried in
+    an enum field (inside a union or tuple, at any depth) flattens too. Shared by
+    both rewrite sites (the main pass and the complex-enum post-pass)."""
+    def rule(_: g.Resolver, thing):
+        if isinstance(thing, t.ClassSpec) and thing.name in simple_classes:
+            return simple_tuple_specs[thing.name]
+        return thing
+    return rule
+
+
 def __build_replace_fn(
         simple_classes: dict[str, s.ClassStatement],
         simple_tuple_specs: dict[str, t.TupleSpec],
         tuple_id_to_class: dict[str, str],
 ):
     """Return the AST replace function that rewrites all simple-class references."""
+    flatten_rule = __flatten_class_rule(simple_classes, simple_tuple_specs)
+
     def replace_fn(resolver_: g.Resolver, thing):
         # ClassSpec → TupleSpec
         if isinstance(thing, t.ClassSpec) and thing.name in simple_classes:
             return simple_tuple_specs[thing.name]
 
-        # EnumSpec: update any ClassSpec entries in all_fields.
-        # EnumSpec.search_and_replace intentionally skips all_fields (to avoid
-        # infinite recursion on self-referential enums), so we apply the
-        # ClassSpec→TupleSpec replacement here with cycle detection.  This
-        # ensures that field-access type inference in codegen sees TupleSpec
-        # (not ClassSpec) for simple-class fields, which keeps BoxExpression
-        # boxing consistent with the updated struct field types.
+        # EnumSpec: rewrite simple-class references buried in all_fields, which
+        # search_and_replace skips (its cycle guard for self-referential enums).
+        # Doing it here keeps codegen's field-access types as TupleSpec, not
+        # ClassSpec, so ConvertExpression conversion matches the updated struct fields.
         if isinstance(thing, t.EnumSpec):
-            return __update_enum_all_fields(thing, simple_classes, simple_tuple_specs)
+            return thing.replace_in_all_fields(g.ResolverRoot([]), flatten_rule)
 
         # NewExpression whose type was already converted to TupleSpec → just the params
         if isinstance(thing, e.NewExpression) and isinstance(thing.type, t.TupleSpec):
@@ -366,36 +382,16 @@ def __build_replace_fn(
                 if dot.name in method_names:
                     func_name = f"{cls_name}__{dot.name}"
                     lr = thing.line_ref
-                    args = cast(e.TupleExpression, thing.parameter).expressions
+                    args = checked_cast(e.TupleExpression, thing.parameter).expressions
                     new_args = e.TupleExpression(
                         lr,
                         [e.TupleEntryExpression(None, dot.base)] + list(args),
                     )
                     return e.CallExpression(lr, e.NamedExpression(lr, func_name), new_args)
 
-        return thing
+        return rw.UNCHANGED
 
     return replace_fn
-
-
-def __update_enum_all_fields(
-        spec: t.EnumSpec,
-        simple_classes: dict[str, s.ClassStatement],
-        simple_tuple_specs: dict[str, t.TupleSpec],
-        visited: frozenset[str] = frozenset(),
-) -> t.EnumSpec:
-    """Propagate the simple-class → TupleSpec replacement into an EnumSpec's
-    all_fields. Called both from replace_fn (covering EnumSpec instances in
-    expressions and type specs) and from a post-pass on EnumStatement._enum_spec
-    (the struct definition itself).
-    """
-    def _fix(ft: t.TypeSpec, inner_visited: frozenset[str]) -> t.TypeSpec:
-        if isinstance(ft, t.ClassSpec) and ft.name in simple_classes:
-            return simple_tuple_specs[ft.name]
-        if isinstance(ft, t.EnumSpec):
-            return __update_enum_all_fields(ft, simple_classes, simple_tuple_specs, inner_visited)
-        return ft
-    return spec.walk_all_fields(_fix, visited)
 
 
 def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
@@ -444,24 +440,26 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
 
     # Rewrite all non-simple-class statements, then the lifted methods
     new_statements = [
-        stmt.search_and_replace(rewrite_resolver, replace_fn)
+        rw.resolved(stmt.search_and_replace(rewrite_resolver, replace_fn), stmt)
         for stmt in statements
         if not (isinstance(stmt, s.ClassStatement) and stmt.name in simple_classes)
     ]
     lifted_final = [
-        lifted.search_and_replace(rewrite_resolver, replace_fn) for lifted in lifted_pre
+        rw.resolved(lifted.search_and_replace(rewrite_resolver, replace_fn), lifted) for lifted in lifted_pre
     ]
 
     # EnumSpec.search_and_replace skips all_fields to avoid infinite recursion
     # on self-referential enums; the main pass above therefore leaves stale
     # ClassSpec entries in complex enums' all_fields.  Fix them now so that the
     # C struct fields match the flat-struct types used elsewhere.
+    flatten_rule = __flatten_class_rule(simple_classes, simple_tuple_specs)
+
     def _fix_enum_stmt(stmt: s.Statement) -> s.Statement:
         if (isinstance(stmt, s.EnumStatement)
                 and stmt._enum_spec is not None
                 and stmt._enum_spec.is_complex):
-            new_spec = __update_enum_all_fields(
-                stmt._enum_spec, simple_classes, simple_tuple_specs)
+            new_spec = stmt._enum_spec.replace_in_all_fields(
+                g.ResolverRoot([]), flatten_rule)
             if new_spec is not stmt._enum_spec:
                 return dataclasses.replace(stmt, _enum_spec=new_spec)
         return stmt

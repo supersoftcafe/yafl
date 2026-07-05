@@ -1,10 +1,17 @@
+"""The type representations: what a YAFL type IS.
+
+One frozen dataclass per kind of type (builtin, class, enum, tuple, callable,
+union, placeholder, unresolved name), each carrying its own compile / check /
+generate / assignability behaviour. The algorithms OVER these representations —
+meet, refine, unification, substitution, trait-constraint solving — live in
+pyast/typespec/algebra.py; `import pyast.typespec as t` exposes both halves.
+"""
 from __future__ import annotations
 
 import dataclasses
-from abc import abstractmethod
-from enum import Enum
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import langtools
 import pyast.utils
@@ -14,6 +21,7 @@ import pyast.statement as s
 import pyast.expression as e
 
 import codegen.typedecl as cg_t
+import pyast.rewrite as rw
 
 from parsing.tokenizer import LineRef
 
@@ -21,7 +29,7 @@ from parsing.tokenizer import LineRef
 def collect_enum_leaves(stmt: s.EnumStatement) -> list[s.EnumStatement]:
     """Return all leaf EnumStatement nodes in declaration order (same order as all_leaf_names)."""
     if not stmt.variants:
-        return [stmt]
+        return [stmt] if stmt.has_param_list else []  # uninhabited → no leaf
     result: list[s.EnumStatement] = []
     for v in stmt.variants:
         result.extend(collect_enum_leaves(v))
@@ -40,7 +48,7 @@ def _collect_leaf_field_sets(
     own = [let for let in stmt.parameters.flatten() if let.declared_type is not None]
     combined = inherited + own
     if not stmt.variants:
-        return [combined]
+        return [combined] if stmt.has_param_list else []  # uninhabited → no leaf
     result: list[list] = []
     for v in stmt.variants:
         result.extend(_collect_leaf_field_sets(v, combined))
@@ -60,6 +68,9 @@ def enum_variant_types(stmt: s.EnumStatement, resolver: g.Resolver) -> list[cg_t
 
 @dataclass(frozen=True)
 class TypeSpec:
+    # Provenance only (error messages). Two specs of the same shape are the
+    # same type wherever they were written — substitution copies specs across
+    # sites freely — so the source position is not part of type identity.
     line_ref: LineRef = field(compare=False)
 
     def is_concrete(self) -> bool:
@@ -71,7 +82,7 @@ class TypeSpec:
     def compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
         type, statements = self._compile(resolver)
         if not isinstance(type, TypeSpec):
-            raise ValueError("Urggg..  This is here to catch mistakes in the code that the IDE hasn't caught")
+            raise ValueError(f"_compile returned a non-TypeSpec ({type(type).__name__}) — bug in the node's _compile")
         return type, statements
 
     def check(self, resolver: g.Resolver) -> list[Error]:
@@ -86,13 +97,19 @@ class TypeSpec:
     def as_unique_id_str(self) -> str|None:
         raise NotImplementedError()
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
-        return langtools.cast(TypeSpec, replace(resolver, self))
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
+        return replace(resolver, self)
 
 
 def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, right: TypeSpec | None) -> bool | None:
     if left is None or right is None:
         return None
+    # The empty type (a leafless enum like `Never`) is the bottom type: it has no
+    # values, so a `Never`-typed expression — only ever reachable in dead code,
+    # e.g. the `Error<_, Never>` arm of a match over a stream that cannot fail —
+    # is assignable to any target.
+    if isinstance(right, EnumSpec) and not right.valid_leaf_names:
+        return True
     # In yafl, a 1-tuple is equivalent to its element (recursively).
     # The unwrap must be symmetric: if either side is a 1-tuple with an
     # unknown entry type, treat the comparison as uncertain (None) rather
@@ -173,11 +190,10 @@ class CallableSpec(TypeSpec):
         p = self.parameters.as_unique_id_str()
         return p and f"f{p}"
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
-        new_self = dataclasses.replace(self,
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
+        return rw.rewrite(self, replace, resolver,
             parameters=self.parameters.search_and_replace(resolver, replace),
-            result=self.result.search_and_replace(resolver, replace) if self.result else None)
-        return langtools.cast(TypeSpec, replace(resolver, new_self))
+            result=rw.opt(self.result, resolver, replace))
 
 
 @dataclass(frozen=True)
@@ -273,9 +289,8 @@ class LazyStubSpec(TypeSpec):
         return f"$lazystubptr${inner}" if inner else "$lazystubptr"
 
     def search_and_replace(self, resolver: g.Resolver, replace) -> TypeSpec:
-        tt = self.target_type.search_and_replace(resolver, replace) if self.target_type else None
-        return langtools.cast(TypeSpec, replace(resolver,
-            dataclasses.replace(self, target_type=tt)))
+        return rw.rewrite(self, replace, resolver,
+            target_type=rw.opt(self.target_type, resolver, replace))
 
 
 @dataclass(frozen=True)
@@ -321,9 +336,8 @@ class ArrayFieldSpec(TypeSpec):
         return f"$array${self.length_field}${inner}" if inner is not None else None
 
     def search_and_replace(self, resolver: g.Resolver, replace) -> TypeSpec:
-        element = self.element.search_and_replace(resolver, replace)
-        return langtools.cast(TypeSpec, replace(resolver,
-            dataclasses.replace(self, element=element)))
+        return rw.rewrite(self, replace, resolver,
+            element=self.element.search_and_replace(resolver, replace))
 
 
 @dataclass(frozen=True)
@@ -359,9 +373,9 @@ class ClassSpec(TypeSpec):
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         def find_class(xtype: TypeSpec) -> s.ClassStatement:
-            clstype = langtools.cast(ClassSpec, xtype)
+            clstype = langtools.checked_cast(ClassSpec, xtype)
             xstmt = resolver.find_type(clstype.name)[0].statement
-            return langtools.cast(s.ClassStatement, xstmt)
+            return langtools.checked_cast(s.ClassStatement, xstmt)
 
         if not '@' in self.name:
             return None # Left is not resolved yet
@@ -380,10 +394,9 @@ class ClassSpec(TypeSpec):
     def as_unique_id_str(self) -> str|None:
         return self.name
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
-        new_self = dataclasses.replace(self,
-            type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params))
-        return langtools.cast(TypeSpec, replace(resolver, new_self))
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
+        return rw.rewrite(self, replace, resolver,
+            type_params=rw.seq(self.type_params, resolver, replace))
 
 
 @dataclass(frozen=True)
@@ -458,7 +471,7 @@ class EnumSpec(TypeSpec):
             return False
         return right.valid_leaf_names <= self.valid_leaf_names
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
         # Do NOT recurse into all_fields: a recursive enum's all_fields
         # references the same EnumSpec, which would loop forever. all_fields
         # is maintained by EnumStatement.compile from the variants'
@@ -473,10 +486,11 @@ class EnumSpec(TypeSpec):
         # `!=` judged a substituted nested spec "unchanged" and kept the stale
         # one — the placeholder inside List<_N<T>>'s inner _N spec survived
         # call-site substitution exactly that way.
-        new_type_params = tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params)
-        changed = any(n is not o for n, o in zip(new_type_params, self.type_params))
-        new_self = dataclasses.replace(self, type_params=new_type_params) if changed else self
-        return langtools.cast(TypeSpec, replace(resolver, new_self))
+        # all_fields is deliberately NOT recursed (recursive enums self-reference
+        # it); the AST walk reaches those types via EnumStatement's variant lets.
+        # seq() reports change by the UNCHANGED signal, not by shallow ==/is.
+        return rw.rewrite(self, replace, resolver,
+            type_params=rw.seq(self.type_params, resolver, replace))
 
     def walk_all_fields(self,
                         fix: Callable[[TypeSpec, frozenset[str]], TypeSpec],
@@ -502,6 +516,30 @@ class EnumSpec(TypeSpec):
         if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, self.all_fields)):
             return self
         return dataclasses.replace(self, all_fields=new_fields)
+
+    def replace_in_all_fields(self,
+                              resolver: g.Resolver,
+                              replace: Callable[[g.Resolver, Any], Any],
+                              visited: frozenset[str] = frozenset()) -> EnumSpec:
+        """Apply `replace` to every type nested in this enum's all_fields:
+        descending through unions and tuples, and into nested enums' all_fields,
+        stopping if it revisits an enum already on the current path.
+
+        search_and_replace deliberately skips all_fields so it cannot loop on a
+        recursive enum (see walk_all_fields). A pass that must rewrite a type
+        buried in a field — e.g. flatten a simple class that appears only as a
+        union member of an enum field — uses this instead. `replace` is the
+        ordinary search_and_replace callback: it handles just its own leaf rule;
+        the structural descent and the cycle-guarded recursion into nested enums
+        are supplied here, so callers never reimplement them."""
+        def fix(field_type: TypeSpec, inner_visited: frozenset[str]) -> TypeSpec:
+            def descend(res: g.Resolver, thing):
+                thing = replace(res, thing)
+                if isinstance(thing, EnumSpec):
+                    return thing.replace_in_all_fields(res, replace, inner_visited)
+                return thing
+            return field_type.search_and_replace(resolver, descend)
+        return self.walk_all_fields(fix, visited)
 
 
 def enum_leaf_object_name(root_name: str, leaf_name: str) -> str:
@@ -552,105 +590,6 @@ class GenericPlaceholderSpec(TypeSpec):
 
     # Base class search_and_replace is sufficient: it calls replace(resolver, self),
     # which is where mappings like GenericPlaceholderSpec -> concrete type are applied.
-
-
-def substitute_placeholders(spec: "TypeSpec | None", mapping: dict[str, "TypeSpec"],
-                            resolver: g.Resolver) -> "TypeSpec | None":
-    """Replace every GenericPlaceholderSpec whose name is in `mapping` with its
-    mapped concrete type, throughout `spec`. Identity when `spec` is None or
-    `mapping` is empty. The single home for the placeholder-to-concrete rewrite
-    that generic substitution (class/enum fields, parent interfaces, trait
-    dispatch, call-site type params) performs."""
-    if spec is None or not mapping:
-        return spec
-    def replace_fn(_, thing):
-        if isinstance(thing, GenericPlaceholderSpec) and thing.name in mapping:
-            return mapping[thing.name]
-        return thing
-    return spec.search_and_replace(resolver, replace_fn)
-
-
-def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
-                  placeholder_names: set[str],
-                  mapping: dict[str, "TypeSpec"] | None = None) -> dict[str, "TypeSpec"] | None:
-    """Match a generic type tree against a concrete type tree; return a
-    {placeholder_name: concrete_type} mapping, or None if they don't unify.
-
-    Only recognises placeholders whose name appears in `placeholder_names`.
-    Unknown / unresolved branches are skipped (return the current mapping
-    unchanged) — the caller should treat a partial mapping as a failure if
-    every placeholder must be resolved.
-    """
-    if mapping is None:
-        mapping = {}
-
-    if isinstance(generic, GenericPlaceholderSpec) and generic.name in placeholder_names:
-        # Don't let a placeholder bind to itself (or to any other placeholder):
-        # the concrete side is not concrete enough to pin down.
-        if isinstance(concrete, GenericPlaceholderSpec):
-            return mapping
-        existing = mapping.get(generic.name)
-        if existing is None:
-            mapping[generic.name] = concrete
-            return mapping
-        if existing == concrete:
-            return mapping
-        return None  # conflicting bindings
-
-    # Same concrete leaf types — nothing to infer, but compatible.
-    if isinstance(generic, BuiltinSpec) and isinstance(concrete, BuiltinSpec):
-        return mapping if generic.type_name == concrete.type_name else None
-
-    if isinstance(generic, ClassSpec) and isinstance(concrete, ClassSpec):
-        if generic.name != concrete.name:
-            return mapping  # can't unify further, accept what we have
-        if len(generic.type_params) != len(concrete.type_params):
-            return mapping
-        m: dict[str, TypeSpec] | None = mapping
-        for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m)
-            if m is None:
-                return None
-        return m
-
-    if isinstance(generic, TupleSpec) and isinstance(concrete, TupleSpec):
-        if len(generic.entries) != len(concrete.entries):
-            return mapping
-        m = mapping
-        for ge, ce in zip(generic.entries, concrete.entries):
-            if ge.type is None or ce.type is None:
-                continue
-            m = unify_generic(ge.type, ce.type, placeholder_names, m)
-            if m is None:
-                return None
-        return m
-
-    if isinstance(generic, CombinationSpec) and isinstance(concrete, CombinationSpec):
-        # Align by position; this is a weak match but works for the common
-        # case where the union variants appear in the same order.
-        if len(generic.types) != len(concrete.types):
-            return mapping
-        m = mapping
-        for gv, cv in zip(generic.types, concrete.types):
-            m = unify_generic(gv, cv, placeholder_names, m)
-            if m is None:
-                return None
-        return m
-
-    if isinstance(generic, CallableSpec) and isinstance(concrete, CallableSpec):
-        m = unify_generic(generic.parameters, concrete.parameters, placeholder_names, mapping)
-        if m is None:
-            return None
-        if generic.result is not None and concrete.result is not None:
-            m = unify_generic(generic.result, concrete.result, placeholder_names, m)
-            if m is None:
-                return None
-        return m
-
-    # Unknown / mismatched shapes — return current mapping unchanged rather
-    # than failing hard; the caller decides whether it's complete enough.
-    return mapping
-
 
 @dataclass(frozen=True)
 class NamedSpec(TypeSpec):
@@ -728,22 +667,28 @@ class NamedSpec(TypeSpec):
 
 
 def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
-    """Associativity of `|`: a member that is itself a union contributes its
-    members directly — `(Word|None)|IOError` IS `Word|None|IOError` under set
-    semantics (exactly what a generic `T|E` instantiated with a union T
-    produces). Nesting is spelling, not structure: discriminator tags are
-    global per LEAF type, so there is no representation for a nested member.
-
-    Duplicates are deliberately NOT dropped: a duplicate member is an
-    ambiguity, reported by CombinationSpec.check — silent dedupe at a
-    representation stage could merge nominally distinct variants.
+    """Associativity AND set semantics of `|`, applied structurally: a member
+    that is itself a union contributes its members directly — `(Word|None)|E`
+    IS `Word|None|E` — and a GROUND duplicate is the SAME member and is
+    dropped, so `X|X` collapses (via the callers' singleton rule) to bare `X`.
+    A duplicate must not survive as spelling: `union(X)` and `X` would carry
+    the same set identity but different mangled names and exact-equality
+    forms, splitting one type into two spellings (a phantom `E` pinned to a
+    chain's own error is exactly how `E|JsonParseError` becomes `X|X`).
+    Members whose identity is not yet ground (holes mid-fixpoint) are kept —
+    the fixpoint re-flattens once they ground.
     """
     flat: list[TypeSpec] = []
+    seen: set[str] = set()
     for tp in types:
-        if isinstance(tp, CombinationSpec):
-            flat.extend(_flatten_union_members(tp.types))
-        else:
-            flat.append(tp)
+        members = _flatten_union_members(tp.types) if isinstance(tp, CombinationSpec) else (tp,)
+        for m in members:
+            uid = m.as_unique_id_str()
+            if uid is not None:
+                if uid in seen:
+                    continue
+                seen.add(uid)
+            flat.append(m)
     return tuple(flat)
 
 
@@ -754,22 +699,22 @@ class CombinationSpec(TypeSpec):
     def is_concrete(self) -> bool:
         return all(x.is_concrete() for x in self.types)
 
-    def _compile(self, resolver: g.Resolver) ->  tuple[CombinationSpec, list[s.Statement]]:
+    def _compile(self, resolver: g.Resolver) ->  tuple[TypeSpec, list[s.Statement]]:
         new_types, new_errors = zip(*[x.compile(resolver) for x in self.types])
-        return dataclasses.replace(self, types = _flatten_union_members(new_types)), [x for stm in new_errors for x in stm]
+        flat = _flatten_union_members(new_types)
+        errors = [x for stm in new_errors for x in stm]
+        # A union keeps every distinct member, an uninhabited one included
+        # (`Never | X` is not `X`; narrowing it still needs a match). Only a
+        # genuine single-member union is just that bare member.
+        if len(flat) == 1:
+            return flat[0], errors
+        return dataclasses.replace(self, types=flat), errors
 
     def check(self, resolver: g.Resolver) -> list[Error]:
-        errors = [y for x in self.types for y in x.check(resolver)]
-        seen: set[str] = set()
-        for tp in self.types:
-            uid = tp.as_unique_id_str()
-            if uid is None:
-                continue  # unresolved member — cannot judge yet
-            if uid in seen:
-                errors.append(Error(self.line_ref,
-                    f"Ambiguous union: duplicate member type {uid}"))
-            seen.add(uid)
-        return errors
+        # A union is a set: a repeated member is not an error, it is the same
+        # member (`String | String | Bool` is `String | Bool`). Identity folds
+        # duplicates, so no duplicate-member diagnostic is needed here.
+        return [y for x in self.types for y in x.check(resolver)]
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
         from pyast import union_repr  # lazy: union_repr imports this module
@@ -779,7 +724,34 @@ class CombinationSpec(TypeSpec):
         ids = [x.as_unique_id_str() for x in self.types]
         if not all(ids):
             return None
-        return f"union({','.join(sorted(ids))})"
+        # Set identity: order and repetition carry no meaning, so dedupe and
+        # sort. `String|Bool`, `Bool|String` and `String|String|Bool` then share
+        # one id, hence one representation.
+        return f"union({','.join(sorted(set(ids)))})"
+
+    def repr_members(self) -> tuple[TypeSpec, ...]:
+        """The canonical member list for this union's in-memory representation:
+        members deduped by structural id, first occurrence kept (unresolved
+        members, with no id yet, are never folded).
+
+        A union is a set, so a member repeated by substitution — `E | IOError`
+        with `E = IOError` — must lay out as ONE slot and ONE tag, not two;
+        otherwise boxing a value of that type cannot say which duplicate slot it
+        belongs to. `types` is left exactly as written/substituted; every
+        representation site (classify, match dispatch, widen, box) reads members
+        through here, so the layout is built AND indexed from the same list.
+        Identity (`as_unique_id_str`) dedupes the same way, so a deduped layout
+        and the type's id always agree."""
+        seen: set[str] = set()
+        out: list[TypeSpec] = []
+        for tp in self.types:
+            uid = tp.as_unique_id_str()
+            if uid is not None:
+                if uid in seen:
+                    continue
+                seen.add(uid)
+            out.append(tp)
+        return tuple(out)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):
@@ -799,13 +771,27 @@ class CombinationSpec(TypeSpec):
         if any(r is False for r in outer): return False
         return None
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
         # Re-flatten after rebuilding: replacement can substitute a union for a
         # member (generics instantiating `T|E` with a union T), and lowering
-        # passes assume flat member lists.
-        new_self = dataclasses.replace(self, types=_flatten_union_members(
-            [tp.search_and_replace(resolver, replace) for tp in self.types]))
-        return langtools.cast(TypeSpec, replace(resolver, new_self))
+        # passes assume flat member lists. Members are neither deduped nor
+        # dropped here — a union keeps every member it is given; set identity and
+        # the tag-by-uid representation handle repeats and uninhabited members.
+        members, changed = [], False
+        for tp in self.types:
+            r = tp.search_and_replace(resolver, replace)
+            members.append(tp if r is rw.UNCHANGED else r)
+            changed = changed or r is not rw.UNCHANGED
+        flat = _flatten_union_members(members)
+        if len(flat) == 1:
+            return flat[0]  # collapsed to a single member, already rewritten
+        # A nested union expanding on substitution changes the member count even
+        # when no single member "changed" in place.
+        if not changed and len(flat) == len(self.types):
+            return replace(resolver, self)
+        rebuilt = dataclasses.replace(self, types=flat)
+        res = replace(resolver, rebuilt)
+        return rebuilt if res is rw.UNCHANGED else res
 
 
 @dataclass(frozen=True)
@@ -827,10 +813,10 @@ class TupleEntrySpec:
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
         return self.type.generate(resolver)
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TupleEntrySpec:
-        return dataclasses.replace(self,
-            type=self.type.search_and_replace(resolver, replace) if self.type else None,
-            default=self.default.search_and_replace(resolver, replace) if self.default else None)
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TupleEntrySpec:
+        return rw.rebuild(self,
+            type=rw.opt(self.type, resolver, replace),
+            default=rw.opt(self.default, resolver, replace))
 
 
 @dataclass(frozen=True)
@@ -888,7 +874,6 @@ class TupleSpec(TypeSpec):
             return None
         return True
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> TypeSpec:
-        new_self = dataclasses.replace(self,
-            entries=[ent.search_and_replace(resolver, replace) for ent in self.entries])
-        return langtools.cast(TypeSpec, replace(resolver, new_self))
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
+        return rw.rewrite(self, replace, resolver,
+            entries=rw.seq(self.entries, resolver, replace))

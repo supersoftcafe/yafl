@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import codegen.typedecl as cg_t
@@ -119,6 +119,15 @@ class Resolver:
     def get_traits(self) -> list[s.LetStatement]:
         return []
 
+    # The suggested parameter shape for the function `name` (its unique `@`-name),
+    # gathered from the previous pass's call sites — a TupleSpec whose entries may
+    # be partial (a hole where no call site pinned that parameter, or where call
+    # sites disagreed). None when nothing was suggested. Read-only: a declared
+    # parameter type always overrides, so this only fills holes. See
+    # compiler.__collect_param_suggestions (path 3 of the inference model).
+    def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
+        return None
+
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         return []
 
@@ -162,6 +171,9 @@ class DelegatingResolver(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return self._parent.get_traits()
 
+    def get_param_suggestion(self, name: str) -> "t.TypeSpec | None":
+        return self._parent.get_param_suggestion(name)
+
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         return self._parent.get_implicit_where_specs(scopes)
 
@@ -181,6 +193,11 @@ class DelegatingResolver(Resolver):
 def simple_name(name: str) -> str:
     return name.rpartition('@')[0] or name
 
+def bare_name(name: str) -> str:
+    """The unqualified simple name: `@`-hash suffix and namespace path both
+    stripped. What diagnostics print and `_`-prefix conventions test against."""
+    return simple_name(name).rpartition("::")[2]
+
 def match_name(left: str, right: str) -> bool:
     return simple_name(left) == simple_name(right)
 
@@ -196,62 +213,111 @@ def _name_prefixes(name: str) -> list[str]:
     return ['@'.join(parts[:i+1]) for i in range(len(parts))]
 
 
-def _index_enum_variants(
-    variants: list[s.EnumStatement],
-    index: dict[str, list[Resolved[s.TypeStatement]]]
-) -> None:
-    for v in variants:
-        resolved: Resolved[s.TypeStatement] = Resolved(v.name, v, ResolvedScope.GLOBAL)
-        for key in _name_prefixes(v.name):
-            index.setdefault(key, []).append(resolved)
-        _index_enum_variants(v.variants, index)
 
 
-_EMPTY_TYPE_RESULT: list[Resolved[s.TypeStatement]] = []
-_EMPTY_DATA_RESULT: list[Resolved[s.DataStatement]] = []
+
+
+class Statements:
+    """An ordered collection of top-level statements that carries its own
+    by-name lookup index, built once at construction.
+
+    Iterates like a list of statements (top-level, in order); subscripts and
+    `.get()` like a dict of name -> tuple of statements sharing that name. The
+    index is keyed by every name PREFIX (`_name_prefixes`), so a resolver's
+    prefix-match lookup is a plain dict hit — the index that `ResolverRoot`
+    used to rebuild on every construction lives here and is built once per
+    collection. Nested enum variants are indexed too (so a variant name
+    resolves) but are not part of iteration. `traits` and `where_aliases` —
+    the two other collection-wide scans the resolver needs — are precomputed.
+
+    A changed statement set is a *new* `Statements` built from the new
+    contents, so there is never a stale index to reason about across passes.
+    """
+    __slots__ = ("_ordered", "_index", "traits", "where_aliases")
+
+    def __init__(self, statements: "Iterable[s.Statement]") -> None:
+        ordered = tuple(statements)
+        index: dict[str, list[s.Statement]] = {}
+        traits: list[s.LetStatement] = []
+        where_aliases: list[s.TypeAliasStatement] = []
+        for st in ordered:
+            # Only named statements are indexed; structural statements (imports,
+            # namespace markers) carry no name — matching the old ResolverRoot,
+            # which indexed only Type/Data statements.
+            if not isinstance(st, s.NamedStatement):
+                continue
+            for key in _name_prefixes(st.name):
+                index.setdefault(key, []).append(st)
+            if isinstance(st, s.EnumStatement):
+                Statements.__index_variants(st.variants, index)
+            elif isinstance(st, s.LetStatement) and 'trait' in st.attributes:
+                traits.append(st)
+            elif isinstance(st, s.TypeAliasStatement) and 'where' in st.attributes:
+                where_aliases.append(st)
+        self._ordered: tuple[s.Statement, ...] = ordered
+        self._index: dict[str, tuple[s.Statement, ...]] = {k: tuple(v) for k, v in index.items()}
+        self.traits: tuple[s.LetStatement, ...] = tuple(traits)
+        self.where_aliases: tuple[s.TypeAliasStatement, ...] = tuple(where_aliases)
+
+    @staticmethod
+    def __index_variants(variants: "list[s.EnumStatement]", index: dict) -> None:
+        for v in variants:
+            for key in _name_prefixes(v.name):
+                index.setdefault(key, []).append(v)
+            Statements.__index_variants(v.variants, index)
+
+    def __iter__(self): return iter(self._ordered)
+    def __len__(self) -> int: return len(self._ordered)
+    def __bool__(self) -> bool: return bool(self._ordered)
+    def __getitem__(self, name: str) -> "tuple[s.Statement, ...]": return self._index.get(name, ())
+    def get(self, name: str) -> "tuple[s.Statement, ...]": return self._index.get(name, ())
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Statements):
+            return self._ordered == other._ordered
+        return NotImplemented
+
+    __hash__ = None  # ordered contents are the identity; not hashable
+
+    def __add__(self, other: "Iterable[s.Statement]") -> "Statements":
+        return Statements(self._ordered + tuple(other))
+
+
+def as_statements(statements: "Iterable[s.Statement] | Statements") -> Statements:
+    """Wrap a plain iterable in `Statements`, or pass a `Statements` through —
+    so a collection is indexed at most once as it flows through the pipeline."""
+    return statements if isinstance(statements, Statements) else Statements(statements)
 
 
 class ResolverRoot(Resolver):
-    __statements: list[s.Statement]
-    __traits: list[s.LetStatement]
-    __type_index: dict[str, list[Resolved[s.TypeStatement]]]
-    __data_index: dict[str, list[Resolved[s.DataStatement]]]
-
-    def __init__(self, statements: list[s.Statement]) -> None:
-        self.__statements = statements
-        self.__traits = [st for st in self.__statements if isinstance(st, s.LetStatement) and 'trait' in st.attributes]
-
-        self.__type_index = {}
-        for st in self.__statements:
-            if isinstance(st, s.TypeStatement):
-                resolved: Resolved[s.TypeStatement] = Resolved(st.name, st, ResolvedScope.GLOBAL)
-                for key in _name_prefixes(st.name):
-                    self.__type_index.setdefault(key, []).append(resolved)
-            if isinstance(st, s.EnumStatement):
-                _index_enum_variants(st.variants, self.__type_index)
-
-        self.__data_index = {}
-        for st in self.__statements:
-            if isinstance(st, s.DataStatement):
-                resolved_d: Resolved[s.DataStatement] = Resolved(st.name, st, ResolvedScope.GLOBAL)
-                for key in _name_prefixes(st.name):
-                    self.__data_index.setdefault(key, []).append(resolved_d)
+    def __init__(self, statements: "Iterable[s.Statement] | Statements",
+                 param_suggestions: "dict[str, t.TupleSpec] | None" = None) -> None:
+        # The collection carries its own index; wrapping a `Statements` reuses
+        # it, wrapping a list builds it once here.
+        self.__statements = as_statements(statements)
+        # {function unique-name: suggested param TupleSpec}, computed once per
+        # compile pass from the previous pass's call sites (path 3).
+        self.__param_suggestions = param_suggestions or {}
 
     def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return self.__type_index.get(name, _EMPTY_TYPE_RESULT)
+        return [Resolved(st.name, st, ResolvedScope.GLOBAL)
+                for st in self.__statements[name] if isinstance(st, s.TypeStatement)]
 
     def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return self.__data_index.get(name, _EMPTY_DATA_RESULT)
+        return [Resolved(st.name, st, ResolvedScope.GLOBAL)
+                for st in self.__statements[name] if isinstance(st, s.DataStatement)]
 
     def get_traits(self) -> list[s.LetStatement]:
-        return self.__traits
+        return list(self.__statements.traits)
+
+    def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
+        return self.__param_suggestions.get(name)
 
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         if not scopes:
             return []
-        return [st.type for st in self.__statements
-                if isinstance(st, s.TypeAliasStatement) and 'where' in st.attributes
-                and isinstance(st.type, t.ClassSpec) and st.type.is_concrete()
+        return [st.type for st in self.__statements.where_aliases
+                if isinstance(st.type, t.ClassSpec) and st.type.is_concrete()
                 and st.name.rpartition('::')[0] in scopes]
 
 

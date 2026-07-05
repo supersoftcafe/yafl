@@ -62,3 +62,16 @@ interface Shift<TVal>
 interface Show<TVal>
   fun show(value: TVal): System::String
 
+
+
+# A linear type's scope-exit release: a `[linear]` binding that is never
+# referenced in its scope is consumed by an inserted `drop(x)` at the scope's
+# exit — IF an instance of this trait is in scope for its type. The signature
+# returns None BY TYPE, so a fallible release (e.g. an IO close) must handle
+# its own failure inside the instance body: discarding an error there is a
+# visible, one-place library decision — the compiler never invents a discard.
+# Generic code dropping a `[linear] T` declares `where Drop<T>` like any other
+# constraint; a concrete instance is made ambient with `typealias [where]`, so
+# concrete code never mentions it.
+interface Drop<[linear] T>
+  fun drop(self: T): None

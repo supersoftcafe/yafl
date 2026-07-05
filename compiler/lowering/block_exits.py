@@ -18,6 +18,7 @@ the copy. These are lowering-time ordinals, exactly like
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 
 import pyast.expression as e
 import pyast.statement as s
@@ -39,7 +40,7 @@ def assign_block_exits(statements: list[s.Statement]) -> list[s.Statement]:
             n = counters["ret"]
             counters["ret"] = n + 1
             return dataclasses.replace(thing, index=n)
-        return thing
+        return rw.UNCHANGED
 
     resolver = g.ResolverRoot(statements)
-    return [stmt.search_and_replace(resolver, stamp) for stmt in statements]
+    return [rw.resolved(stmt.search_and_replace(resolver, stamp), stmt) for stmt in statements]

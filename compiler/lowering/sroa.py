@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import codegen.typedecl as t
 from codegen.gen import Application
-from codegen.things import Function
+from codegen.ir import Function
 from codegen.ops import Op, Move, Call, Phi
 from codegen.param import RParam, StackVar, StructField
 

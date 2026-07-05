@@ -4,7 +4,7 @@ from tests.testutil import TimedTestCase as TestCase
 
 from codegen.param import StackVar, Integer, ObjectField
 from codegen.ops import Return, Move
-from codegen.things import Function, Object
+from codegen.ir import Function, Object
 from codegen.typedecl import ImmediateStruct, Struct, Int, DataPointer, FuncPointer, Array
 
 
@@ -82,7 +82,7 @@ class TestCseHeapInvalidation(TestCase):
     overwritten with a different logical variable, then read again. CSE used to
     cache the first read and reuse it for the second, substituting the slot's
     previous occupant for its current one (e.g. a path string where a line
-    number belonged). See codegen.things.eliminate_common_subexpressions.
+    number belonged). See codegen.ir.eliminate_common_subexpressions.
     """
 
     def _slot(self):

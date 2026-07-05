@@ -7,7 +7,10 @@ from typing import Iterable, Callable, Iterator
 def flatten(lst):
     return list(chain.from_iterable(lst))
 
-def cast[_T](the_type: type[_T], the_object: object|None) -> _T:
+def checked_cast[_T](the_type: type[_T], the_object: object|None) -> _T:
+    """Runtime-checked cast: raises on None or type mismatch. Deliberately NOT
+    typing.cast (which asserts nothing) — a failed cast here is a compiler bug
+    surfacing at the earliest point it can be observed."""
     if the_object is None:
         raise TypeError(f"could not cast None object to {the_type}")
     if not isinstance(the_object, the_type):

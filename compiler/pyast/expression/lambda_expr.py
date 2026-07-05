@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -35,11 +35,10 @@ class LambdaExpression(Expression):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
         nested_resolver = g.ResolverData(resolver, self._find_locals)
-        return cast(Expression, replace(resolver, dataclasses.replace(
-            self,
-            parameters=cast(s.DestructureStatement, self.parameters.search_and_replace(resolver, replace)),
+        return rw.rewrite(self, replace, resolver,
+            parameters=self.parameters.search_and_replace(resolver, replace),
             expression=self.expression.search_and_replace(nested_resolver, replace),
-            return_type=self.return_type.search_and_replace(resolver, replace) if self.return_type else None)))
+            return_type=rw.opt(self.return_type, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.CallableSpec | None:
         return self.return_type
@@ -87,7 +86,19 @@ class LambdaExpression(Expression):
             new_ret_result = sub_expected_type
         else:
             new_ret_result = body_type
-        new_ret = t.CallableSpec(self.line_ref, self.parameters.get_type(), new_ret_result)
+        # Report the parameter types the body was actually compiled against. When
+        # the expected signature filled an undeclared `(x) =>` parameter, the
+        # lambda's own type must reflect it so a sibling-dependent call site sees
+        # the matching signature (e.g. `mapBox(b, (x) => x + 1)` once `T` is known
+        # from `b`). Use the compiled `new_prm` ONLY when it is fully ground —
+        # `as_unique_id_str()` is None exactly while a placeholder/unresolved name
+        # remains — otherwise keep the original, which avoids reporting an
+        # unresolved generic mid-resolution (the `?>`-chain `TOut` regression).
+        threaded_params = new_prm.get_type()
+        params_type = (threaded_params
+                       if threaded_params is not None and threaded_params.as_unique_id_str() is not None
+                       else self.parameters.get_type())
+        new_ret = t.CallableSpec(self.line_ref, params_type, new_ret_result)
 
         return dataclasses.replace(
             self, parameters=new_prm, expression=new_xpr,

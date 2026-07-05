@@ -31,6 +31,7 @@ Class member methods are out of scope for this pass.
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 from typing import Any, Callable, cast
 
 import pyast.expression as e
@@ -59,7 +60,7 @@ def _node_count(obj: Any) -> int:
     def visit(_resolver, thing):
         if isinstance(thing, (e.Expression, s.Statement, m.MatchArm)):
             total[0] += 1
-        return thing
+        return rw.UNCHANGED
 
     if isinstance(obj, list):
         for item in obj:
@@ -109,14 +110,14 @@ def _substitute_names(obj: Any, mapping: dict[str, e.Expression]) -> Any:
     def replace(_resolver, thing):
         if isinstance(thing, e.NamedExpression) and thing.name in mapping:
             return mapping[thing.name]
-        return thing
+        return rw.UNCHANGED
 
     resolver = g.ResolverRoot([])
     if isinstance(obj, list):
-        return [item.search_and_replace(resolver, replace) if isinstance(item, s.Statement) else item
+        return [rw.resolved(item.search_and_replace(resolver, replace), item) if isinstance(item, s.Statement) else item
                 for item in obj]
     if isinstance(obj, (s.Statement, e.Expression, m.MatchArm)):
-        return obj.search_and_replace(resolver, replace)
+        return rw.resolved(obj.search_and_replace(resolver, replace), obj)
     return obj
 
 
@@ -134,7 +135,7 @@ def _rename_match_patterns(body: "e.Expression | list[s.Statement]", suffix: str
             for arm in thing.arms:
                 if arm.name and arm.name != "_":
                     bound.add(arm.name)
-        return thing
+        return rw.UNCHANGED
 
     resolver = g.ResolverRoot([])
     if isinstance(body, list):
@@ -159,11 +160,11 @@ def _rename_match_patterns(body: "e.Expression | list[s.Statement]", suffix: str
             ]
             if any(na is not oa for na, oa in zip(new_arms, thing.arms)):
                 return dataclasses.replace(thing, arms=new_arms)
-        return thing
+        return rw.UNCHANGED
 
     if isinstance(body, list):
-        return [stmt.search_and_replace(resolver, _rename) for stmt in body]
-    return body.search_and_replace(resolver, _rename)
+        return [rw.resolved(stmt.search_and_replace(resolver, _rename), stmt) for stmt in body]
+    return rw.resolved(body.search_and_replace(resolver, _rename), body)
 
 
 def _rename_let_vars(stmts: list[s.Statement], suffix: str) -> tuple[list[s.Statement], dict[str, str]]:
@@ -181,10 +182,10 @@ def _rename_let_vars(stmts: list[s.Statement], suffix: str) -> tuple[list[s.Stat
         if isinstance(thing, s.LetStatement) and not isinstance(thing, s.DestructureStatement) \
                 and thing.name in rename:
             return dataclasses.replace(thing, name=rename[thing.name])
-        return thing
+        return rw.UNCHANGED
 
     resolver = g.ResolverRoot([])
-    new_stmts = [stm.search_and_replace(resolver, replace) for stm in stmts]
+    new_stmts = [rw.resolved(stm.search_and_replace(resolver, replace), stm) for stm in stmts]
     return new_stmts, rename
 
 
@@ -432,7 +433,7 @@ def _inline_let_bound(body: e.Expression,
     def collect(_r, thing):
         if isinstance(thing, s.LetStatement) and not isinstance(thing, s.DestructureStatement):
             bound.add(thing.name)
-        return thing
+        return rw.UNCHANGED
     body.search_and_replace(root, collect)
     rename = {n: n + suffix for n in bound}
 
@@ -471,7 +472,7 @@ def _inline_let_bound(body: e.Expression,
     all_stmts = prologue + body_stmts
     result: e.Expression = e.BlockExpression(lr, all_stmts, body_value) if all_stmts else body_value
     if isinstance(return_type, t.CombinationSpec):
-        return e.BoxExpression(lr, result, return_type)
+        return e.ConvertExpression(lr, result, return_type)
     return result
 
 
@@ -491,9 +492,9 @@ def _flatten_block_values(statements: list[s.Statement]) -> list[s.Statement]:
                 merged.extend(value.statements)
                 value = value.value
             return dataclasses.replace(thing, statements=merged, value=value)
-        return thing
+        return rw.UNCHANGED
     resolver = g.ResolverRoot(statements)
-    return [stmt.search_and_replace(resolver, flatten) for stmt in statements]
+    return [rw.resolved(stmt.search_and_replace(resolver, flatten), stmt) for stmt in statements]
 
 
 def _beta_reduce_lambda(lambda_expr: e.LambdaExpression,
@@ -597,10 +598,10 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
                 reduced = _expr_inline_function(target, args, _resolver)
                 if reduced is not None:
                     return reduced
-        return thing
+        return rw.UNCHANGED
 
     resolver = global_resolver if global_resolver is not None else g.ResolverRoot([])
-    new_stmts = [stmt.search_and_replace(resolver, replace) for stmt in stmts]
+    new_stmts = [rw.resolved(stmt.search_and_replace(resolver, replace), stmt) for stmt in stmts]
 
     # Drop `let` statements whose lambda was successfully inlined (they are
     # now dead — no remaining references).

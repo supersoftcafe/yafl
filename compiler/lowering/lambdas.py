@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 
 import pyast.statement as s
 import pyast.expression as e
@@ -8,7 +9,7 @@ import pyast.expression as e
 import pyast.resolver as g
 import pyast.typespec as t
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from pyast.statement import ImportGroup
 
@@ -119,14 +120,13 @@ def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.Typ
             # field flips its generate path from StackVar/GlobalVar to
             # ObjectField on `this`.
             return dataclasses.replace(thing, captured_class=cls_name)
-        return thing
-    result = xpr.search_and_replace(g.ResolverRoot([]), redirect_reference)
-    return result
+        return rw.UNCHANGED
+    return rw.resolved(xpr.search_and_replace(g.ResolverRoot([]), redirect_reference), xpr)
 
 
 def __create_function_from_lambda(lmd: e.LambdaExpression, nme: str, xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]]) -> s.FunctionStatement:
     lr = lmd.line_ref
-    return_type = cast(t.CallableSpec, lmd.return_type).result
+    return_type = checked_cast(t.CallableSpec, lmd.return_type).result
     body = e.BlockExpression(lr, [], xpr)
     function = s.FunctionStatement(lr, nme, __empty_imports, {}, (), lmd.parameters, body, return_type)
     return function
@@ -168,7 +168,7 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
         return e.NamedExpression(lr, fnc.name)
 
 
-def __scan_function_and_export_lambdas(statement: s.Statement, all_statements: list[s.Statement]) -> tuple[s.Statement, list[s.Statement]]:
+def __scan_function_and_export_lambdas(statement: s.Statement, all_statements_resolver: g.Resolver) -> tuple[s.Statement, list[s.Statement]]:
     exported_statements = []
     # Build the path map BEFORE search_and_replace.  search_and_replace
     # clones nodes via `dataclasses.replace`, but `line_ref` is preserved
@@ -178,7 +178,7 @@ def __scan_function_and_export_lambdas(statement: s.Statement, all_statements: l
 
     def export_if_lambda(resolver: g.Resolver, lmd):
         if not isinstance(lmd, e.LambdaExpression):
-            return lmd
+            return rw.UNCHANGED
 
         nme = __create_unique_name(lmd, lambda_paths.get(lmd.line_ref, ()))
         cpt = __discover_captures(resolver, lmd)
@@ -209,12 +209,14 @@ def __scan_function_and_export_lambdas(statement: s.Statement, all_statements: l
     # generic, but after monomorphisation each `where Show<T>` constraint
     # rewrites to a concrete `Show$generic$<concrete>` and the lookup
     # needs the full statement list to find that class.
-    statement = statement.search_and_replace(g.ResolverRoot(all_statements), export_if_lambda)
+    statement = rw.resolved(statement.search_and_replace(all_statements_resolver, export_if_lambda), statement)
     return statement, exported_statements
 
 
 def __convert_lambdas_to_functions(statements: list[s.Statement]) -> list[s.Statement]:
-    tmp_result = [__scan_function_and_export_lambdas(stm, statements) for stm in statements]
+    # Index the collection once; every statement's scan reuses it.
+    all_statements_resolver = g.ResolverRoot(g.as_statements(statements))
+    tmp_result = [__scan_function_and_export_lambdas(stm, all_statements_resolver) for stm in statements]
     statements, new_statements = zip(*tmp_result) if tmp_result else ([], [])
     statements = [x for x in statements if x is not None]
     new_statements = [x for lst in new_statements for x in lst]

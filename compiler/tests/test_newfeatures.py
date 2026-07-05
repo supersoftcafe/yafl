@@ -246,3 +246,34 @@ fun main(): System::Int
     ret 1 < 0 ? 9 : (3 + 4)
 """
         self.assertEqual(7, _compile_and_run(content))
+
+
+class TestPipeCaptureAvoidance(TestCase):
+    """`l |> (x) => body`: the parameter scopes to the body ONLY — a name in
+    `l` must resolve in the enclosing scope even when it matches a parameter
+    (the beta-block lowering is capture-avoiding via a fresh $pipe@hash
+    intermediate)."""
+
+    def test_pipe_param_shadows_body_not_argument(self):
+        # 5 |> (x) => ((x + 1) |> (x) => x * 2): the inner stage's argument
+        # `(x + 1)` reads the OUTER stage's x (5) — the inner parameter must
+        # not capture it — then the inner x binds 6 → 12. (Parens needed:
+        # `|>` binds tighter than `+`.)
+        from tests.testutil import compile_and_run_stdlib
+        rc = compile_and_run_stdlib(
+            "namespace Main\nimport System\n"
+            "fun main(): System::Int\n"
+            "  ret 5 |> (x) => ((x + 1) |> (x) => x * 2)\n")
+        self.assertEqual(12, rc)
+
+    def test_pipe_tuple_params_shadow_body_not_argument(self):
+        # The shape that failed in json_pretty: the second binder reuses the
+        # names of the first; the argument tuple references the FIRST stage's.
+        from tests.testutil import compile_and_run_stdlib
+        rc = compile_and_run_stdlib(
+            "namespace Main\nimport System\n"
+            "fun main(): System::Int\n"
+            "  ret (1, 2)\n"
+            "    |> (a, b) => (a + b, b)\n"
+            "    |> (a, b) => a * b\n")
+        self.assertEqual(6, rc)

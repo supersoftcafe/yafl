@@ -10,6 +10,13 @@ class [final] Array<T>(length: Int32, array: T[length])
 
 
 # Indexed read: `a[i]` lowers to ``[]``(a, i). Aborts if `i` is out of range
-# (0 <= i < length).
+# (0 <= i < length). The index is Int at the API surface — `a[0]` works
+# because 0 IS an Int (literals are their spelling; nothing converts) — and
+# is truncated internally, where the runtime bounds check catches any value
+# an Int32 could not have addressed anyway.
+fun `[]`<T>(a: Array<T>, i: Int): T
+  ret a.array(truncateToInt32(i))
+
+# Int32 form for byte-scanning code that already holds a sized index.
 fun `[]`<T>(a: Array<T>, i: Int32): T
   ret a.array(i)

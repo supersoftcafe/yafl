@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -28,9 +28,9 @@ class NewExpression(Expression):
     parameter: Expression
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
+        return rw.rewrite(self, replace, resolver,
             type=self.type.search_and_replace(resolver, replace),
-            parameter=self.parameter.search_and_replace(resolver, replace))))
+            parameter=self.parameter.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.type
@@ -73,13 +73,13 @@ class NewExpression(Expression):
         return []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        xtype = cast(t.TupleSpec, self.parameter.get_type(resolver))
-        ctype = cast(t.ClassSpec, self.type)
+        xtype = checked_cast(t.TupleSpec, self.parameter.get_type(resolver))
+        ctype = checked_cast(t.ClassSpec, self.type)
         found = resolver.find_type(ctype.name)
         if len(found) != 1:
             resolver.find_type(ctype.name)
             raise AssertionError(f"Failed to resolve {ctype.name}")
-        classstmt = cast(s.ClassStatement, found[0].statement)
+        classstmt = checked_cast(s.ClassStatement, found[0].statement)
 
         params_bundle = self.parameter.generate(resolver).with_prefix("args")
         params_var = cg_p.StackVar(xtype.generate(resolver), "params")
@@ -116,7 +116,7 @@ class NewExpression(Expression):
         head Phi → back-edge). The argument tuple is positional in constructor-
         parameter order, so `params._i` matches `parameters.flatten()[i]`."""
         params = classstmt.parameters.flatten()
-        af_spec = cast(t.ArrayFieldSpec, array_param.declared_type)
+        af_spec = checked_cast(t.ArrayFieldSpec, array_param.declared_type)
         elem_ctype = af_spec.element.generate(resolver)
 
         arr_idx = next(i for i, p in enumerate(params) if isinstance(p.declared_type, t.ArrayFieldSpec))
@@ -144,8 +144,8 @@ class NewExpression(Expression):
         i_next = cg_p.StackVar(cg_t.Int(32), "fillinext")
         elem_var = cg_p.StackVar(elem_ctype, "fillelem")
         entry, head, body, back, end = "fillentry", "fillhead", "fillbody", "fillback", "fillend"
-        less = cg_p.Invoke("int32_test_lt", cg_p.NewStruct((("a", i_var), ("b", length))), cg_t.Int(8))
-        incr = cg_p.Invoke("int32_add", cg_p.NewStruct((("a", i_var), ("b", cg_p.Integer(1, 32)))), cg_t.Int(32))
+        less = cg_p.RuntimeInvoke("int32_test_lt", cg_p.NewStruct((("a", i_var), ("b", length))), cg_t.Int(8))
+        incr = cg_p.RuntimeInvoke("int32_add", cg_p.NewStruct((("a", i_var), ("b", cg_p.Integer(1, 32)))), cg_t.Int(32))
         ops += [
             cg_o.Label(entry),
             cg_o.Label(head),
@@ -196,14 +196,19 @@ class NewEnumExpression(Expression):
         return errors
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
-        new_field_args = {k: v.search_and_replace(resolver, replace) for k, v in self.field_args.items()}
-        new_type_params = tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params)
-        return cast(Expression, replace(resolver, dataclasses.replace(self, field_args=new_field_args, type_params=new_type_params)))
+        fa_out, fa_changed = {}, False
+        for k, v in self.field_args.items():
+            r = v.search_and_replace(resolver, replace)
+            fa_out[k] = v if r is rw.UNCHANGED else r
+            fa_changed = fa_changed or r is not rw.UNCHANGED
+        return rw.rewrite(self, replace, resolver,
+            field_args=(fa_out if fa_changed else rw.UNCHANGED),
+            type_params=rw.seq(self.type_params, resolver, replace))
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         types = resolver.find_type(self.root_spec_name)
         assert len(types) == 1
-        root_stmt = cast(s.EnumStatement, types[0].statement)
+        root_stmt = checked_cast(s.EnumStatement, types[0].statement)
         root_spec = root_stmt._enum_spec
         assert root_spec is not None
         # The repr (complex enum -> heap object; flat enum -> tagged struct)

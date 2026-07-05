@@ -41,7 +41,10 @@ def create_constructor(cls: s.ClassStatement) -> s.FunctionStatement:
     expression = e.TupleExpression(cls.line_ref, parameters)
 
     body = e.BlockExpression(cls.line_ref, [], e.NewExpression(cls.line_ref, class_type, expression))
-    constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, cls.type_params, ctor_params, body, class_type)
+    # Carry the class's `where` onto its constructor so a construction site can
+    # discharge it (a where-only `E` then infers at `Wrap<One>(…)`).
+    constructor = s.FunctionStatement(cls.line_ref, cls.name, cls.imports, {}, cls.type_params,
+                                      ctor_params, body, class_type, trait_params=cls.trait_params)
 
     return constructor
 
@@ -84,3 +87,29 @@ def flatten_lists[_X,_Y](lists: Iterable[tuple[_X, list[_Y]]]) -> tuple[list[_X]
 
     return xs, ys
 
+
+
+def referenced_names(node: "e.Expression | s.Statement") -> set[str]:
+    """Every name referenced by a NamedExpression anywhere inside `node`.
+    A pure structural scan (search_and_replace with an identity visitor), used
+    by the vanished-value warnings to ask "is this binding ever read?"."""
+    names: set[str] = set()
+    def visit(_, thing):
+        if isinstance(thing, e.NamedExpression):
+            names.add(thing.name)
+        return thing
+    node.search_and_replace(None, visit)
+    return names
+
+
+def binding_lets(statements: "list[s.Statement]") -> "list[s.LetStatement]":
+    """The value bindings a statement list declares: plain lets, and each
+    destructure's targets. Shared by the unused-binding warning and the
+    drop-insertion pass, which both ask "what does this scope bind?"."""
+    out: list[s.LetStatement] = []
+    for stmt in statements:
+        if isinstance(stmt, s.DestructureStatement):
+            out += stmt.flatten()
+        elif isinstance(stmt, s.LetStatement):
+            out.append(stmt)
+    return out

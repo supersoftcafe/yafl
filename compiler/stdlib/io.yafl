@@ -142,7 +142,7 @@ fun _read_line_eof(io: IO, sb: System::StringBuilder): (io: IO, v: String|IOErro
 
 # Error mid-line: consume the linear builder and surface the errno.
 fun _read_line_failed(io: IO, sb: System::StringBuilder, code: Int): (io: IO, v: String|IOError)
-  let dropped = System::toString(sb)
+  let _ = System::toString(sb)
   ret (io, _error_from_code(code))
 
 
@@ -235,38 +235,48 @@ fun _streamEnd(): StreamIO
 # Drain a String stream into `io`, writing each value in order. Stops at the first
 # Error (from the stream or a write) and returns it; otherwise None at end of
 # stream. `io` is threaded through and returned — the caller still owns close.
+#
+# `writeStream<S, E>` is the public generic drain over the source's error type
+# `E`: the result error is `E | IOError` (the stream's own errors, forwarded,
+# unioned with write IOErrors). A source that can't fail (`E = Never`) drains to
+# just `IOError`; one carrying its own errors (a JSON tokenizer,
+# `E = IOError | JsonParseError`) surfaces them at the end; `E = IOError` dedups
+# back to `IOError`. `E` appears only in the `where` constraint, so a caller
+# whose source is a generic combinator chain must spell it — call-site inference
+# can derive `E` from a concrete stream instance but not yet from a combinator
+# chain. `writeToFile` fixes `E = IOError` for plain IO sources.
 fun writeToFile<S>(io: IO, source: S): (io: IO, v: IOError|System::None) where System::Stream<S, System::String, IOError>
-  ret _writeStream<S>(io, source)
+  ret writeStream<S, IOError>(io, source)
 
-fun [tail] _writeStream<S>(io: IO, s: S): (io: IO, v: IOError|System::None) where System::Stream<S, System::String, IOError>
-  let r = System::streamNext<S, System::String, IOError>(s)
-  if _streamIsEnd(r.value)
-    ret (io, _streamEndErr(r.value))
-  let w = writeAll(io, _streamStr(r.value))
+fun [tail] writeStream<S, E>(io: IO, s: S): (io: IO, v: E|IOError|System::None) where System::Stream<S, System::String, E>
+  let r = System::streamNext<S, System::String, E>(s)
+  if _streamIsEnd<E>(r.value)
+    ret (io, _streamEndErr<E>(r.value))
+  let w = writeAll(io, _streamStr<E>(r.value))
   ret match(w.v)
-    (n: System::Int) => _writeStream<S>(w.io, r.stream)
+    (n: System::Int) => writeStream<S, E>(w.io, r.stream)
     (e: IOError)     => (w.io, e)
 
 # Projectors over a stream element for the [tail] loop above (mirrors the
 # _readEnded/_readChunk helpers used by copy()).
-fun _streamIsEnd(v: Result<System::String|System::None, IOError>): System::Bool
+fun _streamIsEnd<E>(v: Result<System::String|System::None, E>): System::Bool
   ret match(v)
-    (ok: Ok<System::String|System::None, IOError>) => match(ok.value)
+    (ok: Ok<System::String|System::None, E>) => match(ok.value)
       (s: System::String) => false
       ()                  => true
-    (er: Error<System::String|System::None, IOError>) => true
+    (er: Error<System::String|System::None, E>) => true
 
-fun _streamEndErr(v: Result<System::String|System::None, IOError>): IOError|System::None
+fun _streamEndErr<E>(v: Result<System::String|System::None, E>): E|System::None
   ret match(v)
-    (ok: Ok<System::String|System::None, IOError>) => None
-    (er: Error<System::String|System::None, IOError>) => er.error
+    (ok: Ok<System::String|System::None, E>) => None
+    (er: Error<System::String|System::None, E>) => er.error
 
-fun _streamStr(v: Result<System::String|System::None, IOError>): System::String
+fun _streamStr<E>(v: Result<System::String|System::None, E>): System::String
   ret match(v)
-    (ok: Ok<System::String|System::None, IOError>) => match(ok.value)
+    (ok: Ok<System::String|System::None, E>) => match(ok.value)
       (s: System::String) => s
       ()                  => ""
-    (er: Error<System::String|System::None, IOError>) => ""
+    (er: Error<System::String|System::None, E>) => ""
 
 
 # Monadic bind for IO chains. `pair ?> f` calls f(io, v) when `pair` is a
@@ -288,7 +298,9 @@ fun [inline] `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
 fun writeAll(io: IO, data: System::String): (io: IO, v: System::Int|IOError)
   # Write `data` in full, looping over partial writes. A single self-`[tail]`
   # loop that advances an OFFSET into `data` rather than slicing — `write(data,
-  # offset, …)` writes the sub-range directly, so no String per chunk.
+  # offset, …)` writes the sub-range directly, so no String per chunk. `data`
+  # is a capture: lambda lifting threads it as a parameter automatically, so
+  # the natural form costs nothing.
   fun [tail] loop(io: IO, offset: System::Int, total: System::Int): (io: IO, v: System::Int|IOError)
     if offset >= total
       ret (io, total)
@@ -402,3 +414,20 @@ fun _withFiles_have_src<T>(s: IO, dst: IO|IOError,
 # the error-priority rule (use error > close error > value) holds uniformly.
 fun _release2<T>(r: (src: IO, dst: IO, v: T|IOError)): T|IOError
   ret _release<T>((io=r.src, v=_release<T>((io=r.dst, v=r.v))))
+
+
+# ── Drop: scope-exit release ──────────────────────────────────────────────
+# The Drop instance for IO: an unused handle auto-closes when its scope ends.
+# A drop path has nowhere to put close's IOError, so its discard is POLICY,
+# decided once, here: a dropped handle is one whose fate the program declined
+# to observe. Where the close error MATTERS — a write handle, whose close is
+# the final flush — consume the handle explicitly with close() instead of
+# letting it drop. The `typealias [where]` makes the constraint ambient: no
+# signature ever spells `where Drop<IO>`.
+class _DropIO() : System::Drop<IO>
+  fun drop(self: IO): System::None
+    ret match(self.close())
+      (e: IOError)      => None
+      (n: System::None) => None
+typealias [where] _ioDroppable : System::Drop<IO>
+let [trait] _dropIO: _DropIO = _DropIO()

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -18,7 +18,7 @@ import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.utils as u
-from pyast import union_repr
+from pyast import inference, union_repr
 from pyast.expression.base import Expression
 from pyast.expression.literal import StringExpression
 from pyast.expression.tuple_expr import TupleExpression
@@ -44,7 +44,6 @@ def _is_impure(stmt: s.FunctionStatement) -> bool:
 def _is_sync(stmt: s.FunctionStatement) -> bool:
     """Return True if stmt has the [sync] attribute."""
     return "sync" in stmt.attributes
-
 
 
 def _substitute_class_type_params(
@@ -86,9 +85,9 @@ def _substitute_enum_type_params(
 
 
 
-def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_data: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
-    if len(list_data) <= 1:
-        return list_data
+def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, candidates: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
+    if len(candidates) <= 1:
+        return candidates
     # Partition by verdict: definite matches (True) win over undecided ones
     # (None) when both are present. The undecided bucket is only returned
     # when no candidate matches definitively. This gives specific-beats-
@@ -96,7 +95,7 @@ def _reduce_list(resolver: g.Resolver, expected_type: t.TypeSpec | None, list_da
     # the in-scope-but-unconstrained `BasicEquality<K>::==`.
     truthy: list[g.Resolved[s.DataStatement]] = []
     maybe: list[g.Resolved[s.DataStatement]] = []
-    for x in list_data:
+    for x in candidates:
         other_type = x.statement.get_type()
         # Apply trait type param substitution so e.g. Plus<Int>.+ has effective type
         # (Int,Int)->Int rather than (TVal,TVal)->TVal, enabling correct disambiguation.
@@ -120,8 +119,8 @@ class DotExpression(Expression):
     name: str
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            base=self.base.search_and_replace(resolver, replace))))
+        return rw.rewrite(self, replace, resolver,
+            base=self.base.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         btype = self.base.get_type(resolver)
@@ -161,7 +160,7 @@ class DotExpression(Expression):
                 cdecl = cdecl[0].statement
                 if not isinstance(cdecl, s.ClassStatement):
                     raise ValueError()
-                datas = _reduce_list(resolver, expected_type, cdecl.find_data(resolver, self.name))
+                datas = _resolve_overloads(resolver, expected_type, cdecl.find_data(resolver, self.name))
                 if len(datas) == 1:
                     name = datas[0].unique_name
             case t.EnumSpec(all_fields=fields):
@@ -211,7 +210,7 @@ class DotExpression(Expression):
                 return base_bundle + g.OperationBundle((), (), result_var)
 
             case t.ClassSpec(_, cname):
-                cdecl = cast(s.ClassStatement, resolver.find_type(cname)[0].statement)
+                cdecl = checked_cast(s.ClassStatement, resolver.find_type(cname)[0].statement)
                 data = cdecl.find_data(resolver, self.name)[0].statement
                 xtype = data.get_type().generate(resolver)
 
@@ -236,16 +235,29 @@ class DotExpression(Expression):
 
 
 
+def _distinct_resolutions(datas: list) -> list:
+    """Collapse duplicate resolutions of the SAME statement reached by
+    different resolver routes (root scope vs import scope, stacked imports):
+    one statement is one candidate, whatever paths found it. Ambiguity
+    judgements must run on distinct statements only — the duplicate-route
+    case used to report "ambiguous" with a single candidate listed."""
+    seen: set[int] = set()
+    out = []
+    for d in datas:
+        key = id(d.statement)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
 @dataclass
 class NamedExpression(Expression):
     name: str
     type_params: tuple[t.TypeSpec, ...] = ()
+    # Disambiguation cache re-derived from `name` by compile each pass — not
+    # part of program identity, so its settling never keeps the loop spinning.
     resolved_trait_scope: t.ClassSpec | None = field(default=None, compare=False)
-
-
-    def __post_init__(self):
-        if self.name == 'this':
-            pass
 
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
@@ -286,14 +298,12 @@ class NamedExpression(Expression):
         return t.substitute_placeholders(raw_type, mapping, resolver)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        rts = self.resolved_trait_scope.search_and_replace(resolver, replace) if self.resolved_trait_scope is not None else None
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            type_params=tuple(tp.search_and_replace(resolver, replace) for tp in self.type_params),
-            resolved_trait_scope=rts if isinstance(rts, t.ClassSpec) else None)))
+        rts = rw.opt(self.resolved_trait_scope, resolver, replace)
+        return rw.rewrite(self, replace, resolver,
+            type_params=rw.seq(self.type_params, resolver, replace),
+            resolved_trait_scope=(rts if rts is rw.UNCHANGED or isinstance(rts, t.ClassSpec) else None))
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        if self.name == 'this':
-            pass
         # Resolve the statement this name refers to. Once the name is fully
         # qualified (@-hash) we skip the ambiguity check but still run the
         # generic-inference step below, because the argument types feeding
@@ -301,7 +311,7 @@ class NamedExpression(Expression):
         # compile loop.
         datas = resolver.find_data(self.name)
         if '@' not in self.name:
-            datas = _reduce_list(resolver, expected_type, datas)
+            datas = _resolve_overloads(resolver, expected_type, datas)
             if len(datas) != 1:
                 return self, [] # didn't find a unique candidate
             data = datas[0]
@@ -321,34 +331,23 @@ class NamedExpression(Expression):
             new_name = self.name
             trait_scope = self.resolved_trait_scope
 
-        # Generic type-parameter inference: if the resolved statement has
-        # type_params and the call site supplied none, try to match the
-        # statement's declared signature against the expected_type from the
-        # enclosing CallExpression to fill them in.
-        type_params_to_compile: tuple[t.TypeSpec, ...] = self.type_params
-        stmt = data.statement
-        stmt_type_params = getattr(stmt, "type_params", None) or ()
-        if (not self.type_params
-                and stmt_type_params
-                and isinstance(expected_type, t.CallableSpec)):
-            placeholder_names = {tp.name for tp in stmt_type_params}
-            declared = stmt.get_type() if hasattr(stmt, "get_type") else None
-            if isinstance(declared, t.CallableSpec):
-                mapping = t.unify_generic(declared.parameters, expected_type.parameters, placeholder_names)
-                if (mapping is not None
-                        and declared.result is not None
-                        and expected_type.result is not None):
-                    mapping = t.unify_generic(declared.result, expected_type.result,
-                                              placeholder_names, mapping)
-                if mapping is not None and all(p.name in mapping for p in stmt_type_params):
-                    type_params_to_compile = tuple(mapping[p.name] for p in stmt_type_params)
+        # Fill or refresh this use's type arguments from the enclosing
+        # CallExpression's expected type; runs while any supplied argument
+        # still carries a hole, keeping a partial result's placeholders for a
+        # later pass (see _infer_use_site_type_params for the rules).
+        type_params_to_compile = inference.use_site_type_params(
+            data.statement, self.type_params, expected_type, resolver)
 
         type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in type_params_to_compile)
         return dataclasses.replace(self, name=new_name, type_params=tuple(type_params), resolved_trait_scope=trait_scope), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
-        datas = resolver.find_data(self.name)
+        # Duplicate-route resolutions of one statement are one candidate for
+        # ambiguity purposes ONLY here in check: get_type/compile treat the
+        # raw multiplicity as an unresolved signal that overload inference
+        # depends on, so they must keep seeing it.
+        datas = _distinct_resolutions(resolver.find_data(self.name))
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
         if len(datas) > 1 and self.resolved_trait_scope is not None:
             filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
@@ -370,8 +369,6 @@ class NamedExpression(Expression):
                     f"Ambiguous reference '{self.name}' — qualify it. Candidates: {candidates}")] + tp_errors
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
-        if self.name == 'this':
-            pass
         x = resolver.find_data(self.name)
         if not x:
             raise ValueError(f"Could not find {self.name}")
@@ -411,9 +408,9 @@ class ArrayReadExpression(Expression):
     index: Expression
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
+        return rw.rewrite(self, replace, resolver,
             object=self.object.search_and_replace(resolver, replace),
-            index=self.index.search_and_replace(resolver, replace))))
+            index=self.index.search_and_replace(resolver, replace))
 
     def __array_info(self, resolver: g.Resolver):
         """(class_name, element_spec, length_field_name) for `object`'s array
@@ -424,11 +421,11 @@ class ArrayReadExpression(Expression):
         found = resolver.find_type(otype.name)
         if len(found) != 1 or not isinstance(found[0].statement, s.ClassStatement):
             return None
-        classstmt = cast(s.ClassStatement, found[0].statement)
+        classstmt = checked_cast(s.ClassStatement, found[0].statement)
         af = classstmt.array_field(resolver)
         if af is None:
             return None
-        af_spec = cast(t.ArrayFieldSpec, af.declared_type)
+        af_spec = checked_cast(t.ArrayFieldSpec, af.declared_type)
         len_name = next((f.name for f in classstmt.get_fields(resolver)
                          if g.name_matches(f.name, af_spec.length_field)), None)
         if len_name is None:
@@ -512,8 +509,8 @@ class LazyExpression(Expression):
         return []
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            target_type=self.target_type.search_and_replace(resolver, replace))))
+        return rw.rewrite(self, replace, resolver,
+            target_type=self.target_type.search_and_replace(resolver, replace))
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         import lowering.lazy_thunks as lt

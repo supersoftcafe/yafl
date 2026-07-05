@@ -33,7 +33,7 @@ Known exceptions:
 from __future__ import annotations
 
 from codegen.gen import Application
-from codegen.things import Function
+from codegen.ir import Function
 from codegen.ops import Op, Move, Call, NewObject, ParallelCall, Phi, Label, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Abort
 from codegen.param import StackVar, NullPointer, Integer, Float, ZeroOf
 
@@ -174,18 +174,23 @@ def __check_phi_well_formed(fn: Function) -> None:
             in_phi_region = False
 
 
-def __validate_fn(fn: Function) -> None:
+def __validate_fn(fn: Function, ssa: bool = True) -> None:
     if fn.name == "__entrypoint__":
         return
-    __check_single_definition(fn)
+    # After lowering/phi_removal.py the IR is deliberately not single-
+    # assignment (edge moves and coalesced phi webs multi-define); the final
+    # validation checks control flow and termination only.
+    if ssa:
+        __check_single_definition(fn)
+        __check_phi_well_formed(fn)
     __check_all_paths_return(fn)
-    __check_phi_well_formed(fn)
 
 
-def validate(app: Application) -> Application:
+def validate(app: Application, ssa: bool = True) -> Application:
     """Validate every function in the application. Returns `app` unchanged
     on success; raises `SSAValidationError` with details on the first
-    violation found."""
+    violation found. `ssa=False` (used after phi_removal) skips the
+    single-definition and Phi-shape checks."""
     for fn in app.functions.values():
-        __validate_fn(fn)
+        __validate_fn(fn, ssa)
     return app

@@ -127,3 +127,31 @@ class TestAllArithmetic(TestCase):
         rc, stdout = compile_and_run_stdlib_capture(_SRC, timeout=10)
         self.assertEqual(0, rc, f"program exited with {rc}; stdout was:\n{stdout}")
         self.assertEqual(_EXPECTED_LINES, stdout.splitlines())
+
+
+class TestBignumMultiplyOverflow(TestCase):
+    """The literal-fast-path in integer_mul must promote a product to a heap
+    bignum exactly when it leaves the tagged-literal range (±INTPTR_MAX/4, the
+    value<<2 encoding). A `/2` bound there admitted products in (2^61, 2^62)
+    whose top bits the shift destroyed — `20!` came back negative. This walks
+    a factorial straight across that boundary and past it."""
+
+    def test_factorial_crosses_tag_boundary(self):
+        src = (
+            "namespace Main\n"
+            "import System\n"
+            "fun [tail] factInto(n: System::Int, acc: System::Int): System::Int\n"
+            "  ret n < 2 ? acc : factInto(n - 1, acc * n)\n"
+            "fun fact(n: System::Int): System::Int\n"
+            "  ret factInto(n, 1)\n"
+            "fun main(): System::Int\n"
+            # 20! = 2432902008176640000 straddles 2^61; 25! is a multi-limb
+            # bignum. Both must print exactly and stay positive.
+            "  System::print(System::String(fact(20)) + \"\\n\")\n"
+            "  System::print(System::String(fact(25)) + \"\\n\")\n"
+            "  ret fact(20) > 0 && fact(25) > 0 ? 0 : 1\n")
+        rc, out = compile_and_run_stdlib_capture(src, timeout=15)
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            ["2432902008176640000", "15511210043330985984000000"],
+            out.splitlines())

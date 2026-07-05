@@ -109,6 +109,44 @@ EXPORT object_t* string_truncate(object_t* self, int32_t new_length) {
 }
 
 
+// Concatenate `count` strings in one exact-size allocation — the compiler
+// rewrites `a + b + c + …` chains to this (lowering/known_values.py), eliding
+// every intermediate string. Mirrors string_append's read-then-allocate-then-
+// copy discipline, including the packed short-string path. `count` is capped
+// at 16 by the compiler; a longer chain keeps a chained tail.
+EXPORT object_t* string_concat_n(int32_t count, ...) {
+    char* cstrs[16]; int32_t lens[16]; intptr_t bufs[16];
+    int64_t total = 0;
+
+    va_list ap;
+    va_start(ap, count);
+    for (int32_t i = 0; i < count; i++) {
+        object_t* s = va_arg(ap, object_t*);
+        cstrs[i] = string_to_cstr(s, &bufs[i], &lens[i]);
+        total += lens[i];
+    }
+    va_end(ap);
+
+    string_t* string;
+    uint8_t* ptr;
+    if (total < (int64_t)sizeof(uintptr_t)) {
+        uintptr_t test = 1;
+        string = (string_t*)(uintptr_t)(total * (PTR_TAG_MASK+1) + PTR_TAG_STRING);
+        ptr = (uint8_t*)&string + (1==*(uint8_t*)&test ? 1 : 0);
+    } else {
+        string = _string_allocate(total);
+        ptr = string->array;
+    }
+
+    int64_t offset = 0;
+    for (int32_t i = 0; i < count; i++) {
+        memcpy(ptr + offset, cstrs[i], lens[i]);
+        offset += lens[i];
+    }
+    return (object_t*)string;
+}
+
+
 EXPORT object_t* string_append(object_t* self, object_t* data) {
     intptr_t buf1; int32_t len1;
     char* cstr1 = string_to_cstr(self, &buf1, &len1);
@@ -496,6 +534,62 @@ EXPORT bool string_valid_utf8(object_t* self) {
         i += w;
     }
     return true;
+}
+
+
+// Ensure `buf` is a heap string with capacity for `used + extra` bytes,
+// growing geometrically (mirrors the stdlib StringBuilder's policy). The
+// compiler's accumulation-loop rewrite (lowering/string_accumulation.py)
+// calls this before each in-place append so the growth BRANCH lives here,
+// keeping the IR rewrite branch-free. A packed short string is always
+// heapified: the subsequent string_copy_to_dangerously writes through the
+// object's array, which only heap strings have.
+// Copy `value[from .. end)` into `self` at byte `idx` — the range variant of
+// string_copy_to_dangerously, so a builder can append a sub-range of a source
+// string without materialising the slice (stdlib appendSlice). Bounds are
+// clamped to the value's length; `self` must be a heap string with capacity.
+EXPORT object_t* string_copy_range_to_dangerously(object_t* self, object_t* o_index,
+                                                  object_t* value, object_t* o_from,
+                                                  object_t* o_end) {
+    int overflow = 0;
+    int32_t idx  = int32_from_integer_with_overflow(o_index, &overflow);
+    int32_t from = int32_from_integer_with_overflow(o_from, &overflow);
+    int32_t end  = int32_from_integer_with_overflow(o_end, &overflow);
+    if (overflow) __abort_on_overflow();
+
+    intptr_t local_buffer;
+    int32_t vlen;
+    char* vstr = string_to_cstr(value, &local_buffer, &vlen);
+    if (from < 0) from = 0;
+    if (end > vlen) end = vlen;
+    if (end > from)
+        memcpy(((string_t*)self)->array + idx, vstr + from, (size_t)(end - from));
+    return self;
+}
+
+
+EXPORT object_t* string_builder_reserve(object_t* buf, object_t* used, object_t* extra) {
+    int overflow = 0;
+    int32_t n_used  = int32_from_integer_with_overflow(used,  &overflow);
+    int32_t n_extra = int32_from_integer_with_overflow(extra, &overflow);
+    if (n_used < 0 || n_extra < 0 || overflow) __abort_on_overflow();
+
+    int64_t want = (int64_t)n_used + n_extra;
+    if (want <= string_length(buf) && !PTR_IS_STRING(buf))
+        return buf;
+
+    // Perfect-fill sizing: grow 1.5x, then round the WHOLE object (header +
+    // chars + NUL) up to the allocator's granule and claim every byte of the
+    // slot as capacity. The allocator rounds regardless — requesting less
+    // just records a smaller capacity and reallocates early; requesting the
+    // fill makes the smallest builder exactly one 32-byte object.
+    int64_t overhead = (int64_t)offsetof(string_t, array) + 1;
+    int64_t grow = want + want/2;
+    int64_t total = grow + overhead;
+    total = (total + GC_ALLOC_GRANULE - 1) / GC_ALLOC_GRANULE * GC_ALLOC_GRANULE;
+    int64_t capacity = total - overhead;
+    if (capacity > INT32_MAX) __abort_on_overflow();
+    return string_resize(buf, integer_from_int32((int32_t)capacity));
 }
 
 

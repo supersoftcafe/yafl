@@ -16,7 +16,7 @@ import parsing.parselib as p
 import codegen.ops as cg_o
 import codegen.param as cg_p
 import codegen.typedecl as cg_t
-import codegen.things as cg_x
+import codegen.ir as cg_ir
 
 
 def create_slots_from_members(cls: s.ClassStatement) -> list[s.ClassFunctionSlot]:
@@ -47,6 +47,31 @@ def override_inherited_slots(
     parent_filtered = [x for x in parent_slots if x.name not in exclusion_set]
     # Return a list of all slots refined so that the overridden ones are not visible
     return base_enhanced + parent_filtered
+
+
+def fragile_base_captures(
+        resolver: g.Resolver,
+        base_slots: list[s.ClassFunctionSlot],
+        parent_classes: list[s.ClassStatement]
+) -> list[tuple[s.ClassFunctionSlot, str, list[str]]]:
+    """Base slots that override two or more methods declared by a SINGLE
+    immediate parent — the fragile-base hazard worth flagging: that one parent
+    has a set of very-similar functions which a broad override silently
+    subsumes, so widening the override changes what several of them dispatch
+    to. Overriding one method each across DIFFERENT parents (a diamond, or two
+    interfaces declaring the same method) is normal and does not warn — the
+    count is per immediate parent, over that parent's OWN declared methods
+    (one level up). Returns (base_slot, parent_name, captured method names).
+    (Ruling 2026-07-04: warn, and name the parent.)"""
+    out: list[tuple[s.ClassFunctionSlot, str, list[str]]] = []
+    for slot in base_slots:
+        for parent in parent_classes:
+            captured = sorted({x.name for x in create_slots_from_members(parent)
+                               if g.match_name(slot.name, x.name)
+                               and t.trivially_assignable_equals(resolver, x.type, slot.type)})
+            if len(captured) > 1:
+                out.append((slot, parent.name, captured))
+    return out
 
 
 def invert_and_merge_slots(slots: list[s.ClassFunctionSlot]) -> dict[str, set[str]]:
@@ -83,9 +108,9 @@ def find_classes_or_error(
     return result
 
 
-def create_thunk(class_name: str, let: s.LetStatement, resolver: g.Resolver) -> cg_x.Function:
-    xtype = langtools.cast(t.CallableSpec, let.get_type())
-    param_type = langtools.cast(cg_t.Struct, xtype.parameters.generate(resolver))
+def create_thunk(class_name: str, let: s.LetStatement, resolver: g.Resolver) -> cg_ir.Function:
+    xtype = langtools.checked_cast(t.CallableSpec, let.get_type())
+    param_type = langtools.checked_cast(cg_t.Struct, xtype.parameters.generate(resolver))
     param_vars = [cg_p.StackVar(ft, fn) for fn, ft in param_type.fields]
     xthis = cg_t.Struct((("this", cg_t.DataPointer()),))
     result_type = xtype.result.generate(resolver)
@@ -96,5 +121,5 @@ def create_thunk(class_name: str, let: s.LetStatement, resolver: g.Resolver) -> 
         cg_p.NewStruct(tuple((sv.name, sv) for sv in param_vars)),
         result_var)
     op_return = cg_o.Return(result_var)
-    thunk = cg_x.Function(let.name, xthis + param_type, result_type, locals, (op_call, op_return))
+    thunk = cg_ir.Function(let.name, xthis + param_type, result_type, locals, (op_call, op_return))
     return thunk

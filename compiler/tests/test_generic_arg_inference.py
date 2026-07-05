@@ -37,30 +37,36 @@ class Test(TestCase):
         self.assertNotEqual("", result)
 
     def test_bare_literal_into_int32_param(self):
-        # A bare `0` should take Int32 from the parameter's expected type.
+        # RULED (2026-07-04): no conversion — a bare `0` is Int and does NOT
+        # take Int32 from the parameter. Spell it 0i32.
         content = (_INT32 +
                    "fun main(): System::Int\n"
                    "    ret takesI32(0)\n")
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertEqual("", result or "")
+        content = (_INT32 +
+                   "fun main(): System::Int\n"
+                   "    ret takesI32(0i32)\n")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
 
-    def test_generic_inference_not_voided_by_width(self):
-        # `second(0, 99)`: T must infer from the second argument (Int) even
-        # though the first argument's literal meets an Int32 parameter.  Today
-        # the width mismatch makes unify_generic drop the T binding.
+    def test_generic_inference_with_suffixed_width(self):
+        # RULED (2026-07-04): `second(0, 99)` is an error — a bare 0 is Int,
+        # not Int32. Spelled 0i32, T infers from the second argument.
         content = ("import System\n"
                    "\n"
                    "fun second<T>(i: System::Int32, x: T): T\n"
                    "    ret x\n"
                    "\n"
                    "fun main(): System::Int\n"
-                   "    ret second(0, 99)\n")
+                   "    ret second(0i32, 99)\n")
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
 
     def test_array_index_with_bare_literal(self):
-        # The motivating real-world case: index an array with a plain literal.
-        # `a[0]` lowers to `[]`(a, 0); the index param is Int32.
+        # `a[0]` works because the index API takes Int — 0 IS an Int under
+        # strict literals (array.yafl converts internally; the Int32 overload
+        # remains for byte-scanning code holding a sized index).
         content = ("import System\n"
                    "\n"
                    "fun get0(a: System::Array<System::Int>): System::Int\n"
@@ -86,8 +92,8 @@ class Test(TestCase):
         self.assertNotEqual("", result)
 
     def test_bare_float_into_float32_param(self):
-        # A bare `1.5` should take Float32 from the parameter's expected type
-        # rather than defaulting to Float64 and failing to assign.
+        # RULED (2026-07-04): 1.5 is Float64 and does not become Float32;
+        # 1.5f32 is. Type what you mean.
         content = ("import System\n"
                    "\n"
                    "fun takesF32(x: System::Float32): System::Int\n"
@@ -95,5 +101,8 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret takesF32(1.5)\n")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertEqual("", result or "")
+        content = content.replace("takesF32(1.5)", "takesF32(1.5f32)")
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)

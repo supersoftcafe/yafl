@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -28,10 +28,10 @@ class TernaryExpression(Expression):
     falseResult: Expression
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
+        return rw.rewrite(self, replace, resolver,
             condition=self.condition.search_and_replace(resolver, replace),
             trueResult=self.trueResult.search_and_replace(resolver, replace),
-            falseResult=self.falseResult.search_and_replace(resolver, replace))))
+            falseResult=self.falseResult.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         trueType = self.trueResult.get_type(resolver)
@@ -55,9 +55,10 @@ class TernaryExpression(Expression):
         return cond_err + true_err + false_err + self_err
 
     def generate_to(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> g.OperationBundle:
-        # The branches share one result slot, so coercion to the union happens
-        # *inside* generate (each branch is widened to the slot type before the
-        # Phi); there is nothing left to coerce afterwards.
+        # The branches share one result slot, so the expected type threads down
+        # to size it. Each branch already carries its ConvertExpression where a
+        # representation change is needed (lowering/boxing.py) — generate never
+        # coerces, so there is nothing to convert here, only a slot to size.
         return self.generate(resolver, expected_type)
 
     def generate(self, resolver: g.Resolver, expected_type: t.TypeSpec | None = None) -> g.OperationBundle:

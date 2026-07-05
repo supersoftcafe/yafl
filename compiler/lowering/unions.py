@@ -3,6 +3,7 @@ from __future__ import annotations
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
+import pyast.rewrite as rw
 
 
 def collect_discriminator_ids(statements: list[s.Statement]) -> dict[str, int]:
@@ -33,7 +34,7 @@ def collect_discriminator_ids(statements: list[s.Statement]) -> dict[str, int]:
         if isinstance(thing, t.CombinationSpec):
             for variant in thing.types:
                 assign(variant.as_unique_id_str())
-        return thing
+        return rw.UNCHANGED
 
     resolver = g.ResolverRoot(statements)
     # Enum leaves first, taken from the root enum STATEMENTS in statement

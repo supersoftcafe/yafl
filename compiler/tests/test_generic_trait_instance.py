@@ -131,7 +131,30 @@ class TestStreamTransducers(TestCase):
         # 1..5 mapped *10, summed: 10+20+30+40+50 = 150.
         src = _STREAM_LEAF + (
             "fun main(): System::Int\n"
-            "  ret drain(System::Map<Count, System::Int, System::Int>(Count(1, 5), dbl))\n")
+            "  ret drain(System::Map(Count(1, 5), dbl))\n")
+        self.assertEqual(150, compile_and_run_stdlib(src))
+
+    def test_let_bound_combinator_infers(self):
+        # A combinator construction bound to an untyped `let` before use. The
+        # let's inferred type must keep refining (meet) across compile passes
+        # until Map's blanks fill from inference — it must not latch the first
+        # pass's all-blank Map<_,_,_,_> as "concrete" (placeholders pass
+        # is_concrete; only has_free_placeholders sees them as holes here).
+        src = _STREAM_LEAF + (
+            "fun main(): System::Int\n"
+            "  let m = System::Map(Count(1, 5), dbl)\n"
+            "  ret drain(m)\n")
+        self.assertEqual(150, compile_and_run_stdlib(src))
+
+    def test_untyped_helper_return_infers(self):
+        # Same latch for an undeclared function return type: the helper's
+        # return type refines from the body until the combinator grounds,
+        # and the caller's `drain` monomorphises off the refined type.
+        src = _STREAM_LEAF + (
+            "fun mk()\n"
+            "  ret System::Map(Count(1, 5), dbl)\n"
+            "fun main(): System::Int\n"
+            "  ret drain(mk())\n")
         self.assertEqual(150, compile_and_run_stdlib(src))
 
     def test_filter_map_pipeline(self):
@@ -140,16 +163,16 @@ class TestStreamTransducers(TestCase):
         # generic Stream instances from the stdlib composed.
         src = _STREAM_LEAF + (
             "fun main(): System::Int\n"
-            "  let f = System::Filter<Count, System::Int>(Count(1, 5), isOdd)\n"
-            "  ret drain(System::Map<System::Filter<Count, System::Int>, System::Int, System::Int>(f, dbl))\n")
+            "  ret drain(System::Map(System::Filter(Count(1, 5), isOdd), dbl))\n")
         self.assertEqual(90, compile_and_run_stdlib(src))
 
     def test_generic_lines_splitter(self):
         # The generic System::Lines<S> line-splitter — a stateful, many-to-many
         # transducer — over a pure chunk source ("ab\\nc" + "d\\nef" -> lines
-        # "ab","cd","ef": 3 lines, 6 chars). Constructed directly as
-        # Lines<Feed>(source, ""); the |>-chain form of generic transformers
-        # awaits a generic-inference improvement (see TODO).
+        # "ab","cd","ef": 3 lines, 6 chars). Built via toLines (the public
+        # constructor; Lines' fields are carry internals — pending + pos);
+        # the |>-chain form of generic transformers awaits a generic-inference
+        # improvement (see TODO).
         src = (
             "namespace Main\nimport System\n"
             "class [final] Feed(idx: System::Int)\n"
@@ -167,7 +190,7 @@ class TestStreamTransducers(TestCase):
             "      (n: System::None)       => ln * 10 + ch\n"
             "    (er: System::Error<System::String|System::None, System::Never>) => 0 - 1\n"
             "fun main(): System::Int\n"
-            "  ret tally<System::Lines<Feed>>(System::Lines<Feed>(Feed(0), \"\"), 0, 0)\n")
+            "  ret tally(System::toLines(Feed(0)), 0, 0)\n")
         self.assertEqual(36, compile_and_run_stdlib(src))  # 3 lines, 6 chars
 
     def test_error_propagates_through_pipeline(self):
@@ -191,8 +214,7 @@ class TestStreamTransducers(TestCase):
                "      (n: System::None) => System::Ok<System::Int, E>(acc)\n"
                "    (er: System::Error<System::Int|System::None, E>) => System::Error<System::Int, E>(er.error)\n"
                "fun main(): System::Int\n"
-               "  let m = System::Map<Src, System::Int, System::Int>(Src(1), dbl)\n"
-               "  ret match(run<System::Map<Src, System::Int, System::Int>, Boom>(m, 0))\n"
+               "  ret match(run(System::Map(Src(1), dbl), 0))\n"
                "    (ok: System::Ok<System::Int, Boom>)  => ok.value\n"
                "    (er: System::Error<System::Int, Boom>) => er.error.code\n")
         # values 1,2 mapped to 10,20 then Error(Boom(42)) surfaces -> exit 42.

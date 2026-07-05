@@ -8,8 +8,10 @@
    (`CombinationSpec._compile`) — never in the constructor, where it would
    also run on representation specs during lowering.
 
-2. A duplicate member is an ambiguity, reported as an error — not silently
-   collapsed.
+2. A duplicate member is the SAME member — a union is a set, so `Int|Int` is
+   `Int` and `(Word|None)|(None|IOError)` is `Word|None|IOError`. Repetition
+   carries no meaning: identity (`as_unique_id_str`) and the representation
+   (`repr_members`) both fold it to one slot and one tag.
 
 3. Lowering must preserve nominal identity: two same-shaped simple classes
    would flatten to the same structural tuple spec (same unique id, same
@@ -77,28 +79,44 @@ fun main(): System::Int
 """, timeout=120)
         self.assertEqual(0, rc)
 
-    def test_duplicate_union_member_rejected(self):
-        result = c.compile([c.Input(
-            "import System\n"
-            "fun f(ok: Bool): Int|Int\n"
-            "  ret 1\n"
-            "fun main(): System::Int\n"
-            "  ret 0\n",
-            "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertEqual("", result)
+    def test_duplicate_union_member_is_one_member(self):
+        # `Int|Int` IS `Int` — structurally, not just for dispatch: the repeat
+        # folds at flatten, so the declared type is plain Int and the value is
+        # directly usable (no match, no boxing, no error). A match would now be
+        # rejected exactly as it is for any non-union Int.
+        rc, out = compile_and_run_stdlib_capture("""
+import System
 
-    def test_duplicate_via_nested_spelling_rejected(self):
-        # Flattening (Word|None)|(None|IOError) surfaces a duplicate None.
-        result = c.compile([c.Input(
-            "import System\n"
-            "import System::IO\n"
-            "class Word(text: String)\n"
-            "fun f(ok: Bool): (Word|None)|(None|IOError)\n"
-            "  ret None\n"
-            "fun main(): System::Int\n"
-            "  ret 0\n",
-            "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertEqual("", result)
+fun f(ok: System::Bool): System::Int | System::Int
+  ret 1
+
+fun main(): System::Int
+  ret f(true) - 1
+""", timeout=120)
+        self.assertEqual(0, rc)
+
+    def test_duplicate_via_nested_spelling_collapses(self):
+        # Flattening (Word|None)|(None|IOError) surfaces a duplicate None, which
+        # folds: the type IS Word|None|IOError, and a None value flows through.
+        rc, out = compile_and_run_stdlib_capture("""
+import System
+import System::IO
+
+class Word(text: String)
+
+fun f(ok: System::Bool): (Word|None)|(None|IOError)
+  ret None
+
+fun pick(v: Word|None|IOError): System::Int
+  ret match(v)
+    (w: Word)    => 0
+    (n: None)    => 1
+    (e: IOError) => 2
+
+fun main(): System::Int
+  ret pick(f(true)) == 1 ? 0 : 9
+""", timeout=120)
+        self.assertEqual(0, rc)
 
     def test_same_shape_classes_keep_nominal_identity(self):
         # Cat and Dog have identical field shapes; in a union they must

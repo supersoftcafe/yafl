@@ -13,9 +13,9 @@ from codegen.typedecl import Type, Struct
 from codegen.ops import Call, Op, Move, Label, Return, Jump, ParallelCall
 from codegen.gen import Application
 from codegen.param import GlobalFunction, NewStruct, StackVar
-from codegen.things import Function
+from codegen.ir import Function
 
-from langtools import cast
+from langtools import checked_cast
 from pyast.statement import ImportGroup
 
 

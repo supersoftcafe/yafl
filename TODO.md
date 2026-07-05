@@ -3,6 +3,51 @@
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.
 
+## FIXED 2026-07-04: function-typed global `let` segfault (root-caused)
+
+Root cause: `lower_lazy_lets` SPECIAL-CASED a lambda RHS — it skipped wrapping
+the value in the nullary `() => expr` init thunk whenever the value was a
+lambda, so a parameterised value-lambda was used directly as the init closure
+and called with NO arguments → garbage `fun_t` → the caller's segfault (and a
+nullary value-lambda would have been CALLED and its result memoised instead of
+the function). Fix: remove the special-case entirely — every deferred-init RHS
+is wrapped uniformly; construct-lazy does not care what it memoises. Plus the
+lazy machinery now supports a FuncPointer value type (`_ir_mangle` "fun" case;
+`StructField` reads a `fun_t`'s `.o`, which the task ABI tags). All shapes
+work at -O0/-O3: alias, ternary-of-funs, ternary-of-lambdas, nullary function
+value. tests/test_function_typed_globals.py.
+
+### also FIXED 2026-07-04: dead arm not stripped after a folded const branch
+`let h = true ? l1 : l2` at -O3: `known_tags` folds the constant `JumpIf` to
+an unconditional `Jump`, but LEFT the now-unreachable arm's ops in place —
+their `Move result = l2` still referenced `l2`, so the reachability prune kept
+`l2` while C emission (which skips unreachable ops) dropped it → clang
+`-Wunused-function`. Fix: `known_tags` calls `strip_unused_operations()` after
+folding, removing the unreachable arm so the prune sees `l2` truly dead. The
+prune was right all along; the fold just needed to drop its own dead code.
+
+## OPEN (optimisation): static-const global lets
+
+Separately from the bug above: **any global `let` whose initialiser is a
+compile-time constant with no captures, calls, or allocations should be a
+static const**, not a lazy memoised thunk. Today every non-trivial global
+goes through the `[lazy]` stub (files have no order → no ordered init); a
+constant initialiser needs no thunk. This would also make some function-typed
+globals avoid the lazy path, but it does NOT fix the bug above for the
+run-code cases.
+
+## OPEN (idea): lazy-backed eager parallelism
+
+Use the existing lazy/task machinery to speculatively parallelise: a function
+doing a heavy operation could **eagerly kick off the work as a lazy/async
+evaluation and return the lazy object immediately**, so the caller proceeds
+and the heavy work overlaps on a worker thread; forcing the lazy value later
+blocks only if the work hasn't finished. This turns `[lazy]` from
+compute-on-first-force into compute-eagerly-in-background — a form of
+automatic futures. Investigate: which heavy ops to auto-wrap (cost model?),
+interaction with `__parallel__` and the task backpressure machinery, and
+whether it's opt-in (an attribute) or inferred.
+
 ## "findstr integer overflow" — ROOT-CAUSED & FIXED 2026-06-13 (two bugs, both fixed)
 
 The long-standing findstr `Aborting due to integer overflow` was **two unrelated

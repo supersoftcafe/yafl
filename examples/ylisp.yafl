@@ -1,0 +1,300 @@
+# ylisp — a small Lisp interpreter, built to stress the whole runtime at once:
+# deep tree recursion where ANY frame may suspend (print threads the linear IO
+# handle through every eval call), enum dispatch as the inner loop, closures
+# and environment chains as mass-produced data, bignum arithmetic past the
+# tagged fast path, and an error union threading up from any depth.
+#
+#   echo '(print (fact 100))' … | ylisp     (program text on stdin)
+#
+# Language: integers, booleans (#t/#f), symbols, pairs.
+# Special forms: quote, if, lambda, define.  Builtins: + - * < = car cdr cons
+# null? print.  Top-level forms evaluate in sequence; `define` extends the
+# global environment; closures capture their local chain and fall back to the
+# CALL-TIME globals, so top-level recursion just works.
+namespace Main
+
+import System
+import System::IO
+
+class [final] EvalError(message: System::String)
+
+enum Value
+  enum VNil()
+  enum VBool(flag: System::Bool)
+  enum VInt(num: System::Int)
+  enum VSym(name: System::String)
+  enum VPair(head: Value, tail: Value)
+  enum VClosure(params: Value, body: Value, captured: Env)
+  enum VBuiltin(op: System::String)
+
+enum Env
+  enum EnvNil()
+  enum EnvBind(name: System::String, value: Value, rest: Env)
+
+fun [tail] lookup(env: Env, name: System::String): Value | System::None
+  ret match(env)
+    (b: EnvBind) => b.name == name ? b.value : lookup(b.rest, name)
+    (n: EnvNil)  => None
+
+# ── s-expression reader: index-based scanning, no carry slicing ──────────────
+
+fun _isSpace(c: System::Int32): System::Bool
+  ret c == ' ' || c == '\t' || c == '\n' || c == '\r'
+
+fun _isDelim(c: System::Int32): System::Bool
+  ret _isSpace(c) || c == '(' || c == ')' 
+
+fun [tail] _skipWs(s: System::String, pos: System::Int): System::Int
+  ret pos < System::length(s) && _isSpace(System::byteAt(s, pos))
+    ? _skipWs(s, pos + 1) : pos
+
+fun [tail] _scanAtom(s: System::String, pos: System::Int): System::Int
+  ret pos < System::length(s) && !_isDelim(System::byteAt(s, pos))
+    ? _scanAtom(s, pos + 1) : pos
+
+# One datum starting at `pos` (whitespace already skipped).
+fun readForm(s: System::String, pos: System::Int): (pos: System::Int, v: Value | EvalError)
+  if pos >= System::length(s)
+    ret (pos, EvalError("unexpected end of input"))
+  let c = System::byteAt(s, pos)
+  if c == '('
+    ret readList(s, _skipWs(s, pos + 1))
+  if c == ')'
+    ret (pos, EvalError("unexpected )"))
+  let end = _scanAtom(s, pos)
+  let text = System::slice(s, pos, end)
+  ret (end, _atom(text))
+
+fun _atom(text: System::String): Value | EvalError
+  ret text == "#t" ? VBool(true)
+    : text == "#f" ? VBool(false)
+    : match(System::parseInt(text))
+        (n: System::Int)  => VInt(n)
+        (x: System::None) => VSym(text)
+
+fun readList(s: System::String, pos: System::Int): (pos: System::Int, v: Value | EvalError)
+  ret _readListLoop(s, pos, (v: Value) => v)
+
+# Elements accumulate through a continuation so the list builds in order
+# without a reverse pass — each parsed head wraps the builder.
+fun [tail] _readListLoop(s: System::String, pos: System::Int, build: (:Value): Value): (pos: System::Int, v: Value | EvalError)
+  if pos >= System::length(s)
+    ret (pos, EvalError("unterminated list"))
+  if System::byteAt(s, pos) == ')'
+    ret (pos + 1, build(VNil()))
+  let r = readForm(s, pos)
+  ret match(r.v)
+    (e: EvalError) => (r.pos, e)
+    (head: Value)  => _readListLoop(s, _skipWs(s, r.pos),
+                                    (rest: Value) => build(VPair(head, rest)))
+
+# ── printer ──────────────────────────────────────────────────────────────────
+
+fun show(v: Value): System::String
+  ret System::toString(_show(System::StringBuilder(), v))
+
+fun _show([terminal] sb: System::StringBuilder, v: Value): System::StringBuilder
+  ret match(v)
+    (n: VNil)     => System::append(sb, "()")
+    (b: VBool)    => System::append(sb, b.flag ? "#t" : "#f")
+    (i: VInt)     => System::append(sb, i.num)
+    (s: VSym)     => System::append(sb, s.name)
+    (p: VPair)    => _showTail(System::append(_show(System::append(sb, "("), p.head), ""), p.tail)
+    (c: VClosure) => System::append(sb, "#<closure>")
+    (f: VBuiltin) => System::append(sb, "#<builtin>")
+
+fun [tail] _showTail([terminal] sb: System::StringBuilder, v: Value): System::StringBuilder
+  ret match(v)
+    (n: VNil)  => System::append(sb, ")")
+    (p: VPair) => _showTail(_show(System::append(sb, " "), p.head), p.tail)
+    (other: Value) => System::append(_show(System::append(sb, " . "), other), ")")
+
+# ── evaluator ────────────────────────────────────────────────────────────────
+# The linear IO handle threads through EVERY call: any subexpression may
+# print, so every frame of this tree recursion is suspension-capable.
+
+fun eval(io: IO, genv: Env, env: Env, x: Value): (io: IO, v: Value | EvalError)
+  ret match(x)
+    (s: VSym)  => (io, _lookupBoth(genv, env, s.name))
+    (p: VPair) => _evalForm(io, genv, env, p.head, p.tail)
+    (other: Value) => (io, other)   # self-evaluating
+
+fun _lookupBoth(genv: Env, env: Env, name: System::String): Value | EvalError
+  ret match(lookup(env, name))
+    (v: Value)        => v
+    (x: System::None) => match(lookup(genv, name))
+      (v: Value)        => v
+      (y: System::None) => EvalError("unbound symbol")
+
+fun _evalForm(io: IO, genv: Env, env: Env, op: Value, args: Value): (io: IO, v: Value | EvalError)
+  ret match(op)
+    (s: VSym) =>
+      s.name == "quote"  ? (io, _car(args))
+      : s.name == "if"     ? _evalIf(io, genv, env, args)
+      : s.name == "lambda" ? (io, VClosure(_car(args), _car(_cdr(args)), env))
+      : _evalApply(io, genv, env, op, args)
+    (other) => _evalApply(io, genv, env, op, args)
+
+fun _car(v: Value): Value
+  ret match(v)
+    (p: VPair) => p.head
+    (other)    => VNil()
+
+fun _cdr(v: Value): Value
+  ret match(v)
+    (p: VPair) => p.tail
+    (other)    => VNil()
+
+fun _evalIf(io: IO, genv: Env, env: Env, args: Value): (io: IO, v: Value | EvalError)
+  let c = eval(io, genv, env, _car(args))
+  ret match(c.v)
+    (e: EvalError) => (c.io, e)
+    (v: Value)     => _truthy(v)
+      ? eval(c.io, genv, env, _car(_cdr(args)))
+      : eval(c.io, genv, env, _car(_cdr(_cdr(args))))
+
+fun _truthy(v: Value): System::Bool
+  ret match(v)
+    (b: VBool) => b.flag
+    (n: VNil)  => false
+    (other)    => true
+
+# Evaluate operator and operands, then apply.
+fun _evalApply(io: IO, genv: Env, env: Env, op: Value, args: Value): (io: IO, v: Value | EvalError)
+  let f = eval(io, genv, env, op)
+  ret match(f.v)
+    (e: EvalError) => (f.io, e)
+    (fv: Value)    => _evalArgs(f.io, genv, env, fv, args, VNil())
+
+# Operands evaluate left to right; `acc` collects them REVERSED, and apply
+# walks the reversal back out when binding parameters.
+fun _evalArgs(io: IO, genv: Env, env: Env, fv: Value, args: Value, acc: Value): (io: IO, v: Value | EvalError)
+  ret match(args)
+    (p: VPair) => _evalArgsStep(io, genv, env, fv, p.head, p.tail, acc)
+    (other)    => apply(io, genv, fv, acc)
+
+fun _evalArgsStep(io: IO, genv: Env, env: Env, fv: Value, arg: Value, rest: Value, acc: Value): (io: IO, v: Value | EvalError)
+  let r = eval(io, genv, env, arg)
+  ret match(r.v)
+    (e: EvalError) => (r.io, e)
+    (v: Value)     => _evalArgs(r.io, genv, env, fv, rest, VPair(v, acc))
+
+fun apply(io: IO, genv: Env, f: Value, revArgs: Value): (io: IO, v: Value | EvalError)
+  ret match(f)
+    (c: VClosure) => match(_bindParams(c.params, revArgs, c.captured))
+      (e: EvalError) => (io, e)
+      (env2: Env)    => eval(io, genv, env2, c.body)
+    (b: VBuiltin) => _applyBuiltin(io, b.op, revArgs)
+    (other)       => (io, EvalError("not callable"))
+
+# params in order, revArgs reversed: bind params right-to-left against the
+# reversal by first counting, then peeling — simpler: reverse params too.
+fun _bindParams(params: Value, revArgs: Value, env: Env): Env | EvalError
+  ret _bindLoop(_reverse(params, VNil()), revArgs, env)
+
+fun [tail] _reverse(v: Value, acc: Value): Value
+  ret match(v)
+    (p: VPair) => _reverse(p.tail, VPair(p.head, acc))
+    (other)    => acc
+
+fun [tail] _bindLoop(revParams: Value, revArgs: Value, env: Env): Env | EvalError
+  ret match(revParams)
+    (pp: VPair) => match(revArgs)
+      (ap: VPair) => match(pp.head)
+        (s: VSym)   => _bindLoop(pp.tail, ap.tail, EnvBind(s.name, ap.head, env))
+        (other)     => EvalError("bad parameter")
+      (other) => EvalError("too few arguments")
+    (other) => match(revArgs)
+      (ap: VPair) => EvalError("too many arguments")
+      (other)     => env
+
+# revArgs is reversed; for the 2-arg builtins peel b then a.
+fun _applyBuiltin(io: IO, op: System::String, revArgs: Value): (io: IO, v: Value | EvalError)
+  if op == "print"
+    ret _printValue(io, _car(revArgs))
+  let b = _car(revArgs)
+  let a = _car(_cdr(revArgs))
+  ret (io, _builtin2(op, a, b))
+
+fun _builtin2(op: System::String, a: Value, b: Value): Value | EvalError
+  ret op == "cons"  ? VPair(a, b)
+    : op == "car"   ? _car(b)
+    : op == "cdr"   ? _cdr(b)
+    : op == "null?" ? VBool(b is VNil)
+    : match(a)
+        (x: VInt) => match(b)
+          (y: VInt) => _arith(op, x.num, y.num)
+          (other)   => EvalError("number expected")
+        (other) => EvalError("number expected")
+
+fun _arith(op: System::String, x: System::Int, y: System::Int): Value | EvalError
+  ret op == "+" ? VInt(x + y)
+    : op == "-" ? VInt(x - y)
+    : op == "*" ? VInt(x * y)
+    : op == "<" ? VBool(x < y)
+    : op == "=" ? VBool(x == y)
+    : EvalError("unknown builtin")
+
+fun _printValue(io: IO, v: Value): (io: IO, v: Value | EvalError)
+  let r = writeAll(io, show(v) + "\n")
+  ret match(r.v)
+    (e: IOError)     => (r.io, EvalError("io error"))
+    (n: System::Int) => (r.io, VNil())
+
+fun _builtins(): Env
+  ret _addBuiltin("print", _addBuiltin("null?", _addBuiltin("cons",
+      _addBuiltin("cdr", _addBuiltin("car", _addBuiltin("=", _addBuiltin("<",
+      _addBuiltin("*", _addBuiltin("-", _addBuiltin("+", EnvNil()))))))))))
+
+fun _addBuiltin(name: System::String, env: Env): Env
+  ret EnvBind(name, VBuiltin(name), env)
+
+# ── driver: read every top-level form, evaluate in sequence ─────────────────
+
+fun runAll(io: IO, genv: Env, src: System::String, pos: System::Int): (io: IO, v: System::Int)
+  let at = _skipWs(src, pos)
+  if at >= System::length(src)
+    ret (io, 0)
+  let r = readForm(src, at)
+  ret match(r.v)
+    (e: EvalError) => _fail(io, e)
+    (form: Value)  => _runForm(io, genv, src, r.pos, form)
+
+fun _runForm(io: IO, genv: Env, src: System::String, pos: System::Int, form: Value): (io: IO, v: System::Int)
+  ret _isDefine(form)
+    ? _runDefine(io, genv, src, pos, form)
+    : _runExpr(io, genv, src, pos, form)
+
+fun _isDefine(form: Value): System::Bool
+  ret match(_car(form))
+    (s: VSym)  => s.name == "define"
+    (other)    => false
+
+fun _runDefine(io: IO, genv: Env, src: System::String, pos: System::Int, form: Value): (io: IO, v: System::Int)
+  let name = _car(_cdr(form))
+  let r = eval(io, genv, EnvNil(), _car(_cdr(_cdr(form))))
+  ret match(r.v)
+    (e: EvalError) => _fail(r.io, e)
+    (v: Value)     => match(name)
+      (s: VSym)  => runAll(r.io, EnvBind(s.name, v, genv), src, pos)
+      (other)    => _fail(r.io, EvalError("define needs a symbol"))
+
+fun _runExpr(io: IO, genv: Env, src: System::String, pos: System::Int, form: Value): (io: IO, v: System::Int)
+  let r = eval(io, genv, EnvNil(), form)
+  ret match(r.v)
+    (e: EvalError) => _fail(r.io, e)
+    (v: Value)     => runAll(r.io, genv, src, pos)
+
+fun _fail(io: IO, e: EvalError): (io: IO, v: System::Int)
+  let r = writeAll(io, "error: " + e.message + "\n")
+  ret (r.io, 1)
+
+fun main(): System::Int
+  ret stdin().asStream()
+    |> (i, s) => (System::collect(s), i)
+    |> (src, i) => match(src)
+      (text: System::String) => stdout()
+        |> (o) => runAll(o, _builtins(), text, 0)
+        |> (o, code) => (o.close(), i.close(), code)
+        |> (c1, c2, code) => code
+      (e: IOError) => (i.close(), 1) |> (c, code) => code

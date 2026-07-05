@@ -37,25 +37,26 @@ Source (.yafl)
 
 ### Key modules
 
-**`pyast/`** — The typed AST used throughout compilation:
-- `statement.py` — `Statement` hierarchy: `FunctionStatement`, `ClassStatement`, `LetStatement`, `TypeAliasStatement`, `NamedStatement`, etc. Statements have `compile()`, `check()`, and `generate()` methods.
-- `expression.py` — Expression nodes.
-- `typespec.py` — Type representations: `BuiltinSpec`, `NamedSpec`, `TupleSpec`, `CombinationSpec`, `CallableSpec`, `ClassSpec`, `GenericPlaceholderSpec`.
+**`pyast/`** — The typed AST used throughout compilation (theory of operation: `docs/compiler-internals.md`):
+- `statement/` — `Statement` hierarchy, one kind per submodule: `base.py` (protocol + shared bases), `function.py`, `classdef.py`, `lets.py`, `types.py`, `control.py`. Statements have `compile()`, `check()`, and `generate()` methods.
+- `expression/` — Expression nodes, same one-kind-per-submodule layout.
+- `typespec/` — The type system: `specs.py` (representations: `BuiltinSpec`, `NamedSpec`, `TupleSpec`, `CombinationSpec`, `CallableSpec`, `ClassSpec`, `GenericPlaceholderSpec`) and `algebra.py` (`meet`, `refine`, `unify_generic`, `substitute_placeholders`, `solve_trait_constraint`).
 - `resolver.py` — Name resolution (`Resolver`, `ResolverRoot`, `AddScopeResolution`, `OperationBundle`).
 
-**`lowering/`** — AST-level transformation passes applied before codegen:
-1. `generics.py` — Monomorphise generics (name-mangles as `name$generic$type_sig`).
-2. `strings.py` / `integers.py` — Lower literal constants.
-3. `lambdas.py` — Convert lambda expressions to top-level functions (closure capture).
-4. `globalfuncs.py` — Discover global function calls.
-5. `globalinit.py` — Add lazy initialisation support for global `let` values.
-6. `inlining.py` — Inline small functions (iterated 4×).
-7. `async_lower.py` — Task lowering (async by default, sync when provable).
-8. `trim.py` — Dead-code elimination (run between most passes).
+**`lowering/`** — transformation passes; the full ordered list with each pass's
+ordering constraint lives in `docs/compiler-internals.md` §6. Highlights:
+1. `drops.py` — affine auto-release: unused `[linear]` bindings consume via their `Drop` instance (runs between convergence and checks).
+2. `generics.py` — Monomorphise generics (name-mangles as `name$generic$type_sig`).
+3. `conversions.py` — insert explicit `ConvertExpression` nodes (generate never converts).
+4. `tail_loop.py` / `ast_inline.py` — `[tail]` recursion → loops; AST-level inlining.
+5. `strings.py` / `integers.py` — Lower literal constants.
+6. `lower_lazy_lets.py` / `lambdas.py` — `[lazy]` thunking, then closure conversion.
+7. `linearity.py` — linear-type checking (exactly-once, post-drops).
+8. `inlining.py` / `async_lower.py` / `trim.py` and friends — IR-level: inline, task lowering (async by default, sync when provable), dead-code elimination between most passes.
 
 **`codegen/`** — IR and C emission:
 - `gen.py` — `Application` aggregates all functions/objects/globals and emits final C.
-- `things.py` — `Function`, `Object`, `Global` IR nodes.
+- `ir.py` — `Function`, `Object`, `Global` IR nodes.
 - `typedecl.py` — C-level types: `Int`, `Struct`, `DataPointer`, etc.
 - `ops.py` — Operation IR (`Call`, `Return`, `Label`, etc.).
 - `param.py` — Parameter/variable IR (`StackVar`, `GlobalFunction`, `NewStruct`, etc.).

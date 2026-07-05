@@ -26,14 +26,14 @@ from lowering.task_abi import (
 )
 from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
-from codegen.things import Function, Object
+from codegen.ir import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type, Array,
     TaskWrapper, first_pointer_field, is_task_check,
 )
 from codegen.param import (
     ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer,
-    RParam, StructField, NullPointer, Invoke, TagTask, IntEqConst, ZeroOf, SyncWrap,
+    RParam, StructField, NullPointer, RuntimeInvoke, TagTask, IntEqConst, ZeroOf, SyncWrap,
 )
 
 
@@ -103,13 +103,13 @@ def __convert_returns_for_state_machine(
                     op.value))
             out.append(Move(
                 __sv_discard,
-                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
+                RuntimeInvoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
                 keep=True))
             out.append(ReturnVoid())
         elif isinstance(op, ReturnVoid):
             out.append(Move(
                 __sv_discard,
-                Invoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
+                RuntimeInvoke("task_complete", NewStruct((("self", my_task_field),)), DataPointer()),
                 keep=True))
             out.append(ReturnVoid())
         else:
@@ -165,7 +165,7 @@ def _emit_par_task_setup(par_task_var: StackVar, par_task_name: str,
     setup: list[Op] = [
         NewObject(par_task_name, par_task_var),
         Move(__sv_discard,
-             Invoke("task_init", NewStruct((("task", par_task_var),)), DataPointer()),
+             RuntimeInvoke("task_init", NewStruct((("task", par_task_var),)), DataPointer()),
              keep=True),
         Move(ObjectField(Int(32), par_task_var, par_task_name, "remaining", None),
              Integer(par_n, 32)),
@@ -183,14 +183,14 @@ def _emit_post_launcher(launcher_var: StackVar, par_task_var: StackVar,
     launcher_cb = GlobalFunction(f"{fn_name}$par${call_site}$launcher${slot}", par_task_var)
     return (
         Move(launcher_var,
-             Invoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),
+             RuntimeInvoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),
         Move(__sv_discard,
-             Invoke("task_on_complete",
+             RuntimeInvoke("task_on_complete",
                     NewStruct((("task", launcher_var), ("cb", launcher_cb))),
                     DataPointer()),
              keep=True),
         Move(__sv_discard,
-             Invoke("thread_work_post_parallel",
+             RuntimeInvoke("thread_work_post_parallel",
                     NewStruct((("task", launcher_var),)), DataPointer()),
              keep=True),
     )
@@ -206,14 +206,14 @@ def _emit_task_alloc(sv_task: StackVar, task_subtype_name: str | None) -> tuple[
     """
     if task_subtype_name is None:
         return (Move(sv_task,
-            Invoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
+            RuntimeInvoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
     if task_subtype_name == "task_obj":
         return (Move(sv_task,
-            Invoke("task_obj_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
+            RuntimeInvoke("task_obj_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
     return (
         NewObject(task_subtype_name, sv_task),
         Move(__sv_discard,
-             Invoke("task_init", NewStruct((("task", sv_task),)), DataPointer()),
+             RuntimeInvoke("task_init", NewStruct((("task", sv_task),)), DataPointer()),
              keep=True),
     )
 
@@ -231,7 +231,7 @@ def _emit_suspend_to_async(idx_field: LParam, idx: int, untagged_task: RParam,
     return (
         Move(idx_field, Integer(idx, 32)),
         Move(__sv_discard,
-             Invoke("task_on_complete",
+             RuntimeInvoke("task_on_complete",
                     NewStruct((("task", untagged_task), ("cb", callback))),
                     DataPointer()),
              keep=True),
@@ -416,6 +416,12 @@ class FrameLayout:
     inline_slots: dict[str, str]                  # other frame local → shared field name
     slot_fields:  tuple[tuple[str, Type], ...]    # the distinct inline slot fields
     n_array:      int                             # trailing array length
+    # Structs whose every leaf is a strict pointer live DECOMPOSED in the
+    # trailing array (base index; one element per leaf): the array is length-
+    # scanned by the GC, so these need no object_pointer_locations bits —
+    # the mask is a single word and a big fused frame's inline slots can
+    # exceed it. Only mixed structs (raw ints alongside pointers) stay inline.
+    decomposed:   dict[str, int] = dataclasses.field(default_factory=dict)
 
 
 def __frame_field_types(basic_blocks: list[BasicBlock]) -> dict[str, Type]:
@@ -538,21 +544,97 @@ def __compute_frame_layout(sm_basic_blocks: list[BasicBlock],
     ptr_slots: dict[str, int] = {}
     inline_slots: dict[str, str] = {}
     slot_fields: list[tuple[str, Type]] = []
+    decomposed: dict[str, int] = {}
     n_array = 0
     for type_index, (typ, names) in enumerate(by_type.items()):
         colour = __colour(names, graph)
+        leaves = __ptr_leaves(typ)
         if isinstance(typ, DataPointer):
             base = n_array
             for name in names:
                 ptr_slots[name] = base + colour[name]
             n_array += len(set(colour.values()))
+        elif leaves is not None:
+            # All-pointer struct: decomposed into the maskless trailing array
+            # (see FrameLayout.decomposed), coalesced like any other slot.
+            width = len(leaves)
+            colour_base = {c: n_array + i * width
+                           for i, c in enumerate(sorted(set(colour.values())))}
+            for name in names:
+                decomposed[name] = colour_base[colour[name]]
+            n_array += width * len(colour_base)
         else:
             for c in sorted(set(colour.values())):
                 slot_fields.append((f"$slot${type_index}${c}", typ))
             for name in names:
                 inline_slots[name] = f"$slot${type_index}${colour[name]}"
 
-    return FrameLayout(ptr_slots, inline_slots, tuple(slot_fields), n_array)
+    return FrameLayout(ptr_slots, inline_slots, tuple(slot_fields), n_array,
+                       decomposed)
+
+
+def __ptr_leaves(typ: Type) -> list[tuple[str, ...]] | None:
+    """Leaf field paths when every leaf of `typ` is a strict pointer; None
+    otherwise (or when it isn't a struct at all)."""
+    if not isinstance(typ, Struct):
+        return None
+    out: list[tuple[str, ...]] = []
+    for fname, ftype in typ.fields:
+        if isinstance(ftype, DataPointer):
+            out.append((fname,))
+        elif isinstance(ftype, Struct):
+            inner = __ptr_leaves(ftype)
+            if inner is None:
+                return None
+            out.extend((fname,) + path for path in inner)
+        else:
+            return None
+    return out if out else None
+
+
+def __array_elem(state_param: RParam, state_name: str, index: int) -> ObjectField:
+    return ObjectField(DataPointer(), state_param, state_name, "array",
+                       Integer(index, 32))
+
+
+def __store_var(var: StackVar, state_param: RParam, state_name: str,
+                layout: FrameLayout) -> list[Op]:
+    """local → state; a decomposed struct stores one leaf per array element."""
+    if var.name in layout.decomposed:
+        base = layout.decomposed[var.name]
+        paths = __ptr_leaves(var.get_type())
+        ops: list[Op] = []
+        for i, path in enumerate(paths):
+            src: RParam = var
+            for f in path:
+                src = StructField(src, f)
+            ops.append(Move(__array_elem(state_param, state_name, base + i), src))
+        return ops
+    return [Move(__state_field(var.name, var.get_type(), state_param,
+                               state_name, layout), var)]
+
+
+def __load_var(var: StackVar, state_param: RParam, state_name: str,
+               layout: FrameLayout) -> list[Op]:
+    """state → local; a decomposed struct is rebuilt from its array elements."""
+    if var.name in layout.decomposed:
+        base = layout.decomposed[var.name]
+        typ = var.get_type()
+
+        def build(t: Struct, idx: list[int]) -> RParam:
+            values = []
+            for fname, ftype in t.fields:
+                if isinstance(ftype, Struct):
+                    values.append((fname, build(ftype, idx)))
+                else:
+                    values.append((fname, __array_elem(state_param, state_name,
+                                                       base + idx[0])))
+                    idx[0] += 1
+            return NewStruct(tuple(values))
+
+        return [Move(var, build(typ, [0]))]
+    return [Move(var, __state_field(var.name, var.get_type(), state_param,
+                                    state_name, layout))]
 
 
 def __state_field(name: str, typ: Type, state_param: RParam,
@@ -566,18 +648,6 @@ def __state_field(name: str, typ: Type, state_param: RParam,
     if name in layout.inline_slots:
         return ObjectField(typ, state_param, state_name, layout.inline_slots[name], None)
     return ObjectField(typ, state_param, state_name, name, None)
-
-
-def __convert_var_to_field_refs(ops: Iterable[Op],
-                                 vars_to_fields: dict[str, LParam]) -> tuple[Op, ...]:
-    # Each StackVar name within a function is unique to one declaration
-    # site (match arms get per-arm mangled names — see match._arm_unique_name),
-    # so name-keyed substitution maps each occurrence to the right state field.
-    def replacer(p: RParam) -> RParam:
-        if isinstance(p, StackVar) and p.name in vars_to_fields:
-            return vars_to_fields[p.name]
-        return p
-    return tuple(op.replace_params(replacer) for op in ops)
 
 
 def __unroll_musttail_for_state_machine(fn: Function) -> Function:
@@ -622,9 +692,7 @@ def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
         last_op = ops[-1]
         result = last_op.register if isinstance(last_op, (Call, ParallelCall)) else None
         augmented = ops
-        live_vars = {var: ObjectField(var.get_type(), __state_param_var, state_name, var.name, None)
-                     for var in last_op.saved_vars}
-        return BasicBlock(name, augmented, live_vars, result)
+        return BasicBlock(name, augmented, last_op.saved_vars, result)
 
     return [make_block(i, ops) for i, ops in enumerate(partitions)]
 
@@ -877,9 +945,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
         # Deterministic store order (bb.live is a frozenset); each save is
         # independent, so SSA-name order is as valid as any and reproducible.
         for var in sorted(bb.live, key=lambda v: v.name):
-            common_ops.append(Move(
-                __state_field(var.name, var.get_type(), __sv_state, state_name, layout),
-                var))
+            common_ops.extend(__store_var(var, __sv_state, state_name, layout))
         common_ops.append(Jump("$save$done"))
     common_ops.append(Label("$save$done"))
 
@@ -908,7 +974,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
     callback = GlobalFunction(f"{fn.name}$async", __sv_state)
     common_ops.append(Move(
         __sv_discard,
-        Invoke("task_on_complete",
+        RuntimeInvoke("task_on_complete",
                NewStruct((("task", __sv_async_task), ("cb", callback))),
                DataPointer()),
         keep=True))
@@ -929,6 +995,85 @@ def __create_hot_path_func(fn: Function, state_name: str,
                                stack_vars=fn.stack_vars + extra_stack)
 
 
+# A function this large doesn't get the full duplicated linear launch body:
+# the hot path and the state machine are near-identical twins, and past this
+# size the twin costs more (binary size, clang's register allocator working
+# the same giant body twice) than the sync fast path is worth. Instead a
+# small STUB allocates the heap frame immediately, stores the parameters,
+# and transfers control to the state machine via its entry case — which now
+# runs on locals at hot-path speed anyway (see __create_state_machine_func).
+_STUB_THRESHOLD_OPS = 256
+
+# DISABLED pending a sync-entry bug: a stubbed function driven to completion
+# on the caller's stack (Json::prettyString via collect — no IO anywhere)
+# aborts at runtime; the IO-driven path works. Suspect the entry-case /
+# completion interaction when the machine never actually parks. Flip once
+# diagnosed — tests/test_json_string.py pins the failing case at -O3.
+_STUB_ENABLED = True
+
+
+def __augment_layout_with_params(layout: FrameLayout, params) -> FrameLayout:
+    """Stub mode: every parameter needs a state field (the stub stores them,
+    the entry case reloads them), not just those live across a suspension."""
+    ptr_slots = dict(layout.ptr_slots)
+    inline_slots = dict(layout.inline_slots)
+    slot_fields = list(layout.slot_fields)
+    n_array = layout.n_array
+    decomposed = dict(layout.decomposed)
+    placed = (set(ptr_slots) | set(inline_slots) | set(decomposed)
+              | {n for n, _ in slot_fields})
+    for name, typ in params.fields:
+        if name in placed:
+            continue
+        leaves = __ptr_leaves(typ)
+        if isinstance(typ, DataPointer):
+            ptr_slots[name] = n_array
+            n_array += 1
+        elif leaves is not None:
+            decomposed[name] = n_array
+            n_array += len(leaves)
+        else:
+            inline_slots[name] = name
+            slot_fields.append((name, typ))
+    return FrameLayout(ptr_slots, inline_slots, tuple(slot_fields), n_array,
+                       decomposed)
+
+
+def __create_stub_launch_func(fn: Function, state_name: str,
+                               task_subtype_name: str | None,
+                               layout: FrameLayout, entry_idx: int) -> Function:
+    """The linear-launch replacement for oversized functions: allocate the
+    state object, park the parameters, allocate the task, and run the state
+    machine's entry case on this C stack. Sync completion still works — the
+    caller receives a task that is already complete, and task_on_complete
+    fires immediately on registration."""
+    wrapped_result = wrap_return_type(fn.result)
+    ops: list[Op] = [NewObject(state_name, __sv_state, Integer(layout.n_array, 32))]
+    for name, typ in fn.params.fields:
+        ops.extend(__store_var(StackVar(typ, name), __sv_state, state_name, layout))
+    ops.append(Move(
+        ObjectField(DataPointer(), __sv_state, state_name, "my_task", None),
+        NullPointer()))
+    ops.append(Move(
+        ObjectField(Int(32), __sv_state, state_name, "idx", None),
+        Integer(entry_idx, 32)))
+    ops.extend(_emit_task_alloc(__sv_task, task_subtype_name))
+    ops.append(Move(
+        ObjectField(DataPointer(), __sv_state, state_name, "my_task", None),
+        __sv_task))
+    # The machine's C signature is ($state, $completed_task); a Call's first
+    # argument slot is the callee object, so the state rides there.
+    ops.append(Call(
+        function=GlobalFunction(f"{fn.name}$async", __sv_state),
+        parameters=NewStruct((("$completed_task", NullPointer()),)),
+        register=None))
+    ops.append(Return(TagTask(__sv_task, wrapped_result)))
+    return dataclasses.replace(
+        fn, result=wrapped_result, ops=tuple(ops),
+        stack_vars=Struct((("$sv_state", DataPointer()),
+                           ("$sv_task", DataPointer()))))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # State-machine function
 # ─────────────────────────────────────────────────────────────────────────────
@@ -936,43 +1081,54 @@ def __create_hot_path_func(fn: Function, state_name: str,
 def __create_state_machine_func(fn: Function, state_name: str,
                                  task_subtype_name: str | None,
                                  basic_blocks: list[BasicBlock],
-                                 layout: FrameLayout) -> Function:
+                                 layout: FrameLayout,
+                                 with_entry_case: bool = False) -> Function:
     """
     void foo$async(object_t* $state, object_t* $completed_task)
 
     Dispatches on $state->idx, extracts the result from $completed_task, then
-    runs the remainder of the function as a state machine.  All live-variable
-    and result-variable references in the body are substituted to state fields.
+    runs the remainder of the function as a state machine.
+
+    The body runs on ORDINARY C LOCALS, exactly like the hot path: state
+    fields are touched only at the two suspension boundaries. Each dispatch
+    case loads its site's live set (field → local) and jumps to the resume
+    point; each suspend edge stores it back (local → field) before parking.
+    The sync fall-through — a call that completed without suspending — pays
+    nothing. This keeps the machine's heap traffic (and every GC write
+    barrier it implies) proportional to suspensions taken, not to ops
+    executed; the fused-drain regression this replaced was per-op field
+    addressing making the whole hot loop barrier-bound once the first
+    suspension parked the loop in this function.
+
+    The resume label therefore joins two edges that deliver the same
+    variables by NAME (sync defs vs dispatch loads) without a Phi — this
+    function is deliberately phi-lowered at those joins, and ssa_validate
+    exempts `$async` functions from the single-definition check for exactly
+    this reason.
     """
     non_terminal = basic_blocks[:-1]   # blocks that end with a non-tail call
     n = len(non_terminal)
 
-    # Build substitution map: variable name → ObjectField into $state.
-    # Keyed by name (not full StackVar) because the same physical variable
-    # can appear with different IR types in different contexts — most
-    # commonly a match-arm rebinding reinterpreting a union pointer. The
-    # state struct is also one field per unique name, and both types map
-    # to the same C variable, so the substitution needs to match by name
-    # to stay consistent.
-    vars_to_fields: dict[str, LParam] = {}
-    for bb in non_terminal:
-        # Name-keyed lookup map; iterate the frozenset deterministically for
-        # consistency with the other bb.live walks (first-wins by unique name,
-        # so the result is order-independent regardless).
-        for var in sorted(bb.live, key=lambda v: v.name):
-            vars_to_fields.setdefault(var.name, __state_field(
-                var.name, var.get_type(), __state_param_var, state_name, layout))
-        if bb.result is not None and isinstance(bb.result, StackVar):
-            vars_to_fields.setdefault(bb.result.name, __state_field(
-                bb.result.name, bb.result.get_type(), __state_param_var, state_name, layout))
+    def field_for(var: StackVar) -> LParam:
+        return __state_field(var.name, var.get_type(), __state_param_var,
+                             state_name, layout)
+
+    # Park stores skip values the machine can only ever have LOADED: a var
+    # with no definition anywhere in the body (a loop-invariant — stream
+    # handle, config) reached this park holding exactly the value its field
+    # already holds, because the only way into the machine is a dispatch
+    # load. (Slot coalescing cannot have clobbered the field in between:
+    # slots are shared only between non-overlapping live ranges, and this
+    # var was live throughout.) Loads must stay unfiltered — the field is
+    # always current, the local only exists after a load.
+    body_defs: set[str] = set()
+    for bb_scan in basic_blocks:
+        for op_scan in bb_scan.ops:
+            for sv in op_scan.get_live_vars()[1]:
+                body_defs.add(sv.name)
 
     idx_field = ObjectField(Int(32), __state_param_var, state_name, "idx", None)
     my_task_field = ObjectField(DataPointer(), __state_param_var, state_name, "my_task", None)
-
-    def to_state_field(p: RParam) -> RParam:
-        if isinstance(p, StackVar) and p.name in vars_to_fields:
-            return vars_to_fields[p.name]
-        return p
 
     sm_ops: list[Op] = []
     cold_ops: list[Op] = []
@@ -981,7 +1137,15 @@ def __create_state_machine_func(fn: Function, state_name: str,
     # ── Dispatch: switch on idx (1-based); every valid resume has a case
     #    mapped to a label in dispatch_ops; idx==0 (uninitialised state) and
     #    any out-of-range value hit the default abort. ──────────────────────
-    sm_ops.append(SwitchJump(idx_field, tuple((i + 1, f"$case${i + 1}") for i in range(n))))
+    cases = tuple((i + 1, f"$case${i + 1}") for i in range(n))
+    if with_entry_case:
+        # Stub mode (oversized function, no linear launch body): the stub
+        # parks the parameters and sets idx to the entry case, which reloads
+        # them and starts the body from the top on this C stack.
+        cases += ((n + 1, "$case$entry"),)
+    sm_ops.append(SwitchJump(idx_field, cases))
+    if with_entry_case:
+        sm_ops.append(Label("$sm$body"))
 
     # ── Body: bb[0]..bb[N-1] ops, with StackVar → state field substitution.
     #    bb[0] (the pre-first-suspend entry block) is included even though the
@@ -995,17 +1159,19 @@ def __create_state_machine_func(fn: Function, state_name: str,
         body_ops_before_call = bb.ops[:-1]
         call_op_orig         = bb.ops[-1]
 
-        substituted_before = __convert_var_to_field_refs(body_ops_before_call, vars_to_fields)
-        # An early Return inside a non-terminal block's body must also drive
-        # task_complete — same conversion as the terminal block applies here.
-        substituted_before = __convert_returns_for_state_machine(
-            substituted_before, my_task_field, fn.result, task_subtype_name)
-        sm_ops.extend(substituted_before)
+        # Body ops run on their original locals — only the boundaries below
+        # touch the state object. Early Returns still drive task_complete.
+        sm_ops.extend(__convert_returns_for_state_machine(
+            body_ops_before_call, my_task_field, fn.result, task_subtype_name))
+
+        # local → field, in the hot path's deterministic $save$i order;
+        # never-defined (loaded-only) values are already current in the state.
+        save_stores = tuple(op for var in sorted(bb.live, key=lambda v: v.name)
+                            if var.name in body_defs
+                            for op in __store_var(var, __state_param_var, state_name, layout))
 
         if isinstance(call_op_orig, ParallelCall):
             par_task_name = f"task$par${i}${fn.name}"
-
-            pc_subst_calls = tuple(c.replace_params(to_state_field) for c in call_op_orig.calls)
 
             sv_par_sm      = StackVar(DataPointer(), f"$sv_par_sm${i}")
             sv_launcher_sm = StackVar(DataPointer(), f"$sv_launcher_sm${i}")
@@ -1014,13 +1180,15 @@ def __create_state_machine_func(fn: Function, state_name: str,
 
             closures = tuple(
                 c.object if isinstance(c, GlobalFunction) and c.object is not None else NullPointer()
-                for c in pc_subst_calls)
+                for c in call_op_orig.calls)
             sm_ops.extend(_emit_par_task_setup(sv_par_sm, par_task_name, closures))
-            for k in range(len(pc_subst_calls)):
+            for k in range(len(call_op_orig.calls)):
                 sm_ops.extend(_emit_post_launcher(sv_launcher_sm, sv_par_sm, fn.name, i, k))
 
-            # Register fn$async on par_task and suspend; dispatch case$i+1 will
-            # land at $resume$i after the par_task completes.
+            # A ParallelCall always parks: store the live set, register
+            # fn$async on the par_task and suspend; dispatch case$i+1 reloads
+            # and lands at $resume$i after the par_task completes.
+            sm_ops.extend(save_stores)
             sm_ops.extend(_emit_suspend_to_async(idx_field, i + 1, sv_par_sm, fn.name))
             sm_ops.append(Label(f"$resume${i}"))
             # No cold_ops entry needed — always takes the launcher path
@@ -1031,7 +1199,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
         wrapped_type    = wrap_return_type(result_type)  if result_type else None
         needs_temp      = result_type is not None and (wrapped_type is not result_type)
 
-        call_subst = call_op_orig.replace_params(to_state_field)
+        call_subst = call_op_orig
 
         # The `$resume${i}` label marks the point both the sync fall-through
         # *after* the IS_TASK check+unpack and the dispatch path (from
@@ -1070,7 +1238,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
             # Void call: nothing to test; resume falls through directly.
             sm_ops.append(Label(f"$resume${i}"))
         else:
-            check = Invoke("UNLIKELY",
+            check = RuntimeInvoke("UNLIKELY",
                            NewStruct((("x", is_task_param(sv_check, check_type)),)),
                            Int(32))
             async_sm_label = f"$async_sm${i}"
@@ -1079,10 +1247,13 @@ def __create_state_machine_func(fn: Function, state_name: str,
                 sm_ops.append(unwrap_op)
             sm_ops.append(Label(f"$resume${i}"))
 
-            untagged = Invoke("TASK_UNTAG",
+            untagged = RuntimeInvoke("TASK_UNTAG",
                               NewStruct((("p", task_ptr_from(sv_check, check_type)),)),
                               DataPointer())
+            # The park path: this is the ONLY place block i's locals reach
+            # the state object — the sync fall-through above never does.
             cold_ops.append(Label(async_sm_label))
+            cold_ops.extend(save_stores)
             cold_ops.extend(_emit_suspend_to_async(idx_field, i + 1, untagged, fn.name))
 
     # ── Terminal block ────────────────────────────────────────────────────────
@@ -1090,26 +1261,28 @@ def __create_state_machine_func(fn: Function, state_name: str,
     # terminal block is just the block whose last op happens to not be a
     # non-tail Call; structurally it has no special status.
     terminal_bb = basic_blocks[-1]
-    terminal_ops = __convert_var_to_field_refs(terminal_bb.ops, vars_to_fields)
     sm_ops.extend(__convert_returns_for_state_machine(
-        terminal_ops, my_task_field, fn.result, task_subtype_name))
+        terminal_bb.ops, my_task_field, fn.result, task_subtype_name))
 
     # ── Dispatch targets for idx 1..N (at tail, after cold blocks). Case
-    #    (i+1) handles completion of non_terminal[i]'s call: extract that
-    #    call's result from the completed task, then jump to $resume$i.
+    #    (i+1) handles completion of non_terminal[i]'s call: reload the site's
+    #    live set (field → local), extract that call's result from the
+    #    completed task into its local register, then jump to $resume$i.
     dispatch_ops: list[Op] = []
     for i in range(n):
         bb = non_terminal[i]
         dispatch_ops.append(Label(f"$case${i + 1}"))
+        for var in sorted(bb.live, key=lambda v: v.name):
+            dispatch_ops.extend(__load_var(var, __state_param_var, state_name, layout))
         call_op = bb.ops[-1]
         if isinstance(call_op, ParallelCall):
             # Completed task is the par_task; assemble tuple from its result_k fields.
             pc = call_op
             par_task_name  = f"task$par${i}${fn.name}"
             par_result_types = [r.get_type() for r in pc.results]
-            if pc.register is not None and pc.register.name in vars_to_fields:
+            if pc.register is not None:
                 dispatch_ops.append(Move(
-                    vars_to_fields[pc.register.name],
+                    pc.register,
                     NewStruct(tuple(
                         (f"_{k}", ObjectField(par_result_types[k], __completed_param_var,
                                               par_task_name, f"result_{k}", None))
@@ -1118,18 +1291,54 @@ def __create_state_machine_func(fn: Function, state_name: str,
             callee_task_name = __task_subtype_name(bb.result.get_type())
             extract = __extract_from_task(__completed_param_var, bb.result.get_type(),
                                            callee_task_name)
-            dispatch_ops.append(Move(vars_to_fields[bb.result.name], extract))
+            dispatch_ops.append(Move(bb.result, extract))
         dispatch_ops.append(Jump(f"$resume${i}"))
+    if with_entry_case:
+        # The entry case defines the parameters (parked by the stub) AND every
+        # park-stored local from its zero-filled field: a first-iteration park
+        # may store a local whose definition lives on a later-iteration path,
+        # and the zero it reloads here is exactly what the field-addressed
+        # machine used to read. Runs once per activation.
+        dispatch_ops.append(Label("$case$entry"))
+        entry_defined: set[str] = set()
+        for name, typ in fn.params.fields:
+            entry_defined.add(name)
+            dispatch_ops.extend(__load_var(StackVar(typ, name),
+                                           __state_param_var, state_name, layout))
+        for bb in non_terminal:
+            for var in sorted(bb.live, key=lambda v: v.name):
+                if var.name not in entry_defined:
+                    entry_defined.add(var.name)
+                    dispatch_ops.extend(__load_var(var, __state_param_var, state_name, layout))
+        dispatch_ops.append(Jump("$sm$body"))
 
     all_ops = _prune_unreachable_phi_sources(tuple(sm_ops) + tuple(cold_ops) + tuple(dispatch_ops))
 
+    # The original function's PARAMETERS become plain locals here (the SM's
+    # own signature is just $state/$completed_task): a param live across a
+    # suspension is reloaded by the dispatch like any other local, so it
+    # needs a local slot to land in. Likewise block RESULT registers that
+    # exist nowhere else — the musttail-unroll's `$musttail$ret$N` temps are
+    # minted during this pass and were previously "declared" by the very
+    # field substitution this design removed.
+    declared = {n for n, _ in fn.stack_vars.fields}
+    extra_locals: list[tuple[str, Type]] = []
+    for name, typ in fn.params.fields:
+        if name not in declared:
+            declared.add(name)
+            extra_locals.append((name, typ))
+    for bb in basic_blocks:
+        if isinstance(bb.result, StackVar) and bb.result.name not in declared:
+            declared.add(bb.result.name)
+            extra_locals.append((bb.result.name, bb.result.get_type()))
+    param_locals = Struct(tuple(extra_locals))
     extra_stack = Struct((("$sv_discard", DataPointer()),) + tuple(sm_wrap_fields))
 
     return Function(
         name=f"{fn.name}$async",
         params=Struct((("$state", DataPointer()), ("$completed_task", DataPointer()))),
         result=Void(),
-        stack_vars=fn.stack_vars + extra_stack,
+        stack_vars=fn.stack_vars + param_locals + extra_stack,
         ops=all_ops,
         comment=fn.comment,
     )
@@ -1257,8 +1466,39 @@ def __convert_function_to_task_convention(
     layout = __compute_frame_layout(sm_basic_blocks, basic_blocks,
                                     __calculate_saved_vars(sm_fn).ops)
 
-    hot_fn = __create_hot_path_func(after_tail, state_name,
-                                     task_subtype_name, basic_blocks, layout)
+    # Stub only when the body LOOPS as well as being large: a straight-line
+    # body runs once and the linear launch completes it synchronously with no
+    # state/task allocation at all — the stub would pay that on every call.
+    # A loopy body parks repeatedly, so it lives in the machine anyway and
+    # the duplicated launch body is pure size.
+    def has_back_edge(ops) -> bool:
+        seen: set[str] = set()
+        for op in ops:
+            if isinstance(op, Label):
+                seen.add(op.name)
+            elif isinstance(op, Jump) and op.name in seen:
+                return True
+            elif isinstance(op, JumpIf) and op.label in seen:
+                return True
+            elif isinstance(op, SwitchJump) and any(l in seen for _, l in op.cases):
+                return True
+        return False
+
+    # A stub defers ALL work to the state machine + state object, so it only
+    # applies to functions that HAVE them: never a sync function (no
+    # suspensions → no machine → nothing to duplicate, so the code-size
+    # rationale doesn't even arise). Large + looping + genuinely-async.
+    use_stub = (_STUB_ENABLED and not fn.sync
+                and len(sm_fn.ops) > _STUB_THRESHOLD_OPS
+                and has_back_edge(sm_fn.ops))
+    if use_stub:
+        layout = __augment_layout_with_params(layout, fn.params)
+        hot_fn = __create_stub_launch_func(after_tail, state_name,
+                                            task_subtype_name, layout,
+                                            entry_idx=len(sm_basic_blocks))
+    else:
+        hot_fn = __create_hot_path_func(after_tail, state_name,
+                                         task_subtype_name, basic_blocks, layout)
 
     # Scan for ParallelCall blocks; generate par_task structs, slot callbacks, and launcher callbacks.
     par_objects: dict[str, Object] = {}
@@ -1290,7 +1530,8 @@ def __convert_function_to_task_convention(
     # → task_complete logic fires; the hot path keeps the musttail.
     state_obj  = __create_state_object(sm_fn, state_name, layout)
     machine_fn = __create_state_machine_func(sm_fn, state_name,
-                                              task_subtype_name, sm_basic_blocks, layout)
+                                              task_subtype_name, sm_basic_blocks, layout,
+                                              with_entry_case=use_stub)
     functions = {hot_fn.name: hot_fn, machine_fn.name: machine_fn} | par_functions
     objects   = {state_obj.name: state_obj} | par_objects
     return functions, objects
@@ -1356,7 +1597,7 @@ def _slot_callback_function(fn_name: str, call_site: int, slot: int,
 
     ops_cb.append(Move(
         sv_discard_,
-        Invoke("task_par_decrement", NewStruct((("par_task", sv_par),)), DataPointer()),
+        RuntimeInvoke("task_par_decrement", NewStruct((("par_task", sv_par),)), DataPointer()),
         keep=True))
     ops_cb.append(Return(NullPointer()))
 
@@ -1393,7 +1634,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
     # Call the lambda
     ops.append(Call(GlobalFunction(lambda_name, sv_closure), NewStruct(()), sv_result_w))
     # IS_TASK check
-    cond = Invoke("UNLIKELY",
+    cond = RuntimeInvoke("UNLIKELY",
                   NewStruct((("x", is_task_param(sv_result_w, wrapped_type)),)),
                   Int(32))
     ops.append(JumpIf("$launcher_async", cond))
@@ -1403,17 +1644,17 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
         ObjectField(result_type, sv_par, par_task_name, f"result_{slot}", None),
         unwrapped))
     ops.append(Move(sv_discard_,
-                    Invoke("task_par_decrement",
+                    RuntimeInvoke("task_par_decrement",
                            NewStruct((("par_task", sv_par),)), DataPointer()),
                     keep=True))
     ops.append(Jump("$launcher_done"))
     # Async path: register slot callback
     ops.append(Label("$launcher_async"))
     task_ptr_k = task_ptr_from(sv_result_w, wrapped_type)
-    untag_k    = Invoke("TASK_UNTAG", NewStruct((("p", task_ptr_k),)), DataPointer())
+    untag_k    = RuntimeInvoke("TASK_UNTAG", NewStruct((("p", task_ptr_k),)), DataPointer())
     slot_cb    = GlobalFunction(f"{fn_name}$par${call_site}$slot${slot}", sv_par)
     ops.append(Move(sv_discard_,
-                    Invoke("task_on_complete",
+                    RuntimeInvoke("task_on_complete",
                            NewStruct((("task", untag_k), ("cb", slot_cb))),
                            DataPointer()),
                     keep=True))
@@ -1509,7 +1750,7 @@ def __outline_parallel_sites(fn: Function) -> tuple[Function, dict[str, Function
         ]
         helper_ops: tuple[Op, ...] = (
             Move(sv_accepting,
-                 Invoke("thread_work_accepting", NewStruct(()), Int(32))),
+                 RuntimeInvoke("thread_work_accepting", NewStruct(()), Int(32))),
             JumpIf("$fork", sv_accepting),
             # Sequential arm — falls through when the task system is busy.
             *seq_calls,

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -21,15 +21,40 @@ import pyast.utils as u
 from pyast.expression.base import Expression
 
 
+def _type_str(ts: t.TypeSpec | None) -> str:
+    """A source-shaped rendering of a type for diagnostics (best-effort;
+    never the internal class name)."""
+    if ts is None:
+        return "unknown"
+    if isinstance(ts, t.BuiltinSpec):
+        return {"bigint": "Int", "int8": "Int8", "int16": "Int16",
+                "int32": "Int32", "int64": "Int64", "float32": "Float32",
+                "float64": "Float64", "bool": "Bool", "str": "String"}.get(
+                    ts.type_name, ts.type_name)
+    if isinstance(ts, t.NamedSpec):
+        return g.bare_name(ts.name)
+    if isinstance(ts, t.TupleSpec):
+        return "(" + ", ".join(_type_str(e.type) for e in ts.entries) + ")"
+    if isinstance(ts, t.CombinationSpec):
+        return " | ".join(_type_str(m) for m in ts.types)
+    if isinstance(ts, t.CallableSpec):
+        return f"{_type_str(ts.parameters)}: {_type_str(ts.result)}"
+    if isinstance(ts, t.ClassSpec):
+        return g.bare_name(ts.name)
+    if isinstance(ts, t.GenericPlaceholderSpec):
+        return g.bare_name(ts.name)
+    return type(ts).__name__
+
+
 @dataclass
 class CallExpression(Expression):
     function: Expression
     parameter: Expression
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
+        return rw.rewrite(self, replace, resolver,
             function=self.function.search_and_replace(resolver, replace),
-            parameter=self.parameter.search_and_replace(resolver, replace))))
+            parameter=self.parameter.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         func_type = self.function.get_type(resolver)
@@ -67,16 +92,47 @@ class CallExpression(Expression):
 
         ftype = self.function.get_type(resolver)
         if not isinstance(ftype, t.CallableSpec):
-            return [Error(self.line_ref, "Callable must be of type CallableSpec")]
+            return [self.__unresolved_call_error(resolver, ptype, ftype)]
 
         if ftype.parameters.trivially_assignable_from(resolver, ptype) is False:
             return [Error(self.line_ref, "Parameters are not assignment compatible")]
 
         return []
 
+    def __unresolved_call_error(self, resolver: g.Resolver,
+                                ptype: t.TupleSpec, ftype: t.TypeSpec | None) -> Error:
+        """The callee didn't resolve to a single callable. Say WHY in terms
+        the author wrote — the called name, the argument types, and the
+        candidate signatures — never the internal spec class name."""
+        from pyast.expression.access import NamedExpression
+        args = _type_str(ptype)
+        if not isinstance(self.function, NamedExpression):
+            return Error(self.line_ref,
+                f"the value being called is not a function (its type is "
+                f"{_type_str(ftype)})")
+        raw = g.bare_name(self.function.name)
+        name = raw if raw.startswith("`") else f"`{raw}`"
+        candidates = resolver.find_data(self.function.name)
+        callable_sigs = []
+        non_callable = None
+        for cand in candidates:
+            ctype = cand.statement.get_type()
+            if isinstance(ctype, t.CallableSpec):
+                callable_sigs.append(_type_str(ctype))
+            elif ctype is not None:
+                non_callable = _type_str(ctype)
+        if not candidates:
+            return Error(self.line_ref, f"no function named {name} is in scope")
+        if not callable_sigs and non_callable is not None:
+            return Error(self.line_ref,
+                f"{name} is not a function — it is a {non_callable}")
+        sigs = "; ".join(sorted(set(callable_sigs)))
+        return Error(self.line_ref,
+            f"no {name} accepts arguments {args} — candidates: {sigs}")
+
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         ftype = self.function.get_type(resolver)
-        xtype = cast(t.CallableSpec, ftype)
+        xtype = checked_cast(t.CallableSpec, ftype)
 
         fun_op_bundle = self.function.generate(resolver).with_prefix("fn")
         # Coerce each argument to its declared parameter type — a narrow argument

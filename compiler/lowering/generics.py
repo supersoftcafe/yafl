@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 from typing import Callable
 
 import pyast.statement as s
@@ -9,7 +10,7 @@ import pyast.expression as e
 import pyast.resolver as g
 import pyast.typespec as t
 
-from langtools import cast
+from langtools import checked_cast
 from pyast.statement import ImportGroup
 
 
@@ -37,7 +38,69 @@ def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
     return all(not isinstance(tp, t.GenericPlaceholderSpec)
                and not (isinstance(tp, (t.EnumSpec, t.ClassSpec, t.NamedSpec))
                         and tp.type_params)
+               # A union with a placeholder member (`E | JsonParseError` while E
+               # is still abstract) is NOT concrete — specialising it produces a
+               # `…_unknown` instantiation that crashes codegen. The bare-
+               # placeholder check above misses it (the arg is a CombinationSpec,
+               # not the placeholder itself), and `is_concrete()` is no help
+               # because GenericPlaceholderSpec.is_concrete() returns True.
+               and not (isinstance(tp, t.CombinationSpec) and __contains_placeholder(tp))
                for tp in type_args)
+
+
+def __contains_placeholder(spec: t.TypeSpec) -> bool:
+    """True if `spec` holds a GenericPlaceholderSpec anywhere — used to spot a
+    not-yet-concrete union member like `E | JsonParseError` and refuse to treat
+    it as a concrete type argument.
+
+    `is_concrete()` is no help: GenericPlaceholderSpec.is_concrete() returns True
+    (a placeholder is a fully-formed type, just an unbound one). By the time this
+    pass runs, name resolution has converged, so every surviving generic
+    reference is a GenericPlaceholderSpec — an unresolved NamedSpec would already
+    have failed compilation (compiler.py rejects any leftover NamedSpec before
+    generics run), which is why there is no NamedSpec case below."""
+    if isinstance(spec, t.GenericPlaceholderSpec):
+        return True
+    if isinstance(spec, t.CombinationSpec):
+        return any(__contains_placeholder(m) for m in spec.types)
+    if isinstance(spec, t.ClassSpec):
+        return any(__contains_placeholder(tp) for tp in spec.type_params)
+    if isinstance(spec, t.TupleSpec):
+        return any(en.type is not None and __contains_placeholder(en.type) for en in spec.entries)
+    if isinstance(spec, t.EnumSpec) and spec.type_params:
+        return any(__contains_placeholder(tp) for tp in spec.type_params)
+    return False
+
+
+def __appears_outside_union(spec: t.TypeSpec, name: str, in_union: bool = False) -> bool:
+    """True if type parameter `name` is used anywhere in `spec` that is NOT
+    inside a union.
+
+    This is how __generic_instance_refs decides what to do with a parameter the
+    interface match left unbound:
+      - Used ONLY inside unions (E in `E | Bool`): unification genuinely can't
+        pin it — once widened, E=Never, E=Bool, ... all give the same union. A
+        benign, expected gap; leave the `where` clause to bind it.
+      - Used OUTSIDE any union (S in `Grow<S>`): unification SHOULD have pinned
+        it. If it didn't, the interface match never really named this instance,
+        and where-solving would bind from an unrelated one — so the caller bails
+        rather than rescue a bogus match.
+
+    The recursion mirrors the type structure; descending into a union member
+    sets in_union, and only a bare placeholder reached with in_union False
+    counts. (No NamedSpec case — see __contains_placeholder: none survive here.)"""
+    if isinstance(spec, t.GenericPlaceholderSpec):
+        return spec.name == name and not in_union
+    if isinstance(spec, t.CombinationSpec):
+        return any(__appears_outside_union(m, name, True) for m in spec.types)
+    if isinstance(spec, t.ClassSpec):
+        return any(__appears_outside_union(tp, name, in_union) for tp in spec.type_params)
+    if isinstance(spec, t.TupleSpec):
+        return any(en.type is not None and __appears_outside_union(en.type, name, in_union)
+                   for en in spec.entries)
+    if isinstance(spec, t.EnumSpec) and spec.type_params:
+        return any(__appears_outside_union(tp, name, in_union) for tp in spec.type_params)
+    return False
 
 
 def __find_concrete_instantiations(
@@ -77,7 +140,7 @@ def __find_concrete_instantiations(
             if __is_concrete_type_args(thing.type_params):
                 data_refs.add((thing.name, thing.type_params))
 
-        return thing
+        return rw.UNCHANGED
 
     # Scan all statements for concrete generic instantiations
     for stmt in statements:
@@ -152,10 +215,10 @@ def __substitute_type_params(
             return _resolve_gp(thing)
         if isinstance(thing, t.EnumSpec):
             return _substitute_enum(thing, frozenset())
-        return thing
+        return rw.UNCHANGED
 
     # Use search_and_replace to recursively substitute throughout the tree
-    return node.search_and_replace(g.ResolverRoot([]), substitute)
+    return rw.resolved(node.search_and_replace(g.ResolverRoot([]), substitute), node)
 
 
 def __create_specialized_version(
@@ -211,7 +274,7 @@ def __create_specialized_version(
                 for slot in new_stmt._all_slots]
             new_stmt = dataclasses.replace(new_stmt, statements=new_members, _all_slots=new_slots)
 
-    return cast(s.NamedStatement, new_stmt)
+    return checked_cast(s.NamedStatement, new_stmt)
 
 
 def __rebuild_enum_spec(stmt: s.EnumStatement) -> s.EnumStatement:
@@ -310,9 +373,9 @@ def __replace_concrete_references(
                 if replacement is not None:
                     return replacement
                 break  # matched class but no redirect — no other rule applies
-        return thing
+        return rw.UNCHANGED
 
-    return [stmt.search_and_replace(g.ResolverRoot([]), redirect_reference) for stmt in statements]
+    return [rw.resolved(stmt.search_and_replace(g.ResolverRoot([]), redirect_reference), stmt) for stmt in statements]
 
 
 def __prune_unused_generics(statements: list[s.Statement]) -> list[s.Statement]:
@@ -394,13 +457,13 @@ def __collect_concrete_constraints(statements: list[s.Statement]) -> set[t.Class
             for tp in thing.trait_params:
                 if isinstance(tp, t.ClassSpec) and tp.is_concrete():
                     found.add(tp)
-        return thing
+        return rw.UNCHANGED
     for st in statements:
         st.search_and_replace(resolver, collect)
     return found
 
 
-def __reinflate(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t.TypeSpec, ...]]]) -> t.TypeSpec:
+def __spec_from_mangled(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t.TypeSpec, ...]]]) -> t.TypeSpec:
     """Undo monomorphisation name-mangling structurally: a bare `Wrap$generic$Leaf`
     ClassSpec becomes `Wrap<Leaf>` again (recursively). The constraint we must
     discharge only ever exists with its inner types already mangled — the
@@ -412,29 +475,119 @@ def __reinflate(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t.TypeSpe
             base_name, base_args = mono_map[spec.name]
             return dataclasses.replace(
                 spec, name=base_name,
-                type_params=tuple(__reinflate(a, mono_map) for a in base_args))
+                type_params=tuple(__spec_from_mangled(a, mono_map) for a in base_args))
         if spec.type_params:
             return dataclasses.replace(
-                spec, type_params=tuple(__reinflate(a, mono_map) for a in spec.type_params))
+                spec, type_params=tuple(__spec_from_mangled(a, mono_map) for a in spec.type_params))
     return spec
 
 
-def __remangle(spec: t.TypeSpec) -> t.TypeSpec:
-    """Inverse of __reinflate: a structural `Wrap<Leaf,Int>` recovered by the
+def __mangled_from_spec(spec: t.TypeSpec) -> t.TypeSpec:
+    """Inverse of __spec_from_mangled: a structural `Wrap<Leaf,Int>` recovered by the
     unifier becomes the bare monomorphic name `Wrap$generic$Leaf_Int` (no type
     params). The witness must be specialised against that bare name — the form
     __is_concrete_type_args accepts and the form its already-monomorphised class
     actually has."""
     if isinstance(spec, t.ClassSpec) and spec.type_params:
-        args = tuple(__remangle(a) for a in spec.type_params)
+        args = tuple(__mangled_from_spec(a) for a in spec.type_params)
         return dataclasses.replace(spec, name=__create_unique_name(spec.name, args), type_params=())
     return spec
+
+
+def __concrete_instance_interfaces(statements: list[s.Statement]) -> list[t.ClassSpec]:
+    """The concrete interface(s) implemented by each NON-generic `[trait]`
+    instance — e.g. `let [trait] _one: _OneStream` implements
+    `Stream<One, Int, Never>`.
+
+    These are the known, fully-concrete facts that __bind_where_params matches a
+    generic instance's `where` constraints against, to pin down a type parameter
+    the interface match alone left unbound. Only non-generic instances are
+    collected; a generic one has nothing concrete to offer yet."""
+    resolver = g.ResolverRoot(statements)
+    out: list[t.ClassSpec] = []
+    for st in statements:
+        if not (isinstance(st, s.LetStatement) and 'trait' in st.attributes and not st.type_params):
+            continue
+        dt = st.declared_type
+        if not isinstance(dt, t.ClassSpec):
+            continue
+        found = resolver.find_type(dt.name)
+        if len(found) != 1 or not isinstance(found[0].statement, s.ClassStatement):
+            continue
+        cls = found[0].statement
+        if cls._all_parents is None:
+            continue
+        remap = ({p.name: c for p, c in zip(cls.type_params, dt.type_params)}
+                 if cls.type_params and len(cls.type_params) == len(dt.type_params) else {})
+        for parent in cls._all_parents:
+            if not isinstance(parent, t.ClassSpec):
+                continue
+            iface = t.substitute_placeholders(parent, remap, resolver) if remap else parent
+            if isinstance(iface, t.ClassSpec) and iface.is_concrete():
+                out.append(iface)
+    return out
+
+
+def __bind_where_params(st: s.LetStatement, mapping: dict[str, t.TypeSpec],
+                        instance_ifaces: list[t.ClassSpec],
+                        mono_map: dict[str, tuple[str, tuple[t.TypeSpec, ...]]]) -> dict[str, t.TypeSpec]:
+    """Fill in instance type parameters that the interface match left unbound, by
+    solving the instance's own `where` constraints against the concrete instances
+    we already know about.
+
+    Worked example — the error-growing combinator
+
+        _Grow<S, E> : Stream<Grow<S>, Int, E | Bool>  where Stream<S, Int, E>
+
+    has E only in its output union `E | Bool`. Matching that against a concrete
+    `Bool` is ambiguous (E=Never, E=Bool, ... all widen to the same union), so E
+    comes back unbound. But the `where Stream<S, Int, E>` pins it: with S already
+    known to be One, `Stream<One, Int, E>` matched against the known concrete
+    instance `Stream<One, Int, Never>` gives E = Never. This only fills what the
+    interface match left out; error-preserving combinators bind every parameter
+    up front, so for them it does nothing.
+
+    The match is strict and positional, deliberately NOT unify_generic.
+    unify_generic is lenient — on a mismatched concrete anchor it returns the
+    mapping unchanged — which would bind a target parameter from an unrelated
+    instance and cascade into runaway Map<Map<...>> instantiation. So here a
+    concrete anchor position MUST equal the instance's exactly; a target
+    placeholder is bound; anything else (e.g. an anchor that is itself still an
+    unbound placeholder) rejects the match.
+
+    This is the MONO-TIME where-discharge; its call-site (pre-monomorphisation)
+    counterpart is typespec/algebra.py::solve_trait_constraint. The two are
+    deliberately separate — this one consumes `mono_map`, the instantiation
+    facts the surrounding worklist loop itself produces, which do not exist at
+    the call-site phase — see the design note in docs/compiler-internals.md §3."""
+    resolver = g.ResolverRoot([])
+    targets = {p.name for p in st.type_params if p.name not in mapping}
+    for wc in st.trait_params:
+        if not targets:
+            break
+        wc_sub = t.substitute_placeholders(wc, mapping, resolver)
+        if not isinstance(wc_sub, t.ClassSpec):
+            continue
+        for raw_iface in instance_ifaces:
+            # Concrete-instance interfaces come back name-MANGLED (e.g.
+            # `Stream$generic$One_bigint_Never`, no structural type params), but
+            # the where-constraint is structural — re-inflate to compare.
+            iface = __spec_from_mangled(raw_iface, mono_map)
+            if not isinstance(iface, t.ClassSpec):
+                continue
+            binding = t.bind_from_constraint_match(wc_sub, iface, targets)
+            if binding:
+                mapping = {**mapping, **binding}
+                targets = {p.name for p in st.type_params if p.name not in mapping}
+                break
+    return mapping
 
 
 def __generic_instance_refs(
     providers: list[tuple[s.LetStatement, t.ClassSpec]],
     constraints: set[t.ClassSpec],
     mono_refs: set[tuple[str, tuple[t.TypeSpec, ...]]],
+    instance_ifaces: list[t.ClassSpec],
 ) -> set[tuple[str, tuple[t.TypeSpec, ...]]]:
     """Witness-let instantiations (name, type_args) needed to satisfy `constraints`
     via the generic `providers`. The witness's own `where` becomes a fresh, more
@@ -447,11 +600,24 @@ def __generic_instance_refs(
         for constraint in constraints:
             if pattern.name != constraint.name:
                 continue
-            inflated = __reinflate(constraint, mono_map)
+            inflated = __spec_from_mangled(constraint, mono_map)
             mapping = t.unify_generic(pattern, inflated, names)
-            if mapping is None or not all(p.name in mapping for p in st.type_params):
+            if mapping is None:
                 continue
-            type_args = tuple(__remangle(mapping[p.name]) for p in st.type_params)
+            # Interface unification can leave a param undetermined when it only
+            # appears in an output union (error-growing combinators); solve the
+            # let's `where` constraints to bind it — but ONLY when the interface
+            # match genuinely named this instance: it bound something, and every
+            # still-unbound param lives solely in a union position (otherwise the
+            # constraint isn't really for this instance and where-solving would
+            # cascade across unrelated instances).
+            unbound = [p for p in st.type_params if p.name not in mapping]
+            if (unbound and mapping
+                    and all(not __appears_outside_union(pattern, p.name) for p in unbound)):
+                mapping = __bind_where_params(st, mapping, instance_ifaces, mono_map)
+            if not all(p.name in mapping for p in st.type_params):
+                continue
+            type_args = tuple(__mangled_from_spec(mapping[p.name]) for p in st.type_params)
             if __is_concrete_type_args(type_args):
                 extra.add((st.name, type_args))
     return extra
@@ -487,7 +653,8 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statem
         # so far against the generic instances, seeding witness-let refs.
         seen_constraints |= __collect_concrete_constraints(statements)
         data_refs = data_refs | __generic_instance_refs(
-            __generic_instance_providers(statements), seen_constraints, seen_mono_refs)
+            __generic_instance_providers(statements), seen_constraints, seen_mono_refs,
+            __concrete_instance_interfaces(statements))
 
         if not data_refs and not type_refs:
             # No concrete instantiations found - we're done iterating
@@ -574,7 +741,7 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
 
     def redirect(r: g.Resolver, thing):
         if not isinstance(thing, e.NamedExpression):
-            return thing
+            return rw.UNCHANGED
 
         # Use the trait_scope recorded during compilation if available, otherwise derive it.
         if thing.resolved_trait_scope is not None:
@@ -582,32 +749,32 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         else:
             datas = r.find_data(thing.name)
             if len(datas) != 1 or datas[0].scope != g.ResolvedScope.TRAIT:
-                return thing
+                return rw.UNCHANGED
             trait_spec = datas[0].trait_scope
             if not isinstance(trait_spec, t.ClassSpec):
-                return thing
+                return rw.UNCHANGED
 
         providers = [tr for tr in traits if implements_trait(tr, trait_spec)]
         if len(providers) != 1:
-            return thing
+            return rw.UNCHANGED
 
         provider = providers[0]
         provider_type = provider.declared_type
         if not isinstance(provider_type, t.ClassSpec):
-            return thing
+            return rw.UNCHANGED
 
         provider_classes = r.find_type(provider_type.name)
         if len(provider_classes) != 1:
-            return thing
+            return rw.UNCHANGED
         provider_class = provider_classes[0].statement
         if not isinstance(provider_class, s.ClassStatement):
-            return thing
+            return rw.UNCHANGED
 
         # Find the concrete method on the provider class by simple name
         simple = g.simple_name(thing.name)
         method_datas = provider_class.find_data(r, simple)
         if not method_datas:
-            return thing
+            return rw.UNCHANGED
 
         if len(method_datas) > 1:
             # Multiple overloads — disambiguate by comparing the concrete type of
@@ -624,20 +791,20 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
                             def sub(_, node, m=mapping):
                                 if isinstance(node, t.GenericPlaceholderSpec) and node.name in m:
                                     return m[node.name]
-                                return node
-                            iface_type = iface_type.search_and_replace(r, sub)
+                                return rw.UNCHANGED
+                            iface_type = rw.resolved(iface_type.search_and_replace(r, sub), iface_type)
                         matching = [md for md in method_datas
                                     if t.trivially_assignable_equals(r, iface_type, md.statement.get_type())]
                         if len(matching) == 1:
                             method_datas = matching
 
         if len(method_datas) != 1:
-            return thing
+            return rw.UNCHANGED
 
         provider_expr = e.NamedExpression(thing.line_ref, provider.name)
         return e.DotExpression(thing.line_ref, provider_expr, method_datas[0].unique_name)
 
-    return [stmt.search_and_replace(resolver, redirect) for stmt in statements]
+    return [rw.resolved(stmt.search_and_replace(resolver, redirect), stmt) for stmt in statements]
 
 
 def __refresh_enum_spec_all_fields(statements: list[s.Statement]) -> list[s.Statement]:
@@ -707,20 +874,20 @@ def __refresh_enum_spec_all_fields(statements: list[s.Statement]) -> list[s.Stat
 
     def refresh(resolver: g.Resolver, thing):
         if not isinstance(thing, t.EnumSpec):
-            return thing
+            return rw.UNCHANGED
         spec = canonical.get(thing.root_name)
         if spec is None:
-            return thing
+            return rw.UNCHANGED
         # Use identity check, not equality: EnumSpec.__eq__ excludes all_fields
         # and all_leaf_names, so == would falsely match stale copies.
         if spec.all_fields is thing.all_fields and spec.all_leaf_names is thing.all_leaf_names:
-            return thing
+            return rw.UNCHANGED
         return dataclasses.replace(thing,
                                    all_fields=spec.all_fields,
                                    all_leaf_names=spec.all_leaf_names)
 
     resolver = g.ResolverRoot(statements)
-    return [stmt.search_and_replace(resolver, refresh) for stmt in statements]
+    return [rw.resolved(stmt.search_and_replace(resolver, refresh), stmt) for stmt in statements]
 
 
 def convert_generic_to_concrete(statements: list[s.Statement]) -> list[s.Statement]:

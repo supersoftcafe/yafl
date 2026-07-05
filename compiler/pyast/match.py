@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
-from typing import Callable
+from typing import Any, Callable
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -114,11 +115,11 @@ class MatchArm:
         # own type_spec.
         return _binding_resolver(resolver, self, self.type_spec)
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> MatchArm:
-        new_body = self.body.search_and_replace(self.__body_resolver(resolver), replace)
-        new_type = self.type_spec.search_and_replace(resolver, replace) if self.type_spec else None
-        new_literal = self.literal.search_and_replace(resolver, replace) if self.literal else None
-        return dataclasses.replace(self, type_spec=new_type, body=new_body, literal=new_literal)
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> MatchArm:
+        return rw.rebuild(self,
+            body=self.body.search_and_replace(self.__body_resolver(resolver), replace),
+            type_spec=rw.opt(self.type_spec, resolver, replace),
+            literal=rw.opt(self.literal, resolver, replace))
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement]]:
         new_body, body_stmts = self.body.compile(self.__body_resolver(resolver), func_ret_type)
@@ -332,10 +333,10 @@ class MatchExpression(e.Expression):
     subject: e.Expression
     arms: list[MatchArm]
 
-    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, any], any]) -> e.Expression:
-        return cast(e.Expression, replace(resolver, dataclasses.replace(self,
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> e.Expression:
+        return rw.rewrite(self, replace, resolver,
             subject=self.subject.search_and_replace(resolver, replace),
-            arms=[arm.search_and_replace(resolver, replace) for arm in self.arms])))
+            arms=rw.seq(self.arms, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         for arm in self.arms:
@@ -559,9 +560,18 @@ class MatchExpression(e.Expression):
                     for k in covers:
                         del remaining[k]
 
-        if not else_seen and remaining:
-            errors.append(Error(self.line_ref,
-                f"non-exhaustive match; missing: {missing_name(remaining)}"))
+        # Exhaustiveness counts INHABITED members only: an arm for a type with
+        # no values is dead code by construction, so an uncovered uninhabited
+        # member (`Never` in an error union) is covered by the laws of physics.
+        # An EXPLICIT arm for it stays legal (it sits in `remaining` until
+        # matched) — writing one documents intent, omitting one costs nothing.
+        if not else_seen:
+            uncovered = (remaining if isinstance(remaining, set) else
+                         {uid for uid, (_, v) in remaining.items()
+                          if not (isinstance(v, t.EnumSpec) and not v.valid_leaf_names)})
+            if uncovered:
+                errors.append(Error(self.line_ref,
+                    f"non-exhaustive match; missing: {missing_name(uncovered)}"))
 
         return errors
 

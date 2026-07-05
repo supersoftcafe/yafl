@@ -173,6 +173,10 @@ def __char() -> p.Parser[e.Expression]:
                 if len(decoded) != 1:
                     return p.Result.error(
                         "char literal must contain exactly one character", tail, head.line_ref)
+                # RULED (2026-07-04, superseding an earlier fluid-literals
+                # direction): a char literal IS an Int32 literal — 'a' is
+                # 97i32, exactly. No literal converts to anything: 37 is Int,
+                # 37i32 is Int32, 12.5 is Float64. Type what you mean.
                 return p.Result.ok(e.IntegerExpression(head.line_ref, ord(decoded), 32),
                                    tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
@@ -255,6 +259,30 @@ def __to_invokes(result: p.Result[tuple[e.Expression, list]], tokens: list[p.Tok
 
 def __to_pipeline(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     def accumulate(last_result: e.Expression, function: e.Expression) -> e.Expression:
+        # `l |> (a, b) => body` is a beta-redex: lower it to BLOCKS binding the
+        # lambda's parameters from `l` and running the body inline — not a
+        # call. No closure is created, a piped TUPLE value binds its entries
+        # positionally through the ordinary destructure (the "let without
+        # let"), and a linear value pipes through without tripping the
+        # nested-function capture rule.
+        #
+        # Substitution is CAPTURE-AVOIDING: lambda parameters scope to the
+        # lambda's body only, so they must not be visible to `l` (the argument
+        # belongs to the enclosing scope — `x |> (x) => …` reads the OUTER x).
+        # Hence two blocks: the outer binds `l` to a fresh path-derived
+        # intermediate (unique by construction — nothing in `l` can resolve to
+        # it), the inner binds the parameters from that intermediate.
+        if isinstance(function, e.LambdaExpression):
+            lr = function.line_ref
+            tmp = f"$pipe@{lr.hash6()}"
+            targets = function.parameters.targets
+            binder: s.Statement = (
+                dataclasses.replace(targets[0], default_value=e.NamedExpression(lr, tmp))
+                if len(targets) == 1
+                else dataclasses.replace(function.parameters, default_value=e.NamedExpression(lr, tmp)))
+            inner = e.BlockExpression(lr, [binder], function.expression)
+            return e.BlockExpression(lr,
+                [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], inner)
         # Wrap last result in a tuple, just-in-case it isn't a tuple already.
         parameter = last_result if isinstance(last_result, e.TupleExpression)\
             else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression(None, last_result)])
@@ -852,13 +880,32 @@ __parse_else = p.block(p.requires(
     p.many(__parse_statement) >> __to_else_statement,
     "invalid else statement"))
 
+# Sentinel for "no constructor parameter list was written" (distinct from an
+# empty `()`, which is the empty list). Must be non-None so the Result stays
+# truthy (Result.__bool__ is `value is not None`) and non-tuple so the `&`
+# combinator keeps it as a single sequence element.
+__NO_ENUM_PARAMS = object()
+
+def __to_enum_params(result: p.Result, tokens: list[p.Token]) -> p.Result:
+    # `p.maybe` yields [] when no parens were written and [fields] when a `(...)`
+    # list was (fields possibly empty for `()`). Preserve that distinction
+    # rather than flattening both to [] like __parse_maybe_destructure_parts.
+    parts = result.value
+    value = __NO_ENUM_PARAMS if not parts else parts[0]
+    return p.Result(value, result.tokens, result.line_ref, result.errors)
+__parse_enum_params = p.maybe(__parse_destructure_parts) >> __to_enum_params
+
+
 def __to_enum(result: p.Result, tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
     name, generics, params, variants = result.value
     type_params = tuple(generics) if generics else ()
+    has_param_list = params is not __NO_ENUM_PARAMS
+    fields = [] if params is __NO_ENUM_PARAMS else params
     statement = s.EnumStatement(
         result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, type_params,
-        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params or []),
-        variants)
+        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, fields),
+        variants,
+        has_param_list=has_param_list)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
@@ -868,13 +915,15 @@ __parse_enum = p.Parser(parse_enum)
 
 __parse_enum_any = p.block(p.requires(
     p.discard_sym("enum"),
-    (p.ident() & __parse_maybe_generic_statement & __parse_maybe_destructure_parts & p.many(__parse_enum)) >> __to_enum,
+    (p.ident() & __parse_maybe_generic_statement & __parse_enum_params & p.many(__parse_enum)) >> __to_enum,
     "invalid enum statement"))
 
 
 def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.EnumStatement], import_group: s.ImportGroup) -> list[s.Statement]:
     results: list[s.Statement] = []
     all_ancestors = ancestors + [root]
+    if not root.variants and not root.has_param_list:
+        return results  # uninhabited empty type (e.g. Never): no constructor
     if not root.variants:
         all_params = [let for anc in all_ancestors for let in anc.parameters.flatten()]
         true_root = ancestors[0] if ancestors else root

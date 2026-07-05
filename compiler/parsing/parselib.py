@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Generic, TypeVar
+from typing import Callable, Generic, List, Optional, Tuple, TypeVar
 from dataclasses import dataclass, field
-from parsing.tokenizer import *
+from parsing.tokenizer import LineRef, Token, TokenKind
 
 
 T = TypeVar('T')
@@ -13,9 +13,18 @@ Y = TypeVar('Y')
 class Error:
     line_ref: LineRef
     message: str
+    # "error" fails the build; "warning" is reported and compilation continues.
+    # One diagnostic type for both keeps every check() signature unchanged —
+    # the partition happens once, at the top of the compile driver.
+    severity: str = "error"
 
     def __str__(self):
-        return f"{self.line_ref} - {self.message}"
+        prefix = "warning: " if self.severity == "warning" else ""
+        return f"{self.line_ref} - {prefix}{self.message}"
+
+    @staticmethod
+    def warning(line_ref: LineRef, message: str) -> "Error":
+        return Error(line_ref, message, "warning")
 
 
 @dataclass(frozen=True)

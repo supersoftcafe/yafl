@@ -41,7 +41,7 @@ from __future__ import annotations
 import dataclasses
 
 from codegen.gen import Application
-from codegen.things import Function
+from codegen.ir import Function
 from codegen.ops import Call, ParallelCall, Return
 from codegen.param import GlobalFunction, VirtualFunction, TagTask
 

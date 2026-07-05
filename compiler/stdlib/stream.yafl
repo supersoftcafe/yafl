@@ -56,16 +56,16 @@ fun [inline(always)] streamNext<S, T, E>(s: S): (stream: S, value: Result<T | Sy
 
 
 # ── map: apply `f` to every value; Ok(None) and Error pass through ───────────
-class [final] Map<S, A, B>(inner: S, f: (A): B)
+class [final] Map<S, A, B, E>(inner: S, f: (A): B) where Stream<S, A, E>
 
-class _StreamMap<S, A, B, E>() : Stream<Map<S, A, B>, B, E>
-  fun [inline(always)] next(self: Map<S, A, B>): (stream: Map<S, A, B>, value: Result<B | System::None, E>) where Stream<S, A, E>
+class _StreamMap<S, A, B, E>() : Stream<Map<S, A, B, E>, B, E>
+  fun [inline(always)] next(self: Map<S, A, B, E>): (stream: Map<S, A, B, E>, value: Result<B | System::None, E>) where Stream<S, A, E>
     let r = streamNext<S, A, E>(self.inner)
     ret match(r.value)
       (ok: Ok<A | System::None, E>) => match(ok.value)
-        (v: A)            => (Map<S, A, B>(r.stream, self.f), Ok<B | System::None, E>(self.f(v)))
-        (n: System::None) => (Map<S, A, B>(r.stream, self.f), Ok<B | System::None, E>(None))
-      (er: Error<A | System::None, E>) => (Map<S, A, B>(r.stream, self.f), Error<B | System::None, E>(er.error))
+        (v: A)            => (Map<S, A, B, E>(r.stream, self.f), Ok<B | System::None, E>(self.f(v)))
+        (n: System::None) => (Map<S, A, B, E>(r.stream, self.f), Ok<B | System::None, E>(None))
+      (er: Error<A | System::None, E>) => (Map<S, A, B, E>(r.stream, self.f), Error<B | System::None, E>(er.error))
 
 let [trait] _stream_map<S, A, B, E>: _StreamMap<S, A, B, E> = _StreamMap<S, A, B, E>() where Stream<S, A, E>
 
@@ -77,25 +77,25 @@ let [trait] _stream_map<S, A, B, E>: _StreamMap<S, A, B, E> = _StreamMap<S, A, B
 
 
 # ── filter: keep only values satisfying `keep`; Ok(None)/Error pass through ───
-class [final] Filter<S, T>(inner: S, keep: (T): System::Bool)
+class [final] Filter<S, T, E>(inner: S, keep: (T): System::Bool) where Stream<S, T, E>
 
-class _StreamFilter<S, T, E>() : Stream<Filter<S, T>, T, E>
-  fun [inline(always)] next(self: Filter<S, T>): (stream: Filter<S, T>, value: Result<T | System::None, E>) where Stream<S, T, E>
+class _StreamFilter<S, T, E>() : Stream<Filter<S, T, E>, T, E>
+  fun [inline(always)] next(self: Filter<S, T, E>): (stream: Filter<S, T, E>, value: Result<T | System::None, E>) where Stream<S, T, E>
     ret _filterAdvance<S, T, E>(self.inner, self.keep)
 
 # The skip-loop is a free [tail] helper: it recurses past rejected values, and
 # being free (not the combinator's `next` member) it can dispatch the inner pull
 # and call itself without member shadowing. Ok(None) and Error stop the skip and
 # are forwarded unchanged.
-fun [tail,inline(always)] _filterAdvance<S, T, E>(inner: S, keep: (T): System::Bool): (stream: Filter<S, T>, value: Result<T | System::None, E>) where Stream<S, T, E>
+fun [tail,inline(always)] _filterAdvance<S, T, E>(inner: S, keep: (T): System::Bool): (stream: Filter<S, T, E>, value: Result<T | System::None, E>) where Stream<S, T, E>
   let r = streamNext<S, T, E>(inner)
   ret match(r.value)
     (ok: Ok<T | System::None, E>) => match(ok.value)
       (v: T) => keep(v)
-        ? (Filter<S, T>(r.stream, keep), Ok<T | System::None, E>(v))
+        ? (Filter<S, T, E>(r.stream, keep), Ok<T | System::None, E>(v))
         : _filterAdvance<S, T, E>(r.stream, keep)
-      (n: System::None) => (Filter<S, T>(r.stream, keep), Ok<T | System::None, E>(None))
-    (er: Error<T | System::None, E>) => (Filter<S, T>(r.stream, keep), Error<T | System::None, E>(er.error))
+      (n: System::None) => (Filter<S, T, E>(r.stream, keep), Ok<T | System::None, E>(None))
+    (er: Error<T | System::None, E>) => (Filter<S, T, E>(r.stream, keep), Error<T | System::None, E>(er.error))
 
 let [trait] _stream_filter<S, T, E>: _StreamFilter<S, T, E> = _StreamFilter<S, T, E>() where Stream<S, T, E>
 
@@ -109,36 +109,38 @@ let [trait] _stream_filter<S, T, E>: _StreamFilter<S, T, E> = _StreamFilter<S, T
 # IO): it buffers a partial line in `pending` and assembles lines across input
 # chunks. The trailing '\n' (and any preceding '\r') is removed; a final
 # unterminated line is emitted at end of stream. `toLines(source)` infers S from
-# the argument — `Lines<S>` carries only S, so no explicit type args are needed.
-class [final] Lines<S>(inner: S, pending: System::String)
+# the argument — `Lines<S, E>` carries only S, so no explicit type args are needed.
+# `pending[pos..]` is the unconsumed carry: lines advance the INDEX (slicing
+# the carry per line recopies up to a whole chunk per line); the consumed
+# prefix compacts away once per refill.
+class [final] Lines<S, E>(inner: S, pending: System::String, pos: System::Int) where Stream<S, System::String, E>
 
-class _StreamLines<S, E>() : Stream<Lines<S>, System::String, E>
-  fun [inline(always)] next(self: Lines<S>): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
-    ret _linesStep<S, E>(self.inner, self.pending)
+class _StreamLines<S, E>() : Stream<Lines<S, E>, System::String, E>
+  fun [inline(always)] next(self: Lines<S, E>): (stream: Lines<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+    ret _linesStep<S, E>(self.inner, self.pending, self.pos)
 
 # Emit a buffered line if one is complete, otherwise pull a chunk and retry. A
 # single self-`[tail]` loop (the `if` early-returns the emit case, the recursion
 # is a direct self-call), so it lowers to a loop and is inlinable into callers.
-fun [tail,inline(always)] _linesStep<S, E>(inner: S, pending: System::String): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
-  let nl = System::findByte(pending, '\n', 0)
+fun [tail,inline(always)] _linesStep<S, E>(inner: S, pending: System::String, pos: System::Int): (stream: Lines<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  let nl = System::findByte(pending, '\n', pos)
   if nl >= 0
-    ret _linesEmit<S, E>(inner, pending, nl)
+    ret _linesEmit<S, E>(inner, pending, pos, nl)
   let r = streamNext<S, System::String, E>(inner)
   ret match(r.value)
     (ok: Ok<System::String|System::None, E>) => match(ok.value)
-      (chunk: System::String) => _linesStep<S, E>(r.stream, pending + chunk)
-      (n: System::None)       => _linesEOF<S, E>(r.stream, pending)
-    (er: Error<System::String|System::None, E>) => (Lines<S>(r.stream, ""), Error<System::String|System::None, E>(er.error))
+      (chunk: System::String) => _linesStep<S, E>(r.stream, (pos == 0 ? pending : System::slice(pending, pos, System::length(pending))) + chunk, 0)
+      (n: System::None)       => _linesEOF<S, E>(r.stream, pending, pos)
+    (er: Error<System::String|System::None, E>) => (Lines<S, E>(r.stream, "", 0), Error<System::String|System::None, E>(er.error))
 
-fun [inline(always)] _linesEmit<S, E>(inner: S, pending: System::String, nl: System::Int): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
-  let line = _stripCR(System::slice(pending, 0, nl))
-  let rest = System::slice(pending, nl + 1, System::length(pending))
-  ret (Lines<S>(inner, rest), Ok<System::String|System::None, E>(line))
+fun [inline(always)] _linesEmit<S, E>(inner: S, pending: System::String, pos: System::Int, nl: System::Int): (stream: Lines<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  let line = _stripCR(System::slice(pending, pos, nl))
+  ret (Lines<S, E>(inner, pending, nl + 1), Ok<System::String|System::None, E>(line))
 
-fun [inline(always)] _linesEOF<S, E>(inner: S, pending: System::String): (stream: Lines<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
-  ret System::length(pending) == 0
-    ? (Lines<S>(inner, ""), Ok<System::String|System::None, E>(None))
-    : (Lines<S>(inner, ""), Ok<System::String|System::None, E>(_stripCR(pending)))
+fun [inline(always)] _linesEOF<S, E>(inner: S, pending: System::String, pos: System::Int): (stream: Lines<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  ret System::length(pending) == pos
+    ? (Lines<S, E>(inner, "", 0), Ok<System::String|System::None, E>(None))
+    : (Lines<S, E>(inner, "", 0), Ok<System::String|System::None, E>(_stripCR(System::slice(pending, pos, System::length(pending)))))
 
 fun _stripCR(s: System::String): System::String
   let n = System::length(s)
@@ -147,24 +149,24 @@ fun _stripCR(s: System::String): System::String
 let [trait] _stream_lines<S, E>: _StreamLines<S, E> = _StreamLines<S, E>() where Stream<S, System::String, E>
 
 # `source |> toLines` over any String stream. S is inferred from the argument.
-fun toLines<S>(source: S): Lines<S>
-  ret Lines<S>(source, "")
+fun toLines<S, E>(source: S): Lines<S, E> where Stream<S, System::String, E>
+  ret Lines<S, E>(source, "", 0)
 
 
 # ── prependLineNumbers: prefix each line with its 1-based number ─────────────
 #
 # A stateful 1:1 transducer over any `Stream<S, String, E>`: each value becomes
 # "N: <value>\n" with N counting from 1. Errors and end pass through.
-class [final] Numbered<S>(inner: S, n: System::Int)
+class [final] Numbered<S, E>(inner: S, n: System::Int) where Stream<S, System::String, E>
 
-class _StreamNumbered<S, E>() : Stream<Numbered<S>, System::String, E>
-  fun [inline(always)] next(self: Numbered<S>): (stream: Numbered<S>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+class _StreamNumbered<S, E>() : Stream<Numbered<S, E>, System::String, E>
+  fun [inline(always)] next(self: Numbered<S, E>): (stream: Numbered<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
     let r = streamNext<S, System::String, E>(self.inner)
     ret match(r.value)
       (ok: Ok<System::String|System::None, E>) => match(ok.value)
-        (line: System::String) => (Numbered<S>(r.stream, self.n + 1), Ok<System::String|System::None, E>(_numberLine(self.n, line)))
-        (no: System::None)     => (Numbered<S>(r.stream, self.n), Ok<System::String|System::None, E>(None))
-      (er: Error<System::String|System::None, E>) => (Numbered<S>(r.stream, self.n), Error<System::String|System::None, E>(er.error))
+        (line: System::String) => (Numbered<S, E>(r.stream, self.n + 1), Ok<System::String|System::None, E>(_numberLine(self.n, line)))
+        (no: System::None)     => (Numbered<S, E>(r.stream, self.n), Ok<System::String|System::None, E>(None))
+      (er: Error<System::String|System::None, E>) => (Numbered<S, E>(r.stream, self.n), Error<System::String|System::None, E>(er.error))
 
 # "N: <line>\n". The number is anchored to a String-typed let first so the `+`
 # overloads resolve unambiguously (see the same idiom in format.yafl).
@@ -175,5 +177,43 @@ fun _numberLine(n: System::Int, line: System::String): System::String
 let [trait] _stream_numbered<S, E>: _StreamNumbered<S, E> = _StreamNumbered<S, E>() where Stream<S, System::String, E>
 
 # `source |> prependLineNumbers` over any String stream. S inferred from the arg.
-fun prependLineNumbers<S>(source: S): Numbered<S>
-  ret Numbered<S>(source, 1)
+fun prependLineNumbers<S, E>(source: S): Numbered<S, E> where Stream<S, System::String, E>
+  ret Numbered<S, E>(source, 1)
+
+
+# ── once: a one-shot source — yields a single value, then ends ───────────────
+# The error type is `Never`, honestly: this source cannot fail. Downstream
+# unions carry the uninhabited member (`Never | JsonParseError`), which costs
+# consumers nothing — exhaustiveness counts inhabited members only, so no arm
+# is ever owed for it — and the type says exactly what can happen.
+class [final] Once<T>(value: T, done: System::Bool)
+
+class _StreamOnce<T>() : Stream<Once<T>, T, System::Never>
+  fun next(self: Once<T>): (stream: Once<T>, value: Result<T | System::None, System::Never>)
+    ret self.done
+      ? (self, Ok<T | System::None, System::Never>(None))
+      : (Once<T>(self.value, true), Ok<T | System::None, System::Never>(self.value))
+let [trait] _stream_once<T>: _StreamOnce<T> = _StreamOnce<T>()
+
+fun once<T>(value: T): Once<T>
+  ret Once<T>(value, false)
+
+
+# ── collect: drain a String stream into one String ───────────────────────────
+# Builds through a linear StringBuilder (cost linear in total size), threaded
+# through the [tail] loop. An error consumes the builder — the partial output
+# is meaningless — and surfaces as the stream's own `E`.
+fun collect<S, E>(s: S): System::String | E where Stream<S, System::String, E>
+  ret _collectInto<S, E>(s, System::StringBuilder())
+
+fun _discardBuilder<E>(sb: System::StringBuilder, e: E): E
+  System::discard(sb)
+  ret e
+
+fun [tail] _collectInto<S, E>(s: S, sb: System::StringBuilder): System::String | E where Stream<S, System::String, E>
+  let r = streamNext<S, System::String, E>(s)
+  ret match(r.value)
+    (ok: Ok<System::String | System::None, E>) => match(ok.value)
+      (chunk: System::String) => _collectInto<S, E>(r.stream, System::append(sb, chunk))
+      (n: System::None)       => System::toString(sb)
+    (er: Error<System::String | System::None, E>) => _discardBuilder<E>(sb, er.error)

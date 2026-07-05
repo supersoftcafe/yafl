@@ -49,7 +49,7 @@ class Move(Op):
     # Set when this Move exists *to anchor a side-effecting call* —
     # the target's value is intentionally never read; the only reason
     # the Move exists is to keep deadstores from dropping `source`
-    # (typically an Invoke into a runtime function such as
+    # (typically an RuntimeInvoke into a runtime function such as
     # `task_on_complete`).  Pure helpers should leave this False so
     # genuinely dead stores still get cleaned up.
     keep: bool = False

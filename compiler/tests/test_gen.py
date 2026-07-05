@@ -5,7 +5,7 @@ import codegen.ops as o
 import codegen.typedecl as t
 
 from codegen.gen import Application
-from codegen.things import Function, Object
+from codegen.ir import Function, Object
 
 import lowering.globalfuncs
 import lowering.lower_lazy_lets
@@ -141,7 +141,7 @@ class TestPromoteStaticObjectsCounter(TestCase):
         '$si$bogus'.  The fix replaces the name-parsing counter with a
         module-level itertools.count() that never inspects global names.
         """
-        from codegen.things import Global
+        from codegen.ir import Global
 
         app = Application()
         app.globals["$si$bogus"] = Global(name="$si$bogus", type=t.DataPointer())
@@ -222,7 +222,7 @@ class TestSyncInferenceTaggedTaskReturn(TestCase):
 
     def _wrapper_like(self) -> Function:
         """Mimic the shape of the `[tail]` wrapper: side-effecting
-        Invoke-via-Move ops (no `Call` op), then `Return(TagTask(...))`."""
+        RuntimeInvoke-via-Move ops (no `Call` op), then `Return(TagTask(...))`."""
         sv_state = e.StackVar(t.DataPointer(), "$state")
         sv_discard = e.StackVar(t.DataPointer(), "$sv_tail_discard")
         return Function(
@@ -234,7 +234,7 @@ class TestSyncInferenceTaggedTaskReturn(TestCase):
             ops=(
                 o.NewObject("loop$tailstate", sv_state),
                 o.Move(sv_discard,
-                       e.Invoke("thread_dispatch",
+                       e.RuntimeInvoke("thread_dispatch",
                                 e.NewStruct((("action",
                                               e.GlobalFunction("loop$tailcallback", sv_state)),)),
                                 t.DataPointer()),

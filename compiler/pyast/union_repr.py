@@ -42,10 +42,10 @@ def literal_eq_test(lit_type_name: str, value: cg_p.RParam,
     """Boolean IR expression comparing a primitive `value` to a `literal`."""
     args = cg_p.NewStruct((("a", value), ("b", literal)))
     if lit_type_name == "str":
-        return cg_p.IntEqConst(cg_p.Invoke("string_compare", args, cg_t.Int(32)), 0)
+        return cg_p.IntEqConst(cg_p.RuntimeInvoke("string_compare", args, cg_t.Int(32)), 0)
     if lit_type_name == "bigint":
-        return cg_p.Invoke("integer_test_eq", args, cg_t.Int(8))
-    return cg_p.Invoke(f"{lit_type_name}_test_eq", args, cg_t.Int(8))  # int8..int64
+        return cg_p.RuntimeInvoke("integer_test_eq", args, cg_t.Int(8))
+    return cg_p.RuntimeInvoke(f"{lit_type_name}_test_eq", args, cg_t.Int(8))  # int8..int64
 
 
 def _classspec_is_foreign(member: t.ClassSpec, resolver: g.Resolver) -> bool:
@@ -261,14 +261,14 @@ class TaggedRepr(UnionRepr):
         # The slot layout is the repr's own data; `variant_types` is still needed
         # below to find a variant by its generated ctype (the `vt == arm_ctype`
         # lookup), but the slot map itself comes from `self`, not a recompute.
-        variant_types = [v.generate(resolver) for v in subj_type.types]
+        variant_types = [v.generate(resolver) for v in subj_type.repr_members()]
         variant_map = self.variant_map
         slot_fields = self.container.fields
 
         def variant_index(uid: str | None) -> int | None:
             if uid is None:
                 return None
-            return next((i for i, v in enumerate(subj_type.types)
+            return next((i for i, v in enumerate(subj_type.repr_members())
                          if v.as_unique_id_str() == uid), None)
 
         for arm in arms:
@@ -278,11 +278,11 @@ class TaggedRepr(UnionRepr):
             if arm.literal is not None:
                 lit_ast_type = arm.literal.get_type(resolver)
                 lit_type_name = lit_ast_type.type_name if isinstance(lit_ast_type, t.BuiltinSpec) else None
-                vi = next((i for i, v in enumerate(subj_type.types)
+                vi = next((i for i, v in enumerate(subj_type.repr_members())
                            if isinstance(v, t.BuiltinSpec) and v.type_name == lit_type_name), None)
                 if vi is None:
                     continue  # check() prevents this; skip to be safe
-                tag_value = discriminators.get(subj_type.types[vi].as_unique_id_str(), 0)
+                tag_value = discriminators.get(subj_type.repr_members()[vi].as_unique_id_str(), 0)
                 si, _ = variant_map[vi][0]
                 slot_val = cg_p.StructField(sv, slot_fields[si][0])
                 lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{em.counter}")
@@ -301,10 +301,10 @@ class TaggedRepr(UnionRepr):
                 narrow_map = None
                 if isinstance(narrow_ctype, cg_t.Struct):
                     _, narrow_map = cg_t.compute_union_slots(
-                        [m.generate(resolver) for m in arm.type_spec.types])
+                        [m.generate(resolver) for m in arm.type_spec.repr_members()])
 
                 entries: list[tuple[cg_p.RParam, cg_p.RParam]] = []
-                for k, member in enumerate(arm.type_spec.types):
+                for k, member in enumerate(arm.type_spec.repr_members()):
                     uid = member.as_unique_id_str()
                     vi = variant_index(uid)
                     if vi is None or uid not in discriminators:
@@ -348,7 +348,7 @@ class TaggedRepr(UnionRepr):
         if inner_ctype == target_ctype:
             return g.OperationBundle((), (), value)
         su = source_type.as_unique_id_str()
-        variant_idx = next(i for i, v in enumerate(self.union_type.types)
+        variant_idx = next(i for i, v in enumerate(self.union_type.repr_members())
                            if v.as_unique_id_str() == su)
         discriminators = resolver.get_discriminators()
         tag_value = discriminators.get(su, 0)
@@ -362,7 +362,7 @@ class TaggedRepr(UnionRepr):
         primitive offset, then rebuild it from the union slots it occupies. A
         field spanning several primitives (a tuple field) reads each slot and
         re-packs them into the field's struct shape."""
-        root_stmt = langtools.cast(
+        root_stmt = langtools.checked_cast(
             s.EnumStatement, resolver.find_type(self.union_type.root_name)[0].statement)
         leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
         container = self.container
@@ -422,7 +422,11 @@ class TaggedRepr(UnionRepr):
             pi = prim_start[field_name]
             let = next(l for l in leaf_fields if l.name == field_name)
             field_type = let.declared_type.generate(resolver)
-            arg_bundle = arg_expr.generate(resolver).with_prefix(f"arg_{field_name.split('@')[0]}")
+            # Coerce the arg into the field's declared type — a no-op when they
+            # already match, a representation conversion when they don't (e.g.
+            # widening into a union, or a bottom `Never` value reaching a wider
+            # field in a dead match arm).
+            arg_bundle = arg_expr.generate_to(resolver, let.declared_type).with_prefix(f"arg_{field_name.split('@')[0]}")
             bundles.append(arg_bundle)
 
             def emit_flat(param, ftype, off):
@@ -485,15 +489,15 @@ class TaggedRepr(UnionRepr):
         to this tagged-union Struct. The non-null pointer path and the null path
         each contribute a single tagged-union expression to the Phi."""
         unit_type = cg_t.Struct(())
-        src_variant_types = [v.generate(resolver) for v in source.types]
-        ptr_variant = next((v for v, vt in zip(source.types, src_variant_types) if vt != unit_type), None)
-        unit_variant = next((v for v, vt in zip(source.types, src_variant_types) if vt == unit_type), None)
+        src_variant_types = [v.generate(resolver) for v in source.repr_members()]
+        ptr_variant = next((v for v, vt in zip(source.repr_members(), src_variant_types) if vt != unit_type), None)
+        unit_variant = next((v for v, vt in zip(source.repr_members(), src_variant_types) if vt == unit_type), None)
         assert ptr_variant is not None, "DataPointer union must have a non-unit pointer variant"
 
         null_label = "wide_null"
         ptr_uid = ptr_variant.as_unique_id_str()
         ptr_tag = discriminators.get(ptr_uid, 0)
-        tgt_ptr_idx = next((i for i, v in enumerate(target.types) if v.as_unique_id_str() == ptr_uid), None)
+        tgt_ptr_idx = next((i for i, v in enumerate(target.repr_members()) if v.as_unique_id_str() == ptr_uid), None)
         slot_values = [(tgt_slot_fields[tgt_si][0], sv) for tgt_si, _ in tgt_variant_map[tgt_ptr_idx]] \
             if tgt_ptr_idx is not None else []
         slot_values.append(("$tag", cg_p.Integer(ptr_tag, 32)))
@@ -520,14 +524,14 @@ class TaggedRepr(UnionRepr):
         src_tag_field = cg_p.StructField(sv, "$tag")
 
         bundles = []
-        for i, src_var in enumerate(source.types):
+        for i, src_var in enumerate(source.repr_members()):
             var_uid = src_var.as_unique_id_str()
             var_tag = discriminators.get(var_uid, 0)
             arm_label, next_label = f"wide_arm_{i}", f"wide_next_{i}"
             exit_label = f"wide_exit_{i}"
 
             tgt_var_idx = next(
-                (ti for ti, tv in enumerate(target.types) if tv.as_unique_id_str() == var_uid), None)
+                (ti for ti, tv in enumerate(target.repr_members()) if tv.as_unique_id_str() == var_uid), None)
             slot_values = []
             if tgt_var_idx is not None:
                 for pi in range(len(cg_t._flatten_primitives(src_var.generate(resolver)))):
@@ -568,7 +572,7 @@ class PointerRepr(UnionRepr):
         subj_type = self.union_type
         unit_type = cg_t.Struct(())
         sv = subj_bundle.result_var
-        subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.types)
+        subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.repr_members())
 
         def member_guard(member: t.TypeSpec) -> cg_p.RParam | None:
             kind = _pointer_word_kind(member, resolver)
@@ -596,7 +600,7 @@ class PointerRepr(UnionRepr):
                 foreign_fallback = arm
             else:
                 if isinstance(arm.type_spec, t.CombinationSpec) and any(
-                        m.generate(resolver) == unit_type for m in arm.type_spec.types):
+                        m.generate(resolver) == unit_type for m in arm.type_spec.repr_members()):
                     union_arm_covers_none = True
                 guarded.append(arm)
 
@@ -615,7 +619,7 @@ class PointerRepr(UnionRepr):
                 self._pointer_literal_arm(em, arm, sv, resolver)
             elif isinstance(arm.type_spec, t.CombinationSpec):
                 guards = []
-                for member in arm.type_spec.types:
+                for member in arm.type_spec.repr_members():
                     if member.generate(resolver) == unit_type:
                         guards.append(cg_p.IntEqConst(sv, 0))
                     else:
@@ -700,7 +704,7 @@ class ComplexEnumRepr(UnionRepr):
         """Read a field off a complex-enum value. Field names are @hash-unique
         to one variant, so the field lives under its own name on the heap object
         of the variant whose declaration carries it."""
-        root_stmt = langtools.cast(
+        root_stmt = langtools.checked_cast(
             s.EnumStatement, resolver.find_type(self.union_type.root_name)[0].statement)
         leaf_field_sets = t._collect_leaf_field_sets(root_stmt, [])
         for leaf_name, leaf_fields in zip(self.union_type.all_leaf_names, leaf_field_sets):
@@ -754,7 +758,7 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         # exactly from the old EnumSpec.generate.
         types = resolver.find_type(union_type.root_name)
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
-            stmt = langtools.cast(s.EnumStatement, types[0].statement)
+            stmt = langtools.checked_cast(s.EnumStatement, types[0].statement)
             container, vmap = cg_t.compute_union_slots(t.enum_variant_types(stmt, resolver))
             return TaggedRepr(union_type, container, vmap)
         container = cg_t.Struct(tuple((name, ftype.generate(resolver))
@@ -762,9 +766,9 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         return TaggedRepr(union_type, container, ())
 
     if isinstance(union_type, t.CombinationSpec):
-        if _union_collapses_to_pointer(list(union_type.types), resolver):
+        if _union_collapses_to_pointer(list(union_type.repr_members()), resolver):
             return PointerRepr(union_type)
-        variant_types = [v.generate(resolver) for v in union_type.types]
+        variant_types = [v.generate(resolver) for v in union_type.repr_members()]
         container, vmap = cg_t.compute_union_slots(variant_types)
         return TaggedRepr(union_type, container, vmap)
 

@@ -3,7 +3,7 @@ namespace System
 fun [foreign("print_string"), impure, sync] __print_string(str: System::String): System::Int
 
 fun [impure] print(str: System::String): System::None
-    __print_string(str)
+    let _ = __print_string(str)
     ret None
 
 fun [impure] print(int: System::Int): System::None

@@ -12,10 +12,10 @@ from typing import Iterable
 import langtools
 from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
-from codegen.things import Function, Object, Global
+from codegen.ir import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
-    StructField, InitArray, Invoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq, ArrayElement, VtableDiscriminator
+    StructField, InitArray, RuntimeInvoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq, ArrayElement, VtableDiscriminator
 from functools import reduce
 
 
@@ -45,7 +45,7 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return __reduce_scan_sets(__scan_rparam(x) for x in p.values)
         case NewStruct():
             return __reduce_scan_sets(__scan_rparam(x) for _, x in p.values)
-        case Invoke():
+        case RuntimeInvoke():
             return __scan_rparam(p.parameters)
         case PointerTo():
             return __scan_rparam(p.value)

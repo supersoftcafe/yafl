@@ -33,6 +33,7 @@ call, and is ignored.
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 
 from parsing.parselib import Error
 
@@ -78,8 +79,8 @@ def _transform(stmt: s.Statement, resolver: g.Resolver, errors: list[Error]) -> 
     # self-call in an un-inlined closure would spuriously trip the non-tail
     # error below. (Blank lambdas to a leaf, then count what remains.)
     def blank_lambdas(_r, thing):
-        return e.NothingExpression(thing.line_ref) if isinstance(thing, e.LambdaExpression) else thing
-    own_body = stmt.body.search_and_replace(resolver, blank_lambdas)
+        return e.NothingExpression(thing.line_ref) if isinstance(thing, e.LambdaExpression) else rw.UNCHANGED
+    own_body = rw.resolved(stmt.body.search_and_replace(resolver, blank_lambdas), stmt.body)
 
     total = [0]
     def counter(_r, thing):

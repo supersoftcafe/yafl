@@ -65,7 +65,7 @@ fun _slotValue(parts: Array<String>, n: Int): String
 # value for slot N, then continue scanning after the closing `}`.
 fun _emitSlot(sb: StringBuilder, f: String, pos: Int, open: Int, dEnd: Int, parts: Array<String>): StringBuilder
   let argN = _parseDigits(f, open + 1, dEnd, 0)
-  let sb1 = append(sb, slice(f, pos, open))
+  let sb1 = appendSlice(sb, f, pos, open)
   let sb2 = append(sb1, _slotValue(parts, argN))
   ret _formatScan(sb2, f, dEnd + 1, parts)
 
@@ -85,7 +85,7 @@ fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: Array<Str
   let dEnd = _digitsEnd(f, open + 1)
   ret _isSlot(f, open, dEnd)
     ? _emitSlot(sb, f, pos, open, dEnd, parts)
-    : _formatScan(append(sb, slice(f, pos, open + 1)), f, open + 1, parts)
+    : _formatScan(appendSlice(sb, f, pos, open + 1), f, open + 1, parts)
 
 
 # Walk the template from `pos`: find the next `{` (if any), and either
@@ -93,7 +93,7 @@ fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: Array<Str
 fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: Array<String>): StringBuilder
   let open = findByte(f, '{', pos)
   ret open < 0
-    ? append(sb, slice(f, pos, length(f)))
+    ? appendSlice(sb, f, pos, length(f))
     : _trySlot(sb, f, pos, open, parts)
 
 

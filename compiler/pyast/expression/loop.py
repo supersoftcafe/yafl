@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -56,8 +56,8 @@ class RecurExpression(Expression):
     index: int
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            args=tuple(a.search_and_replace(resolver, replace) for a in self.args))))
+        return rw.rewrite(self, replace, resolver,
+            args=rw.seq(self.args, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return None  # bottom
@@ -124,10 +124,9 @@ class LoopExpression(Expression):
     params: tuple[NamedExpression, ...]
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
+        return rw.rewrite(self, replace, resolver,
             body=self.body.search_and_replace(resolver, replace),
-            params=tuple(cast(NamedExpression, p.search_and_replace(resolver, replace))
-                         for p in self.params))))
+            params=rw.seq(self.params, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.body.get_type(resolver)

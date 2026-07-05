@@ -106,7 +106,11 @@ enum { GC_PAGE_SIZE = 16384 };
 #endif
 
 
-#define ALIGNED     __attribute__((aligned(32)))
+// The allocator's slot granule: every heap object occupies a multiple of
+// this, on 32- and 64-bit alike. object.c's slot_t asserts it; size-aware
+// callers (string_builder_reserve's perfect-fill policy) consume it.
+#define GC_ALLOC_GRANULE 32
+#define ALIGNED     __attribute__((aligned(GC_ALLOC_GRANULE)))
 
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
@@ -268,6 +272,23 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 
 EXTERN size_t object_get_size(object_t* ptr);
 EXTERN vtable_t *object_get_vtable(object_t *object);
+
+// TRUE virtual dispatch: probe the perfect-hashed function table. Entry
+// index = (pre-rotated id & mask) / entry-stride — ids are pre-rotated by
+// rotate_function_id and the mask is rotate(size-1), so the rotation factor
+// cancels into an array index. Perfect hashing guarantees present slots
+// never collide; unused slots hold abort_on_vtable_lookup. The id assert is
+// a debug tripwire only: a type-correct program never looks up a slot its
+// static type doesn't provide. (First exercised 2026-07-04: every earlier
+// dispatch in the tree was single-implementation and devirtualised at every
+// -O level, so no genuinely-virtual call had ever been emitted.)
+INLINE fun_t vtable_lookup(object_t* object, intptr_t id) {
+    vtable_t* vt = object_get_vtable(object);
+    const vtable_entry_t* e =
+        &vt->lookup[(uint32_t)(id & vt->functions_mask) / (sizeof(intptr_t) * 2)];
+    assert(e->i == id);
+    return (fun_t){ .f = e->f, .o = (void*)object };
+}
 EXTERN fun_t object_lookup_vtable(object_t *object, intptr_t id);
 
 // Tag-aware "is-a" test for match-arm dispatch. True if `obj` is an instance
@@ -655,14 +676,31 @@ INLINE object_t* integer_andnot(object_t* a, object_t* b) {
 EXTERN object_t* integer_div(object_t* self, object_t* data);
 EXTERN object_t* integer_mul(object_t* self, object_t* data);
 EXTERN object_t* integer_rem(object_t* self, object_t* data);
-EXTERN int32_t   integer_cmp(object_t* self, object_t* data);
+EXTERN int32_t   integer_cmp_full(object_t* self, object_t* data);
+// Every Int comparison in generated code lands here — the tagged-literal
+// fast path is a raw word compare (same tag bit; value in the upper bits,
+// two's-complement order preserved by the shift encoding), so it belongs
+// inline next to integer_add/sub rather than behind a cross-TU call.
+INLINE int32_t integer_cmp(object_t* self, object_t* data) {
+    intptr_t va = (intptr_t)self, vb = (intptr_t)data;
+    if (LIKELY(va & vb & PTR_TAG_INTEGER)) {
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+        return 0;
+    }
+    return integer_cmp_full(self, data);
+}
 EXTERN object_t* integer_shl(object_t* self, object_t* amount);
 EXTERN object_t* integer_shr(object_t* self, object_t* amount);
 
 EXTERN object_t* integer_add_int32(object_t* self, int32_t value);
 EXTERN int32_t   integer_cmp_int32(object_t* self, int32_t value);
 EXTERN int32_t   int32_from_integer(object_t* self);
-EXTERN object_t* integer_from_int32(int32_t value);
+// An int32 always fits the tagged-literal encoding (value << 2 | tag), so
+// boxing one is three instructions and never allocates.
+INLINE object_t* integer_from_int32(int32_t value) {
+    return (object_t*)(((intptr_t)value << 2) | PTR_TAG_INTEGER);
+}
 EXTERN object_t* integer_from_int32_noalloc(int32_t value);
 
 // Tagged-pointer fast path; caller guarantees `value` fits in signed 24 bits
@@ -1015,6 +1053,7 @@ INLINE char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len
 }
 EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
 EXTERN object_t* string_append(object_t* self, object_t* data);
+EXTERN object_t* string_concat_n(int32_t count, ...);
 EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
 EXTERN int       string_compare(object_t* self, object_t* data);
 
@@ -1066,6 +1105,8 @@ INLINE object_t* ascii_to_string(int32_t b) {
 }
 
 EXTERN object_t* string_resize(object_t* self, object_t* new_size);
+EXTERN object_t* string_builder_reserve(object_t* buf, object_t* used, object_t* extra);
+EXTERN object_t* string_copy_range_to_dangerously(object_t* self, object_t* o_index, object_t* value, object_t* o_from, object_t* o_end);
 EXTERN object_t* string_find_byte(object_t* self, int32_t byte_value, object_t* from);
 EXTERN object_t* string_index_of (object_t* self, object_t* needle,     object_t* from);
 EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);

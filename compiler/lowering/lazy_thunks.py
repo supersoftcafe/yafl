@@ -70,11 +70,11 @@ from __future__ import annotations
 import hashlib
 
 from codegen.gen import Application
-from codegen.things import Function, Object
+from codegen.ir import Function, Object
 from codegen.ops import Op, Move, Return, ReturnVoid, Call, JumpIf, Jump, Label, NewObject
 from codegen.param import (
     StackVar, ObjectField, StructField, GlobalFunction, NullPointer,
-    NewStruct, Invoke, TagTask, RParam, IntEqConst, ZeroOf, PointerTo,
+    NewStruct, RuntimeInvoke, TagTask, RParam, IntEqConst, ZeroOf, PointerTo,
     SyncWrap,
 )
 from codegen.typedecl import (
@@ -107,6 +107,8 @@ def _ir_mangle(t: Type) -> str:
     if isinstance(t, Float):
         if t.precision in (32, 64):
             return f"f{t.precision}"
+    if isinstance(t, FuncPointer):
+        return "fun"
     if isinstance(t, Struct):
         # Hash the field signature for a stable, unique mangle.  Field
         # names are part of the signature: tuples (`_0`, `_1`, …) and
@@ -153,10 +155,11 @@ def ir_mangle_to_type(suffix: str) -> Type:
     """Inverse of `_ir_mangle`; used by `__ensure_lazy_machinery` in
     compiler.py to decode Lazy$X references back into IR types."""
     if suffix == "ptr": return DataPointer()
+    if suffix == "fun": return FuncPointer()
     if suffix.startswith("i"):
         bits = int(suffix[1:])
         if bits in (8, 16, 32, 64): return Int(bits)
-    if suffix.startswith("f"):
+    if suffix.startswith("f") and suffix != "fun":
         bits = int(suffix[1:])
         if bits in (32, 64): return Float(bits)
     if suffix.startswith("s_"):
@@ -175,7 +178,7 @@ _DISCARD = StackVar(DataPointer(), "$sv_lazy_discard")
 
 def _runtime_call(name: str, **args: RParam) -> Op:
     return Move(_DISCARD,
-                Invoke(name, NewStruct(tuple(args.items())), DataPointer()),
+                RuntimeInvoke(name, NewStruct(tuple(args.items())), DataPointer()),
                 keep=True)
 
 
@@ -238,7 +241,7 @@ def make_drain_function(value_type: Type) -> Function:
 
     ops: tuple[Op, ...] = (
         Move(sv_head,
-             Invoke("lazy_chain_swap_sentinel",
+             RuntimeInvoke("lazy_chain_swap_sentinel",
                     NewStruct((("flag", flag_field),)),
                     DataPointer())),
 
@@ -250,7 +253,7 @@ def make_drain_function(value_type: Type) -> Function:
         Move(ObjectField(value_type, sv_head, waiter_ty, "result", None), value),
 
         Move(sv_next,
-             Invoke("lazy_chain_step",
+             RuntimeInvoke("lazy_chain_step",
                     NewStruct((("head", sv_head),)),
                     DataPointer())),
         _runtime_call("task_complete_deferred", self=sv_head),
@@ -317,7 +320,7 @@ def make_fetch_function(value_type: Type) -> Function:
     closure_f = ObjectField(FuncPointer(), this, cls, "closure", None)
     value_f   = ObjectField(value_type,    this, cls, "value",   None)
 
-    is_complete = Invoke("lazy_global_init_complete",
+    is_complete = RuntimeInvoke("lazy_global_init_complete",
                          NewStruct((("p", flag_f),)),
                          Int(32))
 
@@ -332,7 +335,7 @@ def make_fetch_function(value_type: Type) -> Function:
         _runtime_call("task_init", self=waiter),
         Move(flag_addr, PointerTo(flag_f)),
         Move(status,
-             Invoke("lazy_thunk_enqueue",
+             RuntimeInvoke("lazy_thunk_enqueue",
                     NewStruct((("flag", flag_addr), ("waiter", waiter))),
                     Int(32))),
 
@@ -346,7 +349,7 @@ def make_fetch_function(value_type: Type) -> Function:
              register=rwrapped),
 
         JumpIf("$async_init",
-               Invoke("UNLIKELY",
+               RuntimeInvoke("UNLIKELY",
                       NewStruct((("x", is_task_param(rwrapped, wrapped)),)),
                       Int(32))),
 
@@ -360,7 +363,7 @@ def make_fetch_function(value_type: Type) -> Function:
         Label("$async_init"),
         _runtime_call(
             "task_on_complete",
-            task=Invoke("TASK_UNTAG",
+            task=RuntimeInvoke("TASK_UNTAG",
                         NewStruct((("p", task_ptr_from(rwrapped, wrapped)),)),
                         DataPointer()),
             cb=GlobalFunction(finisher, this)),

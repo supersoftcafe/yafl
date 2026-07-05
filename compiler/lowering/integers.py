@@ -7,6 +7,7 @@ import pyast.expression as e
 
 import pyast.resolver as g
 import pyast.typespec as t
+import pyast.rewrite as rw
 
 from pyast.statement import ImportGroup
 from parsing.tokenizer import LineRef
@@ -19,7 +20,7 @@ def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:
         def find_integer_literal(resolver: g.Resolver, thing: Any) -> Any:
             if isinstance(thing, e.IntegerExpression) and thing.precision == 0:
                 all_integer_literals.add(thing.value)
-            return thing
+            return rw.UNCHANGED
         for x in statements:
             x.search_and_replace(g.ResolverRoot([]), find_integer_literal)
         return all_integer_literals

@@ -87,13 +87,15 @@ class TestLazyThunks(TestCase):
         self.assertEqual(len(app.functions), 3)
 
     def test_unsupported_value_type_raises(self):
+        # An Int of non-standard precision has no lazy mangle (FuncPointer is
+        # now supported — a callable value memoises like any other).
         with self.assertRaises(NotImplementedError):
-            lt.make_stub_object(t.FuncPointer())
+            lt.make_stub_object(t.Int(24))
         with self.assertRaises(NotImplementedError):
-            lt.make_fetch_function(t.FuncPointer())
+            lt.make_fetch_function(t.Int(24))
 
     def test_ir_mangle_roundtrip(self):
-        for ty in (t.DataPointer(),
+        for ty in (t.DataPointer(), t.FuncPointer(),
                    t.Int(8), t.Int(16), t.Int(32), t.Int(64),
                    t.Float(32), t.Float(64)):
             self.assertEqual(lt.ir_mangle_to_type(lt._ir_mangle(ty)), ty)

@@ -11,6 +11,7 @@ const used in 100 places does not produce 100 copies in the emitted code.
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 from typing import Any
 
 import pyast.statement as s
@@ -38,11 +39,14 @@ def inline_constants(statements: list[s.Statement]) -> list[s.Statement]:
             # Re-stamp the line_ref so error messages point at the use site, not
             # the declaration. Other fields (value, precision) carry through.
             return dataclasses.replace(literal, line_ref=thing.line_ref)
-        return thing
+        return rw.UNCHANGED
 
+    # One indexed collection for the whole pass — the resolver reads its
+    # prebuilt index instead of rebuilding it per statement (was O(n^2)).
+    resolver = g.ResolverRoot(g.as_statements(statements))
     rewritten: list[s.Statement] = []
     for stmt in statements:
         if isinstance(stmt, s.LetStatement) and stmt.name in const_values:
             continue  # drop const declarations — they live entirely as inlined uses
-        rewritten.append(stmt.search_and_replace(g.ResolverRoot(statements), replace))
+        rewritten.append(rw.resolved(stmt.search_and_replace(resolver, replace), stmt))
     return rewritten

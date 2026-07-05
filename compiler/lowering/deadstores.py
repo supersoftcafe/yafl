@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 
 from codegen.gen import Application
-from codegen.things import Function
+from codegen.ir import Function
 from codegen.ops import Op, Move, Call, ParallelCall
 from codegen.param import StackVar
 

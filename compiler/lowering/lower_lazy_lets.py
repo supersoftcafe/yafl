@@ -27,6 +27,7 @@ turns that into a compile error rather than a runtime crash.
 from __future__ import annotations
 
 import dataclasses
+import pyast.rewrite as rw
 from typing import Any, Callable
 
 import pyast.expression as e
@@ -89,13 +90,13 @@ def check_lazy_forward_refs(statements: list[s.Statement]) -> list[Error]:
                                     f"non-lazy let '{thing.name}'. "
                                     f"Mark '{thing.name}' as [lazy], or move its "
                                     f"declaration before '{stmt.name}'."))
-                    return thing
+                    return rw.UNCHANGED
                 stmt.default_value.search_and_replace(g.ResolverRoot([]), _check_ref)
 
     def _walk(_resolver: g.Resolver, node: Any) -> Any:
         if isinstance(node, e.BlockExpression):
             _check_block(node.statements)
-        return node
+        return rw.UNCHANGED
 
     for stmt in statements:
         stmt.search_and_replace(g.ResolverRoot(statements), _walk)
@@ -174,7 +175,7 @@ def lower_lazy_lets(statements: list[s.Statement]) -> list[s.Statement]:
                 and thing.is_deferred_init()
                 and thing.declared_type is not None):
             lazy_lets[thing.name] = thing.declared_type
-        return thing
+        return rw.UNCHANGED
 
     root = g.ResolverRoot(statements)
     for stmt in statements:
@@ -196,10 +197,17 @@ def lower_lazy_lets(statements: list[s.Statement]) -> list[s.Statement]:
                 stub_name   = thing.name,
                 target_type = lazy_lets[thing.name],
             )
+        # Wrap EVERY deferred-init RHS in a nullary `() => expr` thunk so
+        # forcing runs it once and memoises the value. The wrapping does not
+        # care what the value is — a lambda is memoised like anything else
+        # (the thunk returns the lambda's fun_t). Special-casing a lambda RHS
+        # here was the function-typed-global bug: a value-lambda used directly
+        # as the init closure is called with no arguments, and even a nullary
+        # one would be CALLED rather than stored, memoising its result instead
+        # of the function value.
         if (isinstance(thing, s.LetStatement)
                 and thing.is_deferred_init()
-                and thing.default_value is not None
-                and not isinstance(thing.default_value, e.LambdaExpression)):
+                and thing.default_value is not None):
             T = thing.declared_type
             assert T is not None  # check() guarantees this
             wrapped = e.LambdaExpression(
@@ -211,6 +219,6 @@ def lower_lazy_lets(statements: list[s.Statement]) -> list[s.Statement]:
                                              T),
             )
             return dataclasses.replace(thing, default_value=wrapped)
-        return thing
+        return rw.UNCHANGED
 
-    return [stmt.search_and_replace(root, _rewrite) for stmt in statements]
+    return [rw.resolved(stmt.search_and_replace(root, _rewrite), stmt) for stmt in statements]

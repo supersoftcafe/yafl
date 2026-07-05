@@ -30,6 +30,7 @@ import pyast.match as m
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
+import pyast.rewrite as rw
 
 
 # An obligation is (root binding name, field-path to a linear leaf).
@@ -117,8 +118,8 @@ class _Checker:
         def fn(_, thing):
             if isinstance(thing, t.GenericPlaceholderSpec) and thing.name in mapping:
                 return mapping[thing.name]
-            return thing
-        return spec.search_and_replace(self.resolver, fn)
+            return rw.UNCHANGED
+        return rw.resolved(spec.search_and_replace(self.resolver, fn), spec)
 
     # --- structural (conservative) rejections ----------------------------
 
@@ -270,10 +271,10 @@ class _Checker:
         if isinstance(expr, e.BuiltinOpExpression):
             return self._count(expr.params, env, resolver)
 
-        # BoxExpression wraps a sub-expression to widen it into a union. It may
+        # ConvertExpression wraps a sub-expression to widen it into a union. It may
         # not be present this early in the pipeline, but recursing into `inner`
         # is correct whether or not it is.
-        if isinstance(expr, e.BoxExpression):
+        if isinstance(expr, e.ConvertExpression):
             return self._count(expr.inner, env, resolver)
 
         if isinstance(expr, e.TernaryExpression):
@@ -551,7 +552,7 @@ class _Checker:
         def visit(_, thing):
             if isinstance(thing, e.NamedExpression) and thing.name in env:
                 captured.add(thing.name)
-            return thing
+            return rw.UNCHANGED
         body.search_and_replace(self.resolver, visit)
         for name in sorted(captured):
             self.errors.append(Error(line_ref,
@@ -573,7 +574,7 @@ class _Checker:
             elif isinstance(thing, t.EnumSpec) and thing.type_params:
                 self._check_instantiation(thing.root_name, thing.type_params,
                                           thing.line_ref, is_type=True)
-            return thing
+            return rw.UNCHANGED
         for stmt in statements:
             stmt.search_and_replace(self.resolver, visit)
 

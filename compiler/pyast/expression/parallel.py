@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -26,9 +26,8 @@ class ParallelExpression(Expression):
     exprs: list[Expression]
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(
-            self,
-            exprs=[e.search_and_replace(resolver, replace) for e in self.exprs])))
+        return rw.rewrite(self, replace, resolver,
+            exprs=rw.seq(self.exprs, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TupleSpec | None:
         entries = []
@@ -61,7 +60,7 @@ class ParallelExpression(Expression):
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         fn_bundles = [expr.generate(resolver).with_prefix(f"par{i}") for i, expr in enumerate(self.exprs)]
-        result_types = [cast(t.CallableSpec, expr.get_type(resolver)).result for expr in self.exprs]
+        result_types = [checked_cast(t.CallableSpec, expr.get_type(resolver)).result for expr in self.exprs]
         result_vars = tuple(cg_p.StackVar(rt.generate(resolver), f"$par{i}") for i, rt in enumerate(result_types))
         register = cg_p.StackVar(self.get_type(resolver).generate(resolver), "$par_result")
         parallel_op = cg_o.ParallelCall(

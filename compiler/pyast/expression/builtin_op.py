@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
-import random
+import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -30,9 +30,9 @@ class BuiltinOpExpression(Expression):
     params: Expression
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
+        return rw.rewrite(self, replace, resolver,
             type=self.type.search_and_replace(resolver, replace),
-            params=self.params.search_and_replace(resolver, replace))))
+            params=self.params.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.type
@@ -75,7 +75,7 @@ class BuiltinOpExpression(Expression):
             raise ValueError("BuiltinOpExpression parameters must be tuple")
 
         xtype = self.type.generate(resolver)
-        xexpr = cg_p.Invoke(self.op.value, params_bundle.result_var, xtype)
+        xexpr = cg_p.RuntimeInvoke(self.op.value, params_bundle.result_var, xtype)
         final_bundle = g.OperationBundle( (), (), xexpr )
 
         return params_bundle + final_bundle

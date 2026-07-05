@@ -262,9 +262,9 @@ fun main(): System::Int
     def test_builtin_side_effect_survives_dead_store_elimination(self):
         """A __builtin_op__ call whose result is discarded must not be eliminated by DSE.
 
-        System::print compiles to Move(result, Invoke("print_string", ...)).  When the
+        System::print compiles to Move(result, RuntimeInvoke("print_string", ...)).  When the
         caller discards the return value, DSE previously dropped the entire Move —
-        including the Invoke side-effect — because the target StackVar was unread.
+        including the RuntimeInvoke side-effect — because the target StackVar was unread.
         The fix: only eliminate Moves whose source has no side effects.
         """
         content = """namespace System

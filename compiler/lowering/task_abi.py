@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import hashlib
 
-from codegen.param import RParam, StructField, Invoke, NewStruct
-from codegen.things import Object
+from codegen.param import RParam, StructField, RuntimeInvoke, NewStruct
+from codegen.ir import Object
 from codegen.typedecl import (
     Type, DataPointer, FuncPointer, Int, Struct, TaskWrapper, Void,
     ImmediateStruct, first_pointer_field,
@@ -117,16 +117,16 @@ def is_task_param(result_var: RParam, wrapped_type: Type) -> RParam:
     """Truthy (Int(32)) when `result_var` carries a task signal.
     `wrapped_type` is the *already-wrapped* return type."""
     if isinstance(wrapped_type, DataPointer):
-        return Invoke("PTR_IS_TASK", NewStruct((("p", result_var),)), Int(32))
+        return RuntimeInvoke("PTR_IS_TASK", NewStruct((("p", result_var),)), Int(32))
     if isinstance(wrapped_type, FuncPointer):
-        return Invoke("PTR_IS_TASK",
+        return RuntimeInvoke("PTR_IS_TASK",
                       NewStruct((("p", StructField(result_var, "o")),)), Int(32))
     if isinstance(wrapped_type, TaskWrapper):
         return StructField(result_var, "task")
     if isinstance(wrapped_type, Struct):
         fname = first_pointer_field(wrapped_type)
         if fname is not None:
-            return Invoke("PTR_IS_TASK",
+            return RuntimeInvoke("PTR_IS_TASK",
                           NewStruct((("p", StructField(result_var, fname)),)),
                           Int(32))
     raise ValueError(f"Cannot emit IS_TASK check for type {wrapped_type}")

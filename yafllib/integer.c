@@ -96,7 +96,7 @@ static int _compare_abs(integer_t* a, integer_t* b) {
     return 0;
 }
 
-EXTERN int32_t integer_cmp(object_t* a, object_t* b) {
+EXTERN int32_t integer_cmp_full(object_t* a, object_t* b) {
     if (_IS_LITERAL(a) && _IS_LITERAL(b)) {
         intptr_t av = (intptr_t)a;
         intptr_t bv = (intptr_t)b;
@@ -148,10 +148,6 @@ static integer_t* _normalize_integer(integer_t* result) {
     }
 
     return result;
-}
-
-EXPORT object_t* integer_from_int32(int32_t value) {
-    return (object_t*)_integer_from_intptr(value);
 }
 
 EXPORT object_t* integer_from_int32_noalloc(int32_t value) {
@@ -397,7 +393,11 @@ object_t* integer_mul(object_t* oa, object_t* ob) {
         intptr_t av = _UNTAG_LITERAL(oa);
         intptr_t bv = _UNTAG_LITERAL(ob);
         dword_t rv = (dword_t)av * (dword_t)bv;
-        if (rv >= INTPTR_MIN/2 && rv <= INTPTR_MAX/2) {
+        // Tag encoding is value << 2: the packable range is ±INTPTR_MAX/4,
+        // exactly as _integer_from_intptr checks. /2 admitted products in
+        // (2^61, 2^62) whose shift destroyed the top bits — (fact 20) came
+        // back negative (found by examples/ylisp.yafl).
+        if (rv >= INTPTR_MIN/4 && rv <= INTPTR_MAX/4) {
             return (object_t*)_TAG_LITERAL((intptr_t)rv);
         } else {
             integer_t* result = _integer_allocate(2);

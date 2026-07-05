@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
+import pyast.rewrite as rw
 import random
 from dataclasses import dataclass, field
 from functools import reduce
 
-from langtools import cast
+from langtools import checked_cast
 from parsing.tokenizer import LineRef
 from parsing.parselib import Error
 
@@ -42,8 +43,8 @@ class TupleEntryExpression:
     value: Expression
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> TupleEntryExpression:
-        return dataclasses.replace(self,
-            value=self.value.search_and_replace(resolver, replace))
+        v = self.value.search_and_replace(resolver, replace)
+        return rw.UNCHANGED if v is rw.UNCHANGED else dataclasses.replace(self, value=v)
 
     def get_type(self, resolver: g.Resolver) -> t.TupleSpec | None:
         return self.value.get_type(resolver)
@@ -66,8 +67,8 @@ class TupleExpression(Expression):
     expressions: list[TupleEntryExpression]
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
-        return cast(Expression, replace(resolver, dataclasses.replace(self,
-            expressions=[x.search_and_replace(resolver, replace) for x in self.expressions])))
+        return rw.rewrite(self, replace, resolver,
+            expressions=rw.seq(self.expressions, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TupleSpec | None:
         entries = [t.TupleEntrySpec(x.name, x.get_type(resolver)) for x in self.expressions]

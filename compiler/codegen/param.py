@@ -93,7 +93,7 @@ class NewStruct(RParam): # Create a new blank instance of the defined struct
 
 
 @dataclass(frozen=True)
-class Invoke(RParam):
+class RuntimeInvoke(RParam):
     function: str
     parameters: RParam
     type: t.Type
@@ -107,7 +107,7 @@ class Invoke(RParam):
     def get_type(self) -> t.Type:
         return self.type
 
-    def rename_vars(self, renames: dict[str, str]) -> Invoke:
+    def rename_vars(self, renames: dict[str, str]) -> RuntimeInvoke:
         return dataclasses.replace(self, parameters = self.parameters.rename_vars(renames))
 
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
@@ -144,6 +144,8 @@ class StructField(RParam):
             fields = xtype.fields
         elif isinstance(xtype, t.TaskWrapper):
             fields = (("value", xtype.inner), ("task", t.DataPointer()))
+        elif isinstance(xtype, t.FuncPointer):
+            fields = (("f", t.DataPointer()), ("o", t.DataPointer()))
         else:
             raise ValueError(f"StructField requires a Struct, got {xtype}")
         result = next((ftype for name, ftype in fields if name == self.field), None)
@@ -618,7 +620,7 @@ class LParam(RParam):
         return self
 
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> LParam:
-        return langtools.cast(LParam, replacer(self))
+        return langtools.checked_cast(LParam, replacer(self))
 
     def to_c_store(self, type_cache: dict[t.Type, tuple[str, str]], value: str) ->str:
         return f"    {self.to_c(type_cache)} = {value};\n"
@@ -676,7 +678,7 @@ class ObjectField(LParam):
         return base
 
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> LParam:
-        return langtools.cast(LParam, replacer(dataclasses.replace(self, pointer=self.pointer.replace_params(replacer), index=self.index and self.index.replace_params(replacer))))
+        return langtools.checked_cast(LParam, replacer(dataclasses.replace(self, pointer=self.pointer.replace_params(replacer), index=self.index and self.index.replace_params(replacer))))
 
     def to_c_store(self, type_cache: dict[t.Type, tuple[str, str]], value: str) ->str:
         pointer = self.pointer.to_c(type_cache)

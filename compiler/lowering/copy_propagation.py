@@ -12,7 +12,7 @@ Conservative rules:
 
   - The Move's target `M` must be a StackVar.
   - The Move's source `S` must also be a StackVar. Substituting a non-LParam
-    (NullPointer, Invoke, etc.) is unsafe because `replace_params` walks both
+    (NullPointer, RuntimeInvoke, etc.) is unsafe because `replace_params` walks both
     read and write positions of the next op — if `M` happens to appear as an
     LParam there, propagating an RParam-only value into that slot is a type
     error.
@@ -39,7 +39,7 @@ from __future__ import annotations
 import dataclasses
 
 from codegen.gen import Application
-from codegen.things import Function
+from codegen.ir import Function
 from codegen.ops import Op, Move, Label, Return, ReturnVoid
 from codegen.param import StackVar, RParam
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pyast.statement as s
 import pyast.expression as e
 
 import pyast.resolver as g
 import pyast.typespec as t
+import pyast.rewrite as rw
 
 from pyast.statement import ImportGroup
 from parsing.tokenizer import LineRef
@@ -14,10 +17,10 @@ def fix_global_strings(statements: list[s.Statement]) -> list[s.Statement]:
     # Find all string literals
     def find_all_string_literals(statements: list[s.Statement]) -> set[str]:
         all_string_literals: set[str] = set()
-        def find_string_literal(resolver: g.Resolver, thing: any) -> any:
+        def find_string_literal(resolver: g.Resolver, thing: Any) -> Any:
             if isinstance(thing, e.StringExpression):
                 all_string_literals.add(thing.value)
-            return thing
+            return rw.UNCHANGED
         for x in statements:
             x.search_and_replace(g.ResolverRoot([]), find_string_literal)
         return all_string_literals
@@ -39,7 +42,7 @@ def fix_global_strings(statements: list[s.Statement]) -> list[s.Statement]:
     global_references = {value: e.NamedExpression(statement.line_ref, statement.name)  for value, statement in global_statements.items()}
 
     # Replace all strings with their global reference counterparts
-    def replace_string_expression(resolver: g.Resolver, thing: any) -> any:
+    def replace_string_expression(resolver: g.Resolver, thing: Any) -> Any:
         if isinstance(thing, e.StringExpression):
             return global_references[thing.value]
         return thing

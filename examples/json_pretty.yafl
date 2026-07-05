@@ -5,42 +5,30 @@ import System::IO
 import System::Json
 
 
-# Pretty-print JSON read from stdin to stdout.
-# IO is used only to move bytes; the JSON conversion itself is pure
-# (System::Json is a String -> JsonValue -> String converter).
+# Pretty-print JSON read from stdin to stdout, in constant memory.
+#
+# The whole pipeline is a lazy stream: bytes are pulled from stdin only as the
+# formatter needs them and written to stdout as they are produced, so an
+# arbitrarily large document never has to be held in memory at once.
+#
+#   stdin → asStream → tokenize → prettyEmit → writeStream → stdout
+#
+# No type argument is written anywhere, and no `let`: each pipe stage binds the
+# previous stage's tuple positionally. The stdin handle `i` is never referenced,
+# so it auto-closes at scope exit through the `Drop<IO>` instance — AFTER the
+# stream is drained (scope-exit timing) — and a read-side close error is
+# discarded by that instance's declared policy. The stdout handle's close is
+# the final flush, so ITS error matters: `o` is consumed explicitly on every
+# path, and a close failure turns an otherwise clean run into an IO error.
 # Exit codes:
 #   0  ok
-#   1  IO error
+#   1  IO error (including a failed output flush/close)
 #   2  parse error
-
-# Read the whole input into a String, accumulating fixed-size chunks until EOF.
-fun _slurp(io: IO, acc: String): (io: IO, v: String|IOError)
-  let r = io.read(4096)
-  ret match(r.v)
-    (s: String)  => _slurp(r.io, acc + s)
-    (e: IOError) => match(e)
-      (eof: EOFError) => (r.io, acc)
-      ()              => (r.io, e)
-
-fun _emit(io: IO, text: String): System::Int
-  let r = writeAll(io, text + "\n")
-  # Close unconditionally so the handle is consumed on every path,
-  # then decide the exit code.
-  let closeResult = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => match(closeResult)
-      (e: IOError)      => 1
-      (n: System::None) => 0
-    (e: IOError) => 1
-
-fun _convert(input: System::String): System::Int
-  ret match(parse(input))
-    (val: JsonValue)    => _emit(stdout(), stringify(val, true))
-    (e: JsonParseError) => 2
-
 fun main(): System::Int
-  let r = _slurp(stdin(), "")
-  let closeResult = r.io.close()
-  ret match(r.v)
-    (input: System::String) => _convert(input)
-    (e: IOError)            => 1
+  ret stdin().asStream()
+    |> (i, s) => writeStream(stdout(), prettyEmit(tokenize(s)))
+    |> (o, v) => (o.close(), v)
+    |> (c, v) => match(v)
+      (e: IOError)        => 1
+      (p: JsonParseError) => 2
+      (n: System::None)   => c !is None ? 1 : 0

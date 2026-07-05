@@ -134,7 +134,7 @@ EXPORT void abort_on_array_bounds() {
 
 typedef uintptr_t mask_bits_t;
 enum { GC_MASK_SIZE = sizeof(mask_bits_t) * 8 /* bits */ };
-enum { GC_SLOT_SIZE = 32 /* bytes */ };
+enum { GC_SLOT_SIZE = GC_ALLOC_GRANULE /* bytes; single source: yafl.h */ };
 
 typedef struct {
     mask_bits_t a[GC_PAGE_SIZE / GC_SLOT_SIZE / 8 / sizeof(mask_bits_t)];
