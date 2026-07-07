@@ -488,6 +488,17 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     if untyped_errors:
         return untyped_errors
 
+    # `[future]` is a LOCAL-let feature: a global initialises at startup,
+    # before the worker pool is useful, and the global lazy codegen path has
+    # no post site — it would silently behave as `[lazy]`. Reject instead.
+    future_global_errors = [
+        Error(stmt.line_ref, "[future] is not supported on a global let — "
+                             "it initialises at startup; use [lazy]")
+        for stmt in new_statements
+        if isinstance(stmt, s.LetStatement) and stmt.is_future_init()]
+    if future_global_errors:
+        return future_global_errors
+
     diagnostics = [x for stmt in new_statements for x in stmt.check(__stmt_scope_resolver(stmt, resolver), None)]
     if not mains:
         diagnostics += [Error(LineRef("none", 0, 0), "No main function found")]

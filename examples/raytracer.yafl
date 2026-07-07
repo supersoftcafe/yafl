@@ -137,11 +137,15 @@ fun [tail] _rangeStr(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: I
 # ── Parallel render ──────────────────────────────────────────────────────────
 # Divide the row range and render the halves concurrently; the two text blocks
 # concatenate back in order. Small ranges render serially (a leaf).
+#
+# The top half is a `[future]`: its render is posted to the worker pool at the
+# binding, the bottom half renders on this task meanwhile, and reading `top`
+# is the join — parking until the worker finishes (or, when the pool is busy,
+# the binding quietly degrades to lazy and the read evaluates it right here).
 fun _renderSplit(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, lo: Int, hi: Int): String
   let mid = (lo + hi) / 2
-  let (top, bot) = __parallel__(
-        () => _render(scene, cam, light, w, h, lo, mid),
-        () => _render(scene, cam, light, w, h, mid, hi))
+  let [future] top = _render(scene, cam, light, w, h, lo, mid)
+  let bot = _render(scene, cam, light, w, h, mid, hi)
   ret top + bot
 
 fun _render(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, lo: Int, hi: Int): String => (hi - lo) <= 8

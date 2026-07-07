@@ -73,18 +73,20 @@ class TestLazyThunks(TestCase):
         self.assertEqual(cls1, cls2)
         self.assertEqual(cls1, "Lazy$ptr")
         # Three objects (stub + foreign task base + canonical waiter
-        # task subtype), three functions (fetch + finisher + drain).
-        # The waiter subtype is registered under its async_lower-shared
-        # name (`task_obj` for DataPointer) so ObjectField casts on a
-        # completed task land on the actual emitted struct.
+        # task subtype), four functions (fetch + finisher + drain + the
+        # [future] worker runner). The waiter subtype is registered under
+        # its async_lower-shared name (`task_obj` for DataPointer) so
+        # ObjectField casts on a completed task land on the actual
+        # emitted struct.
         self.assertIn("Lazy$ptr",            app.objects)
         self.assertIn("task",                app.objects)
         self.assertIn("task_obj",            app.objects)
         self.assertIn("lazy_fetch$ptr",      app.functions)
         self.assertIn("lazy_finish$ptr",    app.functions)
         self.assertIn("lazy_drain$ptr",      app.functions)
+        self.assertIn("future_run$ptr",      app.functions)
         self.assertEqual(len(app.objects),   3)
-        self.assertEqual(len(app.functions), 3)
+        self.assertEqual(len(app.functions), 4)
 
     def test_unsupported_value_type_raises(self):
         # An Int of non-standard precision has no lazy mangle (FuncPointer is

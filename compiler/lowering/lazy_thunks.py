@@ -134,6 +134,7 @@ def stub_class_name(t: Type)        -> str: return f"Lazy${_ir_mangle(t)}"
 def fetch_function_name(t: Type)    -> str: return f"lazy_fetch${_ir_mangle(t)}"
 def finisher_function_name(t: Type) -> str: return f"lazy_finish${_ir_mangle(t)}"
 def drain_function_name(t: Type)    -> str: return f"lazy_drain${_ir_mangle(t)}"
+def future_runner_name(t: Type)     -> str: return f"future_run${_ir_mangle(t)}"
 
 
 def waiter_subtype_name(t: Type) -> str:
@@ -396,6 +397,46 @@ def make_fetch_function(value_type: Type) -> Function:
     )
 
 
+# ─── Future runner (worker-pool entry for `[future]` lets) ────────────────
+
+def make_future_runner_function(value_type: Type) -> Function:
+    """The task callback a `[future]` let posts at bind time (via the runtime's
+    `future_post`): fire signature `(this=stub, task) -> object_t*`, matching
+    `_task_fire`'s invocation exactly — the fetch itself must NOT be fired
+    directly, since its wrapped(T) result can be a struct return (hidden sret)
+    and would misread the fire's two-pointer frame.
+
+    Body: run the ordinary fetch on the stub and discard the result. Winning
+    the init race evaluates the thunk on this worker and drains any waiters;
+    losing it (a reader got in first, or the thunk suspended) leaves a
+    callback-less waiter on the stub's chain — completed by the drain later,
+    harmless. Either way every reader's own fetch sees the protocol state."""
+    fname   = future_runner_name(value_type)
+    fetch   = fetch_function_name(value_type)
+    wrapped = wrap_return_type(value_type)
+
+    this     = StackVar(DataPointer(), "this")
+    rwrapped = StackVar(wrapped,       "result_wrapped")
+
+    return Function(
+        name=fname,
+        params=Struct((("this", DataPointer()), ("$task", DataPointer()))),
+        result=DataPointer(),
+        stack_vars=Struct((("result_wrapped", wrapped),)),
+        ops=(
+            # The stub is the fetch's `this` (bound, like the finisher's
+            # callback binding) — the fetch takes no further parameters.
+            Call(function=GlobalFunction(fetch, this),
+                 parameters=NewStruct(()),
+                 register=rwrapped),
+            Return(NullPointer()),
+        ),
+        comment=f"[future] worker runner for {_ir_mangle(value_type)}",
+        sync=False,
+        bypass_async=True,
+    )
+
+
 # ─── Finisher (async-completion callback) ─────────────────────────────────
 
 def make_finisher_function(value_type: Type) -> Function:
@@ -462,4 +503,5 @@ def ensure_lazy_machinery(app: Application, value_type: Type) -> str:
     app.functions[fetch_function_name(value_type)]     = make_fetch_function(value_type)
     app.functions[finisher_function_name(value_type)]  = make_finisher_function(value_type)
     app.functions[drain_function_name(value_type)]     = make_drain_function(value_type)
+    app.functions[future_runner_name(value_type)]      = make_future_runner_function(value_type)
     return cls

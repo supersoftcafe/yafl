@@ -94,25 +94,28 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
 
 def compile_and_run_stdlib(source: str, timeout: int = 5,
                            args: list[str] | None = None,
-                           optimization_level: int = 0) -> int:
+                           optimization_level: int = 0,
+                           env: dict[str, str] | None = None) -> int:
     """Compile yafl source with stdlib, link against libyafl, run, return exit code.
 
     `args`, when provided, are passed as the program's CLI arguments (so
     `System::args()` in the yafl source sees them). `optimization_level` selects
-    the yafl optimisation level (>0 enables inlining etc.)."""
+    the yafl optimisation level (>0 enables inlining etc.). `env` adds/overrides
+    environment variables for the RUN (e.g. YAFL_TASK_BACKLOG)."""
     rc, _ = compile_and_run_stdlib_capture(source, timeout=timeout, args=args,
-                                           optimization_level=optimization_level)
+                                           optimization_level=optimization_level, env=env)
     return rc
 
 
 def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
                                    args: list[str] | None = None,
-                                   optimization_level: int = 0) -> tuple[int, str]:
+                                   optimization_level: int = 0,
+                                   env: dict[str, str] | None = None) -> tuple[int, str]:
     """Same as compile_and_run_stdlib but also returns the program's stdout
     (decoded as UTF-8). Used by tests that batch several checks into one
     program and verify the printed output, sidestepping the per-test
     compile+link wall-clock. `optimization_level` selects the yafl optimisation
-    level (>0 enables inlining etc.)."""
+    level (>0 enables inlining etc.); `env` adds/overrides run environment."""
     c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
                        optimization_level=optimization_level)
     assert c_code, "yafl compilation produced no output (type errors?)"
@@ -125,7 +128,8 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
-        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout, env=_RUN_ENV)
+        run_env = {**_RUN_ENV, **env} if env else _RUN_ENV
+        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout, env=run_env)
         return run.returncode, run.stdout.decode("utf-8", errors="replace")
     finally:
         try:

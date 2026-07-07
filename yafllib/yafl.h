@@ -486,6 +486,11 @@ EXTERN bool thread_work_accepting(void);
 // Returns NULL; the object_t* return makes the symbol usable from the YAFL
 // compiler's `Invoke` form (which always assigns the result into a discard slot).
 EXTERN object_t* thread_dispatch(fun_t action);
+// `[future]` bind-time spawn: post a task firing `cb` (the per-type
+// future_run$<T> runner bound to the stub) on a worker; no-op when the pool
+// is not accepting — the binding then degrades to exactly [lazy]. NULL return
+// for the same Invoke-form reason as thread_dispatch.
+EXTERN object_t* future_post(fun_t cb);
 
 
 /**********************************************************

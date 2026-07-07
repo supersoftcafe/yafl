@@ -422,15 +422,26 @@ class _Checker:
             # linear type captured by the synthesised closure body fall under
             # the same "captured by a nested function or lambda" rule. Reject
             # both at declaration.
+            #
+            # `[future]` differs: a linear PAYLOAD makes the binding itself
+            # linear (registered below), so its single read is the consumption
+            # and the thunk runs exactly once (claim protocol — on the worker
+            # or the reader). Under that same guarantee its linear CAPTURES
+            # are consumed exactly once too, so both are sound. Without a
+            # linear payload the guarantee lapses — an unread future is only a
+            # warning, and on the degraded-lazy path its thunk never runs —
+            # so linear captures then fall back to the lazy rejection.
             if stmt.is_deferred_init():
-                if (stmt.declared_type is not None
-                        and self.carries_linearity(stmt.declared_type)):
+                payload_linear = (stmt.declared_type is not None
+                                  and self.carries_linearity(stmt.declared_type))
+                if payload_linear and not stmt.is_future_init():
                     self.errors.append(Error(stmt.line_ref,
                         f"[lazy] let '{stmt.name}' may not hold a "
                         f"linear value — the stub memoises across "
                         f"forces, so multiple reads would yield "
                         f"the same linear instance"))
-                if stmt.default_value is not None:
+                if stmt.default_value is not None and not (
+                        stmt.is_future_init() and payload_linear):
                     self._check_capture(stmt.default_value, local_env, stmt.line_ref)
             c = self._count(stmt.default_value, local_env, resolver) if stmt.default_value else Counter()
             if stmt.declared_type is not None and self.carries_linearity(stmt.declared_type):

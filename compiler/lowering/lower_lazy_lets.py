@@ -1,6 +1,13 @@
-"""`[lazy]` let lowering.
+"""Deferred-init (`[lazy]` / `[future]`) let lowering.
 
-For each `let [lazy] x: T = expr` (local + global), this pass:
+A `[future]` let is a `[lazy]` whose thunk is POSTED to the worker pool at
+bind time (LetStatement.generate_lazy_populate emits the `future_post` call;
+the runtime skips the post when the pool isn't accepting, degrading the
+binding to exactly `[lazy]`). Everything in this pass — the thunk wrap, the
+reference rewrite, the stub — is common to both; `is_deferred_init()` is the
+predicate throughout.
+
+For each such deferred `let [lazy] x: T = expr` (local + global), this pass:
 
   1. Wraps the RHS in a `() => expr` LambdaExpression so the subsequent
      lambdas pass converts it to a closure class + NewExpression.  The

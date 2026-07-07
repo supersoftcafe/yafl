@@ -54,20 +54,26 @@ class LetStatement(DataStatement):
         return self.declared_type
 
     def is_deferred_init(self) -> bool:
-        """True if this let is initialised lazily — its RHS is wrapped in
-        a closure and evaluation is deferred until first force.  Today
-        that means `[lazy]`; future deferred-eval attributes route through
-        the same predicate so callers don't need to enumerate them.
+        """True if this let's RHS is wrapped in a closure and its slot holds a
+        deferred stub rather than the value: `[lazy]` (evaluated at first
+        force, on the forcer) and `[future]` (posted to the worker pool at
+        bind time; a read parks until complete — or, when the pool isn't
+        accepting, degrades to exactly `[lazy]`).
 
         Used to keep multiple compiler stages in lock-step:
         `ast_inline` skips statement-level inlining; `lower_lazy_lets`
         wraps the RHS in a `()=>expr` lambda; `NamedExpression.generate`
         returns DataPointer-typed storage (the stub pointer);
         `BlockExpression.generate` hoists stub allocation to block entry.
-        Any new pass that special-cases lazy lets should consult this
-        predicate rather than spelling out `"lazy" in attributes`.
+        Any new pass that special-cases deferred lets should consult this
+        predicate rather than spelling out the attribute names.
         """
-        return "lazy" in self.attributes
+        return "lazy" in self.attributes or "future" in self.attributes
+
+    def is_future_init(self) -> bool:
+        """True for `[future]` — the deferred stub whose thunk is posted to
+        the worker pool at bind time. Always implies is_deferred_init."""
+        return "future" in self.attributes
 
     def add_namespace(self, path: str):
         return self if self.name == '_' else super().add_namespace(path)
@@ -128,6 +134,18 @@ class LetStatement(DataStatement):
                 lazy_err.append(Error(self.line_ref, "[lazy] takes no arguments"))
             if self.default_value is None:
                 lazy_err.append(Error(self.line_ref, "[lazy] requires an initialiser"))
+        if "future" in self.attributes:
+            if self.attributes.get("future") is not None:
+                lazy_err.append(Error(self.line_ref, "[future] takes no arguments"))
+            if self.default_value is None:
+                lazy_err.append(Error(self.line_ref, "[future] requires an initialiser"))
+            if "lazy" in self.attributes:
+                lazy_err.append(Error(self.line_ref,
+                    "[lazy] and [future] are mutually exclusive — a future IS "
+                    "lazy when the worker pool is busy; pick one"))
+            if isinstance(self, DestructureStatement):
+                lazy_err.append(Error(self.line_ref,
+                    "[future] applies to a simple let, not a destructuring binding"))
         where_err = [e for x in self.trait_params for e in x.check(resolver)]
         return err1 + err2 + const_err + lazy_err + where_err
 
@@ -203,9 +221,24 @@ class LetStatement(DataStatement):
         closure_bundle = self.default_value.generate(resolver).with_prefix("closure")
         sv_stub   = cg_p.StackVar(cg_t.DataPointer(), self.name)
         closure_f = cg_p.ObjectField(cg_t.FuncPointer(), sv_stub, cls, "closure", None)
+        ops: tuple = (cg_o.Move(closure_f, closure_bundle.result_var),)
+        stack_vars: tuple = ()
+        if self.is_future_init():
+            # `[future]`: hand the populated stub to the worker pool. The
+            # runtime helper posts a task whose callback is the per-type
+            # runner bound to the stub — or does nothing when the pool is
+            # saturated, degrading this binding to exactly `[lazy]`. Must
+            # follow the closure Move: a worker may fire immediately.
+            sv_discard = cg_p.StackVar(cg_t.DataPointer(), "$sv_future_discard")
+            post = cg_p.RuntimeInvoke(
+                "future_post",
+                cg_p.NewStruct((("cb", cg_p.GlobalFunction(lt.future_runner_name(ir_t), sv_stub)),)),
+                cg_t.DataPointer())
+            ops += (cg_o.Move(sv_discard, post, keep=True),)
+            stack_vars += (sv_discard,)
         return closure_bundle + g.OperationBundle(
-            stack_vars=(),
-            operations=(cg_o.Move(closure_f, closure_bundle.result_var),),
+            stack_vars=stack_vars,
+            operations=ops,
             result_var=None,
         )
 
