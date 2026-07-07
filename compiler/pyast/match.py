@@ -339,18 +339,20 @@ class MatchExpression(e.Expression):
             arms=rw.seq(self.arms, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        # A match yields a value of ANY arm's body type, so its type is the
-        # JOIN (set union) of them — not just the first arm. Identical arms
-        # collapse back to that one type (the singleton rule); heterogeneous
-        # arms (a member `A` and the union `A|None` it belongs to, say) widen
-        # to their set union `A|None`. Taking only the first arm made the shared
-        # result slot too narrow, so a wider later arm was truncated into it
-        # (a value of `A|None` stored as `A`) — a C type mismatch under -O2.
+        # A match yields a value of ANY arm's body type, so its type is a pure
+        # function of them: the one type they all share, or their flattened SET
+        # UNION — total, never failing, never clever (no common-parent search,
+        # no field-wise tuple merging; see t.join). Incompatibility with the
+        # receiver is the RECEIVER's error to report; a declared receiver type
+        # threads back into the arms and converges them. Taking only the first
+        # arm made the shared result slot too narrow, so a wider later arm was
+        # truncated into it (a value of `A|None` stored as `A`) — a C type
+        # mismatch under -O2.
         resolved = [ty for ty in (arm.get_body_type(resolver) for arm in self.arms)
                     if ty is not None]
         if not resolved:
             return None
-        return reduce(lambda x, y: t.join(x, y, resolver), resolved)
+        return reduce(t.join, resolved)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
         new_subject, subj_stmts = self.subject.compile(resolver, None)

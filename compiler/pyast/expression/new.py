@@ -180,14 +180,32 @@ class NewEnumExpression(Expression):
             return types[0].statement._enum_spec
         return None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[NewEnumExpression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        # Thread each construction argument's declared FIELD type down — the
+        # argument node owns any boxing toward it (a union-typed field takes a
+        # narrow argument). Mirrors the field lookup construct_enum_value
+        # performs when emitting.
+        by_name: dict[str, t.TypeSpec | None] = {}
+        types = resolver.find_type(self.root_spec_name)
+        if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
+            root_stmt = types[0].statement
+            root_spec = root_stmt._enum_spec
+            if root_spec is not None and self.leaf_name in root_spec.all_leaf_names:
+                leaf_idx = root_spec.all_leaf_names.index(self.leaf_name)
+                leaf_fields = t._collect_leaf_field_sets(root_stmt, [])[leaf_idx]
+                by_name = {let.name: let.declared_type for let in leaf_fields}
         new_field_args: dict[str, Expression] = {}
         all_stmts: list[s.Statement] = []
         for fname, fexpr in self.field_args.items():
-            new_fexpr, stmts = fexpr.compile(resolver, None)
+            new_fexpr, stmts = fexpr.compile(resolver, by_name.get(fname))
             new_field_args[fname] = new_fexpr
             all_stmts.extend(stmts)
-        return dataclasses.replace(self, field_args=new_field_args), all_stmts
+        expr = dataclasses.replace(self, field_args=new_field_args)
+        # The constructed enum value owns its conversion to the receiver — an
+        # enum member boxing into a union that contains it (`JsonParseError`
+        # into `State | JsonParseError`).
+        from pyast.expression.conversion import converted
+        return converted(expr, expected_type, resolver), all_stmts
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         errors: list[Error] = []

@@ -125,12 +125,10 @@ class FunctionStatement(DataStatement):
             else:
                 # An undeclared return converges on the body's type and must be
                 # free to WIDEN as a match/branch body broadens (`A`, then
-                # `A|None`) — the shared receiver-convergence step, gated on the
-                # body still changing this pass.
+                # `A|None`) — the shared receiver-convergence step.
                 new_inferred = True
                 rettype = t.refine_widening(rettype, resolver,
-                                            lambda: new_body.get_type(body_resolver),
-                                            new_body != self.body)
+                                            lambda: new_body.get_type(body_resolver))
         else:
             new_body, body_glb = None, []
 

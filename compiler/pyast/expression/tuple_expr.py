@@ -75,13 +75,23 @@ class TupleExpression(Expression):
         return t.TupleSpec(self.line_ref, entries = entries)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        expected_entries = expected_type.entries if isinstance(expected_type, t.TupleSpec) else []
+        # A tuple literal converges FIELD-WISE against a tuple receiver: each
+        # entry compiles toward its slot and owns any boxing itself. Against a
+        # UNION receiver holding a matching tuple variant, the fields converge
+        # toward that variant, then the whole tuple owns the box into the union.
+        from pyast.expression.conversion import converted, matching_tuple_variant
+        effective = expected_type
+        if isinstance(expected_type, t.CombinationSpec):
+            actual = self.get_type(resolver)
+            if actual is not None and actual.is_concrete():
+                effective = matching_tuple_variant(actual, expected_type, resolver)
+        expected_entries = effective.entries if isinstance(effective, t.TupleSpec) else []
         def entry_expected(i: int) -> t.TypeSpec | None:
             return expected_entries[i].type if i < len(expected_entries) else None
         p = [x.compile(resolver, entry_expected(i)) for i, x in enumerate(self.expressions)]
         new_expressions, new_statements_lists = zip(*p) if p else ([], [])
         expr = dataclasses.replace(self, expressions=list(new_expressions))
-        return expr, list(x for l in new_statements_lists for x in l)
+        return converted(expr, expected_type, resolver), list(x for l in new_statements_lists for x in l)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # TODO: Breakdown expected_type and pass it into the check function

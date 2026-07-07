@@ -33,7 +33,10 @@ class StringExpression(Expression):
         return t.BuiltinSpec(self.line_ref, "str")
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
+        # A literal owns its conversion to the receiver — its only case is
+        # boxing into a union slot (`"x"` into `String|None`).
+        from pyast.expression.conversion import converted
+        return converted(self, expected_type, resolver), []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
@@ -68,7 +71,10 @@ class _NumericLiteral(Expression):
         # a char literal is an Int32 literal. No context narrowing, no
         # conversion: type what you mean. (Superseded machinery: contextual
         # width adoption, f238a66; literal second phase, same-day.)
-        return self, []
+        # The one conversion a literal owns is boxing into a union slot
+        # (`7` into `Int|None`) — a representation change, not a re-typing.
+        from pyast.expression.conversion import converted
+        return converted(self, expected_type, resolver), []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
@@ -112,7 +118,9 @@ class BoolExpression(Expression):
         return t.BuiltinSpec(self.line_ref, "bool")
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
+        # Boxing into a union slot is the one conversion a literal owns.
+        from pyast.expression.conversion import converted
+        return converted(self, expected_type, resolver), []
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []

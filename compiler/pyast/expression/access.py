@@ -145,7 +145,7 @@ class DotExpression(Expression):
         return None
 
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[DotExpression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
         base, new_statements = self.base.compile(resolver, None)
         name = self.name
 
@@ -170,7 +170,11 @@ class DotExpression(Expression):
                         name = match_field[0]
 
         expr = dataclasses.replace(self, base=base, name=name)
-        return expr, new_statements
+        # A field read owns its conversion to the receiver (an `A`-typed field
+        # into an `A|None` slot). A method load (CallableSpec expected) never
+        # converts.
+        from pyast.expression.conversion import converted
+        return converted(expr, expected_type, resolver), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         btype = self.base.get_type(resolver)
@@ -348,7 +352,13 @@ class NamedExpression(Expression):
             data.statement, self.type_params, expected_type, resolver)
 
         type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in type_params_to_compile)
-        return dataclasses.replace(self, name=new_name, type_params=tuple(type_params), resolved_trait_scope=trait_scope), new_statements
+        expr = dataclasses.replace(self, name=new_name, type_params=tuple(type_params), resolved_trait_scope=trait_scope)
+        # A committed load owns its conversion to the receiver (an `A`-typed
+        # binding into an `A|None` slot). Ground types only, so the expected-
+        # SHAPE overload selection above is undisturbed, and a CallableSpec
+        # expected (this load is being called) never converts.
+        from pyast.expression.conversion import converted
+        return converted(expr, expected_type, resolver), new_statements
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]

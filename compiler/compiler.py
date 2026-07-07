@@ -9,7 +9,6 @@ sys.setrecursionlimit(20000)
 
 import lowering.ast_inline
 import lowering.block_exits
-import lowering.conversions
 import lowering.constants
 import lowering.integers
 import lowering.strings
@@ -523,14 +522,16 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
 
     # All ok so let's create some C code
     new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
+    # Monomorphisation re-enters the compile fixpoint: a conversion inside a
+    # generic template is undecidable (needs_conversion is conservative on
+    # non-ground types), so each node of a freshly-instantiated body places its
+    # own ConvertExpression only now, when its types are concrete — the same
+    # node-owns-its-conversion step every ground node already ran during the
+    # main converge. Sits before tail-loop lowering so a recursive call's boxed
+    # arguments carry over to the loop back-edge.
+    new_statements, resolver = __converge(new_statements)
     new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
     new_statements = lowering.constants.inline_constants(new_statements)
-    # Make every implicit representation change an explicit ConvertExpression —
-    # generate never coerces (docs/compiler-internals.md §2). Must run after
-    # monomorphisation (conversions inside generic templates are undecidable
-    # before it) and before tail-loop lowering (a recursive call's boxed
-    # arguments carry over to the loop back-edge).
-    new_statements = lowering.conversions.insert_conversions(new_statements)
     # `[tail]` self-recursion → loop. Runs before inlining / closure conversion,
     # while every self-call is still a direct, name-resolved call so the
     # recursion is detectable. Nested `[tail]` functions are lowered too; a

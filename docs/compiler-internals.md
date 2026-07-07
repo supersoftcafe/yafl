@@ -41,9 +41,14 @@ with the same four methods:
 type down where a shared slot needs sizing (ternary/match merges, block
 values) and **asserts** that no conversion is needed — it never coerces.
 Representation changes (union boxing/widening, tuple rebuilds) exist in the
-tree as explicit `ConvertExpression` nodes, inserted by `lowering/conversions.py` after
-monomorphisation; that node's `generate` is the only caller of the
-`pyast/expression/conversion.py` machinery.
+tree as explicit `ConvertExpression` nodes that each value node inserts over
+ITSELF during its own `compile`, when its ground type cannot meet the
+receiver's expected type (`conversion.converted` — a no-op on non-ground
+types, so generic template bodies never wrap; monomorphisation re-enters the
+compile fixpoint so instance bodies place theirs). Every node owns its own
+convergence; there is no conversion-insertion pass. `ConvertExpression`'s
+`generate` is the only caller of the `pyast/expression/conversion.py`
+emission machinery.
 
 
 ## 2. The compile fixpoint
@@ -237,8 +242,7 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 |---|---|
 | `drops.insert_drops` | between convergence and the check phase (needs converged types to decide droppability; the checks then see the inserted `drop(x)` calls). Inserting triggers ONE re-convergence so the calls resolve. An unused `[linear]` binding with a `Drop` instance consumes by policy; without one, linearity errors as before. |
 | `linearity.check_linearity` | on converged templates, pre-monomorphisation (each `<[linear] T>` body checked once). |
-| `generics.convert_generic_to_concrete` | first transform; everything after assumes concrete types. |
-| `conversions.insert_conversions` | after monomorphisation (conversions inside generic templates are undecidable before it), before tail loops (a recursive call's boxed args carry to the loop back-edge). Makes every representation change an explicit `ConvertExpression` — generate never coerces. |
+| `generics.convert_generic_to_concrete` | first transform; everything after assumes concrete types. Followed immediately by a re-entry into the compile fixpoint: conversions inside a generic template are undecidable (non-ground types), so each node of an instantiated body places its own `ConvertExpression` only now — before tail loops, so a recursive call's boxed args carry to the loop back-edge. There is no conversion-insertion pass. |
 | `tail_loop.lower_tail_loops` | before inlining/lambda conversion, while every self-call is still a direct, name-resolved call. |
 | `ast_inline.inline_ast` | after tail loops (so it copies loops, not recursive calls). |
 | `lower_lazy_lets` | before `lambdas` — the synthesised thunk closure must go through normal closure conversion. |

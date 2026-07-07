@@ -54,8 +54,26 @@ class ConvertExpression(Expression):
         return self.target
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        # The inner compiles with NO expected type: it is the raw source value —
+        # this node is the adapter to the receiver, and feeding the receiver's
+        # type back down would make the inner wrap itself again. Safe because a
+        # wrap is only ever inserted over ground types (needs_conversion), so
+        # the inner's names are already committed.
         inner, stmts = self.inner.compile(resolver, None)
         target, spec_stmts = self.target.compile(resolver)
+        # The receiver's view wins: a ground expected that differs from our
+        # target means the receiver WIDENED since this wrap was inserted
+        # (inference only ever widens) — retarget to it.
+        if (expected_type is not None and expected_type.is_concrete()
+                and expected_type.as_unique_id_str() is not None
+                and expected_type.as_unique_id_str() != target.as_unique_id_str()):
+            target = expected_type
+        # Dissolve when no conversion remains (the inner reached the target
+        # itself, or a retarget made the wrap moot). Idempotent at fixpoint:
+        # the parent's own `converted` re-wraps only if needs_conversion says
+        # so, which is exactly the kept case.
+        if not needs_conversion(inner.get_type(resolver), target, resolver):
+            return inner, stmts + spec_stmts
         return dataclasses.replace(self, inner=inner, target=target), stmts + spec_stmts
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:

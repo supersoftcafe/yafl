@@ -47,6 +47,12 @@ class LetStatement(DataStatement):
     def get_type(self) -> t.TypeSpec|None:
         return self.declared_type
 
+    def _rhs_expected(self) -> t.TypeSpec|None:
+        """The type the RHS flows into — what its nodes converge toward and box
+        themselves against. A plain let: the declared (or inferred) type. A
+        destructure overrides this: its sink is the TARGETS' tuple type."""
+        return self.declared_type
+
     def is_deferred_init(self) -> bool:
         """True if this let is initialised lazily — its RHS is wrapped in
         a closure and evaluation is deferred until first force.  Today
@@ -85,12 +91,11 @@ class LetStatement(DataStatement):
         # (see compiler.__stmt_scope_resolver), so do NOT re-wrap here — that
         # would shadow each placeholder and make references ambiguous.
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
-        dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
+        dv, dv_glb = self.default_value.compile(resolver, self._rhs_expected()) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
         # A DECLARED type is fixed (refine only fills its holes); an UNTYPED let
         # converges on the RHS and must be free to widen as a match/branch RHS
-        # broadens (`A`, then `A|None`) — the shared receiver-convergence step,
-        # gated on the RHS still changing this pass.
+        # broadens (`A`, then `A|None`) — the shared receiver-convergence step.
         declared = self.declared_type is not None and not self.type_inferred
         new_type_inferred = self.type_inferred
         if dv is not None:
@@ -98,8 +103,7 @@ class LetStatement(DataStatement):
                 dt = t.refine(dt, resolver, lambda: dv.get_type(resolver))
             else:
                 new_type_inferred = True
-                dt = t.refine_widening(dt, resolver, lambda: dv.get_type(resolver),
-                                       dv != self.default_value)
+                dt = t.refine_widening(dt, resolver, lambda: dv.get_type(resolver))
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt, trait_params=tuple(trts),
                                    type_inferred=new_type_inferred)
         return stmt, dv_glb+dt_glb+trts_glb
@@ -381,16 +385,26 @@ class DestructureStatement(LetStatement):
         x: DestructureStatement = checked_cast(DestructureStatement, super().add_namespace(path))
         return dataclasses.replace(x, targets=[l.add_namespace(path) for l in self.targets])
 
+    def _rhs_expected(self) -> t.TypeSpec|None:
+        # The RHS flows into the TARGETS' tuple type, which may be wider than
+        # the value (`(s: String|None, n) = (None, 7)`, the shape a |>-lambda
+        # binds) — each RHS node boxes itself toward it. Only once every target
+        # is typed: while a target still infers, the parent type is being
+        # derived FROM the RHS and must not be fed back as its expected.
+        slot = self.get_type()
+        if any(entry.type is None for entry in slot.entries):
+            return self.declared_type
+        return slot
+
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DestructureStatement, list[Statement]]:
         stmt, stmt_glb = super().compile(resolver, func_ret_type)
         # Propagate the parent tuple's entry types onto the targets. A target
         # with no type adopts the entry's (which may itself still be a generic
-        # placeholder, needed inside a generic body); a target whose type still
-        # carries a HOLE — a bare unbound placeholder, or a compound with a free
-        # placeholder inside (`E|IOError|None` before `E` discharges) — keeps
-        # refining via t.refine, the single gate/threshold/merge rule. A target
-        # with its own resolved (or merely still-unresolved NamedSpec) annotation
-        # keeps it: refine never overwrites a declaration.
+        # placeholder, needed inside a generic body) and is thereafter INFERRED:
+        # it keeps tracking the entry via t.refine_widening, so a hole keeps
+        # filling AND a late field-wise broaden (`A`, then `A|None`) propagates.
+        # A target with its own ANNOTATION keeps it — refined only (holes fill),
+        # never overwritten, never widened.
         parent_type = stmt.declared_type
         targets = stmt.targets
         if isinstance(parent_type, t.TupleSpec) and len(parent_type.entries) == len(targets):
@@ -398,8 +412,13 @@ class DestructureStatement(LetStatement):
                 if entry.type is None:
                     return tgt
                 if tgt.declared_type is None:
-                    return dataclasses.replace(tgt, declared_type=entry.type)
-                new_dt = t.refine(tgt.declared_type, resolver, lambda: entry.type)
+                    # Adopting the entry's type IS inference: mark it, so the
+                    # target keeps tracking the entry if it later WIDENS (a
+                    # field-wise broadened tuple settling a pass late).
+                    return dataclasses.replace(tgt, declared_type=entry.type, type_inferred=True)
+                new_dt = (t.refine_widening(tgt.declared_type, resolver, lambda: entry.type)
+                          if tgt.type_inferred
+                          else t.refine(tgt.declared_type, resolver, lambda: entry.type))
                 if new_dt is not tgt.declared_type:
                     return dataclasses.replace(tgt, declared_type=new_dt)
                 return tgt

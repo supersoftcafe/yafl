@@ -123,6 +123,18 @@ def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, rig
         left = left.entries[0].type
         if left is None:
             return None
+    # Set semantics of a union VALUE: it is one of its members, so a union on
+    # the right is assignable iff EVERY member is. Needed since a branch's type
+    # is the honest set union of its arms — `(T,C) | ((),C)` flowing into a
+    # declared `(T|None, C)` decomposes memberwise (each arm's value is boxed
+    # toward the declared type individually; the union never exists at runtime).
+    # A union LEFT keeps its own memberwise rule (CombinationSpec handles it).
+    if isinstance(right, CombinationSpec) and not isinstance(left, CombinationSpec):
+        results = [trivially_assignable_equals(resolver, left, member)
+                   for member in right.repr_members()]
+        if any(r is False for r in results):
+            return False
+        return None if any(r is None for r in results) else True
     return left.trivially_assignable_from(resolver, right)
 
 

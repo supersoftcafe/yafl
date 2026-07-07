@@ -40,7 +40,11 @@ class BuiltinOpExpression(Expression):
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
         new_params, new_statements = self.params.compile(resolver, None)
         expr = dataclasses.replace(self, params=new_params)
-        return expr._fold_const_compare() or expr, list(new_statements)
+        # A primitive op owns its conversion to the receiver — its result
+        # boxing into a union slot (`string_parse_int`'s bigint into `Int|None`).
+        from pyast.expression.conversion import converted
+        folded = expr._fold_const_compare()
+        return (folded if folded is not None else converted(expr, expected_type, resolver)), list(new_statements)
 
     # An integer comparison of two bigint literals (the body of Int's `==`/`<`/
     # `>`) folds to a Bool literal. The language has no true/false token, so

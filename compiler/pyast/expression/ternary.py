@@ -38,11 +38,8 @@ class TernaryExpression(Expression):
     # upper bound (the result type), compile each branch against the receiver's
     # expected type, and require the branches to converge.
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        trueType = self.trueResult.get_type(resolver)
-        falseType = self.falseResult.get_type(resolver)
-        if trueType is None: return falseType
-        if falseType is None: return trueType
-        return t.join(trueType, falseType, resolver)
+        return t.join(self.trueResult.get_type(resolver),
+                      self.falseResult.get_type(resolver))
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         condition, conditionStatements = self.condition.compile(resolver, t.Bool())

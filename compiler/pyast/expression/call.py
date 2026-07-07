@@ -78,7 +78,12 @@ class CallExpression(Expression):
         function, fglb = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
 
         expr = dataclasses.replace(self, function=function, parameter=parameter)
-        return expr, fglb+pglb
+        # This node owns the conversion between itself and its receiver: a call
+        # whose settled result type cannot meet the receiver's expected type
+        # wraps ITSELF (no-op until both types are ground — needs_conversion is
+        # conservative, so generic templates never wrap).
+        from pyast.expression.conversion import converted
+        return converted(expr, expected_type, resolver), fglb+pglb
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # TODO: Figure out what expected type to pass in
