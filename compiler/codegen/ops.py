@@ -234,7 +234,11 @@ class NewObject(Op): # Create a new blank instance of the named object
         if self.size is not None:
             value = f"array_create(obj_{mangle_name(self.name)}, {self.size.to_c(type_cache)})"
         else:
-            value = f"object_create(obj_{mangle_name(self.name)})"
+            # object_new is the INLINE fast path (yafl.h): with the vtable
+            # constant visible in this TU, the C compiler folds object_size and
+            # is_mutable per site and elides whichever zero-fill stores the
+            # immediate field writes below make dead.
+            value = f"object_new(obj_{mangle_name(self.name)})"
         return self.register.to_c_store(type_cache, value)
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:

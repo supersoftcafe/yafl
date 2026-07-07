@@ -581,8 +581,9 @@ fun main(): System::Int
         self.assertNotEqual("", result)
         # The Object name 'Chain@hash' is mangled to a C identifier.
         self.assertIn("Chain", result)
-        # The heap allocator must be invoked (recursive enum uses object_create).
-        self.assertIn("object_create", result)
+        # The heap allocator must be invoked (recursive enum allocates via the
+        # inline bump fast path, object_new).
+        self.assertIn("object_new", result)
 
     def test_non_recursive_enum_remains_flat(self):
         # A regression check: IOError is non-recursive — its Variant

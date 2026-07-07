@@ -248,11 +248,179 @@ enum {
 
 
 EXTERN void gc_start();
-#ifndef OBJECT_HEADER_EXCLUSIONS
-EXTERN thread_local struct {
-    volatile int_fast32_t safe_point_request;
-} gc_thread_info;
-#endif
+
+// ── GC heap geometry + the inline allocation fast path ─────────────────────
+// These are THE allocator's definitions (object.c builds on them; its
+// static_asserts cross-check the arithmetic). They live in the header so the
+// compiler's generated C bump-allocates INLINE with the vtable constant
+// visible per call site: object_size and is_mutable fold to literals, the
+// branches vanish, and the zero-fill loop is elided by the C compiler's
+// dead-store elimination wherever the object's fields are initialised
+// immediately afterwards.
+
+typedef uintptr_t mask_bits_t;
+enum { GC_MASK_SIZE = sizeof(mask_bits_t) * 8 /* bits */ };
+enum { GC_SLOT_SIZE = GC_ALLOC_GRANULE /* bytes */ };
+
+typedef struct {
+    mask_bits_t a[GC_PAGE_SIZE / GC_SLOT_SIZE / 8 / sizeof(mask_bits_t)];
+} __attribute__((aligned(GC_PAGE_SIZE / GC_SLOT_SIZE / 8))) bitmap_t;
+
+typedef struct slot_t {
+    vtable_t *vt;
+    struct slot_t *o1, *o2;
+    uintptr_t a[(GC_SLOT_SIZE - sizeof(void*)*3) / sizeof(uintptr_t)];
+} __attribute__((aligned(GC_SLOT_SIZE))) slot_t;
+
+typedef struct page_head {
+    struct {
+        struct gc_page *next;
+        struct gc_page *prev;
+    } list; // Page belongs to a cicular list, somewhere
+
+    struct {
+        bitmap_t        seen; // Starting slot of each seen object
+        bitmap_t     scanned; // Starting slot of each scanned object
+        bitmap_t atomic_seen; // Strictly for the early stage atomic updates
+        _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
+        bool          pinned; // Stack references found, which can't be re-written easily
+    } scanner;
+
+    bitmap_t objects; // Starting slot of each known object
+    uint32_t     tag; // Safety check
+    uint32_t   pages; // Number of pages, including this one, in the complete allocation
+    bool     mutable; // Contains mutable objects.
+    bool   compacted; // Don't compact again.
+    bool         old; // Promoted to the old generation: exempt from minor cycles.
+    bool   dirty_old; // Aged page still holding young references: exempt from
+                      // pruning, but force-marked as a root every cycle until
+                      // its targets promote (then it graduates to `old`).
+    uint8_t refs_defer;   // prunes left before re-walking gc_page_refs_are_old
+    uint8_t refs_backoff; // last defer length; doubles per failed walk up to
+                          // GC_REFS_BACKOFF_CAP, so permanently-blocked pages
+                          // stop costing a full object walk every prune.
+                          // Reset on instability and on major demotion. Sound
+                          // while deferred: the page stays dirty-old, i.e. a
+                          // force-marked root.
+    uint64_t stable_since; // Allocation-clock reading (pages) at the last
+                           // prune that found a death on this page — or
+                           // UINT64_MAX before the first prune (a page's
+                           // first prune is force-stable via birth
+                           // protection, so it only STARTS the clock).
+                           // Drives volume-based promotion.
+
+} __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
+
+enum { PAGE_MAGIC_NUMBER = 0x71ea05c3 };
+enum { SLOTS_PER_PAGE = (GC_PAGE_SIZE - sizeof(page_head_t)) / sizeof(slot_t) };
+
+typedef struct gc_page {
+    page_head_t head;
+    slot_t     slots[SLOTS_PER_PAGE];
+} __attribute__((aligned(GC_SLOT_SIZE))) gc_page_t;
+
+enum { MAX_OBJECT_SIZE = sizeof(gc_page_t) - offsetof(gc_page_t, slots[0]) };
+
+enum {
+    GC_SAFE_POINT_SCAN_ROOTS = 0x001,
+    GC_SAFE_POINT_CATCH_UP   = 0x002
+};
+
+INLINE bool bitmap_fetch_set(bitmap_t *bitmap, unsigned bit) {
+    mask_bits_t mask = ((mask_bits_t)1) << (bit % GC_MASK_SIZE);
+    mask_bits_t *ptr = &bitmap->a[bit / GC_MASK_SIZE];
+    mask_bits_t bits = *ptr;
+    *ptr = bits | mask;
+    return (bits & mask) != 0;
+}
+
+INLINE bool atomic_bitmap_fetch_set(bitmap_t *bitmap, unsigned bit) {
+    mask_bits_t mask = ((mask_bits_t)1) << (bit % GC_MASK_SIZE);
+    _Atomic(mask_bits_t) *ptr = (_Atomic(mask_bits_t)*)&bitmap->a[bit / GC_MASK_SIZE];
+    mask_bits_t bits = atomic_fetch_or(ptr, mask);
+    return (bits & mask) != 0;
+}
+
+// Zero exactly the slots the new object occupies, at the point of allocation:
+// the zero-writes land in L1 immediately under the field writes that follow.
+// (The old scheme memset whole pages at claim time; by the time a page's
+// later objects were carved out those lines had been evicted, so every first
+// field write missed again.) The zero state is load-bearing — the generated
+// code writes each pointer field through the GC write barrier, which marks
+// the field's PRIOR value, and a partially-initialised object may be scanned;
+// NULL is safe, garbage is not. Written UNCONDITIONALLY here: at each inlined
+// call site the C compiler sees which zero-stores are overwritten before they
+// can be observed and elides exactly those — do not hand-optimise this loop.
+INLINE void zero_object_slots(void *object, size_t actual_size) {
+    slot_t *s = (slot_t*)object;
+    for (size_t k = 0; k < actual_size / sizeof(slot_t); ++k)
+        s[k] = (slot_t){0};
+}
+
+typedef struct {
+    char *bump; // -size to get next object reference
+    char *base; // until <base_pointer, then we need to ask for more
+} bump_pointers_t;
+
+// The per-thread allocation state, split out of object.c's private
+// gc_thread_info so the fast path can inline into generated code. The rest
+// of the thread record stays private in object.c; it holds a pointer to this
+// block for the collector's remote accesses (root-scan region reset,
+// safe-point requests).
+typedef struct {
+    _Atomic(int_fast32_t) safe_point_request;   // GC_SAFE_POINT_* bits
+    bump_pointers_t region_mutable;
+    bump_pointers_t region_immutable;
+} gc_alloc_tl_t;
+EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
+
+// The slow half: multi-page objects, and region refill — which is also where
+// the GC pacing clock ticks. Refills, then re-runs the fast path.
+EXTERN void *object_alloc_slow(size_t size, bool is_mutable);
+
+INLINE void *object_alloc_fast(size_t size, bool is_mutable) {
+    size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+    bump_pointers_t *bp = is_mutable
+        ? &gc_alloc_tl.region_mutable
+        : &gc_alloc_tl.region_immutable;
+    if (UNLIKELY(actual_size > (size_t)MAX_OBJECT_SIZE
+                 || (size_t)(bp->bump - bp->base) < actual_size))
+        return object_alloc_slow(size, is_mutable);
+    void *object = (bp->bump -= actual_size);
+    zero_object_slots(object, actual_size);
+
+    // Publish into the page's objects bitmap. Non-atomic: the bump page is
+    // this thread's own until its next root-scan safe point, which cannot
+    // fall between here and the field initialisation that follows the call
+    // (allocation + initialisation is straight-line code).
+    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(sizeof(gc_page_t)-1));
+    unsigned slot = (unsigned)((slot_t*)object - page->slots);
+    bitmap_fetch_set(&page->head.objects, slot);
+
+    // Snapshot-smear guard: between a cycle opening and THIS thread's root
+    // scan, objects allocated here land on pages that will be taken into the
+    // current cycle's collection pool — no birth protection — and the stack
+    // scan that would find them happens too late (the snapshot is ragged).
+    // Allocate BLACK for exactly that window: mark the object seen at birth.
+    // The window closes when this thread's scan clears the flag, so the cost
+    // outside it is one thread-local load and a not-taken branch.
+    if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
+        atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
+
+    return object;
+}
+
+// Allocate + install the vtable: what the generated code's NewObject emits.
+// Every field is zero on return (see zero_object_slots — that NULL state is
+// load-bearing for the write barrier and for scans of partially-initialised
+// objects), and each call site's immediate field stores let the C compiler
+// elide the redundant zeroes.
+INLINE void *object_new(vtable_t *vtable) {
+    object_t *object = (object_t*)object_alloc_fast(vtable->object_size, vtable->is_mutable);
+    object->vtable = vtable;
+    return object;
+}
+
 EXTERN volatile bool gc_write_barrier_requested;
 
 
@@ -261,7 +429,7 @@ EXTERN void _gc_write_barrier2(object_t **field, ptr_mask_t mask);
 EXTERN void _gc_mark_as_seen2(object_t *object);
 
 #define GC_SAFE_POINT()\
-    do { if (UNLIKELY(gc_thread_info.safe_point_request)) _gc_safe_point2(); } while (false)
+    do { if (UNLIKELY(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed))) _gc_safe_point2(); } while (false)
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\

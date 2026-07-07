@@ -104,11 +104,6 @@ static void gc_read_config(void) {
 #endif
 
 
-enum {
-    GC_SAFE_POINT_SCAN_ROOTS = 0x001,
-    GC_SAFE_POINT_CATCH_UP   = 0x002
-};
-
 EXPORT volatile bool gc_write_barrier_requested = false;
 
 
@@ -132,77 +127,17 @@ EXPORT void abort_on_array_bounds() {
 
 
 
-typedef uintptr_t mask_bits_t;
-enum { GC_MASK_SIZE = sizeof(mask_bits_t) * 8 /* bits */ };
-enum { GC_SLOT_SIZE = GC_ALLOC_GRANULE /* bytes; single source: yafl.h */ };
-
-typedef struct {
-    mask_bits_t a[GC_PAGE_SIZE / GC_SLOT_SIZE / 8 / sizeof(mask_bits_t)];
-} __attribute__((aligned(GC_PAGE_SIZE / GC_SLOT_SIZE / 8))) bitmap_t;
-
-typedef struct slot_t {
-    vtable_t *vt;
-    struct slot_t *o1, *o2;
-    uintptr_t a[(GC_SLOT_SIZE - sizeof(void*)*3) / sizeof(uintptr_t)];
-} __attribute__((aligned(GC_SLOT_SIZE))) slot_t;
+// The heap geometry (mask_bits_t, bitmap_t, slot_t, page_head_t, gc_page_t,
+// SLOTS_PER_PAGE, MAX_OBJECT_SIZE, PAGE_MAGIC_NUMBER) lives in yafl.h — the
+// allocation fast path is inlined into generated code and needs it there.
+// These asserts cross-check the arithmetic stays true to GC_PAGE_SIZE.
+static_assert(sizeof(gc_page_t) == GC_PAGE_SIZE, "Page size doesn't add up");
+static_assert(sizeof(slot_t) == GC_SLOT_SIZE, "Slot size doesn't add up");
 
 typedef struct list_element {
     struct list_element *next;
     struct list_element *prev;
 } list_element_t;
-
-typedef struct page_head {
-    struct {
-        struct gc_page *next;
-        struct gc_page *prev;
-    } list; // Page belongs to a cicular list, somewhere
-
-    struct {
-        bitmap_t        seen; // Starting slot of each seen object
-        bitmap_t     scanned; // Starting slot of each scanned object
-        bitmap_t atomic_seen; // Strictly for the early stage atomic updates
-        _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
-        bool          pinned; // Stack references found, which can't be re-written easily
-    } scanner;
-
-    bitmap_t objects; // Starting slot of each known object
-    uint32_t     tag; // Safety check
-    uint32_t   pages; // Number of pages, including this one, in the complete allocation
-    bool     mutable; // Contains mutable objects.
-    bool   compacted; // Don't compact again.
-    bool         old; // Promoted to the old generation: exempt from minor cycles.
-    bool   dirty_old; // Aged page still holding young references: exempt from
-                      // pruning, but force-marked as a root every cycle until
-                      // its targets promote (then it graduates to `old`).
-    uint8_t refs_defer;   // prunes left before re-walking gc_page_refs_are_old
-    uint8_t refs_backoff; // last defer length; doubles per failed walk up to
-                          // GC_REFS_BACKOFF_CAP, so permanently-blocked pages
-                          // stop costing a full object walk every prune.
-                          // Reset on instability and on major demotion. Sound
-                          // while deferred: the page stays dirty-old, i.e. a
-                          // force-marked root.
-    uint64_t stable_since; // Allocation-clock reading (pages) at the last
-                           // prune that found a death on this page — or
-                           // UINT64_MAX before the first prune (a page's
-                           // first prune is force-stable via birth
-                           // protection, so it only STARTS the clock).
-                           // Drives volume-based promotion.
-
-} __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
-
-static const uint32_t PAGE_MAGIC_NUMBER = 0x71ea05c3;
-enum { SLOTS_PER_PAGE = (GC_PAGE_SIZE - sizeof(page_head_t)) / sizeof(slot_t) };
-
-typedef struct gc_page {
-    page_head_t head;
-    slot_t     slots[SLOTS_PER_PAGE];
-} __attribute__((aligned(GC_SLOT_SIZE))) gc_page_t;
-
-static_assert(sizeof(gc_page_t) == GC_PAGE_SIZE, "Page size doesn't add up");
-
-static_assert(sizeof(slot_t) == GC_SLOT_SIZE, "Slot size doesn't add up");
-
-enum { MAX_OBJECT_SIZE = sizeof(gc_page_t) - offsetof(gc_page_t, slots[0]) };
 
 
 
@@ -213,20 +148,8 @@ static __attribute__((unused)) unsigned bitmap_count(const bitmap_t *bitmap) {
     return count;
 }
 
-static bool bitmap_fetch_set(bitmap_t *bitmap, unsigned bit) {
-    mask_bits_t mask = ((mask_bits_t)1) << (bit % GC_MASK_SIZE);
-    mask_bits_t *ptr = &bitmap->a[bit / GC_MASK_SIZE];
-    mask_bits_t bits = *ptr;
-    *ptr = bits | mask;
-    return (bits & mask) != 0;
-}
-
-static bool atomic_bitmap_fetch_set(bitmap_t *bitmap, unsigned bit) {
-    mask_bits_t mask = ((mask_bits_t)1) << (bit % GC_MASK_SIZE);
-    _Atomic(mask_bits_t) *ptr = (_Atomic(mask_bits_t)*)&bitmap->a[bit / GC_MASK_SIZE];
-    mask_bits_t bits = atomic_fetch_or(ptr, mask);
-    return (bits & mask) != 0;
-}
+// bitmap_fetch_set / atomic_bitmap_fetch_set live in yafl.h (the inline
+// allocation fast path uses them).
 
 static void bitmap_reset_all(bitmap_t *bitmap) {
     memset(bitmap, 0, sizeof(bitmap_t));
@@ -325,13 +248,16 @@ enum thread_state {
 
 
 
-typedef struct {
-    char *bump; // -size to get next object reference
-    char *base; // until <base_pointer, then we need to ask for more
-} bump_pointers_t;
+// The per-thread ALLOCATION state (safe_point_request + bump regions) is the
+// public `gc_alloc_tl` thread-local from yafl.h — the inline fast path in
+// generated code reads and writes it directly. The rest of the thread record
+// stays private here; `alloc` points at the owning thread's gc_alloc_tl so
+// the collector's remote accesses (root-scan region reset, safe-point
+// requests) reach it through the `threads` chain.
+EXPORT thread_local gc_alloc_tl_t gc_alloc_tl = {0};
 
 thread_local struct gc_thread_info {
-    atomic_int_fast32_t safe_point_request;
+    gc_alloc_tl_t *alloc;   // = &gc_alloc_tl of this thread (set at registration)
     int_fast32_t lag_counter;
     bool in_relocation;  // set while compaction evacuates objects: its target
                          // allocations may use the relocation reserve
@@ -345,8 +271,6 @@ thread_local struct gc_thread_info {
     _Atomic(enum thread_state) thread_state;
 
     list_element_t  new_pages; // Circular list of pages waiting for next GC
-    bump_pointers_t region_mutable;
-    bump_pointers_t region_immutable;
 
     object_t **stack_lower_ptr; // Numerically lower pointer to the stack
     object_t **stack_upper_ptr; // Numerically higher pointer to the stack
@@ -996,7 +920,7 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
             gc_thread_info.lag_counter += 1;
             if (gc_thread_info.lag_counter > GC_PACE_LAG_MAX)
                 gc_thread_info.lag_counter = GC_PACE_LAG_MAX;
-            atomic_fetch_or(&gc_thread_info.safe_point_request, GC_SAFE_POINT_CATCH_UP);
+            atomic_fetch_or(&gc_alloc_tl.safe_point_request, GC_SAFE_POINT_CATCH_UP);
         }
 
         // Relocation reserve: ordinary allocation may not consume the last
@@ -1049,7 +973,7 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
 
     // memory_pages_alloc hands back pages with UNDEFINED contents (see
     // claimed_run): the header must be zeroed here, and object slots are
-    // zeroed individually at allocation in _object_alloc. The release fence
+    // zeroed individually at allocation in object_alloc_fast. The release fence
     // orders the header zeroing before the tag store — the conservative
     // scanner probes arbitrary candidate pages by tag, and must never see
     // the magic number ahead of zeroed bitmaps. (gc_page_free clears the tag
@@ -1097,20 +1021,12 @@ EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
     return previous;
 }
 
-// Zero exactly the slots the new object occupies, at the point of allocation:
-// the zero-writes land in L1 immediately under the field writes that follow.
-// (The old scheme memset whole pages at claim time; by the time a page's
-// later objects were carved out those lines had been evicted, so every first
-// field write missed again.) The zero state is load-bearing — see
-// object_create — and it is always written HERE, never inherited from the
-// kernel's zero-fill promise (a future MADV_FREE would break that promise).
-static inline void zero_object_slots(void *object, size_t actual_size) {
-    slot_t *s = object;
-    for (size_t k = 0; k < actual_size / sizeof(slot_t); ++k)
-        s[k] = (slot_t){0};
-}
-
-static NOINLINE_DEBUG void *_object_alloc(size_t size, bool is_mutable) {
+// The allocation FAST PATH (object_alloc_fast / object_new / zero_object_slots)
+// lives in yafl.h and inlines into generated code. This is its slow half:
+// multi-page objects, and bump-region refill — where the GC pacing clock ticks
+// (gc_page_alloc). Refill then re-runs the fast path, which now succeeds (a
+// fresh page's slot region is exactly MAX_OBJECT_SIZE).
+EXPORT void *object_alloc_slow(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
 
     if (actual_size > MAX_OBJECT_SIZE) {
@@ -1124,55 +1040,34 @@ static NOINLINE_DEBUG void *_object_alloc(size_t size, bool is_mutable) {
         page->head.mutable = is_mutable;
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
-        // Snapshot-smear guard — see the bump path below for the rationale.
-        if (UNLIKELY(gc_thread_info.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
+        // Snapshot-smear guard — see object_alloc_fast for the rationale.
+        if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
             atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, 0);
         return page->slots;
     }
 
+    gc_page_t* new_page = gc_page_alloc(1);
+    new_page->head.mutable = is_mutable;
+
     bump_pointers_t *bp = is_mutable
-        ? &gc_thread_info.region_mutable
-        : &gc_thread_info.region_immutable;
+        ? &gc_alloc_tl.region_mutable
+        : &gc_alloc_tl.region_immutable;
+    bp->base = (char*)(new_page->slots);
+    bp->bump = (char*)(new_page->slots + SLOTS_PER_PAGE);
 
-    if (UNLIKELY((size_t)(bp->bump - bp->base) < actual_size)) {
-        gc_page_t* new_page = gc_page_alloc(1);
+    list_link(&gc_thread_info.new_pages, (list_element_t*)&new_page->head.list);
 
-        new_page->head.mutable = is_mutable;
-        bp->base = (char*)(new_page->slots);
-        bp->bump = (char*)(new_page->slots + SLOTS_PER_PAGE);
-
-        list_link(&gc_thread_info.new_pages, (list_element_t*)&new_page->head.list);
-    }
-
-    object_t *object = (object_t*)(bp->bump -= actual_size);
-    zero_object_slots(object, actual_size);   // before the bitmap makes it findable
-
-    gc_page_t *page ; ptrdiff_t slot ;
-    object_get_page_and_slot(object, &page, &slot);
-    bitmap_fetch_set(&page->head.objects, slot);
-
-    // Snapshot-smear guard: between a cycle opening and THIS thread's root
-    // scan, objects allocated here land on pages that will be taken into the
-    // current cycle's collection pool — no birth protection — and the stack
-    // scan that would find them happens too late (the snapshot is ragged).
-    // Allocate BLACK for exactly that window: mark the object seen at birth.
-    // The window closes when this thread's scan clears the flag, so the cost
-    // outside it is one thread-local load and a not-taken branch.
-    if (UNLIKELY(gc_thread_info.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
-        atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
-
-    return object;
+    return object_alloc_fast(size, is_mutable);
 }
 
 EXPORT void* object_create(vtable_t *vtable) {
     assert(vtable->array_el_size == 0);
-    object_t *object = _object_alloc(vtable->object_size, vtable->is_mutable);
-    // Every field is already zero (_object_alloc zeroes the object's slots).
-    // That NULL state is load-bearing — the generated code writes each pointer
-    // field through the GC write barrier, which marks the field's PRIOR value,
-    // and a partially-initialised object may be scanned; NULL is safe, garbage
-    // is not.
-    object->vtable = vtable;
+    // Every field is zero on return from object_new (the fast path zeroes the
+    // object's slots). That NULL state is load-bearing — the generated code
+    // writes each pointer field through the GC write barrier, which marks the
+    // field's PRIOR value, and a partially-initialised object may be scanned;
+    // NULL is safe, garbage is not.
+    object_t *object = (object_t*)object_new(vtable);
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);
     return object;
 }
@@ -1181,8 +1076,8 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
     size_t total = vtable->object_size + (size_t)vtable->array_el_size * (size_t)length;
-    object_t *object = _object_alloc(total, vtable->is_mutable);
-    // The whole object is already zero (_object_alloc zeroes its slots).
+    object_t *object = (object_t*)object_alloc_fast(total, vtable->is_mutable);
+    // The whole object is already zero (the fast path zeroes its slots).
     // That matters: a pointer-bearing object (e.g. a heap state frame) may be
     // scanned before every field is written — NULL is safe, garbage is not.
     object->vtable = vtable;
@@ -1294,6 +1189,9 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
 
     gc_thread_info.next = threads;
     gc_thread_info.thread_state = THREAD_STATE_RUNNING;
+    // Wire the collector's remote view of this thread's allocation state (the
+    // public gc_alloc_tl thread-local the inline fast path uses).
+    gc_thread_info.alloc = &gc_alloc_tl;
 
     gc_thread_info.new_pages.next = &gc_thread_info.new_pages;
     gc_thread_info.new_pages.prev = &gc_thread_info.new_pages;
@@ -1359,7 +1257,7 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         object_t *object = (object_t*)&page->slots[objects[index].o];
         size_t      size = objects[index].s;
 
-        object_t *target = _object_alloc(size, false);       // Allocate new object
+        object_t *target = (object_t*)object_alloc_fast(size, false); // Allocate new object
         memcpy(target, object, size);                        // Copy contents across
         object->vtable = (vtable_t*)target;                  // Forwarding pointer: a heap
                                                              // address here means "moved"
@@ -1498,7 +1396,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     // root after the start but lands on a page promoted this cycle: the root
     // snapshot predates the store, so nothing marks it, yet its page is prunable.
     for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
-        atomic_fetch_or(&thread->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
+        atomic_fetch_or(&thread->alloc->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
         thread->roots_scanned = false;
     }
 
@@ -1558,15 +1456,15 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         // so this cycle's objects land after it rather than straddling onto a
         // taken page.
         list_move(&pages_to_scan, &thread->new_pages);
-        thread->region_immutable.base = thread->region_mutable.base = NULL;
-        thread->region_immutable.bump = thread->region_mutable.bump = NULL;
+        thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
+        thread->alloc->region_immutable.bump = thread->alloc->region_mutable.bump = NULL;
         // Scan stack and registers
         gc_fsa_scan_roots$scan_range(thread->stack_lower_ptr, thread->stack_upper_ptr);
         gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);
         // Thread library has some stuff
         thread->thread_roots_declaration_func(thread->thread_roots_context, atomic_gc_object_seen_by_field);
         // Release the thread state
-        atomic_fetch_and(&thread->safe_point_request, ~GC_SAFE_POINT_SCAN_ROOTS);
+        atomic_fetch_and(&thread->alloc->safe_point_request, ~GC_SAFE_POINT_SCAN_ROOTS);
         atomic_store(&thread->thread_state, old_state);
         thread->lag_counter = 0;
     }
@@ -2292,12 +2190,12 @@ EXPORT int gc_debug_object_state(object_t* o) {
 }
 
 EXPORT void _gc_safe_point2() {
-    uint_fast32_t sp = gc_thread_info.safe_point_request;
+    uint_fast32_t sp = gc_alloc_tl.safe_point_request;
     if (sp & (GC_SAFE_POINT_SCAN_ROOTS|GC_SAFE_POINT_CATCH_UP)) {
         if (gc_fsa() && gc_thread_info.lag_counter > 0) {
             gc_thread_info.lag_counter -= 1;
         } else {
-            atomic_fetch_and(&gc_thread_info.safe_point_request, ~GC_SAFE_POINT_CATCH_UP);
+            atomic_fetch_and(&gc_alloc_tl.safe_point_request, ~GC_SAFE_POINT_CATCH_UP);
         }
     }
 }
