@@ -94,7 +94,7 @@ class NewExpression(Expression):
         fields = classstmt.get_fields(resolver)
         ops = ( ( cg_o.Move(params_var, params_bundle.result_var),
                   cg_o.NewObject(cname, result_var) )
-               + tuple(cg_o.Move(cg_p.ObjectField(x.get_type().generate(resolver), result_var, cname, x.name, None), cg_p.StructField(params_var, f"_{index}")) for index, x in enumerate(fields))
+               + tuple(cg_o.Move(cg_p.ObjectField(x.get_type().generate(resolver), result_var, cname, x.name, None, fresh=True), cg_p.StructField(params_var, f"_{index}")) for index, x in enumerate(fields))
         )
 
         constructor_bundle = g.OperationBundle(
@@ -133,7 +133,7 @@ class NewExpression(Expression):
             if i == arr_idx:
                 continue
             ops.append(cg_o.Move(
-                cg_p.ObjectField(p.get_type().generate(resolver), result_var, cname, p.name, None),
+                cg_p.ObjectField(p.get_type().generate(resolver), result_var, cname, p.name, None, fresh=True),
                 cg_p.StructField(params_var, f"_{i}")))
 
         # Fill loop: i = 0; while i < length { array[i] = init_fn(i); i = i + 1 }.
@@ -154,7 +154,9 @@ class NewExpression(Expression):
             cg_o.Jump(end),
             cg_o.Label(body),
             cg_o.Call(init_fn, cg_p.NewStruct((("_0", i_var),)), elem_var),
-            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var), elem_var),
+            # fresh: each element is written exactly once and its prior value is the
+            # allocator's NULL — the SATB deletion barrier is provably a no-op.
+            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var, fresh=True), elem_var),
             cg_o.Move(i_next, incr),
             cg_o.Label(back),
             cg_o.Jump(head),

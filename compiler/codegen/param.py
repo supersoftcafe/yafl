@@ -657,6 +657,16 @@ class ObjectField(LParam):
     object_name: str         # Which object type
     field: str               # Which named field
     index: RParam|None       # If 'field' is an array, this is required
+    # True for a FRESH-OBJECT initialisation store: emitted straight-line after
+    # the object's NewObject, before anything can publish it. Skips the write
+    # barrier — sound because the field's prior value is NULL by construction
+    # (the allocator zero-fills), so there is no old edge for the snapshot to
+    # preserve, and the object is invisible to the marker until after these
+    # stores (its bump page stays thread-private until the next safe point,
+    # which cannot fall inside straight-line initialisation). Skipping the
+    # barrier also makes this field's zero-fill store dead, so the C compiler
+    # elides it. Provenance, not identity: compare-excluded.
+    fresh: bool = dataclasses.field(default=False, compare=False)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
         return ([self] if is_reader else []) + self.pointer.flatten() + (self.index.flatten() if self.index else [])
@@ -685,7 +695,7 @@ class ObjectField(LParam):
         field_ref = f"(({mangle_name(self.object_name)}_t*){pointer})->{mangle_name(self.field)}"
         if self.index is not None:
             field_ref = f"{field_ref}.a[{self.index.to_c(type_cache)}]"
-        if self.type.has_pointers:
+        if self.type.has_pointers and not self.fresh:
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
             return f"    GC_WRITE_BARRIER({field_ref}, {mask});\n    {field_ref} = {value};\n"
         else:

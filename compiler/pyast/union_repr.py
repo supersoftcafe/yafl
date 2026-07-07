@@ -739,7 +739,7 @@ class ComplexEnumRepr(UnionRepr):
             else:
                 source = cg_p.ZeroOf(field_type)
             ops.append(cg_o.Move(
-                cg_p.ObjectField(field_type, result_var, obj_name, field_name, None), source))
+                cg_p.ObjectField(field_type, result_var, obj_name, field_name, None, fresh=True), source))
         ctor_bundle = g.OperationBundle(stack_vars=(result_var,),
                                         operations=tuple(ops), result_var=result_var)
         if bundles:

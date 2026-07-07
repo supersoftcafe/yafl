@@ -189,8 +189,8 @@ class LetStatement(DataStatement):
         cls = lt.stub_class_name(ir_t)
 
         sv_stub   = cg_p.StackVar(cg_t.DataPointer(), self.name)
-        flag_f    = cg_p.ObjectField(cg_t.DataPointer(), sv_stub, cls, "flag",    None)
-        closure_f = cg_p.ObjectField(cg_t.FuncPointer(), sv_stub, cls, "closure", None)
+        flag_f    = cg_p.ObjectField(cg_t.DataPointer(), sv_stub, cls, "flag",    None, fresh=True)
+        closure_f = cg_p.ObjectField(cg_t.FuncPointer(), sv_stub, cls, "closure", None, fresh=True)
         return g.OperationBundle(
             stack_vars=(sv_stub,),
             operations=(
