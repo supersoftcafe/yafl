@@ -54,6 +54,10 @@ fun isNaN(f: System::Float): System::Bool
 fun Float(i: System::Int): System::Float
   ret __builtin_op__<float64>("float64_from_integer", i)
 
+# Square root. Lowers to a single hardware instruction (sqrtsd) via libm.
+fun sqrt(x: System::Float): System::Float
+  ret __builtin_op__<float64>("float64_sqrt", x)
+
 # Float → Int truncates the fractional part — lossy, hence truncateToInt.
 fun truncateToInt(f: System::Float): System::Int
   ret __builtin_op__<bigint>("integer_from_float64", f)

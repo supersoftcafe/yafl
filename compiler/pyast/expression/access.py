@@ -266,6 +266,9 @@ class NamedExpression(Expression):
         # through a compile step and found the unique name of a type match.
         # Both outcomes are fine.
         datas = resolver.find_data(self.name)
+        # An incomplete search can't give a trustworthy type yet — defer.
+        if not datas.complete:
+            return None
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
         if len(datas) > 1 and self.resolved_trait_scope is not None:
             filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
@@ -311,6 +314,12 @@ class NamedExpression(Expression):
         # compile loop.
         datas = resolver.find_data(self.name)
         if '@' not in self.name:
+            # Never commit a name against an INCOMPLETE candidate set: the search
+            # was blocked (an unresolved `[where]` alias / NamedSpec), so the
+            # candidate that should win may not be visible yet. Leave the use
+            # unresolved and retry once the blocker clears on a later pass.
+            if not datas.complete:
+                return self, []
             datas = _resolve_overloads(resolver, expected_type, datas)
             if len(datas) != 1:
                 return self, [] # didn't find a unique candidate

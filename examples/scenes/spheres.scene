@@ -1,0 +1,9 @@
+# A few spheres on a big ground sphere, lit from the upper right.
+#   camera  eye        lower-left    horizontal  vertical
+camera   0 0 0    -2 -1.5 -1     4 0 0       0 3 0
+light    4 4 1
+
+sphere   0 -100.5 -1   100    0.5 0.5 0.5   diffuse    # ground
+sphere   0 0 -1        0.5    0.7 0.3 0.3   diffuse    # centre (red)
+sphere  -1 0 -1        0.5    0.8 0.8 0.8   metal      # left (mirror)
+sphere   1 0 -1        0.5    0.3 0.3 0.7   diffuse    # right (blue)

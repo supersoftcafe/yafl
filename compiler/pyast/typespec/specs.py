@@ -642,7 +642,7 @@ class NamedSpec(TypeSpec):
         # overload resolution narrow `add(1, 2)` definitively: a candidate
         # whose parameter is `NamedSpec("Set", ...)` can never accept a
         # `BuiltinSpec("bigint")` — no knowledge of T required.
-        if isinstance(right, (NamedSpec, GenericPlaceholderSpec)):
+        if isinstance(right, NamedSpec):
             return None
         types = resolver.find_type(self.name)
         if len(types) != 1:
@@ -721,7 +721,10 @@ class CombinationSpec(TypeSpec):
         return union_repr.classify(self, resolver).ctype()
 
     def as_unique_id_str(self) -> str|None:
-        ids = [x.as_unique_id_str() for x in self.types]
+        # Flatten nested unions first (an inferred `A | (A|None)` is the set
+        # `A | None`), so identity agrees with repr_members and a nested union
+        # shares one id — and one representation — with its flat form.
+        ids = [x.as_unique_id_str() for x in _flatten_union_members(self.types)]
         if not all(ids):
             return None
         # Set identity: order and repetition carry no meaning, so dedupe and
@@ -731,27 +734,21 @@ class CombinationSpec(TypeSpec):
 
     def repr_members(self) -> tuple[TypeSpec, ...]:
         """The canonical member list for this union's in-memory representation:
-        members deduped by structural id, first occurrence kept (unresolved
-        members, with no id yet, are never folded).
+        nested unions flattened and members deduped by structural id, first
+        occurrence kept (unresolved members, with no id yet, are never folded).
 
         A union is a set, so a member repeated by substitution — `E | IOError`
         with `E = IOError` — must lay out as ONE slot and ONE tag, not two;
         otherwise boxing a value of that type cannot say which duplicate slot it
-        belongs to. `types` is left exactly as written/substituted; every
-        representation site (classify, match dispatch, widen, box) reads members
-        through here, so the layout is built AND indexed from the same list.
-        Identity (`as_unique_id_str`) dedupes the same way, so a deduped layout
-        and the type's id always agree."""
-        seen: set[str] = set()
-        out: list[TypeSpec] = []
-        for tp in self.types:
-            uid = tp.as_unique_id_str()
-            if uid is not None:
-                if uid in seen:
-                    continue
-                seen.add(uid)
-            out.append(tp)
-        return tuple(out)
+        belongs to. And a member that is ITSELF a union must contribute its
+        members directly: an inferred type may nest (`A | (A|None)` from a match
+        whose arms are a member and the union), and that must share one layout
+        with the flat `A | None`. `types` is left exactly as written/substituted;
+        every representation site (classify, match dispatch, widen, box) reads
+        members through here, so the layout is built AND indexed from the same
+        list. `as_unique_id_str` flattens the same way, so a laid-out union and
+        the type's id always agree."""
+        return _flatten_union_members(self.types)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):

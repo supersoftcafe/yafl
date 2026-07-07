@@ -956,6 +956,13 @@ def _hoist_from_body(fn: s.FunctionStatement) -> tuple[list[s.Statement], dict[s
 
         if not scc_needs_closure[idx]:
             for member in scc_member_fns:
+                # Moving to top level: the function loses the owner's lexical
+                # trait scope, so make the owner's `where` explicit on it (an
+                # inner function has none of its own), and it now establishes its
+                # own scope. Deeper nesting inherits correctly because this
+                # hoisted function is itself re-processed (see the recursion in
+                # _hoist_nested_fns_to_lambdas), carrying these traits down.
+                member = dataclasses.replace(member, is_nested=False, trait_params=fn.trait_params)
                 if spec_suffix and not member.name.endswith(spec_suffix):
                     unique_name = member.name + spec_suffix
                     renames[member.name] = unique_name

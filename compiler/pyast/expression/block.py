@@ -85,6 +85,14 @@ class BlockExpression(Expression):
     value: Expression
     tag: str | None = None
 
+    def __inner_marked(self) -> list[s.Statement]:
+        # A block is never top level, so every function declared in it is an
+        # INNER function: mark it, so it establishes no trait scope of its own
+        # (it carries no `where` and inherits the owner's lexically). Idempotent.
+        return [dataclasses.replace(x, is_nested=True)
+                if isinstance(x, s.FunctionStatement) and not x.is_nested else x
+                for x in self.statements]
+
     def _find_locals(self) -> Callable[[str], list[g.Resolved]]:
         def finder(query: str) -> list[g.Resolved]:
             lets = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
@@ -98,7 +106,7 @@ class BlockExpression(Expression):
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Expression:
         nested = g.ResolverData(resolver, self._find_locals())
         return rw.rewrite(self, replace, resolver,
-            statements=rw.seq(self.statements, nested, replace),
+            statements=rw.seq(self.__inner_marked(), nested, replace),
             value=self.value.search_and_replace(nested, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
@@ -106,7 +114,7 @@ class BlockExpression(Expression):
         return self.value.get_type(nested)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        statements = s.collapse_else_if(self.statements)
+        statements = s.collapse_else_if(self.__inner_marked())
         nested = g.ResolverData(resolver, self._find_locals())
         stmt_results = [x.compile(nested, expected_type) for x in statements]
         new_stmts = [r[0] for r in stmt_results if r[0]]
@@ -116,7 +124,7 @@ class BlockExpression(Expression):
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         nested = g.ResolverData(resolver, self._find_locals())
-        stmt_errs = [err for x in self.statements for err in x.check(nested, expected_type)]
+        stmt_errs = [err for x in self.__inner_marked() for err in x.check(nested, expected_type)]
         val_errs = self.value.check(nested, expected_type)
         if not val_errs and expected_type is not None:
             xtype = self.value.get_type(nested)

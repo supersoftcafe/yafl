@@ -908,6 +908,7 @@ INLINE double   float64_mul(double a, double b) { return a * b; }
 INLINE double   float64_div(double a, double b) { return a / b; }
 INLINE double   float64_neg(double a)            { return -a; }
 INLINE double   float64_rem(double a, double b)  { return fmod(a, b); }
+INLINE double   float64_sqrt(double a)           { return sqrt(a); }
 INLINE bool     float64_lt (double a, double b)  { return a <  b; }
 INLINE bool     float64_eq (double a, double b)  { return a == b; }
 INLINE bool     float64_gt (double a, double b)  { return a >  b; }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 import codegen.typedecl as cg_t
@@ -10,6 +10,49 @@ import codegen.ops as cg_o
 
 import pyast.statement as s
 import pyast.typespec as t
+
+
+@dataclass(frozen=True)
+class Bag[T]:
+    """A found set plus whether that set is COMPLETE — whether the search saw
+    everything it needed to. Every `find` over a resolver returns one of these,
+    and a name is only ever committed to a candidate from a *complete* bag: an
+    incomplete one may still be missing the candidate that should win, once the
+    thing that blocked the search (an unresolved `[where]` alias, or a NamedSpec
+    encountered anywhere along the way) resolves on a later compile pass.
+
+    Combining bags with `+` unions the items and ANDs completeness — a result is
+    complete only when every part that fed it was. This is also the value type
+    of the `Statements` by-name index. Two shared empties cover the common ends:
+    `EMPTY` (nothing found, and that is the whole story) and `INCOMPLETE`
+    (nothing found *yet* — the search was blocked, so absence proves nothing)."""
+    items: tuple[T, ...] = ()
+    complete: bool = True
+
+    def __add__(self, other: "Bag[T] | Iterable[T]") -> "Bag[T]":
+        if isinstance(other, Bag):
+            return Bag(self.items + other.items, self.complete and other.complete)
+        return Bag(self.items + tuple(other), self.complete)
+
+    def __radd__(self, other: "Iterable[T]") -> "Bag[T]":
+        return Bag(tuple(other) + self.items, self.complete)
+
+    def __iter__(self): return iter(self.items)
+    def __len__(self) -> int: return len(self.items)
+    def __getitem__(self, index): return self.items[index]
+    def __bool__(self) -> bool: return bool(self.items)
+
+
+# A Bag is a sequence of its items (with completeness riding alongside), so the
+# many `match resolver.find_*(): case [x]:` sites treat it exactly as they did
+# the old list. Registering it keeps those sequence patterns working.
+Sequence.register(Bag)
+
+
+# The shared empties (see Bag): found-nothing-and-that's-final vs found-nothing-
+# -yet-because-blocked. Everything else is built by `+`-ing bags together.
+EMPTY: Bag = Bag((), True)
+INCOMPLETE: Bag = Bag((), False)
 
 
 class FunctionBuilder:
@@ -110,11 +153,11 @@ class Resolved[T]:
 
 
 class Resolver:
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return []
+    def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
+        return EMPTY
 
-    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return []
+    def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
+        return EMPTY
 
     def get_traits(self) -> list[s.LetStatement]:
         return []
@@ -269,8 +312,11 @@ class Statements:
     def __iter__(self): return iter(self._ordered)
     def __len__(self) -> int: return len(self._ordered)
     def __bool__(self) -> bool: return bool(self._ordered)
-    def __getitem__(self, name: str) -> "tuple[s.Statement, ...]": return self._index.get(name, ())
-    def get(self, name: str) -> "tuple[s.Statement, ...]": return self._index.get(name, ())
+    # The by-name index is exhaustive over this collection, so a lookup is
+    # always a COMPLETE bag — incompleteness only ever enters via the trait
+    # finder meeting an unresolved alias, never from a plain name miss here.
+    def __getitem__(self, name: str) -> "Bag[s.Statement]": return Bag(self._index.get(name, ()))
+    def get(self, name: str) -> "Bag[s.Statement]": return Bag(self._index.get(name, ()))
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Statements):
@@ -299,13 +345,13 @@ class ResolverRoot(Resolver):
         # compile pass from the previous pass's call sites (path 3).
         self.__param_suggestions = param_suggestions or {}
 
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
-        return [Resolved(st.name, st, ResolvedScope.GLOBAL)
-                for st in self.__statements[name] if isinstance(st, s.TypeStatement)]
+    def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
+        return Bag(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
+                for st in self.__statements[name] if isinstance(st, s.TypeStatement)))
 
-    def find_data(self, name: str) -> list[Resolved[s.DataStatement]]:
-        return [Resolved(st.name, st, ResolvedScope.GLOBAL)
-                for st in self.__statements[name] if isinstance(st, s.DataStatement)]
+    def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
+        return Bag(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
+                for st in self.__statements[name] if isinstance(st, s.DataStatement)))
 
     def get_traits(self) -> list[s.LetStatement]:
         return list(self.__statements.traits)
@@ -316,9 +362,12 @@ class ResolverRoot(Resolver):
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         if not scopes:
             return []
+        # Every in-scope [where] alias type, resolved or not: the trait finder
+        # must see an unresolved one (still a NamedSpec) to register its trait
+        # set as not-yet-complete, rather than treat it as absent and commit a
+        # name against a search that was actually blocked.
         return [st.type for st in self.__statements.where_aliases
-                if isinstance(st.type, t.ClassSpec) and st.type.is_concrete()
-                and st.name.rpartition('::')[0] in scopes]
+                if st.name.rpartition('::')[0] in scopes]
 
 
 class AddScopeResolution(DelegatingResolver):
@@ -376,11 +425,12 @@ class ResolverType(DelegatingResolver):
         self.__find = find
         self.__cache = {}
 
-    def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
+    def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
         cached = self.__cache.get(name)
         if cached is not None:
             return cached
-        result = self._parent.find_type(name) + self.__find(name)
+        found = self.__find(name)
+        result = self._parent.find_type(name) + (found if isinstance(found, Bag) else Bag(tuple(found)))
         self.__cache[name] = result
         return result
 
@@ -403,7 +453,33 @@ class ResolverData(DelegatingResolver):
         # inside a function with a parameter also named `io` triggers an
         # ambiguity error ("Resolved too many io") instead of shadowing.
         own = self.__find(name)
+        own = own if isinstance(own, Bag) else Bag(tuple(own))
         result = own if own else self._parent.find_data(name)
+        self.__cache[name] = result
+        return result
+
+
+class ResolverTraitData(DelegatingResolver):
+    """Adds the in-scope trait / interface operators as ADDITIONAL data
+    candidates — they JOIN the enclosing scope, never shadow it (only a local
+    binding shadows), so a free `+` and the built-in `+` resolve together and
+    are told apart by argument type. Established once, at a top-level function
+    or let (see _initialiser_resolver); an inner function carries no `where` and
+    never adds its own, inheriting this scope lexically from its owner, so a name
+    resolves to the same operators whether used at top level or nested."""
+    __find_trait: Callable[[Resolver, str], "Bag[Resolved[s.DataStatement]]"]
+    __cache: dict[str, "Bag[Resolved[s.DataStatement]]"]
+
+    def __init__(self, parent: Resolver, find_trait: Callable[[Resolver, str], "Bag[Resolved[s.DataStatement]]"]):
+        super().__init__(parent)
+        self.__find_trait = find_trait
+        self.__cache = {}
+
+    def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
+        cached = self.__cache.get(name)
+        if cached is not None:
+            return cached
+        result = self._parent.find_data(name) + self.__find_trait(self._parent, name)
         self.__cache[name] = result
         return result
 

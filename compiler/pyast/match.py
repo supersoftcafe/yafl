@@ -339,11 +339,18 @@ class MatchExpression(e.Expression):
             arms=rw.seq(self.arms, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        for arm in self.arms:
-            t_arm = arm.get_body_type(resolver)
-            if t_arm is not None:
-                return t_arm
-        return None
+        # A match yields a value of ANY arm's body type, so its type is the
+        # JOIN (set union) of them — not just the first arm. Identical arms
+        # collapse back to that one type (the singleton rule); heterogeneous
+        # arms (a member `A` and the union `A|None` it belongs to, say) widen
+        # to their set union `A|None`. Taking only the first arm made the shared
+        # result slot too narrow, so a wider later arm was truncated into it
+        # (a value of `A|None` stored as `A`) — a C type mismatch under -O2.
+        resolved = [ty for ty in (arm.get_body_type(resolver) for arm in self.arms)
+                    if ty is not None]
+        if not resolved:
+            return None
+        return reduce(lambda x, y: t.join(x, y, resolver), resolved)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
         new_subject, subj_stmts = self.subject.compile(resolver, None)
@@ -384,9 +391,13 @@ class MatchExpression(e.Expression):
         return dataclasses.replace(self, subject=new_subject, arms=new_arms), subj_stmts + arm_stmts
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list:
+        # The subject is an ordinary expression: check it, so an unresolved
+        # subject (e.g. a call to an undefined function) reports its own error
+        # here rather than slipping past every check below into a codegen crash.
+        subject_err = self.subject.check(resolver, None)
         subj_type = self.subject.get_type(resolver)
         if subj_type is None:
-            return []  # Not ready
+            return subject_err  # subject's type unknown — its own errors are all there is
 
         has_literal = any(arm.literal is not None for arm in self.arms)
         is_primitive_subject = (isinstance(subj_type, t.BuiltinSpec)
@@ -395,14 +406,14 @@ class MatchExpression(e.Expression):
         # Subjects with literal arms must contain at least one primitive
         # variant (Int or String) that the literal values can match.
         if has_literal and not (is_primitive_subject or self.__subject_has_primitive(subj_type)):
-            return [Error(self.line_ref,
+            return subject_err + [Error(self.line_ref,
                 "literal match arms require a subject with a primitive (Int or String) variant")]
 
         if not has_literal and not isinstance(subj_type, (t.EnumSpec, t.CombinationSpec)):
-            return [Error(self.line_ref, "match subject must be a union type"
+            return subject_err + [Error(self.line_ref, "match subject must be a union type"
                           + ", or use literal patterns on an Int/String subject")]
 
-        errors = []
+        errors = list(subject_err)
         for arm in self.arms:
             errors += arm.check(resolver, expected_type)
         if is_primitive_subject and subj_type.is_concrete():

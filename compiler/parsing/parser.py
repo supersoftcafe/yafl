@@ -619,12 +619,23 @@ def __to_function_oneliner(result: p.Result, tokens: list[p.Token]) -> p.Result[
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
+def __flatten_inheritance(implements: list[t.TypeSpec]) -> list[t.TypeSpec]:
+    """In an inheritance clause, `: A | B` means "implements BOTH A and B" — a
+    list of interfaces that happens to be spelled with `|`, not the union *type*
+    A-or-B. Flatten it here so a class's `implements` is a flat list of
+    individual interfaces from the moment it is parsed: no later pass has to
+    unpack a CombinationSpec that never should have been one, and the trait
+    search never meets a union parent."""
+    return [member for entry in implements
+            for member in (entry.types if isinstance(entry, t.CombinationSpec) else [entry])]
+
+
 def __to_class(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.ClassStatement]:
     attributes, name, generics, params, implements, where_traits, body = result.value
     statement = s.ClassStatement(
         result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
         s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params),
-        body, implements, False, trait_params=where_traits)
+        body, __flatten_inheritance(implements), False, trait_params=where_traits)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
@@ -633,7 +644,7 @@ def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, lis
     statement = s.ClassStatement(
         result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
         s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, []),
-        body, implements, True, trait_params=where_traits)
+        body, __flatten_inheritance(implements), True, trait_params=where_traits)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 

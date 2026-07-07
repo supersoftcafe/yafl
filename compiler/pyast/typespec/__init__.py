@@ -20,7 +20,7 @@ from pyast.typespec.specs import (
 )
 from pyast.typespec.algebra import (
     substitute_placeholders, placeholder_names_in, has_free_placeholders,
-    meet, refine, unify_generic,
+    meet, join, refine, refine_widening, unify_generic,
     bind_from_constraint_match, TraitInstance, solve_trait_constraint,
     _CONFLICT,
 )

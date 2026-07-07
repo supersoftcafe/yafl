@@ -32,6 +32,12 @@ from pyast.statement.base import Statement, NamedStatement, DataStatement, Impor
 class LetStatement(DataStatement):
     default_value: e.Expression|None
     declared_type: t.TypeSpec|None
+    # True once inference has FILLED an untyped let's type. A declared type is
+    # fixed (its holes fill by refinement); an inferred one converges on the RHS
+    # and must be free to WIDEN as a match/branch RHS broadens — the same
+    # distinction FunctionStatement draws for its return. Provenance, not
+    # identity: excluded from equality/hash.
+    type_inferred: bool = field(default=False, compare=False, kw_only=True)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return rw.rewrite(self, replace, resolver,
@@ -81,11 +87,21 @@ class LetStatement(DataStatement):
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
         dv, dv_glb = self.default_value.compile(resolver, self.declared_type) if self.default_value else (None, [])
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
-        # An untyped (or still-holey) let refines its type from the RHS each
-        # pass — t.refine is the single gate/threshold/merge rule for that.
+        # A DECLARED type is fixed (refine only fills its holes); an UNTYPED let
+        # converges on the RHS and must be free to widen as a match/branch RHS
+        # broadens (`A`, then `A|None`) — the shared receiver-convergence step,
+        # gated on the RHS still changing this pass.
+        declared = self.declared_type is not None and not self.type_inferred
+        new_type_inferred = self.type_inferred
         if dv is not None:
-            dt = t.refine(dt, resolver, lambda: dv.get_type(resolver))
-        stmt = dataclasses.replace(self, default_value=dv, declared_type=dt, trait_params=tuple(trts))
+            if declared:
+                dt = t.refine(dt, resolver, lambda: dv.get_type(resolver))
+            else:
+                new_type_inferred = True
+                dt = t.refine_widening(dt, resolver, lambda: dv.get_type(resolver),
+                                       dv != self.default_value)
+        stmt = dataclasses.replace(self, default_value=dv, declared_type=dt, trait_params=tuple(trts),
+                                   type_inferred=new_type_inferred)
         return stmt, dv_glb+dt_glb+trts_glb
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:

@@ -143,6 +143,66 @@ def meet(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None | _Conf
     return a if a == b else _CONFLICT
 
 
+def join(a: "TypeSpec | None", b: "TypeSpec | None", resolver: "g.Resolver") -> "TypeSpec | None":
+    """Least upper bound: the narrowest type both `a` and `b` widen into — the
+    type of a branch (a `match`, a `?:`) whose sides yield `a` and `b`.
+
+    If one side already widens into the other, THAT wider type is the join — a
+    member folds into its union (`A ⊔ (A|None)` = `A|None`) and a variant into
+    its enum (`Ok ⊔ Result` = `Result`), never a redundant `Result | Ok`. Tuples
+    otherwise join FIELD-WISE (`(T, C) ⊔ (None, C)` = `(T|None, C)`, so tuple-
+    building arms reconcile to one tuple with union fields, matching a declared
+    tuple return). Anything else is a genuine SET UNION of distinct types.
+    Identical types and holes short-circuit. Unlike `meet` — which REFINES and
+    conflicts on incompatible leaves — join never fails."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a == b:
+        return a
+    if b.trivially_assignable_from(resolver, a) is True:
+        return b
+    if a.trivially_assignable_from(resolver, b) is True:
+        return a
+    if (isinstance(a, TupleSpec) and isinstance(b, TupleSpec)
+            and len(a.entries) == len(b.entries)):
+        entries = tuple(dataclasses.replace(ea, type=join(ea.type, eb.type, resolver),
+                                            name=ea.name or eb.name)
+                        for ea, eb in zip(a.entries, b.entries))
+        return dataclasses.replace(a, entries=entries)
+    # Genuine set union: build it and read its canonical (flattened, deduped)
+    # members; one member left ⇒ the singleton rule (`A ⊔ A` = `A`).
+    members = CombinationSpec(a.line_ref, (a, b)).repr_members()
+    return members[0] if len(members) == 1 else CombinationSpec(a.line_ref, members)
+
+
+def refine_widening(current: "TypeSpec | None", resolver: "g.Resolver",
+                    infer: "Callable[[], TypeSpec | None]", source_changed: bool) -> "TypeSpec | None":
+    """`refine` for a type inferred from a source that can WIDEN across passes.
+
+    A match/branch broadens its arms to their least upper bound, and that grows
+    as arms resolve late (`A`, then `A|None`). Plain `refine` latches the first
+    concrete view and its `meet` rejects the wider one as a conflict, freezing
+    the narrow type. So any receiver inferring from such a source — an undeclared
+    return, an untyped `let` — must be free to WIDEN: when the fresh view is a
+    strict superset of the settled current type, adopt it.
+
+    Gated on `source_changed` (the receiver's source expression differing from
+    last pass): a SETTLED source — a grounded generic call whose type is stable —
+    must not be re-derived every pass, which churns its monomorphisation. Only a
+    still-converging source is re-read, and only a genuine widening is taken, so
+    a stable or re-monomorphised-but-equal view neither churns nor accretes."""
+    refined = refine(current, resolver, infer)
+    if source_changed and refined is not None and refined.is_concrete():
+        fresh = infer()
+        if (fresh is not None and fresh.is_concrete()
+                and fresh.trivially_assignable_from(resolver, refined) is True
+                and refined.trivially_assignable_from(resolver, fresh) is not True):
+            return fresh
+    return refined
+
+
 def _meet_params(base: "TypeSpec", a_params: "tuple", b_params: "tuple") -> "TypeSpec | _Conflict":
     """Meet two positional type-argument lists of a generic class/enum and return
     `base` rebuilt with the refined arguments, or `_CONFLICT` if any argument

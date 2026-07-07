@@ -77,8 +77,10 @@ class ClassStatement(TypeStatement):
             m = self.find_data(resolver, query)
             l = LetStatement(self.line_ref, "this", None, {}, (), None, this_type)
             s = [g.Resolved("this", l, g.ResolvedScope.LOCAL)] if "this" == query else []
-            td = self._find_trait_data(resolver, query)
-            return m + s + td
+            # No trait data here: each method (a FunctionStatement) establishes
+            # its own trait scope in its body resolver, so adding it here too
+            # would double the in-scope operators.
+            return m + s
         return finder
 
     def find_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
@@ -148,8 +150,10 @@ class ClassStatement(TypeStatement):
         # Use a resolver that includes this class's own generic type params so that
         # e.g. `TVal` in `class Foo<TVal> : Bar<TVal>` resolves to GenericPlaceholderSpec.
         type_resolver = g.ResolverType(resolver, self._find_generic_types)
-        unpacked_implements = [y for x in self.implements for y in (x.types if isinstance(x, t.CombinationSpec) else [x])]
-        resolved_inheritance = c.find_classes_or_error(unpacked_implements, type_resolver)
+        # `implements` is a flat list of individual interfaces (the parser splits
+        # the `A | B` inheritance spelling — see __flatten_inheritance), so there
+        # is no union left to unpack here.
+        resolved_inheritance = c.find_classes_or_error(self.implements, type_resolver)
         resolved_classes = [(xtype, xcls) for (xtype, xcls) in resolved_inheritance if isinstance(xcls, ClassStatement)]
         classes = [xcls for (xtype, xcls) in resolved_classes]
         new_implements = [xtype for (xtype, xcls) in resolved_inheritance]

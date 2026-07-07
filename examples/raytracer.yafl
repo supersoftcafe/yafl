@@ -1,0 +1,264 @@
+# raytracer — a small deterministic Whitted ray tracer, built to stress a
+# different corner of the runtime than ylisp: Float64 arithmetic in bulk,
+# small value-structs (Vec3 flattens to a flat struct and should stack-promote
+# in the hot loop), a material UNION dispatched per hit, an Option (`Hit|None`)
+# on every intersection, recursion for mirror reflection, and a multi-megabyte
+# PPM streamed out row by row.
+#
+#   raytracer < scene > out.ppm
+#
+# Output: PPM P3 (ASCII) on stdout — `P3`, width height, 255, then `r g b`
+# triples, one pixel per line, top row first.
+namespace Main
+
+import System
+import System::IO
+
+# ── Vec3: a flat value struct (3 fields → simple_classes flattens it) ────────
+class Vec3(x: Float, y: Float, z: Float)
+
+fun `+`(a: Vec3, b: Vec3) => Vec3(a.x + b.x, a.y + b.y, a.z + b.z)
+fun `-`(a: Vec3, b: Vec3) => Vec3(a.x - b.x, a.y - b.y, a.z - b.z)
+fun `*`(a: Vec3, s: Float) => Vec3(a.x * s, a.y * s, a.z * s)   # scale by a scalar
+fun `*`(a: Vec3, b: Vec3) => Vec3(a.x * b.x, a.y * b.y, a.z * b.z)   # component-wise
+fun dot(a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z
+fun lengthSq(a: Vec3) => dot(a, a)
+fun length(a: Vec3) => sqrt(lengthSq(a))
+fun normalize(a: Vec3) => a * (1.0 / length(a))
+fun reflect(v: Vec3, n: Vec3) => v - n * (2.0 * dot(v, n))
+
+fun _max(a: Float, b: Float) => a > b ? a : b
+fun _min(a: Float, b: Float) => a < b ? a : b
+fun _clamp01(x: Float) => _max(0.0, _min(1.0, x))
+
+
+# ── Scene objects: material is a union, so Sphere stays a heap object ────────
+enum Material
+  enum Lambertian(albedo: Vec3)
+  enum Metal(albedo: Vec3)
+
+class Sphere(center: Vec3, radius: Float, material: Material)
+
+class Hit(t: Float, point: Vec3, normal: Vec3, material: Material)
+
+fun _mkHit(s: Sphere, ro: Vec3, rd: Vec3, t: Float): Hit
+  let p = ro + rd * t
+  ret Hit(t, p, normalize(p - s.center), s.material)
+
+fun hitSphere(s: Sphere, ro: Vec3, rd: Vec3, tmin: Float, tmax: Float): Hit | None
+  let oc = ro - s.center
+  let a = lengthSq(rd)
+  let halfB = dot(oc, rd)
+  let c = lengthSq(oc) - s.radius * s.radius
+  let disc = halfB * halfB - a * c
+  if disc < 0.0
+    ret None
+  let sd = sqrt(disc)
+  let ta = (0.0 - halfB - sd) / a
+  let tb = (0.0 - halfB + sd) / a
+  ret (ta > tmin && ta < tmax)
+    ? _mkHit(s, ro, rd, ta)
+    : ((tb > tmin && tb < tmax) ? _mkHit(s, ro, rd, tb) : None)
+
+# Closer of `best` and sphere `s` (the fold step): once there is a hit, tmax
+# narrows to best.t, so the fold naturally keeps the nearest.
+fun _closer(ro: Vec3, rd: Vec3, tmin: Float, tmax: Float, best: Hit | None, s: Sphere) => match(best)
+  (h: Hit) => match(hitSphere(s, ro, rd, tmin, h.t))
+    (nh: Hit)    => nh
+    (miss: None) => h
+  (miss: None) => hitSphere(s, ro, rd, tmin, tmax)
+
+fun nearest(scene: List<Sphere>, ro: Vec3, rd: Vec3, tmin: Float, tmax: Float) =>
+  fold<Sphere, Hit | None>(scene, None, (best: Hit | None, s: Sphere) => _closer(ro, rd, tmin, tmax, best, s))
+
+
+# ── Shading ─────────────────────────────────────────────────────────────────
+fun _sky(rd: Vec3): Vec3
+  let t = 0.5 * (normalize(rd).y + 1.0)
+  ret Vec3(1.0, 1.0, 1.0) * (1.0 - t) + Vec3(0.5, 0.7, 1.0) * t
+
+fun _inShadow(scene: List<Sphere>, p: Vec3, light: Vec3) =>
+  match(nearest(scene, p, normalize(light - p), 0.001, length(light - p)))
+    (h: Hit)     => true
+    (miss: None) => false
+
+fun _shadeLambert(scene: List<Sphere>, light: Vec3, l: Lambertian, h: Hit): Vec3
+  let diff = _max(0.0, dot(h.normal, normalize(light - h.point)))
+  let lit = _inShadow(scene, h.point, light) ? 0.15 : (0.15 + diff)
+  ret l.albedo * lit
+
+fun trace(scene: List<Sphere>, light: Vec3, ro: Vec3, rd: Vec3, depth: Int): Vec3
+  if depth < 1
+    ret Vec3(0.0, 0.0, 0.0)
+  ret match(nearest(scene, ro, rd, 0.001, 1000000.0))
+    (h: Hit) => match(h.material)
+      (m: Metal)      => m.albedo * trace(scene, light, h.point, reflect(normalize(rd), h.normal), depth - 1)
+      (l: Lambertian) => _shadeLambert(scene, light, l, h)
+    (miss: None) => _sky(rd)
+
+
+# ── Camera ────────────────────────────────────────────────────────────────
+# A viewport described directly (no trig): the eye, the lower-left corner of
+# the image plane, and its horizontal + vertical spans.
+class Camera(origin: Vec3, lowerLeft: Vec3, horizontal: Vec3, vertical: Vec3)
+
+fun _camRay(cam: Camera, u: Float, v: Float) =>
+  cam.lowerLeft + cam.horizontal * u + cam.vertical * v - cam.origin
+
+
+# ── Sampling + colour → PPM text ─────────────────────────────────────────────
+fun _sampleAt(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, px: Int, py: Int, dx: Float, dy: Float): Vec3
+  let u = (Float(px) + dx) / Float(w)
+  let v = (Float(h - py) + dy) / Float(h)   # py=0 is the top row
+  ret trace(scene, light, cam.origin, _camRay(cam, u, v), 8)
+
+# 2x2 supersampling: four sub-pixel samples averaged.
+fun _pixelColor(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, px: Int, py: Int): Vec3
+  let a = _sampleAt(scene, cam, light, w, h, px, py, 0.25, 0.25)
+  let b = _sampleAt(scene, cam, light, w, h, px, py, 0.75, 0.25)
+  let c = _sampleAt(scene, cam, light, w, h, px, py, 0.25, 0.75)
+  let d = _sampleAt(scene, cam, light, w, h, px, py, 0.75, 0.75)
+  ret (a + b + c + d) * 0.25
+
+fun _byte(x: Float) => truncateToInt(_clamp01(sqrt(x)) * 255.0)   # gamma 2.0
+
+fun _pixelStr(c: Vec3) => String(_byte(c.x)) + " " + String(_byte(c.y)) + " " + String(_byte(c.z)) + "\n"
+
+fun [tail] _rowStr(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, py: Int, px: Int, acc: String) => px >= w
+  ? acc
+  : _rowStr(scene, cam, light, w, h, py, px + 1, acc + _pixelStr(_pixelColor(scene, cam, light, w, h, px, py)))
+
+# Rows [lo, hi) as one PPM text block, rendered serially.
+fun [tail] _rangeStr(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, lo: Int, hi: Int, acc: String) => lo >= hi
+  ? acc
+  : _rangeStr(scene, cam, light, w, h, lo + 1, hi, acc + _rowStr(scene, cam, light, w, h, lo, 0, ""))
+
+
+# ── Parallel render ──────────────────────────────────────────────────────────
+# Divide the row range and render the halves concurrently; the two text blocks
+# concatenate back in order. Small ranges render serially (a leaf).
+fun _renderSplit(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, lo: Int, hi: Int): String
+  let mid = (lo + hi) / 2
+  let (top, bot) = __parallel__(
+        () => _render(scene, cam, light, w, h, lo, mid),
+        () => _render(scene, cam, light, w, h, mid, hi))
+  ret top + bot
+
+fun _render(scene: List<Sphere>, cam: Camera, light: Vec3, w: Int, h: Int, lo: Int, hi: Int): String => (hi - lo) <= 8
+  ? _rangeStr(scene, cam, light, w, h, lo, hi, "")
+  : _renderSplit(scene, cam, light, w, h, lo, hi)
+
+
+fun _defaultCam() => Camera(Vec3(0.0, 0.0, 0.0), Vec3(-2.0, -1.5, -1.0), Vec3(4.0, 0.0, 0.0), Vec3(0.0, 3.0, 0.0))
+
+# ── Scene parser: a tiny text DSL read from stdin ────────────────────────────
+# Whitespace/newline-separated directives; `#` starts a comment to end-of-line:
+#   camera  ox oy oz  llx lly llz  hx hy hz  vx vy vz
+#   light   px py pz
+#   sphere  cx cy cz  radius  r g b  (metal|diffuse)
+fun [tail] _skipToEol(s: String, pos: Int) => pos < length(s) && byteAt(s, pos) != '\n'
+  ? _skipToEol(s, pos + 1)
+  : pos
+
+fun [tail] _skipWs(s: String, pos: Int): Int
+  if pos >= length(s)
+    ret pos
+  let c = byteAt(s, pos)
+  ret (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+    ? _skipWs(s, pos + 1)
+    : (c == '#' ? _skipWs(s, _skipToEol(s, pos)) : pos)
+
+fun [tail] _scanTok(s: String, pos: Int): Int
+  if pos >= length(s)
+    ret pos
+  let c = byteAt(s, pos)
+  ret (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '#')
+    ? pos
+    : _scanTok(s, pos + 1)
+
+fun _pf(s: String) => match(parseFloat(s))
+  (f: Float)   => f
+  (n: None)    => 0.0
+
+fun _nextFloat(s: String, pos: Int): (pos: Int, v: Float)
+  let p = _skipWs(s, pos)
+  let e = _scanTok(s, p)
+  ret (e, _pf(slice(s, p, e)))
+
+fun _nextWord(s: String, pos: Int): (pos: Int, w: String)
+  let p = _skipWs(s, pos)
+  let e = _scanTok(s, p)
+  ret (e, slice(s, p, e))
+
+# The parse functions are mutually recursive (not tail-self), so plain `fun`;
+# a scene has few directives, so recursion depth is small.
+fun _parseSphere(s: String, pos: Int, scene: List<Sphere>, cam: Camera, light: Vec3): (scene: List<Sphere>, cam: Camera, light: Vec3)
+  let f0 = _nextFloat(s, pos)
+  let f1 = _nextFloat(s, f0.pos)
+  let f2 = _nextFloat(s, f1.pos)
+  let f3 = _nextFloat(s, f2.pos)
+  let f4 = _nextFloat(s, f3.pos)
+  let f5 = _nextFloat(s, f4.pos)
+  let f6 = _nextFloat(s, f5.pos)
+  let kw = _nextWord(s, f6.pos)
+  let albedo = Vec3(f4.v, f5.v, f6.v)
+  let mat = kw.w == "metal" ? Metal(albedo) : Lambertian(albedo)
+  ret _parseLoop(s, kw.pos, prepend<Sphere>(Sphere(Vec3(f0.v, f1.v, f2.v), f3.v, mat), scene), cam, light)
+
+fun _parseCamera(s: String, pos: Int, scene: List<Sphere>, light: Vec3): (scene: List<Sphere>, cam: Camera, light: Vec3)
+  let f0 = _nextFloat(s, pos)
+  let f1 = _nextFloat(s, f0.pos)
+  let f2 = _nextFloat(s, f1.pos)
+  let f3 = _nextFloat(s, f2.pos)
+  let f4 = _nextFloat(s, f3.pos)
+  let f5 = _nextFloat(s, f4.pos)
+  let f6 = _nextFloat(s, f5.pos)
+  let f7 = _nextFloat(s, f6.pos)
+  let f8 = _nextFloat(s, f7.pos)
+  let f9 = _nextFloat(s, f8.pos)
+  let fa = _nextFloat(s, f9.pos)
+  let fb = _nextFloat(s, fa.pos)
+  let cam = Camera(Vec3(f0.v, f1.v, f2.v), Vec3(f3.v, f4.v, f5.v), Vec3(f6.v, f7.v, f8.v), Vec3(f9.v, fa.v, fb.v))
+  ret _parseLoop(s, fb.pos, scene, cam, light)
+
+fun _parseLight(s: String, pos: Int, scene: List<Sphere>, cam: Camera): (scene: List<Sphere>, cam: Camera, light: Vec3)
+  let f0 = _nextFloat(s, pos)
+  let f1 = _nextFloat(s, f0.pos)
+  let f2 = _nextFloat(s, f1.pos)
+  ret _parseLoop(s, f2.pos, scene, cam, Vec3(f0.v, f1.v, f2.v))
+
+fun _parseLoop(s: String, pos: Int, scene: List<Sphere>, cam: Camera, light: Vec3): (scene: List<Sphere>, cam: Camera, light: Vec3)
+  let p0 = _skipWs(s, pos)
+  if p0 >= length(s)
+    ret (scene, cam, light)
+  let wr = _nextWord(s, p0)
+  ret wr.w == "sphere"
+    ? _parseSphere(s, wr.pos, scene, cam, light)
+    : (wr.w == "camera"
+      ? _parseCamera(s, wr.pos, scene, light)
+      : (wr.w == "light"
+        ? _parseLight(s, wr.pos, scene, cam)
+        : _parseLoop(s, wr.pos, scene, cam, light)))
+
+fun _parseScene(text: String) =>
+  _parseLoop(text, 0, List<Sphere>(), _defaultCam(), Vec3(4.0, 4.0, 1.0))
+
+
+# ── main: read a scene on stdin, write the PPM on stdout ──────────────────────
+fun _renderScene(o: IO, text: String, w: Int, h: Int): (io: IO, code: Int)
+  let ps = _parseScene(text)
+  let body = _render(ps.scene, ps.cam, ps.light, w, h, 0, h)
+  ret writeAll(o, "P3\n" + String(w) + " " + String(h) + "\n255\n" + body)
+    |> (o2, res) => (o2, 0)
+
+fun main(): Int
+  let w = 400
+  let h = 300
+  ret stdin().asStream()
+    |> (i, st) => (collect(st), i)
+    |> (src, i) => match(src)
+      (text: String) => stdout()
+        |> (o) => _renderScene(o, text, w, h)
+        |> (o, code) => (o.close(), i.close(), code)
+        |> (c1, c2, code) => code
+      (e: IOError) => (i.close(), 1) |> (c, code) => code

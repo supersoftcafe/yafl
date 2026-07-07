@@ -57,45 +57,58 @@ class NamedStatement(Statement):
     type_params: tuple[TypeAliasStatement, ...]     # SomeClass<TValue1, TValue1>
     trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)   # SomeClass<TValue>() where Numeric<TValue>
 
-    def _find_trait_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
+    def _find_trait_data(self, resolver: g.Resolver, query: str) -> "g.Bag[g.Resolved[DataStatement]]":
         # Deferred: base ← classdef would be an import cycle (ClassStatement IS
         # a NamedStatement); this method only runs long after both initialise.
         from pyast.statement.classdef import ClassStatement
 
-        def find_in_class(tp: t.ClassSpec) -> list[g.Resolved[DataStatement]]:
+        def find_in_class(tp: t.ClassSpec | t.NamedSpec) -> "g.Bag[g.Resolved[DataStatement]]":
             found = [rs.statement for rs in resolver.find_type(tp.name)]
             match found:
                 case [ClassStatement() as cls]:
                     if len(tp.type_params) != len(cls.type_params):
-                        return []
-                    # Search direct members first (the class's by-name index
-                    # is built once; this is a dict hit, not a linear scan).
+                        return g.EMPTY
+                    # Direct members first (the by-name index is a dict hit).
                     direct = cls.member_index()[query]
                     if direct:
-                        return [g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls) for x in direct]
-                    # Not found directly — recurse into parent interfaces with type params substituted.
-                    # E.g. if cls is Math<TVal> : Plus<TVal> and tp is Math<Int>,
-                    # substitute TVal→Int to get Plus<Int>, preserving the correct trait_scope.
+                        return g.Bag(tuple(g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls) for x in direct))
+                    # Recurse into each parent interface with type params
+                    # substituted (Math<TVal> : Plus<TVal>, tp Math<Int> ⇒
+                    # Plus<Int>). `implements` is already a flat list of
+                    # individual interfaces — the parser split any `A | B`
+                    # inheritance spelling — so there is never a union here.
                     mapping = {p.name: c for p, c in zip(cls.type_params, tp.type_params)}
-                    result = []
+                    result = g.EMPTY
                     for parent_type in cls.implements:
-                        substituted = t.substitute_placeholders(parent_type, mapping, resolver)
-                        if isinstance(substituted, t.ClassSpec) and substituted.is_concrete():
-                            result.extend(find_in_class(substituted))
+                        parent = t.substitute_placeholders(parent_type, mapping, resolver)
+                        # A parent whose name — or any type arg — is still a
+                        # NamedSpec has not grounded: its operators aren't
+                        # knowable yet, so this whole search is incomplete.
+                        if isinstance(parent, t.NamedSpec) or any(isinstance(a, t.NamedSpec) for a in parent.type_params):
+                            result = result + g.INCOMPLETE
+                        else:
+                            result = result + find_in_class(parent)
                     return result
+                case []:
+                    return g.INCOMPLETE  # interface name not resolved yet — blocked, not absent
                 case _:
                     raise LookupError(f"Failed to find class {tp.name!r}: got {[type(f).__name__ for f in found]}")
         specs: set[t.ClassSpec] = set()
         ordered_specs: list[t.ClassSpec] = []
-        for tp in self.trait_params:
-            if isinstance(tp, t.ClassSpec) and tp.is_concrete() and tp not in specs:
-                specs.add(tp)
-                ordered_specs.append(tp)
-        for iface in resolver.get_implicit_where_specs():
-            if isinstance(iface, t.ClassSpec) and iface.is_concrete() and iface not in specs:
-                specs.add(iface)
-                ordered_specs.append(iface)
-        return [x for tp in ordered_specs for x in find_in_class(tp)]
+        blocked = False
+        for tp in (*self.trait_params, *resolver.get_implicit_where_specs()):
+            if isinstance(tp, t.ClassSpec) and tp.is_concrete():
+                if tp not in specs:
+                    specs.add(tp)
+                    ordered_specs.append(tp)
+            elif isinstance(tp, t.NamedSpec):
+                # An in-scope [where] alias / constraint whose type is still a
+                # NamedSpec: unresolved, so the trait set is not yet complete.
+                blocked = True
+        result = g.INCOMPLETE if blocked else g.EMPTY
+        for tp in ordered_specs:
+            result = result + find_in_class(tp)
+        return result
 
     def _find_generic_types(self, query: str) -> list[g.Resolved[TypeStatement]]:
         return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.name_matches(tp.name, query)]
@@ -108,11 +121,17 @@ class NamedStatement(Statement):
         bodies and global-let initialisers share it so operators resolve the
         same in each."""
         typed = g.ResolverType(resolver, self._find_generic_types)
-        def find_data(query: str) -> list[g.Resolved[DataStatement]]:
-            found = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-                     for let in local_lets if g.name_matches(let.name, query)]
-            return found + self._find_trait_data(typed, query)
-        return g.ResolverData(typed, find_data)
+        # Trait / interface operators JOIN this scope (only a local shadows), and
+        # this scope is established ONCE, here, for a top-level function or let.
+        # Inner functions carry no `where`: they do not call this and never add
+        # their own trait scope, inheriting this one lexically from their owner.
+        joined = g.ResolverTraitData(typed, self._find_trait_data)
+        if not local_lets:
+            return joined
+        def find_locals(query: str) -> list[g.Resolved[DataStatement]]:
+            return [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                    for let in local_lets if g.name_matches(let.name, query)]
+        return g.ResolverData(joined, find_locals)
 
     def add_namespace(self, path: str):
         return dataclasses.replace(self, name=f"{path}{self.name}")

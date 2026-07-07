@@ -33,9 +33,23 @@ class FunctionStatement(DataStatement):
     parameters: DestructureStatement
     body: e.Expression | None
     return_type: t.TypeSpec|None = None
+    # An inner (nested) function carries NO `where` — no explicit trait_params
+    # and no implicit in-scope wheres. It inherits its owner's trait scope
+    # lexically; only a top-level function establishes one. Set when the function
+    # is parsed inside a body, and cleared (with the owner's traits copied on)
+    # if it is later hoisted to top level.
+    is_nested: bool = False
+    # True once inference has FILLED an undeclared return type. A declared
+    # return is fixed (its holes fill by refinement); an inferred one is the
+    # JOIN of the body and must be free to WIDEN as late-resolving branches
+    # appear (`A`, then `A|None`) — a distinction the stored type alone, once
+    # concrete, can no longer make. Excluded from equality/hash: it is provenance
+    # metadata, not identity (two functions equal but for it are the same
+    # function, so monomorphisation must not split on it).
+    return_inferred: bool = dataclasses.field(default=False, compare=False)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
-        nested_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
+        nested_resolver = self.__body_resolver(resolver)
         return rw.rewrite(self, replace, nested_resolver,
             parameters=self.parameters.search_and_replace(resolver, replace),
             body=rw.opt(self.body, nested_resolver, replace),
@@ -45,14 +59,26 @@ class FunctionStatement(DataStatement):
     def get_type(self) -> t.TypeSpec|None:
         return t.CallableSpec(self.line_ref, self.parameters.get_type(), self.return_type)
 
-    def __find_locals(self, resolver: g.Resolver) -> Callable[[str],list[g.Resolved[DataStatement]]]:
+    def __find_locals(self) -> Callable[[str],list[g.Resolved[DataStatement]]]:
+        # Parameters only — the function body adds no trait scope of its own. A
+        # top-level function's trait scope is established by __stmt_scope_resolver
+        # (via _initialiser_resolver); an inner function has none, inheriting its
+        # owner's lexically (only locals shadow, so nothing is duplicated).
         def finder(query: str) -> list[g.Resolved[DataStatement]]:
-            p = [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
-                 for let in self.parameters.flatten()
-                 if g.name_matches(let.name, query)]
-            td = self._find_trait_data(resolver, query)
-            return p + td
+            return [g.Resolved(let.name, let, g.ResolvedScope.LOCAL)
+                    for let in self.parameters.flatten()
+                    if g.name_matches(let.name, query)]
         return finder
+
+    def __body_resolver(self, resolver: g.Resolver) -> g.Resolver:
+        """Body resolver over `resolver` (which already carries this function's
+        generic type params where relevant). A TOP-LEVEL function establishes
+        the trait / operator scope here — JOINed, so a free operator coexists
+        with the built-in of the same name; an INNER function adds none (it has
+        no `where`), inheriting its owner's lexically. Parameters shadow on top."""
+        if not self.is_nested:
+            resolver = g.ResolverTraitData(resolver, self._find_trait_data)
+        return g.ResolverData(resolver, self.__find_locals())
 
     def __with_param_suggestion(self, resolver: g.Resolver) -> DestructureStatement:
         """Fill any UN-annotated parameter from the call-site suggestion gathered
@@ -85,22 +111,37 @@ class FunctionStatement(DataStatement):
         prms, prms_glb = self.__with_param_suggestion(resolver).compile(resolver, None)
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
 
-        body_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
+        body_resolver = self.__body_resolver(resolver)
+        declared = self.return_type is not None and not self.return_inferred
+        new_inferred = self.return_inferred
         if self.body is not None:
+            # The inferred return is fed back as the body's expected type each
+            # pass — a generic combinator body grounds off it. It does NOT pin a
+            # widening union: a match/branch's get_type is the JOIN of its arms'
+            # own types, independent of the expected slot.
             new_body, body_glb = self.body.compile(body_resolver, self.return_type)
-            # An undeclared return type refines from the body each pass — the
-            # same t.refine rule as an untyped let.
-            rettype = t.refine(rettype, resolver, lambda: new_body.get_type(body_resolver))
+            if declared:
+                rettype = t.refine(rettype, resolver, lambda: new_body.get_type(body_resolver))
+            else:
+                # An undeclared return converges on the body's type and must be
+                # free to WIDEN as a match/branch body broadens (`A`, then
+                # `A|None`) — the shared receiver-convergence step, gated on the
+                # body still changing this pass.
+                new_inferred = True
+                rettype = t.refine_widening(rettype, resolver,
+                                            lambda: new_body.get_type(body_resolver),
+                                            new_body != self.body)
         else:
             new_body, body_glb = None, []
 
         globals = body_glb + rettype_glb + prms_glb + trts_glb
-        new_self = dataclasses.replace(self, trait_params=tuple(trts), parameters=prms, body=new_body, return_type=rettype)
+        new_self = dataclasses.replace(self, trait_params=tuple(trts), parameters=prms, body=new_body,
+                                       return_type=rettype, return_inferred=new_inferred)
         return new_self, globals
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         resolver = g.ResolverType(resolver, self._find_generic_types)
-        body_resolver = g.ResolverData(resolver, self.__find_locals(resolver))
+        body_resolver = self.__body_resolver(resolver)
         err1 = self.return_type.check(resolver) if self.return_type else []
         err2 = self.parameters.check(resolver, None)
         err3 = self.body.check(body_resolver, self.return_type) if self.body is not None else []
@@ -140,8 +181,15 @@ class FunctionStatement(DataStatement):
         if "terminal" in self.attributes and self.attributes.get("terminal") is not None:
             terminal_err.append(Error(self.line_ref, "[terminal] takes no arguments"))
 
+        # An inner function carries no `where`: it has no trait scope of its own
+        # (it inherits its owner's), so a `where` on it would silently do
+        # nothing. Reject it — move the function to top level if it needs one.
+        inner_where_err: list[Error] = []
+        if self.is_nested and self.trait_params:
+            inner_where_err.append(Error(self.line_ref, "`where` is not allowed on an inner function — move it to a top-level function"))
+
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
-                + tail_err + terminal_err + self.__unused_param_warnings())
+                + tail_err + terminal_err + inner_where_err + self.__unused_param_warnings())
 
     def __unused_param_warnings(self) -> list[Error]:
         # No value vanishes silently: a parameter the body never reads receives
@@ -163,7 +211,7 @@ class FunctionStatement(DataStatement):
 
     def global_codegen(self, resolver: g.Resolver) -> cg_ir.Function:
         resolver = g.ResolverType(resolver, self._find_generic_types)
-        resolver = g.ResolverData(resolver, self.__find_locals(resolver))
+        resolver = self.__body_resolver(resolver)
 
         bundle = g.OperationBundle()
         for index, parameter in enumerate(self.parameters.targets):

@@ -470,7 +470,7 @@ fun _lexEmit<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: S
     : c == ']'      ? _emit1<S, E>(inner, pending, pos, atEnd, TokRBracket())
     : c == ':'      ? _emit1<S, E>(inner, pending, pos, atEnd, TokColon())
     : c == ','      ? _emit1<S, E>(inner, pending, pos, atEnd, TokComma())
-    : _isWs(c)      ? _emitSpace<S, E>(inner, pending, atEnd, System::skipAny(pending, " \t\n\r", pos))
+    : _isWs(c)      ? _emitSpace<S, E>(inner, pending, pos, atEnd, System::skipAny(pending, " \t\n\r", pos))
     : _isNumStart(c)? _emitNumber<S, E>(inner, pending, pos, atEnd, System::skipAny(pending, "-+0123456789.eE", pos))
     : c == '"'      ? _emitString<S, E>(inner, pending, pos, atEnd)
     : c == 't'      ? _emitKeyword<S, E>(inner, pending, pos, atEnd, "true", TokTrue())
@@ -482,11 +482,12 @@ fun _emit1<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: Sys
   ret (Lexer<S, E>(inner, pending, pos + 1, atEnd),
        Ok<JsonToken | System::None, E | JsonParseError>(tok))
 
-# Emit the whitespace run `pending[pos..end)` as TokSpace. The formatter drops
-# it, so no text is carried — the run is skipped by index alone.
-fun _emitSpace<S, E>(inner: S, pending: System::String, atEnd: System::Bool, end: System::Int): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+# Emit the whitespace run `pending[pos..end)` as TokSpace, carrying its source
+# text so a verbatim serialise reproduces it exactly (the pretty formatter drops
+# it regardless — it reads TokSpace only for its presence, not its content).
+fun _emitSpace<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool, end: System::Int): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
   ret (Lexer<S, E>(inner, pending, end, atEnd),
-       Ok<JsonToken | System::None, E | JsonParseError>(TokSpace("")))
+       Ok<JsonToken | System::None, E | JsonParseError>(TokSpace(System::slice(pending, pos, end))))
 
 fun _emitNumber<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool, end: System::Int): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
   let text = System::slice(pending, pos, end)
@@ -594,3 +595,46 @@ fun prettyEmit<S, E>(source: S): Pretty<S, E> where System::Stream<S, JsonToken,
 # only — so `match` with String and JsonParseError arms is complete.
 fun prettyString(s: System::String): System::String | JsonParseError | System::Never
   ret System::collect(prettyEmit(tokenize(System::once(s))))
+
+
+# ── verbatim token→String serialiser (identity round-trip) ───────────────────
+# Each token maps back to its exact source text — whitespace preserved via
+# TokSpace, strings/numbers carrying their raw lexemes — so tokenise then
+# serialise reproduces lexically-valid input verbatim (unlike prettyEmit, which
+# reformats). Stateless: a straight 1-to-1 map over the token stream.
+fun _tokenText(tok: JsonToken): System::String
+  ret match(tok)
+    (x: TokLBrace)   => "{"
+    (x: TokRBrace)   => "}"
+    (x: TokLBracket) => "["
+    (x: TokRBracket) => "]"
+    (x: TokColon)    => ":"
+    (x: TokComma)    => ","
+    (x: TokNull)     => "null"
+    (x: TokTrue)     => "true"
+    (x: TokFalse)    => "false"
+    (x: TokString)   => "\"" + x.raw + "\""
+    (x: TokNumber)   => x.text
+    (x: TokSpace)    => x.text
+
+class [final] Verbatim<S, E>(inner: S) where System::Stream<S, JsonToken, E>
+
+class _StreamVerbatim<S, E>() : System::Stream<Verbatim<S, E>, System::String, E>
+  fun next(self: Verbatim<S, E>): (stream: Verbatim<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
+    let r = System::streamNext<S, JsonToken, E>(self.inner)
+    ret match(r.value)
+      (ok: Ok<JsonToken | System::None, E>) => match(ok.value)
+        (tok: JsonToken)  => (Verbatim<S, E>(r.stream), Ok<System::String | System::None, E>(_tokenText(tok)))
+        (x: System::None) => (Verbatim<S, E>(r.stream), Ok<System::String | System::None, E>(None))
+      (er: Error<JsonToken | System::None, E>) => (Verbatim<S, E>(r.stream), Error<System::String | System::None, E>(er.error))
+
+let [trait] _stream_verbatim<S, E>: _StreamVerbatim<S, E> = _StreamVerbatim<S, E>() where System::Stream<S, JsonToken, E>
+
+fun verbatimEmit<S, E>(source: S): Verbatim<S, E> where System::Stream<S, JsonToken, E>
+  ret Verbatim<S, E>(source)
+
+# Round-trip an in-memory JSON String through the token stream: tokenise then
+# serialise verbatim. On lexically-valid input this is the identity; a malformed
+# token yields JsonParseError. The source can't fail (Never), only the lexer.
+fun tokenStringRoundTrip(s: System::String): System::String | JsonParseError | System::Never
+  ret System::collect(verbatimEmit(tokenize(System::once(s))))

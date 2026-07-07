@@ -325,9 +325,9 @@ def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
         scoped = g.AddScopeResolution(glb, import_scopes)
         # A global let's initialiser resolves like a function body: it needs the
         # trait/interface methods (operators) in scope. FunctionStatement adds
-        # this itself; a top-level LetStatement has no such hook, so add it here.
-        # Local lets compile via BlockExpression (not this path), so they keep
-        # the enclosing function's trait scope unpolluted.
+        # this itself (for a top-level function; an inner one adds none — see
+        # FunctionStatement.compile); a top-level LetStatement has no such hook,
+        # so add it here.
         if isinstance(stmt, s.LetStatement):
             return stmt._initialiser_resolver(scoped)
         return scoped

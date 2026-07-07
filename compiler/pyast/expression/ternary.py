@@ -33,17 +33,21 @@ class TernaryExpression(Expression):
             trueResult=self.trueResult.search_and_replace(resolver, replace),
             falseResult=self.falseResult.search_and_replace(resolver, replace))
 
+    # A ternary is a two-arm match on a Bool condition: the branches are the
+    # arms, and the same rules apply — broaden the branch types to their least
+    # upper bound (the result type), compile each branch against the receiver's
+    # expected type, and require the branches to converge.
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         trueType = self.trueResult.get_type(resolver)
         falseType = self.falseResult.get_type(resolver)
-        if not trueType: return falseType
-        if not falseType: return trueType
-        return falseType if falseType.trivially_assignable_from(resolver, trueType) else trueType
+        if trueType is None: return falseType
+        if falseType is None: return trueType
+        return t.join(trueType, falseType, resolver)
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
         condition, conditionStatements = self.condition.compile(resolver, t.Bool())
-        trueResult, trueStatements = self.trueResult.compile(resolver, self.falseResult.get_type(resolver))
-        falseResult, falseStatements = self.falseResult.compile(resolver, self.trueResult.get_type(resolver))
+        trueResult, trueStatements = self.trueResult.compile(resolver, expected_type)
+        falseResult, falseStatements = self.falseResult.compile(resolver, expected_type)
         return (dataclasses.replace(self, condition=condition, trueResult=trueResult, falseResult=falseResult),
                 conditionStatements + trueStatements + falseStatements)
 
