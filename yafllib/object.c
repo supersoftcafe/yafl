@@ -1025,8 +1025,10 @@ EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
 // lives in yafl.h and inlines into generated code. This is its slow half:
 // multi-page objects, and bump-region refill — where the GC pacing clock ticks
 // (gc_page_alloc). Refill then re-runs the fast path, which now succeeds (a
-// fresh page's slot region is exactly MAX_OBJECT_SIZE).
-EXPORT void *object_alloc_slow(size_t size, bool is_mutable) {
+// fresh page's slot region is exactly MAX_OBJECT_SIZE). RAW: no zeroing here —
+// object_alloc_fast zeroes at its call site (where the C compiler can elide),
+// and array_create's pointer-free path zeroes the header slots alone.
+EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
 
     if (actual_size > MAX_OBJECT_SIZE) {
@@ -1036,11 +1038,10 @@ EXPORT void *object_alloc_slow(size_t size, bool is_mutable) {
         // physical pages have no header of their own.
         size_t page_count = (sizeof(page_head_t) + actual_size + GC_PAGE_SIZE - 1) / GC_PAGE_SIZE;
         gc_page_t* page = gc_page_alloc(page_count);
-        zero_object_slots(page->slots, actual_size);   // before the bitmap makes it findable
         page->head.mutable = is_mutable;
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
-        // Snapshot-smear guard — see object_alloc_fast for the rationale.
+        // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
         if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
             atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, 0);
         return page->slots;
@@ -1057,7 +1058,7 @@ EXPORT void *object_alloc_slow(size_t size, bool is_mutable) {
 
     list_link(&gc_thread_info.new_pages, (list_element_t*)&new_page->head.list);
 
-    return object_alloc_fast(size, is_mutable);
+    return object_alloc_fast_raw(size, is_mutable);
 }
 
 EXPORT void* object_create(vtable_t *vtable) {
@@ -1076,10 +1077,26 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
     size_t total = vtable->object_size + (size_t)vtable->array_el_size * (size_t)length;
-    object_t *object = (object_t*)object_alloc_fast(total, vtable->is_mutable);
-    // The whole object is already zero (the fast path zeroes its slots).
-    // That matters: a pointer-bearing object (e.g. a heap state frame) may be
-    // scanned before every field is written — NULL is safe, garbage is not.
+    object_t *object;
+    if (vtable->array_el_pointer_locations == 0) {
+        // Pointer-free payload (byte/int/float arrays — file buffers, string
+        // storage): every GC element scan gates on the element mask, so the
+        // payload's zero state is load-bearing for NOTHING. Skip the fill —
+        // the dominant memset for large IO buffers that are overwritten
+        // immediately — and zero only the HEADER's slots (vtable, length and
+        // any scalar fields; rounding into the first payload bytes is
+        // harmless). The caller's contract is write-before-read on elements,
+        // which YAFL_GC_POISON makes loud if ever violated.
+        object = (object_t*)object_alloc_fast_raw(total, vtable->is_mutable);
+        size_t header = ((size_t)vtable->object_size + sizeof(slot_t) - 1)
+                        / sizeof(slot_t) * sizeof(slot_t);
+        zero_object_slots(object, header);
+    } else {
+        // Pointer-bearing elements: the whole object must be zero — it may be
+        // scanned before every element is written (the fill loop can suspend),
+        // and NULL is safe where garbage is not.
+        object = (object_t*)object_alloc_fast(total, vtable->is_mutable);
+    }
     object->vtable = vtable;
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);

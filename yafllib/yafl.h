@@ -375,19 +375,24 @@ typedef struct {
 EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 
 // The slow half: multi-page objects, and region refill — which is also where
-// the GC pacing clock ticks. Refills, then re-runs the fast path.
-EXTERN void *object_alloc_slow(size_t size, bool is_mutable);
+// the GC pacing clock ticks. RAW contract: the returned memory is NOT zeroed;
+// every caller goes through object_alloc_fast (which zeroes at the call site)
+// except array_create's pointer-free-payload path, which zeroes the header
+// slots only.
+EXTERN void *object_alloc_slow_raw(size_t size, bool is_mutable);
 
-INLINE void *object_alloc_fast(size_t size, bool is_mutable) {
+// RAW bump allocation: claims and publishes the slots but does NOT zero them.
+// Callers must either zero (object_alloc_fast) or prove the zero state is
+// load-bearing for nothing (a pointer-free array payload — see array_create).
+INLINE void *object_alloc_fast_raw(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
     bump_pointers_t *bp = is_mutable
         ? &gc_alloc_tl.region_mutable
         : &gc_alloc_tl.region_immutable;
     if (UNLIKELY(actual_size > (size_t)MAX_OBJECT_SIZE
                  || (size_t)(bp->bump - bp->base) < actual_size))
-        return object_alloc_slow(size, is_mutable);
+        return object_alloc_slow_raw(size, is_mutable);
     void *object = (bp->bump -= actual_size);
-    zero_object_slots(object, actual_size);
 
     // Publish into the page's objects bitmap. Non-atomic: the bump page is
     // this thread's own until its next root-scan safe point, which cannot
@@ -407,6 +412,16 @@ INLINE void *object_alloc_fast(size_t size, bool is_mutable) {
     if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
         atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
 
+    return object;
+}
+
+INLINE void *object_alloc_fast(size_t size, bool is_mutable) {
+    void *object = object_alloc_fast_raw(size, is_mutable);
+    // Zeroed HERE, at the call site, so the C compiler sees which zero-stores
+    // the immediate field writes make dead and elides exactly those (this now
+    // covers the refill and multi-page paths too — the slow half is raw).
+    size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+    zero_object_slots(object, actual_size);
     return object;
 }
 
