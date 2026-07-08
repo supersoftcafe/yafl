@@ -583,6 +583,7 @@ EXPORT object_t* io_write_range(object_t* self, object_t* data, object_t* o_offs
 // `file`/`is_write`/buffer-state fields are not touched on these paths.
 
 static void _fs_finish_exists(io_job_t* job);
+static void _fs_finish_remove(io_job_t* job);
 static void _fs_finish_stat   (io_job_t* job);
 
 
@@ -619,6 +620,14 @@ static void _fs_finish_exists(io_job_t* job) {
 }
 
 
+static void _fs_finish_remove(io_job_t* job) {
+    // raw_result is 0 (deleted) or -errno — post it as the task's Int result.
+    GC_WRITE_BARRIER(job->task.result, 1);
+    job->task.result = integer_from_int32_noalloc(job->raw_result);
+    task_complete((object_t*)&job->task);
+}
+
+
 static void _fs_finish_stat(io_job_t* job) {
     object_t* result = (job->raw_result < 0)
         ? integer_from_int32_noalloc(job->raw_result)
@@ -636,6 +645,12 @@ static void _fs_finish_stat(io_job_t* job) {
 EXPORT object_t* fs_exists(object_t* self, object_t* path) {
     (void)self;
     return _fs_dispatch_meta(path, IO_OP_FS_EXISTS, _fs_finish_exists, NULL);
+}
+
+
+EXPORT object_t* fs_remove(object_t* self, object_t* path) {
+    (void)self;
+    return _fs_dispatch_meta(path, IO_OP_FS_REMOVE, _fs_finish_remove, NULL);
 }
 
 

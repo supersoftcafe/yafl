@@ -563,20 +563,29 @@ fun _prettyOut(tok: JsonToken, depth: System::Int, pending: System::Bool): (out:
 
 class [final] Pretty<S, E>(inner: S, depth: System::Int, pending: System::Bool) where System::Stream<S, JsonToken, E>
 
-class _StreamPretty<S, E>() : System::Stream<Pretty<S, E>, System::String, E>
-  fun next(self: Pretty<S, E>): (stream: Pretty<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
+class _StreamPretty<S, E>() : System::Stream<Pretty<S, E>, System::String, E | JsonParseError>
+  fun next(self: Pretty<S, E>): (stream: Pretty<S, E>, value: Result<System::String | System::None, E | JsonParseError>) where System::Stream<S, JsonToken, E>
     let r = System::streamNext<S, JsonToken, E>(self.inner)
     ret match(r.value)
       (ok: Ok<JsonToken | System::None, E>) => match(ok.value)
         (tok: JsonToken)  => _prettyNext<S, E>(r.stream, self.depth, self.pending, tok)
-        (x: System::None) => (Pretty<S, E>(r.stream, self.depth, self.pending), Ok<System::String | System::None, E>(None))
-      (er: Error<JsonToken | System::None, E>) => (Pretty<S, E>(r.stream, self.depth, self.pending), Error<System::String | System::None, E>(er.error))
+        (x: System::None) => _prettyEnd<S, E>(r.stream, self.depth, self.pending)
+      (er: Error<JsonToken | System::None, E>) => (Pretty<S, E>(r.stream, self.depth, self.pending), Error<System::String | System::None, E | JsonParseError>(er.error))
 
 let [trait] _stream_pretty<S, E>: _StreamPretty<S, E> = _StreamPretty<S, E>() where System::Stream<S, JsonToken, E>
 
-fun _prettyNext<S, E>(inner: S, depth: System::Int, pending: System::Bool, tok: JsonToken): (stream: Pretty<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
+# End of the token stream: only a complete document may end here.  Nesting
+# depth is already tracked for indentation, so EOF inside an open container
+# (or after a stray closer) is exactly `depth != 0` — the tokenizer stays
+# lexical-only by design and cannot catch truncation.
+fun _prettyEnd<S, E>(inner: S, depth: System::Int, pending: System::Bool): (stream: Pretty<S, E>, value: Result<System::String | System::None, E | JsonParseError>) where System::Stream<S, JsonToken, E>
+  ret depth != 0
+    ? (Pretty<S, E>(inner, depth, pending), Error<System::String | System::None, E | JsonParseError>(JsonParseError("unexpected end of input", 0)))
+    : (Pretty<S, E>(inner, depth, pending), Ok<System::String | System::None, E | JsonParseError>(None))
+
+fun _prettyNext<S, E>(inner: S, depth: System::Int, pending: System::Bool, tok: JsonToken): (stream: Pretty<S, E>, value: Result<System::String | System::None, E | JsonParseError>) where System::Stream<S, JsonToken, E>
   let o = _prettyOut(tok, depth, pending)
-  ret (Pretty<S, E>(inner, o.depth, o.pending), Ok<System::String | System::None, E>(o.out))
+  ret (Pretty<S, E>(inner, o.depth, o.pending), Ok<System::String | System::None, E | JsonParseError>(o.out))
 
 fun prettyEmit<S, E>(source: S): Pretty<S, E> where System::Stream<S, JsonToken, E>
   ret Pretty<S, E>(source, 0, false)

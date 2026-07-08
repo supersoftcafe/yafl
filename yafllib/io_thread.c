@@ -260,6 +260,13 @@ static void* _io_thread_main(void* arg) {
             }
         } break;
 
+        case IO_OP_FS_REMOVE: {
+            // remove() deletes a file or an empty directory; the caller sees
+            // 0 or -errno.  No allocation, no GC interaction.
+            errno = 0;
+            job->raw_result = (remove((const char*)io->buf) == 0) ? 0 : -errno;
+        } break;
+
         case IO_OP_DIR_OPEN: {
             dir_t* dir = job->dir;
             errno = 0;

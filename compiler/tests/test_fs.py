@@ -14,6 +14,38 @@ from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib
 
 
+class TestRemove(TestCase):
+
+    def test_remove_deletes_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "doomed.txt")
+            with open(path, "w") as f:
+                f.write("bye")
+            src = f"""namespace Main
+import System
+import System::IO
+
+fun main(): System::Int
+  ret match(remove("{path}"))
+    (e: IOError)      => 2
+    (n: System::None) => 0
+"""
+            self.assertEqual(0, compile_and_run_stdlib(src))
+            self.assertFalse(os.path.exists(path))
+
+    def test_remove_missing_path_is_error(self):
+        src = """namespace Main
+import System
+import System::IO
+
+fun main(): System::Int
+  ret match(remove("/nonexistent_yafl_fs_test_xyz_777"))
+    (e: IOError)      => 1
+    (n: System::None) => 0
+"""
+        self.assertEqual(1, compile_and_run_stdlib(src))
+
+
 class TestExists(TestCase):
 
     def test_existing_file_returns_true(self):

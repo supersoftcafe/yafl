@@ -12,6 +12,7 @@ import System::IO
 fun [foreign("fs_exists"),impure]   _fs_exists  (path: String): Int
 fun [foreign("fs_stat"),impure]     _fs_stat    (path: String): _FileInfo|Int
 fun [foreign("fs_open_dir"),impure] _fs_open_dir(path: String): _Dir|Int
+fun [foreign("fs_remove"),impure]   _fs_remove  (path: String): Int
 
 class [foreign,final] _Dir:
   fun [foreign("fs_dir_next"),impure]  _next():  String|Int|None
@@ -43,6 +44,13 @@ fun stat(path: String): FileInfo|IOError
   ret match(_fs_stat(path))
     (fi: _FileInfo) => FileInfo(fi._size(), fi._mtime(), fi._isDirRaw() > 0, fi._isRegularRaw() > 0, fi._mode())
     (c: Int)        => _error_from_code(c)
+
+
+# Delete the file (or empty directory) at `path`.  None on success; any
+# syscall failure surfaces as an IOError.
+fun remove(path: String): IOError|None
+  let c = _fs_remove(path)
+  ret c == 0 ? None : _error_from_code(c)
 
 
 # Public Dir handle.  [linear,final] — every Dir must be threaded through

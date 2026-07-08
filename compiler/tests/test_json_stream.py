@@ -50,6 +50,23 @@ class TestJsonStream(TestCase):
         rc = _run('ret err("\\"abc") + err("@") * 10 + err("1.2.3") * 100')
         self.assertEqual(111, rc)
 
+    def test_truncated_input_rejected(self):
+        # EOF inside an open container is a parse error from the PRETTY
+        # PRINTER (the tokenizer stays lexical-only by design, so a lone
+        # "{" is a valid token stream — but not a complete document).
+        src = (
+            "namespace Test\n"
+            "import System\n"
+            "import System::Json\n"
+            "fun chk(input: System::String): System::Int\n"
+            "  ret match(System::Json::prettyString(input))\n"
+            "    (s: System::String)               => 0\n"
+            "    (e: System::Json::JsonParseError) => 1\n"
+            "fun main(): System::Int\n"
+            '  ret chk("{\\"a\\": [1,2") + chk("[") * 10 + chk("[]") * 100\n')
+        rc, _ = compile_and_run_stdlib_capture(src, timeout=120)
+        self.assertEqual(11, rc)
+
     def test_pretty_printer(self):
         # Token-level reformat: drop source whitespace, insert two-space indent;
         # empty {}/[] stay inline. `prettyString` = tokenise -> reformat -> fold.
