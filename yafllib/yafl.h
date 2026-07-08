@@ -16,6 +16,7 @@
 
 #include <stdatomic.h>
 #include <stdnoreturn.h>
+#include <stdalign.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -283,6 +284,10 @@ typedef struct page_head {
         bitmap_t     scanned; // Starting slot of each scanned object
         bitmap_t atomic_seen; // Strictly for the early stage atomic updates
         _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
+        _Atomic(bool) requeue_pending; // a requeue request arrived while an executor
+                                       // had this page CLAIMED (popped, on no list);
+                                       // the owner consumes it after its final
+                                       // re-merge and requeues the page itself
         bool          pinned; // Stack references found, which can't be re-written easily
     } scanner;
 
