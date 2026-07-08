@@ -44,3 +44,11 @@ def mangle_name(symbol: str) -> str:
 def to_pointer_mask(field_type: codegen.typedecl.Type, type_str: str) -> str:
     mask = "".join(f"|maskof({type_str}, {path})" for path in field_type.get_pointer_paths(""))
     return f"(0{mask})"
+
+
+def to_pointer_mask_window(field_type: codegen.typedecl.Type, type_str: str, window: int) -> str:
+    """One 64-slot window of a wide object's pointer map. maskof_w is 0 for a
+    field outside the window (modulo keeps the shift defined), so every field
+    appears in every window's expression and C folds each to its constant."""
+    mask = "".join(f"|maskof_w({type_str}, {path}, {window})" for path in field_type.get_pointer_paths(""))
+    return f"(0{mask})"

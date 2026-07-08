@@ -15,6 +15,13 @@ mask_int = (1 << 32) - 1
 
 @dataclass(frozen=True)
 class Type(ABC):
+    def words_upper_bound(self) -> int:
+        """Conservative bound on this type's size in pointer-words, for sizing
+        the vtable's pointer-mask window array. Every member rounds UP to
+        whole words, so the bound never undershoots the real C layout (member
+        alignment never exceeds a word) — an overshoot merely emits an all-zero
+        trailing mask window, which the GC walkers skip for free."""
+        return 1
     # @property
     # @abstractmethod
     # def size(self) -> int:
@@ -190,6 +197,8 @@ class DataPointer(Type):
 
 @dataclass(frozen=True)
 class FuncPointer(Type):
+    def words_upper_bound(self) -> int:
+        return 2  # fun_t = { void* f; void* o; }
     # @property
     # def size(self) -> int:
     #     return word_size * 2
@@ -225,6 +234,9 @@ class FuncPointer(Type):
 @dataclass(frozen=True)
 class Struct(Type):
     fields: Tuple[Tuple[str, Type], ...]
+
+    def words_upper_bound(self) -> int:
+        return sum(t.words_upper_bound() for _, t in self.fields)
 
     @property
     def _dont_cache(self) -> bool:
@@ -282,6 +294,8 @@ class Struct(Type):
 
 @dataclass(frozen=True)
 class Void(Type):
+    def words_upper_bound(self) -> int:
+        return 0
     # @property
     # def size(self) -> int:
     #     return 0
@@ -308,6 +322,9 @@ class ImmediateStruct(Struct):
 class Array(Type):
     type: Type
     length: int
+
+    def words_upper_bound(self) -> int:
+        return self.type.words_upper_bound() * self.length
 
     # @property
     # def size(self) -> int:
@@ -350,6 +367,9 @@ class TaskWrapper(Type):
     task == NULL means a real value; task != NULL means the result is a pending task.
     """
     inner: Type
+
+    def words_upper_bound(self) -> int:
+        return self.inner.words_upper_bound() + 1
 
     @property
     def has_pointers(self) -> bool:

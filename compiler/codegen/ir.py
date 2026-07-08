@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Callable, Any
 from dataclasses import dataclass, field
-from codegen.tools import mangle_name, to_pointer_mask
+from codegen.tools import mangle_name, to_pointer_mask, to_pointer_mask_window
 
 from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Label, Phi, Abort
 
@@ -496,14 +496,30 @@ class Object:
     def comment_line(self):
         return f"// {self.comment}\n" if self.comment else ""
 
-    def get_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+    def __mask_fields(self) -> "t.Struct":
         # Skip the leading "type" vtable field (the GC handles it via the
         # vtable header, not through the per-object mask) and the trailing
         # array field (whose mask is computed separately).
         fields = self.fields.fields[1:]
         if self.array_type:
             fields = fields[:-1]
-        return to_pointer_mask(t.Struct(fields), f"{mangle_name(self.name)}_t")
+        return t.Struct(fields)
+
+    def get_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        # Window 0 of the pointer map (slots 0..63). maskof_w rather than
+        # maskof so an object whose fields pass slot 63 folds those fields to
+        # 0 here and carries them in the window array instead (see
+        # get_pointer_mask_window_count) — never a shift-overflow error.
+        return to_pointer_mask_window(self.__mask_fields(), f"{mangle_name(self.name)}_t", 0)
+
+    def get_pointer_mask_window_count(self) -> int:
+        # 64-slot windows covering every field, counted from the object base
+        # (the +1 is the leading vtable word). words_upper_bound only ever
+        # overshoots, and an extra window is an all-zero mask the GC skips.
+        return (1 + self.__mask_fields().words_upper_bound() + 63) // 64
+
+    def get_pointer_mask_window(self, window: int) -> str:
+        return to_pointer_mask_window(self.__mask_fields(), f"{mangle_name(self.name)}_t", window)
 
     def get_array_pointer_mask(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         array_type = self.array_type

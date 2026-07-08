@@ -62,8 +62,11 @@ class TestObject(TestCase):
         self.assertEqual(Int(16), self.target.array_type)
 
     def test_get_pointer_mask(self):
+        # Object masks emit the windowed form (window 0) so a wide object can
+        # never shift-overflow; array-element masks keep plain maskof.
         mask = self.target.get_pointer_mask(self.cache)
-        self.assertRegex(mask, r'\(0\|maskof\(')
+        self.assertRegex(mask, r'\(0\|maskof_w\(')
+        self.assertRegex(mask, r', 0\)')
         self.assertRegex(mask, r'\.ref')
         self.assertRegex(mask, r'\.ref\.o')
         self.assertNotRegex(mask, r'array')

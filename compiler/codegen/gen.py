@@ -82,6 +82,20 @@ class Application:
         ptr_mask_str = o.get_pointer_mask(type_cache)
         arr_el_ptr_mask_str = o.get_array_pointer_mask(type_cache)
 
+        # Objects wider than 64 slots carry the rest of their pointer map in
+        # a static window array next to the vtable (window 0 duplicates the
+        # inline word; extra all-zero windows from the conservative count are
+        # skipped by the walkers).
+        nwindows = o.get_pointer_mask_window_count()
+        masks_init = ""
+        if nwindows > 1:
+            masks_name = f"pmasks_{mangled_name}"
+            windows_str = ",\n    ".join(o.get_pointer_mask_window(w) for w in range(nwindows))
+            self.__variables.append(
+                f"{o.comment_line}static const ptr_mask_t {masks_name}[{nwindows}] = {{\n    {windows_str}\n}};\n")
+            masks_init = (f"    .object_pointer_masks = {masks_name},\n"
+                          f"    .object_pointer_mask_words = {nwindows},\n")
+
         self.__forwards.append(f"{o.comment_line}static vtable_t* const obj_{mangled_name};\n")
         self.__variables.append(
             f"{o.comment_line}static vtable_t* const obj_{mangle_name(name)} = VTABLE_DECLARE({len(vtable_array)}){{\n" +
@@ -89,7 +103,7 @@ class Application:
             f"    .array_el_size = {arr_el_size_str},\n"
             f"    .functions_mask = rotate_function_id({vtable_size-1}),\n"
             f"    .object_pointer_locations = {ptr_mask_str},\n"
-            f"    .array_el_pointer_locations = {arr_el_ptr_mask_str},\n"
+            f"    .array_el_pointer_locations = {arr_el_ptr_mask_str},\n" + masks_init +
             f"    .array_len_offset = {arr_len_offset_str},\n"
             f"    .is_mutable = {1 if o.is_mutable else 0},\n"
             f"    .discriminator = {o.discriminator},\n"
