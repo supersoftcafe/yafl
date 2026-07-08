@@ -35,7 +35,25 @@ def substitute_placeholders(spec: "TypeSpec | None", mapping: dict[str, "TypeSpe
         if isinstance(thing, GenericPlaceholderSpec) and thing.name in mapping:
             return mapping[thing.name]
         return rw.UNCHANGED
-    return rw.resolved(spec.search_and_replace(resolver, replace_fn), spec)
+    subbed = rw.resolved(spec.search_and_replace(resolver, replace_fn), spec)
+    if subbed is spec:
+        return spec
+    # Substituting a union member can create a GROUND duplicate — `E | X` with
+    # E = X|Y rebuilds as `X|Y|X` — and a duplicate must not survive as a
+    # SPELLING (see _flatten_union_members: same set identity but a different
+    # exact-equality form, so one type splits into two spellings and the
+    # inference fixpoint oscillates). Canonicalise every union the substitution
+    # touched; repr_members never folds unresolved members, so mid-fixpoint
+    # holes are preserved.
+    def canonise_unions(_, thing):
+        if isinstance(thing, CombinationSpec):
+            members = thing.repr_members()
+            if len(members) == 1:
+                return members[0]
+            if len(members) != len(thing.types):
+                return dataclasses.replace(thing, types=tuple(members))
+        return rw.UNCHANGED
+    return rw.resolved(subbed.search_and_replace(resolver, canonise_unions), subbed)
 
 
 def placeholder_names_in(spec: "TypeSpec | None") -> set[str]:
@@ -237,6 +255,77 @@ def refine(current: "TypeSpec | None", resolver: "g.Resolver",
     return merged if isinstance(merged, TypeSpec) else current
 
 
+def _unify_union(generic: "CombinationSpec", concrete: "CombinationSpec",
+                 placeholder_names: set[str],
+                 mapping: dict[str, "TypeSpec"]) -> dict[str, "TypeSpec"] | None:
+    """Union-vs-union unification. Union members are a SET, so `E | X` against
+    `A | X` must solve E by set difference, never by positional alignment —
+    the error-growing instance pattern (`Stream<Lexer<S,E>, T, E|ParseError>`)
+    depends on it, including when E itself grounds to a union that overlaps
+    the pattern's ground members (`(A|X) | X` flattens to `A | X`).
+
+    Ground pattern members are matched (and removed) by structural equality;
+    a single unbound placeholder member then binds to whatever concrete
+    members remain; an already-bound placeholder makes the slot a set-equality
+    CHECK against its binding. Patterns with several placeholder-bearing
+    members have no set partition to exploit and keep the old positional
+    alignment."""
+    # Positional alignment first — the historic behaviour, which the inference
+    # fixpoint's progression is tuned to (it binds a hole from its written
+    # position when the members happen to align). Set-wise matching is the
+    # FALLBACK for when position lies: the error-growing instance pattern
+    # (`E | ParseError` against a concrete set whose E is itself a union)
+    # positionally binds garbage and conflicts; only then re-match as a set.
+    if len(generic.types) == len(concrete.types):
+        trial: dict[str, TypeSpec] | None = dict(mapping)
+        for gv, cv in zip(generic.types, concrete.types):
+            trial = unify_generic(gv, cv, placeholder_names, trial)
+            if trial is None:
+                break
+        if trial is not None:
+            mapping.clear()
+            mapping.update(trial)
+            return mapping
+    gen = list(generic.repr_members())
+    con = list(concrete.repr_members())
+    holes = [m for m in gen
+             if isinstance(m, GenericPlaceholderSpec) and m.name in placeholder_names]
+    ground = [m for m in gen
+              if not (isinstance(m, GenericPlaceholderSpec) and m.name in placeholder_names)]
+    if len(holes) != 1 or any(placeholder_names & placeholder_names_in(m) for m in ground):
+        return mapping  # no single-hole partition either: defer to the caller
+    # Deferral, not failure, on any mismatch: mid-fixpoint the concrete side
+    # may still hold unresolved members, and this function's contract (like
+    # the leaf cases') is to leave the mapping incomplete and let the caller
+    # decide — solve_trait_constraint skips an instance whose params stay
+    # unbound, and the inference fixpoint simply retries once types ground.
+    remaining = list(con)
+    for gm in ground:
+        idx = next((i for i, cm in enumerate(remaining) if cm == gm), -1)
+        if idx < 0:
+            return mapping  # ground pattern member absent (or not yet resolved)
+        remaining.pop(idx)
+    hole = holes[0]
+    existing = mapping.get(hole.name)
+    if existing is not None:
+        # The hole is already pinned (usually by the carrier slot): this slot
+        # is a consistency check, not a binding site. `existing ∪ ground` must
+        # equal the concrete set: every leftover concrete member is in the
+        # binding, and every binding member is in the concrete union.
+        bound = list(existing.repr_members()) if isinstance(existing, CombinationSpec) else [existing]
+        if all(any(rm == bm for bm in bound) for rm in remaining) \
+                and all(any(bm == cm for cm in con) for bm in bound):
+            return mapping
+        return mapping if any(_is_hole(cm) for cm in con) else None
+    if not remaining:
+        # `E | X` against bare `X`: E could be any subset of the matched
+        # members — ambiguous, so leave it for another slot to pin.
+        return mapping
+    mapping[hole.name] = remaining[0] if len(remaining) == 1 \
+        else CombinationSpec(generic.line_ref, tuple(remaining))
+    return mapping
+
+
 def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
                   placeholder_names: set[str],
                   mapping: dict[str, "TypeSpec"] | None = None) -> dict[str, "TypeSpec"] | None:
@@ -303,16 +392,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
         return m
 
     if isinstance(generic, CombinationSpec) and isinstance(concrete, CombinationSpec):
-        # Align by position; this is a weak match but works for the common
-        # case where the union variants appear in the same order.
-        if len(generic.types) != len(concrete.types):
-            return mapping
-        m = mapping
-        for gv, cv in zip(generic.types, concrete.types):
-            m = unify_generic(gv, cv, placeholder_names, m)
-            if m is None:
-                return None
-        return m
+        return _unify_union(generic, concrete, placeholder_names, mapping)
 
     if isinstance(generic, CallableSpec) and isinstance(concrete, CallableSpec):
         m = unify_generic(generic.parameters, concrete.parameters, placeholder_names, mapping)

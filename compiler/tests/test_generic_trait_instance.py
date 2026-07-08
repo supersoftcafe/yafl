@@ -219,3 +219,46 @@ class TestStreamTransducers(TestCase):
                "    (er: System::Error<System::Int, Boom>) => er.error.code\n")
         # values 1,2 mapped to 10,20 then Error(Boom(42)) surfaces -> exit 42.
         self.assertEqual(42, compile_and_run_stdlib(src))
+
+
+class TestUnionGrowingInstance(TestCase):
+    # An instance whose interface has a UNION containing its own placeholder —
+    # `Box<Grow<S, T>, T | ErrX>`, the error-growing stream shape. Stacked two
+    # deep, the inner level grounds T to a union (`Int | ErrX`), so discharging
+    # the outer constraint must match `T | ErrX` against `Int | ErrX` as a SET
+    # (T <- Int|ErrX, ErrX matched, flatten collapses the duplicate). A
+    # positional zip instead binds T <- Int against the carrier's T <- Int|ErrX
+    # and skips the instance, leaving the trait call unresolved.
+    def test_union_member_grounds_to_union(self):
+        src = """namespace Main
+import System
+
+class [final] ErrX()
+
+interface Box<S, T>
+  fun unwrap(self: S): T
+
+class [final] Leaf(v: System::Int)
+class _BoxLeaf() : Box<Leaf, System::Int>
+  fun unwrap(self: Leaf): System::Int
+    ret self.v
+let [trait] _box_leaf: _BoxLeaf = _BoxLeaf()
+
+class [final] Grow<S, T>(inner: S)
+class _BoxGrow<S, T>() : Box<Grow<S, T>, T | ErrX>
+  fun unwrap(self: Grow<S, T>): T | ErrX where Box<S, T>
+    ret _unwrapInner<S, T>(self.inner)
+fun _unwrapInner<S, T>(b: S): T where Box<S, T>
+  ret unwrap(b)
+let [trait] _box_grow<S, T>: _BoxGrow<S, T> = _BoxGrow<S, T>() where Box<S, T>
+
+fun useBox<S, T>(b: S): T where Box<S, T>
+  ret unwrap(b)
+
+fun main(): System::Int
+  let g = Grow<Grow<Leaf, System::Int>, System::Int | ErrX>(Grow<Leaf, System::Int>(Leaf(7)))
+  ret match(useBox<Grow<Grow<Leaf, System::Int>, System::Int | ErrX>, System::Int | ErrX>(g))
+    (n: System::Int) => n
+    (e: ErrX)        => 9
+"""
+        self.assertEqual(7, compile_and_run_stdlib(src))
