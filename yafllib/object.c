@@ -2,6 +2,7 @@
 #define OBJECT_HEADER_EXCLUSIONS
 
 #include "yafl.h"
+#include "gc_internal.h"
 #include <malloc.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -11,6 +12,53 @@
 
 #define COMPACT_THRESHOLD_PERCENT   33
 #define REPROCESS_PAGE_COUNT        16
+
+// ═══ COLLECTOR PROTOCOL — the one-page map ═══════════════════════════════════
+//
+// STAGES  (enum gc_stage, gc_internal.h; `stage` is the atomic word):
+//
+//   IDLE -> START -> SCAN_ROOTS -> MARK_SWEEP -> PRUNE -> IDLE ...
+//
+//   There are NO dedicated GC threads: every allocating worker drives the
+//   machine through gc_fsa(), paced by its own allocation (see pacing below).
+//   START and SCAN_ROOTS are EXCLUSIVE — one executor at a time under
+//   fsa_lock. MARK_SWEEP and PRUNE are PARALLEL — every caller becomes an
+//   executor, takes no lock, and claims work page-by-page.
+//
+// OWNERSHIP  Page claims are the unit of parallelism: an executor pops a page
+//   from pages_to_scan / pages_to_prune (under gc_pool_lock) and then owns it
+//   outright — a claimed page is UNLINKED and invisible to everyone else, so
+//   per-page state (seen/scanned bitmaps) needs no further synchronisation.
+//   Concurrent requeues aimed at a claimed page park in
+//   page->scanner.requeue_pending, consumed by the owner.
+//
+// LOCKS
+//   fsa_lock      exclusive stages + all stage TRANSITIONS (CAS bool).
+//   gc_pool_lock  page-list surgery ONLY (O(1) sections; every splice on
+//                 pages_to_scan/prune/old during parallel stages goes under
+//                 it — no exceptions, that rule has been paid for twice).
+//   gc_in_fsa     thread-local re-entrancy guard: collector work that
+//                 allocates (compaction refill) must not nest an executor.
+//
+// TRANSITIONS quiesce on gc_pages_in_flight == 0 — pages claimed but not yet
+//   returned — NEVER on the executor count, which churns per paced step and
+//   would starve the transition under sustained allocation. The last
+//   executor whose step found no work re-verifies under fsa_lock and moves
+//   the stage (gc_fsa_try_transition).
+//
+// PACING  Collection rate is proportional to allocation rate EXACTLY:
+//   allocations advance gc_alloc_clock (pages); executors CAS-claim bounded
+//   slices of the unclaimed backlog (gc_pace_credit). Aggregate claims can
+//   never exceed aggregate allocation. The reserve gate in gc_page_alloc is
+//   the backstop: a nearly-full heap stalls allocators into driving cycles
+//   synchronously, and compaction's evacuation targets come from a reserve
+//   ordinary allocation may not consume.
+//
+// MODULES  gc_stats.c (counters + [GC]/[GC TIME] reporting), gc_debug.c
+//   (poison dangle check, YAFL_GC_HUNT census), mmap.c (page provider +
+//   madvise scavenger), gc_internal.h (shared state + the pointer-window
+//   walker). The allocation fast path is inline in yafl.h (generated code).
+// ═════════════════════════════════════════════════════════════════════════════
 
 // --- GC pacing --------------------------------------------------------------
 //
@@ -79,8 +127,9 @@ static unsigned gc_step_base = GC_PACE_SCAN_PAGES;
 //
 // YAFL_GC_HUNT (with YAFL_GC_STATS): exit-time heap census and retention
 // hunt — see the heap-hunt comment further down.
-static bool gc_poison_enabled = false;
-static bool gc_stats_enabled  = false;
+EXPORT bool gc_debug_manual_mode = false;
+bool gc_poison_enabled = false;
+bool gc_stats_enabled  = false;
 // YAFL_GC_GEN=0 disables the generational machinery (default ON). Gated at a
 // single point — page promotion — so with it off no page ever becomes old and
 // the skip paths, dirty-old handling and major trigger are all inert.
@@ -134,10 +183,7 @@ EXPORT void abort_on_array_bounds() {
 static_assert(sizeof(gc_page_t) == GC_PAGE_SIZE, "Page size doesn't add up");
 static_assert(sizeof(slot_t) == GC_SLOT_SIZE, "Slot size doesn't add up");
 
-typedef struct list_element {
-    struct list_element *next;
-    struct list_element *prev;
-} list_element_t;
+// list_element_t: gc_internal.h
 
 
 
@@ -254,21 +300,7 @@ static bool list_empty(list_element_t *root) {
 static bool gc_fsa();
 
 
-enum gc_stage {
-    GC_STAGE_NOT_STARTED,
-    GC_STAGE_IDLE,       // Nothing happening, waiting for GC to start
-    GC_STAGE_START,      // First setup
-    GC_STAGE_SCAN_ROOTS, // Trying to scan stack. Globals scanned as we exited idle.
-    GC_STAGE_MARK_SWEEP, // Walk the graph, mark things as seen and scan as we go
-    GC_STAGE_PRUNE
-};
-
-enum thread_state {
-    THREAD_STATE_RUNNING,               // Busy running, don't interrupt
-    THREAD_STATE_SUSPENDED,             // IO is in progress, so an external thread could scan this thread
-    THREAD_STATE_SUSPENDED_SCAN,        // Thread is suspended, an external thread is scanning this one
-    THREAD_STATE_EXITED
-};
+// gc_stage / thread_state enums: gc_internal.h
 
 
 
@@ -280,29 +312,10 @@ enum thread_state {
 // requests) reach it through the `threads` chain.
 EXPORT thread_local gc_alloc_tl_t gc_alloc_tl = {0};
 
-thread_local struct gc_thread_info {
-    gc_alloc_tl_t *alloc;   // = &gc_alloc_tl of this thread (set at registration)
-    int_fast32_t lag_counter;
-    bool in_relocation;  // set while compaction evacuates objects: its target
-                         // allocations may use the relocation reserve
+thread_local struct gc_thread_info gc_thread_info;   // type: gc_internal.h
 
-    struct gc_thread_info *next;
-
-    thread_roots_declaration_func_t thread_roots_declaration_func;
-    void* thread_roots_context;
-
-    bool roots_scanned;
-    _Atomic(enum thread_state) thread_state;
-
-    list_element_t  new_pages; // Circular list of pages waiting for next GC
-
-    object_t **stack_lower_ptr; // Numerically lower pointer to the stack
-    object_t **stack_upper_ptr; // Numerically higher pointer to the stack
-    jmp_buf    saved_registers; // Expensive way to save the registers for GC
-} gc_thread_info;
-
-static _Atomic(struct gc_thread_info*) threads = NULL;
-static _Atomic(enum gc_stage) stage = GC_STAGE_NOT_STARTED;
+_Atomic(struct gc_thread_info*) threads = NULL;
+_Atomic(enum gc_stage) stage = GC_STAGE_NOT_STARTED;
 
 // ── Parallel-executor state (P1) ────────────────────────────────────────────
 // MARK_SWEEP and PRUNE admit ANY number of workers stepping concurrently:
@@ -318,25 +331,14 @@ static alignas(CACHE_LINE_SIZE) _Atomic(int)  gc_stage_executors = 0;
 // for executors==0 starves the transition indefinitely; waiting for zero
 // in-flight PAGES only waits for real work to finish.
 static alignas(CACHE_LINE_SIZE) _Atomic(int)  gc_pages_in_flight = 0;
-static alignas(CACHE_LINE_SIZE) _Atomic(bool) gc_pool_lock_word = false;
+alignas(CACHE_LINE_SIZE) _Atomic(bool) gc_pool_lock_word = false;
 
-// Page-pool lock: guards pages_to_scan / pages_to_prune list surgery only —
-// O(1) critical sections, taken once per page claimed/linked. A CAS spinlock
-// beats a futex here: the hold time is shorter than a syscall path.
-static inline void gc_pool_lock(void) {
-    bool expected = false;
-    while (!atomic_compare_exchange_weak_explicit(&gc_pool_lock_word, &expected, true,
-                                                  memory_order_acquire, memory_order_relaxed))
-        expected = false;
-}
-static inline void gc_pool_unlock(void) {
-    atomic_store_explicit(&gc_pool_lock_word, false, memory_order_release);
-}
-static uint32_t              epoch = 0; // Must never be 0, except now
+// gc_pool_lock/unlock: gc_internal.h
+uint32_t                     epoch = 0; // Must never be 0, except now
 
 // Bumped each time gc_fsa_prune drains pages_to_prune to empty (i.e., a full
 // GC cycle has completed). Diagnostic only.
-static _Atomic(uint64_t)     gc_cycle_count = 0;
+_Atomic(uint64_t)            gc_cycle_count = 0;
 
 static _Atomic(gc_page_t*) reprocess_page_list[REPROCESS_PAGE_COUNT];
 static atomic_size_t       reprocess_page_head;
@@ -382,7 +384,7 @@ typedef struct mark_chunk {
 static thread_local mark_chunk_t *mark_top  = NULL;  // top chunk, NULL when the stack is empty
 static thread_local mark_chunk_t *mark_free = NULL;  // recycled-chunk freelist (linked via ->prev)
 static thread_local size_t        mark_free_count = 0;
-static thread_local size_t        mark_worklist_count = 0;  // diagnostic depth (this worker; for [GC] stats)
+thread_local size_t               mark_worklist_count = 0;  // diagnostic depth (this worker; for [GC] stats)
 
 static void mark_worklist_push(object_t *o) {
     if (mark_top == NULL || mark_top->count == MARK_CHUNK_CAP) {
@@ -443,8 +445,11 @@ static void mark_worklist_reset(void) {
  * Wipe that bitmap when doing mark-sweep, ready for next iteration.
  */
 
-static list_element_t pages_to_scan  = {&pages_to_scan, &pages_to_scan};
-static list_element_t pages_to_prune = {&pages_to_prune, &pages_to_prune};
+// Each list head on its own cache line: they are touched under gc_pool_lock
+// from every executor, and two adjacent 16-byte heads on one line measurably
+// false-share (perf c2c: 5.8% of HITM traffic at T=12).
+alignas(CACHE_LINE_SIZE) list_element_t pages_to_scan  = {&pages_to_scan, &pages_to_scan};
+alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &pages_to_prune};
 
 // --- Generations (immutability-based) ----------------------------------------
 //
@@ -465,13 +470,13 @@ static list_element_t pages_to_prune = {&pages_to_prune, &pages_to_prune};
 // Compacted pages never promote — their forwarders point at YOUNG copies,
 // which the old-skip would lose.
 #define GC_MAJOR_FLOOR   256   // pages: no majors until the old gen reaches this
-static list_element_t old_pages = {&old_pages, &old_pages};
-static _Atomic(uint64_t) gc_alloc_clock = 0; // cumulative pages ever allocated
+alignas(CACHE_LINE_SIZE) list_element_t old_pages = {&old_pages, &old_pages};
+_Atomic(uint64_t) gc_alloc_clock = 0; // cumulative pages ever allocated
 static size_t gc_promote_volume = 0;  // pages of allocation a page must stay
                                       // stable across to promote: eight young
                                       // turnovers, set at each prune's end.
-static _Atomic(size_t) gc_old_page_count   = 0;
-static _Atomic(size_t) gc_dirty_old_count  = 0;   // diagnostic: dirty-old pages this cycle
+_Atomic(size_t) gc_old_page_count   = 0;
+_Atomic(size_t) gc_dirty_old_count  = 0;   // diagnostic: dirty-old pages this cycle
 static size_t gc_old_baseline   = 0;     // old-gen size right after the last major
 static bool   gc_major_cycle    = false; // current cycle includes the old generation
 static bool   gc_major_request  = false; // debug: force the next cycle major
@@ -539,74 +544,10 @@ static unsigned gc_pace_credit(void) {
 }
 
 
-// --- GC diagnostics (set YAFL_GC_STATS to enable; prints to stderr).
-// A sampled progress line every 512 page allocations, plus a [GC TIME]
-// summary at exit: time inside gc_fsa per stage vs wall and process CPU.
-extern size_t memory_watermark(void);
-static _Atomic(uint64_t) gc_stat_mark_steps   = 0;  // gc_fsa_mark_sweep() invocations
-static _Atomic(uint64_t) gc_stat_pages_popped = 0;  // pages popped + scanned in mark-sweep
-static _Atomic(uint64_t) gc_stat_requeued     = 0;  // page_needs_scan() — re-scan requeues
-static _Atomic(uint64_t) gc_stat_rq_drain     = 0;  //   ...from post-scan atomic-seen drain
-static _Atomic(uint64_t) gc_stat_rq_repro     = 0;  //   ...from reprocess-ring drain
-static _Atomic(uint64_t) gc_stat_overflows    = 0;  // reprocess-ring overflow whole-heap rescans
-static _Atomic(uint64_t) gc_stat_prune_steps  = 0;  // gc_fsa_prune() invocations
-static _Atomic(uint64_t) gc_stat_pages_freed  = 0;  // gc_page_free() calls
-static _Atomic(uint64_t) gc_stat_page_allocs  = 0;  // gc_page_alloc() calls
-static _Atomic(uint64_t) gc_stat_majors       = 0;  // major (full-heap) cycles completed
-static _Atomic(uint64_t) gc_stat_cons_seeds   = 0;  // objects seeded live by conservative scan
-/* Fine-grained mark/prune profiling (stats-gated, single FSA thread): object
-   and pointer tallies, promotion outcomes, and tsc per mark/prune section —
-   printed at exit as [GC PROF]/[GC PROMO] alongside the stats. */
-static _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
-static _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
-                gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
-static _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
-static inline uint64_t gc_tsc(void) { unsigned lo, hi; __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi)); return ((uint64_t)hi << 32) | lo; }
-#define GC_STAT_BUMP(c)\
-    do { if (UNLIKELY(gc_stats_enabled))\
-             atomic_fetch_add_explicit(&(c), 1, memory_order_relaxed);\
-    } while (false)
+// GC stats counters + [GC]/[GC TIME] reporting: gc_internal.h + gc_stats.c
+// Heap hunt (YAFL_GC_HUNT): gc_debug.c
 
-// Charge the time since `last` (an rdtsc reading) to profile accumulator
-// `acc`, then advance `last` to now — the per-section "lap" used to attribute
-// mark/prune time. Companion to GC_STAT_BUMP: stats-gated, so it compiles to
-// nothing measurable when YAFL_GC_STATS is off. `last` is passed explicitly
-// rather than captured, so the macro reads no hidden local.
-#define GC_PROF_LAP(acc, last)\
-    do { if (UNLIKELY(gc_stats_enabled)) {\
-             uint64_t _now = gc_tsc();\
-             (acc) += _now - (last);\
-             (last) = _now;\
-         } } while (false)
 
-// Nanoseconds spent inside gc_fsa, per stage (index = enum gc_stage). All GC
-// work happens there, single-threaded under fsa_lock, so the sum is total
-// collector time. Excludes mutator-side barrier checks and allocator memsets.
-static _Atomic(uint64_t) gc_stat_stage_ns[8];
-// Per-call latency histogram: log2(ns) buckets per stage (see gc_fsa's exit
-// timing block and the [GC LAT] report). The bucket index uses
-// __builtin_clzll, whose operand is unsigned long long; pin that to uint64_t
-// (the type of the value being bucketed) so the width the log2 maths assumes
-// can never silently diverge from clzll's operand on some future platform.
-_Static_assert(sizeof(unsigned long long) == sizeof(uint64_t),
-               "__builtin_clzll operand must be 64-bit for the [GC LAT] log2 bucketing");
-enum { GC_LAT_BUCKETS = 24 };
-static _Atomic(uint64_t) gc_stat_lat[8][GC_LAT_BUCKETS];
-static _Atomic(uint64_t) gc_stat_fsa_calls = 0;
-static struct timespec   gc_stats_t0;
-
-// Page-occupancy survey (stats only): accumulated over each PRUNE as surviving
-// pages stream past, snapshotted at cycle end. Index 0 = immutable, 1 = mutable.
-// "Sparse" = under 25% live — candidates for any future reclamation of
-// mostly-empty pages. Live slot counts use the objects/seen bitmaps alone
-// (object extent = start bit to next start bit), never vtables.
-static size_t gc_occ_pages[2], gc_occ_live[2], gc_occ_sparse[2], gc_occ_sparse_free[2], gc_occ_large;
-static size_t gc_snap_pages[2], gc_snap_live[2], gc_snap_sparse[2], gc_snap_sparse_free[2], gc_snap_large;
-// Why is an immutable sparse page sparse? fwd = compacted earlier, only
-// forwarders remain (lazy-fixup residue); pin = conservative root pinned it
-// this cycle; oth = eligible but blocked some other way (object-count guard).
-static size_t gc_occ_sparse_fwd, gc_occ_sparse_pin, gc_occ_sparse_oth;
-static size_t gc_snap_sparse_fwd, gc_snap_sparse_pin, gc_snap_sparse_oth;
 
 // Live slot count for a single page, from the objects/seen bitmaps alone
 // (object extent = start bit to next start bit), never vtables. Used by the
@@ -656,325 +597,6 @@ static void gc_occupancy_account(gc_page_t *page) {
         }
     }
 }
-
-// --- Heap hunt (YAFL_GC_HUNT, diagnostics only) ------------------------------
-//
-// Post-mortem retention analysis, printed at exit alongside the stats when
-// YAFL_GC_HUNT is set (requires YAFL_GC_STATS). Three stages:
-//   1. CENSUS: every live object bucketed by vtable name with counts — the
-//      first question is always "what IS all this?".
-//   2. HEADS: for the bucket named by the env value (substring match; "1" =
-//      biggest bucket), find members no same-type member points to — the
-//      entry points of chains/lists, however long.
-//   3. HOLDERS: one full-heap scan reporting each head's first heap referrer,
-//      plus a conservative stack/register sweep. Caveat: the sweep also sees
-//      the hunter's own frame — ignore pins within a few hundred bytes of
-//      the reported hunter SP.
-// Found on its first outing: completed tasks retaining dead capture graphs
-// (fixed by deferred resumption) and per-construction unit-enum boxes (fixed
-// by static promotion). Zero cost when the env var is unset.
-static vtable_t* _hunt_vt(object_t* o) {
-    vtable_t* vt = o->vtable;
-    while (vt && vtable_is_forward(vt)) vt = ((object_t*)vt)->vtable;
-    return vt;
-}
-static void _hunt_each_live(void (*fn)(object_t*, void*), void* arg) {
-    extern char* _memory_heap_base;
-    size_t wm = memory_watermark();
-    for (size_t pi = 0; pi < wm; pi++) {
-        gc_page_t* page = (gc_page_t*)(_memory_heap_base + pi * GC_PAGE_SIZE);
-        if (!memory_pages_is_alloc_head(page) || page->head.tag != PAGE_MAGIC_NUMBER) continue;
-        for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {
-            mask_bits_t starts = page->head.objects.a[index];
-            unsigned offset = index * GC_MASK_SIZE;
-            while (starts) {
-                unsigned slot = __builtin_ctzll(starts) + offset;
-                starts &= starts - 1;
-                fn((object_t*)&page->slots[slot], arg);
-            }
-        }
-        if (page->head.pages > 1) pi += page->head.pages - 1;
-    }
-}
-struct _hunt_ref { object_t* target; object_t* referrer; const char* via; int count; };
-static void _hunt_scan_fields(object_t* o, void* arg) {
-    struct _hunt_ref* r = (struct _hunt_ref*)arg;
-    vtable_t* vt = _hunt_vt(o);
-    if (!vt || vtable_is_forward(o->vtable)) return;
-    uint64_t m = vt->object_pointer_locations;
-    while (m) {
-        unsigned i = (unsigned)__builtin_ctzll(m);
-        m &= m - 1;
-        if (((object_t**)o)[i] == r->target) {
-            r->count++;
-            if (!r->referrer) {
-                r->referrer = o;
-                r->via = vt->name;
-            }
-        }
-    }
-    if (vt->array_el_pointer_locations) {
-        uint32_t len = *(uint32_t*)&((char*)o)[vt->array_len_offset];
-        char* arr = ((char*)o) + vt->object_size;
-        for (; len-- > 0; arr += vt->array_el_size) {
-            uint64_t am = vt->array_el_pointer_locations;
-            while (am) {
-                unsigned i = (unsigned)__builtin_ctzll(am);
-                am &= am - 1;
-                if (((object_t**)arr)[i] == r->target) {
-                    r->count++;
-                    if (!r->referrer) {
-                        r->referrer = o;
-                        r->via = vt->name;
-                    }
-                }
-            }
-        }
-    }
-}
-static int _hunt_scan_pins(object_t* target) {
-    int hits = 0;
-    for (struct gc_thread_info* t = threads; t != NULL; t = t->next) {
-        for (object_t** p = t->stack_lower_ptr; p && p < t->stack_upper_ptr; p++) {
-            if (*p == target) {
-                fprintf(stderr, "[HUNT]     PIN stack thread=%p at %p\n", (void*)t, (void*)p);
-                hits++;
-            }
-        }
-        object_t** rl = (object_t**)&t->saved_registers[0];
-        object_t** rh = (object_t**)&t->saved_registers[1];
-        for (object_t** p = rl; p < rh; p++) {
-            if (*p == target) {
-                fprintf(stderr, "[HUNT]     PIN register thread=%p slot=%ld\n", (void*)t, (long)(p - rl));
-                hits++;
-            }
-        }
-    }
-    return hits;
-}
-static object_t** _hunt_members;
-static char*      _hunt_pointed;
-static size_t     _hunt_nmembers;
-static const char* _hunt_member_name;
-static int _hunt_cmp_ptr(const void* a, const void* b) {
-    uintptr_t x = *(const uintptr_t*)a, y = *(const uintptr_t*)b;
-    return x < y ? -1 : x > y ? 1 : 0;
-}
-static long _hunt_member_idx(object_t* o) {
-    size_t lo = 0, hi = _hunt_nmembers;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        if ((uintptr_t)_hunt_members[mid] < (uintptr_t)o) lo = mid + 1;
-        else hi = mid;
-    }
-    return (lo < _hunt_nmembers && _hunt_members[lo] == o) ? (long)lo : -1;
-}
-static void _hunt_collect_members(object_t* o, void* arg) {
-    (void)arg;
-    vtable_t* vt = _hunt_vt(o);
-    if (vt && vt->name && vt->name == _hunt_member_name)
-        _hunt_members[_hunt_nmembers++] = o;
-}
-static void _hunt_mark_pointed(object_t* o, void* arg) {
-    (void)arg;
-    vtable_t* vt = _hunt_vt(o);
-    if (!vt || vtable_is_forward(o->vtable) || !vt->name || vt->name != _hunt_member_name) return;
-    uint64_t m = vt->object_pointer_locations;
-    while (m) {
-        unsigned i = (unsigned)__builtin_ctzll(m);
-        m &= m - 1;
-        long idx = _hunt_member_idx(((object_t**)o)[i]);
-        if (idx >= 0) _hunt_pointed[idx] = 1;
-    }
-}
-struct _hunt_bkt { const char* name; size_t count; object_t* example; };
-static struct _hunt_bkt _hunt_bkts[128];
-static int _hunt_nbkts = 0;
-static void _hunt_census_one(object_t* o, void* arg) {
-    (void)arg;
-    vtable_t* vt = _hunt_vt(o);
-    const char* nm = (vt && !vtable_is_forward(o->vtable)) ? (vt->name ? vt->name : "?") : "(fwd)";
-    int b;
-    for (b = 0; b < _hunt_nbkts; b++)
-        if (_hunt_bkts[b].name == nm) break;
-    if (b == _hunt_nbkts && _hunt_nbkts < 128) {
-        _hunt_bkts[_hunt_nbkts].name = nm;
-        _hunt_bkts[_hunt_nbkts].count = 0;
-        _hunt_bkts[_hunt_nbkts].example = o;
-        _hunt_nbkts++;
-    }
-    if (b < 128) {
-        _hunt_bkts[b].count++;
-        _hunt_bkts[b].example = o;
-    }
-}
-static void _hunt_run(void) {
-    if (!getenv("YAFL_GC_HUNT")) return;   // see the heap-hunt comment above
-    _hunt_each_live(_hunt_census_one, NULL);
-    fprintf(stderr, "[HUNT] census:\n");
-    for (int b = 0; b < _hunt_nbkts; b++)
-        fprintf(stderr, "[HUNT]   %-50s count=%zu example=%p\n", _hunt_bkts[b].name, _hunt_bkts[b].count, (void*)_hunt_bkts[b].example);
-    // Find the chosen bucket (YAFL_GC_HUNT substring; "1" = biggest), then
-    // locate its HEADS — members no other member points to — and report who
-    // holds each head (heap referrer, or stack/register pin).
-    const char* want = getenv("YAFL_GC_HUNT");
-    struct _hunt_bkt* big = NULL;
-    for (int b = 0; b < _hunt_nbkts; b++) {
-        if (want && want[0] != '1' && (!_hunt_bkts[b].name || !strstr(_hunt_bkts[b].name, want))) continue;
-        if (!big || _hunt_bkts[b].count > big->count) big = &_hunt_bkts[b];
-    }
-    if (!big) return;
-    fprintf(stderr, "[HUNT] chasing bucket %s (count=%zu)\n", big->name, big->count);
-    _hunt_members = malloc(big->count * sizeof(object_t*));
-    _hunt_pointed = calloc(big->count, 1);
-    _hunt_nmembers = 0;
-    _hunt_member_name = big->name;
-    _hunt_each_live(_hunt_collect_members, NULL);
-    qsort(_hunt_members, _hunt_nmembers, sizeof(object_t*), _hunt_cmp_ptr);
-    _hunt_each_live(_hunt_mark_pointed, NULL);
-    size_t nheads = 0;
-    object_t* heads[8];
-    for (size_t i = 0; i < _hunt_nmembers; i++) {
-        if (!_hunt_pointed[i]) {
-            if (nheads < 8) heads[nheads] = _hunt_members[i];
-            nheads++;
-        }
-    }
-    fprintf(stderr, "[HUNT] members=%zu heads=%zu\n", _hunt_nmembers, nheads);
-    {
-        volatile char sp_marker = 0;
-        fprintf(stderr, "[HUNT] hunter SP ~= %p\n", (void*)&sp_marker);
-    }
-    for (size_t h = 0; h < nheads && h < 8; h++) {
-        struct _hunt_ref r = { heads[h], NULL, NULL, 0 };
-        _hunt_each_live(_hunt_scan_fields, &r);
-        vtable_t* rvt = r.referrer ? _hunt_vt(r.referrer) : NULL;
-        fprintf(stderr, "[HUNT] head[%zu] %p: heap refs=%d holder=%p (%s) pins=%d\n",
-                h, (void*)heads[h], r.count, (void*)r.referrer,
-                rvt && rvt->name ? rvt->name : "-", _hunt_scan_pins(heads[h]));
-    }
-    free(_hunt_members);
-    free(_hunt_pointed);
-}
-
-static void gc_stats_report(void) {
-    _hunt_run();
-    struct timespec t1, cpu;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu);
-    double wall = (t1.tv_sec - gc_stats_t0.tv_sec) + (t1.tv_nsec - gc_stats_t0.tv_nsec) / 1e9;
-    double cpus = cpu.tv_sec + cpu.tv_nsec / 1e9;
-    double gc = 0, mark, prune, roots;
-    for (unsigned i = 0; i < 8; ++i) gc += atomic_load(&gc_stat_stage_ns[i]) / 1e9;
-    roots = atomic_load(&gc_stat_stage_ns[GC_STAGE_SCAN_ROOTS]) / 1e9;
-    mark  = atomic_load(&gc_stat_stage_ns[GC_STAGE_MARK_SWEEP]) / 1e9;
-    prune = atomic_load(&gc_stat_stage_ns[GC_STAGE_PRUNE]) / 1e9;
-    fprintf(stderr,
-        "[GC TIME] gc=%.3fs (roots=%.3f mark=%.3f prune=%.3f other=%.3f) "
-        "wall=%.3fs cpu=%.3fs | gc/wall=%.1f%% gc/cpu=%.1f%% | fsa_calls=%llu cycles=%llu\n",
-        gc, roots, mark, prune, gc - roots - mark - prune,
-        wall, cpus,
-        wall > 0 ? 100.0 * gc / wall : 0.0,
-        cpus > 0 ? 100.0 * gc / cpus : 0.0,
-        (unsigned long long)atomic_load(&gc_stat_fsa_calls),
-        (unsigned long long)atomic_load(&gc_cycle_count));
-
-    // Per-call latency distribution by stage: percentile bounds read off the
-    // log2 histogram (a bucket b means "< 2^(b+1) ns"). The spread between
-    // p50 and p99 is the call-cost (un)predictability we tune pacing for.
-    static const char *lat_name[8] = {
-        [GC_STAGE_SCAN_ROOTS] = "roots", [GC_STAGE_MARK_SWEEP] = "mark",
-        [GC_STAGE_PRUNE] = "prune" };
-    for (unsigned s = 0; s < 8; ++s) {
-        if (!lat_name[s]) continue;
-        uint64_t n = 0;
-        for (unsigned b = 0; b < GC_LAT_BUCKETS; ++b) n += atomic_load(&gc_stat_lat[s][b]);
-        if (n == 0) continue;
-        unsigned p50 = 0, p90 = 0, p99 = 0, pmax = 0;
-        uint64_t acc = 0;
-        for (unsigned b = 0; b < GC_LAT_BUCKETS; ++b) {
-            uint64_t c = atomic_load(&gc_stat_lat[s][b]);
-            if (c == 0) continue;
-            acc += c;
-            if (p50 == 0 && acc * 2 >= n)       p50 = b + 1;
-            if (p90 == 0 && acc * 10 >= n * 9)  p90 = b + 1;
-            if (p99 == 0 && acc * 100 >= n * 99) p99 = b + 1;
-            pmax = b + 1;
-        }
-        fprintf(stderr, "[GC LAT] %-5s calls=%llu p50<2^%uns p90<2^%u p99<2^%u max<2^%u\n",
-                lat_name[s], (unsigned long long)n, p50, p90, p99, pmax);
-    }
-
-    // Page-occupancy snapshot of the last completed cycle. "sparse" = <25%
-    // live; its KB figure is the space those pages are wasting.
-    const char* cls_name[2] = { "imm", "mut" };
-    char occ_line[256]; size_t off = 0;
-    for (int cls = 0; cls < 2; ++cls) {
-        double pct = gc_snap_pages[cls]
-            ? 100.0 * (double)gc_snap_live[cls] / ((double)gc_snap_pages[cls] * SLOTS_PER_PAGE) : 0.0;
-        off += (size_t)snprintf(occ_line + off, sizeof occ_line - off,
-            "%s: n=%zu live=%.0f%% sparse=%zu (waste %zu KB) | ",
-            cls_name[cls], gc_snap_pages[cls], pct,
-            gc_snap_sparse[cls],
-            gc_snap_sparse_free[cls] * sizeof(slot_t) / 1024);
-    }
-    fprintf(stderr, "[GC PROMO] ok=%llu dirty=%llu unstable=%llu volume=%llu kind=%llu defer=%llu\n",
-            (unsigned long long)gc_prof_promote_ok, (unsigned long long)gc_prof_promote_dirty,
-            (unsigned long long)gc_prof_block_unstable, (unsigned long long)gc_prof_block_volume,
-            (unsigned long long)gc_prof_block_kind, (unsigned long long)gc_prof_defer);
-    fprintf(stderr, "[GC PROF] objs=%llu ptrs=%llu drained=%llu passes=%llu | tsc: drain=%llu merge=%llu pages=%llu live=%llu prune_rest=%llu\n",
-            (unsigned long long)gc_prof_objs, (unsigned long long)gc_prof_ptrs,
-            (unsigned long long)gc_prof_drained, (unsigned long long)gc_prof_passes,
-            (unsigned long long)gc_prof_t_drain, (unsigned long long)gc_prof_t_merge,
-            (unsigned long long)gc_prof_t_pages, (unsigned long long)gc_prof_t_live,
-            (unsigned long long)gc_prof_t_prune_rest);
-    fprintf(stderr, "[GC PAGES] last cycle: %slarge=%zu pages | imm-sparse: fwd=%zu pin=%zu oth=%zu | old=%zu dirty=%zu pages majors=%llu\n",
-            occ_line, gc_snap_large,
-            gc_snap_sparse_fwd, gc_snap_sparse_pin, gc_snap_sparse_oth,
-            gc_old_page_count, gc_dirty_old_count,
-            (unsigned long long)atomic_load(&gc_stat_majors));
-    size_t scav_ret, scav_rec, scav_cold, scav_rec_runs;
-    memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);
-    fprintf(stderr, "[GC SCAV] returned=%zu reclaimed=%zu (runs=%zu) cold_now=%zu (pages)\n",
-            scav_ret, scav_rec, scav_rec_runs, scav_cold);
-}
-
-static void gc_stats_tick(void) {
-    if (LIKELY(!gc_stats_enabled)) return;
-    uint64_t n = atomic_fetch_add_explicit(&gc_stat_page_allocs, 1, memory_order_relaxed) + 1;
-    if ((n & 511) != 0) return;   // sample every 512 page allocations
-    unsigned scanq = 0;
-    for (list_element_t *n = pages_to_scan.next; n != &pages_to_scan && scanq < 9999; n = n->next)
-        scanq++;
-    size_t scav_ret, scav_rec, scav_cold, scav_rec_runs;
-    memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);
-    fprintf(stderr,
-        "[GC] allocs=%llu watermark=%llu live=%llu cycles=%llu stage=%d epoch=%u "
-        "wl=%u scanq=%u "
-        "mark_steps=%llu popped=%llu requeued=%llu overflows=%llu "
-        "rq_drain=%llu rq_repro=%llu prune_steps=%llu freed=%llu "
-        "scav_ret=%zu scav_rec=%zu cold=%zu\n",
-        (unsigned long long)n,
-        (unsigned long long)memory_watermark(),
-        (unsigned long long)memory_count(),
-        (unsigned long long)atomic_load(&gc_cycle_count),
-        (int)stage, (unsigned)epoch,
-        (unsigned)mark_worklist_count, scanq,
-        (unsigned long long)atomic_load(&gc_stat_mark_steps),
-        (unsigned long long)atomic_load(&gc_stat_pages_popped),
-        (unsigned long long)atomic_load(&gc_stat_requeued),
-        (unsigned long long)atomic_load(&gc_stat_overflows),
-        (unsigned long long)atomic_load(&gc_stat_rq_drain),
-        (unsigned long long)atomic_load(&gc_stat_rq_repro),
-        (unsigned long long)atomic_load(&gc_stat_prune_steps),
-        (unsigned long long)atomic_load(&gc_stat_pages_freed),
-        scav_ret, scav_rec, scav_cold);
-}
-
-
-// DEBUG: when set, allocation does NOT drive the GC FSA, so a test can step the
-// collector by hand (gc_debug_step) and pin down exact interleavings.
-EXPORT bool gc_debug_manual_mode = false;
 
 static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     gc_stats_tick();
@@ -1360,7 +982,7 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
 
 
 
-static bool gc_object_is_on_heap_slow(object_t *object) {
+bool gc_object_is_on_heap_slow(object_t *object) {
     uintptr_t asint = (uintptr_t)object;
     gc_page_t *page = (gc_page_t*)(asint &~ (GC_PAGE_SIZE-1));
     return object != NULL                     // Must have a non-zero value
@@ -1652,6 +1274,15 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
     // monotonic within an epoch, so a stale 1 is impossible; a stale 0 merely
     // falls through to the atomic test.
     if (bitmap_test(&page->head.scanner.seen, slot)) return;
+    // Same racy pre-filter against atomic_seen: a locked fetch_or costs a
+    // store-buffer drain (~20-40 cycles) even uncontended — measured at 58%
+    // of mark_object's cycles at T=12 — while an already-marked object needs
+    // nothing. Reading 1 is decisive at that instant: the bit is either still
+    // in atomic_seen or has been drained into seen by a merge, so the object
+    // is recorded either way and the setter made the worklist decision.
+    // Reading a stale 0 merely falls through to the fetch_set — and the load
+    // has warmed the exact line the RMW then needs.
+    if (bitmap_test(&page->head.scanner.atomic_seen, slot)) return;
     bool was_set = atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
 
     // Newly marked on a page the scanner already finished this epoch: a
@@ -1724,37 +1355,12 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
     }
 }
 
-// Debug (YAFL_GC_POISON): catch a use-after-free cleanly — a live object being
-// scanned whose GC pointer field references a reclaimed (poisoned) object.
-// Aborts with the offending edge instead of faulting deep in the scanner.
-static void _dbg_dangle_check(object_t* object) {
-    // Follow forwarding to the real vtable; the field walk below still reads
-    // the payload at `object` itself (a forwarder's old payload mirrors the
-    // copy's layout until fixup rewrites it).
-    vtable_t* vt = object->vtable;
-    while (UNLIKELY(vtable_is_forward(vt)))
-        vt = ((object_t*)vt)->vtable;
-    uint64_t m = vt->object_pointer_locations;
-    while (m) {
-        unsigned i = (unsigned)__builtin_ctzll(m); m &= m-1;
-        object_t* child = ((object_t**)object)[i];
-        uintptr_t a = (uintptr_t)child;
-        if (!a || (a & (GC_SLOT_SIZE-1)) || (a & PTR_TAG_MASK)) continue;
-        gc_page_t* cpg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE-1));
-        if (!memory_pages_is_alloc_head(cpg) || cpg->head.tag != PAGE_MAGIC_NUMBER) continue;
-        if (*(uint64_t*)child != 0x4242424242424242ULL) continue;
-        fprintf(stderr, "\nDANGLE cycle=%llu: live %p (vt=%s) field#%u -> reclaimed %p\n",
-                (unsigned long long)atomic_load(&gc_cycle_count),
-                (void*)object, vt->name, i, (void*)child);
-        fflush(stderr);
-        abort();
-    }
-}
+// poison-mode dangle check: gc_debug.c
 
 static void gc_fsa_mark_sweep$scan_object(object_t *object) {
     if (UNLIKELY(gc_stats_enabled)) gc_prof_objs++;
     if (UNLIKELY(gc_poison_enabled))
-        _dbg_dangle_check(object);
+        gc_dbg_dangle_check(object);
     // Find the real vtable pointer (forwarding-aware; targets get marked too:
     // a mutator may have read any hop's address before we got here, so every
     // hop must survive this cycle).
@@ -1791,9 +1397,18 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
     // a mutable page, so it is authoritative without a separate page lookup.
     bool fixup = !vt->is_mutable;
 
-    // Scan references
+    // Scan references. Windowed map: scan_elements takes a base + one mask
+    // word, so each 64-slot window is one call (window 0 stays the inline
+    // word — the overwhelmingly common single-window case is unchanged).
     if (vt->object_pointer_locations) {
         gc_fsa_mark_sweep$scan_elements((object_t**)object, vt->object_pointer_locations, fixup);
+    }
+    if (UNLIKELY(vt->object_pointer_masks != NULL)) {
+        for (unsigned w = 1; w < vt->object_pointer_mask_words; w++) {
+            if (vt->object_pointer_masks[w])
+                gc_fsa_mark_sweep$scan_elements((object_t**)object + (size_t)w * 64,
+                                                vt->object_pointer_masks[w], fixup);
+        }
     }
 
     if (vt->array_el_pointer_locations) {
@@ -1870,25 +1485,41 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     const unsigned step_pages = gc_step_base * gc_pace_credit();
     uint64_t _t0 = gc_stats_enabled ? gc_tsc() : 0;
 
-    for (unsigned count = 0; count < step_pages; ++count) {
+    // BATCHED claims/publication, same shape as prune (see the comment
+    // there): one hold claims up to MARK_CLAIM_BATCH pages, one publishes
+    // the batch's requeues and completions.
+    enum { MARK_CLAIM_BATCH = 8 };
+    unsigned count = 0;
+    while (count < step_pages) {
+        gc_page_t *batch[MARK_CLAIM_BATCH];
+        unsigned want = step_pages - count;
+        if (want > MARK_CLAIM_BATCH) want = MARK_CLAIM_BATCH;
+        unsigned n = 0;
         // Stage-guarded claim: the pool lock serialises this against the
         // transition tail's verify-and-store, so a pop can never race the
         // stage forward and claim a NEXT-cycle page, and the in_flight
         // increment is visible to any tail that observes the pop.
         gc_pool_lock();
-        gc_page_t *page = NULL;
         if (atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_MARK_SWEEP) {
-            page = (gc_page_t*)list_pop(&pages_to_scan);
-            if (page != NULL) {
-                atomic_fetch_add_explicit(&gc_pages_in_flight, 1, memory_order_acq_rel);
+            while (n < want) {
+                gc_page_t *p = (gc_page_t*)list_pop(&pages_to_scan);
+                if (p == NULL) break;
                 // Fresh-claim flag clear INSIDE the lock: outside it, a pump's
                 // concurrent deferral (also pool-locked) could land between
                 // the pop and the clear and be silently clobbered.
-                atomic_store(&page->head.scanner.requeue_pending, false);
+                atomic_store(&p->head.scanner.requeue_pending, false);
+                batch[n++] = p;
             }
+            if (n != 0)
+                atomic_fetch_add_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
         }
         gc_pool_unlock();
-        if (page == NULL) break;
+        if (n == 0) break;
+        count += n;
+        list_element_t requeue = {&requeue, &requeue};   // -> pages_to_scan
+        list_element_t done    = {&done,    &done};      // -> pages_to_prune
+        for (unsigned bi = 0; bi < n; ++bi) {
+        gc_page_t *page = batch[bi];
         GC_STAT_BUMP(gc_stat_pages_popped);
         if (page->head.scanner.processed_by_epoch == epoch) {   // instrumented assert
             fprintf(stderr, "[DOUBLE-CLAIM] page=%p epoch=%u links=%p/%p pending=%d cycle=%llu\n",
@@ -1943,15 +1574,17 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
             GC_STAT_BUMP(gc_stat_rq_drain);
             GC_STAT_BUMP(gc_stat_requeued);
             page->head.scanner.processed_by_epoch = 0;
-            gc_pool_lock();
-            list_link(&pages_to_scan, (list_element_t*)&page->head.list);
-            gc_pool_unlock();
+            list_link(&requeue, (list_element_t*)&page->head.list);
         } else {
-            gc_pool_lock();
-            list_link(&pages_to_prune, (list_element_t*)&page->head.list);
-            gc_pool_unlock();
+            list_link(&done, (list_element_t*)&page->head.list);
         }
-        atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_acq_rel);
+        }
+        gc_pool_lock();
+        list_move(&pages_to_scan,  &requeue);
+        list_move(&pages_to_prune, &done);
+        gc_pool_unlock();
+        // Release in-flight only AFTER publication (see prune).
+        atomic_fetch_sub_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
     }
 
     // Move re-process pages back on to the scan list
@@ -2043,10 +1676,10 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
             // Non-compacted page: the vtable word is a real vtable.
             vtable_t *vt = object->vtable;
 
-            ptr_mask_t m = vt->object_pointer_locations;
+            GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
             while (m) {
                 unsigned i = __builtin_ctzll(m); m &= m-1;
-                object_t *child = ((object_t**)object)[i];
+                object_t *child = slots[i];
                 if (!gc_object_is_on_heap_fast(child)) continue;
                 gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
                 // A reference is acceptable if it points within this page, or
@@ -2090,18 +1723,42 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
 static NOINLINE_DEBUG bool gc_fsa_prune_body() {
     GC_STAT_BUMP(gc_stat_prune_steps);
     const unsigned step_pages = gc_step_base * GC_PACE_PRUNE_RATIO * gc_pace_credit();
-    for (unsigned count = 0; count < step_pages; ++count) {
+    // BATCHED claims and publication: one pool-lock hold claims up to
+    // PRUNE_CLAIM_BATCH pages, one more publishes the whole batch's
+    // survivors and promotions. Per-page holds made the pool lock the
+    // machine-wide bottleneck at T=12 (~47% of ALL cycles waiting on it —
+    // perf c2c, 2026-07-08); prune is the heaviest client at 16x the scan
+    // claim rate. Batch results collect on LOCAL chains — claimed pages are
+    // unlinked and invisible, so no lock is needed until publication, and
+    // promotion simplifies: the page joins old_pages directly instead of
+    // being published to pages_to_scan and unlinked again.
+    enum { PRUNE_CLAIM_BATCH = 16 };
+    unsigned count = 0;
+    while (count < step_pages) {
+        gc_page_t *batch[PRUNE_CLAIM_BATCH];
+        unsigned want = step_pages - count;
+        if (want > PRUNE_CLAIM_BATCH) want = PRUNE_CLAIM_BATCH;
+        unsigned n = 0;
         gc_pool_lock();
-        gc_page_t *page = NULL;
         if (atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_PRUNE) {
-            page = (gc_page_t*)list_pop(&pages_to_prune);
-            if (page != NULL) {
-                atomic_fetch_add_explicit(&gc_pages_in_flight, 1, memory_order_acq_rel);
-                atomic_store(&page->head.scanner.requeue_pending, false);
+            while (n < want) {
+                gc_page_t *p = (gc_page_t*)list_pop(&pages_to_prune);
+                if (p == NULL) break;
+                // Flag clear INSIDE the claim lock (see mark body).
+                atomic_store(&p->head.scanner.requeue_pending, false);
+                batch[n++] = p;
             }
+            if (n != 0)
+                atomic_fetch_add_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
         }
         gc_pool_unlock();
-        if (page == NULL) break;
+        if (n == 0) break;
+        count += n;
+        list_element_t survivors = {&survivors, &survivors};   // -> pages_to_scan
+        list_element_t promoted  = {&promoted,  &promoted};    // -> old_pages
+        size_t batch_survivor_pages = 0, batch_survivor_slots = 0, batch_promoted = 0;
+        for (unsigned bi = 0; bi < n; ++bi) {
+        gc_page_t *page = batch[bi];
         assert(page->head.scanner.processed_by_epoch == epoch);
         // (flag cleared under the claim lock above)   // stale by now:
         // during PRUNE the barrier is off and mark executors are gone, so a
@@ -2162,7 +1819,7 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             uint64_t _tp0 = gc_stats_enabled ? gc_tsc() : 0;
             bool page_stable = memcmp(&page->head.objects, &page->head.scanner.seen,
                                       sizeof(bitmap_t)) == 0;
-            gc_cycle_survivors += page->head.pages;
+            batch_survivor_pages += page->head.pages;
             // Byte-honest live count for the dwell threshold — sampled before
             // the bitmap overwrite (like the survey), but only ADDED below,
             // after the promotion decision: pages that leave the young
@@ -2178,9 +1835,7 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             bitmap_reset_all(&page->head.scanner.seen);
             bitmap_reset_all(&page->head.scanner.scanned);
             bitmap_reset_all(&page->head.scanner.atomic_seen);
-            gc_pool_lock();
-            list_link(&pages_to_scan, (list_element_t*)&page->head.list);
-            gc_pool_unlock();
+            list_link(&survivors, (list_element_t*)&page->head.list);
 #if COMPACT_THRESHOLD_PERCENT > 0
             gc_compact_page(page);
 #endif
@@ -2241,16 +1896,13 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                         // Belt-and-braces: the only road back into the
                         // rotation (major demotion) resets these anyway.
                         page->head.refs_defer = page->head.refs_backoff = 0;
-                        // Pool-locked: this unlink splices pages_to_scan (the
-                        // survivor link above published the page there), which
-                        // other prune executors are linking concurrently — and
-                        // old_pages is shared between concurrent promotions.
-                        gc_pool_lock();
+                        // No lock: the page sits on this batch's LOCAL
+                        // survivors chain — move it to the local promoted
+                        // chain; publication happens once, below.
                         list_unlink((list_element_t*)&page->head.list);
-                        list_link(&old_pages, (list_element_t*)&page->head.list);
-                        gc_pool_unlock();
+                        list_link(&promoted, (list_element_t*)&page->head.list);
                         page->head.old = true;
-                        gc_old_page_count += 1;
+                        batch_promoted += 1;
                     } else {
                         if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_dirty++;
                         page->head.dirty_old = true;
@@ -2269,14 +1921,24 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             }
             // Young survivor accounting (see comment above the sample site).
             if (!page->head.old && !page->head.dirty_old)
-                gc_cycle_survivor_slots += page_live_slots;
+                batch_survivor_slots += page_live_slots;
             if (UNLIKELY(gc_stats_enabled)) gc_prof_t_prune_rest += gc_tsc() - _tp0;
         } else {
             // Residue merged above, so an all-dead page truly has no marks.
             assert(bitmap_test_all(&page->head.scanner.atomic_seen) == false);
             gc_page_free(page);
         }
-        atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_acq_rel);
+        }
+        gc_pool_lock();
+        list_move(&pages_to_scan, &survivors);
+        list_move(&old_pages, &promoted);
+        gc_pool_unlock();
+        gc_cycle_survivors      += batch_survivor_pages;
+        gc_cycle_survivor_slots += batch_survivor_slots;
+        gc_old_page_count       += batch_promoted;
+        // Release in-flight only AFTER publication: a transition that sees
+        // zero in-flight must also see every batch page on its final list.
+        atomic_fetch_sub_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
     }
 
     gc_pool_lock();

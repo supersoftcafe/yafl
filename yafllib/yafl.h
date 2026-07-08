@@ -153,12 +153,24 @@ EXTERN noreturn void log_error_and_exit(char const* format, ...);
 
 
 // Bitmask of which pointer-sized slots of an object/array-element are GC
-// pointers, indexed by slot = byteoffset/sizeof(void*). 64 bits: heap state
-// frames are kept within this width by slot coalescing (see async_lower).
+// pointers, indexed by slot = byteoffset/sizeof(void*). One word covers an
+// object's first 64 slots; wider objects extend the map through the vtable's
+// `object_pointer_masks` window array (window w covers slots 64w..64w+63).
+// Array-element masks and field-relative write-barrier masks stay single-word:
+// `maskof` keeps the raw shift so exceeding it is a loud compile error there.
 typedef uint64_t ptr_mask_t;
 
 #define maskof(type, field)\
         ((ptr_mask_t)(((ptr_mask_t)1)<<(offsetof(struct {type o;}, o field)/sizeof(void*))))
+
+// The slot index of `field`, and its mask bit within window `w` (0 when the
+// field lives in another window). The modulo keeps the shift < 64 for ANY
+// offset, so these are always well-defined constant expressions.
+#define ptr_word_of(type, field)\
+        (offsetof(struct {type o;}, o field)/sizeof(void*))
+#define maskof_w(type, field, w)\
+        ((ptr_mask_t)((ptr_word_of(type, field) / 64 == (size_t)(w))\
+            ? (((ptr_mask_t)1) << (ptr_word_of(type, field) % 64)) : (ptr_mask_t)0))
 
 typedef struct {
     void* f;
@@ -184,6 +196,12 @@ typedef struct vtable {
     // lives here — once per TYPE — instead of a tag byte in every object.
     // 0 for types that never appear in a match dispatch.
     int32_t discriminator;
+    // Extended pointer map for objects whose fields pass slot 63: masks[w]
+    // covers slots 64w..64w+63 and masks[0] duplicates
+    // object_pointer_locations. NULL for the common (<= 64 slot) case —
+    // every walker treats NULL as a single-window map.
+    const ptr_mask_t* object_pointer_masks;
+    uint16_t object_pointer_mask_words;
     const char *name;
     struct vtable** implements_array; // Array of all classes that this class extends
 #ifdef NDEBUG
@@ -203,6 +221,8 @@ typedef struct vtable {
             uint16_t array_len_offset;\
             uint16_t is_mutable:1;\
             int32_t discriminator;\
+            const ptr_mask_t* object_pointer_masks;\
+            uint16_t object_pointer_mask_words;\
             const char* name;\
             struct vtable** implements_array;\
             vtable_entry_t lookup[LOOKUP_COUNT];\

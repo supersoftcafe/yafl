@@ -13,6 +13,8 @@ set(SRC_FILES
     io.c
     io_thread.c
     object.c
+    gc_stats.c
+    gc_debug.c
     parallel.c
     primitive.c
     stackguard.c
@@ -60,6 +62,8 @@ set(TEST_SRC_FILES
     io.c
     io_thread.c
     object.c
+    gc_stats.c
+    gc_debug.c
     parallel.c
     primitive.c
     stackguard.c
