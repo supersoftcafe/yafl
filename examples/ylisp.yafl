@@ -41,15 +41,14 @@ fun [tail] lookup(env: Env, name: System::String): Value | System::None
 fun _isSpace(c: System::Int32): System::Bool
   ret c == ' ' || c == '\t' || c == '\n' || c == '\r'
 
-fun _isDelim(c: System::Int32): System::Bool
-  ret _isSpace(c) || c == '(' || c == ')' 
-
 fun [tail] _skipWs(s: System::String, pos: System::Int): System::Int
   ret pos < System::length(s) && _isSpace(System::byteAt(s, pos))
     ? _skipWs(s, pos + 1) : pos
 
 fun [tail] _scanAtom(s: System::String, pos: System::Int): System::Int
-  ret pos < System::length(s) && !_isDelim(System::byteAt(s, pos))
+  fun isDelim(c: System::Int32): System::Bool
+    ret _isSpace(c) || c == '(' || c == ')'
+  ret pos < System::length(s) && !isDelim(System::byteAt(s, pos))
     ? _scanAtom(s, pos + 1) : pos
 
 # One datum starting at `pos` (whitespace already skipped).
@@ -146,20 +145,20 @@ fun _cdr(v: Value): Value
     (other)    => VNil()
 
 fun _evalIf(io: IO, genv: Env, env: Env, args: Value): (io: IO, v: Value | EvalError)
+  fun truthy(v: Value): System::Bool
+    ret match(v)
+      (b: VBool) => b.flag
+      (n: VNil)  => false
+      (other)    => true
+
+  # Evaluate operator and operands, then apply.
   let c = eval(io, genv, env, _car(args))
   ret match(c.v)
     (e: EvalError) => (c.io, e)
-    (v: Value)     => _truthy(v)
+    (v: Value)     => truthy(v)
       ? eval(c.io, genv, env, _car(_cdr(args)))
       : eval(c.io, genv, env, _car(_cdr(_cdr(args))))
 
-fun _truthy(v: Value): System::Bool
-  ret match(v)
-    (b: VBool) => b.flag
-    (n: VNil)  => false
-    (other)    => true
-
-# Evaluate operator and operands, then apply.
 fun _evalApply(io: IO, genv: Env, env: Env, op: Value, args: Value): (io: IO, v: Value | EvalError)
   let f = eval(io, genv, env, op)
   ret match(f.v)
@@ -190,25 +189,25 @@ fun apply(io: IO, genv: Env, f: Value, revArgs: Value): (io: IO, v: Value | Eval
 # params in order, revArgs reversed: bind params right-to-left against the
 # reversal by first counting, then peeling — simpler: reverse params too.
 fun _bindParams(params: Value, revArgs: Value, env: Env): Env | EvalError
-  ret _bindLoop(_reverse(params, VNil()), revArgs, env)
+  fun [tail] reverse(v: Value, acc: Value): Value
+    ret match(v)
+      (p: VPair) => reverse(p.tail, VPair(p.head, acc))
+      (other)    => acc
 
-fun [tail] _reverse(v: Value, acc: Value): Value
-  ret match(v)
-    (p: VPair) => _reverse(p.tail, VPair(p.head, acc))
-    (other)    => acc
+  fun [tail] bindLoop(revParams: Value, revArgs: Value, env: Env): Env | EvalError
+    ret match(revParams)
+      (pp: VPair) => match(revArgs)
+        (ap: VPair) => match(pp.head)
+          (s: VSym)   => bindLoop(pp.tail, ap.tail, EnvBind(s.name, ap.head, env))
+          (other)     => EvalError("bad parameter")
+        (other) => EvalError("too few arguments")
+      (other) => match(revArgs)
+        (ap: VPair) => EvalError("too many arguments")
+        (other)     => env
 
-fun [tail] _bindLoop(revParams: Value, revArgs: Value, env: Env): Env | EvalError
-  ret match(revParams)
-    (pp: VPair) => match(revArgs)
-      (ap: VPair) => match(pp.head)
-        (s: VSym)   => _bindLoop(pp.tail, ap.tail, EnvBind(s.name, ap.head, env))
-        (other)     => EvalError("bad parameter")
-      (other) => EvalError("too few arguments")
-    (other) => match(revArgs)
-      (ap: VPair) => EvalError("too many arguments")
-      (other)     => env
+  # revArgs is reversed; for the 2-arg builtins peel b then a.
+  ret bindLoop(reverse(params, VNil()), revArgs, env)
 
-# revArgs is reversed; for the 2-arg builtins peel b then a.
 fun _applyBuiltin(io: IO, op: System::String, revArgs: Value): (io: IO, v: Value | EvalError)
   if op == "print"
     ret _printValue(io, _car(revArgs))
@@ -217,23 +216,22 @@ fun _applyBuiltin(io: IO, op: System::String, revArgs: Value): (io: IO, v: Value
   ret (io, _builtin2(op, a, b))
 
 fun _builtin2(op: System::String, a: Value, b: Value): Value | EvalError
+  fun arith(op: System::String, x: System::Int, y: System::Int): Value | EvalError
+    ret op == "+" ? VInt(x + y)
+      : op == "-" ? VInt(x - y)
+      : op == "*" ? VInt(x * y)
+      : op == "<" ? VBool(x < y)
+      : op == "=" ? VBool(x == y)
+      : EvalError("unknown builtin")
   ret op == "cons"  ? VPair(a, b)
     : op == "car"   ? _car(b)
     : op == "cdr"   ? _cdr(b)
     : op == "null?" ? VBool(b is VNil)
     : match(a)
         (x: VInt) => match(b)
-          (y: VInt) => _arith(op, x.num, y.num)
+          (y: VInt) => arith(op, x.num, y.num)
           (other)   => EvalError("number expected")
         (other) => EvalError("number expected")
-
-fun _arith(op: System::String, x: System::Int, y: System::Int): Value | EvalError
-  ret op == "+" ? VInt(x + y)
-    : op == "-" ? VInt(x - y)
-    : op == "*" ? VInt(x * y)
-    : op == "<" ? VBool(x < y)
-    : op == "=" ? VBool(x == y)
-    : EvalError("unknown builtin")
 
 fun _printValue(io: IO, v: Value): (io: IO, v: Value | EvalError)
   let r = writeAll(io, show(v) + "\n")

@@ -41,11 +41,10 @@ class Sphere(center: Vec3, radius: Float, material: Material)
 
 class Hit(t: Float, point: Vec3, normal: Vec3, material: Material)
 
-fun _mkHit(s: Sphere, ro: Vec3, rd: Vec3, t: Float): Hit
-  let p = ro + rd * t
-  ret Hit(t, p, normalize(p - s.center), s.material)
-
 fun hitSphere(s: Sphere, ro: Vec3, rd: Vec3, tmin: Float, tmax: Float): Hit | None
+  fun mkHit(s: Sphere, ro: Vec3, rd: Vec3, t: Float): Hit
+    let p = ro + rd * t
+    ret Hit(t, p, normalize(p - s.center), s.material)
   let oc = ro - s.center
   let a = lengthSq(rd)
   let halfB = dot(oc, rd)
@@ -57,44 +56,43 @@ fun hitSphere(s: Sphere, ro: Vec3, rd: Vec3, tmin: Float, tmax: Float): Hit | No
   let ta = (0.0 - halfB - sd) / a
   let tb = (0.0 - halfB + sd) / a
   ret (ta > tmin && ta < tmax)
-    ? _mkHit(s, ro, rd, ta)
-    : ((tb > tmin && tb < tmax) ? _mkHit(s, ro, rd, tb) : None)
+    ? mkHit(s, ro, rd, ta)
+    : ((tb > tmin && tb < tmax) ? mkHit(s, ro, rd, tb) : None)
 
-# Closer of `best` and sphere `s` (the fold step): once there is a hit, tmax
-# narrows to best.t, so the fold naturally keeps the nearest.
-fun _closer(ro: Vec3, rd: Vec3, tmin: Float, tmax: Float, best: Hit | None, s: Sphere) => match(best)
-  (h: Hit) => match(hitSphere(s, ro, rd, tmin, h.t))
-    (nh: Hit)    => nh
-    (miss: None) => h
-  (miss: None) => hitSphere(s, ro, rd, tmin, tmax)
-
-fun nearest(scene: List<Sphere>, ro: Vec3, rd: Vec3, tmin: Float, tmax: Float) =>
-  fold<Sphere, Hit | None>(scene, None, (best: Hit | None, s: Sphere) => _closer(ro, rd, tmin, tmax, best, s))
+fun nearest(scene: List<Sphere>, ro: Vec3, rd: Vec3, tmin: Float, tmax: Float): Hit | None
+  # Closer of `best` and sphere `s` (the fold step): once there is a hit, tmax
+  # narrows to best.t, so the fold naturally keeps the nearest.
+  fun closer(best: Hit | None, s: Sphere): Hit | None
+    ret match(best)
+      (h: Hit) => match(hitSphere(s, ro, rd, tmin, h.t))
+        (nh: Hit)    => nh
+        (miss: None) => h
+      (miss: None) => hitSphere(s, ro, rd, tmin, tmax)
+  ret fold<Sphere, Hit | None>(scene, None, (best: Hit | None, s: Sphere) => closer(best, s))
 
 
 # ── Shading ─────────────────────────────────────────────────────────────────
-fun _sky(rd: Vec3): Vec3
-  let t = 0.5 * (normalize(rd).y + 1.0)
-  ret Vec3(1.0, 1.0, 1.0) * (1.0 - t) + Vec3(0.5, 0.7, 1.0) * t
-
-fun _inShadow(scene: List<Sphere>, p: Vec3, light: Vec3) =>
-  match(nearest(scene, p, normalize(light - p), 0.001, length(light - p)))
-    (h: Hit)     => true
-    (miss: None) => false
-
-fun _shadeLambert(scene: List<Sphere>, light: Vec3, l: Lambertian, h: Hit): Vec3
-  let diff = _max(0.0, dot(h.normal, normalize(light - h.point)))
-  let lit = _inShadow(scene, h.point, light) ? 0.15 : (0.15 + diff)
-  ret l.albedo * lit
-
 fun trace(scene: List<Sphere>, light: Vec3, ro: Vec3, rd: Vec3, depth: Int): Vec3
+  fun sky(rd: Vec3): Vec3
+    let t = 0.5 * (normalize(rd).y + 1.0)
+    ret Vec3(1.0, 1.0, 1.0) * (1.0 - t) + Vec3(0.5, 0.7, 1.0) * t
+
+  fun inShadow(scene: List<Sphere>, p: Vec3, light: Vec3) =>
+    match(nearest(scene, p, normalize(light - p), 0.001, length(light - p)))
+      (h: Hit)     => true
+      (miss: None) => false
+
+  fun shadeLambert(scene: List<Sphere>, light: Vec3, l: Lambertian, h: Hit): Vec3
+    let diff = _max(0.0, dot(h.normal, normalize(light - h.point)))
+    let lit = inShadow(scene, h.point, light) ? 0.15 : (0.15 + diff)
+    ret l.albedo * lit
   if depth < 1
     ret Vec3(0.0, 0.0, 0.0)
   ret match(nearest(scene, ro, rd, 0.001, 1000000.0))
     (h: Hit) => match(h.material)
       (m: Metal)      => m.albedo * trace(scene, light, h.point, reflect(normalize(rd), h.normal), depth - 1)
-      (l: Lambertian) => _shadeLambert(scene, light, l, h)
-    (miss: None) => _sky(rd)
+      (l: Lambertian) => shadeLambert(scene, light, l, h)
+    (miss: None) => sky(rd)
 
 
 # ── Camera ────────────────────────────────────────────────────────────────
@@ -160,17 +158,16 @@ fun _defaultCam() => Camera(Vec3(0.0, 0.0, 0.0), Vec3(-2.0, -1.5, -1.0), Vec3(4.
 #   camera  ox oy oz  llx lly llz  hx hy hz  vx vy vz
 #   light   px py pz
 #   sphere  cx cy cz  radius  r g b  (metal|diffuse)
-fun [tail] _skipToEol(s: String, pos: Int) => pos < length(s) && byteAt(s, pos) != '\n'
-  ? _skipToEol(s, pos + 1)
-  : pos
-
 fun [tail] _skipWs(s: String, pos: Int): Int
+  fun [tail] skipToEol(s: String, pos: Int) => pos < length(s) && byteAt(s, pos) != '\n'
+    ? skipToEol(s, pos + 1)
+    : pos
   if pos >= length(s)
     ret pos
   let c = byteAt(s, pos)
   ret (c == ' ' || c == '\t' || c == '\n' || c == '\r')
     ? _skipWs(s, pos + 1)
-    : (c == '#' ? _skipWs(s, _skipToEol(s, pos)) : pos)
+    : (c == '#' ? _skipWs(s, skipToEol(s, pos)) : pos)
 
 fun [tail] _scanTok(s: String, pos: Int): Int
   if pos >= length(s)
@@ -180,14 +177,13 @@ fun [tail] _scanTok(s: String, pos: Int): Int
     ? pos
     : _scanTok(s, pos + 1)
 
-fun _pf(s: String) => match(parseFloat(s))
-  (f: Float)   => f
-  (n: None)    => 0.0
-
 fun _nextFloat(s: String, pos: Int): (pos: Int, v: Float)
+  fun pf(s: String) => match(parseFloat(s))
+    (f: Float)   => f
+    (n: None)    => 0.0
   let p = _skipWs(s, pos)
   let e = _scanTok(s, p)
-  ret (e, _pf(slice(s, p, e)))
+  ret (e, pf(slice(s, p, e)))
 
 fun _nextWord(s: String, pos: Int): (pos: Int, w: String)
   let p = _skipWs(s, pos)

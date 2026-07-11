@@ -84,22 +84,18 @@ fun openDir(path: String): Dir|IOError
 # Drain a Dir into a List<String>, then close it.  On a read error the
 # accumulated entries are discarded and the error is returned (the handle
 # is still closed).
-fun _listDirLoop(d: Dir, acc: List<String>): (dir: Dir, entries: List<String>|IOError)
-  let r = d.next()
-  ret match(r.entry)
-    (s: String)  => _listDirLoop(r.dir, append<String>(acc, s))
-    (n: None)    => (r.dir, acc)
-    (e: IOError) => (r.dir, e)
-
-
-fun _drainAndClose(d: Dir): List<String>|IOError
-  let r = _listDirLoop(d, List<String>())
-  ret match(r.dir.close())
-    (closeErr: IOError) => closeErr
-    (n: System::None)   => r.entries
-
-
 fun listDir(path: String): List<String>|IOError
+  fun loop(d: Dir, acc: List<String>): (dir: Dir, entries: List<String>|IOError)
+    let r = d.next()
+    ret match(r.entry)
+      (s: String)  => loop(r.dir, append<String>(acc, s))
+      (n: None)    => (r.dir, acc)
+      (e: IOError) => (r.dir, e)
+  fun drainAndClose(d: Dir): List<String>|IOError
+    let r = loop(d, List<String>())
+    ret match(r.dir.close())
+      (closeErr: IOError) => closeErr
+      (n: System::None)   => r.entries
   ret match(openDir(path))
     (e: IOError) => e
-    (d: Dir)     => _drainAndClose(d)
+    (d: Dir)     => drainAndClose(d)

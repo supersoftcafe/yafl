@@ -1034,7 +1034,9 @@ def inline_ast(statements: list[s.Statement], optimization_level: int = 0) -> li
     levels regardless.
     """
     _inline_counter[0] = 0
-    current = _hoist_nested_fns_to_lambdas(list(statements))
+    # Nested functions were hoisted by the lowering/hoist_nested.py stage
+    # (before tail_loop); bodies here contain no FunctionStatements.
+    current = list(statements)
     for _ in range(_MAX_ITERATIONS):
         catalog = _build_catalog(current, optimization_level)
         if not catalog:

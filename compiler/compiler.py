@@ -8,6 +8,7 @@ import sys
 sys.setrecursionlimit(20000)
 
 import lowering.ast_inline
+import lowering.hoist_nested
 import lowering.block_exits
 import lowering.constants
 import lowering.integers
@@ -555,6 +556,12 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # Nested helpers that capture only to be called shed the closure: captures
     # become parameters (must precede tail_loop — self-calls are still calls).
     new_statements = lowering.lambda_lift.lift_captured_calls(new_statements)
+    # Hoist nested function declarations BEFORE the tail rewrite: tail_loop
+    # wraps the whole body in a LoopExpression, and a declaration carried
+    # inside it is invisible to every later body scan (it would reach codegen
+    # still LOCAL-scoped). Capturing helpers become lambda-lets that ride
+    # into the loop and capture per iteration.
+    new_statements = lowering.hoist_nested.hoist_nested_functions(new_statements)
     new_statements, tail_errors = lowering.tail_loop.lower_tail_loops(new_statements, resolver)
     if tail_errors:
         return tail_errors

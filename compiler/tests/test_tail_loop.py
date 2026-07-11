@@ -181,3 +181,48 @@ fun main(): System::Int
         self.assertTrue(ccode, "nested [tail] should compile")
         self.assertIn("loophead", ccode, "expected a back-edge loop label")
         self.assertNotIn("tailcallback", ccode, "no [tail] trampoline machinery should remain")
+
+
+_HELPER_IN_TAIL_HOST = """namespace Test
+import System
+
+fun [tail] countDown(n: Int, acc: Int): Int
+  fun double(x: Int): Int
+    ret x * 2
+  ret n == 0 ? acc : countDown(n - 1, acc + double(n))
+
+fun main(): System::Int
+  ret countDown(4, 0) == 20 ? 0 : 1
+"""
+
+_CAPTURING_HELPER_IN_TAIL_HOST = """namespace Test
+import System
+
+# The helper captures the [tail] host's CURRENT parameter: after the
+# tail-to-loop rewrite it must see each iteration's n (a per-iteration
+# closure), never a stale first-iteration snapshot.
+fun [tail] sumScaled(n: Int, acc: Int): Int
+  fun scaled(x: Int): Int
+    ret x * n
+  ret n == 0 ? acc : sumScaled(n - 1, acc + scaled(3))
+fun main(): System::Int
+  ret sumScaled(4, 0) == 30 ? 0 : 1
+"""
+
+
+class TestHelperNestedInTailHost(TestCase):
+    # The converse of the nested-[tail] tests above: an ordinary helper
+    # nested inside a [tail] HOST. The tail-to-loop rewrite used to wrap the
+    # whole body (helper declarations included) inside the LoopExpression's
+    # block, where the nested-function hoist never looked — the reference
+    # then reached codegen still LOCAL-scoped and crashed generate.
+    def test_plain_helper_in_tail_host(self):
+        rc, out = compile_and_run_stdlib_capture(_HELPER_IN_TAIL_HOST, timeout=30)
+        self.assertEqual(0, rc, f"helper in [tail] host failed; stdout:\n{out}")
+
+    def test_capturing_helper_in_tail_host_sees_current_iteration(self):
+        # scaled(3) = 3*n with the CURRENT n: 12+9+6+3 = 30. A stale
+        # first-iteration capture (n pinned at 4) would give 48.
+        rc, out = compile_and_run_stdlib_capture(_CAPTURING_HELPER_IN_TAIL_HOST, timeout=30)
+        self.assertEqual(0, rc, f"capturing helper in [tail] host failed; stdout:\n{out}")
+

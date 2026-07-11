@@ -47,25 +47,21 @@ fun gatherJson(path: String): List<String>
       : (endsWith(path, ".json") ? prepend<String>(path, List<String>()) : List<String>())
     (e: IOError)     => List<String>()
 
-# The per-file pipeline, kept as its own small function so the -O3 inliner
-# does not fuse it into callers (a fused frame's pointer fields must stay
-# within the 64-word object mask).
-fun _pipe(i: IO, o: IO): Int
-  ret i.asStream()
-    |> (i2, s) => writeStream(o, prettyEmit(tokenize(s)))
-    |> (o2, v) => (o2.close(), i2.close(), v)
-    |> (c1, c2, v) => match(v)
-      (e: IOError)        => 1
-      (p: JsonParseError) => 1
-      (n: System::None)   => (c1 !is None || c2 !is None) ? 1 : 0
-
 # One file: both linear handles are opened, threaded and closed entirely
 # within this call, so a conversion is safe inside its own [future] worker.
 fun convertOne(path: String): Int
+  fun pipe(i: IO, o: IO): Int
+    ret i.asStream()
+      |> (i2, s) => writeStream(o, prettyEmit(tokenize(s)))
+      |> (o2, v) => (o2.close(), i2.close(), v)
+      |> (c1, c2, v) => match(v)
+        (e: IOError)        => 1
+        (p: JsonParseError) => 1
+        (n: System::None)   => (c1 !is None || c2 !is None) ? 1 : 0
   fun failCleanup(): Int
     ret remove(path + ".pretty") |> (r) => 1
   fun run(i: IO, o: IO): Int
-    ret _pipe(i, o) == 0 ? 0 : failCleanup()
+    ret pipe(i, o) == 0 ? 0 : failCleanup()
   ret match(open_read(path))
     (i: IO) => match(open_write(path + ".pretty", true))
       (o: IO)      => run(i, o)
@@ -84,14 +80,13 @@ fun convertAll(files: List<String>): Int
     (p: String) => isEmpty<String>(tail<String>(files)) ? convertOne(p) : splitAndGo()
     (e: None)   => 0
 
-fun _report(total: Int, failed: Int): Int
-  print("converted " + String(total - failed) + " ok, " + String(failed) + " failed\n")
-  ret failed
-
 fun runTree(dir: String): System::Int
+  fun report(total: Int, failed: Int): Int
+    print("converted " + String(total - failed) + " ok, " + String(failed) + " failed\n")
+    ret failed
   let files = gatherJson(dir)
   let total = chainLength<String>(chain<String>(files))
-  ret _report(total, convertAll(files))
+  ret report(total, convertAll(files))
 
 fun runSingle(path: String): System::Int
   ret match(stat(path))
@@ -109,13 +104,12 @@ fun runStdio(): System::Int
       (p: JsonParseError) => 2
       (n: System::None)   => c !is None ? 1 : 0
 
-fun _runFlagged(a: List<String>): System::Int
-  ret match(head<String>(tail<String>(a)))
-    (dir: String)     => runTree(dir)
-    (e: System::None) => print("-r requires a directory\n") |> (u) => 2
-
 fun main(): System::Int
+  fun runFlagged(a: List<String>): System::Int
+    ret match(head<String>(tail<String>(a)))
+      (dir: String)     => runTree(dir)
+      (e: System::None) => print("-r requires a directory\n") |> (u) => 2
   let a = args()
   ret match(head<String>(a))
-    (first: String)   => first == "-r" ? _runFlagged(a) : runSingle(first)
+    (first: String)   => first == "-r" ? runFlagged(a) : runSingle(first)
     (e: System::None) => runStdio()
