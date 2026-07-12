@@ -120,8 +120,10 @@ class RuntimeInvoke(RParam):
             raise ValueError("parameters must be a struct type")
 
         if isinstance(p, NewStruct):
-            return f"{self.function}({", ".join(src.to_c(type_cache) for name, src in p.values)})"
-        return f"{self.function}({", ".join(f"{p.to_c(type_cache)}.{name}" for name, ftype in ptype.fields)})"
+            args = ", ".join(src.to_c(type_cache) for name, src in p.values)
+            return f"{self.function}({args})"
+        args = ", ".join(f"{p.to_c(type_cache)}.{name}" for name, ftype in ptype.fields)
+        return f"{self.function}({args})"
 
     def get_live_vars(self) -> frozenset[StackVar]:
         return self.parameters.get_live_vars()
@@ -242,6 +244,23 @@ class NullPointer(RParam):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return "((object_t*)0)"
+
+
+@dataclass(frozen=True)
+class StaticObjectRef(RParam):
+    """The address of a STATIC object instance (`&<global>_data`), usable
+    inside another static's C initialiser. A plain GlobalVar read of the
+    object-pointer variable is not a C constant expression; taking the data
+    struct's address is. `name` is the referenced Global's (unmangled) name;
+    that Global must be a static class instance (object_name set, init
+    present) emitted before this one."""
+    name: str
+
+    def get_type(self) -> t.DataPointer:
+        return t.DataPointer()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"((object_t*)&{mangle_name(self.name)}_data)"
 
 
 @dataclass(frozen=True)
@@ -719,13 +738,18 @@ class ArrayElement(RParam):
 
     `pointer` and `index` are materialised into StackVars by the caller, so each
     appears once here as a plain variable — no re-evaluation despite the helper
-    seeing both the base and the index."""
+    seeing both the base and the index.
+
+    `checked=False` (set only by lowering/bounds_elim.py on PROOF that the
+    index is in range) emits the raw indexed read: the abort branch inside a
+    loop is what stops clang's vectoriser."""
     element_type: t.Type
     pointer: RParam
     object_name: str
     field: str
     length_field: str
     index: RParam
+    checked: bool = True
 
     def flatten(self, is_reader: bool = True) -> list[RParam]:
         return [self] + self.pointer.flatten() + self.index.flatten()
@@ -753,6 +777,8 @@ class ArrayElement(RParam):
         obj = f"(({mangle_name(self.object_name)}_t*){self.pointer.to_c(type_cache)})"
         idx = self.index.to_c(type_cache)
         base = f"{obj}->{mangle_name(self.field)}.a"
-        length = f"{obj}->{mangle_name(self.length_field)}"
         elem_ptr = f"{self.element_type.declare(type_cache)}*"
+        if not self.checked:
+            return f"(({elem_ptr}){base})[{idx}]"
+        length = f"{obj}->{mangle_name(self.length_field)}"
         return f"(({elem_ptr})array_bounds_check({idx}, {length}, {base}))[{idx}]"

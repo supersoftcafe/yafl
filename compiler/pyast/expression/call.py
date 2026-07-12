@@ -86,8 +86,12 @@ class CallExpression(Expression):
         return converted(expr, expected_type, resolver), fglb+pglb
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
-        # TODO: Figure out what expected type to pass in
-        err = self.function.check(resolver, None) + self.parameter.check(resolver, None)
+        # The argument tuple checks against the resolved parameter shape, so an
+        # explicit `name = value` naming no parameter is reported by the tuple
+        # itself (the binding is otherwise lenient about incidental names).
+        callee_type = self.function.get_type(resolver)
+        callee_params = callee_type.parameters if isinstance(callee_type, t.CallableSpec) else None
+        err = self.function.check(resolver, None) + self.parameter.check(resolver, callee_params)
         if err:
             return err
 

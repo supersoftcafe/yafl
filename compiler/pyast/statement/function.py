@@ -186,8 +186,13 @@ class FunctionStatement(DataStatement):
         if self.is_nested and self.trait_params:
             inner_where_err.append(Error(self.line_ref, "`where` is not allowed on an inner function — move it to a top-level function"))
 
+        default_err = [err for let in self.parameters.flatten()
+                       for err in t.default_value_errors(let.default_value, resolver,
+                                                         let.line_ref, "parameter")]
+
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
-                + tail_err + terminal_err + inner_where_err + self.__unused_param_warnings())
+                + tail_err + terminal_err + inner_where_err + default_err
+                + self.__unused_param_warnings())
 
     def __unused_param_warnings(self) -> list[Error]:
         # No value vanishes silently: a parameter the body never reads receives

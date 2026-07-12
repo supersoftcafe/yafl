@@ -183,6 +183,22 @@ def __char() -> p.Parser[e.Expression]:
     return p.Parser(_p)
 
 
+def __regex() -> p.Parser[e.Expression]:
+    r"""`re"pattern"` — a RAW regex literal: the pattern between the quotes is
+    handed to the engine byte-for-byte (no yafl escape decoding), so `\d`
+    is written with one backslash. Validation and interning happen in
+    lowering/regexes.py."""
+    def _p(tokens: list[p.Token]) -> p.Result[e.RegexExpression]:
+        match tokens:
+            case[head, *tail] if head.kind == p.TokenKind.REGEX:
+                value = head.value
+                if not value.endswith('"') or len(value) < 4:
+                    return p.Result.error("regex literal missing closing quote", tail, head.line_ref)
+                return p.Result.ok(e.RegexExpression(head.line_ref, value[3:-1]), tail, head.line_ref)
+        return p.Result.none(tokens, tokens[0].line_ref)
+    return p.Parser(_p)
+
+
 def __named() -> p.Parser[e.Expression]:
     def _p(tokens: list[p.Token]) -> p.Result[e.NamedExpression]:
         match tokens:
@@ -257,8 +273,40 @@ def __to_invokes(result: p.Result[tuple[e.Expression, list]], tokens: list[p.Tok
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
+def __placeholder_entries(function: e.Expression) -> list[int]:
+    """Indices of top-level `_` placeholder arguments when `function` is a
+    call — the `x |> f(a, _)` stage form. Only the stage call's own argument
+    list is searched: a `_` nested deeper is not a placeholder."""
+    if not (isinstance(function, e.CallExpression)
+            and isinstance(function.parameter, e.TupleExpression)):
+        return []
+    return [i for i, entry in enumerate(function.parameter.expressions)
+            if isinstance(entry.value, e.NamedExpression) and entry.value.name == "_"]
+
+
 def __to_pipeline(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    pipeline_errors: list[p.Error] = []
+
     def accumulate(last_result: e.Expression, function: e.Expression) -> e.Expression:
+        # `l |> f(a, _)`: the `_` placeholder receives the piped value — a
+        # point-free stage. Same capture-avoiding shape as the lambda case
+        # below: bind `l` to a fresh path-derived name OUTSIDE the call, then
+        # substitute that name for the placeholder.
+        holes = __placeholder_entries(function)
+        if len(holes) > 1:
+            pipeline_errors.append(p.Error(function.line_ref,
+                "at most one `_` placeholder per pipeline stage"))
+            return last_result
+        if len(holes) == 1:
+            lr = function.line_ref
+            tmp = f"$pipe@{lr.hash6()}"
+            entries = list(function.parameter.expressions)
+            entries[holes[0]] = dataclasses.replace(
+                entries[holes[0]], value=e.NamedExpression(lr, tmp))
+            call = dataclasses.replace(function,
+                parameter=dataclasses.replace(function.parameter, expressions=entries))
+            return e.BlockExpression(lr,
+                [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], call)
         # `l |> (a, b) => body` is a beta-redex: lower it to BLOCKS binding the
         # lambda's parameters from `l` and running the body inline — not a
         # call. No closure is created, a piped TUPLE value binds its entries
@@ -290,7 +338,7 @@ def __to_pipeline(result: p.Result[tuple[e.Expression, list[e.Expression]]], tok
         return call
     left_expr, right_list = result.value
     expr = reduce(accumulate, right_list, left_expr)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+    return p.Result(expr, result.tokens, result.line_ref, result.errors + pipeline_errors)
 
 
 def __invert_operand(expr: e.Expression) -> e.Expression | None:
@@ -430,6 +478,12 @@ def __to_expr_tuple_entry(result: p.Result[tuple[list[str], e.Expression]], toke
     return p.Result(e.TupleEntryExpression(p.first_or_none(name), value), result.tokens, result.line_ref, result.errors)
 
 
+def __to_spread_entry(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.TupleEntryExpression]:
+    # `*expr` — splice the tuple value's fields into this tuple, positionally.
+    return p.Result(e.TupleEntryExpression(None, result.value, spread=True),
+                    result.tokens, result.line_ref, result.errors)
+
+
 def __to_expr_tuple(result: p.Result[list[e.TupleEntryExpression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     items = result.value
     return p.Result(e.TupleExpression(result.line_ref, items), result.tokens, result.line_ref, result.errors)
@@ -523,22 +577,29 @@ def __to_generic_let_statement(result: p.Result, tokens: list[p.Token]) -> p.Res
     return p.Result(statement, result.tokens, result.line_ref, errors)
 
 
-def __to_match_arm(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
-    params, body = result.value
+def __to_match_arm(result: p.Result[tuple[list[s.LetStatement], list[e.Expression], e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
+    params, guard, body = result.value
     if len(params) == 0:
-        return p.Result(m.MatchArm(result.line_ref, None, None, body), result.tokens, result.line_ref, result.errors)
+        return p.Result(m.MatchArm(result.line_ref, None, None, body, guard=p.first_or_none(guard)),
+                        result.tokens, result.line_ref, result.errors)
     if len(params) == 1:
         param = params[0]
         raw_name = param.name.split('@')[0]
         name = None if raw_name == '_' else raw_name
-        return p.Result(m.MatchArm(result.line_ref, name, param.declared_type, body), result.tokens, result.line_ref, result.errors)
+        return p.Result(m.MatchArm(result.line_ref, name, param.declared_type, body, guard=p.first_or_none(guard)),
+                        result.tokens, result.line_ref, result.errors)
     errors = result.errors + [p.Error(result.line_ref, "match arm must have exactly one parameter")]
     return p.Result(None, result.tokens, result.line_ref, errors)
 
 
-def __to_match_arm_literal(result: p.Result[tuple[e.Expression, e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
-    literal, body = result.value
-    return p.Result(m.MatchArm(result.line_ref, None, None, body, literal=literal),
+def __to_match_arm_literal(result: p.Result[tuple[list[e.Expression], list[e.Expression], e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
+    literals, guard, body = result.value
+    if not literals:
+        # `()` is the else arm, not an empty literal list — let the
+        # destructure form parse it.
+        return p.Result.none(tokens, result.line_ref)
+    return p.Result(m.MatchArm(result.line_ref, None, None, body,
+                               literals=tuple(literals), guard=p.first_or_none(guard)),
                     result.tokens, result.line_ref, result.errors)
 
 
@@ -569,13 +630,14 @@ def __to_builtin_spec(result: p.Result[str], tokens: list[p.Token]) -> p.Result[
                   result.tokens, result.line_ref, result.errors)
 
 
-def __to_tuple_entry(result: p.Result[tuple[list[str], list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[t.TupleEntrySpec]:
+def __to_named_tuple_entry(result: p.Result[tuple[str, list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[t.TupleEntrySpec]:
     name, e_type, default_expr = result.value
-    if len(default_expr) > 0 and len(name) == 0:
-        return p.Result.error("missing name on left of assignment", tokens, result.line_ref)
-    if len(name) == 0 and len(e_type) == 0 and len(default_expr) == 0:
-        return p.Result.none(tokens, result.line_ref)
-    return p.Result(t.TupleEntrySpec(p.first_or_none(name), p.first_or_none(e_type), p.first_or_none(default_expr)),
+    return p.Result(t.TupleEntrySpec(name, p.first_or_none(e_type), p.first_or_none(default_expr)),
+                  result.tokens, result.line_ref, result.errors)
+
+
+def __to_type_only_tuple_entry(result: p.Result[t.TypeSpec], tokens: list[p.Token]) -> p.Result[t.TupleEntrySpec]:
+    return p.Result(t.TupleEntrySpec(None, result.value, None),
                   result.tokens, result.line_ref, result.errors)
 
 
@@ -589,6 +651,9 @@ def __to_tuple_or_callable_spec(result: p.Result[tuple[list[t.TupleEntrySpec],li
 
 def __to_tagged_spec_or_simple_type(result: p.Result[list[t.TypeSpec]], tokens: list[p.Token]) -> p.Result[t.TypeSpec]:
     entries: list[t.TypeSpec] = result.value
+    if len(entries) == 0:
+        # No member parsed at all: this is "no type here", not an empty union.
+        return p.Result.none(tokens, result.line_ref)
     if len(entries) == 1:
         return p.Result(entries[0], result.tokens, result.line_ref, result.errors)
     return p.Result(t.CombinationSpec(result.line_ref, entries), result.tokens, result.line_ref, result.errors)
@@ -705,7 +770,14 @@ __parse_maybe_generic_spec = p.maybe(p.requires(
 
 __parse_type_builtin = (p.discard_sym("__builtin_type__") & p.discard_sym("<") & p.ident() & p.discard_sym(">")) >> __to_builtin_spec
 __parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident() & __parse_maybe_generic_spec) >> __to_named_spec
-__parse_type_tuple_entry = (p.maybe(p.ident()) & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_tuple_entry
+# A tuple-type entry: the colon PRECEDES the type, always. `name[: Type][=
+# default]` is a named field (type optional — inference may fill it), and
+# `:Type` is an unnamed typed field. So `(Int, Int)` is two fields NAMED
+# `Int` with no type, and `(:Int, :Int)` is the unnamed pair-of-Ints —
+# exactly the function-parameter model, applied to every tuple type.
+__parse_type_tuple_entry = (
+      ((p.ident() & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_named_tuple_entry)
+    | ((p.discard_sym(":") & __parse_type) >> __to_type_only_tuple_entry))
 __parse_type_tuple_or_callable = p.requires(
     p.discard_sym("("),
       ((p.delimited_list(__parse_type_tuple_entry, ",") & p.discard_sym(")") & __parse_maybe_colon_type) >> __to_tuple_or_callable_spec),
@@ -749,19 +821,36 @@ __parse_maybe_type_params = p.maybe(p.requires(
     p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
     "missing generics")) >> __to_flat_list
 
-__parse_expr_tuple_entry = (p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression) >> __to_expr_tuple_entry
+__parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression) >> __to_spread_entry)
+                            | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression) >> __to_expr_tuple_entry))
 __parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple") >> __to_expr_tuple
 __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_expr_lambda
 __parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & p.ident() & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
 __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params) >> __to_named_fully_qualified
 
-# match arm: "(" literal ")" "=>" expr  |  "(" name ":" type ")" "=>" expr  |  "()" "=>" expr
+# match arm: "(" literal ("," literal)* ")" |  "(" name ":" type ")"  |  "()"
+# — each optionally guarded by `if cond` — then "=>" expr. A literal may be
+# an inclusive integer/char/float range `lo .. hi` (floats parse first, as in
+# the expression grammar: `1.5` is a NUMBER token __integer would reject).
 __parse_signed_integer = ((p.discard_sym("-") & __integer()) >> __to_negate) | __integer()
-__parse_match_literal   = __parse_signed_integer | __char() | __string()
+__parse_signed_float   = ((p.discard_sym("-") & __float())   >> __to_negate) | __float()
+
+
+def __to_match_range(result: p.Result[tuple[e.Expression, e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchRange]:
+    lo, hi = result.value
+    return p.Result(m.MatchRange(result.line_ref, lo, hi),
+                    result.tokens, result.line_ref, result.errors)
+
+
+__parse_match_bound = __parse_signed_float | __parse_signed_integer | __char()
+__parse_match_range = (__parse_match_bound & p.discard_sym("..") & __parse_match_bound) >> __to_match_range
+__parse_match_literal   = __parse_match_range | __parse_signed_float | __parse_signed_integer | __char() | __string()
+__parse_maybe_arm_guard = p.maybe(p.requires(
+    p.discard_sym("if"), __parse_expression, "missing guard expression"))
 __parse_match_arm_literal = p.block(
-    (p.discard_sym('(') & __parse_match_literal & p.discard_sym(')')
-     & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal)
-__parse_match_arm_destructure = p.block((__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
+    (p.discard_sym('(') & p.delimited_list(__parse_match_literal, ",") & p.discard_sym(')')
+     & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal)
+__parse_match_arm_destructure = p.block((__parse_destructure_parts & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
 __parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
 __parse_match_subject = p.requires(p.sym("("), __parse_expression & p.discard_sym(")"), "invalid match subject")
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression") >> __to_match_expression
@@ -769,7 +858,7 @@ __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.man
 __parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__") >> __to_parallel_expr
 
 __parse_paren_expr = __parse_expr_tuple >> __to_paren_expr
-__parse_terminal = __float() | __integer() | __char() | __string() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
+__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 # Postfix operators form ONE left-associative chain so dot/call/index interleave
 # freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats

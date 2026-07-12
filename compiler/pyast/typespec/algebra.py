@@ -19,6 +19,7 @@ import pyast.resolver as g
 from pyast.typespec.specs import (
     TypeSpec, BuiltinSpec, CallableSpec, ClassSpec, CombinationSpec, EnumSpec,
     GenericPlaceholderSpec, NamedSpec, TupleSpec,
+    bind_tuple_entries,
 )
 
 
@@ -380,10 +381,18 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
         return m
 
     if isinstance(generic, TupleSpec) and isinstance(concrete, TupleSpec):
-        if len(generic.entries) != len(concrete.entries):
+        # Pair entries via the shared binding, so named/defaulted arguments
+        # unify against the field they BIND (positional zip would infer a
+        # placeholder from the wrong field). Default-filled fields contribute
+        # nothing — a default is a literal, never placeholder-typed.
+        binding = bind_tuple_entries(generic.entries, [en.name for en in concrete.entries])
+        if binding is None:
             return mapping
         m = mapping
-        for ge, ce in zip(generic.entries, concrete.entries):
+        for ge, b in zip(generic.entries, binding):
+            if b is None:
+                continue
+            ce = concrete.entries[b]
             if ge.type is None or ce.type is None:
                 continue
             m = unify_generic(ge.type, ce.type, placeholder_names, m)

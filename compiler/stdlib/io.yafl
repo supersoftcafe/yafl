@@ -15,7 +15,7 @@ fun [foreign("io_create"),impure]     _create(path: String): _IO|Int
 fun [foreign("io_open_read"),impure]  _open_read(path: String): _IO|Int
 fun [foreign("io_open_write"),impure] _open_write(path: String, truncate: Bool): _IO|Int
 
-class [foreign,final] _IO:
+class [foreign,final] _IO
   fun [foreign("io_read"),impure]  _read(length: Int): String|Int|None
   fun [foreign("io_take_line"),impure] _take_line(max: Int): String
   fun [foreign("io_refill"),impure] _refill(): Int|None
@@ -30,7 +30,7 @@ class [foreign,final] _IO:
 # Non-linear alias over an open _IO handle, backing the monadic StreamIO. Its
 # `_read` shares the underlying handle and buffer; a closed backing handle
 # yields a negative errno (mapped to IOError) rather than None.
-class [foreign,final] _StreamIO:
+class [foreign,final] _StreamIO
   fun [foreign("stream_read"),impure] _read(length: Int): String|Int|None
 
 

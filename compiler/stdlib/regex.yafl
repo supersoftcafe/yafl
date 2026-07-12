@@ -1,0 +1,389 @@
+namespace System
+import System
+
+# Regular expressions — a pure-YAFL Pike VM, in the RE2 tradition.
+#
+# Matching is LINEAR TIME, guaranteed: the engine simulates a Thompson NFA
+# with a priority-ordered thread list and never backtracks, so no pattern is
+# pathological. The price is deliberate and permanent: no backreferences, no
+# lookaround. Semantics are Perl-flavoured where they can be — leftmost
+# match, greediness by thread priority, lazy variants `*?` `+?` `??`.
+#
+# The engine is byte-oriented: spans are byte offsets, character classes are
+# byte classes, and non-ASCII literals match their UTF-8 byte sequences
+# naturally.
+#
+# `re"..."` literals are validated at compile time and interned — one shared,
+# lazily-built Regex per distinct pattern (lowering/regexes.py). `Regex(p)`
+# also accepts a runtime string; it assumes a valid pattern (the literal form
+# is the checked one) and treats anything malformed leniently as literal
+# text.
+#
+# Pipeline:  pattern ──parse──▶ RNode tree ──emit──▶ Array<RInst> ──▶ Pike VM
+#
+# Capture group g lives in slots 2g and 2g+1; group 0 is the whole match.
+
+
+# ══ Public API ═══════════════════════════════════════════════════════════
+
+class [final] Regex(prog: Array<RInst>, nslots: Int32)
+
+class [final] Match(start: Int, end: Int, caps: Array<Int>)
+
+# True when the pattern matches ANYWHERE in `s` (use `^`/`$` for exactness).
+fun matches(r: Regex, s: String): Bool
+  ret find(r, s) is Match
+
+# The leftmost match at or after `from`, or None.
+fun find(r: Regex, s: String, from: Int = 0): Match|None
+  ret match(_vmRun(r, s, from, length(s), ChainEnd<RThread>(), None))
+    (caps: Array<Int>) => Match(caps[0], caps[1], caps)
+    (n: None)          => None
+
+# Group i's text (0 = the whole match), copied out of the subject on demand
+# — spans are indices, so a Match never retains the subject invisibly.
+fun group(m: Match, s: String, i: Int): String|None
+  let lo = m.caps[i * 2]
+  let hi = m.caps[i * 2 + 1]
+  ret lo < 0 || hi < 0 ? None : slice(s, lo, hi)
+
+# Compile a pattern. Program shape: Save(0); <body>; Save(1); Match — so
+# slots 0/1 always hold the whole match.
+fun Regex(pattern: String): Regex
+  fun [tail] nth(c: Chain<RInst>, i: Int32): RInst
+    ret match(c)
+      (nil: ChainEnd) => IMatch()
+      (l: ChainLink)  => i == 0i32 ? l.value : nth(l.next, i - 1i32)
+  fun assemble(node: RNode, ngroups: Int32): Regex
+    let size  = _rxSize(node)
+    let tail  = ChainLink<RInst>(ISave(1i32, size + 2i32), _one(IMatch()))
+    let insts = _rxInstCat(_one(ISave(0i32, 1i32)), _rxInstCat(_rxEmit(node, 1i32), tail))
+    ret Regex(Array<RInst>(size + 3i32, (i: Int32) => nth(insts, i)), ngroups * 2i32)
+  ret _rxAlt(pattern, 0, length(pattern), 1i32)
+    |> (node, _end, ngroups) => assemble(node, ngroups)
+
+
+# ══ Pattern AST ══════════════════════════════════════════════════════════
+
+enum RNode
+  enum RChar(lo: Int32, hi: Int32)                                # one byte in [lo,hi]
+  enum RClass(ranges: Chain<RRange>)                              # any of several ranges
+  enum RSeq(a: RNode, b: RNode)
+  enum RAlt(x: RNode, y: RNode)
+  enum RRep(body: RNode, minZero: Bool, many: Bool, isLazy: Bool) # ? * + and lazy forms
+  enum RGroup(gidx: Int32, inner: RNode)
+  enum RAssert(kind: Int32)                                       # 0 = ^, 1 = $
+  enum REmpty()
+
+class [final] RRange(lo: Int32, hi: Int32)
+
+# NOTE: instruction fields carry per-variant names (rNext/sNext/aNext) on
+# purpose — same-bare-name fields across enum variants currently alias to
+# the wrong slot (open compiler bug; see the project notes).
+enum RInst
+  enum IRange(lo: Int32, hi: Int32, rNext: Int32)  # consume a byte in [lo,hi]
+  enum ISplit(prefer: Int32, alt: Int32)           # try prefer first, then alt
+  enum IJmp(tgt: Int32)
+  enum ISave(slot: Int32, sNext: Int32)            # record position in a slot
+  enum IAssert(akind: Int32, aNext: Int32)         # 0 = at start, 1 = at end
+  enum IMatch()
+
+
+# ══ Ranges: escapes, classes, complement ═════════════════════════════════
+
+fun _range(lo: Int32, hi: Int32, rest: Chain<RRange>): Chain<RRange>
+  ret ChainLink<RRange>(RRange(lo, hi), rest)
+
+fun _noRanges(): Chain<RRange>
+  ret ChainEnd<RRange>()
+
+# Complement a range set over the byte space 0..255, by walking the bytes
+# and collecting the uncovered runs. Quadratic in the (tiny) range count.
+fun _rxComplement(ranges: Chain<RRange>): Chain<RRange>
+  fun covered(c: Int32, rs: Chain<RRange>): Bool
+    ret match(rs)
+      (nil: ChainEnd) => false
+      (l: ChainLink)  => (c >= l.value.lo && c <= l.value.hi) || covered(c, l.next)
+  fun [tail] walk(c: Int32, runStart: Int32, acc: Chain<RRange>): Chain<RRange>
+    ret c > 255i32 ? (runStart >= 0i32 ? _range(runStart, 255i32, acc) : acc)
+      : covered(c, ranges)
+        ? walk(c + 1i32, -1i32, runStart >= 0i32 ? _range(runStart, c - 1i32, acc) : acc)
+        : walk(c + 1i32, runStart >= 0i32 ? runStart : c, acc)
+  ret walk(0i32, -1i32, _noRanges())
+
+# An escape as a range set: `\d` and friends expand (uppercase negates),
+# anything else is the (decoded) literal byte. `i` addresses the backslash.
+fun _rxEscRanges(p: String, i: Int): Chain<RRange>
+  # \d \w \s as ranges; None means the escape is a literal character.
+  fun escClass(c: Int32): Chain<RRange>|None
+    ret c == 'd' ? _range('0', '9', _noRanges())
+      : c == 'w' ? _range('0', '9', _range('A', 'Z', _range('a', 'z', _range('_', '_', _noRanges()))))
+      : c == 's' ? _range(9i32, 13i32, _range(' ', ' ', _noRanges()))
+      : None
+  # The byte an escaped literal denotes (`\n` `\t` `\r` `\0`, else itself).
+  fun escByte(c: Int32): Int32
+    ret c == 'n' ? 10i32
+      : c == 't' ? 9i32
+      : c == 'r' ? 13i32
+      : c == '0' ? 0i32
+      : c
+  fun isNeg(c: Int32): Bool
+    ret c == 'D' || c == 'W' || c == 'S'
+  fun lower(c: Int32): Int32
+    ret c == 'D' ? 'd' : c == 'W' ? 'w' : c == 'S' ? 's' : c
+  let c = byteAt(p, i + 1)
+  ret match(escClass(lower(c)))
+    (found: Chain<RRange>) => isNeg(c) ? _rxComplement(found) : found
+    (n: None)              => _range(escByte(c), escByte(c), _noRanges())
+
+
+# ══ Pattern parser: bytes → RNode ════════════════════════════════════════
+# Recursive descent. Assumes a valid pattern (literals are compile-time
+# validated); malformed input degrades to literal text.
+#
+# Group numbering threads through every parse function: each returns
+# (node, position-after, next-group-index).
+
+# One atom: group, class, `.`, anchor, escape, or a literal byte.
+fun _rxAtom(p: String, i: Int, n: Int, ng: Int32): (node: RNode, at: Int, ng2: Int32)
+  # A parenthesised group: capturing `(...)` or plain `(?:...)`.
+  fun grp(): (node: RNode, at: Int, ng2: Int32)
+    let plain = i + 2 < n && byteAt(p, i + 1) == '?' && byteAt(p, i + 2) == ':'
+    ret plain
+      ? (_rxAlt(p, i + 3, n, ng)
+         |> (node, at, ng2) => (node, at + 1, ng2))
+      : (_rxAlt(p, i + 1, n, ng + 1i32)
+         |> (node, at, ng2) => (RGroup(ng, node), at + 1, ng2))
+  # One item of a `[...]` body: a range `a-z`, an escape, or a literal byte.
+  fun classItem(j: Int): (rs: Chain<RRange>, at: Int)
+    let c = byteAt(p, j)
+    ret c == '\\' && j + 1 < n
+      ? (_rxEscRanges(p, j), j + 2)
+      : j + 2 < n && byteAt(p, j + 1) == '-' && byteAt(p, j + 2) != ']'
+        ? (_range(c, byteAt(p, j + 2), _noRanges()), j + 3)
+        : (_range(c, c, _noRanges()), j + 1)
+  fun rangeCat(a: Chain<RRange>, b: Chain<RRange>): Chain<RRange>
+    ret match(a)
+      (nil: ChainEnd) => b
+      (l: ChainLink)  => ChainLink<RRange>(l.value, rangeCat(l.next, b))
+  # The `[...]` body, from just after `[` (and after any `^`), up to `]`.
+  fun classBody(j: Int, acc: Chain<RRange>): (rs: Chain<RRange>, at: Int)
+    ret j >= n || byteAt(p, j) == ']'
+      ? (acc, j + 1)
+      : classItem(j)
+        |> (item, at) => classBody(at, rangeCat(acc, item))
+  # A `[...]` class, possibly negated. `.` reuses it as any-but-newline.
+  fun cls(): (node: RNode, at: Int, ng2: Int32)
+    ret byteAt(p, i + 1) == '^'
+      ? (classBody(i + 2, _noRanges())
+         |> (rs, at) => (RClass(_rxComplement(rs)), at, ng))
+      : (classBody(i + 1, _noRanges())
+         |> (rs, at) => (RClass(rs), at, ng))
+  fun dotRanges(): Chain<RRange>
+    ret _range(0i32, 9i32, _range(11i32, 255i32, _noRanges()))
+  let c = byteAt(p, i)
+  ret c == '('  ? grp()
+    : c == '['  ? cls()
+    : c == '.'  ? (RClass(dotRanges()), i + 1, ng)
+    : c == '^'  ? (RAssert(0i32), i + 1, ng)
+    : c == '$'  ? (RAssert(1i32), i + 1, ng)
+    : c == '\\' && i + 1 < n
+      ? (RClass(_rxEscRanges(p, i)), i + 2, ng)
+      : (RChar(c, c), i + 1, ng)
+
+# A sequence: atoms (with quantifiers) until `|`, `)` or the end.
+fun _rxSeqParse(p: String, i: Int, n: Int, ng: Int32, acc: RNode): (node: RNode, at: Int, ng2: Int32)
+  # Postfix quantifier, if present: `*` `+` `?`, each with a lazy variant.
+  # The group counter passes straight through, keeping the pipeline flat.
+  fun rep(j: Int, node: RNode, g: Int32): (node2: RNode, at: Int, g2: Int32)
+    let c      = j < n ? byteAt(p, j) : 0i32
+    let isLazy = j + 1 < n && byteAt(p, j + 1) == '?'
+    let at     = isLazy ? j + 2 : j + 1
+    ret c == '*' ? (RRep(node, true,  true,  isLazy), at, g)
+      : c == '+' ? (RRep(node, false, true,  isLazy), at, g)
+      : c == '?' ? (RRep(node, true,  false, isLazy), at, g)
+      : (node, j, g)
+  fun seq(a: RNode, b: RNode): RNode
+    ret match(a)
+      (e: REmpty) => b
+      ()          => match(b)
+        (e2: REmpty) => a
+        ()           => RSeq(a, b)
+  ret i >= n || byteAt(p, i) == '|' || byteAt(p, i) == ')'
+    ? (acc, i, ng)
+    : _rxAtom(p, i, n, ng)
+      |> (node, at, ng2) => rep(at, node, ng2)
+      |> (node2, at2, ng3) => _rxSeqParse(p, at2, n, ng3, seq(acc, node2))
+
+# Alternation: sequences separated by `|`.
+fun _rxAlt(p: String, i: Int, n: Int, ng: Int32): (node: RNode, at: Int, ng2: Int32)
+  ret _rxSeqParse(p, i, n, ng, REmpty())
+    |> (node, at, ng2) =>
+      at < n && byteAt(p, at) == '|'
+        ? (_rxAlt(p, at + 1, n, ng2)
+           |> (rhs, at2, ng3) => (RAlt(node, rhs), at2, ng3))
+        : (node, at, ng2)
+
+
+# ══ Code generation: RNode → instructions ════════════════════════════════
+# Two passes over the tree: exact instruction counts first (`_rxSize`), then
+# emission with every branch target computed arithmetically from the sizes.
+
+fun _rxSize(node: RNode): Int32
+  ret match(node)
+    (c: RChar)     => 1i32
+    (k: RClass)    => 2i32 * _rxRangeCount(k.ranges) - 1i32   # split-chain
+    (s2: RSeq)     => _rxSize(s2.a) + _rxSize(s2.b)
+    (a: RAlt)      => 2i32 + _rxSize(a.x) + _rxSize(a.y)      # split + jmp
+    (r: RRep)      => (r.many && r.minZero ? 2i32 : 1i32) + _rxSize(r.body)
+    (g: RGroup)    => 2i32 + _rxSize(g.inner)                 # two saves
+    (as2: RAssert) => 1i32
+    (e: REmpty)    => 0i32
+
+fun _rxRangeCount(rs: Chain<RRange>): Int32
+  ret match(rs)
+    (nil: ChainEnd) => 0i32
+    (l: ChainLink)  => 1i32 + _rxRangeCount(l.next)
+
+fun _one(i: RInst): Chain<RInst>
+  ret ChainLink<RInst>(i, ChainEnd<RInst>())
+
+fun _rxInstCat(a: Chain<RInst>, b: Chain<RInst>): Chain<RInst>
+  ret match(a)
+    (nil: ChainEnd) => b
+    (l: ChainLink)  => ChainLink<RInst>(l.value, _rxInstCat(l.next, b))
+
+fun _rxEmit(node: RNode, at: Int32): Chain<RInst>
+  # A class becomes a split-chain — S R S R … R — each split preferring its
+  # range and falling through to the next pair; every range exits to `end`.
+  fun emitClass(rs: Chain<RRange>, at2: Int32, end: Int32): Chain<RInst>
+    ret match(rs)
+      (nil: ChainEnd) => ChainEnd<RInst>()
+      (l: ChainLink)  => match(l.next)
+        (nil2: ChainEnd) => _one(IRange(l.value.lo, l.value.hi, end))
+        () => ChainLink<RInst>(ISplit(at2 + 1i32, at2 + 2i32),
+                ChainLink<RInst>(IRange(l.value.lo, l.value.hi, end),
+                  emitClass(l.next, at2 + 2i32, end)))
+  # Greediness is split ORDER: greedy prefers the body, lazy the exit.
+  fun emitRep(r: RRep): Chain<RInst>
+    let sb = _rxSize(r.body)
+    ret r.many && r.minZero
+      # X*  —  split(body, end); body; jmp(split)
+      ? ChainLink<RInst>(r.isLazy ? ISplit(at + 2i32 + sb, at + 1i32)
+                                  : ISplit(at + 1i32, at + 2i32 + sb),
+          _rxInstCat(_rxEmit(r.body, at + 1i32), _one(IJmp(at))))
+      : r.many
+        # X+  —  body; split(body, end)
+        ? _rxInstCat(_rxEmit(r.body, at),
+            _one(r.isLazy ? ISplit(at + 1i32 + sb, at)
+                          : ISplit(at, at + 1i32 + sb)))
+        # X?  —  split(body, end); body
+        : ChainLink<RInst>(r.isLazy ? ISplit(at + 1i32 + sb, at + 1i32)
+                                    : ISplit(at + 1i32, at + 1i32 + sb),
+            _rxEmit(r.body, at + 1i32))
+  fun emitAlt(a: RAlt): Chain<RInst>
+    let sx = _rxSize(a.x)
+    let sy = _rxSize(a.y)
+    ret ChainLink<RInst>(ISplit(at + 1i32, at + 2i32 + sx),
+          _rxInstCat(_rxEmit(a.x, at + 1i32),
+            ChainLink<RInst>(IJmp(at + 2i32 + sx + sy),
+              _rxEmit(a.y, at + 2i32 + sx))))
+  fun emitGroup(g: RGroup): Chain<RInst>
+    let si = _rxSize(g.inner)
+    ret ChainLink<RInst>(ISave(g.gidx * 2i32, at + 1i32),
+          _rxInstCat(_rxEmit(g.inner, at + 1i32),
+            _one(ISave(g.gidx * 2i32 + 1i32, at + 2i32 + si))))
+  ret match(node)
+    (c: RChar)     => _one(IRange(c.lo, c.hi, at + 1i32))
+    (k: RClass)    => emitClass(k.ranges, at, at + 2i32 * _rxRangeCount(k.ranges) - 1i32)
+    (s2: RSeq)     => _rxInstCat(_rxEmit(s2.a, at), _rxEmit(s2.b, at + _rxSize(s2.a)))
+    (a: RAlt)      => emitAlt(a)
+    (r: RRep)      => emitRep(r)
+    (g: RGroup)    => emitGroup(g)
+    (as2: RAssert) => _one(IAssert(as2.kind, at + 1i32))
+    (e: REmpty)    => ChainEnd<RInst>()
+
+
+# ══ The Pike VM ══════════════════════════════════════════════════════════
+# One pass over the subject. At each position a priority-ordered thread
+# list holds every viable NFA state; threads carry their capture slots. A
+# Match reached by a higher-priority thread cuts everything behind it —
+# that ordering IS the greediness. While no match has been recorded, a
+# fresh lowest-priority thread is seeded at every position (unanchored
+# search); once one exists, leftmost has won and seeding stops.
+
+class [final] RThread(pc: Int32, caps: Array<Int>)
+
+# Add pc's epsilon-closure to `acc` (which is in REVERSED priority order —
+# the step reverses once per position). Returns the grown list and, when
+# the closure reaches Match, the winning captures — the caller then cuts
+# all lower-priority work at this position.
+fun _vmAdd(r: Regex, s: String, pos: Int, pc: Int32, caps: Array<Int>,
+           acc: Chain<RThread>): (acc2: Chain<RThread>, won: Array<Int>|None)
+  fun seen(threads: Chain<RThread>, q: Int32): Bool
+    ret match(threads)
+      (nil: ChainEnd) => false
+      (l: ChainLink)  => l.value.pc == q || seen(l.next, q)
+  fun setSlot(cs: Array<Int>, slot: Int32, at: Int, n: Int32): Array<Int>
+    ret Array<Int>(n, (i: Int32) => i == slot ? at : cs[i])
+  ret seen(acc, pc) ? (acc, None)
+    : match(r.prog[pc])
+      (i: IRange)  => (ChainLink<RThread>(RThread(pc, caps), acc), None)
+      (sp: ISplit) =>
+        _vmAdd(r, s, pos, sp.prefer, caps, acc)
+        |> (acc2, won) => match(won)
+          (w: Array<Int>) => (acc2, won)     # prefer-side matched: cut the alt
+          (n: None)       => _vmAdd(r, s, pos, sp.alt, caps, acc2)
+      (j: IJmp)    => _vmAdd(r, s, pos, j.tgt, caps, acc)
+      (sv: ISave)  => _vmAdd(r, s, pos, sv.sNext, setSlot(caps, sv.slot, pos, r.nslots), acc)
+      (a: IAssert) =>
+        (a.akind == 0i32 ? pos == 0 : pos == length(s))
+          ? _vmAdd(r, s, pos, a.aNext, caps, acc)
+          : (acc, None)
+      (m: IMatch)  => (acc, caps)
+
+# Advance every surviving thread over byte `b` (highest priority first),
+# building the next position's closure.
+fun _vmStep(r: Regex, s: String, pos: Int, b: Int32, threads: Chain<RThread>,
+            acc: Chain<RThread>, best: Array<Int>|None): (next: Chain<RThread>, best2: Array<Int>|None)
+  # A match reached while advancing cuts the remaining (lower-priority)
+  # threads of this position; otherwise the sweep continues.
+  fun cut(rest: Chain<RThread>, acc2: Chain<RThread>,
+          won: Array<Int>|None): (next: Chain<RThread>, best2: Array<Int>|None)
+    ret match(won)
+      (w: Array<Int>) => (acc2, won)
+      (n: None)       => _vmStep(r, s, pos, b, rest, acc2, best)
+  ret match(threads)
+    (nil: ChainEnd) => (acc, best)
+    (l: ChainLink)  => match(r.prog[l.value.pc])
+      (i: IRange) =>
+        b >= i.lo && b <= i.hi
+          ? (_vmAdd(r, s, pos + 1, i.rNext, l.value.caps, acc)
+             |> (acc2, won) => cut(l.next, acc2, won))
+          : _vmStep(r, s, pos, b, l.next, acc, best)
+      () => _vmStep(r, s, pos, b, l.next, acc, best)
+
+fun [tail] _vmRun(r: Regex, s: String, pos: Int, len: Int,
+                  threads: Chain<RThread>, best: Array<Int>|None): Array<Int>|None
+  fun rev(c: Chain<RThread>, acc: Chain<RThread>): Chain<RThread>
+    ret match(c)
+      (nil: ChainEnd) => acc
+      (l: ChainLink)  => rev(l.next, ChainLink<RThread>(l.value, acc))
+  fun better(won: Array<Int>|None): Array<Int>|None
+    ret match(won)
+      (w: Array<Int>) => won
+      (n: None)       => best
+  fun noThreads(c: Chain<RThread>): Bool
+    ret match(c)
+      (nil: ChainEnd) => true
+      ()              => false
+  let (ts, won) = match(best)
+    (w: Array<Int>) => (threads, best)
+    (n: None)       => _vmAdd(r, s, pos, 0i32, Array<Int>(r.nslots, (i: Int32) => -1), threads)
+  let best1 = better(won)
+  if noThreads(ts) || pos > len
+    ret best1
+  let b = pos < len ? byteAt(s, pos) : -1i32
+  let (next, best2) = _vmStep(r, s, pos, b, rev(ts, ChainEnd<RThread>()),
+                              ChainEnd<RThread>(), best1)
+  ret _vmRun(r, s, pos + 1, len, next, best2)

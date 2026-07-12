@@ -20,6 +20,7 @@ class TokenKind(Enum):
     CRAP = 5
     EOF = 6
     CHAR = 7
+    REGEX = 8
 
     def __repr__(self):
         return self.name
@@ -68,20 +69,28 @@ __kinds = [
     # OR any non-backslash non-quote char. Ordering matters — `\.` must
     # win over `[^\\\"]` so `"\""` tokenises as a single 4-char literal
     # rather than splitting on the escaped quote.
+    # Regex literal: `re"..."` — RAW (escapes are NOT decoded; the regex
+    # engine owns its backslashes), but backslash-pairs are still consumed so
+    # an escaped quote stays inside the token. Must precede IDENTIFIER, which
+    # would otherwise eat the `re` prefix.
+    (re.compile(r"re\"(\\.|[^\\\"])*\"?"), TokenKind.REGEX),
     (re.compile(r"\"(\\.|[^\\\"])*\"?"), TokenKind.STRING),
     # Char literal: single quotes, same escape body as a string. The parser
     # decodes it (reusing the string escapes) and requires exactly one
     # codepoint, yielding an Int32 of that codepoint's value.
     (re.compile(r"'(\\.|[^\\'])*'?"), TokenKind.CHAR),
     (re.compile(r"([^\d\W][\w_]*)|(`[^`]*`)"), TokenKind.IDENTIFIER),
-    (re.compile(r"(&&)|(\|\|)|(==)|(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|[=%*+?\-/&|^!~()\[\]<>.;:,]"), TokenKind.SYMBOLS),
+    (re.compile(r"(&&)|(\|\|)|(==)|(\|>)|(\?>)|(<<)|(>>)|(!=)|(<=)|(>=)|(=>)|(::)|(\.\.)|[=%*+?\-/&|^!~()\[\]<>.;:,]"), TokenKind.SYMBOLS),
     # Numeric literal: hex/bin/oct prefix forms, OR decimal with optional
     # fraction, exponent (signed or unsigned), and type suffix (i8|i16|i32|i64|f32|f64).
+    # The fraction's negative lookahead keeps `1..9` out of the float: `1.`
+    # is only a float when the dot is NOT immediately followed by another
+    # dot (which would be the `..` range symbol).
     (re.compile(
         r"0[xX][0-9a-fA-F_]+(?:[a-zA-Z]\w*)?"        # hex
         r"|0[bB][01_]+(?:[a-zA-Z]\w*)?"               # binary
         r"|0[oO][0-7_]+(?:[a-zA-Z]\w*)?"              # octal
-        r"|\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d[\d_]*)?(?:[a-zA-Z]\w*)?"  # decimal
+        r"|\d[\d_]*(?:\.(?!\.)[\d_]*)?(?:[eE][+-]?\d[\d_]*)?(?:[a-zA-Z]\w*)?"  # decimal
     ), TokenKind.NUMBER),
     (re.compile(r"."), TokenKind.CRAP)
 ]

@@ -110,6 +110,12 @@ def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, rig
     # is assignable to any target.
     if isinstance(right, EnumSpec) and not right.valid_leaf_names:
         return True
+    # Tuple-against-tuple goes straight to the tuple rule: arity may legally
+    # differ when the uncovered fields carry defaults, so unwrapping a 1-tuple
+    # first (below) would turn `(x = 5)` against `(x: Int, y: Int = 10)` into
+    # a spurious element-vs-tuple mismatch.
+    if isinstance(left, TupleSpec) and isinstance(right, TupleSpec):
+        return left.trivially_assignable_from(resolver, right)
     # In yafl, a 1-tuple is equivalent to its element (recursively).
     # The unwrap must be symmetric: if either side is a 1-tuple with an
     # unknown entry type, treat the comparison as uncertain (None) rather
@@ -803,6 +809,76 @@ class CombinationSpec(TypeSpec):
         return rebuilt if res is rw.UNCHANGED else res
 
 
+def bind_tuple_entries(declared, supplied_names: list[str | None]) -> list[int | None] | None:
+    """How a supplied tuple's entries map onto a declared tuple's fields — the
+    ONE spelling of named-field/default binding, shared by assignability,
+    generic inference, the conversion engine and TupleExpression's field-wise
+    convergence.
+
+    Returns one value per DECLARED field: the index of the supplied entry that
+    binds it, or None meaning "fill from this field's default". Returns None
+    (no binding at all) when the tuples don't correspond: more entries than
+    fields, a bare entry after a name-bound one, a doubly-bound field, or an
+    unbound field with no default.
+
+    Declared names match bare (a parameter's internal name carries an @hash
+    suffix); supplied names are used as written. A supplied name binds only
+    when it matches a declared field. Tuples whose names don't overlap the
+    declared names at all keep the structural semantics — same length binds
+    positionally, names ignored — so a `(dir, entries)` value still pipes into
+    `(d, acc)` parameters, and a function value's parameter names never
+    participate."""
+    declared = list(declared)
+    if len(supplied_names) > len(declared):
+        return None
+    bare = [g.bare_name(en.name) if en.name is not None else None for en in declared]
+    if (len(supplied_names) == len(declared)
+            and not any(sn is not None and sn in bare for sn in supplied_names)):
+        return list(range(len(declared)))
+    slots: list[int | None] = [None] * len(declared)
+    bound = [False] * len(declared)
+    seen_matched_name = False
+    for i, sname in enumerate(supplied_names):
+        if sname is not None and sname in bare:
+            j = bare.index(sname)
+            if bound[j]:
+                return None
+            slots[j] = i
+            bound[j] = True
+            seen_matched_name = True
+        else:
+            # Positional. An entry whose name matches nothing is treated
+            # positionally too (an incidental name on a value's field, or an
+            # unknown keyword — the latter is reported by TupleExpression.check).
+            if sname is None and seen_matched_name:
+                return None  # bare positional after a name-bound entry
+            if i >= len(declared) or bound[i]:
+                return None
+            slots[i] = i
+            bound[i] = True
+    if any(not b and en.default is None for b, en in zip(bound, declared)):
+        return None
+    return slots
+
+
+def default_value_errors(default: "e.Expression | None", resolver: g.Resolver,
+                         line_ref: LineRef, what: str) -> list[Error]:
+    """A tuple-field/parameter default must be a literal or a `[const]` value:
+    nothing with captures, effects, or an evaluation order — a default is
+    cloned into every site that omits the field."""
+    if default is None:
+        return []
+    if isinstance(default, (e.IntegerExpression, e.FloatExpression,
+                            e.StringExpression, e.BoolExpression)):
+        return []
+    if isinstance(default, e.NamedExpression):
+        datas = resolver.find_data(default.name)
+        if (len(datas) == 1
+                and "const" in getattr(datas[0].statement, "attributes", {})):
+            return []
+    return [Error(line_ref, f"a {what} default must be a literal or a [const] value")]
+
+
 @dataclass(frozen=True)
 class TupleEntrySpec:
     name: str|None
@@ -811,13 +887,16 @@ class TupleEntrySpec:
 
     def compile(self, resolver: g.Resolver) ->  tuple[TupleEntrySpec, list[s.Statement]]:
         new_type, new_statements1 = self.type.compile(resolver) if self.type else (None, [])
-        new_default, new_statements2 = self.default.compile(resolver, new_type) if self.default else None, []
+        new_default, new_statements2 = self.default.compile(resolver, new_type) if self.default else (None, [])
         return dataclasses.replace(self, type=new_type, default=new_default), new_statements1 + new_statements2
 
     def check(self, resolver: g.Resolver) -> list[Error]:
         err1 = self.type.check(resolver) if self.type else []
         err2 = self.default.check(resolver, self.type) if self.default else []
-        return err1 + err2
+        err3 = default_value_errors(self.default, resolver,
+                                    self.type.line_ref if self.type else LineRef("", 0, 0),
+                                    "tuple field")
+        return err1 + err2 + err3
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
         return self.type.generate(resolver)
@@ -865,10 +944,14 @@ class TupleSpec(TypeSpec):
             return None # Not resolved yet
         if not isinstance(right, TupleSpec):
             return False
-        if not len(self.entries) == len(right.entries):
+        # Fields correspond via the shared binding: positional, then by name,
+        # unbound fields covered by their defaults. Only the bound pairs are
+        # type-compared — a default's type was checked at declaration.
+        binding = bind_tuple_entries(self.entries, [en.name for en in right.entries])
+        if binding is None:
             return False
-        raw = [(trivially_assignable_equals(resolver, l.type, r.type), l.type)
-               for l, r in zip(self.entries, right.entries)]
+        raw = [(trivially_assignable_equals(resolver, l.type, right.entries[b].type), l.type)
+               for l, b in zip(self.entries, binding) if b is not None]
         # Structural False: a concrete (non-placeholder) left type that definitively doesn't fit.
         if any(res is False and not isinstance(ltype, GenericPlaceholderSpec) for res, ltype in raw):
             return False

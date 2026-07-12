@@ -247,19 +247,15 @@ class LetStatement(DataStatement):
             return self.__global_codegen_lazy(resolver)
 
         # Non-`[lazy]` globals reach here only when `lower_lazy_lets` did
-        # *not* auto-promote them — meaning `_is_trivial_expr` accepted
-        # the AST shape.  Three direct-emission paths:
-        #
-        #   1. literal scalar / string → single-RParam Global.
-        #   2. `ClassName(literal, …)` → static class-instance Global
-        #      whose `init` is a NewStruct of the literal args.
-        #   3. tuple of literals → flat-struct Global.
-        #
-        # None of these go through `$lazy$init`.
+        # *not* auto-promote them — meaning `static_global_plan` (the SAME
+        # routine, so decision and emission cannot disagree) produced a
+        # constant emission plan: literal scalars/strings, tuples of
+        # literals, and constant object GRAPHS (each nested constructor an
+        # anonymous static referencing its children by address).
         if self.default_value is not None:
-            static = self.__try_static_class_init(resolver)
-            if static is not None:
-                return [static], []
+            plan = self.static_global_plan(resolver)
+            if plan is not None:
+                return plan, []
 
         xtype = self.get_type().generate(resolver)
         rparam: cg_p.RParam | None = None
@@ -273,54 +269,130 @@ class LetStatement(DataStatement):
             rparam = init.result_var
         return [cg_ir.Global(self.name, xtype, rparam)], []
 
-    def __try_static_class_init(self, resolver: g.Resolver) -> cg_ir.Global | None:
-        """Match `let x: T = ClassName(literal, …)` and emit `x` directly
-        as a static class-instance Global with `object_name=ClassName`
-        and `init=NewStruct((field, literal_rparam), …)`.
+    def static_global_plan(self, resolver: g.Resolver,
+                           _chasing: frozenset[str] = frozenset()) -> list[cg_ir.Global] | None:
+        """The compile-time-constant emission plan for this global let: the
+        Global(s) it becomes when its initialiser is a constant tree —
+        nested constructors become anonymous static instances (emitted
+        first, so C sees each `_data` struct before it is referenced), and
+        the let's own global comes last. None when any part needs runtime
+        work; the let is then `[lazy]`-promoted.
 
-        Returns the Global on a successful match, or None to fall back
-        to the generic generate() path.  The match is the AST counterpart
-        of the legacy staticinit + resolve_flat_struct_global_inits
-        optimisations — performed upfront so we never spin up the lazy
-        framework for a global the compiler can statically initialise.
-        """
+        This is BOTH the promotion predicate (lower_lazy_lets) and the
+        emitter (global_codegen). Keep it one routine: the generic
+        emission path cannot handle a non-trivial init, so a predicate
+        that accepts more than the emitter is a codegen crash.
+
+        `_chasing` carries the lets currently being planned further up the
+        chase, so mutually-referencing globals terminate: a cycle falls back
+        to the lazy path rather than recursing forever. (Cyclic STATICS are
+        actually expressible in C — the tentative `_data` declarations allow
+        it — but committing to one requires knowing every plan in the cycle
+        succeeds, a two-phase scheme we don't need yet.)"""
         # Deferred: lets ← classdef would be an import cycle (a class's fields
         # are LetStatements); this only runs long after both initialise.
         from pyast.statement.classdef import ClassStatement
+        from pyast.expression.conversion import ConvertExpression, emit_conversion
+        from pyast.expression.new import NewExpression
 
-        dv = self.default_value
-        if not isinstance(dv, e.CallExpression):
+        if self.default_value is None or self.declared_type is None:
             return None
-        if not isinstance(dv.function, e.NamedExpression):
+        if self.name in _chasing:
             return None
-        if not isinstance(dv.parameter, e.TupleExpression):
-            return None
-        found = resolver.find_type(dv.function.name)
-        if len(found) != 1 or not isinstance(found[0].statement, ClassStatement):
-            return None
-        cls = found[0].statement
-        field_defs = list(cls.parameters.flatten())
-        args = dv.parameter.expressions
-        if len(args) != len(field_defs):
-            return None
+        _chasing = _chasing | {self.name}
+        out: list[cg_ir.Global] = []
 
-        init_pairs: list[tuple[str, cg_p.RParam]] = []
-        for arg_entry, field_def in zip(args, field_defs):
-            # Any arg whose generate() produces a single RParam with no
-            # operations / stack vars is acceptable as a static
-            # initialiser — covers literals AND tuples of literals
-            # (whose generate() produces a NewStruct of literal RParams).
-            ab = arg_entry.value.generate_to(resolver, field_def.declared_type)
-            if ab.operations or ab.stack_vars or ab.result_var is None:
+        def leaf_ok(rp: cg_p.RParam) -> bool:
+            # Everything a C static initialiser can hold. A GlobalVar READ is
+            # not a constant expression (its value is only known at runtime),
+            # so a reference that survives to a leaf disqualifies the plan.
+            if isinstance(rp, cg_p.NewStruct):
+                return all(leaf_ok(v) for _, v in rp.values)
+            return isinstance(rp, (cg_p.Integer, cg_p.Float, cg_p.String,
+                                   cg_p.NullPointer, cg_p.ZeroOf, cg_p.StaticObjectRef))
+
+        def instance(cls: "ClassStatement", args: list[e.Expression], hint: str) -> cg_p.StaticObjectRef | None:
+            if cls.is_interface or cls.array_field(resolver) is not None:
                 return None
-            init_pairs.append((field_def.name, ab.result_var))
+            field_defs = list(cls.parameters.flatten())
+            if len(args) != len(field_defs):
+                return None
+            pairs: list[tuple[str, cg_p.RParam]] = []
+            for i, (arg, fd) in enumerate(zip(args, field_defs)):
+                rp = rec(arg, f"{hint}$f{i}")
+                if rp is None or not leaf_ok(rp):
+                    return None
+                pairs.append((fd.name, rp))
+            out.append(cg_ir.Global(hint, cg_t.DataPointer(),
+                                    cg_p.NewStruct(tuple(pairs)), object_name=cls.name))
+            return cg_p.StaticObjectRef(hint)
 
-        return cg_ir.Global(
-            name=self.name,
-            type=cg_t.DataPointer(),
-            init=cg_p.NewStruct(tuple(init_pairs)),
-            object_name=cls.name,
-        )
+        def rec(expr: e.Expression, hint: str) -> cg_p.RParam | None:
+            # A constructor call (pre-inline) or the construction node itself
+            # (post-inline) → an anonymous static instance.
+            if (isinstance(expr, e.CallExpression)
+                    and isinstance(expr.function, e.NamedExpression)
+                    and isinstance(expr.parameter, e.TupleExpression)):
+                found = resolver.find_type(expr.function.name)
+                if len(found) == 1 and isinstance(found[0].statement, ClassStatement):
+                    return instance(found[0].statement,
+                                    [en.value for en in expr.parameter.expressions], hint)
+                return None
+            if (isinstance(expr, NewExpression)
+                    and isinstance(expr.type, t.ClassSpec)
+                    and isinstance(expr.parameter, e.TupleExpression)):
+                found = resolver.find_type(expr.type.name)
+                if len(found) == 1 and isinstance(found[0].statement, ClassStatement):
+                    return instance(found[0].statement,
+                                    [en.value for en in expr.parameter.expressions], hint)
+                return None
+            # A conversion (boxing into a union slot): convert the constant
+            # value; only a PURE emission (no ops — e.g. a pointer variant
+            # into a nullable-pointer union, None into null) stays static.
+            if isinstance(expr, ConvertExpression):
+                inner = rec(expr.inner, hint)
+                if inner is None:
+                    return None
+                b = emit_conversion(inner, expr.inner.get_type(resolver), expr.target, resolver)
+                if b.operations or b.stack_vars or b.result_var is None:
+                    return None
+                return b.result_var
+            # A reference to another global let: chase its own plan. An
+            # integer/float constant global ($integers::… — every bigint
+            # literal becomes one) inlines its constant; a static class
+            # instance is referenced by address (so user statics can
+            # reference each other). Strings stay a GlobalVar read (inlining
+            # would duplicate the interned data) and fail leaf_ok at the use
+            # site, as before.
+            if isinstance(expr, e.NamedExpression):
+                datas = resolver.find_data(expr.name)
+                if (len(datas) == 1
+                        and isinstance(datas[0].statement, LetStatement)
+                        and datas[0].statement is not self
+                        and not isinstance(datas[0].statement, DestructureStatement)
+                        and not datas[0].statement.is_deferred_init()):
+                    sub = datas[0].statement.static_global_plan(resolver, _chasing)
+                    if sub is not None and sub[-1].init is not None and isinstance(
+                            sub[-1].init, (cg_p.Integer, cg_p.Float, cg_p.StaticObjectRef)):
+                        # The referenced let emits these globals itself; we
+                        # only borrow the constant / the address.
+                        return sub[-1].init
+            # Anything else must generate to a single pure RParam: literals,
+            # tuples of constants, unit refs (validated at the use site).
+            try:
+                b = expr.generate(resolver)
+            except Exception:
+                return None
+            if b.operations or b.stack_vars or b.result_var is None:
+                return None
+            return b.result_var
+
+        rp = rec(self.default_value, f"{self.name}$static")
+        if rp is None or not leaf_ok(rp):
+            return None
+        xtype = self.get_type().generate(resolver)
+        out.append(cg_ir.Global(self.name, xtype, rp))
+        return out
 
     def __global_codegen_lazy(self, resolver: g.Resolver) -> tuple[list[cg_ir.Global], list[cg_ir.Function]]:
         """`[lazy]` global lowering — emit a static `Lazy$<irmangle>`
@@ -381,7 +453,10 @@ class DestructureStatement(LetStatement):
             targets=rw.seq(self.targets, resolver, replace))
 
     def get_type(self) -> t.TupleSpec:
-        return t.TupleSpec(self.line_ref, [t.TupleEntrySpec(x.name, x.get_type(), None) for x in self.targets])
+        # A target's initialiser is the field's DEFAULT in the tuple type
+        # (a function parameter's `= literal` surfaces here, into the
+        # CallableSpec every call site sees).
+        return t.TupleSpec(self.line_ref, [t.TupleEntrySpec(x.name, x.get_type(), x.default_value) for x in self.targets])
 
     def to_c_destructure(self, root: cg_p.RParam | None, resolver: g.Resolver = None) -> g.OperationBundle:
         if not root:

@@ -561,8 +561,13 @@ class Global:
                 return (f"static struct {{\n"
                         + "".join(f"    {value.get_type().declare(type_cache)} {name};\n" for name, value in self.init.values) +
                         f"}}[1] {self.to_c_name()}")
-            # Static object globals are declared as object_t* pointing to a named struct
-            return f"static object_t* {self.to_c_name()}"
+            # Static object globals are declared as object_t* pointing to a named
+            # struct. Tentatively declare the data struct too, so one static's
+            # initialiser can take another's address regardless of emission
+            # order (constant object graphs reference each other via
+            # `&<name>_data`, and the alias global reads it the same way).
+            return (f"static {mangle_name(self.object_name)}_t {self.to_c_name()}_data;\n"
+                    f"static object_t* {self.to_c_name()}")
         return f"static {self.type.declare(type_cache)} {self.to_c_name()}"
 
     def to_c_prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:

@@ -14,11 +14,11 @@ fun [foreign("fs_stat"),impure]     _fs_stat    (path: String): _FileInfo|Int
 fun [foreign("fs_open_dir"),impure] _fs_open_dir(path: String): _Dir|Int
 fun [foreign("fs_remove"),impure]   _fs_remove  (path: String): Int
 
-class [foreign,final] _Dir:
+class [foreign,final] _Dir
   fun [foreign("fs_dir_next"),impure]  _next():  String|Int|None
   fun [foreign("fs_dir_close"),impure] _close(): Int|None
 
-class [foreign,final] _FileInfo:
+class [foreign,final] _FileInfo
   fun [foreign("fs_fi_size"),sync]  _size():  Int
   fun [foreign("fs_fi_mtime"),sync] _mtime(): Int
   fun [foreign("fs_fi_mode"),sync]  _mode():  Int

@@ -133,13 +133,23 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
         # unless the target is identical.
         return source.as_unique_id_str() != target.as_unique_id_str()
     su, tu = source.as_unique_id_str(), target.as_unique_id_str()
-    if su is None or tu is None or su == tu:
+    if su is None or tu is None:
+        return False
+    # Tuple-into-tuple is decided by the field BINDING, before the id shortcut
+    # below: a pure name-directed reorder has identical ids on both sides
+    # (`as_unique_id_str` is positional types only) yet must rebuild the value.
+    if isinstance(target, t.TupleSpec) and isinstance(source, t.TupleSpec):
+        binding = t.bind_tuple_entries(target.entries, [en.name for en in source.entries])
+        if binding is None:
+            return False    # not assignable — the receiver reports that, not us
+        if binding != list(range(len(target.entries))):
+            return True     # reorder and/or default fill
+        return su != tu and any(needs_conversion(s_e.type, t_e.type, resolver)
+                                for s_e, t_e in zip(source.entries, target.entries))
+    if su == tu:
         return False
     if isinstance(target, t.TupleSpec):
-        return (isinstance(source, t.TupleSpec)
-                and len(source.entries) == len(target.entries)
-                and any(needs_conversion(s_e.type, t_e.type, resolver)
-                        for s_e, t_e in zip(source.entries, target.entries)))
+        return False
     if isinstance(target, t.CombinationSpec):
         if isinstance(source, t.TupleSpec):
             return matching_tuple_variant(source, target, resolver) is not None
@@ -166,14 +176,16 @@ def emit_conversion(value, source: t.TypeSpec | None, target: t.TypeSpec | None,
     if isinstance(source, t.EnumSpec) and not source.valid_leaf_names:
         return g.OperationBundle((), (), cg_p.ZeroOf(target.generate(resolver)))
 
-    su = source.as_unique_id_str()
-    if su is not None and su == target.as_unique_id_str():
-        return _passthrough(value)  # same representation — nothing to do
-
+    # Tuple-into-tuple before the same-id shortcut: a pure reorder has equal
+    # ids (positional types only) but still rebuilds the value.
     if isinstance(target, t.TupleSpec):
         if isinstance(source, t.TupleSpec):
             return _convert_tuple(value, source, target, resolver)
         return _passthrough(value)
+
+    su = source.as_unique_id_str()
+    if su is not None and su == target.as_unique_id_str():
+        return _passthrough(value)  # same representation — nothing to do
 
     if isinstance(target, t.CombinationSpec):
         if isinstance(source, t.TupleSpec):
@@ -194,21 +206,31 @@ def emit_conversion(value, source: t.TypeSpec | None, target: t.TypeSpec | None,
 
 def _convert_tuple(value, source: t.TupleSpec, target: t.TupleSpec,
                   resolver: g.Resolver) -> g.OperationBundle:
-    """Rebuild a tuple value with each field coerced to the target field type.
-
-    Reached only when `source != target`, so at least one field widens; reading
-    the unchanged fields back out and re-packing them is cheap and keeps the
-    logic uniform with the non-literal case (a tuple-typed call result, etc.)."""
-    if len(source.entries) != len(target.entries):
+    """Rebuild a tuple value as the target tuple: each source field lands in
+    the target field it BINDS (positional, or by name), coerced to that field's
+    type; an unbound target field materialises its declared default. The
+    binding is the same one needs_conversion consulted, so a pass-through here
+    means the shapes already agree exactly."""
+    binding = t.bind_tuple_entries(target.entries, [en.name for en in source.entries])
+    if binding is None:
+        return _passthrough(value)
+    identity = (binding == list(range(len(target.entries))))
+    if identity and source.as_unique_id_str() == target.as_unique_id_str():
         return _passthrough(value)
     bundle = g.OperationBundle()
     field_values: list[tuple[str, cg_p.RParam]] = []
-    for i, (s_entry, t_entry) in enumerate(zip(source.entries, target.entries)):
-        fname = f"_{i}"
-        cb = emit_conversion(cg_p.StructField(value, fname), s_entry.type, t_entry.type,
-                    resolver).with_prefix(f"f{i}")
+    for i, (t_entry, b) in enumerate(zip(target.entries, binding)):
+        if b is not None:
+            cb = emit_conversion(cg_p.StructField(value, f"_{b}"), source.entries[b].type,
+                        t_entry.type, resolver).with_prefix(f"f{i}")
+        else:
+            # Default fill: a literal or [const] reference (enforced at the
+            # declaration), so generating it here is pure and order-free.
+            db = t_entry.default.generate(resolver)
+            cb = (db + emit_conversion(db.result_var, t_entry.default.get_type(resolver),
+                        t_entry.type, resolver)).with_prefix(f"f{i}")
         bundle = bundle + cb
-        field_values.append((fname, cb.result_var))
+        field_values.append((f"_{i}", cb.result_var))
     return bundle + g.OperationBundle((), (), cg_p.NewStruct(tuple(field_values)))
 
 

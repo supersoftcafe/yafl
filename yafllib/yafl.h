@@ -1122,9 +1122,14 @@ INLINE double   float64_div(double a, double b) { return a / b; }
 INLINE double   float64_neg(double a)            { return -a; }
 INLINE double   float64_rem(double a, double b)  { return fmod(a, b); }
 INLINE double   float64_sqrt(double a)           { return sqrt(a); }
+INLINE float    float32_sqrt(float a)            { return sqrtf(a); }
 INLINE bool     float64_lt (double a, double b)  { return a <  b; }
 INLINE bool     float64_eq (double a, double b)  { return a == b; }
 INLINE bool     float64_gt (double a, double b)  { return a >  b; }
+// ge/le exist for match RANGE arms: IEEE gives false for NaN on every
+// comparison, so NaN matches no range (the !(a<b) negation would not).
+INLINE bool     float64_ge (double a, double b)  { return a >= b; }
+INLINE bool     float64_le (double a, double b)  { return a <= b; }
 INLINE bool     float64_is_nan(double a)         { return a != a; }
 
 EXTERN double    float64_from_integer(object_t* i);
@@ -1141,6 +1146,8 @@ INLINE float    float32_rem(float a, float b)  { return fmodf(a, b); }
 INLINE bool     float32_lt (float a, float b)  { return a <  b; }
 INLINE bool     float32_eq (float a, float b)  { return a == b; }
 INLINE bool     float32_gt (float a, float b)  { return a >  b; }
+INLINE bool     float32_ge (float a, float b)  { return a >= b; }
+INLINE bool     float32_le (float a, float b)  { return a <= b; }
 INLINE bool     float32_is_nan(float a)        { return a != a; }
 
 INLINE float    float32_from_float64(double d) { return (float)d; }

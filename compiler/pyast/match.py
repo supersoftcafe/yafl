@@ -23,17 +23,26 @@ from pyast import union_repr
 
 
 # Primitive builtin types that support literal-pattern matching: arbitrary-
-# precision Int (bigint), String (str), and the fixed-width integers (int8..
-# int64). A char literal is an int32, so matching characters lands here.
+# precision Int (bigint), String (str), the fixed-width integers (int8..
+# int64 — a char literal is an int32), and the floats. Float comparison is
+# allowed generally (as in expressions); NaN compares false to everything,
+# so it matches no literal and no range and lands in the else arm.
 _PRIMITIVE_MATCH_INT_TYPES = ("bigint", "int8", "int16", "int32", "int64")
+_PRIMITIVE_MATCH_FLOAT_TYPES = ("float32", "float64")
 
 def _is_primitive_match_type(type_name: str) -> bool:
-    return type_name == "str" or type_name in _PRIMITIVE_MATCH_INT_TYPES
+    return (type_name == "str" or type_name in _PRIMITIVE_MATCH_INT_TYPES
+            or type_name in _PRIMITIVE_MATCH_FLOAT_TYPES)
 
 def _match_int_precision(type_name: str) -> int:
     """Expected IntegerExpression.precision for an integer-like match subject:
     0 for bigint, else the fixed width (int32 → 32)."""
     return 0 if type_name == "bigint" else int(type_name[3:])
+
+def _float_precision_fits(lit: "e.FloatExpression", type_name: str) -> bool:
+    """An unsuffixed float literal (precision 0) narrows to its subject's
+    width; a suffixed one must match exactly."""
+    return lit.precision in (0, int(type_name[5:]))
 
 
 def _arm_unique_name(arm: "MatchArm") -> str:
@@ -94,20 +103,70 @@ def _binding_resolver(resolver: g.Resolver, arm: "MatchArm",
 
 
 @dataclass
+class MatchRange:
+    """An inclusive `lo .. hi` alternative in a literal arm — integers (and
+    chars, which ARE Int32s) only. Lives in MatchArm.literals alongside plain
+    literals: `(0, 5 .. 7)` is eq-0 OR in-[5,7]. Quacks like the slice of the
+    Expression interface the literal machinery uses; the match generators
+    special-case it to emit a combined bounds test."""
+    line_ref: LineRef
+    lo: e.Expression
+    hi: e.Expression
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        return self.lo.get_type(resolver)
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple["MatchRange", list[s.Statement]]:
+        lo, lo_stmts = self.lo.compile(resolver, None)
+        hi, hi_stmts = self.hi.compile(resolver, None)
+        return dataclasses.replace(self, lo=lo, hi=hi), lo_stmts + hi_stmts
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list:
+        errors = self.lo.check(resolver, None) + self.hi.check(resolver, None)
+        if isinstance(self.lo, e.IntegerExpression) and isinstance(self.hi, e.IntegerExpression):
+            if self.lo.precision != self.hi.precision:
+                errors.append(Error(self.line_ref, "range bounds must be the same integer type"))
+            elif self.lo.value > self.hi.value:
+                errors.append(Error(self.line_ref,
+                    f"empty range: {self.lo.value} .. {self.hi.value} matches nothing"))
+            return errors
+        if isinstance(self.lo, e.FloatExpression) and isinstance(self.hi, e.FloatExpression):
+            # Precision 0 is the unsuffixed literal — it narrows to context.
+            if self.lo.precision and self.hi.precision and self.lo.precision != self.hi.precision:
+                errors.append(Error(self.line_ref, "range bounds must be the same float type"))
+            elif self.lo.value > self.hi.value:
+                errors.append(Error(self.line_ref,
+                    f"empty range: {self.lo.value} .. {self.hi.value} matches nothing"))
+            return errors
+        return errors + [Error(self.line_ref,
+            "range bounds must both be integers (or chars) or both floats")]
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> "MatchRange":
+        return rw.rebuild(self,
+            lo=self.lo.search_and_replace(resolver, replace),
+            hi=self.hi.search_and_replace(resolver, replace))
+
+
+@dataclass
 class MatchArm:
     """One arm of a match expression.
 
     Exactly one of the following holds:
-    - `literal` is set (IntegerExpression or StringExpression): literal arm.
+    - `literals` is non-empty (IntegerExpressions or StringExpressions, one
+      KIND per arm): literal arm — the arm matches ANY of its literals.
     - `type_spec` is set (with optional `name`): type-dispatch arm.
-    - Both `literal` and `type_spec` are None: else arm (with optional `name`
-      that binds the whole subject).
+    - Neither: else arm (with optional `name` that binds the whole subject).
+
+    Any non-else arm may carry a `guard`: evaluated after the binding, a
+    False guard falls through to the NEXT arm. A guarded arm covers nothing
+    for exhaustiveness.
     """
     line_ref: LineRef
     name: str | None         # Bound variable name; None for else arm, "_" to discard
     type_spec: t.TypeSpec | None  # Variant type; None for else or literal arm
     body: e.Expression
-    literal: e.Expression | None = None  # Literal value to match against
+    literals: tuple[e.Expression, ...] = ()  # Literal values to match against (any-of)
+    guard: e.Expression | None = None        # `if cond` — sees the arm's binding
 
     def __body_resolver(self, resolver: g.Resolver) -> g.Resolver:
         # The else arm's binding type (the whole subject) isn't knowable
@@ -119,18 +178,25 @@ class MatchArm:
         return rw.rebuild(self,
             body=self.body.search_and_replace(self.__body_resolver(resolver), replace),
             type_spec=rw.opt(self.type_spec, resolver, replace),
-            literal=rw.opt(self.literal, resolver, replace))
+            literals=rw.seq(self.literals, resolver, replace),
+            guard=rw.opt(self.guard, self.__body_resolver(resolver), replace))
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement]]:
         new_body, body_stmts = self.body.compile(self.__body_resolver(resolver), func_ret_type)
         new_type, type_stmts = self.type_spec.compile(resolver) if self.type_spec else (None, [])
-        new_literal, lit_stmts = self.literal.compile(resolver, None) if self.literal else (None, [])
+        lit_results = [lit.compile(resolver, None) for lit in self.literals]
+        new_literals = tuple(lit for lit, _ in lit_results)
+        lit_stmts = [st for _, sts in lit_results for st in sts]
+        # The guard sees the arm's binding, exactly like the body.
+        new_guard, guard_stmts = (self.guard.compile(self.__body_resolver(resolver), None)
+                                  if self.guard else (None, []))
         # Rename arm.name to the unique form so it stays in sync with the
         # body's NamedExpressions (which the binding finder rewrote during
         # the body.compile() call above).  ast_inline then renames arm.name
         # and the body together; without this, those two sides would desync.
         return dataclasses.replace(self, name=_arm_unique_name(self),
-                                    type_spec=new_type, body=new_body, literal=new_literal), body_stmts + type_stmts + lit_stmts
+                                    type_spec=new_type, body=new_body, literals=new_literals,
+                                    guard=new_guard), body_stmts + type_stmts + lit_stmts + guard_stmts
 
     def get_body_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.body.get_type(self.__body_resolver(resolver))
@@ -138,8 +204,14 @@ class MatchArm:
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list:
         type_err = self.type_spec.check(resolver) if self.type_spec else []
         body_err = self.body.check(self.__body_resolver(resolver), func_ret_type)
-        literal_err = self.literal.check(resolver, None) if self.literal else []
-        return type_err + body_err + literal_err
+        literal_err = [err for lit in self.literals for err in lit.check(resolver, None)]
+        guard_err: list = []
+        if self.guard is not None:
+            guard_err += self.guard.check(self.__body_resolver(resolver), None)
+            gtype = self.guard.get_type(self.__body_resolver(resolver))
+            if gtype is not None and not (isinstance(gtype, t.BuiltinSpec) and gtype.type_name == "bool"):
+                guard_err.append(Error(self.line_ref, "a match guard must be a Bool"))
+        return type_err + body_err + literal_err + guard_err
 
 
 @dataclass
@@ -199,7 +271,15 @@ class _Emitter:
                 self.ops(cg_o.JumpIf(pass_label, guard))
             self.ops(cg_o.Jump(next_label))
             self.ops(cg_o.Label(pass_label))
-        self.__body(arm, bind, f"arm{idx}")
+        # Pattern passed: bind, then the arm's own guard — a failing guard
+        # falls through to the next arm exactly like a failed stage. The bind
+        # is emitted here (not in __body) because the guard reads the binding.
+        prefix = f"arm{idx}"
+        bind_bundle, arm_resolver = bind if bind is not None else (None, self.resolver)
+        if bind_bundle is not None:
+            self.add(bind_bundle.with_prefix(prefix))
+        self.__guard(arm, arm_resolver, idx, next_label)
+        self.__body(arm, (None, arm_resolver), prefix)
         self.ops(cg_o.Label(next_label))
 
     def multi_entry_arm(self, arm: MatchArm, entries: list[tuple[cg_p.RParam, cg_p.RParam]],
@@ -223,8 +303,22 @@ class _Emitter:
                  cg_o.Phi(target=arm_sv, sources=tuple(binds)),
                  stack_vars=(arm_sv,))
         resolver = _binding_resolver(self.resolver, arm, arm.type_spec)
+        self.__guard(arm, resolver, idx, next_label)
         self.__body(arm, (None, resolver), f"arm{idx}")
         self.ops(cg_o.Label(next_label))
+
+    def __guard(self, arm: MatchArm, arm_resolver: g.Resolver, idx: int, next_label: str) -> None:
+        """The arm's `if` guard, evaluated after the binding: False falls
+        through to the next arm. No-op for unguarded arms; check() forbids a
+        guard on the else arm (fallback() therefore never needs one)."""
+        if arm.guard is None:
+            return
+        gb = arm.guard.generate(arm_resolver).with_prefix(f"arm{idx}guard")
+        self.add(gb)
+        pass_label = f"match_guardpass_{idx}"
+        self.ops(cg_o.JumpIf(pass_label, gb.result_var))
+        self.ops(cg_o.Jump(next_label))
+        self.ops(cg_o.Label(pass_label))
 
     def fallback(self, arm: MatchArm | None,
                  bind: tuple[g.OperationBundle, g.Resolver] | None,
@@ -401,7 +495,7 @@ class MatchExpression(e.Expression):
         if subj_type is None:
             return subject_err  # subject's type unknown — its own errors are all there is
 
-        has_literal = any(arm.literal is not None for arm in self.arms)
+        has_literal = any(arm.literals for arm in self.arms)
         is_primitive_subject = (isinstance(subj_type, t.BuiltinSpec)
                                 and _is_primitive_match_type(subj_type.type_name))
 
@@ -418,6 +512,24 @@ class MatchExpression(e.Expression):
         errors = list(subject_err)
         for arm in self.arms:
             errors += arm.check(resolver, expected_type)
+            # The else arm must stay total — the match's coverage guarantee
+            # rests on it. Guard an ordinary arm before it instead.
+            if arm.guard is not None and arm.type_spec is None and not arm.literals:
+                errors.append(Error(arm.line_ref,
+                    "a guard is not allowed on the else arm — put the guarded case in its own arm before it"))
+            # One arm, one literal KIND: mixed kinds can never all match one
+            # subject variant, so a mix is always a mistake. (A range counts
+            # as an integer — `(0, 5 .. 7)` is one kind.)
+            if len(arm.literals) > 1:
+                def _kind(lit) -> str:
+                    probe = lit.lo if isinstance(lit, MatchRange) else lit
+                    if isinstance(probe, e.StringExpression):
+                        return "str"
+                    return "float" if isinstance(probe, e.FloatExpression) else "int"
+                kinds = {_kind(lit) for lit in arm.literals}
+                if len(kinds) > 1:
+                    errors.append(Error(arm.line_ref,
+                        "all literals in one arm must be the same kind (integers, floats or strings)"))
         if is_primitive_subject and subj_type.is_concrete():
             errors += self.__check_literal_arms(subj_type)
         elif subj_type.is_concrete():
@@ -450,37 +562,63 @@ class MatchExpression(e.Expression):
                     f"type arms not allowed on a primitive ({expected_kind}) subject; use literal patterns"))
                 continue
 
-            if arm.literal is None:
+            if not arm.literals:
                 # else arm (with optional binding)
                 else_seen = True
                 continue
 
-            lit = arm.literal
-            if expected_kind == "str":
-                if not isinstance(lit, e.StringExpression):
-                    errors.append(Error(arm.line_ref,
-                        f"literal arm type mismatch: expected string, got {type(lit).__name__}"))
-                    continue
-                key = ("str", lit.value)
-            else:  # integer-like: bigint or a fixed-width int (int8..int64)
-                if not isinstance(lit, e.IntegerExpression):
-                    errors.append(Error(arm.line_ref,
-                        f"literal arm type mismatch: expected integer, got {type(lit).__name__}"))
-                    continue
-                # The literal's precision must match the subject's, since there
-                # is no implicit Int/Int32 coercion. A char literal is int32, so
-                # it matches an Int32 subject; a bare `65` is bigint.
-                if lit.precision != _match_int_precision(expected_kind):
-                    errors.append(Error(arm.line_ref,
-                        f"literal arm type mismatch: subject is {expected_kind}"))
-                    continue
-                key = ("int", lit.value)
+            is_float_subject = expected_kind in _PRIMITIVE_MATCH_FLOAT_TYPES
+            for lit in arm.literals:
+                if isinstance(lit, MatchRange):
+                    if expected_kind == "str":
+                        errors.append(Error(lit.line_ref,
+                            "a range arm needs an integer or float subject"))
+                    elif is_float_subject:
+                        if not (isinstance(lit.lo, e.FloatExpression)
+                                and _float_precision_fits(lit.lo, expected_kind)):
+                            errors.append(Error(lit.line_ref,
+                                f"range bound type mismatch: subject is {expected_kind}"))
+                    elif (isinstance(lit.lo, e.IntegerExpression)
+                          and lit.lo.precision != _match_int_precision(expected_kind)):
+                        errors.append(Error(lit.line_ref,
+                            f"range bound type mismatch: subject is {expected_kind}"))
+                    continue  # ranges take no part in duplicate tracking
+                if expected_kind == "str":
+                    if not isinstance(lit, e.StringExpression):
+                        errors.append(Error(arm.line_ref,
+                            f"literal arm type mismatch: expected string, got {type(lit).__name__}"))
+                        continue
+                    key = ("str", lit.value)
+                elif is_float_subject:
+                    if not (isinstance(lit, e.FloatExpression)
+                            and _float_precision_fits(lit, expected_kind)):
+                        errors.append(Error(arm.line_ref,
+                            f"literal arm type mismatch: subject is {expected_kind}"))
+                        continue
+                    key = ("float", lit.value)
+                else:  # integer-like: bigint or a fixed-width int (int8..int64)
+                    if not isinstance(lit, e.IntegerExpression):
+                        errors.append(Error(arm.line_ref,
+                            f"literal arm type mismatch: expected integer, got {type(lit).__name__}"))
+                        continue
+                    # The literal's precision must match the subject's, since there
+                    # is no implicit Int/Int32 coercion. A char literal is int32, so
+                    # it matches an Int32 subject; a bare `65` is bigint.
+                    if lit.precision != _match_int_precision(expected_kind):
+                        errors.append(Error(arm.line_ref,
+                            f"literal arm type mismatch: subject is {expected_kind}"))
+                        continue
+                    key = ("int", lit.value)
 
-            if key in seen_values:
-                errors.append(Error(arm.line_ref,
-                    f"unreachable arm: literal value already matched"))
-            else:
-                seen_values[key] = arm.line_ref
+                # A guarded arm may repeat a value (its guard differentiates),
+                # and it blocks nothing for later arms.
+                if arm.guard is not None:
+                    continue
+                if key in seen_values:
+                    errors.append(Error(arm.line_ref,
+                        f"unreachable arm: literal value already matched"))
+                else:
+                    seen_values[key] = arm.line_ref
 
         if not else_seen:
             errors.append(Error(self.line_ref,
@@ -538,11 +676,16 @@ class MatchExpression(e.Expression):
                 errors.append(Error(arm.line_ref, "unreachable arm: follows an else arm"))
                 continue
 
+            # A guarded arm covers nothing — its guard may fail at runtime —
+            # so it neither consumes variants nor counts as unreachable.
+            if arm.guard is not None:
+                continue
+
             # Literal arms narrow a primitive variant but can't cover it —
             # `remaining` is unchanged. Treat them as always reachable; a
             # literal against a subject lacking that primitive variant is
             # already rejected by check().
-            if arm.literal is not None:
+            if arm.literals:
                 continue
 
             if arm.type_spec is None:
@@ -618,17 +761,19 @@ class MatchExpression(e.Expression):
 
     def __else_arm(self) -> MatchArm | None:
         return next((arm for arm in self.arms
-                     if arm.type_spec is None and arm.literal is None), None)
+                     if arm.type_spec is None and not arm.literals), None)
 
     def __gen_primitive_match(self, em: _Emitter, subj_bundle, subj_type) -> None:
         """Literal-arm match on a primitive subject: Int (bigint), String (str),
-        or a fixed-width integer (int8..int64 — a char literal is int32)."""
+        or a fixed-width integer (int8..int64 — a char literal is int32).
+        An arm's literals are ALTERNATIVES of one stage: any equality passing
+        enters the arm."""
         sv = subj_bundle.result_var
-        for arm in (a for a in self.arms if a.literal is not None):
+        for arm in (a for a in self.arms if a.literals):
             idx = em.counter  # peek for the literal bundle prefix only
-            lit_bundle = arm.literal.generate(em.resolver).with_prefix(f"lit{idx}")
-            test = union_repr.literal_eq_test(subj_type.type_name, sv, lit_bundle.result_var)
-            em.arm(arm, [[test]], pre=(lit_bundle,))
+            bundles, tests = union_repr.literal_alternative_tests(
+                arm.literals, subj_type.type_name, sv, em.resolver, f"lit{idx}")
+            em.arm(arm, [tests], pre=bundles)
         em.fallback(self.__else_arm(),
                     em.bind_subject(self.__else_arm(), subj_type, sv) if self.__else_arm() else None,
                     "primitive match fell through all arms")

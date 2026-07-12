@@ -15,7 +15,9 @@ from codegen.typedecl import DataPointer, FuncPointer, Struct, Type, Void
 
 def _gen_function_ids(global_ids: dict[str, int]) -> str:
     if not global_ids: return ""
-    return f"enum {{{','.join(f'\n    __FUNCTION_ID__{mangle_name(name)} = rotate_function_id({id})' for name, id in global_ids.items())}\n}};\n"
+    entries = ",".join("\n    __FUNCTION_ID__" + mangle_name(name) + f" = rotate_function_id({id})"
+                       for name, id in global_ids.items())
+    return "enum {" + entries + "\n};\n"
 
 
 # Aggregates all application data for code generation

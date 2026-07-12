@@ -54,7 +54,7 @@ class Type(ABC):
         if self._dont_cache:
             declaration = self._declare_struct(type_cache, "    ")
         elif self not in type_cache:
-            type_str = f"typedef {self._declare_struct(type_cache, "    ")}"
+            type_str = "typedef " + self._declare_struct(type_cache, "    ")
             declaration = f"struct_anon_{len(type_cache)}_t"
             type_cache[self] = declaration, f"{type_str} {declaration};\n"
         else:
@@ -280,7 +280,9 @@ class Struct(Type):
 
     def _declare_struct(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
         new_indent = field_indent + "    "
-        return f"struct {{ {"".join(f"\n{field_indent}{field_type._declare(type_cache, new_indent)} {mangle_name(name)};" for name, field_type in self.fields)}\n{field_indent[:-4]}}}"
+        body = "".join(f"\n{field_indent}{field_type._declare(type_cache, new_indent)} {mangle_name(name)};"
+                       for name, field_type in self.fields)
+        return "struct { " + body + "\n" + field_indent[:-4] + "}"
 
     def __add__(self, other: Struct) -> Struct:
         return Struct(self.fields + other.fields)

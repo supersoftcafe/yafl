@@ -15,7 +15,7 @@ from pyast.typespec.specs import (
     EnumSpec, GenericPlaceholderSpec, LazyStubSpec, ArrayFieldSpec, NamedSpec,
     TupleEntrySpec, TupleSpec,
     collect_enum_leaves, enum_variant_types, enum_leaf_object_name,
-    trivially_assignable_equals,
+    trivially_assignable_equals, bind_tuple_entries, default_value_errors,
     _collect_leaf_field_sets, _flatten_union_members,
 )
 from pyast.typespec.algebra import (

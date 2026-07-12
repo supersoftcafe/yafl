@@ -110,38 +110,13 @@ def check_lazy_forward_refs(statements: list[s.Statement]) -> list[Error]:
     return errors
 
 
-def _is_trivial_expr(expr: e.Expression | None, resolver: g.Resolver) -> bool:
-    """AST-level "trivial init" predicate — an expression that
-    `LetStatement.global_codegen` can emit as a direct C static
-    without going through the lazy-thunk framework.
-
-    Covers:
-      * Numeric / string literals — emit as the literal's RParam.
-      * `CallExpression(NamedExpression(ClassName), TupleExpression(literals…))`
-        — class instantiation with literal args, emitted as a static
-        struct of those field values.
-      * `TupleExpression` of trivials — emitted as a tuple struct.
-
-    Anything else (variable references, function calls returning
-    non-class values, nested constructors) auto-promotes to `[lazy]`
-    and runs through the lazy-thunk framework at first force."""
-    if expr is None:
-        return False
-    if isinstance(expr, (e.IntegerExpression, e.FloatExpression, e.StringExpression)):
-        return True
-    if isinstance(expr, e.TupleExpression):
-        return all(_is_trivial_expr(en.value, resolver) for en in expr.expressions)
-    if isinstance(expr, e.CallExpression) and isinstance(expr.function, e.NamedExpression):
-        # Constructor call to a known class with literal args — the
-        # global_codegen pattern-match emits this as a static struct.
-        found = resolver.find_type(expr.function.name)
-        if len(found) == 1 and isinstance(found[0].statement, s.ClassStatement):
-            return _is_trivial_expr(expr.parameter, resolver)
-    return False
-
-
 def _is_literal_init(stmt: s.LetStatement, resolver: g.Resolver) -> bool:
-    return _is_trivial_expr(stmt.default_value, resolver)
+    """Can this global be emitted as a direct C static? THE decision is
+    `LetStatement.static_global_plan` — the same routine global_codegen
+    emits from, so promotion and emission can never disagree. It covers
+    literals, tuples of literals, and constant object graphs (nested
+    constructors become anonymous statics referencing each other)."""
+    return stmt.static_global_plan(resolver) is not None
 
 
 def _promote_non_trivial_globals(statements: list[s.Statement]) -> list[s.Statement]:

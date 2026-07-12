@@ -10,6 +10,7 @@ sys.setrecursionlimit(20000)
 import lowering.ast_inline
 import lowering.hoist_nested
 import lowering.block_exits
+import lowering.bounds_elim
 import lowering.constants
 import lowering.integers
 import lowering.strings
@@ -20,6 +21,7 @@ import lowering.lambda_lift
 import lowering.lambdas
 import lowering.lazy_thunks
 import lowering.lower_lazy_lets
+import lowering.regexes
 import lowering.generics
 import lowering.inlining
 import lowering.known_tags
@@ -195,6 +197,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
             inline_always = optimization_level >= 3
             prev_shape: tuple | None = None
             for _ in range(16):  # bounded; converges as inlined-away functions are trimmed
+                # Resolve indirect fun_t calls to their known targets first —
+                # a direct call is what makes the closure inlinable (the array
+                # fill loop's init call is the motivating case).
+                a = lowering.globalfuncs.discover_global_function_calls(a)
                 a = lowering.trim.removed_unused_stuff(
                     lowering.inlining.inline_small_functions(a, inline_always))
                 shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
@@ -224,6 +230,13 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 if shape == prev_shape:
                     break
                 prev_shape = shape
+
+        # Bounds-check elimination: flip ArrayElement.checked off where the
+        # canonical counted-loop shape PROVES the index in range — the abort
+        # branch is what stops clang's loop vectoriser. After all inlining
+        # (the caller supplies the 0 start and the length bound); before
+        # async lowering (the state-machine copy inherits the flags).
+        a = lowering.bounds_elim.eliminate_provable_bounds_checks(a)
 
         # Dead store elimination: remove StackVar assignments whose value is never read.
         # After inlining, trait-object `this` variables often become dead; removing them
@@ -465,6 +478,12 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
 def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",)) -> tuple[str, list[Error]] | list[Error]:
     """Returns (c_code, warnings) on success, or the diagnostic list on failure
     (which may include warnings alongside the errors — all get printed)."""
+    # Regex literals: validate at compile time and intern each distinct
+    # pattern as one shared `$regexes::` global. Before convergence — the
+    # created globals need typing like any other statement.
+    statements, regex_errors = lowering.regexes.fix_global_regexes(statements)
+    if regex_errors:
+        return regex_errors
     new_statements, resolver = __converge(statements)
 
     # A global `let` holding a lambda is a function by another name — rewrite

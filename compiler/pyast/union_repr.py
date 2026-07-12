@@ -45,7 +45,51 @@ def literal_eq_test(lit_type_name: str, value: cg_p.RParam,
         return cg_p.IntEqConst(cg_p.RuntimeInvoke("string_compare", args, cg_t.Int(32)), 0)
     if lit_type_name == "bigint":
         return cg_p.RuntimeInvoke("integer_test_eq", args, cg_t.Int(8))
+    if lit_type_name in ("float32", "float64"):
+        return cg_p.RuntimeInvoke(f"{lit_type_name}_eq", args, cg_t.Int(8))
     return cg_p.RuntimeInvoke(f"{lit_type_name}_test_eq", args, cg_t.Int(8))  # int8..int64
+
+
+def literal_range_test(lit_type_name: str, value: cg_p.RParam,
+                       lo: cg_p.RParam, hi: cg_p.RParam) -> cg_p.RParam:
+    """Boolean IR expression testing lo <= value <= hi, as ONE pure RParam so
+    a range slots into an arm's alternatives like any equality. bigint and
+    the floats have ge/le helpers — for floats they are REQUIRED, because the
+    fixed-width !(v < lo) & !(v > hi) composition would let NaN inside every
+    range (IEEE comparisons with NaN are all false)."""
+    lo_args = cg_p.NewStruct((("a", value), ("b", lo)))
+    hi_args = cg_p.NewStruct((("a", value), ("b", hi)))
+    if lit_type_name == "bigint":
+        ge = cg_p.RuntimeInvoke("integer_test_ge", lo_args, cg_t.Int(8))
+        le = cg_p.RuntimeInvoke("integer_test_le", hi_args, cg_t.Int(8))
+    elif lit_type_name in ("float32", "float64"):
+        ge = cg_p.RuntimeInvoke(f"{lit_type_name}_ge", lo_args, cg_t.Int(8))
+        le = cg_p.RuntimeInvoke(f"{lit_type_name}_le", hi_args, cg_t.Int(8))
+    else:  # int8..int64 (chars are int32)
+        ge = cg_p.IntEqConst(cg_p.RuntimeInvoke(f"{lit_type_name}_test_lt", lo_args, cg_t.Int(8)), 0)
+        le = cg_p.IntEqConst(cg_p.RuntimeInvoke(f"{lit_type_name}_test_gt", hi_args, cg_t.Int(8)), 0)
+    return cg_p.RuntimeInvoke("int8_and", cg_p.NewStruct((("a", ge), ("b", le))), cg_t.Int(8))
+
+
+def literal_alternative_tests(items, type_name: str, value: cg_p.RParam,
+                              resolver, prefix: str):
+    """(pre-bundles, tests) for one literal arm's alternatives — plain
+    literals become equality tests, MatchRange items become bounds tests.
+    Shared by all three match generators."""
+    from pyast.match import MatchRange
+    bundles = []
+    tests = []
+    for k, item in enumerate(items):
+        if isinstance(item, MatchRange):
+            lo_b = item.lo.generate(resolver).with_prefix(f"{prefix}_{k}lo")
+            hi_b = item.hi.generate(resolver).with_prefix(f"{prefix}_{k}hi")
+            bundles += [lo_b, hi_b]
+            tests.append(literal_range_test(type_name, value, lo_b.result_var, hi_b.result_var))
+        else:
+            b = item.generate(resolver).with_prefix(f"{prefix}_{k}")
+            bundles.append(b)
+            tests.append(literal_eq_test(type_name, value, b.result_var))
+    return tuple(bundles), tests
 
 
 def _classspec_is_foreign(member: t.ClassSpec, resolver: g.Resolver) -> bool:
@@ -272,11 +316,11 @@ class TaggedRepr(UnionRepr):
                          if v.as_unique_id_str() == uid), None)
 
         for arm in arms:
-            if arm.type_spec is None and arm.literal is None:
+            if arm.type_spec is None and not arm.literals:
                 continue  # else arm: the fallback, handled at the end
 
-            if arm.literal is not None:
-                lit_ast_type = arm.literal.get_type(resolver)
+            if arm.literals:
+                lit_ast_type = arm.literals[0].get_type(resolver)
                 lit_type_name = lit_ast_type.type_name if isinstance(lit_ast_type, t.BuiltinSpec) else None
                 vi = next((i for i, v in enumerate(subj_type.repr_members())
                            if isinstance(v, t.BuiltinSpec) and v.type_name == lit_type_name), None)
@@ -285,11 +329,11 @@ class TaggedRepr(UnionRepr):
                 tag_value = discriminators.get(subj_type.repr_members()[vi].as_unique_id_str(), 0)
                 si, _ = variant_map[vi][0]
                 slot_val = cg_p.StructField(sv, slot_fields[si][0])
-                lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{em.counter}")
+                bundles, tests = literal_alternative_tests(
+                    arm.literals, lit_type_name, slot_val, resolver, f"lit{em.counter}")
                 em.arm(arm,
-                       [[cg_p.IntEqConst(tag, tag_value)],
-                        [literal_eq_test(lit_type_name, slot_val, lit_bundle.result_var)]],
-                       pre=(lit_bundle,))
+                       [[cg_p.IntEqConst(tag, tag_value)], tests],
+                       pre=bundles)
 
             elif isinstance(arm.type_spec, t.CombinationSpec):
                 # Union-typed arm, e.g. `(w: Word|None)` over Word|None|IOError.
@@ -590,7 +634,7 @@ class PointerRepr(UnionRepr):
         guarded = []
         union_arm_covers_none = False
         for arm in arms:
-            if arm.literal is not None:
+            if arm.literals:
                 guarded.append(arm)
             elif arm.type_spec is None:
                 pass  # else arm: the fallback, handled at the end
@@ -615,7 +659,7 @@ class PointerRepr(UnionRepr):
                                         null_target.type_spec or subj_type, sv))
 
         for arm in guarded:
-            if arm.literal is not None:
+            if arm.literals:
                 self._pointer_literal_arm(em, arm, sv, resolver)
             elif isinstance(arm.type_spec, t.CombinationSpec):
                 guards = []
@@ -641,7 +685,7 @@ class PointerRepr(UnionRepr):
                     "pointer-union match fell through all arms")
 
     def _pointer_literal_arm(self, em, arm, sv, resolver):
-        lit_ast_type = arm.literal.get_type(resolver)
+        lit_ast_type = arm.literals[0].get_type(resolver)
         if not isinstance(lit_ast_type, t.BuiltinSpec):
             return  # unreachable — check() already validated
         if lit_ast_type.type_name == "str":
@@ -650,9 +694,9 @@ class PointerRepr(UnionRepr):
             kind_guard = cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
         else:
             return  # unreachable — check() already validated
-        lit_bundle = arm.literal.generate(resolver).with_prefix(f"lit{em.counter}")
-        value_test = literal_eq_test(lit_ast_type.type_name, sv, lit_bundle.result_var)
-        em.arm(arm, [[kind_guard], [value_test]], pre=(lit_bundle,))
+        bundles, value_tests = literal_alternative_tests(
+            arm.literals, lit_ast_type.type_name, sv, resolver, f"lit{em.counter}")
+        em.arm(arm, [[kind_guard], value_tests], pre=bundles)
 
     def box_value(self, value, source_type, resolver):
         """Box an already-generated value of `source_type` (a variant of this

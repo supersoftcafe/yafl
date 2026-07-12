@@ -133,6 +133,25 @@ class BoolExpression(Expression):
 
 
 @dataclass
+class RegexExpression(Expression):
+    """A `re"..."` literal, RAW pattern text. Exists only between parse and
+    the interning pass (lowering/regexes.py), which validates the pattern at
+    compile time and rewrites every use into a reference to a shared
+    per-pattern `$regexes::` global — one Regex per distinct pattern, built
+    once. Reaching compile/check means the pass did not run."""
+    pattern: str
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        return None
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+        return self, []
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return [Error(self.line_ref, "internal: regex literal was not lowered (lowering/regexes.py)")]
+
+
+@dataclass
 class NothingExpression(Expression):
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return replace(resolver, self)

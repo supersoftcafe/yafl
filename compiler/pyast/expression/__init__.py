@@ -21,6 +21,7 @@ import pyast.utils as u
 
 from pyast.expression.base import Expression
 from pyast.expression.literal import (
+    RegexExpression,
     StringExpression, IntegerExpression, FloatExpression, BoolExpression, NothingExpression)
 from pyast.expression.tuple_expr import TupleExpression, TupleEntryExpression
 from pyast.expression.access import NamedExpression, DotExpression, LazyExpression, ArrayReadExpression

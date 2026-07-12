@@ -1,0 +1,136 @@
+namespace System
+
+# Complex numbers, mirroring how Float works: Complex64 over Float64,
+# Complex32 over Float32, and `Complex` as the alias for the default width.
+# Each is a [final] two-field class: the simple-class lowering flattens it to
+# a by-value C struct of two floats — no heap, no vtable — and the operators
+# below inline to straight-line FP that clang's SLP vectoriser handles.
+#
+# Complex numbers have NO natural ordering, so neither width implements
+# BasicMath (which requires BasicCompare): `+` and `==`/hashOf come as trait
+# instances (so generic BasicPlus/BasicEquality code accepts them), while
+# `-`, `*`, `/` are plain operator functions.
+#
+# The imaginary part defaults to zero, so `Complex(3.0)` is the real number 3.
+class [final] Complex64(re: Float64, im: Float64 = 0.0)
+class [final] Complex32(re: Float32, im: Float32 = 0.0f32)
+
+typealias Complex : Complex64
+
+# Constructing through the alias name: `Complex(…)` builds a Complex64,
+# exactly as `Float(…)` produces a Float64.
+fun Complex(re: Float, im: Float = 0.0): Complex64
+  ret Complex64(re, im)
+
+let [const] I_RE: Float = 0.0
+let [const] I_IM: Float = 1.0
+let I: Complex = Complex(I_RE, I_IM)
+
+
+# ── Complex64 ───────────────────────────────────────────────────────────────
+
+let [trait] _complex_plus: _ComplexPlus = _ComplexPlus()
+
+typealias [where] _WhereBasicPlusComplex : BasicPlus<System::Complex64>
+
+class _ComplexPlus() : BasicPlus<Complex64>
+  fun `+`(left: Complex64, right: Complex64): Complex64
+    ret Complex64(left.re + right.re, left.im + right.im)
+
+let [trait] _complex_eq: _ComplexEq = _ComplexEq()
+
+typealias [where] _WhereBasicEqualityComplex : BasicEquality<System::Complex64>
+
+class _ComplexEq() : BasicEquality<Complex64>
+  fun `==`(left: Complex64, right: Complex64): System::Bool
+    ret left.re == right.re && left.im == right.im
+  fun hashOf(value: Complex64): System::Int
+    ret hashOf(value.re) * 31 + hashOf(value.im)
+
+fun `-`(right: Complex64): Complex64
+  ret Complex64(-right.re, -right.im)
+
+fun `-`(left: Complex64, right: Complex64): Complex64
+  ret Complex64(left.re - right.re, left.im - right.im)
+
+fun `*`(left: Complex64, right: Complex64): Complex64
+  ret Complex64(left.re * right.re - left.im * right.im,
+                left.re * right.im + left.im * right.re)
+
+# Division by the usual conjugate trick; division by zero follows IEEE
+# (components become inf/nan), exactly as Float division does.
+fun `/`(left: Complex64, right: Complex64): Complex64
+  let d = right.re * right.re + right.im * right.im
+  ret Complex64((left.re * right.re + left.im * right.im) / d,
+                (left.im * right.re - left.re * right.im) / d)
+
+fun conj(z: Complex64): Complex64
+  ret Complex64(z.re, -z.im)
+
+# Modulus (absolute value).
+fun abs(z: Complex64): Float
+  ret sqrt(z.re * z.re + z.im * z.im)
+
+fun isNaN(z: Complex64): System::Bool
+  ret isNaN(z.re) || isNaN(z.im)
+
+let [trait] _show_complex: _ShowComplex = _ShowComplex()
+
+typealias [where] _WhereShowComplex : Show<System::Complex64>
+
+class _ShowComplex() : Show<Complex64>
+  fun show(value: Complex64): System::String
+    ret show(value.re) + (value.im < 0.0 ? "" : "+") + show(value.im) + "i"
+
+
+# ── Complex32 ───────────────────────────────────────────────────────────────
+
+let [trait] _complex32_plus: _Complex32Plus = _Complex32Plus()
+
+typealias [where] _WhereBasicPlusComplex32 : BasicPlus<System::Complex32>
+
+class _Complex32Plus() : BasicPlus<Complex32>
+  fun `+`(left: Complex32, right: Complex32): Complex32
+    ret Complex32(left.re + right.re, left.im + right.im)
+
+let [trait] _complex32_eq: _Complex32Eq = _Complex32Eq()
+
+typealias [where] _WhereBasicEqualityComplex32 : BasicEquality<System::Complex32>
+
+class _Complex32Eq() : BasicEquality<Complex32>
+  fun `==`(left: Complex32, right: Complex32): System::Bool
+    ret left.re == right.re && left.im == right.im
+  fun hashOf(value: Complex32): System::Int
+    ret hashOf(value.re) * 31 + hashOf(value.im)
+
+fun `-`(right: Complex32): Complex32
+  ret Complex32(-right.re, -right.im)
+
+fun `-`(left: Complex32, right: Complex32): Complex32
+  ret Complex32(left.re - right.re, left.im - right.im)
+
+fun `*`(left: Complex32, right: Complex32): Complex32
+  ret Complex32(left.re * right.re - left.im * right.im,
+                left.re * right.im + left.im * right.re)
+
+fun `/`(left: Complex32, right: Complex32): Complex32
+  let d = right.re * right.re + right.im * right.im
+  ret Complex32((left.re * right.re + left.im * right.im) / d,
+                (left.im * right.re - left.re * right.im) / d)
+
+fun conj(z: Complex32): Complex32
+  ret Complex32(z.re, -z.im)
+
+fun abs(z: Complex32): Float32
+  ret sqrt(z.re * z.re + z.im * z.im)
+
+fun isNaN(z: Complex32): System::Bool
+  ret isNaN(z.re) || isNaN(z.im)
+
+let [trait] _show_complex32: _ShowComplex32 = _ShowComplex32()
+
+typealias [where] _WhereShowComplex32 : Show<System::Complex32>
+
+class _ShowComplex32() : Show<Complex32>
+  fun show(value: Complex32): System::String
+    ret show(value.re) + (value.im < 0.0f32 ? "" : "+") + show(value.im) + "i"

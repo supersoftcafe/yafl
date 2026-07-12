@@ -16,7 +16,7 @@ import System::IO
 
 fun [foreign("process_run"),impure] _run_packed(packed: String): _SpawnResult|Int
 
-class [foreign,final] _SpawnResult:
+class [foreign,final] _SpawnResult
   fun [foreign("spawn_exit_code"),sync] _exitCode(): Int
   fun [foreign("spawn_out"),sync]       _out():      String
   fun [foreign("spawn_err"),sync]       _err():      String
