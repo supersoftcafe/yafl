@@ -10,23 +10,30 @@ import compiler as c
 
 
 class TimedTestCase(unittest.TestCase):
-    """TestCase that fails any individual test exceeding _TIMEOUT seconds.
+    """TestCase that fails any individual test exceeding _TIMEOUT seconds of
+    CPU time.
 
-    Uses SIGALRM so the timeout applies to Python compilation time as well as
-    subprocess execution, catching infinite loops in the compiler itself.
+    CPU time (ITIMER_PROF: user + system), NOT wall clock: the guard exists to
+    catch infinite loops in the compiler itself, and those burn CPU no matter
+    what else the machine is doing. A wall-clock alarm made every heavy test's
+    verdict depend on neighbour load (this box is a shared VM — the parallel
+    suite flaked whichever multi-compile test drew the busiest slot), which is
+    exactly the instability a test suite must not have. Hung SUBPROCESSES don't
+    consume our CPU and so never trip this timer — every subprocess.run in this
+    file carries its own wall-clock timeout for that.
     """
     _TIMEOUT = 120
 
     def run(self, result=None):
         def _handler(signum, frame):
-            raise TimeoutError(f"test exceeded {self._TIMEOUT}s")
-        old_handler = signal.signal(signal.SIGALRM, _handler)
-        signal.alarm(self._TIMEOUT)
+            raise TimeoutError(f"test exceeded {self._TIMEOUT}s of CPU time")
+        old_handler = signal.signal(signal.SIGPROF, _handler)
+        signal.setitimer(signal.ITIMER_PROF, self._TIMEOUT)
         try:
             super().run(result)
         finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
+            signal.setitimer(signal.ITIMER_PROF, 0)
+            signal.signal(signal.SIGPROF, old_handler)
 
 _YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
 _YAFLLIB_BUILD_DIR = _YAFLLIB_DIR / "build" / "debug-unix"

@@ -1,0 +1,240 @@
+# bootstrap/resolver.yafl — name resolution, ported from
+# compiler/pyast/resolver.py.
+#
+# The two ideas that matter:
+#  * A BAG is a found set PLUS whether the search was COMPLETE. A name is only
+#    ever committed against a complete bag: an incomplete one may still be
+#    missing the candidate that should win, once whatever blocked the search
+#    (an unresolved `[where]` alias, a NamedSpec along the way) resolves on a
+#    later pass. Combining bags unions the items and ANDs completeness.
+#  * A resolver is a CHAIN of scopes over one immutable statement index; each
+#    layer answers what it knows and delegates the rest outward.
+namespace Bootstrap
+
+import System
+
+# ── names ───────────────────────────────────────────────────────────────────
+# A unique name is `path::name@hash`; queries are written without the hash.
+
+fun simpleName(name: String): String
+  let at = lastIndexOf(name, '@')
+  ret at < 0 ? name : slice(name, 0, at)
+
+# The unqualified simple name: hash suffix AND namespace path both stripped.
+fun bareOfUnique(name: String): String
+  let s = simpleName(name)
+  let ix = lastSep(s, 0, -1)
+  ret ix < 0 ? s : slice(s, ix + 2, length(s))
+
+fun [tail] lastSep(s: String, at: Int, best: Int): Int
+  if at + 1 >= length(s)
+    ret best
+  ret lastSep(s, at + 1,
+              byteAt(s, at) == ':' && byteAt(s, at + 1) == ':' ? at : best)
+
+fun matchName(left: String, right: String): Bool
+  ret simpleName(left) == simpleName(right)
+
+# A candidate matches a query when identical, or when it is the query's
+# fully-qualified form (`query@hash`).
+fun nameMatches(candidate: String, query: String): Bool
+  ret candidate == query || startsWith(candidate, query + "@")
+
+fun lastIndexOf(s: String, c: Int32): Int
+  ret lastIndexLoop(s, 0, -1, c)
+
+fun [tail] lastIndexLoop(s: String, at: Int, best: Int, c: Int32): Int
+  ret at >= length(s)
+    ? best
+    : lastIndexLoop(s, at + 1, byteAt(s, at) == c ? at : best, c)
+
+# Every prefix of a name at its `@` boundaries — the index keys, so a
+# prefix-match lookup is a plain hit rather than a scan.
+fun namePrefixes(name: String): List<String>
+  ret prefixLoop(chain(split(name, "@")), "", List<String>())
+
+fun [tail] prefixLoop(ps: Chain<String>, acc: String,
+                      out: List<String>): List<String>
+  ret match(ps)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => acc == ""
+      ? prefixLoop(l.next, l.value, append(out, l.value))
+      : prefixLoop(l.next, acc + "@" + l.value,
+                   append(out, acc + "@" + l.value))
+
+# ── bags ────────────────────────────────────────────────────────────────────
+
+enum RScope
+  enum ScGlobal()
+  enum ScLocal()
+  enum ScMember()
+  enum ScTrait()
+
+class [final] Found(fName: String, fStmt: PStmt, fScope: RScope)
+
+class [final] Bag(bItems: List<Found>, bComplete: Bool)
+
+fun emptyBag(): Bag
+  ret Bag(List<Found>(), true)
+
+# Nothing found YET: the search was blocked, so absence proves nothing.
+fun incompleteBag(): Bag
+  ret Bag(List<Found>(), false)
+
+fun addBags(a: Bag, b: Bag): Bag
+  ret Bag(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
+
+fun bagSize(b: Bag): Int
+  ret listLen(b.bItems)
+
+fun soleItem(b: Bag): Found|None
+  ret bagSize(b) == 1 ? head(b.bItems) : None
+
+# ── the statement index ─────────────────────────────────────────────────────
+# Built ONCE per statement set: name-prefix → statements, plus the two
+# collection-wide scans the resolver needs. A changed statement set is a NEW
+# index, so there is never a stale one to reason about across passes.
+
+class [final] Statements(stOrdered: List<PStmt>,
+                         stIndex: Dict<String, List<PStmt> >,
+                         stTraits: List<PStmt>,
+                         stWhereAliases: List<PStmt>)
+
+fun buildStatements(stmts: List<PStmt>): Statements
+  ret indexLoop(chain(stmts), Statements(stmts, Dict<String, List<PStmt> >(),
+                                         List<PStmt>(), List<PStmt>()))
+
+fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => indexLoop(l.next, indexOne(acc, l.value))
+
+fun indexOne(acc: Statements, st: PStmt): Statements
+  let name = stmtName(st)
+  if name == ""
+    ret acc                              # imports/namespaces carry no name
+  let withName = addPrefixes(acc, name, st)
+  ret classify(withName, st, name)
+
+fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
+  ret Statements(acc.stOrdered,
+                 addKeys(acc.stIndex, chain(namePrefixes(name)), st),
+                 acc.stTraits, acc.stWhereAliases)
+
+fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
+                   st: PStmt): Dict<String, List<PStmt> >
+  ret match(ks)
+    (nil: ChainEnd) => d
+    (l: ChainLink)  => addKeys(putUnder(d, l.value, st), l.next, st)
+
+fun putUnder(d: Dict<String, List<PStmt> >, key: String,
+             st: PStmt): Dict<String, List<PStmt> >
+  ret match(get(d, key))
+    (prev: List<PStmt>) => put(d, key, append(prev, st))
+    ()                  => put(d, key, append(List<PStmt>(), st))
+
+# Enum VARIANTS are indexed too (a variant name resolves) but are not part of
+# iteration; `[trait]` lets and `[where]` aliases are precomputed.
+fun classify(acc: Statements, st: PStmt, name: String): Statements
+  ret match(st)
+    (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
+    (l: PsLet)  => hasAttr(l.lAttrs, "trait")
+      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st),
+                   acc.stWhereAliases)
+      : acc
+    (ta: PsTypealias) => hasAttr(ta.taAttrs, "where")
+      ? Statements(acc.stOrdered, acc.stIndex, acc.stTraits,
+                   append(acc.stWhereAliases, st))
+      : acc
+    (o: PStmt)  => acc
+
+fun indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => indexVariants(indexVariant(acc, l.value), l.next)
+
+fun indexVariant(acc: Statements, v: PStmt): Statements
+  ret match(v)
+    (e: PsEnum) => indexVariants(addPrefixes(acc, e.eName, v), chain(e.eVariants))
+    (o: PStmt)  => acc
+
+fun hasAttr(attrs: List<PAttr>, name: String): Bool
+  ret attrLoop(chain(attrs), name)
+
+fun [tail] attrLoop(as2: Chain<PAttr>, name: String): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value.attrName == name ? true : attrLoop(l.next, name)
+
+fun lookup(idx: Statements, query: String): List<PStmt>
+  ret match(get(idx.stIndex, query))
+    (found: List<PStmt>) => found
+    ()                   => List<PStmt>()
+
+# ── the resolver chain ──────────────────────────────────────────────────────
+# Each layer answers what it knows and delegates outward. The root holds the
+# statement index; scopes stack over it.
+
+enum Resolver
+  enum RRoot(rrStmts: Statements)
+  enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
+  enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
+
+fun findData(r: Resolver, query: String): Bag
+  ret match(r)
+    (root: RRoot) => globalBag(root.rrStmts, query, false)
+    (d: RData)    => addBags(matchingFound(d.rdNames, query),
+                             findData(d.rdParent, query))
+    (t2: RTypes)  => findData(t2.rtParent, query)
+
+fun findType(r: Resolver, query: String): Bag
+  ret match(r)
+    (root: RRoot) => globalBag(root.rrStmts, query, true)
+    (d: RData)    => findType(d.rdParent, query)
+    (t2: RTypes)  => addBags(matchingFound(t2.rtNames, query),
+                             findType(t2.rtParent, query))
+
+# The root's answer: every indexed statement under the query, split by whether
+# it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let).
+fun globalBag(idx: Statements, query: String, wantType: Bool): Bag
+  ret Bag(globalLoop(chain(lookup(idx, query)), wantType, List<Found>()), true)
+
+fun [tail] globalLoop(ss: Chain<PStmt>, wantType: Bool,
+                      acc: List<Found>): List<Found>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => wantsThis(isTypeStmt(l.value), wantType)
+      ? globalLoop(l.next, wantType,
+                   append(acc, Found(stmtName(l.value), l.value, ScGlobal())))
+      : globalLoop(l.next, wantType, acc)
+
+fun wantsThis(isType: Bool, wantType: Bool): Bool
+  ret isType ? wantType : !wantType
+
+fun isTypeStmt(st: PStmt): Bool
+  ret match(st)
+    (c: PsClass)      => true
+    (e: PsEnum)       => true
+    (ta: PsTypealias) => true
+    (o: PStmt)        => false
+
+fun matchingFound(names: List<Found>, query: String): Bag
+  ret Bag(matchLoop(chain(names), query, List<Found>()), true)
+
+fun [tail] matchLoop(fs: Chain<Found>, query: String,
+                     acc: List<Found>): List<Found>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameMatches(l.value.fName, query)
+      ? matchLoop(l.next, query, append(acc, l.value))
+      : matchLoop(l.next, query, acc)
+
+fun stmtName(st: PStmt): String
+  ret match(st)
+    (f: PsFun)        => f.fName
+    (l: PsLet)        => l.lName
+    (c: PsClass)      => c.cName
+    (e: PsEnum)       => e.eName
+    (ta: PsTypealias) => ta.taName
+    (d: PsDestructure) => d.dName
+    (o: PStmt)        => ""

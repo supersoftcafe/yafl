@@ -75,7 +75,7 @@ ordering constraint lives in `docs/compiler-internals.md` §6. Highlights:
 - **Generics** use `fun f<TVal>(…): TVal where TraitInterface<TVal>` syntax; trait instances are declared as `let [trait] name: Trait<Type> = Impl()`.
 - **Lambdas** use `(x: Type) => expr` and are lowered to named functions.
 - **Pipeline operator** `|>` passes a value (or tuple) into a lambda/function.
-- **Bind operator** `?>` is monadic bind for `T|None` types.
+- **Bind operator** `?>` threads unions: the lambda's typed parameter names the member it handles, every other member (None, error classes) passes through — `stdlib/result.yafl`; an `(io, v)` overload serves IO chains.
 - **`match`** destructures union types.
 - `main()` must return `System::Int` (bigint) with no parameters.
 

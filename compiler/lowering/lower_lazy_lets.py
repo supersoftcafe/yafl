@@ -105,8 +105,12 @@ def check_lazy_forward_refs(statements: list[s.Statement]) -> list[Error]:
             _check_block(node.statements)
         return rw.UNCHANGED
 
+    # ONE resolver for the whole walk: it indexes the entire statement list, so
+    # rebuilding it per statement re-indexed the whole program n times — O(n^2),
+    # and the dominant cost of compiling anything large.
+    resolver = g.ResolverRoot(statements)
     for stmt in statements:
-        stmt.search_and_replace(g.ResolverRoot(statements), _walk)
+        stmt.search_and_replace(resolver, _walk)
     return errors
 
 

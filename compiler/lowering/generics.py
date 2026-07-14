@@ -623,11 +623,23 @@ def __generic_instance_refs(
     return extra
 
 
-def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statement]:
+# Monomorphisation-round bound: legitimate transitive instantiation chains
+# stabilise in a handful of rounds; a loop still minting new instantiations
+# after this many is deepening without bound (mutual polymorphic recursion —
+# the direct case is caught structurally, see the detector in the loop).
+_MAX_MONO_ROUNDS = 64
+
+
+def __convert_generics_iterative(statements: list[s.Statement]) -> "tuple[list[s.Statement], list]":
     """
     Iteratively convert generics to concrete specialized versions.
-    Keeps iterating until no new specialized statements are created.
+    Keeps iterating until no new specialized statements are created — or until
+    an instantiation's type arguments exceed _MAX_TYPE_ARG_DEPTH, which means
+    polymorphic recursion is minting ever-deeper instantiations (returned as
+    compile errors, second element).
     """
+    from parsing.parselib import Error
+    from parsing.tokenizer import LineRef
     # Track ALL specialized enum names across all iterations so that
     # __finalize_specialized_enum_specs can rebuild their _enum_spec after
     # every redirect pass.  A specialized enum's all_fields may reference
@@ -643,7 +655,7 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statem
     # name in a constraint can be re-inflated to the structure the unifier needs.
     seen_mono_refs: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
 
-    while True:
+    for _round in range(_MAX_MONO_ROUNDS):
         # Step 1: Find all concrete instantiations
         data_refs, type_refs = __find_concrete_instantiations(statements)
         seen_mono_refs |= data_refs | type_refs
@@ -659,6 +671,8 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statem
         if not data_refs and not type_refs:
             # No concrete instantiations found - we're done iterating
             break
+
+
 
         # Step 2: Create specialized versions for matching NamedStatements
         specialized = __create_specialized_statements(statements, data_refs, type_refs)
@@ -704,10 +718,35 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> list[s.Statem
             # No new specialisations were needed; refs have been redirected.
             break
 
+    else:
+        # Still minting new instantiations after every allowed round: the
+        # instantiation graph is deepening without bound — polymorphic
+        # recursion (`depth<T>` calling `depth<Wrap<T>>` needs a fresh
+        # `depth<Wrap<Wrap<...>>>` per round, so its per-generic instantiation
+        # count is about the round cap; legitimate generics sit far below).
+        # Blame the generics with runaway counts, at their declarations.
+        from collections import Counter
+        counts = Counter(n for n, _ in seen_mono_refs)
+        offenders = sorted(n for n, cnt in counts.items() if cnt >= _MAX_MONO_ROUNDS // 2)
+        by_name = {stmt.name: stmt for stmt in statements}
+        if offenders:
+            return statements, [Error(
+                by_name[n].line_ref if n in by_name else LineRef("$generics", 1, 1),
+                f"polymorphic recursion: `{g.simple_name(g.bare_name(n))}` is "
+                f"instantiated at ever-deeper type arguments ({counts[n]} distinct "
+                f"instantiations without stabilising) — a recursive call must use "
+                f"the function's own type parameters, not a compound of them "
+                f"(e.g. Wrap<T>)") for n in offenders]
+        return statements, [Error(LineRef("$generics", 1, 1),
+            f"generic instantiation did not stabilise after {_MAX_MONO_ROUNDS} "
+            f"rounds — likely polymorphic recursion through mutually recursive "
+            f"generics; recursive calls must use the functions' own type "
+            f"parameters")]
+
     # After iterations are stable, prune unused generics
     statements = __prune_unused_generics(statements)
 
-    return statements
+    return statements, []
 
 
 def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statement]:
@@ -890,7 +929,52 @@ def __refresh_enum_spec_all_fields(statements: list[s.Statement]) -> list[s.Stat
     return [rw.resolved(stmt.search_and_replace(resolver, refresh), stmt) for stmt in statements]
 
 
-def convert_generic_to_concrete(statements: list[s.Statement]) -> list[s.Statement]:
+def report_unresolved_generic_calls(statements: list[s.Statement]) -> "list":
+    """Post-monomorphisation guard: a reference from NON-generic code to a
+    still-generic function means call-site inference could not ground its type
+    arguments (nothing in the arguments or the expected type mentioned them).
+    Report that at the use site as a compile error — the alternative is a
+    checked_cast crash deep inside codegen once the pruned template's type
+    comes back None."""
+    from parsing.parselib import Error
+    from pyast.expression.access import NamedExpression
+    errors: list[Error] = []
+    resolver = g.ResolverRoot(statements)
+
+    def scan(res: g.Resolver, thing):
+        if not isinstance(thing, NamedExpression):
+            return rw.UNCHANGED
+        datas = res.find_data(thing.name)
+        unresolved = False
+        if (len(datas) == 1
+                and isinstance(datas[0].statement, s.FunctionStatement)
+                and (datas[0].statement.type_params or ())):
+            # The template survived pruning: the use is fine only when it
+            # carries a full, ground set of type arguments.
+            tps = thing.type_params or ()
+            unresolved = (len(tps) != len(datas[0].statement.type_params)
+                          or any(t.has_free_placeholders(tp, res) for tp in tps))
+        elif (not datas and '@' in thing.name and thing.type_params
+                and any(t.has_free_placeholders(tp, res) for tp in thing.type_params)):
+            # Dangling reference: the name WAS resolved (it carries the @-hash)
+            # but its generic template has been pruned, and the use still holds
+            # unbound placeholders — inference never grounded this call.
+            unresolved = True
+        if unresolved:
+            name = g.simple_name(g.bare_name(thing.name))
+            errors.append(Error(thing.line_ref,
+                f"cannot infer the type arguments of generic function "
+                f"`{name}` here — write them explicitly: {name}<...>(...)"))
+        return rw.UNCHANGED
+
+    for stmt in statements:
+        if getattr(stmt, "type_params", None):
+            continue  # a surviving generic template: its body is legitimately generic
+        stmt.search_and_replace(resolver, scan)
+    return errors
+
+
+def convert_generic_to_concrete(statements: list[s.Statement]) -> "tuple[list[s.Statement], list]":
     """
     Monomorphization pass: Convert generic statements to concrete specialized versions.
 
@@ -922,7 +1006,9 @@ def convert_generic_to_concrete(statements: list[s.Statement]) -> list[s.Stateme
     Second iteration finds helper<Int>, creates helper$generic$int32.
     Third iteration finds no new instantiations, prunes original generics.
     """
-    converted = __convert_generics_iterative(statements)
+    converted, errors = __convert_generics_iterative(statements)
+    if errors:
+        return statements, errors
     converted = __refresh_enum_spec_all_fields(converted)
     resolved = __resolve_trait_references(converted)
-    return resolved
+    return resolved, []

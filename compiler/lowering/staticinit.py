@@ -37,7 +37,19 @@ def _trace_to_constant(val: RParam, value_map: dict[str, RParam], globals: dict)
         return val  # zero-fill — renders as a zero initialiser; unit enum
                     # variants are built entirely from $tag + ZeroOf slots
     if isinstance(val, NewStruct):
-        return val  # Intermediate: allows StructField to extract fields
+        # Trace the struct's OWN values too: a struct is only a compile-time
+        # constant when every field is. Returning it unexamined emitted static
+        # data referencing INLINED LOCALS (`._0 = plFile_..._inl1062`), which
+        # do not exist at file scope. Rebuilt from the traced constants so
+        # StructField extraction still works — and so the promotion still
+        # fires for a genuinely constant graph built through an inlined helper.
+        traced: list[tuple[str, RParam]] = []
+        for fname, fval in val.values:
+            const = _trace_to_constant(fval, value_map, globals)
+            if const is None:
+                return None
+            traced.append((fname, const))
+        return NewStruct(tuple(traced))
     if isinstance(val, StackVar):
         src = value_map.get(val.name)
         return None if src is None else _trace_to_constant(src, value_map, globals)

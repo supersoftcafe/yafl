@@ -1,0 +1,248 @@
+# bootstrap/astdump.yafl — the PORT 2 contract dump, YAFL side. Must produce
+# byte-for-byte the output of compiler/tests/astdump.py over the same tree:
+# one `Kind|line:col|salient` line per node, two spaces of indent per depth.
+# Strings re-escape with Python's repr rules (values are stored UNESCAPED).
+namespace Bootstrap
+
+import System
+
+fun dLine(sb: StringBuilder, depth: Int, kind: String,
+          lr: PLine, extra: String): StringBuilder
+  ret append(sb, indentOf(depth) + kind + "|" + String(lr.plLine) + ":"
+             + String(lr.plCol) + "|" + extra + "\n")
+
+fun [tail] indentLoop(n: Int, acc: String): String
+  ret n == 0 ? acc : indentLoop(n - 1, acc + "  ")
+
+fun indentOf(depth: Int): String
+  ret indentLoop(depth, "")
+
+# ── Python str repr ─────────────────────────────────────────────────────────
+
+fun pyRepr(s: String): String
+  let useDouble = containsByte(s, '\'') && !containsByte(s, '"')
+  let q = useDouble ? "\"" : "'"
+  ret q + reprBody(s, 0, useDouble ? '"' : '\'', "") + q
+
+fun [tail] reprBody(s: String, at: Int, quote: Int32,
+                    acc: String): String
+  if at >= length(s)
+    ret acc
+  let c = byteAt(s, at)
+  ret reprBody(s, at + 1, quote, acc + reprByte(c, quote))
+
+fun reprByte(c: Int32, quote: Int32): String
+  if c == '\\'
+    ret "\\\\"
+  if c == quote
+    ret "\\" + asciiToString(quote)
+  if c == '\n'
+    ret "\\n"
+  if c == '\r'
+    ret "\\r"
+  if c == '\t'
+    ret "\\t"
+  if c < 32i32 || c == 127i32
+    ret "\\x" + hexByte(Int(c))
+  ret asciiToString(c)
+
+fun hexByte(v: Int): String
+  let hexd = "0123456789abcdef"
+  ret slice(hexd, v / 16, v / 16 + 1) + slice(hexd, v % 16, v % 16 + 1)
+
+# ── type spelling ────────────────────────────────────────────────────────────
+
+fun tyStr(o: Spec|None): String
+  ret match(o)
+    (ty: Spec) => tyOf(ty)
+    ()        => "-"
+
+fun tyOf(ty: Spec): String
+  ret match(ty)
+    (n: SNamed)    => "N(" + n.snName + (isEmpty(n.snParams) ? ""
+                        : "<" + tyList(n.snParams) + ">") + ")"
+    (b: SBuiltin)  => "B(" + b.sbName + ")"
+    (t2: STuple)   => "T(" + tyEnts(t2.stEntries) + ")"
+    (u: SCombination)    => "U(" + joinBar(u.scTypes) + ")"
+    (c: SCallable) => "F(" + tyOf(c.scParams2) + "->" + tyStr(c.scResult) + ")"
+    (g: SGeneric) => "G(" + g.sgName + ")"
+    (c2: SClass)      => "C(" + c2.scName + (isEmpty(c2.scParams) ? ""
+                          : "<" + tyList(c2.scParams) + ">") + ")"
+    (af: SArrayField) => "ArrayFieldSpec"
+    # Compile-phase only — the parser never builds these, so (like Python's
+    # dump) they fall through to the bare spec name.
+    (e: SEnum)        => "EnumSpec"
+    (ls: SLazyStub)   => "LazyStubSpec"
+
+fun tyList(ts: List<Spec>): String
+  ret join(map(ts, (t2: Spec) => tyOf(t2)), ",")
+
+fun joinBar(ts: List<Spec>): String
+  ret join(map(ts, (t2: Spec) => tyOf(t2)), "|")
+
+fun tyEnts(es: List<SEntry>): String
+  ret join(map(es, (en: SEntry) => tyEnt(en)), ",")
+
+fun tyEnt(en: SEntry): String
+  let d = match(en.seDefault)
+    (x: PExpr) => "=D"
+    ()         => ""
+  ret en.seName + ":" + tyStr(en.seType) + d
+
+fun attrsStr(attrs: List<PAttr>): String
+  if isEmpty(attrs)
+    ret "-"
+  ret join(map(attrs, (a: PAttr) => attrStr(a)), ",")
+
+fun attrStr(a: PAttr): String
+  ret match(a.attrValue)
+    (x: PExpr) => a.attrName + "=<expr>"
+    ()         => a.attrName
+
+fun gensStr(gs: List<PGen>): String
+  ret join(map(gs, (g2: PGen) => g2.genName), ",")
+
+fun wheresStr(ws: List<Spec>): String
+  ret join(map(ws, (w: Spec) => tyOf(w)), ",")
+
+# ── expression walk ──────────────────────────────────────────────────────────
+
+fun dumpExprOpt(o: PExpr|None, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(o)
+    (x: PExpr) => dumpExpr(x, depth, sb)
+    ()         => append(sb, indentOf(depth) + "None|-|\n")
+
+fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(x)
+    (i: PeInt)    => dLine(sb, depth, "Int", i.peiLine,
+                           String(i.value) + ":" + String(i.precision))
+    (f: PeFloat)  => dLine(sb, depth, "Float", f.pefLine,
+                           f.floatText + ":" + String(f.fPrecision))
+    (b: PeBool)   => dLine(sb, depth, "Bool", b.pebLine, b.boolValue ? "True" : "False")
+    (s2: PeStr)   => dLine(sb, depth, "Str", s2.pesLine, pyRepr(s2.strValue))
+    (r: PeRegex)  => dLine(sb, depth, "Regex", r.perLine, pyRepr(r.pattern))
+    (n: PeName)   => dLine(sb, depth, "Name", n.penLine,
+                           n.refName + "|" + tyList(n.refTypeParams))
+    (d: PeDot)    => dLine(sb, depth, "Dot", d.pedLine, d.member)
+      |> (s1) => dumpExpr(d.base, depth + 1, s1)
+    (c: PeCall)   => dLine(sb, depth, "Call", c.pecLine, "")
+      |> (s1) => dumpExpr(c.function, depth + 1, s1)
+      |> (s2) => dumpExpr(c.parameter, depth + 1, s2)
+    (tu: PeTuple) => dLine(sb, depth, "Tuple", tu.petLine, "")
+      |> (s1) => dumpTupEnts(tu.exprs, tu.petLine, depth + 1, s1)
+    (t3: PeTernary) => dLine(sb, depth, "Ternary", t3.pety, "")
+      |> (s1) => dumpExpr(t3.condition, depth + 1, s1)
+      |> (s2) => dumpExpr(t3.trueResult, depth + 1, s2)
+      |> (s3) => dumpExpr(t3.falseResult, depth + 1, s3)
+    (lm: PeLambda) => dLine(sb, depth, "Lambda", lm.pelLine, "")
+      |> (s1) => dumpStmt(lm.lamParams, depth + 1, s1)
+      |> (s2) => dumpExpr(lm.lamBody, depth + 1, s2)
+    (bk: PeBlock)  => dLine(sb, depth, "Block", bk.pebkLine, bk.blockTag)
+      |> (s1) => dumpStmts(bk.blockStmts, depth + 1, s1)
+      |> (s2) => dumpExpr(bk.blockValue, depth + 1, s2)
+    (m: PeMatch)   => dLine(sb, depth, "Match", m.pemLine, "")
+      |> (s1) => dumpExpr(m.subject, depth + 1, s1)
+      |> (s2) => dumpArms(m.arms, depth + 1, s2)
+    (bo: PeBuiltinOp) => dLine(sb, depth, "BuiltinOp", bo.peboLine, tyOf(bo.opType))
+      |> (s1) => dumpExpr(bo.opName, depth + 1, s1)
+      |> (s2) => dumpExpr(bo.opParams, depth + 1, s2)
+    (pl: PeParallel)  => dLine(sb, depth, "Parallel", pl.pepLine, "")
+      |> (s1) => dumpExpr(pl.parParams, depth + 1, s1)
+    (ng: PeNothing)   => dLine(sb, depth, "Nothing", ng.pengLine, "")
+    (ne: PeNewEnum)   => dLine(sb, depth, "NewEnum", ne.penewLine,
+                               ne.rootName + "|" + ne.leafName + "|"
+                               + join(sort(ne.fieldArgs), ","))
+    (nw: PeNew)       => dLine(sb, depth, "New", nw.penwLine, tyOf(nw.newType))
+      |> (s1) => dumpExpr(nw.newParam, depth + 1, s1)
+    (ar: PeArrayRead) => dLine(sb, depth, "ArrayRead", ar.pearLine, "")
+      |> (s1) => dumpExpr(ar.arrObj, depth + 1, s1)
+      |> (s2) => dumpExpr(ar.arrIndex, depth + 1, s2)
+    # Compile-phase only — the parser never builds one.
+    (cv: PeConvert)   => dLine(sb, depth, "Convert", cv.pecvLine,
+                               tyOf(cv.convTarget))
+      |> (s1) => dumpExpr(cv.convInner, depth + 1, s1)
+
+fun [tail] dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth: Int,
+                       sb: StringBuilder): StringBuilder
+  ret match(head(es))
+    (en: PTupEnt) => dumpTupEnts(tail(es), lr, depth,
+        dumpExpr(en.tupValue, depth + 1,
+          dLine(sb, depth, "Entry", lr,
+                en.tupName + "|" + (en.tupSpread ? "*" : ""))))
+    ()            => sb
+
+fun [tail] dumpArms(arms: List<PArm>, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(head(arms))
+    (a: PArm) => dumpArms(tail(arms), depth, dumpArm(a, depth, sb))
+    ()        => sb
+
+fun dumpArm(a: PArm, depth: Int, sb: StringBuilder): StringBuilder
+  let opened = dLine(sb, depth, "Arm", a.parmLine, a.armName + "|" + tyStr(a.armType))
+  let lits = dumpLits(a.armLiterals, depth + 1, opened)
+  let guarded = match(a.armGuard)
+    (g2: PExpr) => dumpExpr(g2, depth + 2, dLine(lits, depth + 1, "Guard", a.parmLine, ""))
+    ()          => lits
+  ret dumpExpr(a.armBody, depth + 1, guarded)
+
+fun [tail] dumpLits(ls: List<PLit>, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(head(ls))
+    (l: PLit) => dumpLits(tail(ls), depth, dumpLit(l, depth, sb))
+    ()        => sb
+
+fun dumpLit(l: PLit, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(l)
+    (x: PlExpr)  => dumpExpr(x.litExpr, depth, sb)
+    (r: PlRange) => dumpExpr(r.rangeHi, depth + 1,
+                      dumpExpr(r.rangeLo, depth + 1,
+                        dLine(sb, depth, "Range", r.plrLine, "")))
+
+# ── statement walk ───────────────────────────────────────────────────────────
+
+fun [tail] dumpStmts(ss: List<PStmt>, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(head(ss))
+    (st: PStmt) => dumpStmts(tail(ss), depth, dumpStmt(st, depth, sb))
+    ()          => sb
+
+fun dumpStmt(st: PStmt, depth: Int, sb: StringBuilder): StringBuilder
+  ret match(st)
+    (f: PsFun) => dLine(sb, depth, "Fun", f.psfLine,
+                        f.fName + "|" + attrsStr(f.fAttrs) + "|" + gensStr(f.fGens)
+                        + "|" + tyStr(f.fRet) + "|" + wheresStr(f.fWheres))
+      |> (s1) => dumpStmt(f.fParams, depth + 1, s1)
+      |> (s2) => dumpExprOpt(f.fBody, depth + 1, s2)
+    (d: PsDestructure) => dLine(sb, depth, "Destructure", d.psdLine,
+                                d.dName + "|" + attrsStr(d.dAttrs) + "|" + tyStr(d.dType))
+      |> (s1) => dumpStmts(d.dTargets, depth + 1, s1)
+    (l: PsLet) => dLine(sb, depth, "Let", l.pslLine,
+                        l.lName + "|" + attrsStr(l.lAttrs) + "|" + gensStr(l.lGens)
+                        + "|" + tyStr(l.lType))
+      |> (s1) => dumpExprOpt(l.lDefault, depth + 1, s1)
+    (c: PsClass) => dLine(sb, depth, c.cIsInterface ? "Interface" : "Class", c.pscLine,
+                          c.cName + "|" + attrsStr(c.cAttrs) + "|" + gensStr(c.cGens)
+                          + "|" + wheresStr(c.cImplements) + "|" + wheresStr(c.cWheres))
+      |> (s1) => dumpStmt(c.cParams, depth + 1, s1)
+      |> (s2) => dumpStmts(c.cMembers, depth + 1, s2)
+    (e: PsEnum) => dLine(sb, depth, "Enum", e.pseLine,
+                         e.eName + "|" + gensStr(e.eGens) + "|"
+                         + (e.eHasParams ? "True" : "False"))
+      |> (s1) => dumpStmt(e.eParams, depth + 1, s1)
+      |> (s2) => dumpStmts(e.eVariants, depth + 1, s2)
+    (ta: PsTypealias) => dLine(sb, depth, "Typealias", ta.pstLine,
+                              ta.taName + "|" + gensStr(ta.taGens) + "|" + tyOf(ta.taType))
+    (r: PsRet)    => dumpExpr(r.retValue, depth + 1, dLine(sb, depth, "Ret", r.psrLine, ""))
+    (i2: PsIf)    => dLine(sb, depth, "If", i2.psifLine, "")
+      |> (s1) => dumpExpr(i2.ifCond, depth + 1, s1)
+      |> (s2) => dumpStmts(i2.ifTrue, depth + 1, s2)
+      |> (s3) => dumpStmts(i2.ifFalse, depth + 1, s3)
+    (ei: PsElseIf) => dLine(sb, depth, "ElseIf", ei.pseiLine, "")
+      |> (s1) => dumpExpr(ei.eiCond, depth + 1, s1)
+      |> (s2) => dumpStmts(ei.eiStmts, depth + 1, s2)
+    (el: PsElse)  => dLine(sb, depth, "Else", el.pselLine, "")
+      |> (s1) => dumpStmts(el.elStmts, depth + 1, s1)
+    (ac: PsAction) => dLine(sb, depth, "Action", ac.psaLine, "")
+      |> (s1) => dumpExpr(ac.action, depth + 1, s1)
+    (im: PsImport)   => dLine(sb, depth, "ImportStatement", im.psiLine, "")
+    (ns: PsNamespace) => dLine(sb, depth, "NamespaceStatement", ns.psnLine, "")
+
+fun dumpProgram(stmts: List<PStmt>): String
+  ret toString(dumpStmts(stmts, 0, StringBuilder()))

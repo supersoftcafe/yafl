@@ -48,6 +48,10 @@ fun main(): System::Int
 
 
 class TestEarlyReturnInline(TestCase):
+    # Four full stdlib compiles in one test (~110s unloaded) — the default
+    # 120s budget flakes under a loaded parallel suite run.
+    _TIMEOUT = 240
+
     def test_all_optimisation_levels(self):
         for opt in (0, 1, 2, 3):
             with self.subTest(optimisation=opt):

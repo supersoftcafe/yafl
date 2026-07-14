@@ -1,0 +1,139 @@
+# bootstrap/literals.yafl — literal decoding ported from parser.py: string
+# escape decoding (_unescape_string incl. \xNN, \uXXXX, \u{...} to UTF-8) and
+# integer lexeme decoding (radix prefixes, i8/i16/i32/i64 suffix precision,
+# underscore separators). Errors return the message; the builder turns them
+# into parse errors exactly where parser.py does.
+namespace Bootstrap
+
+import System
+
+# ── hex helpers ──────────────────────────────────────────────────────────────
+
+fun isHexByte(c: Int32): Bool
+  ret match(c)
+    ('0' .. '9', 'a' .. 'f', 'A' .. 'F') => true
+    ()                                   => false
+
+fun hexVal(c: Int32): Int32
+  if c <= '9'
+    ret c - '0'
+  ret c <= 'F' ? c - 'A' + 10i32 : c - 'a' + 10i32
+
+fun [tail] hexSpan(s: String, at: Int, stop: Int, acc: Int32): Int32
+  ret at >= stop ? acc : hexSpan(s, at + 1, stop, acc * 16i32 + hexVal(byteAt(s, at)))
+
+fun [tail] allHex(s: String, at: Int, stop: Int): Bool
+  ret at >= stop ? true : isHexByte(byteAt(s, at)) && allHex(s, at + 1, stop)
+
+# Codepoint → UTF-8 comes from stdlib Char(Int32); only validity is ours.
+
+fun codepointOk(cp: Int32): Bool
+  ret cp <= 1114111i32 && !(cp >= 55296i32 && cp <= 57343i32)
+
+# ── string unescape (the body between the quotes) ───────────────────────────
+
+class [final] Unescaped(uText: String, uErr: String)   # uErr "" = success
+
+fun unescape(raw: String): Unescaped
+  ret unescapeLoop(raw, 0, "")
+
+fun [tail] unescapeLoop(raw: String, i: Int, acc: String): Unescaped
+  if i >= length(raw)
+    ret Unescaped(acc, "")
+  let c = byteAt(raw, i)
+  if c != '\\'
+    ret unescapeLoop(raw, i + 1, acc + slice(raw, i, i + 1))
+  if i + 1 >= length(raw)
+    ret Unescaped("", "dangling backslash in string literal")
+  let nxt = byteAt(raw, i + 1)
+  if nxt == 'x'
+    if i + 4 > length(raw) || !allHex(raw, i + 2, i + 4)
+      ret Unescaped("", "\\x escape needs exactly two hex digits")
+    ret unescapeLoop(raw, i + 4, acc + Char(hexSpan(raw, i + 2, i + 4, 0i32)))
+  if nxt == 'u'
+    ret unescapeU(raw, i, acc)
+  let simple = simpleEscape(nxt)
+  if simple == ""
+    ret Unescaped("", "unknown string escape: \\" + asciiToString(nxt))
+  ret unescapeLoop(raw, i + 2, acc + (simple == "@0" ? asciiToString(0i32) : simple))
+
+# '\0' produces a NUL byte, which cannot ride a String return marker — encode
+# it as the sentinel "@0" from simpleEscape and expand at the call site above.
+fun simpleEscape(c: Int32): String
+  if c == 'n'
+    ret "\n"
+  if c == 'r'
+    ret "\r"
+  if c == 't'
+    ret "\t"
+  if c == '0'
+    ret "@0"
+  if c == '\\'
+    ret "\\"
+  if c == '"'
+    ret "\""
+  if c == '\''
+    ret "'"
+  ret ""
+
+fun unescapeU(raw: String, i: Int, acc: String): Unescaped
+  if i + 2 < length(raw) && byteAt(raw, i + 2) == '{'
+    let close = findByte(raw, '}', i + 3)
+    if close < 0
+      ret Unescaped("", "unterminated \\u{…} escape")
+    let n = close - (i + 3)
+    if n < 1 || n > 6 || !allHex(raw, i + 3, close)
+      ret Unescaped("", "\\u{…} escape needs one to six hex digits")
+    let cp = hexSpan(raw, i + 3, close, 0i32)
+    ret codepointOk(cp)
+      ? unescapeLoop(raw, close + 1, acc + Char(cp))
+      : Unescaped("", cpError(cp))
+  if i + 6 > length(raw) || !allHex(raw, i + 2, i + 6)
+    ret Unescaped("", "\\u escape needs exactly four hex digits (or use \\u{…})")
+  let cp = hexSpan(raw, i + 2, i + 6, 0i32)
+  ret codepointOk(cp)
+    ? unescapeLoop(raw, i + 6, acc + Char(cp))
+    : Unescaped("", cpError(cp))
+
+fun cpError(cp: Int32): String
+  ret cp > 1114111i32
+    ? "codepoint out of range (max 10FFFF)"
+    : "surrogate codepoints are not valid scalars"
+
+# ── integer lexeme → (value, precision) ─────────────────────────────────────
+# Mirrors __integer(): radix by 0x/0b/0o prefix, i8/i16/i32/i64 suffix sets
+# the precision (0 = bigint), underscores ignored.
+
+class [final] IntLex(ilValue: Int, ilPrecision: Int, ilErr: String)
+
+fun decodeInt(lexeme: String): IntLex
+  let radix = startsWith(lexeme, "0x") || startsWith(lexeme, "0X") ? 16
+    : startsWith(lexeme, "0b") || startsWith(lexeme, "0B") ? 2
+    : startsWith(lexeme, "0o") || startsWith(lexeme, "0O") ? 8
+    : 10
+  let from = radix == 10 ? 0 : 2
+  let prec = endsWith(lexeme, "i8") ? 8
+    : endsWith(lexeme, "i16") ? 16
+    : endsWith(lexeme, "i32") ? 32
+    : endsWith(lexeme, "i64") ? 64
+    : 0
+  let trimr = prec == 8 ? 2 : prec == 0 ? 0 : 3
+  ret intLoop(lexeme, from, length(lexeme) - trimr, radix, 0)
+
+fun [tail] intLoop(s: String, at: Int, stop: Int, radix: Int, acc: Int): IntLex
+  if at >= stop
+    ret IntLex(acc, precOf(s), "")
+  let c = byteAt(s, at)
+  if c == '_'
+    ret intLoop(s, at + 1, stop, radix, acc)
+  let v = isHexByte(c) ? Int(hexVal(c)) : -1
+  ret v < 0 || v >= radix
+    ? IntLex(0, 0, "invalid digit in integer literal")
+    : intLoop(s, at + 1, stop, radix, acc * radix + v)
+
+fun precOf(lexeme: String): Int
+  ret endsWith(lexeme, "i8") ? 8
+    : endsWith(lexeme, "i16") ? 16
+    : endsWith(lexeme, "i32") ? 32
+    : endsWith(lexeme, "i64") ? 64
+    : 0

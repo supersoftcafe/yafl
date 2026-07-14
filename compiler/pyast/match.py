@@ -238,6 +238,7 @@ class _Emitter:
     arm_results: list = field(default_factory=list)   # (exit_label, value) per arm
     end_label: str = "match_end"
     counter: int = 0
+    fallback_label: str | None = None
 
     def ops(self, *operations: cg_o.Op, stack_vars: tuple = ()) -> None:
         self.bundles.append(g.OperationBundle(stack_vars=stack_vars, operations=operations))
@@ -320,6 +321,16 @@ class _Emitter:
         self.ops(cg_o.Jump(next_label))
         self.ops(cg_o.Label(pass_label))
 
+    def guard_to_fallback(self, guard: cg_p.RParam) -> None:
+        """Route a passing guard straight to the fallback body. Used when one
+        arm handles both an early dispatch case (NULL, which must be tested
+        before any vtable-dereferencing guard) and the fall-through: the body
+        is emitted exactly once, in fallback(), so its stack variables keep
+        the SSA single-definition invariant."""
+        if self.fallback_label is None:
+            self.fallback_label = f"match_fallback_{self.next_index()}"
+        self.ops(cg_o.JumpIf(self.fallback_label, guard))
+
     def fallback(self, arm: MatchArm | None,
                  bind: tuple[g.OperationBundle, g.Resolver] | None,
                  abort_reason: str) -> None:
@@ -327,6 +338,8 @@ class _Emitter:
         Abort — control must not reach the join with the result slot
         uninitialised, and the Abort keeps the unreachable path out of the
         Phi."""
+        if self.fallback_label is not None:
+            self.ops(cg_o.Label(self.fallback_label))
         if arm is not None:
             self.__body(arm, bind, "else")
         else:
@@ -644,10 +657,19 @@ class MatchExpression(e.Expression):
         else:
             assert isinstance(subj_type, t.CombinationSpec)
             remaining = {}  # id -> (printable name, TypeSpec)
-            for v in subj_type.types:
+            # repr_members, not raw .types: the canonical member set folds
+            # nested unions and variants subsumed by their own enum — the raw
+            # spelling may still say `(E3|W) | EU`. An ENUM member decomposes
+            # into its leaves so per-variant arms can cover it piecewise.
+            for v in subj_type.repr_members():
                 uid = v.as_unique_id_str()
                 if uid is None:
                     return []  # Subject not yet fully resolved
+                # NOTE: an enum member is deliberately NOT decomposed into
+                # leaves here — per-variant arms through a union subject need
+                # narrowing dispatch the union reprs cannot emit yet (a
+                # decomposed check unguards a codegen hole: segfault). Match
+                # the whole enum member, then narrow in a nested match.
                 remaining[uid] = (getattr(v, "name", uid), v)
             remaining_for_err = {uid: name for uid, (name, _) in remaining.items()}
             missing_name = lambda ids: " | ".join(remaining_for_err[i] for i in ids)
@@ -662,7 +684,7 @@ class MatchExpression(e.Expression):
             """
             if isinstance(arm_type, t.CombinationSpec):
                 out: set[str] = set()
-                for member in arm_type.types:
+                for member in arm_type.repr_members():
                     out |= arm_covered_ids(member)
                 return out
             out = set()

@@ -245,13 +245,27 @@ This is equivalent to `System::print(formatUser(getUser(id)))`.
 
 ### Bind
 
-The bind operator `?>` chains operations that may return `None`. If the left side evaluates to `None`, the whole expression short-circuits to `None`; otherwise the inner value is bound and the right-hand expression is evaluated:
+The bind operator `?>` threads a union through a chain of stages. The lambda's
+typed parameter names the member it handles; every other member of the union
+passes through unchanged. With a `T|None` value, `None` short-circuits:
 
 ```yafl
-findUser(id) ?> (user) => findProfile(user) ?> (profile) => profile.name
+findUser(id) ?> (user: User) => findProfile(user) ?> (profile: Profile) => profile.name
 ```
 
-If any step in the chain returns `None`, the entire expression returns `None`.
+The same operator threads error unions — each stage's error passes through
+untouched, so a compile-or-fail pipeline reads top to bottom:
+
+```yafl
+tokenize(src)
+  ?> (toks: List<Tok>)    => parse(toks)          # List<Tok>|Error -> Ast|Error
+  ?> (ast: Ast)           => emit(ast)            # Ast|Error       -> String|Error
+```
+
+A stage's result type is its lambda's result unioned with the passed-through
+members; union set semantics collapse the duplicates, so a chain of
+`X|Error` stages stays `…|Error`. The parameter's type annotation is what
+routes the union, so it is required.
 
 ## Lambda expressions and higher-order functions
 

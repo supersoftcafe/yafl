@@ -226,3 +226,32 @@ class TestHelperNestedInTailHost(TestCase):
         rc, out = compile_and_run_stdlib_capture(_CAPTURING_HELPER_IN_TAIL_HOST, timeout=30)
         self.assertEqual(0, rc, f"capturing helper in [tail] host failed; stdout:\n{out}")
 
+
+
+_EARLY_RETURN_TAIL = """\
+import System
+
+# Self-calls in tail position INSIDE early-return `if` statements — the
+# natural shape for a loop body with base cases first. Every `ret` here
+# supplies the function-body block's value, so each is a genuine tail call.
+fun [tail] count(n: System::Int, acc: System::Int): System::Int
+  if n == 0
+    ret acc
+  if n % 2 == 0
+    ret count(n - 1, acc + 2)
+  let bump = 1
+  ret count(n - 1, acc + bump)
+
+fun main(): System::Int
+  # 1_000_000 iterations: only a real loop survives; sum = 1.5 per pair.
+  print(String(count(10, 0)) + "\\n")
+  print(String(count(1000000, 0)) + "\\n")
+  ret 0
+"""
+
+
+class TestTailEarlyReturn(TestCase):
+    def test_early_return_self_calls_are_tail(self):
+        rc, out = compile_and_run_stdlib_capture(_EARLY_RETURN_TAIL, timeout=30)
+        self.assertEqual(0, rc, f"early-return [tail] failed; stdout:\n{out}")
+        self.assertEqual(["15", "1500000"], out.split())

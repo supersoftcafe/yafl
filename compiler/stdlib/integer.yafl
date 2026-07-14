@@ -7,7 +7,11 @@ typealias Int64 : __builtin_type__<int64>
 typealias Int   : __builtin_type__<bigint>
 typealias Bool  : __builtin_type__<bool>
 typealias None  : ()
-let None:None = ()
+# [const]: None is a constant — the empty tuple value, with no captures, no
+# effects and no evaluation order. Saying so lets it be a field/parameter
+# default (`parent: Node|None = None`), which is the most natural default there
+# is.
+let [const] None: None = ()
 
 # Bool literals. The language has no true/false tokens, and operator
 # resolution (`==`/`>`) is unavailable in a global initialiser, so these name

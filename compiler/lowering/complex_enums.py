@@ -210,7 +210,25 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     #    - Recursion into all_fields uses EnumSpec.walk_all_fields with a
     #      visited set, propagating is_complex to stale copies at any depth
     #      while avoiding loops on self-recursive types.
+    # `visited` breaks CYCLES, but on its own it does not stop the walk
+    # re-deriving a SHARED subgraph once per path that reaches it — and the
+    # number of paths through a densely mutually-recursive enum graph is
+    # exponential in its size. The result for a given (spec, visited) is a pure
+    # function of the graph, so deriving it once and reusing it collapses the
+    # path-walk back to the graph's actual size. Local to this call: it is a
+    # memo of THIS pass's rewrite, never state that outlives it.
+    memo: dict[tuple[int, frozenset[str]], t.TypeSpec] = {}
+
     def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
+        key = (id(ft), visited)
+        hit = memo.get(key)
+        if hit is not None:
+            return hit
+        result = _resolve_named_uncached(ft, visited)
+        memo[key] = result
+        return result
+
+    def _resolve_named_uncached(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:
         if isinstance(ft, t.NamedSpec):
             canonical = name_to_root.get(ft.name)
             if canonical is None:

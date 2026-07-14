@@ -1,0 +1,23 @@
+namespace System
+import System
+
+
+# Error-union threading: `value ?> (v: T) => next(v)`.
+#
+# The union analogue of io.yafl's (io, v) bind. The lambda's TYPED parameter
+# names the success member; every OTHER member of the subject union passes
+# through unchanged (E binds to the leftover member set — one error class,
+# several, or None). The stage's type is the lambda's result unioned with the
+# pass-through members, and union set semantics collapse duplicates, so a
+# chain of `X|Err` stages stays `…|Err`:
+#
+#   tokenize(src)
+#     ?> (toks: List<Tok>)   => parse(toks)      # List<Tok>|Err  -> Ast|Err
+#     ?> (ast: Ast)          => emit(ast)        # Ast|Err        -> String|Err
+#
+# The parameter type annotation is REQUIRED: it is what routes the union.
+
+fun [inline] `?>`<TIn, TOut, E>(value: TIn|E, f: (:TIn): TOut): TOut|E
+  ret match(value)
+    (v: TIn) => f(v)
+    (e: E)   => e

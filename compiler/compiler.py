@@ -552,7 +552,15 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
         return linearity_errors
 
     # All ok so let's create some C code
-    new_statements = lowering.generics.convert_generic_to_concrete(new_statements)
+    new_statements, poly_errors = lowering.generics.convert_generic_to_concrete(new_statements)
+    if poly_errors:
+        return poly_errors
+    # Any surviving reference from non-generic code to a generic template means
+    # inference could not ground the call's type arguments: a compile error at
+    # the use site, never a codegen crash.
+    generic_call_errors = lowering.generics.report_unresolved_generic_calls(new_statements)
+    if generic_call_errors:
+        return generic_call_errors
     # Monomorphisation re-enters the compile fixpoint: a conversion inside a
     # generic template is undecidable (needs_conversion is conservative on
     # non-ground types), so each node of a freshly-instantiated body places its

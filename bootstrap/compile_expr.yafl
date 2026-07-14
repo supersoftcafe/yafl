@@ -1,0 +1,282 @@
+# bootstrap/compile_expr.yafl — Expression.compile, ported from the compile()
+# methods in compiler/pyast/expression/.
+#
+# One pass of the fixpoint over an expression. Each node:
+#   1. compiles its CHILDREN, threading down the type its receiver expects;
+#   2. rebuilds itself from the results;
+#   3. wraps ITSELF in a conversion if representing its value as the receiver's
+#      type needs one.
+#
+# Step 3 is the rule that must not be softened: EVERY node owns its own
+# conversion (conversions.py::converted). Codegen never converts — a conversion
+# still needed at generate time is a bug, and one inserted that was not needed
+# is a silent miscompile. `converted` is IDENTITY while either side is not
+# ground yet, so inserting is idempotent across passes and the fixpoint still
+# settles.
+#
+# A compile also yields any GLOBAL statements it created (a lambda becomes a
+# top-level function, a literal becomes an interned global): they flow up to
+# the driver, which adds them to the statement set for the next pass.
+namespace Bootstrap
+
+import System
+
+# The result of compiling an expression: the rewritten node, plus the globals
+# its compilation created.
+class [final] ExprOut(eoExpr: PExpr, eoGlobals: List<PStmt>)
+
+fun noGlobals(x: PExpr): ExprOut
+  ret ExprOut(x, List<PStmt>())
+
+# ── the conversion wrap ─────────────────────────────────────────────────────
+# THE compile-side insertion point. Identity when the receiver expects nothing,
+# and when no representation change is needed.
+
+fun converted(x: PExpr, expected: Spec|None, r: Resolver): PExpr
+  ret match(expected)
+    (want: Spec) => needsConversion(r, exprType(x, r), want)
+      ? PeConvert(x, want, exprLine(x))
+      : x
+    ()           => x
+
+fun convertedOut(out: ExprOut, expected: Spec|None, r: Resolver): ExprOut
+  ret ExprOut(converted(out.eoExpr, expected, r), out.eoGlobals)
+
+# ── the pass ────────────────────────────────────────────────────────────────
+
+fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
+  ret match(x)
+    # A literal's ONLY conversion is boxing into a union slot.
+    (i: PeInt)     => noGlobals(converted(x, expected, r))
+    (f: PeFloat)   => noGlobals(converted(x, expected, r))
+    (b: PeBool)    => noGlobals(converted(x, expected, r))
+    (st: PeStr)    => noGlobals(converted(x, expected, r))
+    (rx: PeRegex)  => noGlobals(converted(x, expected, r))
+    (ng: PeNothing) => noGlobals(x)          # nothing has no type to convert
+    (nm: PeName)   => compileName(nm, r, expected)
+    (d: PeDot)     => compileDot(d, r, expected)
+    (c: PeCall)    => compileCall(c, r, expected)
+    (tp: PeTuple)  => compileTuple(tp, r, expected)
+    (te: PeTernary) => compileTernary(te, r, expected)
+    (bk: PeBlock)  => compileBlock(bk, r, expected)
+    (mt: PeMatch)  => compileMatch(mt, r, expected)
+    (op: PeBuiltinOp) => compileBuiltinOp(op, r, expected)
+    (nw: PeNew)    => compileNew(nw, r, expected)
+    (ne: PeNewEnum) => noGlobals(converted(x, expected, r))
+    (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
+    (pl: PeParallel) => compileParallel(pl, r)
+    # A lambda is typed by inference before any lowering runs; the lambda pass
+    # owns its rewrite, so this pass leaves it alone.
+    (lm: PeLambda) => noGlobals(x)
+    # Already converted: idempotent, so re-wrapping must not happen.
+    (cv: PeConvert) => noGlobals(x)
+
+# A name RESOLVES: once its declaration is known the node carries the unique
+# (hashed) name. Never commit against an INCOMPLETE search — the candidate that
+# should win may not be visible yet.
+fun compileName(nm: PeName, r: Resolver, expected: Spec|None): ExprOut
+  let bag = findData(r, nm.refName)
+  let resolved = contains(nm.refName, "@") || !bag.bComplete
+    ? nm.refName
+    : soleName(bag, nm.refName)
+  let tps = compileParams(nm.refTypeParams, r)
+  let out = PeName(resolved, tps.psSpecs, nm.penLine, nm.penTrait)
+  ret ExprOut(converted(out, expected, r), tps.psGlobals)
+
+fun soleName(bag: Bag, fallback: String): String
+  ret match(soleItem(bag))
+    (f: Found) => f.fName
+    ()         => fallback
+
+# A field read: the base compiles with NO expectation (it is not the value the
+# receiver wants), then the read owns its own conversion.
+fun compileDot(d: PeDot, r: Resolver, expected: Spec|None): ExprOut
+  let base = compileExpr(d.base, r, None)
+  let out = PeDot(base.eoExpr, d.member, d.pedLine)
+  ret ExprOut(converted(out, expected, r), base.eoGlobals)
+
+# A call: the CALLEE is compiled against the shape the call site needs — the
+# expected-type selection cornerstone (load-then-call disambiguates by expected
+# SHAPE, never by argument types) — and the argument compiles toward the
+# callee's parameter tuple.
+fun compileCall(c: PeCall, r: Resolver, expected: Spec|None): ExprOut
+  let want = SCallable(STuple(List<SEntry>(), c.pecLine), expected, c.pecLine)
+  let fn = compileExpr(c.function, r, expected is None ? None : want)
+  let params = paramShapeOf(exprType(fn.eoExpr, r))
+  let arg = compileExpr(c.parameter, r, params)
+  let out = PeCall(fn.eoExpr, arg.eoExpr, c.pecLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(fn.eoGlobals, arg.eoGlobals))
+
+fun paramShapeOf(ft: Spec|None): Spec|None
+  ret match(ft)
+    (f: Spec) => match(f)
+      (cl: SCallable) => cl.scParams2
+      (o: Spec)       => None
+    ()        => None
+
+# A tuple converges FIELD-WISE against a tuple receiver: each entry compiles
+# toward the field it BINDS (positionally, or by NAME — `f(5, bias = 7)`
+# converges its second entry toward `bias`, not toward index 1), and the whole
+# tuple then owns any box into a union.
+fun compileTuple(tp: PeTuple, r: Resolver, expected: Spec|None): ExprOut
+  let slots = entrySlots(tp, r, expected)
+  let es = compileTupEnts(chain(tp.exprs), r, slots, 0, List<PTupEnt>(),
+                          List<PStmt>())
+  let out = PeTuple(es.teEntries, tp.petLine)
+  ret ExprOut(converted(out, expected, r), es.teGlobals)
+
+class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>)
+
+fun [tail] compileTupEnts(es: Chain<PTupEnt>, r: Resolver, slots: List<SEntry>,
+                          i: Int, acc: List<PTupEnt>,
+                          glb: List<PStmt>): TupEntsOut
+  ret match(es)
+    (nil: ChainEnd) => TupEntsOut(acc, glb)
+    (l: ChainLink)  => compileExpr(l.value.tupValue, r, entryAt(slots, i))
+      |> (v) => compileTupEnts(l.next, r, slots, i + 1,
+                               append(acc, PTupEnt(l.value.tupName,
+                                                   l.value.tupSpread,
+                                                   v.eoExpr)),
+                               concat(glb, v.eoGlobals))
+
+# The receiver's entries, ORDERED to match this tuple's entries via the shared
+# binding. A union receiver first narrows to the tuple variant this value fits.
+fun entrySlots(tp: PeTuple, r: Resolver, expected: Spec|None): List<SEntry>
+  ret match(effectiveTarget(tp, r, expected))
+    (t2: Spec) => match(t2)
+      (st: STuple) => boundSlots(st, tp)
+      (o: Spec)    => List<SEntry>()
+    ()         => List<SEntry>()
+
+fun effectiveTarget(tp: PeTuple, r: Resolver, expected: Spec|None): Spec|None
+  ret match(expected)
+    (want: Spec) => isUnion(want)
+      ? tupleVariantOf(tp, r, want)
+      : want
+    ()           => None
+
+fun tupleVariantOf(tp: PeTuple, r: Resolver, want: Spec): Spec|None
+  ret match(exprType(tp, r))
+    (actual: Spec) => isConcrete(actual)
+      ? matchingTupleVariant(r, actual, want)
+      : None
+    ()             => None
+
+fun boundSlots(st: STuple, tp: PeTuple): List<SEntry>
+  ret match(bindTupleEntries(st.stEntries, tupNames(tp)))
+    (b: List<Int>) => slotsFor(st.stEntries, b, tp)
+    ()             => List<SEntry>()
+
+fun tupNames(tp: PeTuple): List<String>
+  ret nameOfEnts(chain(tp.exprs), List<String>())
+
+fun [tail] nameOfEnts(es: Chain<PTupEnt>, acc: List<String>): List<String>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameOfEnts(l.next, append(acc, l.value.tupName))
+
+# bindTupleEntries answers "which SUPPLIED entry fills declared slot i" — this
+# inverts it into "which declared slot does supplied entry j fill", which is
+# what each entry needs to converge toward.
+fun slotsFor(declared: List<SEntry>, binding: List<Int>,
+             tp: PeTuple): List<SEntry>
+  ret invertLoop(chain(declared), chain(binding), listLen(tp.exprs),
+                 emptySlots(listLen(tp.exprs), List<SEntry>()))
+
+fun [tail] emptySlots(n: Int, acc: List<SEntry>): List<SEntry>
+  ret n <= 0 ? acc : emptySlots(n - 1, append(acc, SEntry("", None, None)))
+
+fun [tail] invertLoop(ds: Chain<SEntry>, bs: Chain<Int>, n: Int,
+                      acc: List<SEntry>): List<SEntry>
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (d: ChainLink)  => match(bs)
+      (nil2: ChainEnd) => acc
+      (b: ChainLink)   => invertLoop(d.next, b.next, n,
+                                     b.value >= 0 && b.value < n
+                                       ? setAt(acc, b.value, d.value)
+                                       : acc)
+
+fun setAt(es: List<SEntry>, i: Int, v: SEntry): List<SEntry>
+  ret setLoop(chain(es), i, v, 0, List<SEntry>())
+
+fun [tail] setLoop(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
+                   acc: List<SEntry>): List<SEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => setLoop(l.next, i, v, at + 1,
+                               append(acc, at == i ? v : l.value))
+
+# A branch threads the receiver's type into BOTH sides — each arm owns its own
+# conversion — while the branch's own type stays the honest JOIN of its arms.
+fun compileTernary(te: PeTernary, r: Resolver, expected: Spec|None): ExprOut
+  let cond = compileExpr(te.condition, r, SBuiltin("bool", te.pety))
+  let t2 = compileExpr(te.trueResult, r, expected)
+  let f = compileExpr(te.falseResult, r, expected)
+  ret ExprOut(PeTernary(cond.eoExpr, t2.eoExpr, f.eoExpr, te.pety),
+              concat(cond.eoGlobals, concat(t2.eoGlobals, f.eoGlobals)))
+
+fun compileMatch(mt: PeMatch, r: Resolver, expected: Spec|None): ExprOut
+  let subj = compileExpr(mt.subject, r, None)
+  let arms = compileArms(chain(mt.arms), r, expected, List<PArm>(), List<PStmt>())
+  ret ExprOut(PeMatch(subj.eoExpr, arms.aoArms, mt.pemLine),
+              concat(subj.eoGlobals, arms.aoGlobals))
+
+class [final] ArmsOut(aoArms: List<PArm>, aoGlobals: List<PStmt>)
+
+fun [tail] compileArms(as2: Chain<PArm>, r: Resolver, expected: Spec|None,
+                       acc: List<PArm>, glb: List<PStmt>): ArmsOut
+  ret match(as2)
+    (nil: ChainEnd) => ArmsOut(acc, glb)
+    (l: ChainLink)  => compileArm(l.value, r, expected)
+      |> (a) => compileArms(l.next, r, expected, append(acc, a.a1Arm),
+                            concat(glb, a.a1Globals))
+
+class [final] ArmOut(a1Arm: PArm, a1Globals: List<PStmt>)
+
+fun compileArm(a: PArm, r: Resolver, expected: Spec|None): ArmOut
+  let ty = compileSpecOpt(a.armType, r)
+  let newTy = match(ty)
+    (t2: SpecOut) => t2.soSpec
+    ()            => None
+  let body = compileExpr(a.armBody, r, expected)
+  ret ArmOut(PArm(a.armName, newTy, body.eoExpr, a.armLiterals, a.armGuard,
+                  a.parmLine),
+             body.eoGlobals)
+
+# A block defers to its VALUE: the receiver's type threads through to it, and
+# the block's own type is the value's.
+fun compileBlock(bk: PeBlock, r: Resolver, expected: Spec|None): ExprOut
+  let v = compileExpr(bk.blockValue, r, expected)
+  ret ExprOut(PeBlock(bk.blockStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
+              v.eoGlobals)
+
+# A primitive op owns its conversion — its result boxing into a union slot.
+fun compileBuiltinOp(op: PeBuiltinOp, r: Resolver, expected: Spec|None): ExprOut
+  let ps = compileExpr(op.opParams, r, None)
+  let out = PeBuiltinOp(op.opType, op.opName, ps.eoExpr, op.peboLine)
+  ret ExprOut(converted(out, expected, r), ps.eoGlobals)
+
+fun compileNew(nw: PeNew, r: Resolver, expected: Spec|None): ExprOut
+  let ty = compileSpec(nw.newType, r)
+  let arg = compileExpr(nw.newParam, r, paramsTupleOfSpec(ty.soSpec))
+  let out = PeNew(ty.soSpec, arg.eoExpr, nw.penwLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(ty.soGlobals, arg.eoGlobals))
+
+fun paramsTupleOfSpec(sp: Spec): Spec|None
+  ret match(sp)
+    (t2: STuple) => t2
+    (o: Spec)    => None
+
+fun compileArrayRead(ar: PeArrayRead, r: Resolver, expected: Spec|None): ExprOut
+  let obj = compileExpr(ar.arrObj, r, None)
+  let idx = compileExpr(ar.arrIndex, r, SBuiltin("int32", ar.pearLine))
+  let out = PeArrayRead(obj.eoExpr, idx.eoExpr, ar.pearLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(obj.eoGlobals, idx.eoGlobals))
+
+fun compileParallel(pl: PeParallel, r: Resolver): ExprOut
+  let ps = compileExpr(pl.parParams, r, None)
+  ret ExprOut(PeParallel(ps.eoExpr, pl.pepLine), ps.eoGlobals)

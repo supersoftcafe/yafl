@@ -1252,8 +1252,12 @@ EXTERN struct string_vtable STRING_VTABLE;
 
 
 INLINE int32_t string_length(object_t* self) {
+    // UNSIGNED: a packed short string whose final byte has the high bit set
+    // (any UTF-8 continuation byte in the last slot) makes the pointer value
+    // negative, and a SIGNED divide then sign-extends — corrupting the length
+    // bits. Short strings are a bit pattern, never a number.
     if (PTR_IS_STRING(self))
-        return (int32_t)((sizeof(uintptr_t)-1) & ((intptr_t)self / (PTR_TAG_MASK+1)));
+        return (int32_t)((sizeof(uintptr_t)-1) & ((uintptr_t)self / (PTR_TAG_MASK+1)));
     return ((string_t*)self)->length - 1;
 }
 
@@ -1269,7 +1273,7 @@ INLINE char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len
     if (1 == *(uint8_t*)&test)
          *local_buffer = (uintptr_t)self >> 8;
     else *local_buffer = (uintptr_t)self & ~(uintptr_t)255;
-    *len_ptr = (uint32_t)((sizeof(uintptr_t)-1) & ((intptr_t)self / (PTR_TAG_MASK+1)));
+    *len_ptr = (int32_t)((sizeof(uintptr_t)-1) & ((uintptr_t)self / (PTR_TAG_MASK+1)));
     return (char*)local_buffer;
 }
 EXTERN object_t* string_truncate(object_t* self, int32_t new_length);

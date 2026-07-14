@@ -68,6 +68,19 @@ class ReturnStatement(Statement):
         # A narrow value or a subset union flowing into a wider union is widened
         # here — `return` is not special.
         vb = self.value.generate_to(resolver, frame.result_type)
+        if vb.operations and isinstance(
+                vb.operations[-1],
+                (cg_o.Jump, cg_o.Return, cg_o.ReturnVoid, cg_o.Abort, cg_o.SwitchJump)):
+            # The value itself transferred control away (a [tail] recur, an
+            # inner return): there is no fall-through to jump from, and the
+            # block Phi must not receive a source for this dead edge — the
+            # same bottom-handling the ternary and the block fall-through do.
+            return g.OperationBundle(
+                stack_vars=vb.stack_vars,
+                operations=vb.operations,
+                result_var=None,
+                recur_sources=vb.recur_sources,
+                exit_sources=vb.exit_sources)
         exit_label = f"blockexit${frame.tag}${self.index}"
         tail = (cg_o.Label(exit_label), cg_o.Jump(frame.end_label))
         if vb.result_var is None:

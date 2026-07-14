@@ -1,0 +1,181 @@
+# bootstrap/compile_types.yafl — TypeSpec._compile, ported from the `_compile`
+# methods in compiler/pyast/typespec/specs.py.
+#
+# This is where a type RESOLVES. The parser leaves every written type as an
+# SNamed; each pass of the fixpoint asks the resolver what that name is, and
+# rewrites it into the thing it names — a class, an enum, or (through a
+# typealias) a builtin. A name that does not resolve YET is left exactly as it
+# is and retried next pass; that is the whole convergence story for types.
+#
+# Two rules the port must not soften:
+#  * resolve ONLY when the name has exactly one answer. Zero means "not yet"
+#    (or an error the check phase will report); more than one is ambiguous and
+#    is likewise left for check. Rewriting on a guess would bake in the wrong
+#    type and the fixpoint would happily converge on it.
+#  * an enum's fields come from the DECLARATION, never from the spec instance
+#    in hand — an instance's copy goes stale (see nodes.yafl). Every pass
+#    re-reads the canonical spec off the statement.
+namespace Bootstrap
+
+import System
+
+# The result of compiling a type: the (possibly rewritten) spec, plus any
+# global statements its compilation created.
+class [final] SpecOut(soSpec: Spec, soGlobals: List<PStmt>)
+
+fun compileSpec(sp: Spec, r: Resolver): SpecOut
+  ret match(sp)
+    (b: SBuiltin)      => SpecOut(sp, List<PStmt>())
+    (g: SGeneric)      => SpecOut(sp, List<PStmt>())
+    (ls: SLazyStub)    => SpecOut(sp, List<PStmt>())
+    (n: SNamed)        => compileNamed(n, r)
+    (c: SClass)        => compileClass(c, r)
+    (e: SEnum)         => compileEnum(e, r)
+    (cl: SCallable)    => compileCallable(cl, r)
+    (cm: SCombination) => compileUnion(cm, r)
+    (t2: STuple)       => compileTuple(t2, r)
+    (af: SArrayField)  => compileArray(af, r)
+
+fun compileSpecOpt(sp: Spec|None, r: Resolver): SpecOut|None
+  ret match(sp)
+    (x: Spec) => compileSpec(x, r)
+    ()        => None
+
+# ── the named type ──────────────────────────────────────────────────────────
+# The one resolution step: `Foo` becomes the class/enum/builtin it names, or
+# stays an SNamed for the next pass.
+
+fun compileNamed(n: SNamed, r: Resolver): SpecOut
+  let bag = findType(r, n.snName)
+  ret match(soleItem(bag))
+    (f: Found) => resolveNamedTo(n, f.fStmt, r)
+    ()         => SpecOut(n, List<PStmt>())      # 0 = not yet, >1 = ambiguous
+
+fun resolveNamedTo(n: SNamed, st: PStmt, r: Resolver): SpecOut
+  ret match(st)
+    # An alias forwards only once its target is itself concrete; otherwise the
+    # alias is still in flight and this name waits another pass.
+    (ta: PsTypealias) => isConcrete(ta.taType)
+      ? SpecOut(ta.taType, List<PStmt>())
+      : SpecOut(n, List<PStmt>())
+    (c: PsClass) => compileParams(n.snParams, r)
+      |> (ps) => SpecOut(SClass(c.cName, ps.psSpecs, n.snLine), ps.psGlobals)
+    # The enum's canonical spec lives on the declaration. Type arguments
+    # (Dict<Int,Str>) are carried into it so the generics pass can later
+    # redirect the concrete instantiation.
+    (e: PsEnum) => enumSpecOf(n, e, r)
+    (o: PStmt)  => SpecOut(n, List<PStmt>())
+
+fun enumSpecOf(n: SNamed, e: PsEnum, r: Resolver): SpecOut
+  ret match(e.eSpec)
+    (canon: Spec) => withTypeArgs(canon, n, r)
+    ()            => SpecOut(n, List<PStmt>())   # variants not laid out yet
+
+fun withTypeArgs(canon: Spec, n: SNamed, r: Resolver): SpecOut
+  if isEmpty(n.snParams)
+    ret SpecOut(canon, List<PStmt>())
+  let ps = compileParams(n.snParams, r)
+  ret match(canon)
+    (ce: SEnum) => SpecOut(SEnum(ce.seRoot, ce.seValidLeaves, ce.seAllLeaves,
+                                 ps.psSpecs, ce.seLine, ce.seAllFields,
+                                 ce.seComplex),
+                           ps.psGlobals)
+    (o: Spec)   => SpecOut(canon, ps.psGlobals)
+
+# ── the resolved types ──────────────────────────────────────────────────────
+
+# A ClassSpec keeps resolving its own name: the parser writes the bare name,
+# and it must settle to the declaration's unique (hashed) one.
+fun compileClass(c: SClass, r: Resolver): SpecOut
+  let bag = findType(r, c.scName)
+  ret match(soleItem(bag))
+    (f: Found) => compileParams(c.scParams, r)
+      |> (ps) => SpecOut(SClass(f.fName, ps.psSpecs, c.scLine), ps.psGlobals)
+    ()         => SpecOut(c, List<PStmt>())
+
+# An enum re-reads its fields from the declaration each pass — the instance in
+# hand may predate the layout that filled them in.
+fun compileEnum(e: SEnum, r: Resolver): SpecOut
+  ret match(soleItem(findType(r, e.seRoot)))
+    (f: Found) => canonicalEnum(e, f.fStmt)
+    ()         => SpecOut(e, List<PStmt>())
+
+fun canonicalEnum(e: SEnum, st: PStmt): SpecOut
+  ret match(st)
+    (en: PsEnum) => match(en.eSpec)
+      (canon: Spec) => refreshedEnum(e, canon)
+      ()            => SpecOut(e, List<PStmt>())
+    (o: PStmt)   => SpecOut(e, List<PStmt>())
+
+fun refreshedEnum(e: SEnum, canon: Spec): SpecOut
+  ret match(canon)
+    (ce: SEnum) => SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
+                                 e.seParams, e.seLine, ce.seAllFields,
+                                 ce.seComplex),
+                           List<PStmt>())
+    (o: Spec)   => SpecOut(e, List<PStmt>())
+
+# ── the structural types ────────────────────────────────────────────────────
+
+fun compileCallable(cl: SCallable, r: Resolver): SpecOut
+  let ps = compileSpec(cl.scParams2, r)
+  ret match(compileSpecOpt(cl.scResult, r))
+    (rs: SpecOut) => SpecOut(SCallable(ps.soSpec, rs.soSpec, cl.sclLine),
+                             concat(ps.soGlobals, rs.soGlobals))
+    ()            => SpecOut(SCallable(ps.soSpec, None, cl.sclLine), ps.soGlobals)
+
+# A union re-canonicalises after its members compile: a member that resolved
+# into an enum may now be subsumed by another member (see reprMembers).
+fun compileUnion(cm: SCombination, r: Resolver): SpecOut
+  let ps = compileParams(cm.scTypes, r)
+  let flat = reprMembersOf(ps.psSpecs)
+  ret SpecOut(SCombination(flat, cm.scmLine), ps.psGlobals)
+
+fun compileArray(af: SArrayField, r: Resolver): SpecOut
+  let el = compileSpec(af.safElem, r)
+  ret SpecOut(SArrayField(el.soSpec, af.safLenField, af.safLine), el.soGlobals)
+
+fun compileTuple(t2: STuple, r: Resolver): SpecOut
+  let es = compileEntries(chain(t2.stEntries), r, List<SEntry>(), List<PStmt>())
+  ret SpecOut(STuple(es.esEntries, t2.stLine), es.esGlobals)
+
+class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
+
+fun [tail] compileEntries(es: Chain<SEntry>, r: Resolver, acc: List<SEntry>,
+                          glb: List<PStmt>): EntriesOut
+  ret match(es)
+    (nil: ChainEnd) => EntriesOut(acc, glb)
+    (l: ChainLink)  => compileEntry(l.value, r)
+      |> (one) => compileEntries(l.next, r, append(acc, one.eoEntry),
+                                 concat(glb, one.eoGlobals))
+
+class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
+
+# An entry's TYPE compiles here. Its DEFAULT is an ordinary expression, and
+# in Python (TupleEntrySpec.compile) it compiles against that freshly compiled
+# type. That call is the one seam this file still has open: the expression
+# pass owns it, and wires in here when it lands. Until then a default is
+# carried through untouched — which is why nothing yet drives this file as a
+# fixpoint.
+fun compileEntry(en: SEntry, r: Resolver): EntryOut
+  let ty = compileSpecOpt(en.seType, r)
+  ret match(ty)
+    (t2: SpecOut) => EntryOut(SEntry(en.seName, t2.soSpec, en.seDefault),
+                              t2.soGlobals)
+    ()            => EntryOut(SEntry(en.seName, None, en.seDefault),
+                              List<PStmt>())
+
+# ── lists of types ──────────────────────────────────────────────────────────
+
+class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
+
+fun compileParams(ts: List<Spec>, r: Resolver): ParamsOut
+  ret compileParamLoop(chain(ts), r, List<Spec>(), List<PStmt>())
+
+fun [tail] compileParamLoop(ts: Chain<Spec>, r: Resolver, acc: List<Spec>,
+                            glb: List<PStmt>): ParamsOut
+  ret match(ts)
+    (nil: ChainEnd) => ParamsOut(acc, glb)
+    (l: ChainLink)  => compileSpec(l.value, r)
+      |> (one) => compileParamLoop(l.next, r, append(acc, one.soSpec),
+                                   concat(glb, one.soGlobals))

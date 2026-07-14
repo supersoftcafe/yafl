@@ -1,4 +1,60 @@
 
+# TODO: a cached (memoised) function in YAFL
+
+Long term we want a language/stdlib facility for a **cached function**: same
+arguments ⇒ same answer, returned from a cache rather than recomputed, for
+functions that are expensive to evaluate. Conceptually "a lazy `Dict`" — the
+memo table is keyed by the argument tuple, and an entry is computed on first
+demand and then reused, in the same spirit as the existing `[lazy]` let (which
+already gives us demand-driven evaluation and memoisation of a *nullary* value).
+
+Why it matters (evidence, not speculation): the Python compiler has now been
+bitten TWICE by exactly the missing-memo shape — a pure recursive rewrite over
+a shared graph re-deriving the same answer once per path that reaches it, which
+is exponential in the graph's size. `lowering/complex_enums.py` cost 9GB / 418s
+compiling the bootstrap until a hand-rolled memo took it to ~1GB / 1s, and
+`EnumSpec.replace_in_all_fields` (used by `lowering/simple_classes.py`) has the
+same shape. Every one of these is a hand-written dict that must be threaded by
+hand and kept out of global state. A first-class cached function would make the
+correct thing the easy thing — and the self-hosted compiler will want it for
+the very same passes.
+
+Design notes / open questions:
+  * keying needs structural equality + hashing on the argument tuple — YAFL
+    derives nothing, so this leans on the hand-written equality/hash story.
+  * scope of the cache: per-call-site? per-invocation of an enclosing pass?
+    It must NOT become process-global mutable state (see the
+    `lazy_thunks._STRUCT_REGISTRY` bug) — a cache that outlives its compilation
+    hands back stale answers.
+  * interaction with `[linear]` values (a cached result cannot be consumed
+    twice) and with purity: only sound for pure functions.
+
+# TODO: annotated tests + a test-runner build mode
+
+Tests should be a FIRST-CLASS thing the compiler knows about, not a separate
+harness bolted on:
+
+  * **Annotated tests** — a test is an annotated declaration in ordinary YAFL
+    source (spelling to be designed; the obvious shape is an attribute, e.g.
+    `fun [test] roundTrips(): ...`, sitting beside the code it tests).
+  * **A compiler option to build the tests.** When it is given, the emitted
+    binary is NOT the application — it is a **test runner** that discovers the
+    annotated tests, runs them, and reports. Same source tree, same compiler,
+    a different output artefact. Without the flag the test declarations are
+    simply not part of the build (dead-code eliminated, or never emitted).
+
+Design questions to settle first:
+  * the annotation's spelling, and what a test's SIGNATURE must be (nullary?
+    what does it return — a Bool, a Result, or does it signal failure by some
+    other means? how are assertions expressed and reported?);
+  * discovery: the runner needs the set of annotated functions, which the
+    compiler already knows — so this is a codegen/entry-point question, not a
+    reflection one (YAFL has no reflection and stays that way);
+  * naming/reporting: a failure must name the test and its source position;
+  * how it composes with the build system (`docs/build-and-packaging.md`) —
+    per-project and per-library test targets;
+  * whether tests may be [linear]/IO, and what the runner's `main` looks like.
+
 # YAFL bootstrap compiler — remaining blockers
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.

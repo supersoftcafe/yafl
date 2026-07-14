@@ -126,7 +126,7 @@ class LetStatement(DataStatement):
         if "const" in self.attributes:
             if self.attributes.get("const") is not None:
                 const_err.append(Error(self.line_ref, "[const] takes no arguments"))
-            if not isinstance(self.default_value, (e.IntegerExpression, e.FloatExpression, e.StringExpression, e.BoolExpression)):
+            if not e.is_literal_value(self.default_value):
                 const_err.append(Error(self.line_ref, "[const] requires a literal value"))
         lazy_err: list[Error] = []
         if "lazy" in self.attributes:

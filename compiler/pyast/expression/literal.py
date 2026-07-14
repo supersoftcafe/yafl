@@ -170,3 +170,38 @@ class NothingExpression(Expression):
 
 
 
+
+
+def is_literal_value(expr) -> bool:
+    """A value with no captures, no effects and no evaluation order.
+
+    THE shared definition: both `[const]` (lets.py) and the field/parameter
+    default rule (typespec/specs.py) mean exactly this by "literal", and a
+    default is cloned into every site that omits the field, so the two must
+    not drift apart.
+
+    A TUPLE of literals is itself one — nothing is captured, nothing is
+    evaluated. Its base case is `()`, the unit value, which is what `None` is:
+    that makes `parent: Node|None = None` (the most natural default there is)
+    expressible, via the `[const] None` the stdlib declares."""
+    from pyast.expression.tuple_expr import TupleExpression
+    expr = strip_conversions(expr)
+    if isinstance(expr, TupleExpression):
+        return all(not en.spread and is_literal_value(en.value)
+                   for en in expr.expressions)
+    return isinstance(expr, (IntegerExpression, FloatExpression,
+                             StringExpression, BoolExpression,
+                             NothingExpression))
+
+
+def strip_conversions(expr):
+    """See through inserted conversions to the value underneath.
+
+    By check time a default has been through the compile fixpoint, which boxes
+    it toward its declared slot (`None` into `Node|None` becomes a
+    ConvertExpression). A conversion of a constant is still a constant — same
+    value, different representation — so the literal rules look through it."""
+    from pyast.expression.conversion import ConvertExpression
+    while isinstance(expr, ConvertExpression):
+        expr = expr.inner
+    return expr

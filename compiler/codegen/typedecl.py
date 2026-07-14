@@ -451,7 +451,7 @@ def _tag_type(n_variants: int) -> Int:
     return Int(32)
 
 
-def compute_union_slots(variant_types: list[Type]) -> tuple[Struct, tuple[tuple[tuple[int, Type], ...], ...]]:
+def compute_union_slots(variant_types: list[Type], max_tag: int | None = None) -> tuple[Struct, tuple[tuple[tuple[int, Type], ...], ...]]:
     """Compute the shared-slot layout for a tagged union with the given per-variant types.
 
     Returns (Struct, variant_map) where variant_map[i] is a tuple of
@@ -503,7 +503,12 @@ def compute_union_slots(variant_types: list[Type]) -> tuple[Struct, tuple[tuple[
     active.sort(key=lambda x: _primitive_rank(x[1][0]))
     renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
 
-    slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", _tag_type(len(variant_types))),)
+    # The tag must hold the largest value actually STORED: a flat enum stores
+    # positional indices (< len), but a tagged combination stores GLOBAL
+    # discriminators — the caller passes their maximum via max_tag, and a
+    # 2-member union whose member is discriminator 135 needs more than int8.
+    tag_bound = max(len(variant_types), (max_tag or 0) + 1)
+    slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", _tag_type(tag_bound)),)
     variant_map = tuple(
         tuple((renumber[si], orig) for si, orig in vm)
         for vm in vmap

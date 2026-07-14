@@ -112,3 +112,41 @@ class TestTupleDefaultsOverloads(TestCase):
             + "fun tag(x: Int): Int\n  ret x\n"
             + "fun main(): Int\n  ret tag(7)\n")
         self.assertTrue(errs.strip(), "expected an ambiguity error")
+
+
+_NONE_DEFAULT = """namespace Test
+import System
+
+# `None` is a literal: no captures, no effects, no evaluation order — exactly
+# what a default is allowed to be. An optional field defaulting to None is the
+# single most natural default there is.
+class [final] Node(tag: String, parent: Node|None = None)
+
+fun label(x: String, note: String|None = None): String
+  ret match(note)
+    (n: String) => x + "/" + n
+    ()          => x
+
+fun parentTag(n: Node): String
+  ret match(n.parent)
+    (p: Node) => p.tag
+    ()        => "-"
+
+fun main(): Int
+  let root = Node("root")
+  let kid = Node("kid", root)
+  print(label("a") + "\\n")
+  print(label("a", "b") + "\\n")
+  print(parentTag(kid) + "\\n")
+  print(parentTag(root) + "\\n")
+  ret 0
+"""
+
+
+class TestNoneDefault(TestCase):
+    def test_none_is_a_valid_default(self):
+        self.assertEqual("", _errors(_NONE_DEFAULT))
+
+    def test_none_default_runs(self):
+        self.assertEqual((0, "a\na/b\nroot\n-\n"),
+                         compile_and_run_stdlib_capture(_NONE_DEFAULT))

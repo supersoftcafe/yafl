@@ -380,6 +380,42 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
                 return None
         return m
 
+    # Generic ENUM instances — `List<T>` vs `List<Thing>`, `Dict<K,V>` vs a
+    # concrete Dict — unify through their type arguments exactly like classes.
+    # This is how a call such as `head(l)` binds T from the container argument
+    # alone. type_params is best-effort metadata (compare=False; empty on some
+    # instances): when either side lacks it there is nothing to walk, and the
+    # mapping passes through unchanged — deferral, not failure, as everywhere
+    # else in this function.
+    if isinstance(generic, EnumSpec) and isinstance(concrete, EnumSpec):
+        if generic.root_name != concrete.root_name:
+            return mapping
+        if (not generic.type_params
+                or len(generic.type_params) != len(concrete.type_params)):
+            return mapping
+        m = mapping
+        for gp, cp in zip(generic.type_params, concrete.type_params):
+            m = unify_generic(gp, cp, placeholder_names, m)
+            if m is None:
+                return None
+        return m
+
+    # Two still-unresolved spellings of the same generic type: infer through
+    # the written type arguments (`Wrap<T>` vs `Wrap<Leaf>` before either
+    # resolves). Same-name-only, same deferral rules as the branches above.
+    if isinstance(generic, NamedSpec) and isinstance(concrete, NamedSpec):
+        if generic.name != concrete.name:
+            return mapping
+        if (not generic.type_params
+                or len(generic.type_params) != len(concrete.type_params)):
+            return mapping
+        m = mapping
+        for gp, cp in zip(generic.type_params, concrete.type_params):
+            m = unify_generic(gp, cp, placeholder_names, m)
+            if m is None:
+                return None
+        return m
+
     if isinstance(generic, TupleSpec) and isinstance(concrete, TupleSpec):
         # Pair entries via the shared binding, so named/defaulted arguments
         # unify against the field they BIND (positional zip would infer a

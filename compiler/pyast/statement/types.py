@@ -82,6 +82,23 @@ class EnumStatement(TypeStatement):
             return [self.name] if self.has_param_list else []  # uninhabited → no leaf
         return [ln for v in self.variants for ln in v._collect_leaf_names()]
 
+    def covering_fields(self, valid: frozenset[str]) -> list[tuple[str, t.TypeSpec]]:
+        """The (unique-name, type) field pairs a value narrowed to the leaf set
+        `valid` is GUARANTEED to carry: fields declared at nodes whose own leaf
+        set covers every valid leaf. A field declared on one variant does not
+        cover a sibling, so a read through it would be reading another
+        variant's slot — the field-aliasing bug this method exists to close."""
+        out: list[tuple[str, t.TypeSpec]] = []
+        def walk(node: EnumStatement):
+            if valid <= frozenset(node._collect_leaf_names()):
+                for let in node.parameters.flatten():
+                    if let.declared_type is not None:
+                        out.append((let.name, let.declared_type))
+            for v in node.variants:
+                walk(v)
+        walk(self)
+        return out
+
     def _collect_data_fields(self) -> list[tuple[str, t.TypeSpec]]:
         seen: set[str] = set()
         result: list[tuple[str, t.TypeSpec]] = []

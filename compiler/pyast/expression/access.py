@@ -93,9 +93,7 @@ def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, c
     # when no candidate matches definitively. This gives specific-beats-
     # generic dispatch — e.g. `0 == 1` picks `BasicEquality<Int>::==` over
     # the in-scope-but-unconstrained `BasicEquality<K>::==`.
-    truthy: list[g.Resolved[s.DataStatement]] = []
-    maybe: list[g.Resolved[s.DataStatement]] = []
-    for x in candidates:
+    def candidate_type(x: g.Resolved[s.DataStatement]) -> t.TypeSpec | None:
         other_type = x.statement.get_type()
         # Apply trait type param substitution so e.g. Plus<Int>.+ has effective type
         # (Int,Int)->Int rather than (TVal,TVal)->TVal, enabling correct disambiguation.
@@ -104,12 +102,74 @@ def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, c
                 and x.owner_class is not None):
             mapping = {p.name: c for p, c in zip(x.owner_class.type_params, x.trait_scope.type_params)}
             other_type = t.substitute_placeholders(other_type, mapping, resolver)
-        b = t.trivially_assignable_equals(resolver, expected_type, other_type)
-        if b is True:
-            truthy.append(x)
-        elif b is None:
-            maybe.append(x)
-    return truthy if truthy else maybe
+        # The candidate's OWN generic parameters are wildcards: instantiating
+        # this candidate can bind them to whatever the argument holds, so no
+        # structural mismatch through them may reject it. Substituting an
+        # unresolvable NamedSpec makes every comparison through such a slot
+        # undecided (None) — crucially even where callable-parameter
+        # contravariance puts the placeholder on the ground side of the
+        # comparison (the `f: (:TIn): TOut` parameter of the union `?>`
+        # against a concrete lambda). A placeholder the candidate does NOT
+        # own (the caller's own `K` inside a generic template) stays as-is
+        # and keeps rejecting concrete instances, which is what routes
+        # template-internal calls to the `where`-constraint's method.
+        own = getattr(x.statement, "type_params", None) or ()
+        if own:
+            wildcards = {p.name: t.NamedSpec(x.statement.line_ref, "$overload$wildcard")
+                         for p in own}
+            other_type = t.substitute_placeholders(other_type, wildcards, resolver)
+        return other_type
+
+    def partition(expected: t.TypeSpec | None) -> list[g.Resolved[s.DataStatement]]:
+        truthy: list[g.Resolved[s.DataStatement]] = []
+        maybe: list[g.Resolved[s.DataStatement]] = []
+        for x in candidates:
+            b = t.trivially_assignable_equals(resolver, expected, candidate_type(x))
+            if b is True:
+                truthy.append(x)
+            elif b is None:
+                maybe.append(x)
+        return truthy if truthy else maybe
+
+    survivors = partition(expected_type)
+    if survivors or not isinstance(expected_type, t.CallableSpec) or expected_type.result is None:
+        return survivors
+    # Every candidate was rejected and the expected shape is a CALL: the result
+    # slot is the usual culprit — a call in a union-typed position expects
+    # `Int|Err` while every candidate returns a member, and callables demand
+    # bidirectional result equivalence (correct for function VALUES, which get
+    # no implicit thunk). A CALL owns its own result conversion, so retry on
+    # the parameters alone; a unique winner widens into the union at the call.
+    return partition(dataclasses.replace(expected_type, result=None))
+
+
+
+# Sentinel: a bare enum-field name that SEVERAL possible variants declare (at
+# different layout positions) — reading it un-narrowed would be a silent read
+# of one arbitrary variant's slot. compile leaves the name unresolved and
+# check() reports it.
+_AMBIGUOUS_ENUM_FIELD = object()
+
+
+def _narrowed_enum_field(resolver: g.Resolver, espec: t.EnumSpec,
+                         bare: str):
+    """Resolve bare field name `bare` against enum subject `espec`, honouring
+    its narrowing: the (unique_name, type) pair, None when absent, or
+    _AMBIGUOUS_ENUM_FIELD. A single enum-wide match resolves directly; when
+    several variants declare the same bare name, only a field the narrowed
+    value is GUARANTEED to carry (declared at a node covering every possible
+    leaf) may win."""
+    cands = [(fn, ft) for fn, ft in espec.all_fields if g.match_name(fn, bare)]
+    if len(cands) == 1:
+        return cands[0]
+    if not cands:
+        return None
+    types = resolver.find_type(espec.root_name)
+    if len(types) != 1 or not isinstance(types[0].statement, s.EnumStatement):
+        return None  # root not resolved yet: retry next pass
+    covering = {fn for fn, _ in types[0].statement.covering_fields(espec.valid_leaf_names)}
+    owned = [c for c in cands if c[0] in covering]
+    return owned[0] if len(owned) == 1 else _AMBIGUOUS_ENUM_FIELD
 
 
 
@@ -163,10 +223,10 @@ class DotExpression(Expression):
                 datas = _resolve_overloads(resolver, expected_type, cdecl.find_data(resolver, self.name))
                 if len(datas) == 1:
                     name = datas[0].unique_name
-            case t.EnumSpec(all_fields=fields):
+            case t.EnumSpec() as espec:
                 if '@' not in self.name:
-                    match_field = next(((fn, ft) for fn, ft in fields if g.match_name(fn, self.name)), None)
-                    if match_field:
+                    match_field = _narrowed_enum_field(resolver, espec, self.name)
+                    if match_field is not None and match_field is not _AMBIGUOUS_ENUM_FIELD:
                         name = match_field[0]
 
         expr = dataclasses.replace(self, base=base, name=name)
@@ -196,8 +256,15 @@ class DotExpression(Expression):
                     return [Error(self.line_ref, f"Could not find a field named {self.name}")]
                 if len(datas) > 1:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
-            case t.EnumSpec(all_fields=fields):
-                if not any(fn == self.name or g.match_name(fn, self.name) for fn, _ in fields):
+            case t.EnumSpec() as espec:
+                if any(fn == self.name for fn, _ in espec.all_fields):
+                    return []  # already resolved to a unique field name
+                found = _narrowed_enum_field(resolver, espec, self.name)
+                if found is _AMBIGUOUS_ENUM_FIELD:
+                    return [Error(self.line_ref,
+                        f"field '{self.name}' is declared by more than one possible "
+                        f"variant here — match on the specific variant first")]
+                if found is None:
                     return [Error(self.line_ref, f"Could not find field {self.name}")]
                 return []
         return []

@@ -1,0 +1,466 @@
+# bootstrap/specs.yafl — the TypeSpec representations, ported from
+# compiler/pyast/typespec/specs.py. This is the ONE type tree: the parser
+# builds the unresolved subset of it, and the compile fixpoint refines those
+# in place — an SNamed becomes an SClass/SEnum/SBuiltin once its name resolves.
+#
+# Ported here: the spec tree, as_unique_id_str (THE structural identity used
+# for layout, mangling and union dedup), is_concrete, repr_members with the
+# union flattening/subsumption rules, and bind_tuple_entries (the one binding
+# shared by assignability, unification, conversion and calls).
+namespace Bootstrap
+
+import System
+
+# ── the spec tree ────────────────────────────────────────────────────────────
+
+enum Spec
+  enum SBuiltin(sbName: String, sbLine: PLine)
+  enum SNamed(snName: String, snParams: List<Spec>, snLine: PLine)
+  enum SClass(scName: String, scParams: List<Spec>, scLine: PLine)
+  # seAllFields / seComplex are METADATA, not identity: the declaration owns
+  # them, an instance's copy can go stale, and equality ignores both (as
+  # Python's compare=False does). Never read them off an instance — resolve
+  # the declaration and read the canonical spec.
+  enum SEnum(seRoot: String, seValidLeaves: List<String>, seAllLeaves: List<String>,
+             seParams: List<Spec>, seLine: PLine,
+             seAllFields: List<SField>, seComplex: Bool = false)
+  enum SGeneric(sgName: String, sgLinear: Bool, sgLine: PLine)
+  enum SCallable(scParams2: Spec, scResult: Spec|None, sclLine: PLine)
+  enum SCombination(scTypes: List<Spec>, scmLine: PLine)
+  enum STuple(stEntries: List<SEntry>, stLine: PLine)
+  enum SArrayField(safElem: Spec, safLenField: String, safLine: PLine)
+  enum SLazyStub(slsTarget: Spec|None, slsLine: PLine)
+
+class [final] SEntry(seName: String, seType: Spec|None, seDefault: PExpr|None)
+class [final] SField(sfName: String, sfType: Spec)
+
+fun specLine(sp: Spec): PLine
+  ret match(sp)
+    (b: SBuiltin)     => b.sbLine
+    (n: SNamed)       => n.snLine
+    (c: SClass)       => c.scLine
+    (e: SEnum)        => e.seLine
+    (g: SGeneric)     => g.sgLine
+    (cl: SCallable)   => cl.sclLine
+    (cm: SCombination) => cm.scmLine
+    (t2: STuple)      => t2.stLine
+    (af: SArrayField) => af.safLine
+    (ls: SLazyStub)   => ls.slsLine
+
+# ── structural identity ─────────────────────────────────────────────────────
+# as_unique_id_str: None ("" here) while a spec is not yet ground. Every
+# layout, name mangle and union dedup reads identity through this.
+
+fun uid(sp: Spec): String
+  ret match(sp)
+    (b: SBuiltin)      => b.sbName
+    (n: SNamed)        => ""                       # unresolved alias
+    (g: SGeneric)      => ""                       # unbound placeholder
+    (c: SClass)        => c.scName
+    (e: SEnum)         => contains(e.seRoot, "@") ? "enum(" + e.seRoot + ")" : ""
+    (cl: SCallable)    => uidCallable(cl)
+    (cm: SCombination) => uidUnion(cm)
+    (t2: STuple)       => uidTuple(t2)
+    (af: SArrayField)  => uidArray(af)
+    (ls: SLazyStub)    => uidLazy(ls)
+
+fun uidCallable(cl: SCallable): String
+  let p = uid(cl.scParams2)
+  ret p == "" ? "" : "f" + p
+
+fun uidTuple(t2: STuple): String
+  ret closeUid(entryUids(chain(t2.stEntries), "("))
+
+fun closeUid(s: String): String
+  ret s == "" ? "" : s + ")"
+
+fun entryUids(es: Chain<SEntry>, acc: String): String
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value.seType)
+      (t2: Spec) => entryUidStep(uid(t2), l.next, acc)
+      ()         => ""
+
+fun entryUidStep(u: String, rest: Chain<SEntry>, acc: String): String
+  ret u == "" ? "" : entryUids(rest, acc + u + ",")
+
+# A union's identity is its SORTED member ids — set semantics, so `A|B` and
+# `B|A` are the same type.
+fun uidUnion(cm: SCombination): String
+  let ids = memberUids(chain(reprMembers(cm)), List<String>())
+  ret match(ids)
+    (l: List<String>) => "union(" + join(sort(l), ",") + ")"
+    ()                => ""
+
+fun memberUids(ms: Chain<Spec>, acc: List<String>): List<String>|None
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => uid(l.value)
+      |> (u) => u == "" ? None : memberUids(l.next, append(acc, u))
+
+fun uidArray(af: SArrayField): String
+  let inner = uid(af.safElem)
+  ret inner == "" ? "" : "$array$" + af.safLenField + "$" + inner
+
+# NOTE: the arm binder must not feed a pipe stage here — see
+# tests/test_arm_binder_in_pipe.py (open compiler bug); use a let.
+fun uidLazy(ls: SLazyStub): String
+  ret match(ls.slsTarget)
+    (t2: Spec) => lazyUid(uid(t2))
+    ()         => "$lazy$"
+
+fun lazyUid(u: String): String
+  ret u == "" ? "" : "$lazy$" + u
+
+fun isGround(sp: Spec): Bool
+  ret uid(sp) != ""
+
+# is_concrete: does this type still NAME something unresolved? Distinct from
+# isGround — a generic placeholder is concrete (it is a real type inside its
+# owner's scope) but not ground (it has no layout until it is bound).
+fun isConcrete(sp: Spec): Bool
+  ret match(sp)
+    (b: SBuiltin)      => true
+    (g: SGeneric)      => true
+    (n: SNamed)        => false
+    (c: SClass)        => isEmpty(c.scParams) || allConcrete(chain(c.scParams))
+    (e: SEnum)         => contains(e.seRoot, "@")
+    (cl: SCallable)    => isConcrete(cl.scParams2) && concreteOpt(cl.scResult)
+    (cm: SCombination) => allConcrete(chain(cm.scTypes))
+    (t2: STuple)       => allEntriesConcrete(chain(t2.stEntries))
+    (af: SArrayField)  => isConcrete(af.safElem)
+    (ls: SLazyStub)    => concreteOpt(ls.slsTarget)
+
+fun concreteOpt(sp: Spec|None): Bool
+  ret match(sp)
+    (x: Spec) => isConcrete(x)
+    ()        => true
+
+fun [tail] allConcrete(ts: Chain<Spec>): Bool
+  ret match(ts)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => isConcrete(l.value) ? allConcrete(l.next) : false
+
+# A tuple entry with NO type is not concrete — an untyped field is unresolved.
+fun [tail] allEntriesConcrete(es: Chain<SEntry>): Bool
+  ret match(es)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(l.value.seType)
+      (t2: Spec) => isConcrete(t2) ? allEntriesConcrete(l.next) : false
+      ()         => false
+
+# ── union canonical members ─────────────────────────────────────────────────
+# _flatten_union_members: associativity + set semantics — a member that is
+# itself a union contributes its members; a GROUND duplicate is dropped; and
+# an enum member SUBSUMED by another member of the same enum folds away
+# (`E3 | EU` where EU narrows E3 IS `E3`). Unresolved members are kept.
+
+fun reprMembers(cm: SCombination): List<Spec>
+  ret reprMembersOf(cm.scTypes)
+
+# Takes the MEMBERS, not the union: a variant constructor returns the root
+# enum type, so a caller that has just built an SCombination cannot pass it
+# where an SCombination is expected.
+fun reprMembersOf(types: List<Spec>): List<Spec>
+  ret flattenMembers(chain(types), List<Spec>())
+    |> (flat) => dropSubsumed(flat)
+
+fun [tail] flattenMembers(ts: Chain<Spec>, acc: List<Spec>): List<Spec>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => flattenMembers(l.next, addMember(acc, l.value))
+
+fun addMember(acc: List<Spec>, sp: Spec): List<Spec>
+  ret match(sp)
+    (cm: SCombination) => flattenMembers(chain(cm.scTypes), acc)
+    (o)                => uid(sp) != "" && hasUid(acc, uid(sp))
+      ? acc
+      : append(acc, sp)
+
+fun [tail] hasUidIn(ts: Chain<Spec>, u: String): Bool
+  ret match(ts)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => uid(l.value) == u ? true : hasUidIn(l.next, u)
+
+fun hasUid(ts: List<Spec>, u: String): Bool
+  ret hasUidIn(chain(ts), u)
+
+fun dropSubsumed(flat: List<Spec>): List<Spec>
+  ret keepUnsubsumed(chain(flat), flat, List<Spec>())
+
+fun [tail] keepUnsubsumed(ms: Chain<Spec>, all2: List<Spec>,
+                          acc: List<Spec>): List<Spec>
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => isSubsumed(l.value, all2)
+      ? keepUnsubsumed(l.next, all2, acc)
+      : keepUnsubsumed(l.next, all2, append(acc, l.value))
+
+# An enum member whose valid leaves are a STRICT subset of another member of
+# the same enum carries no values the wider member lacks.
+fun isSubsumed(m: Spec, flat: List<Spec>): Bool
+  ret match(m)
+    (e: SEnum) => contains(e.seRoot, "@") && anyWider(chain(flat), e)
+    (o)        => false
+
+fun [tail] anyWider(os: Chain<Spec>, e: SEnum): Bool
+  ret match(os)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => widerEnum(l.value, e) ? true : anyWider(l.next, e)
+
+fun widerEnum(o: Spec, e: SEnum): Bool
+  ret match(o)
+    (oe: SEnum) => oe.seRoot == e.seRoot
+                   && listLen(oe.seValidLeaves) > listLen(e.seValidLeaves)
+                   && allIn(chain(e.seValidLeaves), oe.seValidLeaves)
+    (other)     => false
+
+fun [tail] allIn(ns: Chain<String>, wider: List<String>): Bool
+  ret match(ns)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => contains2(wider, l.value) ? allIn(l.next, wider) : false
+
+fun [tail] containsName(ns: Chain<String>, n: String): Bool
+  ret match(ns)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value == n ? true : containsName(l.next, n)
+
+fun contains2(names: List<String>, n: String): Bool
+  ret containsName(chain(names), n)
+
+# ── tuple entry binding ─────────────────────────────────────────────────────
+# bind_tuple_entries: the ONE binding rule — positional first, then by NAME
+# (only where the supplied names overlap the declared ones), with unbound
+# declared entries covered by their defaults. Returns, per declared entry, the
+# supplied index bound to it (-1 = filled by its default), or None when the
+# tuples cannot bind at all.
+
+# bind_tuple_entries — transcribed from specs.py. One value per DECLARED
+# field: the supplied index that binds it, or -1 meaning "fill from this
+# field's default". None (no binding) when the tuples don't correspond: more
+# entries than fields, a bare entry after a name-bound one, a doubly-bound
+# field, or an unbound field with no default.
+#
+# A supplied name binds ONLY when it matches a declared field. Tuples whose
+# names don't overlap the declared names keep the structural semantics — same
+# length binds positionally, names ignored — so a `(dir, entries)` value still
+# pipes into `(d, acc)` parameters.
+
+fun bindTupleEntries(declared: List<SEntry>,
+                     supplied: List<String>): List<Int>|None
+  let nd = listLen(declared)
+  let ns = listLen(supplied)
+  if ns > nd
+    ret None
+  let bare = bareNames(chain(declared), List<String>())
+  if ns == nd && !anyOverlap(chain(supplied), bare)
+    ret range0(nd)
+  ret bindLoop(chain(supplied), 0, declared, bare, initSlots(nd), false)
+
+fun [tail] bareNames(ds: Chain<SEntry>, acc: List<String>): List<String>
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => bareNames(l.next, append(acc, bareOfName(l.value.seName)))
+
+fun bareOfName(name: String): String
+  let at = findByte(name, '@', 0)
+  ret at < 0 ? name : slice(name, 0, at)
+
+fun [tail] anyOverlap(ss: Chain<String>, bare: List<String>): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value != "" && contains2(bare, l.value)
+      ? true
+      : anyOverlap(l.next, bare)
+
+fun range0(n: Int): List<Int>
+  ret rangeLoop(0, n, List<Int>())
+
+fun [tail] rangeLoop(i: Int, n: Int, acc: List<Int>): List<Int>
+  ret i >= n ? acc : rangeLoop(i + 1, n, append(acc, i))
+
+fun initSlots(n: Int): List<Int>
+  ret slotLoop(0, n, List<Int>())
+
+fun [tail] slotLoop(i: Int, n: Int, acc: List<Int>): List<Int>
+  ret i >= n ? acc : slotLoop(i + 1, n, append(acc, -1))
+
+# `slots` carries -1 for "unbound so far"; a field bound by name or position
+# takes the supplied index. seenName tracks the "bare positional after a
+# name-bound entry" rejection.
+fun bindLoop(ss: Chain<String>, i: Int, declared: List<SEntry>,
+             bare: List<String>, slots: List<Int>, seenName: Bool): List<Int>|None
+  ret match(ss)
+    (nil: ChainEnd) => fillDefaults(chain(declared), chain(slots), 0, List<Int>())
+    (l: ChainLink)  => bindOne(l, i, declared, bare, slots, seenName)
+
+fun bindOne(l: ChainLink<String>, i: Int, declared: List<SEntry>,
+            bare: List<String>, slots: List<Int>, seenName: Bool): List<Int>|None
+  let byName = l.value != "" ? indexOfName(bare, l.value) : -1
+  if byName >= 0
+    ret nth(slots, byName) >= 0
+      ? None                                  # doubly-bound field
+      : bindLoop(l.next, i + 1, declared, bare, setSlot(slots, byName, i), true)
+  if l.value == "" && seenName
+    ret None                                  # bare positional after a name bind
+  if i >= listLen(declared) || nth(slots, i) >= 0
+    ret None
+  ret bindLoop(l.next, i + 1, declared, bare, setSlot(slots, i, i), seenName)
+
+# An unbound field is filled by its default, or the binding fails.
+fun fillDefaults(ds: Chain<SEntry>, ss: Chain<Int>, i: Int,
+                 acc: List<Int>): List<Int>|None
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (ld: ChainLink) => match(ss)
+      (ls: ChainLink) => ls.value < 0 && !hasDefault(ld.value)
+        ? None
+        : fillDefaults(ld.next, ls.next, i + 1, append(acc, ls.value))
+      ()              => None
+
+fun hasDefault(e: SEntry): Bool
+  ret match(e.seDefault)
+    (d: PExpr) => true
+    ()         => false
+
+fun indexOfName(bare: List<String>, name: String): Int
+  ret name == "" ? -1 : indexLoop(chain(bare), name, 0)
+
+fun [tail] indexLoop(ns: Chain<String>, name: String, at: Int): Int
+  ret match(ns)
+    (nil: ChainEnd) => -1
+    (l: ChainLink)  => l.value == name ? at : indexLoop(l.next, name, at + 1)
+
+fun nth(xs: List<Int>, i: Int): Int
+  ret match(head(drop(xs, i)))
+    (v: Int) => v
+    ()       => -1
+
+fun setSlot(xs: List<Int>, at: Int, v: Int): List<Int>
+  ret setLoop(chain(xs), 0, at, v, List<Int>())
+
+fun [tail] setLoop(xs: Chain<Int>, i: Int, at: Int, v: Int,
+                   acc: List<Int>): List<Int>
+  ret match(xs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => setLoop(l.next, i + 1, at, v,
+                               append(acc, i == at ? v : l.value))
+
+# ══ spec text format (test harness only) ═════════════════════════════════════
+# A compact spelling so the Python side can drive both implementations over
+# the same cases: i:Int b:Bool s:Str  E:Root:leaf1|leaf2  C:Name  G:Name
+# U(a,b)  T(name=spec,...)  F(params->result)
+# Nested commas are avoided by keeping the generated cases shallow.
+
+fun parseSpecText(s: String): Spec|None
+  let t2 = trim(s)
+  if t2 == ""
+    ret None
+  let k = byteAt(t2, 0)
+  if k == 'i'
+    ret SBuiltin("bigint", noLine())
+  if k == 'b'
+    ret SBuiltin("bool", noLine())
+  if k == 's'
+    ret SBuiltin("str", noLine())
+  if k == 'G'
+    ret SGeneric(afterColon(t2), false, noLine())
+  if k == 'C'
+    ret SClass(afterColon(t2), List<Spec>(), noLine())
+  if k == 'E'
+    ret parseEnumText(afterColon(t2))
+  if k == 'U'
+    ret parseUnionText(inParens(t2))
+  if k == 'T'
+    ret parseTupleText(inParens(t2))
+  ret None
+
+fun noLine(): PLine
+  ret PLine("x", 0, 0)
+
+fun afterColon(s: String): String
+  let c = findByte(s, ':', 0)
+  ret c < 0 ? "" : slice(s, c + 1, length(s))
+
+fun inParens(s: String): String
+  let o = findByte(s, '(', 0)
+  ret o < 0 ? "" : slice(s, o + 1, length(s) - 1)
+
+# `Root:leafA|leafB` — the valid leaves of an enum spec (all leaves = valid).
+# NO leaves at all is the EMPTY type (Never), so the empty spelling must yield
+# an empty list — `split("", "|")` would hand back one empty name and make an
+# uninhabited enum look inhabited.
+fun parseEnumText(body: String): Spec
+  let c = findByte(body, ':', 0)
+  let root = c < 0 ? body : slice(body, 0, c)
+  let tail2 = c < 0 ? "" : slice(body, c + 1, length(body))
+  let leaves = tail2 == "" ? List<String>() : split(tail2, "|")
+  ret SEnum(root, leaves, leaves, List<Spec>(), noLine(), List<SField>())
+
+fun parseUnionText(body: String): Spec|None
+  ret unionParts(chain(topLevelParts(body)), List<Spec>())
+
+# `_=spec,name=spec` — a tuple spelling; `_` is an unnamed entry.
+fun parseTupleText(body: String): Spec|None
+  ret tupleParts(chain(topLevelParts(body)), List<SEntry>())
+
+fun tupleParts(ps: Chain<String>, acc: List<SEntry>): Spec|None
+  ret match(ps)
+    (nil: ChainEnd) => STuple(acc, noLine())
+    (l: ChainLink)  => trim(l.value) == ""
+      ? tupleParts(l.next, acc)
+      : tupleEntryText(l.value)
+        |> (en) => match(en)
+          (e: SEntry) => tupleParts(l.next, append(acc, e))
+          ()          => None
+
+fun tupleEntryText(part: String): SEntry|None
+  let eq = findByte(part, '=', 0)
+  if eq < 0
+    ret None
+  let name = trim(slice(part, 0, eq))
+  ret match(parseSpecText(slice(part, eq + 1, length(part))))
+    (sp: Spec) => SEntry(name == "_" ? "" : name, sp, None)
+    ()         => None
+
+# Split on TOP-LEVEL commas only — a nested U(...)/T(...) carries its own.
+fun topLevelParts(body: String): List<String>
+  ret partLoop(body, 0, 0, 0, List<String>())
+
+fun [tail] partLoop(body: String, at: Int, start: Int, depth: Int,
+                    acc: List<String>): List<String>
+  if at >= length(body)
+    ret append(acc, slice(body, start, length(body)))
+  let c = byteAt(body, at)
+  ret c == '(' ? partLoop(body, at + 1, start, depth + 1, acc)
+    : c == ')' ? partLoop(body, at + 1, start, depth - 1, acc)
+    : c == ',' && depth == 0
+      ? partLoop(body, at + 1, at + 1, depth,
+                 append(acc, slice(body, start, at)))
+      : partLoop(body, at + 1, start, depth, acc)
+
+fun unionParts(ps: Chain<String>, acc: List<Spec>): Spec|None
+  ret match(ps)
+    (nil: ChainEnd) => SCombination(acc, noLine())
+    (l: ChainLink)  => match(parseSpecText(l.value))
+      (s2: Spec) => unionParts(l.next, append(acc, s2))
+      ()         => None
+
+# `name=spec;name=spec` — declared tuple entries (a trailing `!` marks a
+# default). Semicolons separate entries so commas stay free for unions.
+fun parseEntriesText(s: String): List<SEntry>
+  ret entryParts(chain(split(s, ";")), List<SEntry>())
+
+fun entryParts(ps: Chain<String>, acc: List<SEntry>): List<SEntry>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => entryParts(l.next, append(acc, oneEntry(trim(l.value))))
+
+fun oneEntry(part: String): SEntry
+  let hasDflt = endsWith(part, "!")
+  let core = hasDflt ? slice(part, 0, length(part) - 1) : part
+  let eq = findByte(core, '=', 0)
+  let name = eq < 0 ? core : slice(core, 0, eq)
+  let ty = eq < 0 ? "" : slice(core, eq + 1, length(core))
+  ret SEntry(name == "_" ? "" : name, parseSpecText(ty),
+             hasDflt ? PeNothing(noLine()) : None)

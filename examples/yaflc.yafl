@@ -1,0 +1,396 @@
+# yaflc — a miniature YAFL compiler, written in YAFL: the self-hosting
+# prototype. It compiles "core YAFL" — single-expression functions over Int
+# with calls, arithmetic, comparison and the ternary — to a standalone C
+# translation unit, exercising every phase a real compiler needs: tokenising,
+# recursive-descent parsing with operator precedence, name/arity resolution,
+# and code emission.
+#
+#   echo 'fun main() => 6 * 7' | yaflc     (source on stdin, C on stdout)
+#
+# Core-YAFL grammar (whitespace-insensitive, `#` line comments):
+#   program  = fundef* ;                  one of them must be `main()`
+#   fundef   = "fun" name "(" [name ("," name)*] ")" "=>" expr ;
+#   expr     = binary ["?" expr ":" expr] ;
+#   binary   = unary (op unary)* ;        == != < <= > >= | + - | * / %
+#   unary    = int | name | name "(" args ")" | "(" expr ")" | "-" unary ;
+#
+# Every value is a C `long`; division/modulo carry C semantics. Function
+# names are prefixed `yf_` in the output and forward-declared, so mutual
+# recursion works. Errors (lexical, syntactic, unknown name, arity mismatch,
+# duplicate or missing function) print as `error: …` with exit code 1.
+namespace Main
+
+import System
+import System::IO
+
+class [final] CompileError(message: System::String)
+
+# ══ Object language ══════════════════════════════════════════════════════════
+
+enum Tok
+  enum TInt(ival: System::Int)
+  enum TName(tname: System::String)
+  enum TSym(sym: System::String)
+  enum TEnd()
+
+enum Expr
+  enum EInt(num: System::Int)
+  enum EName(ename: System::String)
+  enum EBin(op: System::String, lhs: Expr, rhs: Expr)
+  enum ECond(cnd: Expr, thn: Expr, els: Expr)
+  enum ECall(target: System::String, args: List<Expr>)
+
+class [final] FunDef(name: System::String, params: List<System::String>, body: Expr)
+
+fun listLength<T>(l: List<T>): System::Int
+  ret chainLength(chain(l))
+
+# ══ Tokeniser ════════════════════════════════════════════════════════════════
+
+fun tokenize(src: System::String): List<Tok>|CompileError
+  fun isDigit(c: System::Int32): System::Bool
+    ret match(c)
+      ('0' .. '9') => true
+      ()           => false
+  fun isNameStart(c: System::Int32): System::Bool
+    ret match(c)
+      ('a' .. 'z', 'A' .. 'Z', '_') => true
+      ()                            => false
+  fun isNameChar(c: System::Int32): System::Bool
+    ret isNameStart(c) || isDigit(c)
+  fun [tail] skipLine(pos: System::Int): System::Int
+    ret pos < System::length(src) && System::byteAt(src, pos) != '\n'
+      ? skipLine(pos + 1) : pos
+  fun [tail] skipGap(pos: System::Int): System::Int
+    if pos >= System::length(src)
+      ret pos
+    let c = System::byteAt(src, pos)
+    if c == '#'
+      ret skipGap(skipLine(pos))
+    ret c == ' ' || c == '\t' || c == '\n' || c == '\r' ? skipGap(pos + 1) : pos
+  fun [tail] digitsEnd(pos: System::Int): System::Int
+    ret pos < System::length(src) && isDigit(System::byteAt(src, pos))
+      ? digitsEnd(pos + 1) : pos
+  fun [tail] nameEnd(pos: System::Int): System::Int
+    ret pos < System::length(src) && isNameChar(System::byteAt(src, pos))
+      ? nameEnd(pos + 1) : pos
+  fun symEnd(pos: System::Int): System::Int
+    let two = pos + 2 <= System::length(src) ? System::slice(src, pos, pos + 2) : ""
+    ret match(two)
+      ("<=", ">=", "==", "!=", "=>") => pos + 2
+      ()                             => pos + 1
+  fun intTok(lo: System::Int, hi: System::Int): Tok|CompileError
+    ret match(System::parseInt(System::slice(src, lo, hi)))
+      (n: System::Int) => TInt(n)
+      ()               => CompileError("integer literal out of range at byte " + System::String(lo))
+  fun nextTok(at: System::Int): (t: Tok|CompileError, next: System::Int)
+    let c = System::byteAt(src, at)
+    if isDigit(c)
+      let stop = digitsEnd(at)
+      ret (intTok(at, stop), stop)
+    if isNameStart(c)
+      let stop = nameEnd(at)
+      ret (TName(System::slice(src, at, stop)), stop)
+    if System::containsByte("()+-*/%<>?:,=!", c)
+      let stop = symEnd(at)
+      ret (TSym(System::slice(src, at, stop)), stop)
+    ret (CompileError("unexpected character '" + System::Char(c) + "' at byte " + System::String(at)), at)
+  fun [tail] scan(pos: System::Int, acc: List<Tok>): List<Tok>|CompileError
+    let at = skipGap(pos)
+    if at >= System::length(src)
+      ret append(acc, TEnd())
+    let r = nextTok(at)
+    ret match(r.t)
+      (err: CompileError) => err
+      (t: Tok)            => scan(r.next, append(acc, t))
+  ret scan(0, List<Tok>())
+
+# ══ Parser ═══════════════════════════════════════════════════════════════════
+# Every parse function threads the token chain and returns
+# `(v: node|CompileError, rest)` — the first error wins and unwinds.
+
+fun peekTok(ts: Chain<Tok>): Tok
+  ret match(ts)
+    (l: ChainLink) => l.value
+    ()             => TEnd()
+
+fun dropTok(ts: Chain<Tok>): Chain<Tok>
+  ret match(ts)
+    (l: ChainLink) => l.next
+    ()             => ts
+
+fun isSym(t: Tok, s: System::String): System::Bool
+  ret match(t)
+    (k: TSym) => k.sym == s
+    ()        => false
+
+fun describe(t: Tok): System::String
+  ret match(t)
+    (i: TInt)  => "'" + System::String(i.ival) + "'"
+    (n: TName) => "'" + n.tname + "'"
+    (s: TSym)  => "'" + s.sym + "'"
+    ()         => "end of input"
+
+fun parseProgram(ts: Chain<Tok>, acc: List<FunDef>): List<FunDef>|CompileError
+  ret match(peekTok(ts))
+    (e: TEnd) => acc
+    ()        => parseNextFun(ts, acc)
+
+fun parseNextFun(ts: Chain<Tok>, acc: List<FunDef>): List<FunDef>|CompileError
+  let f = parseFun(ts)
+  ret match(f.v)
+    (err: CompileError) => err
+    (fd: FunDef)        => parseProgram(f.rest, append(acc, fd))
+
+fun parseFun(ts: Chain<Tok>): (v: FunDef|CompileError, rest: Chain<Tok>)
+  fun fail(msg: System::String): (v: FunDef|CompileError, rest: Chain<Tok>)
+    ret (CompileError(msg), ts)
+  fun named(t1: Chain<Tok>): (v: FunDef|CompileError, rest: Chain<Tok>)
+    ret match(peekTok(t1))
+      (n: TName) => header(n.tname, dropTok(t1))
+      ()         => fail("expected function name, found " + describe(peekTok(t1)))
+  fun header(fname: System::String, t2: Chain<Tok>): (v: FunDef|CompileError, rest: Chain<Tok>)
+    if !isSym(peekTok(t2), "(")
+      ret fail("expected '(' after function name " + fname)
+    let ps = parseParams(dropTok(t2), List<System::String>())
+    ret match(ps.v)
+      (err: CompileError)            => (err, ps.rest)
+      (params: List<System::String>) => body(fname, params, ps.rest)
+  fun body(fname: System::String, params: List<System::String>,
+           t3: Chain<Tok>): (v: FunDef|CompileError, rest: Chain<Tok>)
+    if !isSym(peekTok(t3), "=>")
+      ret fail("expected '=>' before the body of " + fname)
+    let b = parseExpr(dropTok(t3))
+    ret match(b.v)
+      (err: CompileError) => (err, b.rest)
+      (bodyExpr: Expr)    => (FunDef(fname, params, bodyExpr), b.rest)
+  ret match(peekTok(ts))
+    (n: TName) => n.tname == "fun"
+      ? named(dropTok(ts))
+      : fail("expected 'fun', found " + describe(peekTok(ts)))
+    ()         => fail("expected 'fun', found " + describe(peekTok(ts)))
+
+fun parseParams(ts: Chain<Tok>, acc: List<System::String>): (v: List<System::String>|CompileError, rest: Chain<Tok>)
+  if isSym(peekTok(ts), ")")
+    ret (acc, dropTok(ts))
+  ret match(peekTok(ts))
+    (n: TName) => paramsAfterName(dropTok(ts), append(acc, n.tname))
+    ()         => (CompileError("expected parameter name, found " + describe(peekTok(ts))), ts)
+
+fun paramsAfterName(ts: Chain<Tok>, acc: List<System::String>): (v: List<System::String>|CompileError, rest: Chain<Tok>)
+  if isSym(peekTok(ts), ",")
+    ret parseParams(dropTok(ts), acc)
+  if isSym(peekTok(ts), ")")
+    ret (acc, dropTok(ts))
+  ret (CompileError("expected ',' or ')' in parameter list, found " + describe(peekTok(ts))), ts)
+
+# expr = binary ["?" expr ":" expr] — the ternary is right-associative and
+# binds loosest, exactly as in full YAFL.
+fun parseExpr(ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  let b = parseBinary(ts)
+  ret match(b.v)
+    (err: CompileError) => b
+    (cond: Expr)        => isSym(peekTok(b.rest), "?")
+      ? parseTernary(cond, dropTok(b.rest))
+      : b
+
+fun parseTernary(cond: Expr, ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  let t = parseExpr(ts)
+  ret match(t.v)
+    (err: CompileError) => t
+    (thn: Expr)         => isSym(peekTok(t.rest), ":")
+      ? parseTernaryElse(cond, thn, dropTok(t.rest))
+      : (CompileError("expected ':' in ternary"), t.rest)
+
+fun parseTernaryElse(cond: Expr, thn: Expr, ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  let e = parseExpr(ts)
+  ret match(e.v)
+    (err: CompileError) => e
+    (els: Expr)         => (ECond(cond, thn, els), e.rest)
+
+fun prec(op: System::String): System::Int
+  ret match(op)
+    ("==", "!=", "<", "<=", ">", ">=") => 1
+    ("+", "-")                         => 2
+    ("*", "/", "%")                    => 3
+    ()                                 => 0
+
+fun parseBinary(ts: Chain<Tok>, minPrec: System::Int = 1): (v: Expr|CompileError, rest: Chain<Tok>)
+  let a = parseUnary(ts)
+  ret match(a.v)
+    (err: CompileError) => a
+    (lhs: Expr)         => binLoop(lhs, a.rest, minPrec)
+
+fun binLoop(lhs: Expr, ts: Chain<Tok>, minPrec: System::Int): (v: Expr|CompileError, rest: Chain<Tok>)
+  let opv = match(peekTok(ts))
+    (s: TSym) => prec(s.sym) >= minPrec && prec(s.sym) > 0 ? s.sym : ""
+    ()        => ""
+  if opv == ""
+    ret (lhs, ts)
+  let r = parseBinary(dropTok(ts), prec(opv) + 1)
+  ret match(r.v)
+    (err: CompileError) => r
+    (rhs: Expr)         => binLoop(EBin(opv, lhs, rhs), r.rest, minPrec)
+
+fun parseUnary(ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  ret match(peekTok(ts))
+    (i: TInt)  => (EInt(i.ival), dropTok(ts))
+    (n: TName) => isSym(peekTok(dropTok(ts)), "(")
+      ? parseCall(n.tname, dropTok(dropTok(ts)))
+      : (EName(n.tname), dropTok(ts))
+    (s: TSym)  => unaryFromSym(s.sym, ts)
+    ()         => (CompileError("unexpected end of input"), ts)
+
+fun unaryFromSym(sym: System::String, ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  if sym == "("
+    ret parseParen(dropTok(ts))
+  if sym == "-"
+    ret parseNegate(dropTok(ts))
+  ret (CompileError("unexpected " + describe(peekTok(ts))), ts)
+
+fun parseParen(ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  let e = parseExpr(ts)
+  ret match(e.v)
+    (err: CompileError) => e
+    (inner: Expr)       => isSym(peekTok(e.rest), ")")
+      ? (inner, dropTok(e.rest))
+      : (CompileError("expected ')', found " + describe(peekTok(e.rest))), e.rest)
+
+fun parseNegate(ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  let e = parseUnary(ts)
+  ret match(e.v)
+    (err: CompileError) => e
+    (inner: Expr)       => (EBin("-", EInt(0), inner), e.rest)
+
+fun parseCall(target: System::String, ts: Chain<Tok>): (v: Expr|CompileError, rest: Chain<Tok>)
+  if isSym(peekTok(ts), ")")
+    ret (ECall(target, List<Expr>()), dropTok(ts))
+  ret callArgs(target, ts, List<Expr>())
+
+fun callArgs(target: System::String, ts: Chain<Tok>, acc: List<Expr>): (v: Expr|CompileError, rest: Chain<Tok>)
+  let a = parseExpr(ts)
+  ret match(a.v)
+    (err: CompileError) => a
+    (arg: Expr)         => afterArg(target, a.rest, append(acc, arg))
+
+fun afterArg(target: System::String, ts: Chain<Tok>, acc: List<Expr>): (v: Expr|CompileError, rest: Chain<Tok>)
+  if isSym(peekTok(ts), ",")
+    ret callArgs(target, dropTok(ts), acc)
+  if isSym(peekTok(ts), ")")
+    ret (ECall(target, acc), dropTok(ts))
+  ret (CompileError("expected ',' or ')' in call to " + target + ", found " + describe(peekTok(ts))), ts)
+
+# ══ Checker ══════════════════════════════════════════════════════════════════
+# Name resolution and arity checking: every EName must be a parameter of the
+# enclosing function, every ECall a defined function called with its arity.
+
+fun check(funs: List<FunDef>): List<FunDef>|CompileError
+  ret match(buildArities(funs, Dict<System::String, System::Int>()))
+    (err: CompileError)                          => err
+    (arities: Dict<System::String, System::Int>) => match(checkAll(funs, arities))
+      (err2: CompileError) => err2
+      ()                   => funs
+
+fun buildArities(funs: List<FunDef>, acc: Dict<System::String, System::Int>): Dict<System::String, System::Int>|CompileError
+  ret match(head(funs))
+    (f: FunDef) => contains(acc, f.name)
+      ? CompileError("duplicate function " + f.name)
+      : buildArities(tail(funs), put(acc, f.name, listLength(f.params)))
+    ()          => checkMain(acc)
+
+fun checkMain(arities: Dict<System::String, System::Int>): Dict<System::String, System::Int>|CompileError
+  ret match(get(arities, "main"))
+    (n: System::Int) => n == 0 ? arities : CompileError("main must take no parameters")
+    ()               => CompileError("no main() function")
+
+fun checkAll(funs: List<FunDef>, arities: Dict<System::String, System::Int>): CompileError|None
+  ret match(head(funs))
+    (f: FunDef) => firstErr(checkExpr(f.body, f.params, arities),
+                            checkAll(tail(funs), arities))
+    ()          => None
+
+fun firstErr(a: CompileError|None, b: CompileError|None): CompileError|None
+  ret match(a)
+    (err: CompileError) => err
+    ()                  => b
+
+fun checkExpr(e: Expr, params: List<System::String>, arities: Dict<System::String, System::Int>): CompileError|None
+  ret match(e)
+    (i: EInt)   => None
+    (n: EName)  => contains(params, n.ename)
+      ? None
+      : CompileError("unknown variable " + n.ename)
+    (b: EBin)   => firstErr(checkExpr(b.lhs, params, arities),
+                            checkExpr(b.rhs, params, arities))
+    (c: ECond)  => firstErr(checkExpr(c.cnd, params, arities),
+                            firstErr(checkExpr(c.thn, params, arities),
+                                     checkExpr(c.els, params, arities)))
+    (c2: ECall) => checkCall(c2, params, arities)
+
+fun checkCall(c: ECall, params: List<System::String>, arities: Dict<System::String, System::Int>): CompileError|None
+  ret match(get(arities, c.target))
+    (n: System::Int) => n == listLength(c.args)
+      ? checkArgs(c.args, params, arities)
+      : CompileError(c.target + " expects " + System::String(n)
+                     + " argument(s), got " + System::String(listLength(c.args)))
+    ()               => CompileError("unknown function " + c.target)
+
+fun checkArgs(args: List<Expr>, params: List<System::String>, arities: Dict<System::String, System::Int>): CompileError|None
+  ret match(head(args))
+    (a: Expr) => firstErr(checkExpr(a, params, arities),
+                          checkArgs(tail(args), params, arities))
+    ()        => None
+
+# ══ Emitter ══════════════════════════════════════════════════════════════════
+# Fully parenthesised expressions (C precedence never bites), forward
+# declarations for mutual recursion, `yf_` prefix so no user name can
+# collide with a C keyword or the printf wrapper.
+
+fun emitExpr(e: Expr): System::String
+  ret match(e)
+    (i: EInt)   => System::String(i.num)
+    (n: EName)  => n.ename
+    (b: EBin)   => "(" + emitExpr(b.lhs) + " " + b.op + " " + emitExpr(b.rhs) + ")"
+    (c: ECond)  => "(" + emitExpr(c.cnd) + " ? " + emitExpr(c.thn) + " : " + emitExpr(c.els) + ")"
+    (c2: ECall) => "yf_" + c2.target + "("
+                   + join(map(c2.args, (a: Expr) => emitExpr(a)), ", ") + ")"
+
+fun cSignature(f: FunDef): System::String
+  let ps = isEmpty(f.params)
+    ? "void"
+    : join(map(f.params, (p: System::String) => "long " + p), ", ")
+  ret "static long yf_" + f.name + "(" + ps + ")"
+
+fun emitProgram(funs: List<FunDef>): System::String
+  let decls = join(map(funs, (f: FunDef) => cSignature(f) + ";"), "\n")
+  let defs  = join(map(funs, (f: FunDef) =>
+                   cSignature(f) + " { return " + emitExpr(f.body) + "; }"), "\n")
+  ret "#include <stdio.h>\n\n" + decls + "\n\n" + defs
+      + "\n\nint main(void) { printf(\"%ld\\n\", yf_main()); return 0; }\n"
+
+# ══ Driver ═══════════════════════════════════════════════════════════════════
+
+# The phases thread with `?>`: each stage's CompileError passes through
+# untouched, the success member flows into the next lambda.
+fun compileSource(src: System::String): System::String|CompileError
+  ret tokenize(src)
+    ?> (toks: List<Tok>)    => parseProgram(chain(toks), List<FunDef>())
+    ?> (funs: List<FunDef>) => check(funs)
+    ?> (good: List<FunDef>) => emitProgram(good)
+
+fun emitOrFail(text: System::String, i: IO): System::Int
+  ret match(compileSource(text))
+    (err: CompileError)  => report("error: " + err.message + "\n", 1, i)
+    (c: System::String)  => report(c, 0, i)
+
+fun report(out: System::String, code: System::Int, i: IO): System::Int
+  let r = writeAll(stdout(), out)
+  let final = r.v is IOError ? 1 : code
+  ret (r.io.close(), i.close(), final) |> (c1, c2, result) => result
+
+fun main(): System::Int
+  ret stdin().asStream()
+    |> (i, s) => (System::collect(s), i)
+    |> (src, i) => match(src)
+      (text: System::String) => emitOrFail(text, i)
+      (e: IOError) => (i.close(), 1) |> (c, code) => code

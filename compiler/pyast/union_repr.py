@@ -136,8 +136,11 @@ def _pointer_word_kind(member: t.TypeSpec, resolver: g.Resolver) -> tuple | None
         return ('FOREIGN',) if _classspec_is_foreign(member, resolver) else ('CLASS', member.name)
     if isinstance(member, t.EnumSpec):
         # Complex enums use per-variant vtables (a pointer-word); flat enums are
-        # a tagged struct, so not pointer-representable here.
-        return ('ENUM', member.root_name) if member.is_complex else None
+        # a tagged struct, so not pointer-representable here. Ask the
+        # DECLARATION, never this instance: a captured spec copy carries a stale
+        # is_complex (compare=False metadata), and disagreeing with the layout
+        # emits a tagged access against a pointer field.
+        return ('ENUM', member.root_name) if _is_complex_enum(member, resolver) else None
     return None
 
 
@@ -654,9 +657,17 @@ class PointerRepr(UnionRepr):
         null_target = (null_arm if null_arm is not None
                        else (else_arm if subj_has_none and not union_arm_covers_none else None))
         if null_target is not None:
-            em.arm(null_target, [[cg_p.IntEqConst(sv, 0)]],
-                   bind=em.bind_subject(null_target,
-                                        null_target.type_spec or subj_type, sv))
+            if null_target is else_arm and foreign_fallback is None:
+                # The else arm is BOTH the null target and the final fallback:
+                # guard NULL straight to the shared fallback body (it must be
+                # tested before any vtable-dereferencing arm guard). Emitting
+                # the body here as its own arm would define its stack
+                # variables a second time — SSA single-definition violation.
+                em.guard_to_fallback(cg_p.IntEqConst(sv, 0))
+            else:
+                em.arm(null_target, [[cg_p.IntEqConst(sv, 0)]],
+                       bind=em.bind_subject(null_target,
+                                            null_target.type_spec or subj_type, sv))
 
         for arm in guarded:
             if arm.literals:
@@ -791,11 +802,37 @@ class ComplexEnumRepr(UnionRepr):
         return ctor_bundle
 
 
+def _is_complex_enum(spec: t.EnumSpec, resolver: g.Resolver) -> bool:
+    """The CANONICAL complexity of `spec`'s enum: the flag on the declaration's
+    own spec, falling back to this instance's when the root doesn't resolve."""
+    types = resolver.find_type(spec.root_name)
+    if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
+        canonical = types[0].statement._enum_spec
+        if canonical is not None:
+            return canonical.is_complex
+    return spec.is_complex
+
+
+def _global_max_tag(resolver: g.Resolver) -> int:
+    """The largest discriminator value any tagged union stores. Tag width is
+    sized from this GLOBAL maximum for every tagged union, not per union:
+    conversions between assignable unions reuse the same anonymous C struct,
+    so all tags must share one width — and a combination's members carry
+    globally-numbered discriminators regardless of the union's own arity."""
+    discs = resolver.get_discriminators()
+    return max(discs.values(), default=0)
+
+
 def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
     """Decide a union's representation. The single source of truth that the
     `*.generate` decision and the per-site representation branches route through."""
     if isinstance(union_type, t.EnumSpec):
-        if union_type.is_complex:
+        # is_complex is compare=False METADATA that lowering/complex_enums sets
+        # on the enum's canonical spec — a spec INSTANCE captured earlier (in a
+        # field type, an arm's type_spec, a union member) can be a stale copy
+        # whose flag is still False. Layout must never depend on which copy we
+        # happen to hold: ask the declaration.
+        if _is_complex_enum(union_type, resolver):
             return ComplexEnumRepr(union_type)
         # Flat enum -> tagged struct over its variants, with the rare fallback
         # (the root name doesn't resolve to a single EnumStatement) preserved
@@ -803,7 +840,8 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         types = resolver.find_type(union_type.root_name)
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
             stmt = langtools.checked_cast(s.EnumStatement, types[0].statement)
-            container, vmap = cg_t.compute_union_slots(t.enum_variant_types(stmt, resolver))
+            container, vmap = cg_t.compute_union_slots(t.enum_variant_types(stmt, resolver),
+                                                       max_tag=_global_max_tag(resolver))
             return TaggedRepr(union_type, container, vmap)
         container = cg_t.Struct(tuple((name, ftype.generate(resolver))
                                       for name, ftype in union_type.all_fields))
@@ -813,7 +851,8 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         if _union_collapses_to_pointer(list(union_type.repr_members()), resolver):
             return PointerRepr(union_type)
         variant_types = [v.generate(resolver) for v in union_type.repr_members()]
-        container, vmap = cg_t.compute_union_slots(variant_types)
+        container, vmap = cg_t.compute_union_slots(variant_types,
+                                                   max_tag=_global_max_tag(resolver))
         return TaggedRepr(union_type, container, vmap)
 
     raise TypeError(f"classify: not a union type: {type(union_type).__name__}")

@@ -98,13 +98,33 @@ def _transform(stmt: s.Statement, resolver: g.Resolver, errors: list[Error]) -> 
         args = tuple(entry.value for entry in call.parameter.expressions)
         return e.RecurExpression(call.line_ref, args, idx)
 
+    def rewrite_stmt_tails(stmts: list[s.Statement]) -> list[s.Statement]:
+        """Early returns in tail position. A `ret` supplies the value of the
+        nearest enclosing block, so when that block is itself in tail position
+        (rewrite_tail reached it), every `ret expr` inside — including inside
+        `if` branches, which are scopes, not blocks — is a tail exit. Other
+        statement kinds run BEFORE the block's result and are left alone."""
+        out: list[s.Statement] = []
+        for st in stmts:
+            if isinstance(st, s.ReturnStatement):
+                out.append(dataclasses.replace(st, value=rewrite_tail(st.value)))
+            elif isinstance(st, s.IfStatement):
+                out.append(dataclasses.replace(st,
+                    true_block=rewrite_stmt_tails(st.true_block),
+                    false_block=rewrite_stmt_tails(st.false_block)))
+            else:
+                out.append(st)
+        return out
+
     def rewrite_tail(expr: e.Expression) -> e.Expression:
         if is_self_call(expr):
             return to_recur(expr)
         if isinstance(expr, e.BlockExpression):
-            # The block's value expression is in tail position; its statements
-            # are not (they run before the result).
-            return dataclasses.replace(expr, value=rewrite_tail(expr.value))
+            # The block's value expression is in tail position, and so is every
+            # `ret` targeting this block from its statements.
+            return dataclasses.replace(expr,
+                statements=rewrite_stmt_tails(expr.statements),
+                value=rewrite_tail(expr.value))
         if isinstance(expr, e.TernaryExpression):
             return dataclasses.replace(
                 expr,

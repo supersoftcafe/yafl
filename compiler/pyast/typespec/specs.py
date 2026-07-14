@@ -538,7 +538,9 @@ class EnumSpec(TypeSpec):
     def replace_in_all_fields(self,
                               resolver: g.Resolver,
                               replace: Callable[[g.Resolver, Any], Any],
-                              visited: frozenset[str] = frozenset()) -> EnumSpec:
+                              visited: frozenset[str] = frozenset(),
+                              memo: dict[tuple[int, frozenset[str]], EnumSpec] | None = None,
+                              ) -> EnumSpec:
         """Apply `replace` to every type nested in this enum's all_fields:
         descending through unions and tuples, and into nested enums' all_fields,
         stopping if it revisits an enum already on the current path.
@@ -549,15 +551,35 @@ class EnumSpec(TypeSpec):
         union member of an enum field — uses this instead. `replace` is the
         ordinary search_and_replace callback: it handles just its own leaf rule;
         the structural descent and the cycle-guarded recursion into nested enums
-        are supplied here, so callers never reimplement them."""
+        are supplied here, so callers never reimplement them.
+
+        `visited` breaks CYCLES; the `memo` breaks REDUNDANCY. Without it the
+        descent re-derives a SHARED subgraph once for every path that reaches
+        it, and the number of paths through an interconnected enum graph grows
+        exponentially with the number of enums — measured at ~2x per two enums,
+        which is what made a 14-enum program cost 1.2GB. The rewrite is a pure
+        function of (spec, path), so deriving each one once collapses the walk
+        back to the size of the graph. The memo is created by the OUTERMOST call
+        and threaded down: it belongs to this one rewrite and never outlives it
+        (a cache that survives its compilation hands back stale specs)."""
+        if memo is None:
+            memo = {}
+        key = (id(self), visited)
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
+
         def fix(field_type: TypeSpec, inner_visited: frozenset[str]) -> TypeSpec:
             def descend(res: g.Resolver, thing):
                 thing = replace(res, thing)
                 if isinstance(thing, EnumSpec):
-                    return thing.replace_in_all_fields(res, replace, inner_visited)
+                    return thing.replace_in_all_fields(res, replace, inner_visited, memo)
                 return thing
             return field_type.search_and_replace(resolver, descend)
-        return self.walk_all_fields(fix, visited)
+
+        result = self.walk_all_fields(fix, visited)
+        memo[key] = result
+        return result
 
 
 def enum_leaf_object_name(root_name: str, leaf_name: str) -> str:
@@ -707,7 +729,22 @@ def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
                     continue
                 seen.add(uid)
             flat.append(m)
-    return tuple(flat)
+    # An enum member SUBSUMED by another member of the same enum is the same
+    # set of values: `E3 | EU` where EU narrows E3 IS `E3` (a match arm
+    # returning a bare variant unioned with an arm returning the enum must
+    # not mint a third member — downstream exhaustiveness and codegen index
+    # the layout by member and would see a phantom). Only ground (resolved)
+    # enums fold; the wider-or-equal member is kept.
+    def subsumed(m: TypeSpec) -> bool:
+        if not (isinstance(m, EnumSpec) and '@' in m.root_name):
+            return False
+        # Strict subset only: equal leaf sets share a uid and were deduped above.
+        return any(o is not m
+                   and isinstance(o, EnumSpec) and o.root_name == m.root_name
+                   and m.valid_leaf_names < o.valid_leaf_names
+                   for o in flat)
+    folded = [m for m in flat if not subsumed(m)]
+    return tuple(folded)
 
 
 @dataclass(frozen=True)
@@ -868,9 +905,9 @@ def default_value_errors(default: "e.Expression | None", resolver: g.Resolver,
     cloned into every site that omits the field."""
     if default is None:
         return []
-    if isinstance(default, (e.IntegerExpression, e.FloatExpression,
-                            e.StringExpression, e.BoolExpression)):
+    if e.is_literal_value(default):
         return []
+    default = e.strip_conversions(default)
     if isinstance(default, e.NamedExpression):
         datas = resolver.find_data(default.name)
         if (len(datas) == 1

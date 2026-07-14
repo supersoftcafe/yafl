@@ -111,9 +111,29 @@ def matching_tuple_variant(source: "t.TupleSpec", target: "t.CombinationSpec",
     More than one match means nominally distinct variants collapsed to one
     structural spec, which simple_classes' union-collision pruning must have
     prevented — assert it."""
-    matching = [v for v in target.repr_members()
-                if isinstance(v, t.TupleSpec)
-                and v.trivially_assignable_from(resolver, source) is True]
+    def class_structural_tuple(v: "t.TypeSpec") -> "t.TypeSpec | None":
+        # A [final] class member is REPRESENTED structurally in unions; a
+        # tuple-typed value (e.g. the class's own inlined construction, whose
+        # type has become the field tuple) must box AS that class member.
+        if not isinstance(v, t.ClassSpec):
+            return None
+        found = resolver.find_type(v.name)
+        if len(found) != 1 or not isinstance(found[0].statement, s.ClassStatement):
+            return None
+        stmt = found[0].statement
+        if "final" not in stmt.attributes:
+            return None
+        return stmt.parameters.get_type()
+
+    matching = []
+    for v in target.repr_members():
+        if isinstance(v, t.TupleSpec) and v.trivially_assignable_from(resolver, source) is True:
+            matching.append(v)
+            continue
+        struct = class_structural_tuple(v)
+        if (isinstance(struct, t.TupleSpec)
+                and struct.trivially_assignable_from(resolver, source) is True):
+            matching.append(v)
     assert len(matching) <= 1, (
         f"ambiguous union boxing: tuple value fits {len(matching)} variants of "
         f"{target.as_unique_id_str()}")
@@ -139,6 +159,20 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
     # below: a pure name-directed reorder has identical ids on both sides
     # (`as_unique_id_str` is positional types only) yet must rebuild the value.
     if isinstance(target, t.TupleSpec) and isinstance(source, t.TupleSpec):
+        # 1-tuple WRAP first: when the target is a one-entry tuple whose entry
+        # the SOURCE-AS-A-WHOLE fits (it IS the entry type, or it is a member
+        # tuple of the entry's union — e.g. a simple-class's structural tuple
+        # into `(t: E3|W)` after simple_classes rewrote W to its field tuple),
+        # the conversion is wrap(+box), not an entry-wise rebind.
+        if len(target.entries) == 1 and target.entries[0].type is not None:
+            ety = target.entries[0].type
+            eu = ety.as_unique_id_str()
+            if eu is not None:
+                if eu == su:
+                    return True
+                if (isinstance(ety, t.CombinationSpec)
+                        and matching_tuple_variant(source, ety, resolver) is not None):
+                    return True
         binding = t.bind_tuple_entries(target.entries, [en.name for en in source.entries])
         if binding is None:
             return False    # not assignable — the receiver reports that, not us
@@ -149,13 +183,27 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
     if su == tu:
         return False
     if isinstance(target, t.TupleSpec):
-        return False
+        # A 1-tuple and its element are one TYPE with two REPRESENTATIONS
+        # (the tuple is a one-field struct): a non-tuple source must WRAP.
+        # Wider tuples with a non-tuple source are not assignable at all —
+        # the receiver reports that, not us.
+        return len(target.entries) == 1
     if isinstance(target, t.CombinationSpec):
         if isinstance(source, t.TupleSpec):
-            return matching_tuple_variant(source, target, resolver) is not None
+            if matching_tuple_variant(source, target, resolver) is not None:
+                return True
+            # A 1-tuple that is a genuine WRAPPER of a union value (its
+            # entry id equals the target's) unwraps to its element first.
+            if len(source.entries) == 1 and source.entries[0].type is not None:
+                return source.entries[0].type.as_unique_id_str() == tu
+            return False
         if isinstance(source, t.CombinationSpec):
             return True     # distinct union ids ⇒ widening/re-slotting
         return any(v.as_unique_id_str() == su for v in target.repr_members())
+    if (isinstance(source, t.TupleSpec) and len(source.entries) == 1
+            and source.entries[0].type is not None
+            and source.entries[0].type.as_unique_id_str() == tu):
+        return True         # a genuine 1-tuple WRAPPER of the target: UNWRAP
     return False
 
 
@@ -180,7 +228,24 @@ def emit_conversion(value, source: t.TypeSpec | None, target: t.TypeSpec | None,
     # ids (positional types only) but still rebuilds the value.
     if isinstance(target, t.TupleSpec):
         if isinstance(source, t.TupleSpec):
+            if len(target.entries) == 1 and target.entries[0].type is not None:
+                ety = target.entries[0].type
+                eu = ety.as_unique_id_str()
+                whole_fits = eu is not None and (
+                    eu == source.as_unique_id_str()
+                    or (isinstance(ety, t.CombinationSpec)
+                        and matching_tuple_variant(source, ety, resolver) is not None))
+                if whole_fits:
+                    inner = emit_conversion(value, source, ety, resolver)
+                    return inner + g.OperationBundle((), (),
+                        cg_p.NewStruct((("_0", inner.result_var),)))
             return _convert_tuple(value, source, target, resolver)
+        if len(target.entries) == 1:
+            # Wrap a bare element into its 1-tuple: convert to the entry's
+            # type first (the element may itself need union boxing).
+            inner = emit_conversion(value, source, target.entries[0].type, resolver)
+            return inner + g.OperationBundle((), (),
+                cg_p.NewStruct((("_0", inner.result_var),)))
         return _passthrough(value)
 
     su = source.as_unique_id_str()
@@ -189,6 +254,12 @@ def emit_conversion(value, source: t.TypeSpec | None, target: t.TypeSpec | None,
 
     if isinstance(target, t.CombinationSpec):
         if isinstance(source, t.TupleSpec):
+            if matching_tuple_variant(source, target, resolver) is not None:
+                return _tuple_into_union(value, source, target, resolver)
+            if (len(source.entries) == 1 and source.entries[0].type is not None
+                    and source.entries[0].type.as_unique_id_str() == target.as_unique_id_str()):
+                inner = cg_p.StructField(value, "_0")
+                return emit_conversion(inner, source.entries[0].type, target, resolver)
             return _tuple_into_union(value, source, target, resolver)
         if isinstance(source, t.CombinationSpec):
             # The target union's repr owns the widening (re-slot / null-check),
@@ -196,6 +267,12 @@ def emit_conversion(value, source: t.TypeSpec | None, target: t.TypeSpec | None,
             return union_repr.classify(target, resolver).widen_from(
                 union_repr.classify(source, resolver), value, resolver)
         return _pack_variant(value, source, target, resolver)
+
+    if isinstance(source, t.TupleSpec) and len(source.entries) == 1:
+        # 1-tuple into a bare element slot: read the single field and convert
+        # the element the rest of the way.
+        inner = cg_p.StructField(value, "_0")
+        return emit_conversion(inner, source.entries[0].type, target, resolver)
 
     return _passthrough(value)
 
@@ -242,6 +319,11 @@ def _tuple_into_union(value, source: t.TupleSpec, target: t.CombinationSpec,
     variant = matching_tuple_variant(source, target, resolver)
     if variant is None:
         return _passthrough(value)
+    if isinstance(variant, t.ClassSpec):
+        # A [final] class member matched structurally: the tuple value IS the
+        # class's in-union representation already — pack it under the class's
+        # identity (its discriminator), no inner rebuild.
+        return _pack_variant(value, variant, target, resolver)
     tuple_bundle = emit_conversion(value, source, variant, resolver)
     box_bundle = _pack_variant(tuple_bundle.result_var, variant, target, resolver)
     return tuple_bundle + box_bundle
