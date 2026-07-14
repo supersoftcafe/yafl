@@ -56,12 +56,14 @@ fun stmtName2(st: PStmt): String
 # The scope a function's BODY compiles in: its type params, then its parameters
 # as locals.
 fun funScope(f: PsFun, r: Resolver): Resolver
-  ret localScope(paramLets(f.fParams), genScope(f.fGens, r))
+  ret localScope(paramLets(f.fParams),
+                 traitScope(f.fWheres, genScope(f.fGens, r)))
 
-# A let's initialiser resolves like a function body — it needs the same generic
-# scope (and, once ported, the same trait operators).
+# A global let's initialiser resolves like a function body: it needs the same
+# generic scope AND the same trait operators, so an operator resolves the same
+# in each.
 fun letScope(l: PsLet, r: Resolver): Resolver
-  ret genScope(l.lGens, r)
+  ret traitScope(l.lWheres, genScope(l.lGens, r))
 
 fun classScope(c: PsClass, r: Resolver): Resolver
   ret genScope(c.cGens, r)
@@ -127,3 +129,93 @@ fun paramLets(params: PStmt): List<PStmt>
 # visible to the statements after it AND to the block's value.
 fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
   ret localScope(stmts, r)
+
+# ── the trait scope ─────────────────────────────────────────────────────────
+# ResolverTraitData + NamedStatement._find_trait_data.
+#
+# The in-scope trait / interface operators JOIN the enclosing scope as extra
+# DATA candidates — they never shadow it (only a local binding does), so a
+# `where`-supplied `+` and the builtin `+` resolve together and are told apart
+# by argument type.
+#
+# The part that MATTERS for the fixpoint is not what it finds but when it
+# admits it does not know: while a trait param is still an unresolved SNamed,
+# the operator set is NOT YET KNOWN, so the search is INCOMPLETE. A name must
+# never be committed against an incomplete bag — the candidate that should win
+# may still be invisible. This is why Python leaves a name unresolved on an
+# early pass where a port without this layer would resolve it too soon.
+
+fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
+  ret isEmpty(wheres) ? r : RTraits(wheres, r)
+
+# Every operator the `where` clauses bring in, plus completeness. A `where`
+# whose type has not grounded yet BLOCKS: the answer is incomplete.
+fun traitBag(wheres: List<Spec>, query: String, r: Resolver): Bag
+  ret traitLoop(chain(wheres), query, r, emptyBag())
+
+fun [tail] traitLoop(ws: Chain<Spec>, query: String, r: Resolver,
+                     acc: Bag): Bag
+  ret match(ws)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => traitLoop(l.next, query, r,
+                                 addBags(acc, oneTrait(l.value, query, r)))
+
+fun oneTrait(w: Spec, query: String, r: Resolver): Bag
+  ret match(w)
+    # Not grounded yet — its operators are unknowable, so this search is
+    # INCOMPLETE, not empty.
+    (n: SNamed) => incompleteBag()
+    (c: SClass) => isConcrete(c) ? membersOf(c, query, r) : incompleteBag()
+    (o: Spec)   => emptyBag()
+
+# The interface's own members, else its parents' (with the type params
+# substituted through). An interface whose name has not resolved is INCOMPLETE.
+fun membersOf(c: SClass, query: String, r: Resolver): Bag
+  ret match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => classMembers(cs, c, query, r)
+      (o: PStmt)    => emptyBag()
+    ()         => incompleteBag()
+
+fun classMembers(cs: PsClass, c: SClass, query: String, r: Resolver): Bag
+  let direct = memberMatches(chain(cs.cMembers), query, List<Found>())
+  ret isEmpty(direct)
+    ? parentMembers(cs, c, query, r)
+    : Bag(direct, true)
+
+fun [tail] memberMatches(ms: Chain<PStmt>, query: String,
+                         acc: List<Found>): List<Found>
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameMatches(stmtName(l.value), query)
+      ? memberMatches(l.next, query, append(acc, Found(stmtName(l.value),
+                                                       l.value, ScTrait())))
+      : memberMatches(l.next, query, acc)
+
+# Recurse into each parent interface with this instance's type args substituted
+# (Math<TVal> : Plus<TVal>, asked as Math<Int> ⇒ Plus<Int>). A parent that has
+# not grounded blocks the whole search.
+fun parentMembers(cs: PsClass, c: SClass, query: String, r: Resolver): Bag
+  let mapping = paramMapping(cs.cGens, c.scParams)
+  ret parentLoop(chain(cs.cImplements), mapping, query, r, emptyBag())
+
+fun [tail] parentLoop(ps: Chain<Spec>, mapping: List<Binding>, query: String,
+                      r: Resolver, acc: Bag): Bag
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => parentLoop(l.next, mapping, query, r,
+                                  addBags(acc, oneTrait(substitute(l.value,
+                                                                   mapping),
+                                                        query, r)))
+
+fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
+  ret mapLoop(chain(gens), chain(args), List<Binding>())
+
+fun [tail] mapLoop(gs: Chain<PGen>, as2: Chain<Spec>,
+                   acc: List<Binding>): List<Binding>
+  ret match(gs)
+    (nil: ChainEnd) => acc
+    (g: ChainLink)  => match(as2)
+      (nil2: ChainEnd) => acc
+      (a: ChainLink)   => mapLoop(g.next, a.next,
+                                  append(acc, Binding(g.value.genName, a.value)))

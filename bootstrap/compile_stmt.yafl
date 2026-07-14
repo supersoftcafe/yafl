@@ -139,7 +139,7 @@ fun adoptLet(l: PsLet, entryTy: Spec|None, r: Resolver): PStmt
 # The SIGNATURE (return type, parameters, wheres) resolves in the generic scope;
 # the BODY additionally sees the parameters as locals.
 fun compileFun(f: PsFun, r0: Resolver): StmtOut
-  let r = genScope(f.fGens, r0)
+  let r = traitScope(f.fWheres, genScope(f.fGens, r0))
   let ret2 = compileSpecOpt(f.fRet, r)
   let declaredRet = specOf(ret2)
   let params = compileStmt(f.fParams, r, None)

@@ -184,6 +184,10 @@ enum Resolver
   # `System::print@hash`. Only a name that is neither qualified nor already
   # hashed is retried this way.
   enum RScopes(rsNames: List<String>, rsParent: Resolver)
+  # The `where`-supplied trait/interface operators. They JOIN the scope (only a
+  # local shadows them), and — the part that matters — they report INCOMPLETE
+  # while a trait param has not grounded.
+  enum RTraits(rtWheres: List<Spec>, rtrParent: Resolver)
 
 fun findData(r: Resolver, query: String): Bag
   ret match(r)
@@ -192,6 +196,8 @@ fun findData(r: Resolver, query: String): Bag
                              findData(d.rdParent, query))
     (t2: RTypes)  => findData(t2.rtParent, query)
     (sc: RScopes) => scopedBag(sc, query, false)
+    (tr: RTraits) => addBags(traitBag(tr.rtWheres, query, tr.rtrParent),
+                             findData(tr.rtrParent, query))
 
 fun findType(r: Resolver, query: String): Bag
   ret match(r)
@@ -200,6 +206,7 @@ fun findType(r: Resolver, query: String): Bag
     (t2: RTypes)  => addBags(matchingFound(t2.rtNames, query),
                              findType(t2.rtParent, query))
     (sc: RScopes) => scopedBag(sc, query, true)
+    (tr: RTraits) => findType(tr.rtrParent, query)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
 # for a name that is still unqualified (no `::`) and unhashed (no `@`).
