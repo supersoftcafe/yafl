@@ -179,6 +179,11 @@ enum Resolver
   enum RRoot(rrStmts: Statements)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
+  # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
+  # name is ALSO looked up under each of them, which is how `print` finds
+  # `System::print@hash`. Only a name that is neither qualified nor already
+  # hashed is retried this way.
+  enum RScopes(rsNames: List<String>, rsParent: Resolver)
 
 fun findData(r: Resolver, query: String): Bag
   ret match(r)
@@ -186,6 +191,7 @@ fun findData(r: Resolver, query: String): Bag
     (d: RData)    => addBags(matchingFound(d.rdNames, query),
                              findData(d.rdParent, query))
     (t2: RTypes)  => findData(t2.rtParent, query)
+    (sc: RScopes) => scopedBag(sc, query, false)
 
 fun findType(r: Resolver, query: String): Bag
   ret match(r)
@@ -193,6 +199,29 @@ fun findType(r: Resolver, query: String): Bag
     (d: RData)    => findType(d.rdParent, query)
     (t2: RTypes)  => addBags(matchingFound(t2.rtNames, query),
                              findType(t2.rtParent, query))
+    (sc: RScopes) => scopedBag(sc, query, true)
+
+# The parent's answer, PLUS the answer under each in-scope namespace — but only
+# for a name that is still unqualified (no `::`) and unhashed (no `@`).
+fun scopedBag(sc: RScopes, query: String, wantType: Bool): Bag
+  let direct = wantType ? findType(sc.rsParent, query)
+                        : findData(sc.rsParent, query)
+  ret contains(query, "::") || contains(query, "@")
+    ? direct
+    : scopeLoop(chain(sc.rsNames), sc.rsParent, query, wantType, direct)
+
+fun [tail] scopeLoop(ns: Chain<String>, parent: Resolver, query: String,
+                     wantType: Bool, acc: Bag): Bag
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => scopeLoop(l.next, parent, query, wantType,
+                                 addBags(acc, qualifiedIn(parent, l.value,
+                                                          query, wantType)))
+
+fun qualifiedIn(parent: Resolver, ns: String, query: String,
+                wantType: Bool): Bag
+  ret wantType ? findType(parent, ns + "::" + query)
+               : findData(parent, ns + "::" + query)
 
 # The root's answer: every indexed statement under the query, split by whether
 # it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let).

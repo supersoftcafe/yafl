@@ -55,6 +55,51 @@ Design questions to settle first:
     per-project and per-library test targets;
   * whether tests may be [linear]/IO, and what the runner's `main` looks like.
 
+# TODO: specialise a `let` bound to a function-RETURNING call into a function
+
+A `let` whose initialiser is a CALL that returns a function is, once its
+arguments are known, a function with a fixed shape — so derive that shape at
+compile time and rewrite the LetStatement into a **FunctionStatement**.
+
+    let number = many1(digit)          # many1 returns a parser (a function)
+    let expr   = seq(term, plus, term)
+
+Today each of these stays a `fun_t` value: a closure built at run time, called
+indirectly, allocating its captures, and opaque to inlining. If the call can be
+evaluated at compile time (the callee is known, its arguments are known, and it
+is pure), the result is a KNOWN function body and can be emitted as an ordinary
+top-level function — direct calls, no closure allocation, and open to the
+inliner like any other function.
+
+This is exactly the shape a COMBINATOR PARSER is built from, so it is the
+optimisation that would make one fast — and the compiler's own parser (both the
+Python `parselib` and the ported one) is precisely such a program. It is
+plausibly the single biggest win available for the self-hosted compiler's own
+runtime.
+
+Precedent already in the tree: `lowering/lambda_globals.py` rewrites a global
+`let` holding a LAMBDA into a function ("a global let holding a lambda is a
+function by another name"). This is the same idea one step further out: the let
+holds a lambda *produced by a call*, so the call must be evaluated first.
+
+Design questions to settle:
+  * **When can the call be evaluated at compile time?** Needs a known callee, a
+    pure body, and arguments that are themselves compile-time known (literals,
+    [const]s, or other specialised lets). This is partial evaluation — bound it
+    deliberately, or it becomes an arbitrary interpreter at compile time.
+  * **Termination / blow-up.** Recursive combinators (`expr := term ('+' expr)`)
+    must not be unfolded forever; a self-referential parser needs a fixed point,
+    not inlining. Some cutoff or cycle detection is required — and note this
+    codebase has ALREADY been bitten twice by unbounded graph expansion
+    (see the enum-graph exponential).
+  * **Captures.** A specialised function's captured values become... what?
+    Constants folded into the body, or an emitted [const] global?
+  * Interaction with generics/monomorphisation (the specialisation is a close
+    cousin of it), with [linear] captures (cannot be duplicated), and with the
+    existing lambda/closure-conversion order in the lowering pipeline.
+  * Where it sits: after convergence (types known) and before `lambdas.py`, in
+    the spirit of `lambda_globals`.
+
 # YAFL bootstrap compiler — remaining blockers
 
 Ranked by how blocking they are to writing the compiler in YAFL itself.

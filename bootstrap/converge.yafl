@@ -46,6 +46,6 @@ fun compilePass(statements: List<PStmt>): List<PStmt>
 fun [tail] passLoop(ss: Chain<PStmt>, r: Resolver, acc: List<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => compileStmt(l.value, r, None)
+    (l: ChainLink)  => compileStmt(l.value, scopeResolver(l.value, r), None)
       |> (out) => passLoop(l.next, r,
                            concat(addStmt(acc, out.soStmt), out.soExtra))

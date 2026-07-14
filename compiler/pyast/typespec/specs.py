@@ -567,7 +567,7 @@ class EnumSpec(TypeSpec):
         key = (id(self), visited)
         cached = memo.get(key)
         if cached is not None:
-            return cached
+            return cached[1]
 
         def fix(field_type: TypeSpec, inner_visited: frozenset[str]) -> TypeSpec:
             def descend(res: g.Resolver, thing):
@@ -578,7 +578,12 @@ class EnumSpec(TypeSpec):
             return field_type.search_and_replace(resolver, descend)
 
         result = self.walk_all_fields(fix, visited)
-        memo[key] = result
+        # The entry KEEPS THE KEY OBJECT ALIVE. Keying on id() is only sound
+        # while the object lives: the descent recurses on freshly built specs,
+        # and if one were collected CPython would recycle its address — handing
+        # a later, unrelated spec a wrong cache hit. Storing `self` in the value
+        # pins the address for the life of the memo.
+        memo[key] = (self, result)
         return result
 
 

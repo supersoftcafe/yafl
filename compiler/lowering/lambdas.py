@@ -55,13 +55,23 @@ def __collect_lambda_paths(stmt: s.Statement) -> dict[LineRef, tuple[str, ...]]:
             new_path = path + (node.name,)
         if not dataclasses.is_dataclass(node):
             return
+        # Descend into EVERY dataclass child, not just Statement/Expression.
+        # A lambda passed as a call ARGUMENT sits inside a TupleEntryExpression,
+        # which is a dataclass but neither a Statement nor an Expression — so a
+        # Statement/Expression-only walk never reached it, left its path EMPTY,
+        # and every specialisation of a generic function then named that lambda
+        # `lambda@<hash6>` with no prefix. They collided onto one class, and the
+        # first `T` lowered won: `concat<A>` ran the lambda built for `B`,
+        # producing a chain whose vtables matched neither arm of the receiving
+        # match — a silent abort. Nested wrappers (arms, tuple entries) must not
+        # hide a lambda from its path.
         for f in dataclasses.fields(node):
             child = getattr(node, f.name, None)
-            if isinstance(child, (s.Statement, e.Expression)):
+            if dataclasses.is_dataclass(child):
                 walk(child, new_path)
             elif isinstance(child, (list, tuple)):
                 for item in child:
-                    if isinstance(item, (s.Statement, e.Expression)):
+                    if dataclasses.is_dataclass(item):
                         walk(item, new_path)
 
     walk(stmt, ())

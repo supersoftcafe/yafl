@@ -217,15 +217,19 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     # function of the graph, so deriving it once and reusing it collapses the
     # path-walk back to the graph's actual size. Local to this call: it is a
     # memo of THIS pass's rewrite, never state that outlives it.
-    memo: dict[tuple[int, frozenset[str]], t.TypeSpec] = {}
+    memo: dict[tuple[int, frozenset[str]], tuple[t.TypeSpec, t.TypeSpec]] = {}
 
     def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
         key = (id(ft), visited)
         hit = memo.get(key)
         if hit is not None:
-            return hit
+            return hit[1]
         result = _resolve_named_uncached(ft, visited)
-        memo[key] = result
+        # The entry KEEPS THE KEY OBJECT ALIVE (`ft`). Keying on id() is only
+        # sound while the object lives: this walk recurses on freshly built
+        # specs, and a collected one would have its address recycled by CPython,
+        # handing a later unrelated spec a wrong cache hit.
+        memo[key] = (ft, result)
         return result
 
     def _resolve_named_uncached(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:

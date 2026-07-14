@@ -247,16 +247,91 @@ fun compileArm(a: PArm, r: Resolver, expected: Spec|None): ArmOut
 
 # A block defers to its VALUE: the receiver's type threads through to it, and
 # the block's own type is the value's.
-fun compileBlock(bk: PeBlock, r: Resolver, expected: Spec|None): ExprOut
+# A block's own lets are in scope for its statements AND for its value.
+fun compileBlock(bk: PeBlock, r0: Resolver, expected: Spec|None): ExprOut
+  let r = blockScope(bk.blockStmts, r0)
+  let ss = compileStmts(chain(bk.blockStmts), r, None, List<PStmt>(), List<PStmt>())
   let v = compileExpr(bk.blockValue, r, expected)
-  ret ExprOut(PeBlock(bk.blockStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
-              v.eoGlobals)
+  ret ExprOut(PeBlock(ss.slStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
+              concat(ss.slGlobals, v.eoGlobals))
 
-# A primitive op owns its conversion — its result boxing into a union slot.
+# A primitive op owns its conversion — its result boxing into a union slot —
+# EXCEPT when it folds: an integer comparison of two bigint literals (the body
+# of Int's ==/</>) collapses to a Bool literal. The language has no true/false
+# token, so this fold is what lets a constant Bool become a literal and inline.
 fun compileBuiltinOp(op: PeBuiltinOp, r: Resolver, expected: Spec|None): ExprOut
   let ps = compileExpr(op.opParams, r, None)
   let out = PeBuiltinOp(op.opType, op.opName, ps.eoExpr, op.peboLine)
-  ret ExprOut(converted(out, expected, r), ps.eoGlobals)
+  ret match(foldConstCompare(out))
+    (b: PExpr) => ExprOut(b, ps.eoGlobals)
+    ()         => ExprOut(converted(out, expected, r), ps.eoGlobals)
+
+# Takes the ROOT type: an enum-variant constructor yields the root, so a caller
+# that has just built a PeBuiltinOp cannot pass it as one.
+fun foldConstCompare(x: PExpr): PExpr|None
+  ret match(x)
+    (op: PeBuiltinOp) => foldOp(op)
+    (o: PExpr)        => None
+
+fun foldOp(op: PeBuiltinOp): PExpr|None
+  if !isBoolBuiltin(op.opType)
+    ret None
+  ret match(opName(op.opName))
+    (nm: String) => foldWith(nm, op)
+    ()           => None
+
+fun isBoolBuiltin(sp: Spec): Bool
+  ret match(sp)
+    (b: SBuiltin) => b.sbName == "bool"
+    (o: Spec)     => false
+
+fun opName(x: PExpr): String|None
+  ret match(x)
+    (s2: PeStr) => s2.strValue
+    (o: PExpr)  => None
+
+fun foldWith(nm: String, op: PeBuiltinOp): PExpr|None
+  if nm != "integer_test_eq" && nm != "integer_test_lt" && nm != "integer_test_gt"
+    ret None
+  ret match(twoBigints(op.opParams))
+    (p: IntPair) => PeBool(compareInts(nm, p.ipLeft, p.ipRight), op.peboLine)
+    ()           => None
+
+class [final] IntPair(ipLeft: Int, ipRight: Int)
+
+# Both operands must be UNSUFFIXED (precision 0) integer literals — a sized
+# literal is a different type and does not fold here.
+fun twoBigints(params: PExpr): IntPair|None
+  ret match(params)
+    (tp: PeTuple) => listLen(tp.exprs) == 2 ? pairOf(tp) : None
+    (o: PExpr)    => None
+
+fun pairOf(tp: PeTuple): IntPair|None
+  ret match(bigintAt(tp.exprs, 0))
+    (a: Int) => match(bigintAt(tp.exprs, 1))
+      (b: Int) => IntPair(a, b)
+      ()       => None
+    ()       => None
+
+fun bigintAt(es: List<PTupEnt>, i: Int): Int|None
+  ret match(entAt(chain(es), i))
+    (en: PTupEnt) => bigintOf(en.tupValue)
+    ()            => None
+
+fun [tail] entAt(es: Chain<PTupEnt>, i: Int): PTupEnt|None
+  ret match(es)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => i <= 0 ? l.value : entAt(l.next, i - 1)
+
+fun bigintOf(x: PExpr): Int|None
+  ret match(x)
+    (i: PeInt) => i.precision == 0 ? i.value : None
+    (o: PExpr) => None
+
+fun compareInts(nm: String, a: Int, b: Int): Bool
+  ret nm == "integer_test_eq" ? a == b
+    : nm == "integer_test_lt" ? a < b
+    : a > b
 
 fun compileNew(nw: PeNew, r: Resolver, expected: Spec|None): ExprOut
   let ty = compileSpec(nw.newType, r)

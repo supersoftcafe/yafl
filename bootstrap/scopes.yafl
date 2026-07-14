@@ -1,0 +1,129 @@
+# bootstrap/scopes.yafl — the per-statement scope chain, ported from
+# compiler.py::__stmt_scope_resolver and NamedStatement._initialiser_resolver.
+#
+# A statement does NOT compile against the global resolver. It compiles inside
+# its own scope, and the order of that chain is the language's shadowing rule:
+#
+#     locals  →  trait / interface operators  →  generic type params  →  global
+#
+# read outward: a local shadows everything; the trait operators JOIN the scope
+# (only a local shadows them); a generic type param is visible throughout its
+# owner's body; the globals are the outermost layer.
+#
+# Without this, a function's PARAMETERS and its TYPE VARIABLES are simply
+# invisible — which is exactly what the converged-AST contract caught: `i` never
+# resolved to `i@M96bWb`, and `TVal` stayed an unresolved SNamed instead of
+# becoming the placeholder `G(TVal@kf85eu)`.
+#
+# A generic type param IS a typealias whose target is its own placeholder. That
+# is not a trick: it is what Python does (type_params are TypeAliasStatements),
+# and it means the ordinary type-resolution path in compile_types.yafl resolves
+# `TVal` to `SGeneric` with no special case anywhere.
+namespace Bootstrap
+
+import System
+
+# ── namespace scope ─────────────────────────────────────────────────────────
+# __stmt_scope_resolver: a statement sees the namespaces it IMPORTED, plus its
+# OWN — so a bare `print` finds `System::print@hash`. This wraps the global
+# resolver before anything else, so every inner scope inherits it.
+
+# The scope list must be a SET: a duplicate namespace finds the same
+# declaration twice, the bag holds two items, and the name then looks
+# AMBIGUOUS and never resolves. (stdlib code is itself in `System`, so the
+# own-namespace and the import coincide.)
+fun scopeResolver(st: PStmt, r: Resolver): Resolver
+  let own = ownNamespace(stmtName2(st))
+  let scopes = own == "" || contains2(importedScopes(), own)
+    ? importedScopes()
+    : append(importedScopes(), own)
+  ret isEmpty(scopes) ? r : RScopes(scopes, r)
+
+# The imports are erased by parse() (they become part of the statement set), so
+# the scopes a statement can see are the ones the stdlib establishes plus its
+# own. `System` is the import every file carries.
+fun importedScopes(): List<String>
+  ret append(List<String>(), "System")
+
+# "Main" from "Main::main@JnNy0L".
+fun ownNamespace(name: String): String
+  let ix = lastSep(name, 0, -1)
+  ret ix < 0 ? "" : slice(name, 0, ix)
+
+fun stmtName2(st: PStmt): String
+  ret stmtName(st)
+
+# The scope a function's BODY compiles in: its type params, then its parameters
+# as locals.
+fun funScope(f: PsFun, r: Resolver): Resolver
+  ret localScope(paramLets(f.fParams), genScope(f.fGens, r))
+
+# A let's initialiser resolves like a function body — it needs the same generic
+# scope (and, once ported, the same trait operators).
+fun letScope(l: PsLet, r: Resolver): Resolver
+  ret genScope(l.lGens, r)
+
+fun classScope(c: PsClass, r: Resolver): Resolver
+  ret genScope(c.cGens, r)
+
+fun enumScope(e: PsEnum, r: Resolver): Resolver
+  ret genScope(e.eGens, r)
+
+fun typealiasScope(ta: PsTypealias, r: Resolver): Resolver
+  ret genScope(ta.taGens, r)
+
+# ── generic type params ─────────────────────────────────────────────────────
+# Each becomes a typealias bound to its own placeholder, so `TVal` resolves
+# through the ordinary type path to `SGeneric(TVal@hash)`.
+
+fun genScope(gens: List<PGen>, r: Resolver): Resolver
+  ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List<Found>()), r)
+
+fun [tail] genFounds(gs: Chain<PGen>, acc: List<Found>): List<Found>
+  ret match(gs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => genFounds(l.next, append(acc, genFound(l.value)))
+
+fun genFound(g: PGen): Found
+  ret Found(g.genName, genAlias(g), ScLocal())
+
+fun genAlias(g: PGen): PStmt
+  ret PsTypealias(g.genName, List<PAttr>(), List<PGen>(),
+                  SGeneric(g.genName, isLinearGen(g), g.pgLine),
+                  List<Spec>(), g.pgLine)
+
+fun isLinearGen(g: PGen): Bool
+  ret hasAttr(g.genAttrs, "linear")
+
+# ── locals ──────────────────────────────────────────────────────────────────
+# A function's parameters, and a block's own lets.
+
+fun localScope(lets: List<PStmt>, r: Resolver): Resolver
+  ret isEmpty(lets) ? r : RData(letFounds(chain(lets), List<Found>()), r)
+
+fun [tail] letFounds(ls: Chain<PStmt>, acc: List<Found>): List<Found>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => letFounds(l.next, addLetFound(acc, l.value))
+
+fun addLetFound(acc: List<Found>, st: PStmt): List<Found>
+  ret match(st)
+    (l: PsLet) => append(acc, Found(l.lName, st, ScLocal()))
+    # A NESTED FUNCTION binds a name in its block, exactly as a let does — a
+    # `[tail] loop` helper must be visible to its siblings and to the body.
+    (f: PsFun) => append(acc, Found(f.fName, st, ScLocal()))
+    (d: PsDestructure) => concat(acc, letFounds(chain(d.dTargets), List<Found>()))
+    (o: PStmt) => acc
+
+# The lets a parameter list introduces: a destructure's targets ARE the
+# parameters.
+fun paramLets(params: PStmt): List<PStmt>
+  ret match(params)
+    (d: PsDestructure) => d.dTargets
+    (l: PsLet)         => append(List<PStmt>(), params)
+    (o: PStmt)         => List<PStmt>()
+
+# A block's statements bind names for the whole block — a block-scoped `let` is
+# visible to the statements after it AND to the block's value.
+fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
+  ret localScope(stmts, r)

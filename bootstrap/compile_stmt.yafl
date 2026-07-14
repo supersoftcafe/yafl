@@ -47,7 +47,8 @@ fun compileStmt(st: PStmt, r: Resolver, retType: Spec|None): StmtOut
 # A let: compile the initialiser against the declared type (so the RHS knows
 # what it is converging toward), compile the type, then EITHER refine a declared
 # type (holes only) OR widen an inferred one.
-fun compileLet(l: PsLet, r: Resolver): StmtOut
+fun compileLet(l: PsLet, r0: Resolver): StmtOut
+  let r = letScope(l, r0)
   let ty = compileSpecOpt(l.lType, r)
   let declaredTy = specOf(ty)
   let init = compileExprOpt(l.lDefault, r, declaredTy)
@@ -88,10 +89,16 @@ fun compileDestructure(d: PsDestructure, r: Resolver): StmtOut
   let ty = compileSpecOpt(d.dType, r)
   let parentTy = specOf(ty)
   let init = compileExprOpt(d.dDefault, r, parentTy)
-  let targets = propagate(parentTy, d.dTargets, r)
+  # Each TARGET compiles in its own right first — a target is a let, and its
+  # written type (`left: TVal`) has to resolve like any other. Only then does
+  # the parent tuple's entry type propagate onto it.
+  let compiled = compileStmts(chain(d.dTargets), r, None, List<PStmt>(),
+                              List<PStmt>())
+  let targets = propagate(parentTy, compiled.slStmts, r)
   ret StmtOut(PsDestructure(d.dName, d.dAttrs, parentTy, targets,
                             exprOf(init), d.psdLine, d.dTypeInferred),
-              concat(globalsOf(init), globalsOfSpec(ty)))
+              concat(globalsOf(init),
+                     concat(globalsOfSpec(ty), compiled.slGlobals)))
 
 fun propagate(parentTy: Spec|None, targets: List<PStmt>,
               r: Resolver): List<PStmt>
@@ -129,16 +136,22 @@ fun adoptLet(l: PsLet, entryTy: Spec|None, r: Resolver): PStmt
 # combinator's body grounds off it), and an undeclared return then converges on
 # the body — widening, for the same reason an untyped let does.
 
-fun compileFun(f: PsFun, r: Resolver): StmtOut
+# The SIGNATURE (return type, parameters, wheres) resolves in the generic scope;
+# the BODY additionally sees the parameters as locals.
+fun compileFun(f: PsFun, r0: Resolver): StmtOut
+  let r = genScope(f.fGens, r0)
   let ret2 = compileSpecOpt(f.fRet, r)
   let declaredRet = specOf(ret2)
   let params = compileStmt(f.fParams, r, None)
   let wheres = compileParams(f.fWheres, r)
-  let body = compileExprOpt(f.fBody, r, declaredRet)
+  let bodyR = localScope(paramLets(stmtOr(params, f.fParams)), r)
+  let body = compileExprOpt(f.fBody, bodyR, declaredRet)
   let declared = hasDeclaredRet(f)
   let inferredNow = declared ? f.fRetInferred : hasBody(f)
   let finalRet = match(body)
-    (b: ExprOut) => inferType(declaredRet, exprType(b.eoExpr, r), declared, r)
+    # The body's own type is derived in the BODY's scope — its parameters must
+    # resolve there too, not just inside its compile.
+    (b: ExprOut) => inferType(declaredRet, exprType(b.eoExpr, bodyR), declared, r)
     ()           => declaredRet
   ret StmtOut(PsFun(f.fName, f.fAttrs, f.fGens, stmtOr(params, f.fParams),
                     exprOf(body), finalRet, wheres.psSpecs, f.psfLine,
@@ -159,14 +172,16 @@ fun hasBody(f: PsFun): Bool
 
 # ── the declarations ────────────────────────────────────────────────────────
 
-fun compileTypealias(ta: PsTypealias, r: Resolver): StmtOut
+fun compileTypealias(ta: PsTypealias, r0: Resolver): StmtOut
+  let r = typealiasScope(ta, r0)
   let ty = compileSpec(ta.taType, r)
   let wheres = compileParams(ta.taWheres, r)
   ret StmtOut(PsTypealias(ta.taName, ta.taAttrs, ta.taGens, ty.soSpec,
                           wheres.psSpecs, ta.pstLine),
               concat(ty.soGlobals, wheres.psGlobals))
 
-fun compileClass(c: PsClass, r: Resolver): StmtOut
+fun compileClass(c: PsClass, r0: Resolver): StmtOut
+  let r = classScope(c, r0)
   let params = compileStmt(c.cParams, r, None)
   let impls = compileParams(c.cImplements, r)
   let wheres = compileParams(c.cWheres, r)
@@ -179,7 +194,8 @@ fun compileClass(c: PsClass, r: Resolver): StmtOut
                      concat(impls.psGlobals,
                             concat(wheres.psGlobals, members.slGlobals))))
 
-fun compileEnum(e: PsEnum, r: Resolver): StmtOut
+fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
+  let r = enumScope(e, r0)
   let params = compileStmt(e.eParams, r, None)
   let variants = compileStmts(chain(e.eVariants), r, None, List<PStmt>(),
                               List<PStmt>())
@@ -202,8 +218,10 @@ fun compileAction(a: PsAction, r: Resolver): StmtOut
 
 fun compileIf(i: PsIf, r: Resolver, retType: Spec|None): StmtOut
   let cond = compileExpr(i.ifCond, r, SBuiltin("bool", i.psifLine))
-  let t2 = compileStmts(chain(i.ifTrue), r, retType, List<PStmt>(), List<PStmt>())
-  let f = compileStmts(chain(i.ifFalse), r, retType, List<PStmt>(), List<PStmt>())
+  let t2 = compileStmts(chain(i.ifTrue), blockScope(i.ifTrue, r), retType,
+                        List<PStmt>(), List<PStmt>())
+  let f = compileStmts(chain(i.ifFalse), blockScope(i.ifFalse, r), retType,
+                       List<PStmt>(), List<PStmt>())
   ret StmtOut(PsIf(cond.eoExpr, t2.slStmts, f.slStmts, i.psifLine),
               concat(cond.eoGlobals, concat(t2.slGlobals, f.slGlobals)))
 
