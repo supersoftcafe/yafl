@@ -1,0 +1,265 @@
+# bootstrap/tail_loop.yafl — lowering/tail_loop.py: `[tail]` self-recursion →
+# loop lowering.
+#
+# For a [tail]-marked function whose every self-call is in tail position, wrap
+# the body in a PeLoop and rewrite each tail self-call into a PeRecur, then
+# strip the [tail] attribute. A [tail] function that is not self-recursive, or
+# has a self-call in a non-tail position, is a hard error. A self-call inside
+# a lambda is a normal recursive call, not a tail call — both the counter and
+# the rewriter skip lambda subtrees, so they always agree.
+namespace Bootstrap
+
+import System
+
+class [final] TlOut(tlStmts: List<PStmt>, tlErrs: List<PErr>)
+class [final] TlStmt(tsStmt: PStmt, tsErrs: List<PErr>)
+class [final] TlRw(rwExpr: PExpr, rwN: Int)
+
+fun lowerTailLoops(statements: List<PStmt>): TlOut
+  ret tlLoop(chain(statements), List<PStmt>(), List<PErr>())
+
+fun [tail] tlLoop(ss: Chain<PStmt>, acc: List<PStmt>,
+                  errs: List<PErr>): TlOut
+  ret match(ss)
+    (nil: ChainEnd) => TlOut(acc, errs)
+    (l: ChainLink)  => tlTransform(l.value)
+      |> (out) => tlLoop(l.next, append(acc, out.tsStmt),
+                         concat(errs, out.tsErrs))
+
+# Recurse into nested functions and class methods first (bottom-up), so a
+# [tail] function nested inside another is lowered too.
+fun tlTransform(st: PStmt): TlStmt
+  ret match(st)
+    (f: PsFun)   => tlAfterNested(tlNested(f))
+    (c: PsClass) => tlMembers(chain(c.cMembers), List<PStmt>(), List<PErr>())
+      |> (out) => TlStmt(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams,
+                                 c.cImplements, c.cWheres, out.tlStmts,
+                                 c.cIsInterface, c.pscLine, c.cAllParents,
+                                 c.cAllSlots, c.cImports),
+                         out.tlErrs)
+    (o: PStmt)   => TlStmt(st, List<PErr>())
+
+fun [tail] tlMembers(ss: Chain<PStmt>, acc: List<PStmt>,
+                     errs: List<PErr>): TlOut
+  ret match(ss)
+    (nil: ChainEnd) => TlOut(acc, errs)
+    (l: ChainLink)  => tlTransform(l.value)
+      |> (out) => tlMembers(l.next, append(acc, out.tsStmt),
+                            concat(errs, out.tsErrs))
+
+fun tlAfterNested(out: TlStmt): TlStmt
+  ret match(out.tsStmt)
+    (f2: PsFun) => hasAttr(f2.fAttrs, "tail")
+      ? tlLowerFun(f2, out.tsErrs)
+      : out
+    (o: PStmt)  => out
+
+fun tlNested(f: PsFun): TlStmt
+  ret match(f.fBody)
+    (b: PExpr) => match(b)
+      (bk: PeBlock) => tlMembers(chain(bk.blockStmts), List<PStmt>(),
+                                 List<PErr>())
+        |> (out) => TlStmt(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
+                                 PeBlock(out.tlStmts, bk.blockValue,
+                                         bk.blockTag, bk.pebkLine),
+                                 f.fRet, f.fWheres, f.psfLine,
+                                 f.fRetInferred, f.fNested, f.fImports),
+                           out.tlErrs)
+      (o: PExpr)    => TlStmt(f, List<PErr>())
+    ()         => TlStmt(f, List<PErr>())
+
+fun tlLowerFun(f: PsFun, errs0: List<PErr>): TlStmt
+  ret match(f.fBody)
+    (body: PExpr) => tlLowerBody(f, body, errs0)
+    ()            => TlStmt(f, errs0)
+
+fun tlLowerBody(f: PsFun, body: PExpr, errs0: List<PErr>): TlStmt
+  let total = tlCountSelf(body, f.fName, 0)
+  let rw2 = tlRewriteTail(body, f.fName, 0)
+  if total == 0
+    ret TlStmt(f, append(errs0, PErr(f.psfLine,
+        "[tail] requires direct self-recursion, but this function never calls itself directly (mutual recursion between functions is not supported)")))
+  if rw2.rwN != total
+    ret TlStmt(f, append(errs0, PErr(f.psfLine,
+        "[tail] function has a call to itself in a non-tail position; [tail] requires every self-call to be in tail position")))
+  let bodyLine = exprLine(body)
+  let loop = PeLoop(rw2.rwExpr, tlParams(f), bodyLine)
+  # Wrap in a block: later passes gate on the body being a block.
+  let block = PeBlock(List<PStmt>(), loop, "", bodyLine)
+  ret TlStmt(PsFun(f.fName, tlStripTail(chain(f.fAttrs), List<PAttr>()),
+                   f.fGens, f.fParams, block, f.fRet, f.fWheres, f.psfLine,
+                   f.fRetInferred, f.fNested, f.fImports),
+             errs0)
+
+# The loop-carried params: NamedExpression references at the FUNCTION's line.
+fun tlParams(f: PsFun): List<PExpr>
+  ret match(f.fParams)
+    (d: PsDestructure) => tlParamRefs(chain(d.dTargets), f.psfLine,
+                                      List<PExpr>())
+    (o: PStmt)         => List<PExpr>()
+
+fun [tail] tlParamRefs(ts: Chain<PStmt>, lr: PLine,
+                       acc: List<PExpr>): List<PExpr>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => tlParamRefs(l.next, lr,
+        append<PExpr>(acc, PeName(stmtName(l.value), List<Spec>(), lr,
+                                  None)))
+
+fun [tail] tlStripTail(as2: Chain<PAttr>, acc: List<PAttr>): List<PAttr>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => l.value.attrName == "tail"
+      ? tlStripTail(l.next, acc)
+      : tlStripTail(l.next, append(acc, l.value))
+
+fun tlIsSelfCall(x: PExpr, fName: String): Bool
+  ret match(x)
+    (c: PeCall) => match(c.function)
+      (nm: PeName) => nm.refName == fName
+      (o: PExpr)   => false
+    (o2: PExpr) => false
+
+# ── the self-call counter ────────────────────────────────────────────────────
+# Python blanks every lambda to a leaf, then counts self-calls with a full
+# search_and_replace walk; a fold that skips lambda subtrees counts the same.
+
+fun tlCountSelf(x: PExpr, fName: String, n: Int): Int
+  let n2 = tlIsSelfCall(x, fName) ? n + 1 : n
+  ret match(x)
+    (d: PeDot)     => tlCountSelf(d.base, fName, n2)
+    (c: PeCall)    => tlCountSelf(c.parameter, fName,
+                                  tlCountSelf(c.function, fName, n2))
+    (tp: PeTuple)  => tlCountEnts(chain(tp.exprs), fName, n2)
+    (te: PeTernary) => tlCountSelf(te.falseResult, fName,
+                         tlCountSelf(te.trueResult, fName,
+                           tlCountSelf(te.condition, fName, n2)))
+    (lm: PeLambda) => n2                 # lambda subtree skipped (blanked)
+    (bk: PeBlock)  => tlCountSelf(bk.blockValue, fName,
+                                  tlCountStmts(chain(bk.blockStmts), fName,
+                                               n2))
+    (mt: PeMatch)  => tlCountArms(chain(mt.arms), fName,
+                                  tlCountSelf(mt.subject, fName, n2))
+    (op: PeBuiltinOp) => tlCountSelf(op.opParams, fName, n2)
+    (nw: PeNew)    => tlCountSelf(nw.newParam, fName, n2)
+    (ar: PeArrayRead) => tlCountSelf(ar.arrIndex, fName,
+                                     tlCountSelf(ar.arrObj, fName, n2))
+    (cv: PeConvert) => tlCountSelf(cv.convInner, fName, n2)
+    (pl: PeParallel) => tlCountSelf(pl.parParams, fName, n2)
+    (o: PExpr)     => n2
+
+fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName: String, n: Int): Int
+  ret match(es)
+    (nil: ChainEnd) => n
+    (l: ChainLink)  => tlCountEnts(l.next, fName,
+                                   tlCountSelf(l.value.tupValue, fName, n))
+
+fun [tail] tlCountArms(as2: Chain<PArm>, fName: String, n: Int): Int
+  ret match(as2)
+    (nil: ChainEnd) => n
+    (l: ChainLink)  => tlCountArms(l.next, fName,
+        tlCountOpt(l.value.armGuard, fName,
+                   tlCountSelf(l.value.armBody, fName, n)))
+
+fun tlCountOpt(x: PExpr|None, fName: String, n: Int): Int
+  ret match(x)
+    (e2: PExpr) => tlCountSelf(e2, fName, n)
+    ()          => n
+
+fun [tail] tlCountStmts(ss: Chain<PStmt>, fName: String, n: Int): Int
+  ret match(ss)
+    (nil: ChainEnd) => n
+    (l: ChainLink)  => tlCountStmts(l.next, fName,
+                                    tlCountStmt(l.value, fName, n))
+
+fun tlCountStmt(st: PStmt, fName: String, n: Int): Int
+  ret match(st)
+    (f: PsFun)   => tlCountOpt(f.fBody, fName,
+                               tlCountStmt(f.fParams, fName, n))
+    (l: PsLet)   => tlCountOpt(l.lDefault, fName, n)
+    (d: PsDestructure) => tlCountStmts(chain(d.dTargets), fName,
+                                       tlCountOpt(d.dDefault, fName, n))
+    (rt: PsRet)  => tlCountSelf(rt.retValue, fName, n)
+    (a: PsAction) => tlCountSelf(a.action, fName, n)
+    (i: PsIf)    => tlCountStmts(chain(i.ifFalse), fName,
+                                 tlCountStmts(chain(i.ifTrue), fName,
+                                              tlCountSelf(i.ifCond, fName,
+                                                          n)))
+    (o: PStmt)   => n
+
+fun tlCountStmt2(st: PStmt, fName: String, n: Int): Int
+  ret tlCountStmt(st, fName, n)
+
+# ── the tail rewriter ────────────────────────────────────────────────────────
+# Ordinals are assigned in rewrite order (statements before the block value,
+# true branch before false, arms in order) — the same order Python's mutable
+# counter produces.
+
+fun tlRewriteTail(x: PExpr, fName: String, n: Int): TlRw
+  if tlIsSelfCall(x, fName)
+    ret tlToRecur(x, n)
+  ret match(x)
+    (bk: PeBlock)  => tlStmtTails(chain(bk.blockStmts), fName, n,
+                                  List<PStmt>())
+      |> (so) => (so, tlRewriteTail(bk.blockValue, fName, so.soN))
+      |> (so, vo) => TlRw(PeBlock(so.soStmts, vo.rwExpr, bk.blockTag,
+                                  bk.pebkLine),
+                          vo.rwN)
+    (te: PeTernary) => tlRewriteTail(te.trueResult, fName, n)
+      |> (t2) => (t2, tlRewriteTail(te.falseResult, fName, t2.rwN))
+      |> (t2, f2) => TlRw(PeTernary(te.condition, t2.rwExpr, f2.rwExpr,
+                                    te.pety),
+                          f2.rwN)
+    (mt: PeMatch)  => tlArmTails(chain(mt.arms), fName, n, List<PArm>())
+      |> (ao) => TlRw(PeMatch(mt.subject, ao.aoArms, mt.pemLine), ao.aoN)
+    (o: PExpr)     => TlRw(x, n)   # non-tail-bearing: a base-case value
+
+fun tlToRecur(x: PExpr, n: Int): TlRw
+  ret match(x)
+    (c: PeCall) => match(c.parameter)
+      (tp: PeTuple) => TlRw(PeRecur(tlEntValues(chain(tp.exprs),
+                                                List<PExpr>()),
+                                    n, c.pecLine),
+                            n + 1)
+      (o: PExpr)    => TlRw(x, n)
+    (o2: PExpr) => TlRw(x, n)
+
+fun [tail] tlEntValues(es: Chain<PTupEnt>, acc: List<PExpr>): List<PExpr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => tlEntValues(l.next, append(acc, l.value.tupValue))
+
+class [final] TlSo(soStmts: List<PStmt>, soN: Int)
+class [final] TlAo(aoArms: List<PArm>, aoN: Int)
+
+# Early returns in tail position: every `ret expr` inside — including inside
+# `if` branches, which are scopes, not blocks — is a tail exit. Other
+# statement kinds run BEFORE the block's result and are left alone.
+# (Not [tail]: the PsIf arm recurses into both branches.)
+fun tlStmtTails(ss: Chain<PStmt>, fName: String, n: Int,
+                acc: List<PStmt>): TlSo
+  ret match(ss)
+    (nil: ChainEnd) => TlSo(acc, n)
+    (l: ChainLink)  => match(l.value)
+      (rt: PsRet) => tlRewriteTail(rt.retValue, fName, n)
+        |> (vo) => tlStmtTails(l.next, fName, vo.rwN,
+                               append(acc, PsRet(vo.rwExpr, rt.psrLine)))
+      (i: PsIf)   => tlStmtTails(chain(i.ifTrue), fName, n, List<PStmt>())
+        |> (to) => (to, tlStmtTails(chain(i.ifFalse), fName, to.soN,
+                                    List<PStmt>()))
+        |> (to, fo) => tlStmtTails(l.next, fName, fo.soN,
+                                   append(acc, PsIf(i.ifCond, to.soStmts,
+                                                    fo.soStmts, i.psifLine)))
+      (o: PStmt)  => tlStmtTails(l.next, fName, n, append(acc, l.value))
+
+fun [tail] tlArmTails(as2: Chain<PArm>, fName: String, n: Int,
+                      acc: List<PArm>): TlAo
+  ret match(as2)
+    (nil: ChainEnd) => TlAo(acc, n)
+    (l: ChainLink)  => tlRewriteTail(l.value.armBody, fName, n)
+      |> (bo) => tlArmTails(l.next, fName, bo.rwN,
+                            append(acc, PArm(l.value.armName,
+                                             l.value.armType, bo.rwExpr,
+                                             l.value.armLiterals,
+                                             l.value.armGuard,
+                                             l.value.parmLine)))

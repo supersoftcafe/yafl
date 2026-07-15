@@ -1,0 +1,11 @@
+# bootstrap/hoist_nested.yafl — lowering/hoist_nested.py: hoist nested
+# FunctionStatements out of function bodies — its own pipeline stage, run
+# BEFORE tail_loop (a declaration carried inside a LoopExpression would be
+# invisible to every later body scan). The machinery lives in
+# ast_inline.yafl, exactly as Python's lives in lowering/ast_inline.py.
+namespace Bootstrap
+
+import System
+
+fun hoistNestedFunctions(statements: List<PStmt>): List<PStmt>
+  ret hoistNestedFnsToLambdas(statements)

@@ -1,0 +1,564 @@
+# bootstrap/rewrite.yafl — THE tree traversal, written once. This is
+# pyast/rewrite.py's role in the port: Python distributes the walk across
+# each node's search_and_replace method and derives the rebuild by
+# reflection; YAFL has no reflection (by design), so the same walk is a
+# single hand-written bottom-up rebuild, and every pass supplies only its
+# leaf rules as callbacks.
+#
+# THE VISIT-SET LAW (verified against each node's search_and_replace):
+#   Fun        visits params, body, ret, wheres
+#   Let        visits ONLY default + declared type — NEVER wheres
+#   Destructure visits default, type, targets
+#   Typealias  visits ONLY its type — NEVER wheres
+#   Class      visits params, members, implements, wheres, cAllParents —
+#              NEVER cAllSlots
+#   Enum       visits params, variants, eSpec — its SEnum's all_fields are
+#              NEVER visited (recursive enums would loop); passes that need
+#              them use walk-all-fields style helpers with visited sets
+#   NamedSpec  is a traversal LEAF: the callback fires on the node, its
+#              params are never visited
+#   PeName     visits refTypeParams and penTrait — a penTrait replacement
+#              that is not an SClass becomes None (access.py:374-378)
+#
+# Callback protocol: return the replacement, or None for "no change here".
+# Children are rebuilt FIRST, then the callback fires on the rebuilt node
+# (bottom-up, like rw.rewrite); a replacement is NOT re-visited.
+namespace Bootstrap
+
+import System
+
+class [final] Rw(rwFnExpr: (:PExpr): PExpr|None,
+                 rwFnSpec: (:Spec): Spec|None,
+                 rwFnStmt: (:PStmt): PStmt|None)
+
+fun rwNoExpr(x: PExpr): PExpr|None
+  ret None
+
+fun rwNoSpec(sp: Spec): Spec|None
+  ret None
+
+fun rwNoStmt(st: PStmt): PStmt|None
+  ret None
+
+# The common shapes.
+fun rwOnExpr(f: (:PExpr): PExpr|None): Rw
+  ret Rw(f, rwNoSpec, rwNoStmt)
+
+fun rwOnSpec(f: (:Spec): Spec|None): Rw
+  ret Rw(rwNoExpr, f, rwNoStmt)
+
+fun rwOnStmt(f: (:PStmt): PStmt|None): Rw
+  ret Rw(rwNoExpr, rwNoSpec, f)
+
+# ── statements ───────────────────────────────────────────────────────────────
+
+fun rwStmts(ss: List<PStmt>, w: Rw): List<PStmt>
+  ret rwStmtLoop(chain(ss), w, List<PStmt>())
+
+fun [tail] rwStmtLoop(ss: Chain<PStmt>, w: Rw, acc: List<PStmt>): List<PStmt>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwStmtLoop(l.next, w, append(acc, rwStmt(l.value, w)))
+
+fun rwStmt(st: PStmt, w: Rw): PStmt
+  let rebuilt = rwStmtKids(st, w)
+  ret match(w.rwFnStmt(rebuilt))
+    (r: PStmt) => r
+    ()         => rebuilt
+
+fun rwStmtKids(st: PStmt, w: Rw): PStmt
+  ret match(st)
+    (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rwStmt(f.fParams, w),
+                         rwExprOpt(f.fBody, w), rwSpecOpt(f.fRet, w),
+                         rwSpecs(f.fWheres, w), f.psfLine, f.fRetInferred,
+                         f.fNested, f.fImports)
+    (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, rwSpecOpt(l.lType, w),
+                         rwExprOpt(l.lDefault, w), l.lArrayLen, l.lWheres,
+                         l.pslLine, l.lTypeInferred, l.lImports)
+    (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
+                                        rwSpecOpt(d.dType, w),
+                                        rwStmts(d.dTargets, w),
+                                        rwExprOpt(d.dDefault, w),
+                                        d.psdLine, d.dTypeInferred)
+    (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens,
+                            rwStmt(c.cParams, w), rwSpecs(c.cImplements, w),
+                            rwSpecs(c.cWheres, w), rwStmts(c.cMembers, w),
+                            c.cIsInterface, c.pscLine,
+                            rwSpecsOpt(c.cAllParents, w), c.cAllSlots,
+                            c.cImports)
+    (e2: PsEnum) => PsEnum(e2.eName, e2.eGens, rwStmt(e2.eParams, w),
+                           rwStmts(e2.eVariants, w), e2.eHasParams,
+                           e2.pseLine, e2.eRootName,
+                           rwSpecOpt(e2.eSpec, w), e2.eImports)
+    (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
+                                     rwSpec(ta.taType, w), ta.taWheres,
+                                     ta.pstLine, ta.taImports)
+    (rt: PsRet)  => PsRet(rwExpr(rt.retValue, w), rt.psrLine)
+    (a: PsAction) => PsAction(rwExpr(a.action, w), a.psaLine)
+    (i: PsIf)    => PsIf(rwExpr(i.ifCond, w), rwStmts(i.ifTrue, w),
+                         rwStmts(i.ifFalse, w), i.psifLine)
+    (o: PStmt)   => st
+
+# ── expressions ──────────────────────────────────────────────────────────────
+
+fun rwExpr(x: PExpr, w: Rw): PExpr
+  let rebuilt = rwExprKids(x, w)
+  ret match(w.rwFnExpr(rebuilt))
+    (r: PExpr) => r
+    ()         => rebuilt
+
+fun rwExprOpt(x: PExpr|None, w: Rw): PExpr|None
+  ret match(x)
+    (e2: PExpr) => rwExpr(e2, w)
+    ()          => None
+
+fun rwExprs(es: List<PExpr>, w: Rw): List<PExpr>
+  ret rwExprLoop(chain(es), w, List<PExpr>())
+
+fun [tail] rwExprLoop(es: Chain<PExpr>, w: Rw, acc: List<PExpr>): List<PExpr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwExprLoop(l.next, w, append(acc, rwExpr(l.value, w)))
+
+fun rwExprKids(x: PExpr, w: Rw): PExpr
+  ret match(x)
+    (nm: PeName)   => PeName(nm.refName, rwSpecs(nm.refTypeParams, w),
+                             nm.penLine, rwTrait(nm.penTrait, w))
+    (d: PeDot)     => PeDot(rwExpr(d.base, w), d.member, d.pedLine)
+    (c: PeCall)    => PeCall(rwExpr(c.function, w), rwExpr(c.parameter, w),
+                             c.pecLine)
+    (tp: PeTuple)  => PeTuple(rwTupEnts(chain(tp.exprs), w, List<PTupEnt>()),
+                              tp.petLine)
+    (te: PeTernary) => PeTernary(rwExpr(te.condition, w),
+                                 rwExpr(te.trueResult, w),
+                                 rwExpr(te.falseResult, w), te.pety)
+    (lm: PeLambda) => PeLambda(rwStmt(lm.lamParams, w),
+                               rwExpr(lm.lamBody, w), lm.pelLine,
+                               rwSpecOpt(lm.lamRet, w))
+    (bk: PeBlock)  => PeBlock(rwStmts(bk.blockStmts, w),
+                              rwExpr(bk.blockValue, w), bk.blockTag,
+                              bk.pebkLine)
+    (mt: PeMatch)  => PeMatch(rwExpr(mt.subject, w),
+                              rwArms(chain(mt.arms), w, List<PArm>()),
+                              mt.pemLine)
+    (op: PeBuiltinOp) => PeBuiltinOp(rwSpec(op.opType, w), op.opName,
+                                     rwExpr(op.opParams, w), op.peboLine)
+    (nw: PeNew)    => PeNew(rwSpec(nw.newType, w), rwExpr(nw.newParam, w),
+                            nw.penwLine)
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName, ne.fieldArgs,
+                                 rwSpecs(ne.neTypeParams, w), ne.penewLine)
+    (ar: PeArrayRead) => PeArrayRead(rwExpr(ar.arrObj, w),
+                                     rwExpr(ar.arrIndex, w), ar.pearLine)
+    (cv: PeConvert) => PeConvert(rwExpr(cv.convInner, w),
+                                 rwSpec(cv.convTarget, w), cv.pecvLine)
+    (pl: PeParallel) => PeParallel(rwExpr(pl.parParams, w), pl.pepLine)
+    (lp: PeLoop)   => PeLoop(rwExpr(lp.loopBody, w),
+                             rwExprs(lp.loopParams, w), lp.pelpLine)
+    (rc: PeRecur)  => PeRecur(rwExprs(rc.recArgs, w), rc.recIndex,
+                              rc.percLine)
+    (o: PExpr)     => x
+
+# A penTrait replacement that is not a class spec becomes None
+# (access.py:374-378).
+fun rwTrait(sp: Spec|None, w: Rw): Spec|None
+  ret match(sp)
+    (s2: Spec) => match(rwSpec(s2, w))
+      (c: SClass) => c
+      (o: Spec)   => None
+    ()         => None
+
+fun [tail] rwTupEnts(es: Chain<PTupEnt>, w: Rw,
+                     acc: List<PTupEnt>): List<PTupEnt>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwTupEnts(l.next, w,
+        append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
+                            rwExpr(l.value.tupValue, w))))
+
+fun [tail] rwArms(as2: Chain<PArm>, w: Rw, acc: List<PArm>): List<PArm>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwArms(l.next, w,
+        append(acc, PArm(l.value.armName, rwSpecOpt(l.value.armType, w),
+                         rwExpr(l.value.armBody, w),
+                         rwLits(chain(l.value.armLiterals), w, List<PLit>()),
+                         rwExprOpt(l.value.armGuard, w), l.value.parmLine)))
+
+# Arm LITERALS are expressions and Python's MatchArm visits them
+# (match.py:181) — a fold or rewrite that skips them diverges (first seen as
+# _node_count undercounting literal-heavy functions below the inline
+# threshold).
+fun [tail] rwLits(ls: Chain<PLit>, w: Rw, acc: List<PLit>): List<PLit>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwLits(l.next, w, append(acc, rwLit(l.value, w)))
+
+fun rwLit(lt: PLit, w: Rw): PLit
+  ret match(lt)
+    (le: PlExpr)  => PlExpr(rwExpr(le.litExpr, w))
+    (lr: PlRange) => PlRange(rwExpr(lr.rangeLo, w), rwExpr(lr.rangeHi, w),
+                             lr.plrLine)
+
+# ── specs ────────────────────────────────────────────────────────────────────
+
+fun rwSpec(sp: Spec, w: Rw): Spec
+  let rebuilt = rwSpecKids(sp, w)
+  ret match(w.rwFnSpec(rebuilt))
+    (r: Spec) => r
+    ()        => rebuilt
+
+fun rwSpecOpt(sp: Spec|None, w: Rw): Spec|None
+  ret match(sp)
+    (s2: Spec) => rwSpec(s2, w)
+    ()         => None
+
+fun rwSpecs(ts: List<Spec>, w: Rw): List<Spec>
+  ret rwSpecLoop(chain(ts), w, List<Spec>())
+
+fun [tail] rwSpecLoop(ts: Chain<Spec>, w: Rw, acc: List<Spec>): List<Spec>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwSpecLoop(l.next, w, append(acc, rwSpec(l.value, w)))
+
+fun rwSpecsOpt(ss: List<Spec>|None, w: Rw): List<Spec>|None
+  ret match(ss)
+    (l: List<Spec>) => rwSpecs(l, w)
+    ()              => None
+
+fun rwSpecKids(sp: Spec, w: Rw): Spec
+  ret match(sp)
+    (e2: SEnum)        => SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
+                                rwSpecs(e2.seParams, w), e2.seLine,
+                                e2.seAllFields, e2.seComplex)
+    (cl: SClass)       => SClass(cl.scName, rwSpecs(cl.scParams, w),
+                                 cl.scLine)
+    (n: SNamed)        => sp   # traversal LEAF
+    (cm: SCombination) => SCombination(rwSpecs(cm.scTypes, w), cm.scmLine)
+    (t2: STuple)       => STuple(rwEntries(chain(t2.stEntries), w,
+                                           List<SEntry>()),
+                                 t2.stLine)
+    (cb: SCallable)    => SCallable(rwSpec(cb.scParams2, w),
+                                    rwSpecOpt(cb.scResult, w), cb.sclLine)
+    (af: SArrayField)  => SArrayField(rwSpec(af.safElem, w), af.safLenField,
+                                      af.safLine)
+    (ls: SLazyStub)    => SLazyStub(rwSpecOpt(ls.slsTarget, w), ls.slsLine)
+    (o: Spec)          => sp
+
+fun [tail] rwEntries(es: Chain<SEntry>, w: Rw,
+                     acc: List<SEntry>): List<SEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => rwEntries(l.next, w,
+        append(acc, SEntry(l.value.seName, rwSpecOpt(l.value.seType, w),
+                           rwExprOpt(l.value.seDefault, w))))
+
+# ── the fold twins ───────────────────────────────────────────────────────────
+# Same visit sets, no rebuild: the accumulator threads through every visited
+# node in traversal order (children after the node — a PRE-order fold, which
+# is what every scan in the compiler observes: counters and collectors are
+# order-insensitive or want first-encounter order).
+
+fun foldStmts<T>(ss: List<PStmt>, f: (:T, :PStmt): T,
+                 fx: (:T, :PExpr): T, acc: T): T
+  ret foldStmtLoop<T>(chain(ss), f, fx, acc)
+
+fun [tail] foldStmtLoop<T>(ss: Chain<PStmt>, f: (:T, :PStmt): T,
+                           fx: (:T, :PExpr): T, acc: T): T
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldStmtLoop<T>(l.next, f, fx,
+                                       foldStmt<T>(l.value, f, fx, acc))
+
+fun foldStmt<T>(st: PStmt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+                acc: T): T
+  let acc2 = f(acc, st)
+  ret match(st)
+    (fn: PsFun)  => foldExprOpt<T>(fn.fBody, f, fx,
+                                   foldStmt<T>(fn.fParams, f, fx, acc2))
+    (l: PsLet)   => foldExprOpt<T>(l.lDefault, f, fx, acc2)
+    (d: PsDestructure) => foldStmts<T>(d.dTargets, f, fx,
+                                       foldExprOpt<T>(d.dDefault, f, fx,
+                                                      acc2))
+    (rt: PsRet)  => foldExpr<T>(rt.retValue, f, fx, acc2)
+    (a: PsAction) => foldExpr<T>(a.action, f, fx, acc2)
+    (i: PsIf)    => foldStmts<T>(i.ifFalse, f, fx,
+                                 foldStmts<T>(i.ifTrue, f, fx,
+                                              foldExpr<T>(i.ifCond, f, fx,
+                                                          acc2)))
+    (c: PsClass) => foldStmts<T>(c.cMembers, f, fx,
+                                 foldStmt<T>(c.cParams, f, fx, acc2))
+    (e2: PsEnum) => foldStmts<T>(e2.eVariants, f, fx,
+                                 foldStmt<T>(e2.eParams, f, fx, acc2))
+    (o: PStmt)   => acc2
+
+fun foldExprOpt<T>(x: PExpr|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+                   acc: T): T
+  ret match(x)
+    (e2: PExpr) => foldExpr<T>(e2, f, fx, acc)
+    ()          => acc
+
+fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+                acc: T): T
+  let acc2 = fx(acc, x)
+  ret match(x)
+    (d: PeDot)     => foldExpr<T>(d.base, f, fx, acc2)
+    (c: PeCall)    => foldExpr<T>(c.parameter, f, fx,
+                                  foldExpr<T>(c.function, f, fx, acc2))
+    (tp: PeTuple)  => foldTupEnts<T>(chain(tp.exprs), f, fx, acc2)
+    (te: PeTernary) => foldExpr<T>(te.falseResult, f, fx,
+                         foldExpr<T>(te.trueResult, f, fx,
+                           foldExpr<T>(te.condition, f, fx, acc2)))
+    (lm: PeLambda) => foldExpr<T>(lm.lamBody, f, fx,
+                                  foldStmt<T>(lm.lamParams, f, fx, acc2))
+    (bk: PeBlock)  => foldExpr<T>(bk.blockValue, f, fx,
+                                  foldStmts<T>(bk.blockStmts, f, fx, acc2))
+    (mt: PeMatch)  => foldArms<T>(chain(mt.arms), f, fx,
+                                  foldExpr<T>(mt.subject, f, fx, acc2))
+    (op: PeBuiltinOp) => foldExpr<T>(op.opParams, f, fx, acc2)
+    (nw: PeNew)    => foldExpr<T>(nw.newParam, f, fx, acc2)
+    (ar: PeArrayRead) => foldExpr<T>(ar.arrIndex, f, fx,
+                                     foldExpr<T>(ar.arrObj, f, fx, acc2))
+    (cv: PeConvert) => foldExpr<T>(cv.convInner, f, fx, acc2)
+    (pl: PeParallel) => foldExpr<T>(pl.parParams, f, fx, acc2)
+    (lp: PeLoop)   => foldExpr<T>(lp.loopBody, f, fx,
+                                  foldExprs<T>(chain(lp.loopParams), f, fx,
+                                               acc2))
+    (rc: PeRecur)  => foldExprs<T>(chain(rc.recArgs), f, fx, acc2)
+    (o: PExpr)     => acc2
+
+fun [tail] foldExprs<T>(es: Chain<PExpr>, f: (:T, :PStmt): T,
+                        fx: (:T, :PExpr): T, acc: T): T
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldExprs<T>(l.next, f, fx,
+                                    foldExpr<T>(l.value, f, fx, acc))
+
+fun [tail] foldTupEnts<T>(es: Chain<PTupEnt>, f: (:T, :PStmt): T,
+                          fx: (:T, :PExpr): T, acc: T): T
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldTupEnts<T>(l.next, f, fx,
+                                      foldExpr<T>(l.value.tupValue, f, fx,
+                                                  acc))
+
+fun [tail] foldArms<T>(as2: Chain<PArm>, f: (:T, :PStmt): T,
+                       fx: (:T, :PExpr): T, acc: T): T
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldArms<T>(l.next, f, fx,
+        foldExprOpt<T>(l.value.armGuard, f, fx,
+                       foldLits<T>(chain(l.value.armLiterals), f, fx,
+                                   foldExpr<T>(l.value.armBody, f, fx,
+                                               acc))))
+
+fun [tail] foldLits<T>(ls: Chain<PLit>, f: (:T, :PStmt): T,
+                       fx: (:T, :PExpr): T, acc: T): T
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldLits<T>(l.next, f, fx, foldLit<T>(l.value, f, fx,
+                                                             acc))
+
+fun foldLit<T>(lt: PLit, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T
+  ret match(lt)
+    (le: PlExpr)  => foldExpr<T>(le.litExpr, f, fx, acc)
+    (lr: PlRange) => foldExpr<T>(lr.rangeHi, f, fx,
+                                 foldExpr<T>(lr.rangeLo, f, fx, acc))
+
+fun foldNoStmt<T>(acc: T, st: PStmt): T
+  ret acc
+
+# ── counter-threading rewrite twins ──────────────────────────────────────────
+# Same traversal, threading an Int through in visit order — for passes whose
+# callbacks ALLOCATE (the inliner's fresh-suffix counter must increment in
+# exactly Python's order, including inside nested rewrites fired mid-walk).
+# The callback returns the updated counter plus the replacement (or None).
+
+class [final] RwN(rnFnExpr: (:Int, :PExpr): (n2: Int, r: PExpr|None),
+                  rnFnStmt: (:Int, :PStmt): (n2: Int, r: PStmt|None))
+class [final] RwNE(rneN: Int, rneExpr: PExpr)
+class [final] RwNS(rnsN: Int, rnsStmt: PStmt)
+class [final] RwNSs(rnssN: Int, rnssStmts: List<PStmt>)
+
+fun rwnNoExpr(n: Int, x: PExpr): (n2: Int, r: PExpr|None)
+  ret (n, None)
+
+fun rwnNoStmt(n: Int, st: PStmt): (n2: Int, r: PStmt|None)
+  ret (n, None)
+
+fun rwnStmts(ss: List<PStmt>, w: RwN, n: Int): RwNSs
+  ret rwnStmtLoop(chain(ss), w, n, List<PStmt>())
+
+fun [tail] rwnStmtLoop(ss: Chain<PStmt>, w: RwN, n: Int,
+                       acc: List<PStmt>): RwNSs
+  ret match(ss)
+    (nil: ChainEnd) => RwNSs(n, acc)
+    (l: ChainLink)  => rwnStmt(l.value, w, n)
+      |> (o) => rwnStmtLoop(l.next, w, o.rnsN, append(acc, o.rnsStmt))
+
+fun rwnStmt(st: PStmt, w: RwN, n: Int): RwNS
+  let kids = rwnStmtKids(st, w, n)
+  let out = w.rnFnStmt(kids.rnsN, kids.rnsStmt)
+  ret match(out.r)
+    (r: PStmt) => RwNS(out.n2, r)
+    ()         => RwNS(out.n2, kids.rnsStmt)
+
+fun rwnStmtKids(st: PStmt, w: RwN, n: Int): RwNS
+  ret match(st)
+    (f: PsFun)  => rwnStmt(f.fParams, w, n)
+      |> (p) => (p, rwnExprOpt(f.fBody, w, p.rnsN))
+      |> (p, b) => RwNS(b.rneN2,
+                        PsFun(f.fName, f.fAttrs, f.fGens, p.rnsStmt,
+                              b.rneExpr2, f.fRet, f.fWheres, f.psfLine,
+                              f.fRetInferred, f.fNested, f.fImports))
+    (l: PsLet)  => rwnExprOpt(l.lDefault, w, n)
+      |> (d) => RwNS(d.rneN2,
+                     PsLet(l.lName, l.lAttrs, l.lGens, l.lType, d.rneExpr2,
+                           l.lArrayLen, l.lWheres, l.pslLine,
+                           l.lTypeInferred, l.lImports))
+    (d: PsDestructure) => rwnExprOpt(d.dDefault, w, n)
+      |> (dv) => (dv, rwnStmts(d.dTargets, w, dv.rneN2))
+      |> (dv, ts) => RwNS(ts.rnssN,
+                          PsDestructure(d.dName, d.dAttrs, d.dType,
+                                        ts.rnssStmts, dv.rneExpr2, d.psdLine,
+                                        d.dTypeInferred))
+    (c: PsClass) => rwnStmt(c.cParams, w, n)
+      |> (p) => (p, rwnStmts(c.cMembers, w, p.rnsN))
+      |> (p, ms) => RwNS(ms.rnssN,
+                         PsClass(c.cName, c.cAttrs, c.cGens, p.rnsStmt,
+                                 c.cImplements, c.cWheres, ms.rnssStmts,
+                                 c.cIsInterface, c.pscLine, c.cAllParents,
+                                 c.cAllSlots, c.cImports))
+    (e2: PsEnum) => rwnStmt(e2.eParams, w, n)
+      |> (p) => (p, rwnStmts(e2.eVariants, w, p.rnsN))
+      |> (p, vs) => RwNS(vs.rnssN,
+                         PsEnum(e2.eName, e2.eGens, p.rnsStmt, vs.rnssStmts,
+                                e2.eHasParams, e2.pseLine, e2.eRootName,
+                                e2.eSpec, e2.eImports))
+    (rt: PsRet)  => rwnExpr(rt.retValue, w, n)
+      |> (v) => RwNS(v.rneN, PsRet(v.rneExpr, rt.psrLine))
+    (a: PsAction) => rwnExpr(a.action, w, n)
+      |> (v) => RwNS(v.rneN, PsAction(v.rneExpr, a.psaLine))
+    (i: PsIf)    => rwnExpr(i.ifCond, w, n)
+      |> (cd) => (cd, rwnStmts(i.ifTrue, w, cd.rneN))
+      |> (cd, tb) => (cd, tb, rwnStmts(i.ifFalse, w, tb.rnssN))
+      |> (cd, tb, fb) => RwNS(fb.rnssN,
+                              PsIf(cd.rneExpr, tb.rnssStmts, fb.rnssStmts,
+                                   i.psifLine))
+    (o: PStmt)   => RwNS(n, st)
+
+class [final] RwNEo(rneN2: Int, rneExpr2: PExpr|None)
+
+fun rwnExprOpt(x: PExpr|None, w: RwN, n: Int): RwNEo
+  ret match(x)
+    (e2: PExpr) => rwnExpr(e2, w, n)
+      |> (o) => RwNEo(o.rneN, o.rneExpr)
+    ()          => RwNEo(n, None)
+
+fun rwnExpr(x: PExpr, w: RwN, n: Int): RwNE
+  let kids = rwnExprKids(x, w, n)
+  let out = w.rnFnExpr(kids.rneN, kids.rneExpr)
+  ret match(out.r)
+    (r: PExpr) => RwNE(out.n2, r)
+    ()         => RwNE(out.n2, kids.rneExpr)
+
+class [final] RwNEs(rnesN: Int, rnesExprs: List<PExpr>)
+class [final] RwNTs(rntsN: Int, rntsEnts: List<PTupEnt>)
+class [final] RwNAs(rnasN: Int, rnasArms: List<PArm>)
+
+fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
+  ret match(x)
+    (d: PeDot)     => rwnExpr(d.base, w, n)
+      |> (b) => RwNE(b.rneN, PeDot(b.rneExpr, d.member, d.pedLine))
+    (c: PeCall)    => rwnExpr(c.function, w, n)
+      |> (f) => (f, rwnExpr(c.parameter, w, f.rneN))
+      |> (f, p) => RwNE(p.rneN, PeCall(f.rneExpr, p.rneExpr, c.pecLine))
+    (tp: PeTuple)  => rwnTupEnts(chain(tp.exprs), w, n, List<PTupEnt>())
+      |> (es) => RwNE(es.rntsN, PeTuple(es.rntsEnts, tp.petLine))
+    (te: PeTernary) => rwnExpr(te.condition, w, n)
+      |> (cd) => (cd, rwnExpr(te.trueResult, w, cd.rneN))
+      |> (cd, tr) => (cd, tr, rwnExpr(te.falseResult, w, tr.rneN))
+      |> (cd, tr, fr) => RwNE(fr.rneN,
+                              PeTernary(cd.rneExpr, tr.rneExpr, fr.rneExpr,
+                                        te.pety))
+    (lm: PeLambda) => rwnStmt(lm.lamParams, w, n)
+      |> (p) => (p, rwnExpr(lm.lamBody, w, p.rnsN))
+      |> (p, b) => RwNE(b.rneN, PeLambda(p.rnsStmt, b.rneExpr, lm.pelLine,
+                                         lm.lamRet))
+    (bk: PeBlock)  => rwnStmts(bk.blockStmts, w, n)
+      |> (ss) => (ss, rwnExpr(bk.blockValue, w, ss.rnssN))
+      |> (ss, v) => RwNE(v.rneN, PeBlock(ss.rnssStmts, v.rneExpr,
+                                         bk.blockTag, bk.pebkLine))
+    (mt: PeMatch)  => rwnExpr(mt.subject, w, n)
+      |> (sj) => (sj, rwnArms(chain(mt.arms), w, sj.rneN, List<PArm>()))
+      |> (sj, as3) => RwNE(as3.rnasN, PeMatch(sj.rneExpr, as3.rnasArms,
+                                              mt.pemLine))
+    (op: PeBuiltinOp) => rwnExpr(op.opParams, w, n)
+      |> (p) => RwNE(p.rneN, PeBuiltinOp(op.opType, op.opName, p.rneExpr,
+                                         op.peboLine))
+    (nw: PeNew)    => rwnExpr(nw.newParam, w, n)
+      |> (p) => RwNE(p.rneN, PeNew(nw.newType, p.rneExpr, nw.penwLine))
+    (ar: PeArrayRead) => rwnExpr(ar.arrObj, w, n)
+      |> (ob) => (ob, rwnExpr(ar.arrIndex, w, ob.rneN))
+      |> (ob, ix) => RwNE(ix.rneN, PeArrayRead(ob.rneExpr, ix.rneExpr,
+                                               ar.pearLine))
+    (cv: PeConvert) => rwnExpr(cv.convInner, w, n)
+      |> (iv) => RwNE(iv.rneN, PeConvert(iv.rneExpr, cv.convTarget,
+                                         cv.pecvLine))
+    (pl: PeParallel) => rwnExpr(pl.parParams, w, n)
+      |> (p) => RwNE(p.rneN, PeParallel(p.rneExpr, pl.pepLine))
+    (lp: PeLoop)   => rwnExprs(chain(lp.loopParams), w, n, List<PExpr>())
+      |> (ps) => (ps, rwnExpr(lp.loopBody, w, ps.rnesN))
+      |> (ps, b) => RwNE(b.rneN, PeLoop(b.rneExpr, ps.rnesExprs,
+                                        lp.pelpLine))
+    (rc: PeRecur)  => rwnExprs(chain(rc.recArgs), w, n, List<PExpr>())
+      |> (as3) => RwNE(as3.rnesN, PeRecur(as3.rnesExprs, rc.recIndex,
+                                          rc.percLine))
+    (o: PExpr)     => RwNE(n, x)
+
+fun [tail] rwnExprs(es: Chain<PExpr>, w: RwN, n: Int,
+                    acc: List<PExpr>): RwNEs
+  ret match(es)
+    (nil: ChainEnd) => RwNEs(n, acc)
+    (l: ChainLink)  => rwnExpr(l.value, w, n)
+      |> (o) => rwnExprs(l.next, w, o.rneN, append(acc, o.rneExpr))
+
+fun [tail] rwnTupEnts(es: Chain<PTupEnt>, w: RwN, n: Int,
+                      acc: List<PTupEnt>): RwNTs
+  ret match(es)
+    (nil: ChainEnd) => RwNTs(n, acc)
+    (l: ChainLink)  => rwnExpr(l.value.tupValue, w, n)
+      |> (o) => rwnTupEnts(l.next, w, o.rneN,
+                           append(acc, PTupEnt(l.value.tupName,
+                                               l.value.tupSpread,
+                                               o.rneExpr)))
+
+fun [tail] rwnArms(as2: Chain<PArm>, w: RwN, n: Int,
+                   acc: List<PArm>): RwNAs
+  ret match(as2)
+    (nil: ChainEnd) => RwNAs(n, acc)
+    (l: ChainLink)  => rwnExpr(l.value.armBody, w, n)
+      |> (b) => (b, rwnLits(chain(l.value.armLiterals), w, b.rneN,
+                            List<PLit>()))
+      |> (b, ls) => (b, ls, rwnExprOpt(l.value.armGuard, w, ls.rnlsN))
+      |> (b, ls, gd) => rwnArms(l.next, w, gd.rneN2,
+                                append(acc, PArm(l.value.armName,
+                                                 l.value.armType, b.rneExpr,
+                                                 ls.rnlsLits,
+                                                 gd.rneExpr2,
+                                                 l.value.parmLine)))
+
+class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
+
+fun [tail] rwnLits(ls: Chain<PLit>, w: RwN, n: Int,
+                   acc: List<PLit>): RwNLs
+  ret match(ls)
+    (nil: ChainEnd) => RwNLs(n, acc)
+    (l: ChainLink)  => match(l.value)
+      (le: PlExpr)  => rwnExpr(le.litExpr, w, n)
+        |> (o) => rwnLits(l.next, w, o.rneN,
+                          append(acc, PlExpr(o.rneExpr)))
+      (lr: PlRange) => rwnExpr(lr.rangeLo, w, n)
+        |> (lo) => (lo, rwnExpr(lr.rangeHi, w, lo.rneN))
+        |> (lo, hi) => rwnLits(l.next, w, hi.rneN,
+                               append(acc, PlRange(lo.rneExpr, hi.rneExpr,
+                                                   lr.plrLine)))

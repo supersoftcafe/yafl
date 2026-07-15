@@ -485,13 +485,34 @@ def _flatten_block_values(statements: list[s.Statement]) -> list[s.Statement]:
     statement sequences gives each statement its own index; all names are already
     uniquely suffixed by inlining, so the merge cannot capture."""
     def flatten(_resolver: g.Resolver, thing: Any) -> Any:
-        if isinstance(thing, e.BlockExpression) and isinstance(thing.value, e.BlockExpression):
+        if isinstance(thing, e.BlockExpression):
             merged = list(thing.statements)
             value: e.Expression = thing.value
-            while isinstance(value, e.BlockExpression):
-                merged.extend(value.statements)
-                value = value.value
-            return dataclasses.replace(thing, statements=merged, value=value)
+            changed = False
+            while True:
+                if isinstance(value, e.BlockExpression):
+                    merged.extend(value.statements)
+                    value = value.value
+                    changed = True
+                    continue
+                # A Convert between the block and a nested block hides the
+                # same collision (a union-returning ctor inlined at a `ret`
+                # wraps its body block in the union conversion): the
+                # conversion applies to the inner block's VALUE, so hoist the
+                # statements and keep converting the value. Without this the
+                # inner block survives as the outer's value, generates with
+                # no s{i} prefix, and its statement paths collide with the
+                # outer's (SSA "defined 2 times").
+                if (isinstance(value, e.ConvertExpression)
+                        and isinstance(value.inner, e.BlockExpression)):
+                    ib = value.inner
+                    merged.extend(ib.statements)
+                    value = dataclasses.replace(value, inner=ib.value)
+                    changed = True
+                    continue
+                break
+            if changed:
+                return dataclasses.replace(thing, statements=merged, value=value)
         return rw.UNCHANGED
     resolver = g.ResolverRoot(statements)
     return [rw.resolved(stmt.search_and_replace(resolver, flatten), stmt) for stmt in statements]
@@ -733,7 +754,11 @@ def _tarjan_sccs(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]
         counter[0] += 1
         stack.append(v)
         on_stack.add(v)
-        for w in edges.get(v, set()):
+        # Sorted: neighbour order decides SCC member (discovery) order, which
+        # is observable in hoisted-statement order — set iteration order would
+        # make the output depend on string hashing (and be unportable to the
+        # bootstrap, which must reproduce this byte for byte).
+        for w in sorted(edges.get(v, set())):
             if w not in index_of:
                 strongconnect(w)
                 lowlink[v] = min(lowlink[v], lowlink[w])
@@ -809,7 +834,9 @@ def _coalesce_mutual_scc(scc_fns: list[s.FunctionStatement],
     seen_captures: set[str] = set()
     union_captures: list[tuple[str, t.TypeSpec]] = []
     for fn in scc_fns:
-        for ref in _free_refs(fn, sibling_fn_names):
+        # Sorted: set iteration order would make the synthesised class's field
+        # order depend on string hashing (unportable to the bootstrap).
+        for ref in sorted(_free_refs(fn, sibling_fn_names)):
             if ref in outer_var_types and ref not in seen_captures:
                 seen_captures.add(ref)
                 union_captures.append((ref, outer_var_types[ref]))
