@@ -277,6 +277,132 @@ fun passesMode(text: String): (out: String, code: Int)
       (ok: CvOk)      => (String(ok.cvPasses) + "\n", 0)
       (d: CvDiverged) => ("diverged\n", 2)
 
+# check mode: parse, converge, run the post-convergence diagnostic phases and
+# print sorted(set(errors)) — the check contract diffs this byte for byte.
+fun checkMode(text: String): (out: String, code: Int)
+  ret match(parseProgram(text, "x"))
+    (f: PFail)           => ("parse error\n", 1)
+    (stmts: List<PStmt>) => match(converge(stmts))
+      (ok: CvOk)      => (checkOutput(ok.cvStatements), 0)
+      (d: CvDiverged) => ("diverged\n", 2)
+
+# Mirrors the driver order exactly: converge → lambda_globals → drops (ONE
+# re-convergence when it inserted) → diagnostics → linearity.
+fun checkOutput(stmts0: List<PStmt>): String
+  let lowered = lowerLambdaGlobals(stmts0)
+  let d0 = insertDrops(lowered, RRoot(buildStatements(lowered)))
+  ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
+    (ok: CvOk)      => checkedOutput(ok.cvStatements)
+    (dv: CvDiverged) => "diverged\n"
+
+fun checkedOutput(stmts: List<PStmt>): String
+  let r = RRoot(buildStatements(stmts), collectParamSuggestions(stmts))
+  let d = collectDiagnostics(stmts, r)
+  if !isEmpty(d.dFails)
+    ret printedDiagnostics(d.dFails)
+  # Linearity runs only on a clean check phase; its errors return ALONE.
+  let lin = checkLinearity(stmts, r)
+  ret printedDiagnostics(isEmpty(lin) ? d.dWarns : lin)
+
+# generics mode: the first LOWERING contract. Mirrors the driver order up to
+# and including monomorphisation — converge → lambda_globals → drops (ONE
+# re-convergence when it inserted) → convert_generic_to_concrete → the
+# unresolved-generic-call guard — then dumps the monomorphised tree. Errors
+# from either generics phase print as sorted(set(errors)) instead, so the
+# polymorphic-recursion messages are pinned by the same contract.
+fun genericsMode(text: String): (out: String, code: Int)
+  ret match(parseProgram(text, "x"))
+    (f: PFail)           => ("parse error\n", 1)
+    (stmts: List<PStmt>) => match(converge(stmts))
+      (ok: CvOk)      => genericsOutput(ok.cvStatements)
+      (d: CvDiverged) => ("diverged\n", 2)
+
+fun genericsOutput(stmts0: List<PStmt>): (out: String, code: Int)
+  let lowered = lowerLambdaGlobals(stmts0)
+  let d0 = insertDrops(lowered, RRoot(buildStatements(lowered)))
+  ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
+    (ok: CvOk)       => genericsDump(ok.cvStatements)
+    (dv: CvDiverged) => ("diverged\n", 2)
+
+fun genericsDump(stmts: List<PStmt>): (out: String, code: Int)
+  let it = convertGenericToConcrete(stmts)
+  if !isEmpty(it.giErrs)
+    ret (printedDiagnostics(it.giErrs), 0)
+  let unresolved = reportUnresolvedGenericCalls(it.giStmts)
+  ret isEmpty(unresolved)
+    ? (dumpProgram(it.giStmts), 0)
+    : (printedDiagnostics(unresolved), 0)
+
+# postmono mode: the generics pipeline, then the post-monomorphisation
+# re-convergence (each freshly-instantiated body places its own conversions
+# now that its types are concrete), then mark_complex_enums and
+# inline_constants — the driver's exact order up to the tail-loop boundary
+# (compiler.py:588-590).
+# The postmono pipeline as a reusable result, so later stage modes telescope
+# on it without repeating the segment.
+enum PmRes
+  enum PmOk(pmStmts: List<PStmt>)
+  enum PmText(pmOut: String, pmCode: Int)
+
+fun postmonoRes(text: String): PmRes
+  ret match(parseProgram(text, "x"))
+    (fp: PFail)          => PmText("parse error\n", 1)
+    (stmts: List<PStmt>) => match(converge(stmts))
+      (ok: CvOk)      => postmonoRes2(ok.cvStatements)
+      (d: CvDiverged) => PmText("diverged\n", 2)
+
+fun postmonoRes2(stmts0: List<PStmt>): PmRes
+  let lowered = lowerLambdaGlobals(stmts0)
+  let d0 = insertDrops(lowered, RRoot(buildStatements(lowered)))
+  ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
+    (ok: CvOk)       => postmonoRes3(ok.cvStatements)
+    (dv: CvDiverged) => PmText("diverged\n", 2)
+
+fun postmonoRes3(stmts: List<PStmt>): PmRes
+  let it = convertGenericToConcrete(stmts)
+  if !isEmpty(it.giErrs)
+    ret PmText(printedDiagnostics(it.giErrs), 0)
+  let unresolved = reportUnresolvedGenericCalls(it.giStmts)
+  if !isEmpty(unresolved)
+    ret PmText(printedDiagnostics(unresolved), 0)
+  ret match(converge(it.giStmts))
+    (ok: CvOk)       => PmOk(inlineConstants(markComplexEnums(
+                                               ok.cvStatements)))
+    (dv: CvDiverged) => PmText("diverged\n", 2)
+
+fun postmonoMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => (dumpProgram(ok.pmStmts), 0)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+# tail mode: postmono, then lambda_lift → hoist_nested → tail_loop — the
+# driver's exact order (compiler.py:602-611). Tail errors print as
+# sorted(set(errors)).
+fun tailMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => tailStageDump(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun tailStageDump(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  ret isEmpty(tl.tlErrs)
+    ? (dumpProgram(tl.tlStmts), 0)
+    : (printedDiagnostics(tl.tlErrs), 0)
+
+# inline mode: the tail pipeline, then the AST inliner to fixpoint — the
+# driver's compiler.py:612 (optimisation level does not affect this pass;
+# the contract pins -O1, the bootstrap's own build level).
+fun inlineMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => inlineStageDump(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun inlineStageDump(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  ret isEmpty(tl.tlErrs)
+    ? (dumpProgram(inlineAst(tl.tlStmts)), 0)
+    : (printedDiagnostics(tl.tlErrs), 0)
+
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
@@ -327,6 +453,11 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "convert" ? convertMode(text)
         : mode == "converge" ? convergeMode(text)
         : mode == "passes" ? passesMode(text)
+        : mode == "check" ? checkMode(text)
+        : mode == "generics" ? genericsMode(text)
+        : mode == "postmono" ? postmonoMode(text)
+        : mode == "tail" ? tailMode(text)
+        : mode == "inline" ? inlineMode(text)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code
