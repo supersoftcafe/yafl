@@ -85,6 +85,18 @@ class _ShowBool() : Show<System::Bool>
   fun show(value: System::Bool): System::String
     ret value ? "true" : "false"
 
+# Bool equality: `==`/`!=` on Bool (and Bool as a Dict/Set key). hashOf
+# follows the numeric instances' convention of small non-negative ints.
+let [trait] _bool_eq: _BasicEqualityBool = _BasicEqualityBool()
+
+typealias [where] _WhereEqBool : BasicEquality<System::Bool>
+
+class _BasicEqualityBool() : BasicEquality<System::Bool>
+  fun `==`(left: System::Bool, right: System::Bool): System::Bool
+    ret left ? right : (right ? false : true)
+  fun hashOf(value: System::Bool): System::Int
+    ret value ? 1 : 0
+
 
 # ─── Int32 ──────────────────────────────────────────────────────────────────
 #

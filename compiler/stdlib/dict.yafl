@@ -184,3 +184,32 @@ fun size<K,V>(d: Dict<K,V>): Int
   ret match(d)
     (e: DictEmpty) => 0
     (n: DictNode)  => bucket_size(n.bucket) + size<K,V>(n.left) + size<K,V>(n.right)
+
+
+# ─── iteration ───────────────────────────────────────────────────────────────
+# In-order over the hash tree (bucket order within a hash) — an unspecified
+# but DETERMINISTIC order: the same dictionary content always walks the same
+# way. keys(d) and values(d) walk in the same order, so zipping them pairs
+# each key with its value.
+
+fun keys<K,V>(d: Dict<K,V>): List<K>
+  fun bucket_keys(b: _DictBucket<K,V>, acc: List<K>): List<K>
+    ret match(b)
+      (n: _BucketNil)  => acc
+      (c: _BucketCons) => bucket_keys(c.tail, append<K>(acc, c.key))
+  fun walk(d2: Dict<K,V>, acc: List<K>): List<K>
+    ret match(d2)
+      (e: DictEmpty) => acc
+      (n: DictNode)  => walk(n.right, bucket_keys(n.bucket, walk(n.left, acc)))
+  ret walk(d, List<K>())
+
+fun values<K,V>(d: Dict<K,V>): List<V>
+  fun bucket_values(b: _DictBucket<K,V>, acc: List<V>): List<V>
+    ret match(b)
+      (n: _BucketNil)  => acc
+      (c: _BucketCons) => bucket_values(c.tail, append<V>(acc, c.value))
+  fun walk(d2: Dict<K,V>, acc: List<V>): List<V>
+    ret match(d2)
+      (e: DictEmpty) => acc
+      (n: DictNode)  => walk(n.right, bucket_values(n.bucket, walk(n.left, acc)))
+  ret walk(d, List<V>())

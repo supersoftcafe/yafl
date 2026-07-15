@@ -74,6 +74,24 @@ fun byteAt(s: System::String, i: System::Int): System::Int32
 fun findByte(s: System::String, byte: System::Int32, from: System::Int): System::Int
   ret __builtin_op__<bigint>("string_find_byte", s, byte, from)
 
+# Byte offset of the first occurrence of `needle` at or after `from`, or -1
+# when absent. The empty needle matches immediately at `from` (clamped to the
+# string), like Python's str.find. Byte-wise: needles and offsets follow the
+# same byte-offset convention as findByte/slice.
+fun find(s: System::String, needle: System::String,
+         from: System::Int = 0): System::Int
+  let n = length(s)
+  let m = length(needle)
+  fun [tail] matchesAt(i: System::Int, j: System::Int): System::Bool
+    if j >= m
+      ret true
+    ret byteAt(s, i + j) == byteAt(needle, j) ? matchesAt(i, j + 1) : false
+  fun [tail] scan(i: System::Int): System::Int
+    if i > n - m
+      ret -1
+    ret matchesAt(i, 0) ? i : scan(i + 1)
+  ret scan(from < 0 ? 0 : from)
+
 # Byte offset of the first CODEPOINT at or after `from` in `s` whose value is
 # one of the codepoints in `accept`, or `length(s)` when none is. `accept` is
 # a set of characters (decoded as UTF-8), and the returned offset is always a
