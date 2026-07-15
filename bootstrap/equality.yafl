@@ -312,7 +312,8 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
       (y: PsNamespace) => x.nsPath == y.nsPath && eqLine(x.psnLine, y.psnLine)
       (o: PStmt)       => false
     (x: PsRet) => match(b)
-      (y: PsRet) => eqExpr(x.retValue, y.retValue) && eqLine(x.psrLine, y.psrLine)
+      (y: PsRet) => x.retIndex == y.retIndex
+                      && eqExpr(x.retValue, y.retValue) && eqLine(x.psrLine, y.psrLine)
       (o: PStmt) => false
     (x: PsIf) => match(b)
       (y: PsIf) => eqExpr(x.ifCond, y.ifCond)

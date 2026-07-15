@@ -452,6 +452,38 @@ fun lambdasStageDump(stmts: List<PStmt>): (out: String, code: Int)
     ? (dumpProgram(convertLambdasToFunctions(lowerLazyLets(lowered))), 0)
     : (printedDiagnostics(fwd), 0)
 
+# simple mode: lambdas, then flat-struct lowering — qualifying classes become
+# bare tuples + free functions — driver compiler.py:626.
+fun simpleMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => simpleStageDump(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun simpleStageDump(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  if !isEmpty(tl.tlErrs)
+    ret (printedDiagnostics(tl.tlErrs), 0)
+  let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
+  let fwd = checkLazyForwardRefs(lowered)
+  ret isEmpty(fwd)
+    ? (dumpProgram(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered)))), 0)
+    : (printedDiagnostics(fwd), 0)
+
+fun exitsMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => exitsStageDump(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  if !isEmpty(tl.tlErrs)
+    ret (printedDiagnostics(tl.tlErrs), 0)
+  let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
+  let fwd = checkLazyForwardRefs(lowered)
+  ret isEmpty(fwd)
+    ? (dumpProgram(assignBlockExits(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered))))), 0)
+    : (printedDiagnostics(fwd), 0)
+
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
@@ -510,6 +542,8 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "literals" ? literalsMode(text)
         : mode == "lazy" ? lazyMode(text)
         : mode == "lambdas" ? lambdasMode(text)
+        : mode == "simple" ? simpleMode(text)
+        : mode == "exits" ? exitsMode(text)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code

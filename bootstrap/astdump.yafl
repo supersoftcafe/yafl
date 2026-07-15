@@ -264,7 +264,7 @@ fun dumpStmt(st: PStmt, depth: Int, sb: StringBuilder): StringBuilder
       |> (s2) => dumpStmts(e.eVariants, depth + 1, s2)
     (ta: PsTypealias) => dLine(sb, depth, "Typealias", ta.pstLine,
                               ta.taName + "|" + gensStr(ta.taGens) + "|" + tyOf(ta.taType))
-    (r: PsRet)    => dumpExpr(r.retValue, depth + 1, dLine(sb, depth, "Ret", r.psrLine, ""))
+    (r: PsRet)    => dumpExpr(r.retValue, depth + 1, dLine(sb, depth, "Ret", r.psrLine, String(r.retIndex)))
     (i2: PsIf)    => dLine(sb, depth, "If", i2.psifLine, "")
       |> (s1) => dumpExpr(i2.ifCond, depth + 1, s1)
       |> (s2) => dumpStmts(i2.ifTrue, depth + 1, s2)

@@ -133,7 +133,8 @@ enum PStmt
                    taImports: List<PStmt>|None = None)
   enum PsImport(importPath: String, psiLine: PLine)
   enum PsNamespace(nsPath: String, psnLine: PLine)
-  enum PsRet(retValue: PExpr, psrLine: PLine)
+  # retIndex = block_exits' per-return ordinal (0 until that stage runs).
+  enum PsRet(retValue: PExpr, psrLine: PLine, retIndex: Int = 0)
   enum PsIf(ifCond: PExpr, ifTrue: List<PStmt>, ifFalse: List<PStmt>, psifLine: PLine)
   enum PsElseIf(eiCond: PExpr, eiStmts: List<PStmt>, pseiLine: PLine)
   enum PsElse(elStmts: List<PStmt>, pselLine: PLine)

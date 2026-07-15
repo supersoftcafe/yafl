@@ -1,0 +1,116 @@
+"""bootstrap exits stage — the post-monomorphisation driver segment must
+produce the same AST as compiler.py:588-629: the full AST-lowering pipeline through block-exit stamping — every block tagged, every return given its ordinal — lambda_lift
+(captures become parameters where the helper is only ever called),
+hoist_nested (closure-vs-global strategy, mutual SCCs coalesced into one
+class), then tail_loop ([tail] bodies wrapped as LoopExpression with each
+tail self-call a RecurExpression; hard errors otherwise).
+
+Telescopes on the postmono contract: same corpus, same error-printing rule,
+three passes further. The dump has teeth: Loop prints its carried param names,
+Recur its ordinal; hoisted globals and $mutual:: closure classes appear as
+top-level statements; lifted calls carry their threaded capture arguments.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import compiler as c
+import lowering.complex_enums
+import lowering.constants
+import lowering.drops
+import lowering.generics
+import lowering.ast_inline
+import lowering.integers
+import lowering.block_exits
+import lowering.lambdas
+import lowering.simple_classes
+import lowering.lower_lazy_lets
+import lowering.strings
+import lowering.hoist_nested
+import lowering.lambda_globals
+import lowering.lambda_lift
+import lowering.tail_loop
+from parsing.tokenizer import tokenize
+from parsing.parser import parse
+from tests.astdump import dump
+
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
+
+_REPO = Path(__file__).parent.parent.parent
+_BOOTSTRAP = _REPO / "bootstrap"
+
+_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+    + sorted((_REPO / "examples").glob("*.yafl")) \
+    + sorted((_REPO / "bootstrap").glob("*.yafl")) \
+    + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
+
+_CONVERGE = c.__dict__["__converge"]
+
+
+class TestBootstrapExits(TestCase):
+    _TIMEOUT = 2400
+
+    @classmethod
+    def setUpClass(cls):
+        from tests.testutil import shared_bootstrap_binary
+        cls.binary = shared_bootstrap_binary()
+
+    @classmethod
+    def tearDownClass(cls):
+        pass  # the shared binary is cache-owned
+
+    def _python_exits(self, text: str) -> str:
+        result = parse(tokenize(text, "x"))
+        self.assertFalse(result.errors, "python parse errors")
+        statements, _resolver, _passes = _CONVERGE(result.value)
+        statements = lowering.lambda_globals.lower_lambda_globals(statements)
+        statements, dropped = lowering.drops.insert_drops(statements)
+        if dropped:
+            statements, _resolver, _p2 = _CONVERGE(statements)
+        statements, poly_errors = lowering.generics.convert_generic_to_concrete(statements)
+        if poly_errors:
+            return "".join(f"{e}\n" for e in sorted(set(poly_errors)))
+        unresolved = lowering.generics.report_unresolved_generic_calls(statements)
+        if unresolved:
+            return "".join(f"{e}\n" for e in sorted(set(unresolved)))
+        statements, resolver3, _p3 = _CONVERGE(statements)
+        statements = lowering.complex_enums.mark_complex_enums(statements)
+        statements = lowering.constants.inline_constants(statements)
+        statements = lowering.lambda_lift.lift_captured_calls(statements)
+        statements = lowering.hoist_nested.hoist_nested_functions(statements)
+        statements, tail_errors = lowering.tail_loop.lower_tail_loops(statements, resolver3)
+        if tail_errors:
+            return "".join(f"{e}\n" for e in sorted(set(tail_errors)))
+        statements = lowering.ast_inline.inline_ast(statements, 1)
+        statements = lowering.strings.fix_global_strings(statements)
+        statements = lowering.integers.fix_global_integers(statements)
+        fwd = lowering.lower_lazy_lets.check_lazy_forward_refs(statements)
+        if fwd:
+            return "".join(f"{e}\n" for e in sorted(set(fwd)))
+        statements = lowering.lower_lazy_lets.lower_lazy_lets(statements)
+        statements = lowering.lambdas.convert_lambdas_to_functions(statements)
+        statements = lowering.simple_classes.lower_simple_classes(statements)
+        statements = lowering.block_exits.assign_block_exits(statements)
+        return dump(statements)
+
+    def test_exits_ast_matches_python(self):
+        for path in _CORPUS:
+            with self.subTest(file=path.name):
+                text = path.read_text()
+                expected = self._python_exits(text).splitlines()
+                r = subprocess.run([self.binary, "exits"], input=text,
+                                   capture_output=True, timeout=240, text=True,
+                                   env=_RUN_ENV)
+                self.assertEqual(0, r.returncode,
+                                 f"{path.name}: {r.stdout[:300]}")
+                got = r.stdout.splitlines()
+                for i, (e, gg) in enumerate(zip(expected, got)):
+                    self.assertEqual(e, gg, f"{path.name}: exits AST "
+                                            f"differs at line {i + 1}")
+                self.assertEqual(len(expected), len(got),
+                                 f"{path.name}: exits AST length differs")

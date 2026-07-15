@@ -212,7 +212,8 @@ def dump(statements) -> str:
             gens = ",".join(g.name for g in st.type_params)
             line(depth, "Typealias", st, f"{st.name}|{gens}|{_ty(st.type)}")
         elif isinstance(st, s.ReturnStatement):
-            line(depth, "Ret", st, "")
+            # index = block_exits' per-return ordinal (0 before that stage).
+            line(depth, "Ret", st, str(st.index))
             walk_expr(st.value, depth + 1)
         elif isinstance(st, s.IfStatement):
             line(depth, "If", st, "")
