@@ -434,6 +434,24 @@ fun lazyStageDump(stmts: List<PStmt>): (out: String, code: Int)
     ? (dumpProgram(lowerLazyLets(lowered)), 0)
     : (printedDiagnostics(fwd), 0)
 
+# lambdas mode: lazy, then closure conversion — every LambdaExpression
+# becomes a top-level function (or a [final] closure class + constructor call
+# when it captures) — driver compiler.py:625.
+fun lambdasMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => lambdasStageDump(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun lambdasStageDump(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  if !isEmpty(tl.tlErrs)
+    ret (printedDiagnostics(tl.tlErrs), 0)
+  let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
+  let fwd = checkLazyForwardRefs(lowered)
+  ret isEmpty(fwd)
+    ? (dumpProgram(convertLambdasToFunctions(lowerLazyLets(lowered))), 0)
+    : (printedDiagnostics(fwd), 0)
+
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
@@ -491,6 +509,7 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "inline" ? inlineMode(text)
         : mode == "literals" ? literalsMode(text)
         : mode == "lazy" ? lazyMode(text)
+        : mode == "lambdas" ? lambdasMode(text)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code
