@@ -1,0 +1,13 @@
+# Converge-contract corpus: PATH-3 inference (B8). `v` declares no type; the
+# call site `bump(x)` supplies one, gathered by __collect_param_suggestions
+# and adopted by the function's own compile. A port whose fixpoint resolver
+# carries no suggestions leaves `v` untyped forever.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+fun bump(v): Int
+  ret v
+
+fun use(x: Int): Int
+  ret bump(x)

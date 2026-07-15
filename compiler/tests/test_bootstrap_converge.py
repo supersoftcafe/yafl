@@ -37,20 +37,28 @@ from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 
-# Start with the SELF-CONTAINED sources: convergence resolves names against the
-# statement set it is given, so a file that leans on the stdlib needs the stdlib
-# in that set. These stand alone.
-_CORPUS = [
-    _REPO / "compiler" / "stdlib" / "integer.yafl",
-    _REPO / "compiler" / "stdlib" / "args.yafl",
-    _REPO / "compiler" / "stdlib" / "traits.yafl",
-]
+# EVERYTHING, one file at a time: convergence resolves names against exactly
+# the statement set it is given, so both sides see the same single file and
+# must leave the same names unresolved — the diff is meaningful whether or
+# not the file stands alone. The whole stdlib, every example, and the
+# bootstrap's OWN sources (the self-host ring: the port must converge itself
+# exactly as Python does).
+_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+    + sorted((_REPO / "examples").glob("*.yafl")) \
+    + sorted((_REPO / "bootstrap").glob("*.yafl")) \
+    + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
+# corpus_converge/: one small self-contained file per feature the port has
+# historically missed (the audit's regression pressure) — each was added RED
+# against the port of its day and pinned green by the fix.
 
 _CONVERGE = c.__dict__["__converge"]
 
 
 class TestBootstrapConverge(TestCase):
-    _TIMEOUT = 600
+    # N-scaled: the corpus is ~60 files and each of the two tests converges
+    # every file on the Python side too (the parser-sized bootstrap sources
+    # dominate).
+    _TIMEOUT = 2400
 
     @classmethod
     def setUpClass(cls):
@@ -76,14 +84,15 @@ class TestBootstrapConverge(TestCase):
     def _python_converged(self, text: str):
         result = parse(tokenize(text, "x"))
         self.assertFalse(result.errors, "python parse errors")
-        statements, _resolver = _CONVERGE(result.value)
-        return statements
+        statements, _resolver, passes = _CONVERGE(result.value)
+        return statements, passes
 
     def test_converged_ast_matches_python(self):
         for path in _CORPUS:
             with self.subTest(file=path.name):
                 text = path.read_text()
-                expected = dump(self._python_converged(text)).splitlines()
+                statements, _passes = self._python_converged(text)
+                expected = dump(statements).splitlines()
 
                 r = subprocess.run([self.binary, "converge"], input=text,
                                    capture_output=True, timeout=120, text=True,
@@ -96,3 +105,20 @@ class TestBootstrapConverge(TestCase):
                                             f"at line {i + 1}")
                 self.assertEqual(len(expected), len(got),
                                  f"{path.name}: converged AST length differs")
+
+    def test_pass_count_matches_python(self):
+        # The port must settle in the SAME number of iterations: a port that
+        # reached the same answer in a different number of passes means some
+        # compile() is doing more (or less) per pass than Python's, and the
+        # two drift apart on a program where the extra pass matters.
+        for path in _CORPUS:
+            with self.subTest(file=path.name):
+                text = path.read_text()
+                _statements, py_passes = self._python_converged(text)
+                r = subprocess.run([self.binary, "passes"], input=text,
+                                   capture_output=True, timeout=120, text=True,
+                                   env=_RUN_ENV)
+                self.assertEqual(0, r.returncode,
+                                 f"{path.name}: {r.stdout[:300]}")
+                self.assertEqual(f"{py_passes}\n", r.stdout,
+                                 f"{path.name}: pass count differs")

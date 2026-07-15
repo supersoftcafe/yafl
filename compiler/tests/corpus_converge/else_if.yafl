@@ -1,0 +1,26 @@
+# Converge-contract corpus: the if / else-if / else CHAIN. Parsed FLAT (the
+# if, each else-if, and the else are sibling statements), folded right-nested
+# by collapse_else_if at BOTH fold sites — a block's statement list, and again
+# inside each if branch. A port that skips the fold leaves the siblings in
+# place and its converged tree diverges here.
+namespace Corpus
+
+typealias Int  : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+
+fun `<`(left: Int, right: Int): Bool
+  ret __builtin_op__<bool>("integer_test_lt", left, right)
+
+fun classify(x: Int): Int
+  if x < 0
+    ret 0
+  else if x < 10
+    # A nested chain inside a BRANCH exercises the second fold site.
+    if x < 5
+      ret 1
+    else if x < 8
+      ret 2
+    else
+      ret 3
+  else
+    ret 4

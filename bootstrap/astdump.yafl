@@ -69,9 +69,12 @@ fun tyOf(ty: Spec): String
     (c2: SClass)      => "C(" + c2.scName + (isEmpty(c2.scParams) ? ""
                           : "<" + tyList(c2.scParams) + ">") + ")"
     (af: SArrayField) => "ArrayFieldSpec"
-    # Compile-phase only — the parser never builds these, so (like Python's
-    # dump) they fall through to the bare spec name.
-    (e: SEnum)        => "EnumSpec"
+    # Compile-phase only — the parser never builds one. Valid leaves are a
+    # SET: sorted for a deterministic dump, matching Python's _ty.
+    # `!cx` marks is_complex — absent before mark_complex_enums runs.
+    (e: SEnum)        => "E(" + e.seRoot + ":"
+                         + join(sort(e.seValidLeaves), ",")
+                         + (e.seComplex ? "!cx" : "") + ")"
     (ls: SLazyStub)   => "LazyStubSpec"
 
 fun tyList(ts: List<Spec>): String
@@ -161,6 +164,28 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
     (cv: PeConvert)   => dLine(sb, depth, "Convert", cv.pecvLine,
                                tyOf(cv.convTarget))
       |> (s1) => dumpExpr(cv.convInner, depth + 1, s1)
+    # tail_loop lowering only — exercised by the tail-stage contract.
+    (lp: PeLoop)      => dLine(sb, depth, "Loop", lp.pelpLine,
+                               join(loopParamNames(chain(lp.loopParams),
+                                                   List<String>()),
+                                    ","))
+      |> (s1) => dumpExpr(lp.loopBody, depth + 1, s1)
+    (rc: PeRecur)     => dumpExprs(rc.recArgs, depth + 1,
+                                   dLine(sb, depth, "Recur", rc.percLine,
+                                         String(rc.recIndex)))
+
+fun [tail] loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (nm: PeName) => loopParamNames(l.next, append(acc, nm.refName))
+      (o: PExpr)   => loopParamNames(l.next, acc)
+
+fun [tail] dumpExprs(es: List<PExpr>, depth: Int,
+                     sb: StringBuilder): StringBuilder
+  ret match(head(es))
+    (x: PExpr) => dumpExprs(tail(es), depth, dumpExpr(x, depth, sb))
+    ()         => sb
 
 fun [tail] dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth: Int,
                        sb: StringBuilder): StringBuilder
@@ -244,5 +269,7 @@ fun dumpStmt(st: PStmt, depth: Int, sb: StringBuilder): StringBuilder
     (im: PsImport)   => dLine(sb, depth, "ImportStatement", im.psiLine, "")
     (ns: PsNamespace) => dLine(sb, depth, "NamespaceStatement", ns.psnLine, "")
 
+# Python's dump is `"\n".join(out) + "\n"` — an EMPTY statement list (a file
+# monomorphisation pruned to nothing) still prints one newline.
 fun dumpProgram(stmts: List<PStmt>): String
-  ret toString(dumpStmts(stmts, 0, StringBuilder()))
+  ret isEmpty(stmts) ? "\n" : toString(dumpStmts(stmts, 0, StringBuilder()))

@@ -169,28 +169,32 @@ fun arrayFrom(r: Resolver, af: SArrayField, right: Spec): Tri
 
 # Callables do not auto-widen their result: the return types must be
 # equivalent in BOTH directions, and an undecided direction defers the verdict.
+# Return types must be EQUIVALENT (bidirectionally assignable) — callables do
+# not auto-widen results (no implicit thunk). EITHER direction undecided
+# defers the whole result verdict (a definite asymmetry is False). Parameters
+# swap direction (contravariance) and are compared DIRECTLY by the tuple rule
+# — never via the 1-tuple unwrap: a parameter list's ARITY is significant, so
+# an N-vs-1 mismatch rejects on the arguments alone even while the lone
+# parameter's type is unresolved.
 fun callableFrom(r: Resolver, cl: SCallable, right: Spec): Tri
   ret match(right)
-    (rc: SCallable) => bothWays(r, cl.scResult, rc.scResult)
-      |> (res) => triFalse(res)
-        ? false
-        : combineTri(res, assignableEq(r, rc.scParams2, cl.scParams2))
+    (rn: SNamed)    => None                       # not resolved yet
+    (rc: SCallable) => callableVerdict(resultEquiv(r, cl.scResult, rc.scResult),
+                                       assignableFrom(r, rc.scParams2,
+                                                      cl.scParams2))
     (o: Spec)       => false
 
-fun bothWays(r: Resolver, a: Spec|None, b: Spec|None): Tri
-  ret match(a)
-    (x: Spec) => match(b)
-      (y: Spec) => combineTri(assignableEq(r, x, y), assignableEq(r, y, x))
-      ()        => false
-    () => match(b)
-      (y: Spec) => false
-      ()        => true
+fun resultEquiv(r: Resolver, a: Spec|None, b: Spec|None): Tri
+  let fwd = assignableEq(r, a, b)
+  let rev = assignableEq(r, b, a)
+  ret fwd is None || rev is None
+    ? None
+    : (triTrue(fwd) && triTrue(rev) ? true : false)
 
-# true AND true = true; either false = false; otherwise undecided.
-fun combineTri(a: Tri, b: Tri): Tri
-  ret triFalse(a) || triFalse(b)
+fun callableVerdict(res: Tri, params: Tri): Tri
+  ret triFalse(res) || triFalse(params)
     ? false
-    : (triTrue(a) && triTrue(b) ? true : None)
+    : (triTrue(res) && triTrue(params) ? true : None)
 
 # ── the tuple rule ──────────────────────────────────────────────────────────
 # Fields correspond via the SHARED binding (positional, then by name, unbound

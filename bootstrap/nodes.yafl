@@ -32,7 +32,11 @@ enum PExpr
   enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine)
   enum PeTuple(exprs: List<PTupEnt>, petLine: PLine)
   enum PeTernary(condition: PExpr, trueResult: PExpr, falseResult: PExpr, pety: PLine)
-  enum PeLambda(lamParams: PStmt, lamBody: PExpr, pelLine: PLine)
+  # lamRet: the lambda's own CallableSpec, computed by its compile each pass
+  # (parameters as actually compiled; result preferring the call site's
+  # expected). Program identity in Python (no compare=False).
+  enum PeLambda(lamParams: PStmt, lamBody: PExpr, pelLine: PLine,
+                lamRet: Spec|None = None)
   enum PeBlock(blockStmts: List<PStmt>, blockValue: PExpr, blockTag: String,
                pebkLine: PLine)
   enum PeMatch(subject: PExpr, arms: List<PArm>, pemLine: PLine)
@@ -48,6 +52,13 @@ enum PExpr
   # inserts one exactly where needsConversion says a representation changes.
   # The parser never builds one.
   enum PeConvert(convInner: PExpr, convTarget: Spec, pecvLine: PLine)
+  # tail_loop lowering only. A [tail] body wrapped as an SSA loop: the
+  # loop-carried params are NamedExpression REFERENCES (PeName), so ordinary
+  # renaming passes rewrite them with the body's uses.
+  enum PeLoop(loopBody: PExpr, loopParams: List<PExpr>, pelpLine: PLine)
+  # The back-edge: re-bind the loop vars to recArgs and jump to the head.
+  # Bottom-typed. recIndex = per-function ordinal assigned at lowering.
+  enum PeRecur(recArgs: List<PExpr>, recIndex: Int, percLine: PLine)
 
 class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr)
 
@@ -64,10 +75,27 @@ class [final] PArm(armName: String, armType: Spec|None,
 class [final] PAttr(attrName: String, attrValue: PExpr|None)
 class [final] PGen(genName: String, genAttrs: List<PAttr>, pgLine: PLine)
 
+# One vtable slot (ClassFunctionSlot): a callable member, and the SET of slot
+# names it PROVIDES an implementation for — its own name when it can dispatch
+# (a fun with a body, a fun-typed field), plus every inherited slot it
+# overrides. slotProvides has SET semantics: deduplicated, compared order-free.
+class [final] Slot(slotName: String, slotType: Spec|None,
+                   slotProvides: List<String>)
+
 enum PStmt
+  # fNested: a function declared inside a block is an INNER function — marked by
+  # the block's own compile (never by the parser), it establishes no trait
+  # scope of its own and inherits its owner's lexically. Part of program
+  # identity (Python's is_nested has no compare=False), so equality sees it.
+  # fImports / lImports / cImports / eImports / taImports: the file's
+  # ImportGroup — every import AND namespace declaration, as PsImport nodes —
+  # attached by parse()'s fixup to each TOP-LEVEL named statement (synthesised
+  # constructors copy their class's / enum's). Program identity in Python (no
+  # compare=False), so equality sees it; None on nested statements.
   enum PsFun(fName: String, fAttrs: List<PAttr>, fGens: List<PGen>,
              fParams: PStmt, fBody: PExpr|None, fRet: Spec|None,
-             fWheres: List<Spec>, psfLine: PLine, fRetInferred: Bool = false)
+             fWheres: List<Spec>, psfLine: PLine, fRetInferred: Bool = false,
+             fNested: Bool = false, fImports: List<PStmt>|None = None)
   enum PsDestructure(dName: String, dAttrs: List<PAttr>,
                      dType: Spec|None, dTargets: List<PStmt>,
                      dDefault: PExpr|None, psdLine: PLine,
@@ -75,19 +103,28 @@ enum PStmt
   enum PsLet(lName: String, lAttrs: List<PAttr>, lGens: List<PGen>,
              lType: Spec|None, lDefault: PExpr|None,
              lArrayLen: String, lWheres: List<Spec>, pslLine: PLine,
-             lTypeInferred: Bool = false)
+             lTypeInferred: Bool = false, lImports: List<PStmt>|None = None)
   # cAllParents: the transitive interface closure, computed by the class's own
   # compile. ABSENT (None) means "not worked out yet" — assignability must
   # answer "undecided", never "no".
+  # cAllSlots: the vtable slot table (own callable members overriding matching
+  # parent slots), also computed by compile — one inheritance level per PASS,
+  # since a parent's own table grounded on an earlier pass. Both are program
+  # identity in Python (no compare=False), so equality sees them and the
+  # fixpoint is not settled until they are.
   enum PsClass(cName: String, cAttrs: List<PAttr>, cGens: List<PGen>,
                cParams: PStmt, cImplements: List<Spec>, cWheres: List<Spec>,
                cMembers: List<PStmt>, cIsInterface: Bool, pscLine: PLine,
-               cAllParents: List<Spec>|None = None)
+               cAllParents: List<Spec>|None = None,
+               cAllSlots: List<Slot>|None = None,
+               cImports: List<PStmt>|None = None)
   enum PsEnum(eName: String, eGens: List<PGen>, eParams: PStmt,
               eVariants: List<PStmt>, eHasParams: Bool, pseLine: PLine,
-              eRootName: String|None = None, eSpec: Spec|None = None)
+              eRootName: String|None = None, eSpec: Spec|None = None,
+              eImports: List<PStmt>|None = None)
   enum PsTypealias(taName: String, taAttrs: List<PAttr>, taGens: List<PGen>,
-                   taType: Spec, taWheres: List<Spec>, pstLine: PLine)
+                   taType: Spec, taWheres: List<Spec>, pstLine: PLine,
+                   taImports: List<PStmt>|None = None)
   enum PsImport(importPath: String, psiLine: PLine)
   enum PsNamespace(nsPath: String, psnLine: PLine)
   enum PsRet(retValue: PExpr, psrLine: PLine)

@@ -157,7 +157,9 @@ fun classConstructor(c: PsClass): PStmt
   let body = PeBlock(List<PStmt>(), PeNew(clsTy, PeTuple(entries, lr), lr), "", lr)
   let ctorParams = PsDestructure("_", List<PAttr>(), None,
                                  map(fields, (f: PStmt) => ctorParam(f)), None, lr)
-  ret PsFun(c.cName, List<PAttr>(), c.cGens, ctorParams, body, clsTy, c.cWheres, lr)
+  # The constructor COPIES its class's ImportGroup (create_constructor).
+  ret PsFun(c.cName, List<PAttr>(), c.cGens, ctorParams, body, clsTy, c.cWheres,
+            lr, false, false, c.cImports)
 
 # An array field is CONSTRUCTED from an initialiser function `(:Int32): Elem`
 # whose results are tabulated into the trailing storage (utils.__constructor_param).
@@ -201,7 +203,7 @@ fun withArrayAccessor(c: PsClass): PStmt
   ret match(accessorFor(chain(paramsOf(c.cParams))))
     (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                             c.cWheres, append(c.cMembers, acc), c.cIsInterface,
-                            c.pscLine)
+                            c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
     ()           => c
 
 # The accessor is built INSIDE the narrowed arm — a field read through a
@@ -246,29 +248,29 @@ fun bareName(name: String): String
 # after the leaf, taking every field from the root down to it, returning the
 # ROOT enum type, its body a NewEnum expression.
 
-fun enumLeafConstructors(root: PsEnum): List<PStmt>
-  ret leafWalk(root, root, List<PStmt>(), List<PStmt>())
+fun enumLeafConstructors(root: PsEnum, grp: List<PStmt>): List<PStmt>
+  ret leafWalk(root, root, List<PStmt>(), grp, List<PStmt>())
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited: List<PStmt>,
-             acc: List<PStmt>): List<PStmt>
+             grp: List<PStmt>, acc: List<PStmt>): List<PStmt>
   let params = concat(inherited, paramsOf(node.eParams))
   if isEmpty(node.eVariants)
     ret node.eHasParams
-      ? append(acc, leafConstructor(root, node, params))
+      ? append(acc, leafConstructor(root, node, params, grp))
       : acc
-  ret variantsWalk(root, chain(node.eVariants), params, acc)
+  ret variantsWalk(root, chain(node.eVariants), params, grp, acc)
 
 fun [tail] variantsWalk(root: PsEnum, vs: Chain<PStmt>, params: List<PStmt>,
-                        acc: List<PStmt>): List<PStmt>
+                        grp: List<PStmt>, acc: List<PStmt>): List<PStmt>
   ret match(vs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => variantsWalk(root, l.next, params,
-                                    leafWalkOf(root, l.value, params, acc))
+    (l: ChainLink)  => variantsWalk(root, l.next, params, grp,
+                                    leafWalkOf(root, l.value, params, grp, acc))
 
 fun leafWalkOf(root: PsEnum, v: PStmt, params: List<PStmt>,
-               acc: List<PStmt>): List<PStmt>
+               grp: List<PStmt>, acc: List<PStmt>): List<PStmt>
   ret match(v)
-    (e: PsEnum) => leafWalk(root, e, params, acc)
+    (e: PsEnum) => leafWalk(root, e, params, grp, acc)
     (o: PStmt)  => acc
 
 fun paramsOf(d: PStmt): List<PStmt>
@@ -276,16 +278,18 @@ fun paramsOf(d: PStmt): List<PStmt>
     (ds: PsDestructure) => ds.dTargets
     (o: PStmt)          => List<PStmt>()
 
-fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>): PStmt
+fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>,
+                    grp: List<PStmt>): PStmt
   let lr = leaf.pseLine
   let tps = map(root.eGens, (g2: PGen) => SGeneric(g2.genName, false, g2.pgLine))
   let retTy = SNamed(root.eName, tps, lr)
   let body = PeBlock(List<PStmt>(),
                      PeNewEnum(root.eName, leaf.eName,
                                map(params, (p: PStmt) => letName(p)), tps, lr), "", lr)
+  # A leaf constructor carries the file's ImportGroup, like any top-level fun.
   ret PsFun(leaf.eName, List<PAttr>(), root.eGens,
             PsDestructure("_", List<PAttr>(), None, params, None, lr),
-            body, retTy, List<Spec>(), lr)
+            body, retTy, List<Spec>(), lr, false, false, grp)
 
 fun letName(p: PStmt): String
   ret match(p)
@@ -334,6 +338,8 @@ fun exprLine(x: PExpr): PLine
     (lm: PeLambda) => lm.pelLine
     (bk: PeBlock) => bk.pebkLine
     (m: PeMatch) => m.pemLine
+    (lp: PeLoop) => lp.pelpLine
+    (rc: PeRecur) => rc.percLine
     (bo: PeBuiltinOp) => bo.peboLine
     (pl: PeParallel) => pl.pepLine
     (ng: PeNothing) => ng.pengLine
@@ -349,26 +355,71 @@ fun exprLine(x: PExpr): PLine
 # synthesis is ported separately (create_constructor et al.).
 
 fun fixupProgram(stmts: List<PStmt>): List<PStmt>
-  ret fixupLoop(chain(stmts), "Main::", List<PStmt>())
+  ret fixupLoop(chain(stmts), "Main::",
+                importGroupOf(chain(stmts), List<PStmt>()), List<PStmt>())
 
-fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, acc: List<PStmt>): List<PStmt>
+# The file-wide ImportGroup: every import, AND every namespace declaration (a
+# namespace IS an import of itself — that is how a bare `print` finds
+# `System::print` inside the stdlib), in file order.
+fun [tail] importGroupOf(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (im: PsImport)    => fixupLoop(l.next, ns, acc)
-      (n2: PsNamespace) => fixupLoop(l.next, n2.nsPath + "::", acc)
-      (e: PsEnum)       => fixupLoop(l.next, ns, concat(append(acc, addNamespace(e, ns)),
-                             enumLeafConstructors(namespacedEnum(e, ns))))
-      (c: PsClass)      => fixupLoop(l.next, ns, classWithCtor(c, ns, acc))
-      (other)           => fixupLoop(l.next, ns, append(acc, addNamespace(l.value, ns)))
+      (im: PsImport)    => importGroupOf(l.next, append(acc, l.value))
+      (n2: PsNamespace) => importGroupOf(l.next,
+                                         append(acc, PsImport(n2.nsPath,
+                                                              n2.psnLine)))
+      (o: PStmt)        => importGroupOf(l.next, acc)
+
+fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grp: List<PStmt>,
+                     acc: List<PStmt>): List<PStmt>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (im: PsImport)    => fixupLoop(l.next, ns, grp, acc)
+      (n2: PsNamespace) => fixupLoop(l.next, n2.nsPath + "::", grp, acc)
+      (e: PsEnum)       => fixupLoop(l.next, ns, grp,
+                             concat(append(acc,
+                                           withImports(addNamespace(e, ns), grp)),
+                                    enumLeafConstructors(namespacedEnum(e, ns),
+                                                         grp)))
+      (c: PsClass)      => fixupLoop(l.next, ns, grp, classWithCtor(c, ns, grp, acc))
+      (other)           => fixupLoop(l.next, ns, grp,
+                                     withImports(addNamespace(l.value, ns), grp)
+                                       |> (st) => append(acc, st))
+
+# Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
+fun withImports(st: PStmt, grp: List<PStmt>): PStmt
+  ret match(st)
+    (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
+                         f.fRet, f.fWheres, f.psfLine, f.fRetInferred,
+                         f.fNested, grp)
+    (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType, l.lDefault,
+                         l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
+                         grp)
+    (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams,
+                            c.cImplements, c.cWheres, c.cMembers,
+                            c.cIsInterface, c.pscLine, c.cAllParents,
+                            c.cAllSlots, grp)
+    (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
+                                     ta.taType, ta.taWheres, ta.pstLine, grp)
+    (e: PsEnum) => PsEnum(e.eName, e.eGens, e.eParams, e.eVariants,
+                          e.eHasParams, e.pseLine, e.eRootName, e.eSpec, grp)
+    (other)     => st
 
 # A class emits itself then its constructor (interfaces get neither).
-fun classWithCtor(c: PsClass, ns: String, acc: List<PStmt>): List<PStmt>
-  let named = namespacedClass(c, ns)
+fun classWithCtor(c: PsClass, ns: String, grp: List<PStmt>,
+                  acc: List<PStmt>): List<PStmt>
+  let named = importedClass(namespacedClass(c, ns), grp)
   ret c.cIsInterface
     ? append(acc, named)
     : withArrayAccessor(named)
       |> (full) => append(append(acc, full), classConstructorOf(full))
+
+fun importedClass(c: PsClass, grp: List<PStmt>): PsClass
+  ret match(withImports(c, grp))
+    (c2: PsClass) => c2
+    (other)       => c
 
 fun namespacedClass(c: PsClass, ns: String): PsClass
   ret match(addNamespace(c, ns))

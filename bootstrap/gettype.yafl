@@ -72,13 +72,16 @@ fun exprType(x: PExpr, r: Resolver): Spec|None
     (st: PeStr)      => SBuiltin("str", st.pesLine)
     (rx: PeRegex)    => SBuiltin("str", rx.perLine)
     (n: PeNothing)   => None
+    # tail_loop lowering only: a loop types as its body; recur is bottom.
+    (lp: PeLoop)     => exprType(lp.loopBody, r)
+    (rc: PeRecur)    => None
     (nm: PeName)     => nameType(nm, r)
     (d: PeDot)       => dotType(d, r)
     (c: PeCall)      => callType(c, r)
     (tp: PeTuple)    => tupleType(tp, r)
     (te: PeTernary)  => join(exprType(te.trueResult, r),
                             exprType(te.falseResult, r))
-    (lm: PeLambda)   => None            # filled in by inference, not derived
+    (lm: PeLambda)   => lm.lamRet       # its compile fills this each pass
     (bk: PeBlock)    => exprType(bk.blockValue, r)
     (mt: PeMatch)    => matchType(mt, r)
     (op: PeBuiltinOp) => op.opType
@@ -106,19 +109,72 @@ fun nameType(nm: PeName, r: Resolver): Spec|None
   let bag = findData(r, nm.refName)
   if !bag.bComplete
     ret None
-  ret match(soleItem(bag))
-    (f: Found) => stmtType(f.fStmt)
+  ret match(soleOf(traitFiltered(bag.bItems, nm.penTrait)))
+    (f: Found) => nameTypeOf(nm, f, r)
     ()         => None
+
+# compile() already disambiguated via the trait-scope cache: filter to it when
+# the raw bag is still plural.
+fun traitFiltered(datas: List<Found>, cache: Spec|None): List<Found>
+  ret match(cache)
+    (c: Spec) => listLen(datas) <= 1
+      ? datas
+      : preferScoped(filterByScope(chain(datas), c, List<Found>()), datas)
+    ()        => datas
+
+fun preferScoped(scoped: List<Found>, datas: List<Found>): List<Found>
+  ret listLen(scoped) == 1 ? scoped : datas
+
+fun [tail] filterByScope(ds: Chain<Found>, cache: Spec,
+                         acc: List<Found>): List<Found>
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => sameTraitScope(l.value.fTraitScope, cache)
+      ? filterByScope(l.next, cache, append(acc, l.value))
+      : filterByScope(l.next, cache, acc)
+
+fun sameTraitScope(ts: Spec|None, cache: Spec): Bool
+  ret match(ts)
+    (t2: Spec) => eqSpec(t2, cache)
+    ()         => false
+
+# The declaration's type, instantiated: explicit call-site type args (case 1)
+# and a trait-scoped find's interface instantiation (case 2) both map the
+# declaration's placeholders to concrete types.
+fun nameTypeOf(nm: PeName, f: Found, r: Resolver): Spec|None
+  ret match(stmtType(f.fStmt))
+    (raw: Spec) => substitute(raw, nameMappings(nm, f))
+    ()          => None
+
+fun nameMappings(nm: PeName, f: Found): List<Binding>
+  ret concat(explicitMapping(nm, f), traitCaseMapping(f))
+
+fun explicitMapping(nm: PeName, f: Found): List<Binding>
+  ret isEmpty(nm.refTypeParams)
+    ? List<Binding>()
+    : paramMapping(stmtGens(f.fStmt), nm.refTypeParams)
+
+fun traitCaseMapping(f: Found): List<Binding>
+  ret match(traitMapping(f))
+    (m: List<Binding>) => m
+    ()                 => List<Binding>()
 
 # A branch's type is the JOIN of its arms' own types — the honest set union,
 # independent of any expected type.
 fun matchType(mt: PeMatch, r: Resolver): Spec|None
   ret armJoin(chain(mt.arms), r, None)
 
+# Each body types under its arm's OWN binding (get_body_type: the bound name
+# is a local of the arm's type_spec — an else arm binds nothing here; only
+# compile, which knows the subject type, can bind it).
 fun [tail] armJoin(as2: Chain<PArm>, r: Resolver, acc: Spec|None): Spec|None
   ret match(as2)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => armJoin(l.next, r, join(acc, exprType(l.value.armBody, r)))
+    (l: ChainLink)  => armJoin(l.next, r,
+                               join(acc, exprType(l.value.armBody,
+                                                  bindingScope(l.value,
+                                                               l.value.armType,
+                                                               r))))
 
 # A call's type is its callee's RESULT — and nothing else. A callee that has
 # not resolved to a callable yet simply has no result yet.
@@ -161,7 +217,7 @@ fun memberType(bt: Spec, name: String, r: Resolver): Spec|None
   ret match(bt)
     (t2: STuple) => entryNamed(chain(t2.stEntries), name)
     (c: SClass)  => classMemberType(c, name, r)
-    (e: SEnum)   => enumFieldType(e, name)
+    (e: SEnum)   => enumFieldType(e, name, r)
     (o: Spec)    => None
 
 fun [tail] entryNamed(es: Chain<SEntry>, name: String): Spec|None
@@ -171,20 +227,17 @@ fun [tail] entryNamed(es: Chain<SEntry>, name: String): Spec|None
       ? l.value.seType
       : entryNamed(l.next, name)
 
+# The member's declared type comes from the class's find_data — constructor
+# params AND body statements, then implemented interfaces — with the class's
+# type params substituted through the receiver's instantiation.
 fun classMemberType(c: SClass, name: String, r: Resolver): Spec|None
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
-      (cs: PsClass) => classMemberOf(cs, name)
+      (cs: PsClass) => match(soleOf(classFindData(cs, r, name)))
+        (m: Found) => substituteClassTypeParams(r, c, cs, stmtType(m.fStmt))
+        ()         => None
       (o: PStmt)    => None
     ()         => None
-
-fun classMemberOf(cs: PsClass, name: String): Spec|None
-  ret memberOfTuple(paramsTupleOf(cs.cParams), name)
-
-fun memberOfTuple(t2: Spec, name: String): Spec|None
-  ret match(t2)
-    (tp: STuple) => entryNamed(chain(tp.stEntries), name)
-    (o: Spec)    => None
 
 # An enum's fields live on the spec's all_fields — which compile_types refreshes
 # from the declaration every pass, so this never reads a stale copy.
@@ -195,8 +248,10 @@ fun [tail] fieldNamed(fs: Chain<SField>, name: String): Spec|None
       ? l.value.sfType
       : fieldNamed(l.next, name)
 
-fun enumFieldType(e: SEnum, name: String): Spec|None
-  ret fieldNamed(chain(e.seAllFields), name)
+# The field's declared type, mapped through the receiver's type arguments
+# when the enum is a concrete generic instantiation.
+fun enumFieldType(e: SEnum, name: String, r: Resolver): Spec|None
+  ret substituteEnumTypeParams(r, e, fieldNamed(chain(e.seAllFields), name))
 
 # An array read yields the ELEMENT type of the array field it indexes.
 fun arrayReadType(ar: PeArrayRead, r: Resolver): Spec|None

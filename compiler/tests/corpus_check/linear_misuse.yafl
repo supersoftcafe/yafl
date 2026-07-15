@@ -1,0 +1,21 @@
+# check-contract corpus: LINEARITY. `a` is consumed twice; `b` never; `c`
+# escapes into a lambda; the global is undischargeable; the enum stores one.
+typealias Int : __builtin_type__<bigint>
+
+class [linear, final] Res(v: Int)
+
+fun consume(x: Res): Int
+  ret x.v
+
+fun twice(a: Res): Int
+  let n = consume(a)
+  ret consume(a)
+
+fun leak(b: Res): Int
+  ret 0
+
+fun escape(c: Res): (): Int
+  ret () => consume(c)
+
+fun main(): Int
+  ret 0

@@ -249,21 +249,44 @@ fun withParams(base: Spec, params: List<Spec>): Spec
 # is absent or still carries a hole; an inferred view is adopted only when
 # ground; the merge is `meet`, so information only ever accumulates, and a
 # conflict leaves `current` untouched.
-fun refine(current: Spec|None, inferred: Spec|None): Spec|None
+# Gate — refinable only while `current` is missing (None) or carries a FREE
+# placeholder (one that does not resolve in this scope); anything else is
+# finished and returned untouched. In particular a NON-CONCRETE current — an
+# unresolved SNamed — is a DECLARATION whose names haven't resolved yet: its
+# own compile resolves it and check owns any mismatch; inference never
+# overwrites it.
+# Threshold — an inferred view is adopted only if CONCRETE (a placeholder may
+# travel across a statement boundary and fill later; an unresolved NAME may
+# not — a callee's raw T would land in a scope that cannot resolve it).
+fun refine(current: Spec|None, r: Resolver, inferred: Spec|None): Spec|None
   ret match(current)
-    (c: Spec) => isEmpty(placeholderNames(c)) && !isHoleSpec(c)
-      ? current
-      : refineWith(current, inferred)
+    (c: Spec) => hasFreePlaceholders(c, r)
+      ? refineWith(current, inferred)
+      : current
     ()        => refineWith(current, inferred)
 
 fun refineWith(current: Spec|None, inferred: Spec|None): Spec|None
   ret match(inferred)
-    (i2: Spec) => !isGround(i2)
+    (i2: Spec) => !isConcrete(i2)
       ? current
       : match(meet(current, i2))
         (ms: MSpec) => ms.mSpec
         (o)         => current
     ()         => current
+
+# has_free_placeholders: `sp` contains a generic placeholder that does NOT
+# resolve in the current scope — a blank that leaked out of another
+# declaration's generic context. The scope-aware complement of isConcrete: a
+# placeholder is a real type inside its declaring generic, a hole elsewhere.
+fun hasFreePlaceholders(sp: Spec, r: Resolver): Bool
+  ret anyFreePh(chain(placeholderNames(sp)), r)
+
+fun [tail] anyFreePh(ns: Chain<String>, r: Resolver): Bool
+  ret match(ns)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => isEmpty(findType(r, l.value).bItems)
+      ? true
+      : anyFreePh(l.next, r)
 
 # ══ unification ══════════════════════════════════════════════════════════════
 # unify_generic: match a generic type tree against a concrete one, returning
@@ -580,7 +603,7 @@ fun soleMember(members: List<Spec>, fallback: Spec): Spec
 # type can widen while its own expression is value-equal, because the widening
 # happened inside a callee.
 fun refineWidening(current: Spec|None, fresh: Spec|None, r: Resolver): Spec|None
-  let refined = refine(current, fresh)
+  let refined = refine(current, r, fresh)
   ret match(refined)
     (rf: Spec) => isConcrete(rf) ? widenTo(rf, fresh, r) : refined
     ()         => refined
@@ -595,3 +618,145 @@ fun widenTo(refined: Spec, fresh: Spec|None, r: Resolver): Spec
 fun strictlyWider(f: Spec, refined: Spec, r: Resolver): Bool
   ret triTrue(assignableFrom(r, f, refined))
       && !triTrue(assignableFrom(r, refined, f))
+
+# ── trait-constraint solving ─────────────────────────────────────────────────
+# The call-site (pre-monomorphisation) where-discharge: ground a constraint's
+# still-unbound placeholders by matching it against the `[trait]` instances in
+# scope. (Its mono-time counterpart is lowering/generics.py's binder — kept
+# deliberately separate in Python, and so here.)
+
+# A [trait] instance as the solver sees it: the implemented interface,
+# expressed over the instance's own param names (empty for a concrete one).
+class [final] TraitInst(tiParams: List<String>, tiIface: SClass)
+
+# Positionally match an already-substituted constraint against a CONCRETE
+# instance interface. Strict and positional, deliberately NOT unifyGeneric: at
+# each position a target placeholder binds to the instance's type (only if
+# that side is itself concrete — an unresolved NAME would copy into a scope
+# that cannot resolve it); a concrete anchor must equal the instance's
+# EXACTLY; anything else rejects the whole match. A lenient match would bind
+# a target from an unrelated instance and cascade into runaway instantiation.
+fun bindFromConstraintMatch(constraint: SClass, iface: SClass,
+                            targets: List<String>): List<Binding>|None
+  if constraint.scName != iface.scName
+     || chainLength(chain(constraint.scParams)) != chainLength(chain(iface.scParams))
+    ret None
+  ret match(bfcLoop(chain(constraint.scParams), chain(iface.scParams),
+                    targets, List<Binding>()))
+    (b: List<Binding>) => isEmpty(b) ? None : b
+    ()                 => None
+
+fun [tail] bfcLoop(cs: Chain<Spec>, is2: Chain<Spec>, targets: List<String>,
+                   acc: List<Binding>): List<Binding>|None
+  ret match(cs)
+    (nil: ChainEnd) => acc
+    (c: ChainLink)  => match(is2)
+      (nil2: ChainEnd) => acc
+      (i: ChainLink)   => match(bfcOne(c.value, i.value, targets, acc))
+        (next2: List<Binding>) => bfcLoop(c.next, i.next, targets, next2)
+        ()                     => None
+
+fun bfcOne(cArg: Spec, iArg: Spec, targets: List<String>,
+           acc: List<Binding>): List<Binding>|None
+  ret match(cArg)
+    (g2: SGeneric) => contains2(targets, g2.sgName)
+      ? (isConcrete(iArg) ? append(acc, Binding(g2.sgName, iArg)) : None)
+      : anchorsEqual(cArg, iArg, acc)
+    (o: Spec)      => anchorsEqual(cArg, iArg, acc)
+
+fun anchorsEqual(cArg: Spec, iArg: Spec, acc: List<Binding>): List<Binding>|None
+  ret uid(cArg) != "" && uid(cArg) == uid(iArg) ? acc : None
+
+# Could `pattern` (a provider's interface, still holding its placeholders)
+# match `constraint`? A placeholder on either side is a wildcard; two class
+# specs must share name and arity and agree element-wise; other concrete
+# types must have equal ids. A cheap structural prune so the solver only
+# unifies a RELEVANT provider.
+fun traitPatternCompatible(pattern: Spec, constraint: Spec): Bool
+  ret match(pattern)
+    (pg: SGeneric) => true
+    (pc: SClass)   => match(constraint)
+      (cg: SGeneric) => true
+      (cc: SClass)   => pc.scName == cc.scName
+                        && patternArgsCompatible(chain(pc.scParams),
+                                                 chain(cc.scParams))
+      (co: Spec)     => idsCompatible(pattern, constraint)
+    (po: Spec)     => match(constraint)
+      (cg: SGeneric) => true
+      (co: Spec)     => idsCompatible(pattern, constraint)
+
+fun [tail] patternArgsCompatible(ps: Chain<Spec>, cs: Chain<Spec>): Bool
+  ret match(ps)
+    (nil: ChainEnd) => match(cs)
+      (nil2: ChainEnd) => true
+      (c: ChainLink)   => false
+    (p: ChainLink)  => match(cs)
+      (nil2: ChainEnd) => false
+      (c: ChainLink)   => traitPatternCompatible(p.value, c.value)
+        ? patternArgsCompatible(p.next, c.next)
+        : false
+
+fun idsCompatible(pattern: Spec, constraint: Spec): Bool
+  ret uid(pattern) == "" || uid(constraint) == ""
+    ? true
+    : uid(pattern) == uid(constraint)
+
+# Ground the `targets` placeholders of a trait constraint by matching it
+# against the instances (concrete first); the first whose grounded interface
+# binds the targets wins. A constraint whose SUBJECT is still a bare
+# placeholder cannot be matched — wait for the fixpoint to make it concrete.
+fun solveTraitConstraint(constraint: SClass, targets: List<String>,
+                         instances: List<TraitInst>,
+                         r: Resolver): List<Binding>|None
+  if subjectIsPlaceholder(constraint)
+    ret None
+  ret solveLoop(chain(instances), constraint, targets, r)
+
+fun subjectIsPlaceholder(constraint: SClass): Bool
+  ret match(head(constraint.scParams))
+    (s2: Spec) => match(s2)
+      (g2: SGeneric) => true
+      (o: Spec)      => false
+    ()         => false
+
+fun [tail] solveLoop(is2: Chain<TraitInst>, constraint: SClass,
+                     targets: List<String>, r: Resolver): List<Binding>|None
+  ret match(is2)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => match(tryInstance(l.value, constraint, targets, r))
+      (b: List<Binding>) => b
+      ()                 => solveLoop(l.next, constraint, targets, r)
+
+fun tryInstance(inst: TraitInst, constraint: SClass, targets: List<String>,
+                r: Resolver): List<Binding>|None
+  if !traitPatternCompatible(inst.tiIface, constraint)
+    ret None
+  ret match(instanceMapping(inst, constraint))
+    (m: List<Binding>) => groundedBinding(inst, m, constraint, targets)
+    ()                 => None
+
+# The instance's OWN params must all be fixed by the constraint.
+fun instanceMapping(inst: TraitInst, constraint: SClass): List<Binding>|None
+  if isEmpty(inst.tiParams)
+    ret List<Binding>()
+  ret match(unifyGeneric(inst.tiIface, constraint, inst.tiParams,
+                         List<Binding>()))
+    (m: UMap)  => allParamsBound(chain(inst.tiParams), m.uBindings)
+      ? m.uBindings
+      : None
+    (f: UFail) => None
+
+fun [tail] allParamsBound(ps: Chain<String>, m: List<Binding>): Bool
+  ret match(ps)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(bindingOf(m, l.value))
+      (b: Spec) => allParamsBound(l.next, m)
+      ()        => false
+
+fun groundedBinding(inst: TraitInst, m: List<Binding>, constraint: SClass,
+                    targets: List<String>): List<Binding>|None
+  if isEmpty(m)
+    ret bindFromConstraintMatch(constraint, inst.tiIface, targets)
+  ret match(substitute(inst.tiIface, m))
+    (g2: SClass) => bindFromConstraintMatch(constraint, g2, targets)
+    (o: Spec)    => None

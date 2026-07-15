@@ -70,7 +70,12 @@ enum RScope
   enum ScMember()
   enum ScTrait()
 
-class [final] Found(fName: String, fStmt: PStmt, fScope: RScope)
+# fTraitScope / fOwner: for a TRAIT-scoped find, the interface INSTANTIATION
+# the member came through (Plus<Int>) and the interface's own declaration —
+# overload resolution substitutes the instantiation's type args through the
+# member's type (Resolved.trait_scope / owner_class).
+class [final] Found(fName: String, fStmt: PStmt, fScope: RScope,
+                    fTraitScope: Spec|None = None, fOwner: PStmt|None = None)
 
 class [final] Bag(bItems: List<Found>, bComplete: Bool)
 
@@ -176,7 +181,9 @@ fun lookup(idx: Statements, query: String): List<PStmt>
 # statement index; scopes stack over it.
 
 enum Resolver
-  enum RRoot(rrStmts: Statements)
+  # rrSuggest: {function unique-name → suggested param TupleSpec}, computed
+  # once per compile pass from the previous pass's call sites (path 3).
+  enum RRoot(rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
   # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
@@ -188,16 +195,26 @@ enum Resolver
   # local shadows them), and — the part that matters — they report INCOMPLETE
   # while a trait param has not grounded.
   enum RTraits(rtWheres: List<Spec>, rtrParent: Resolver)
+  # A class BODY's scope (ClassStatement.__find_locals): the class's own
+  # members — fields and methods, MEMBER-scoped — plus `this`, SHADOWING the
+  # enclosing scope like any local layer. No trait data here: each method
+  # establishes its own in its body resolver.
+  enum RClassBody(rcbClass: PsClass, rcbParent: Resolver)
 
 fun findData(r: Resolver, query: String): Bag
   ret match(r)
     (root: RRoot) => globalBag(root.rrStmts, query, false)
-    (d: RData)    => addBags(matchingFound(d.rdNames, query),
-                             findData(d.rdParent, query))
+    # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
+    # same name in every enclosing scope — the parent is consulted only on a
+    # miss. Merging instead would poison a complete local hit with an
+    # enclosing trait layer's INCOMPLETE, or read as ambiguity.
+    (d: RData)    => localsFirst(matchingFound(d.rdNames, query),
+                                 d.rdParent, query)
     (t2: RTypes)  => findData(t2.rtParent, query)
     (sc: RScopes) => scopedBag(sc, query, false)
     (tr: RTraits) => addBags(traitBag(tr.rtWheres, query, tr.rtrParent),
                              findData(tr.rtrParent, query))
+    (cb: RClassBody) => classBodyBag(cb, query)
 
 fun findType(r: Resolver, query: String): Bag
   ret match(r)
@@ -207,6 +224,72 @@ fun findType(r: Resolver, query: String): Bag
                              findType(t2.rtParent, query))
     (sc: RScopes) => scopedBag(sc, query, true)
     (tr: RTraits) => findType(tr.rtrParent, query)
+    (cb: RClassBody) => findType(cb.rcbParent, query)
+
+# ── implicit [where] specs ──────────────────────────────────────────────────
+# get_implicit_where_specs: each namespace-scope layer MERGES its names on the
+# way down; the root filters the `[where]` aliases to those declared in one of
+# the merged namespaces and returns their CURRENT types — resolved or NOT,
+# because the trait finder must SEE an unresolved one (still an SNamed) to
+# register its trait set as not-yet-complete, rather than treat it as absent
+# and commit a name against a search that was actually blocked.
+
+fun implicitWheres(r: Resolver): List<Spec>
+  ret whereWalk(r, List<String>())
+
+# get_param_suggestion: the call-site-implied parameter shape for `name`, or
+# None when nothing was suggested. Read-only — a declared parameter type
+# always overrides; this only fills holes.
+fun [tail] paramSuggestion(r: Resolver, name: String): Spec|None
+  ret match(r)
+    (root: RRoot)    => match(root.rrSuggest)
+      (d: Dict<String, Spec>) => get(d, name)
+      ()                      => None
+    (sc: RScopes)    => paramSuggestion(sc.rsParent, name)
+    (d2: RData)      => paramSuggestion(d2.rdParent, name)
+    (t2: RTypes)     => paramSuggestion(t2.rtParent, name)
+    (tr: RTraits)    => paramSuggestion(tr.rtrParent, name)
+    (cb: RClassBody) => paramSuggestion(cb.rcbParent, name)
+
+# get_traits: every `[trait]` let in the statement set (precomputed by the
+# index) — no scope filter, exactly like Python's root.
+fun [tail] traitLets(r: Resolver): List<PStmt>
+  ret match(r)
+    (root: RRoot)    => root.rrStmts.stTraits
+    (sc: RScopes)    => traitLets(sc.rsParent)
+    (d: RData)       => traitLets(d.rdParent)
+    (t2: RTypes)     => traitLets(t2.rtParent)
+    (tr: RTraits)    => traitLets(tr.rtrParent)
+    (cb: RClassBody) => traitLets(cb.rcbParent)
+
+fun [tail] whereWalk(r: Resolver, scopes: List<String>): List<Spec>
+  ret match(r)
+    (root: RRoot) => isEmpty(scopes)
+      ? List<Spec>()
+      : whereSpecs(chain(root.rrStmts.stWhereAliases), scopes, List<Spec>())
+    (sc: RScopes) => whereWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
+    (d: RData)    => whereWalk(d.rdParent, scopes)
+    (t2: RTypes)  => whereWalk(t2.rtParent, scopes)
+    (tr: RTraits) => whereWalk(tr.rtrParent, scopes)
+    (cb: RClassBody) => whereWalk(cb.rcbParent, scopes)
+
+fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => mergeNames(contains2(acc, l.value)
+                                    ? acc
+                                    : append(acc, l.value),
+                                  l.next)
+
+fun [tail] whereSpecs(ws: Chain<PStmt>, scopes: List<String>,
+                      acc: List<Spec>): List<Spec>
+  ret match(ws)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (ta: PsTypealias) => contains2(scopes, ownNamespace(ta.taName))
+        ? whereSpecs(l.next, scopes, append(acc, ta.taType))
+        : whereSpecs(l.next, scopes, acc)
+      (o: PStmt)        => whereSpecs(l.next, scopes, acc)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
 # for a name that is still unqualified (no `::`) and unhashed (no `@`).
@@ -253,6 +336,14 @@ fun isTypeStmt(st: PStmt): Bool
     (e: PsEnum)       => true
     (ta: PsTypealias) => true
     (o: PStmt)        => false
+
+fun localsFirst(own: Bag, parent: Resolver, query: String): Bag
+  ret isEmpty(own.bItems) ? findData(parent, query) : own
+
+fun classBodyBag(cb: RClassBody, query: String): Bag
+  let own = concat(classFindData(cb.rcbClass, cb.rcbParent, query),
+                   thisFound(cb.rcbClass, query))
+  ret isEmpty(own) ? findData(cb.rcbParent, query) : Bag(own, true)
 
 fun matchingFound(names: List<Found>, query: String): Bag
   ret Bag(matchLoop(chain(names), query, List<Found>()), true)

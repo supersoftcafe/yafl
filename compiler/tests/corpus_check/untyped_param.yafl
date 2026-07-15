@@ -1,0 +1,6 @@
+# check-contract corpus: a parameter no call site pins — uninferable, reported
+# with the call-site clue before the check phase proper.
+typealias Int : __builtin_type__<bigint>
+
+fun orphan(v): Int
+  ret 0

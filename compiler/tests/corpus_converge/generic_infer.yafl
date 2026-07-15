@@ -1,0 +1,13 @@
+# Converge-contract corpus: USE-SITE generic inference (B7). `wrap(x)` spells
+# no type arguments — use_site_type_params infers T=Int from the argument (and
+# the expected result), filling the name's type_params. A port that only
+# recompiles SPELLED type params leaves the call's generics empty forever.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+fun wrap<T>(v: T): T
+  ret v
+
+fun use(x: Int): Int
+  ret wrap(x)

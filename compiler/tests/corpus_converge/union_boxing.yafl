@@ -1,0 +1,16 @@
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+class [final] Err(msg: String)
+
+enum Tok
+  enum TEnd()
+  enum TInt(ival: Int)
+
+fun readForm(s: String, pos: Int): (pos: Int, v: Tok|Err)
+  if pos >= 0
+    ret (pos, Err("x"))
+  ret (pos, TEnd())
+
+fun `>=`(a: Int, b: Int): __builtin_type__<bool>
+  ret __builtin_op__<bool>("integer_test_ge", a, b)

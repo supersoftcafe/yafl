@@ -1,0 +1,356 @@
+# bootstrap/checks.yafl — the post-convergence DIAGNOSTIC phases, ported from
+# compiler.py::__collect_diagnostics (and the Error print/sort contract from
+# parselib). Phase order is the driver's:
+#
+#   1. uninferable untyped parameters (with call-site clues);
+#   2. `[future]` on a global let — rejected;
+#   3. every statement's check() under its own scope, plus the main count;
+#   4. warnings split out — they never fail the build; on failure EVERYTHING
+#      returns (errors and warnings print together);
+#   5. only when clean: the unresolved-NamedSpec scan (returns ALONE).
+#
+# Printing: `sorted(set(errors))` — dedupe, then order by
+# ((filename, line, col), message, severity); "{basename}[{line}:{col}] -
+# {warning: ?}{message}" per line.
+namespace Bootstrap
+
+import System
+
+class [final] Diag(dFails: List<PErr>, dWarns: List<PErr>)
+
+fun collectDiagnostics(statements: List<PStmt>, r: Resolver): Diag
+  let untyped = untypedParamErrors(statements)
+  if !isEmpty(untyped)
+    ret Diag(untyped, noErrs())
+  let future = futureGlobalErrors(chain(statements), noErrs())
+  if !isEmpty(future)
+    ret Diag(future, noErrs())
+  let diagnostics = withMainCount(statements,
+                                  stmtChecks(chain(statements), r, noErrs()))
+  let warnings = onlyWarnings(chain(diagnostics), noErrs())
+  if listLen(warnings) != listLen(diagnostics)
+    ret Diag(diagnostics, warnings)          # some real error: fail with all
+  let named = namedSpecErrors(statements)
+  ret isEmpty(named) ? Diag(noErrs(), warnings) : Diag(named, warnings)
+
+fun [tail] stmtChecks(ss: Chain<PStmt>, r: Resolver,
+                      acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => stmtChecks(l.next, r,
+                                  concat(acc, checkStmt2(l.value,
+                                                         scopeResolver(l.value,
+                                                                       r),
+                                                         None)))
+
+fun withMainCount(statements: List<PStmt>, acc: List<PErr>): List<PErr>
+  let mains = countMains(chain(statements), 0)
+  if mains == 0
+    ret append(acc, PErr(PLine("none", 0, 0), "No main function found"))
+  if mains > 1
+    ret append(acc, PErr(PLine("none", 0, 0), "Too many main functions defined"))
+  ret acc
+
+fun [tail] countMains(ss: Chain<PStmt>, n: Int): Int
+  ret match(ss)
+    (nil: ChainEnd) => n
+    (l: ChainLink)  => countMains(l.next, isMainFunction(l.value) ? n + 1 : n)
+
+fun isMainFunction(st: PStmt): Bool
+  ret match(st)
+    (f: PsFun) => contains(f.fName, "::main@")
+                  && retIsBigint(f.fRet)
+                  && isEmpty(paramLets(f.fParams))
+    (o: PStmt) => false
+
+fun retIsBigint(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => match(s2)
+      (b: SBuiltin) => b.sbName == "bigint"
+      (o: Spec)     => false
+    ()         => false
+
+fun [tail] onlyWarnings(es: Chain<PErr>, acc: List<PErr>): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => onlyWarnings(l.next,
+                                    l.value.errWarn ? append(acc, l.value) : acc)
+
+# ── phase 1: uninferable untyped parameters ─────────────────────────────────
+# A non-generic parameter left untyped after convergence — reported with the
+# call-site evidence the inference itself used (path 3's detail).
+
+fun untypedParamErrors(statements: List<PStmt>): List<PErr>
+  ret hasAnyUntyped(chain(statements))
+    ? untypedLoop(chain(statements), collectSuggestionDetail(statements),
+                  noErrs())
+    : noErrs()
+
+fun [tail] hasAnyUntyped(ss: Chain<PStmt>): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => anyUntypedTarget(chain(paramLets(f.fParams)))
+        ? true
+        : hasAnyUntyped(l.next)
+      (o: PStmt) => hasAnyUntyped(l.next)
+
+fun [tail] anyUntypedTarget(ts: Chain<PStmt>): Bool
+  ret match(ts)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => match(let2.lType)
+        (t2: Spec) => anyUntypedTarget(l.next)
+        ()         => true
+      (o: PStmt)    => anyUntypedTarget(l.next)
+
+fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String> > >,
+                       acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => untypedLoop(l.next, detail,
+                                funUntyped(f, chain(paramLets(f.fParams)), 0,
+                                           detail, acc))
+      (o: PStmt) => untypedLoop(l.next, detail, acc)
+
+fun [tail] funUntyped(f: PsFun, ts: Chain<PStmt>, idx: Int,
+                      detail: Dict<String, List<List<String> > >,
+                      acc: List<PErr>): List<PErr>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => match(let2.lType)
+        (t2: Spec) => funUntyped(f, l.next, idx + 1, detail, acc)
+        ()         => funUntyped(f, l.next, idx + 1, detail,
+                                 append(acc, untypedError(f, let2, idx, detail)))
+      (o: PStmt)    => funUntyped(f, l.next, idx + 1, detail, acc)
+
+fun untypedError(f: PsFun, tgt: PsLet, idx: Int,
+                 detail: Dict<String, List<List<String> > >): PErr
+  ret PErr(tgt.pslLine,
+           "Parameter '" + simpleName(tgt.lName) + "' of '"
+           + simpleName(f.fName)
+           + "' has no type and could not be inferred — "
+           + clueFor(detailSlot(detail, f.fName, idx)))
+
+fun detailSlot(detail: Dict<String, List<List<String> > >, name: String,
+               idx: Int): List<String>
+  ret match(get(detail, name))
+    (slots: List<List<String> >) => match(nthOf(slots, idx))
+      (seen: List<String>) => seen
+      ()                   => List<String>()
+    ()                           => List<String>()
+
+fun clueFor(seen: List<String>): String
+  if listLen(seen) > 1
+    ret "call sites disagree (" + join(sort(seen), ", ") + ")"
+  ret match(head(seen))
+    (one: String) => "call sites only partly determine it (" + one + ")"
+    ()            => "no call site supplies a type to infer it from"
+
+fun nthOf<T>(l: List<T>, idx: Int): T|None
+  ret head(drop(l, idx))
+
+# ── phase 2: [future] on a global let ───────────────────────────────────────
+
+fun [tail] futureGlobalErrors(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => hasAttr(let2.lAttrs, "future")
+        ? futureGlobalErrors(l.next,
+            append(acc, PErr(let2.pslLine,
+                             "[future] is not supported on a global let — "
+                             + "it initialises at startup; use [lazy]")))
+        : futureGlobalErrors(l.next, acc)
+      (o: PStmt)    => futureGlobalErrors(l.next, acc)
+
+# ── phase 3 dispatch ────────────────────────────────────────────────────────
+
+fun checkStmt2(st: PStmt, r: Resolver, retTy: Spec|None): List<PErr>
+  ret checkStmtKind(st, r, retTy)
+
+fun checkExprOpt(x: PExpr|None, r: Resolver, expected: Spec|None): List<PErr>
+  ret match(x)
+    (e2: PExpr) => checkExpr(e2, r, expected)
+    ()          => noErrs()
+
+# ── phase 5: the unresolved-NamedSpec scan ──────────────────────────────────
+# Mirrors search_and_replace's reach: every compound spec recurses, a NamedSpec
+# is a LEAF (its own type args are not walked — the outer name IS the error).
+
+fun namedSpecErrors(statements: List<PStmt>): List<PErr>
+  ret nsStmts(chain(statements), noErrs())
+
+fun [tail] nsStmts(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nsStmts(l.next, nsStmt(l.value, acc))
+
+fun nsStmt(st: PStmt, acc: List<PErr>): List<PErr>
+  ret match(st)
+    (f: PsFun)         => nsExprOpt(f.fBody,
+                            nsSpecs(chain(f.fWheres),
+                              nsSpecOpt(f.fRet, nsStmt(f.fParams, acc))))
+    (l: PsLet)         => nsExprOpt(l.lDefault, nsSpecOpt(l.lType, acc))
+    (d: PsDestructure) => nsStmts(chain(d.dTargets),
+                            nsExprOpt(d.dDefault, nsSpecOpt(d.dType, acc)))
+    (c: PsClass)       => nsSpecsOpt(c.cAllParents,
+                            nsStmts(chain(c.cMembers),
+                              nsSpecs(chain(c.cWheres),
+                                nsSpecs(chain(c.cImplements),
+                                  nsStmt(c.cParams, acc)))))
+    (e2: PsEnum)       => nsStmts(chain(e2.eVariants), nsStmt(e2.eParams, acc))
+    (ta: PsTypealias)  => nsSpecs(chain(ta.taWheres), nsSpec(ta.taType, acc))
+    (rt: PsRet)        => nsExpr(rt.retValue, acc)
+    (a: PsAction)      => nsExpr(a.action, acc)
+    (i: PsIf)          => nsStmts(chain(i.ifFalse),
+                            nsStmts(chain(i.ifTrue), nsExpr(i.ifCond, acc)))
+    (ei: PsElseIf)     => nsStmts(chain(ei.eiStmts), nsExpr(ei.eiCond, acc))
+    (el: PsElse)       => nsStmts(chain(el.elStmts), acc)
+    (o: PStmt)         => acc
+
+fun nsExpr(x: PExpr, acc: List<PErr>): List<PErr>
+  ret match(x)
+    (nm: PeName)   => nsSpecOpt(nm.penTrait, nsSpecs(chain(nm.refTypeParams), acc))
+    (d: PeDot)     => nsExpr(d.base, acc)
+    (c: PeCall)    => nsExpr(c.parameter, nsExpr(c.function, acc))
+    (tp: PeTuple)  => nsEntries(chain(tp.exprs), acc)
+    (te: PeTernary) => nsExpr(te.falseResult,
+                        nsExpr(te.trueResult, nsExpr(te.condition, acc)))
+    (lm: PeLambda) => nsSpecOpt(lm.lamRet,
+                        nsExpr(lm.lamBody, nsStmt(lm.lamParams, acc)))
+    (bk: PeBlock)  => nsExpr(bk.blockValue, nsStmts(chain(bk.blockStmts), acc))
+    (mt: PeMatch)  => nsArms(chain(mt.arms), nsExpr(mt.subject, acc))
+    (op: PeBuiltinOp) => nsExpr(op.opParams, nsSpec(op.opType, acc))
+    (nw: PeNew)    => nsExpr(nw.newParam, nsSpec(nw.newType, acc))
+    (ar: PeArrayRead) => nsExpr(ar.arrIndex, nsExpr(ar.arrObj, acc))
+    (cv: PeConvert) => nsSpec(cv.convTarget, nsExpr(cv.convInner, acc))
+    (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams), acc)
+    (o: PExpr)     => acc
+
+fun [tail] nsEntries(es: Chain<PTupEnt>, acc: List<PErr>): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nsEntries(l.next, nsExpr(l.value.tupValue, acc))
+
+fun [tail] nsArms(as2: Chain<PArm>, acc: List<PErr>): List<PErr>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nsArms(l.next,
+                              nsExprOpt(l.value.armGuard,
+                                nsExpr(l.value.armBody,
+                                  nsSpecOpt(l.value.armType, acc))))
+
+fun nsExprOpt(x: PExpr|None, acc: List<PErr>): List<PErr>
+  ret match(x)
+    (e2: PExpr) => nsExpr(e2, acc)
+    ()          => acc
+
+fun nsSpec(sp: Spec, acc: List<PErr>): List<PErr>
+  ret match(sp)
+    (n: SNamed)        => append(acc, PErr(n.snLine,
+                                           "Failed to resolve type '"
+                                           + n.snName + "'"))
+    (c: SClass)        => nsSpecList(chain(c.scParams), acc)
+    (e2: SEnum)        => nsSpecList(chain(e2.seParams), acc)
+    (cl: SCallable)    => nsSpecOpt(cl.scResult, nsSpec(cl.scParams2, acc))
+    (cm: SCombination) => nsSpecList(chain(cm.scTypes), acc)
+    (t2: STuple)       => nsSpecEntries(chain(t2.stEntries), acc)
+    (af: SArrayField)  => nsSpec(af.safElem, acc)
+    (ls: SLazyStub)    => nsSpecOpt(ls.slsTarget, acc)
+    (o: Spec)          => acc
+
+fun [tail] nsSpecList(ss: Chain<Spec>, acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nsSpecList(l.next, nsSpec(l.value, acc))
+
+fun [tail] nsSpecEntries(es: Chain<SEntry>, acc: List<PErr>): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nsSpecEntries(l.next,
+                                     nsExprOpt(l.value.seDefault,
+                                               nsSpecOpt(l.value.seType, acc)))
+
+fun nsSpecOpt(sp: Spec|None, acc: List<PErr>): List<PErr>
+  ret match(sp)
+    (s2: Spec) => nsSpec(s2, acc)
+    ()         => acc
+
+fun nsSpecs(ss: Chain<Spec>, acc: List<PErr>): List<PErr>
+  ret nsSpecList(ss, acc)
+
+fun nsSpecsOpt(ss: List<Spec>|None, acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (l: List<Spec>) => nsSpecList(chain(l), acc)
+    ()              => acc
+
+# ── printing: sorted(set(errors)) ───────────────────────────────────────────
+
+fun printedDiagnostics(es: List<PErr>): String
+  ret printLoop(chain(sortErrors(dedupeErrors(es))), "")
+
+fun [tail] printLoop(es: Chain<PErr>, acc: String): String
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => printLoop(l.next, acc + errStr(l.value) + "\n")
+
+fun errStr(e2: PErr): String
+  ret e2.errLine.plFile + "[" + String(e2.errLine.plLine) + ":"
+      + String(e2.errLine.plCol) + "] - "
+      + (e2.errWarn ? "warning: " : "") + e2.errMsg
+
+fun dedupeErrors(es: List<PErr>): List<PErr>
+  ret dedupeLoop(chain(es), List<PErr>())
+
+fun [tail] dedupeLoop(es: Chain<PErr>, acc: List<PErr>): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => hasErr(chain(acc), l.value)
+      ? dedupeLoop(l.next, acc)
+      : dedupeLoop(l.next, append(acc, l.value))
+
+fun [tail] hasErr(es: Chain<PErr>, e2: PErr): Bool
+  ret match(es)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => sameErr(l.value, e2) ? true : hasErr(l.next, e2)
+
+fun sameErr(a: PErr, b: PErr): Bool
+  ret a.errMsg == b.errMsg && eqBool(a.errWarn, b.errWarn)
+      && a.errLine.plFile == b.errLine.plFile
+      && a.errLine.plLine == b.errLine.plLine
+      && a.errLine.plCol == b.errLine.plCol
+
+# Stable insertion sort by ((filename, line, col), message, severity) — the
+# order=True dataclass key.
+fun sortErrors(es: List<PErr>): List<PErr>
+  ret esortLoop(chain(es), List<PErr>())
+
+fun [tail] esortLoop(es: Chain<PErr>, acc: List<PErr>): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => esortLoop(l.next, insertErr(chain(acc), l.value,
+                                                   List<PErr>()))
+
+fun [tail] insertErr(as2: Chain<PErr>, x: PErr, acc: List<PErr>): List<PErr>
+  ret match(as2)
+    (nil: ChainEnd) => append(acc, x)
+    (l: ChainLink)  => errLess(x, l.value)
+      ? concat(append(acc, x), List<PErr>(as2))
+      : insertErr(l.next, x, append(acc, l.value))
+
+fun errLess(a: PErr, b: PErr): Bool
+  if a.errLine.plFile != b.errLine.plFile
+    ret a.errLine.plFile < b.errLine.plFile
+  if a.errLine.plLine != b.errLine.plLine
+    ret a.errLine.plLine < b.errLine.plLine
+  if a.errLine.plCol != b.errLine.plCol
+    ret a.errLine.plCol < b.errLine.plCol
+  if a.errMsg != b.errMsg
+    ret a.errMsg < b.errMsg
+  ret severityOf(a) < severityOf(b)
+
+fun severityOf(e2: PErr): String
+  ret e2.errWarn ? "warning" : "error"

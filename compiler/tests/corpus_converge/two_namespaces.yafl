@@ -1,0 +1,18 @@
+# Converge-contract corpus: per-statement IMPORTS. Every import — and every
+# namespace declaration — in the file joins one ImportGroup attached to each
+# named statement, and a bare name is retried under each of those scopes.
+# `Other` reaches `Corpus::util` and `Corpus::Int` only through its `import
+# Corpus`; a port that hardcodes the scope list leaves both unresolved.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+fun util(x: Int): Int
+  ret x
+
+namespace Other
+
+import Corpus
+
+fun use(y: Int): Int
+  ret util(y)

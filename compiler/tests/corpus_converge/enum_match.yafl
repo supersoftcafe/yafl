@@ -1,0 +1,19 @@
+# Converge-contract corpus: enum LAYOUT. An enum reference (the parameter's
+# `Shape`, each arm's variant) resolves to a concrete EnumSpec only once the
+# declaration's own compile has assigned specs — root name, leaf sets, the
+# $tag + collected data fields. A port that never computes them leaves every
+# enum reference an unresolved SNamed forever.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+enum Shape
+  enum Circle(radius: Int)
+  enum Square(side: Int)
+  enum Point()
+
+fun measure(s: Shape): Int
+  ret match(s)
+    (c: Circle) => c.radius
+    (q: Square) => q.side
+    (p: Point)  => 0

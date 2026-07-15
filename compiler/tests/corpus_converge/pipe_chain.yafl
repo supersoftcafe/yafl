@@ -1,0 +1,19 @@
+# A CHAINED multi-param pipe: the second stage's input is the previous
+# stage's computed tuple (not a syntactic tuple literal), so the stage's
+# binder DESTRUCTURE survives beta-reduction — and its declared type must be
+# INFERRED from the default, exactly like an untyped let (the inherited half
+# of DestructureStatement.compile). The port originally compiled the targets
+# before propagation and never ran that inference; this pins both.
+class [final] PcA(av: Int)
+class [final] PcB(bv: Int)
+
+fun pcMake(x: Int): PcA
+  ret PcA(x)
+
+fun pcChain(x: Int): Int
+  ret pcMake(x)
+    |> (a) => (a, PcB(2))
+    |> (a, b) => a.av + b.bv
+
+fun main(): Int
+  ret pcChain(40)

@@ -33,17 +33,44 @@ import System
 # AMBIGUOUS and never resolves. (stdlib code is itself in `System`, so the
 # own-namespace and the import coincide.)
 fun scopeResolver(st: PStmt, r: Resolver): Resolver
-  let own = ownNamespace(stmtName2(st))
-  let scopes = own == "" || contains2(importedScopes(), own)
-    ? importedScopes()
-    : append(importedScopes(), own)
-  ret isEmpty(scopes) ? r : RScopes(scopes, r)
+  let scopes = stmtScopes(st)
+  let scoped = isEmpty(scopes) ? r : RScopes(scopes, r)
+  # A TOP-LEVEL let's initialiser resolves like a function body (Python:
+  # __stmt_scope_resolver calls _initialiser_resolver on a LetStatement): its
+  # generic type params plus the trait/operator scope. A block-scoped let gets
+  # NEITHER — it never passes through here, and its compile adds none.
+  ret match(st)
+    (l: PsLet) => letScope(l, scoped)
+    (o: PStmt) => scoped
 
-# The imports are erased by parse() (they become part of the statement set), so
-# the scopes a statement can see are the ones the stdlib establishes plus its
-# own. `System` is the import every file carries.
-fun importedScopes(): List<String>
-  ret append(List<String>(), "System")
+# The statement's ImportGroup paths (deduplicated), plus its OWN namespace.
+fun stmtScopes(st: PStmt): List<String>
+  let grp = importPaths(chain(stmtImports(st)), List<String>())
+  let own = ownNamespace(stmtName2(st))
+  ret own == "" || contains2(grp, own) ? grp : append(grp, own)
+
+fun stmtImports(st: PStmt): List<PStmt>
+  ret match(st)
+    (f: PsFun)        => importsOr(f.fImports)
+    (l: PsLet)        => importsOr(l.lImports)
+    (c: PsClass)      => importsOr(c.cImports)
+    (e: PsEnum)       => importsOr(e.eImports)
+    (ta: PsTypealias) => importsOr(ta.taImports)
+    (o: PStmt)        => List<PStmt>()
+
+fun importsOr(grp: List<PStmt>|None): List<PStmt>
+  ret match(grp)
+    (g2: List<PStmt>) => g2
+    ()                => List<PStmt>()
+
+fun [tail] importPaths(ss: Chain<PStmt>, acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (im: PsImport) => contains2(acc, im.importPath)
+        ? importPaths(l.next, acc)
+        : importPaths(l.next, append(acc, im.importPath))
+      (o: PStmt)     => importPaths(l.next, acc)
 
 # "Main" from "Main::main@JnNy0L".
 fun ownNamespace(name: String): String
@@ -53,15 +80,10 @@ fun ownNamespace(name: String): String
 fun stmtName2(st: PStmt): String
   ret stmtName(st)
 
-# The scope a function's BODY compiles in: its type params, then its parameters
-# as locals.
-fun funScope(f: PsFun, r: Resolver): Resolver
-  ret localScope(paramLets(f.fParams),
-                 traitScope(f.fWheres, genScope(f.fGens, r)))
-
 # A global let's initialiser resolves like a function body: it needs the same
 # generic scope AND the same trait operators, so an operator resolves the same
-# in each.
+# in each. (_initialiser_resolver — installed by scopeResolver above, for
+# top-level lets ONLY.)
 fun letScope(l: PsLet, r: Resolver): Resolver
   ret traitScope(l.lWheres, genScope(l.lGens, r))
 
@@ -145,56 +167,91 @@ fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
 # may still be invisible. This is why Python leaves a name unresolved on an
 # early pass where a port without this layer would resolve it too soon.
 
+# The layer is installed UNCONDITIONALLY for a function body and a global
+# let's initialiser (Python: _initialiser_resolver / __body_resolver): even a
+# statement with no `where` of its own sees the in-scope IMPLICIT `[where]`
+# aliases, gathered from the resolver chain at query time.
 fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
-  ret isEmpty(wheres) ? r : RTraits(wheres, r)
+  ret RTraits(wheres, r)
 
-# Every operator the `where` clauses bring in, plus completeness. A `where`
-# whose type has not grounded yet BLOCKS: the answer is incomplete.
+# _find_trait_data: the statement's own `where` specs PLUS the in-scope
+# implicit `[where]` aliases. The entry filter is Python's exactly: a CONCRETE
+# class spec joins the search (deduplicated); a still-unresolved SNamed BLOCKS
+# (the trait set is not yet complete, so the whole answer is INCOMPLETE); any
+# other shape is skipped without blocking.
 fun traitBag(wheres: List<Spec>, query: String, r: Resolver): Bag
-  ret traitLoop(chain(wheres), query, r, emptyBag())
+  let entries = concat(wheres, implicitWheres(r))
+  let seed = anyNamed(chain(entries)) ? incompleteBag() : emptyBag()
+  ret traitLoop(chain(entries), query, r, List<Spec>(), seed)
+
+fun [tail] anyNamed(ws: Chain<Spec>): Bool
+  ret match(ws)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (n: SNamed) => true
+      (o: Spec)   => anyNamed(l.next)
 
 fun [tail] traitLoop(ws: Chain<Spec>, query: String, r: Resolver,
-                     acc: Bag): Bag
+                     seen: List<Spec>, acc: Bag): Bag
   ret match(ws)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => traitLoop(l.next, query, r,
-                                 addBags(acc, oneTrait(l.value, query, r)))
+    (l: ChainLink)  => match(l.value)
+      (c: SClass) => isConcrete(c) && !containsSpec(seen, c)
+        ? traitLoop(l.next, query, r, append<Spec>(seen, c),
+                    addBags(acc, membersOf(c, query, r)))
+        : traitLoop(l.next, query, r, seen, acc)
+      (o: Spec)   => traitLoop(l.next, query, r, seen, acc)
 
-fun oneTrait(w: Spec, query: String, r: Resolver): Bag
-  ret match(w)
-    # Not grounded yet — its operators are unknowable, so this search is
-    # INCOMPLETE, not empty.
-    (n: SNamed) => incompleteBag()
-    (c: SClass) => isConcrete(c) ? membersOf(c, query, r) : incompleteBag()
-    (o: Spec)   => emptyBag()
+fun containsSpec(ss: List<Spec>, sp: Spec): Bool
+  ret specSeen(chain(ss), sp)
 
-# The interface's own members, else its parents' (with the type params
-# substituted through). An interface whose name has not resolved is INCOMPLETE.
+fun [tail] specSeen(ss: Chain<Spec>, sp: Spec): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => eqSpec(l.value, sp) ? true : specSeen(l.next, sp)
+
+# find_in_class: the interface's own members, else its parents' (with the type
+# params substituted through). An interface whose name has not resolved is
+# INCOMPLETE — blocked, not absent. (On MORE than one resolution Python raises
+# a LookupError; the port answers incomplete, the nearest non-crashing reading.)
 fun membersOf(c: SClass, query: String, r: Resolver): Bag
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
-      (cs: PsClass) => classMembers(cs, c, query, r)
+      (cs: PsClass) => arityMatches(cs, c)
+                       ? classMembers(cs, c, query, r)
+                       : emptyBag()
       (o: PStmt)    => emptyBag()
     ()         => incompleteBag()
 
+fun arityMatches(cs: PsClass, c: SClass): Bool
+  ret chainLength(chain(cs.cGens)) == chainLength(chain(c.scParams))
+
+# member_index is the class's constructor params (flattened to leaf lets)
+# PLUS its body statements. A trait find carries the interface INSTANTIATION
+# it came through and the interface's declaration — overload resolution
+# substitutes the instantiation's type args through the member's type.
 fun classMembers(cs: PsClass, c: SClass, query: String, r: Resolver): Bag
-  let direct = memberMatches(chain(cs.cMembers), query, List<Found>())
+  let direct = memberMatches(chain(concat(flattenParams(cs.cParams),
+                                          cs.cMembers)),
+                             query, c, cs, List<Found>())
   ret isEmpty(direct)
     ? parentMembers(cs, c, query, r)
     : Bag(direct, true)
 
-fun [tail] memberMatches(ms: Chain<PStmt>, query: String,
-                         acc: List<Found>): List<Found>
+fun [tail] memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
+                         owner: PsClass, acc: List<Found>): List<Found>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(stmtName(l.value), query)
-      ? memberMatches(l.next, query, append(acc, Found(stmtName(l.value),
-                                                       l.value, ScTrait())))
-      : memberMatches(l.next, query, acc)
+      ? memberMatches(l.next, query, tp, owner,
+                      append(acc, Found(stmtName(l.value), l.value,
+                                        ScTrait(), tp, owner)))
+      : memberMatches(l.next, query, tp, owner, acc)
 
 # Recurse into each parent interface with this instance's type args substituted
 # (Math<TVal> : Plus<TVal>, asked as Math<Int> ⇒ Plus<Int>). A parent that has
-# not grounded blocks the whole search.
+# not grounded — its own name, OR any of its type args, still an SNamed —
+# BLOCKS the whole search.
 fun parentMembers(cs: PsClass, c: SClass, query: String, r: Resolver): Bag
   let mapping = paramMapping(cs.cGens, c.scParams)
   ret parentLoop(chain(cs.cImplements), mapping, query, r, emptyBag())
@@ -204,9 +261,17 @@ fun [tail] parentLoop(ps: Chain<Spec>, mapping: List<Binding>, query: String,
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => parentLoop(l.next, mapping, query, r,
-                                  addBags(acc, oneTrait(substitute(l.value,
-                                                                   mapping),
-                                                        query, r)))
+                                  addBags(acc, parentBag(substitute(l.value,
+                                                                    mapping),
+                                                         query, r)))
+
+fun parentBag(p: Spec, query: String, r: Resolver): Bag
+  ret match(p)
+    (n: SNamed) => incompleteBag()
+    (c: SClass) => anyNamed(chain(c.scParams))
+      ? incompleteBag()
+      : membersOf(c, query, r)
+    (o: Spec)   => emptyBag()
 
 fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
   ret mapLoop(chain(gens), chain(args), List<Binding>())

@@ -1,0 +1,13 @@
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+class Box(v: Int)
+  fun put(a: Int): Int
+    ret a
+  fun put(a: Int, b: Int): Int
+    ret b
+
+fun use(bx: Box): Int
+  let p = bx.put(1, 2)
+  ret p

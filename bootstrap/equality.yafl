@@ -130,6 +130,7 @@ fun eqExpr(a: PExpr, b: PExpr): Bool
       (y: PeLambda) => eqStmt(x.lamParams, y.lamParams)
                        && eqExpr(x.lamBody, y.lamBody)
                        && eqLine(x.pelLine, y.pelLine)
+                       && eqSpecOpt(x.lamRet, y.lamRet)
       (o: PExpr)    => false
     (x: PeBlock) => match(b)
       (y: PeBlock) => x.blockTag == y.blockTag
@@ -175,6 +176,16 @@ fun eqExpr(a: PExpr, b: PExpr): Bool
                         && eqExpr(x.convInner, y.convInner)
                         && eqLine(x.pecvLine, y.pecvLine)
       (o: PExpr)     => false
+    (x: PeLoop) => match(b)
+      (y: PeLoop) => eqExpr(x.loopBody, y.loopBody)
+                     && eqExprs(x.loopParams, y.loopParams)
+                     && eqLine(x.pelpLine, y.pelpLine)
+      (o: PExpr)  => false
+    (x: PeRecur) => match(b)
+      (y: PeRecur) => x.recIndex == y.recIndex
+                      && eqExprs(x.recArgs, y.recArgs)
+                      && eqLine(x.percLine, y.percLine)
+      (o: PExpr)   => false
 
 fun eqTupEnt(a: PTupEnt, b: PTupEnt): Bool
   ret a.tupName == b.tupName && eqBool(a.tupSpread, b.tupSpread)
@@ -228,6 +239,10 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
                     && eqSpecs(x.fWheres, y.fWheres)
                     && eqExprOpt(x.fBody, y.fBody)
                     && eqLine(x.psfLine, y.psfLine)
+                    # is_nested is NOT excluded in Python — the mark must
+                    # settle for the fixpoint to see it settle.
+                    && eqBool(x.fNested, y.fNested)
+                    && eqStmtsOpt(x.fImports, y.fImports)
       (o: PStmt) => false
     (x: PsLet) => match(b)
       (y: PsLet) => x.lName == y.lName && x.lArrayLen == y.lArrayLen
@@ -237,6 +252,7 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
                     && eqExprOpt(x.lDefault, y.lDefault)
                     && eqSpecs(x.lWheres, y.lWheres)
                     && eqLine(x.pslLine, y.pslLine)
+                    && eqStmtsOpt(x.lImports, y.lImports)
       (o: PStmt) => false
     (x: PsDestructure) => match(b)
       (y: PsDestructure) => x.dName == y.dName
@@ -255,6 +271,13 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
                       && eqSpecs(x.cWheres, y.cWheres)
                       && eqStmts(x.cMembers, y.cMembers)
                       && eqLine(x.pscLine, y.pscLine)
+                      # _all_parents / _all_slots are NOT excluded in Python
+                      # (no compare=False): the fixpoint runs until the
+                      # tables settle. Parents and provides are SETS —
+                      # compared order-free.
+                      && eqSpecSetOpt(x.cAllParents, y.cAllParents)
+                      && eqSlotsOpt(x.cAllSlots, y.cAllSlots)
+                      && eqStmtsOpt(x.cImports, y.cImports)
       (o: PStmt)   => false
     (x: PsEnum) => match(b)
       (y: PsEnum) => x.eName == y.eName
@@ -263,6 +286,7 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
                      && eqStmts(x.eVariants, y.eVariants)
                      && eqBool(x.eHasParams, y.eHasParams)
                      && eqLine(x.pseLine, y.pseLine)
+                     && eqStmtsOpt(x.eImports, y.eImports)
       (o: PStmt)  => false
     (x: PsTypealias) => match(b)
       (y: PsTypealias) => x.taName == y.taName
@@ -271,6 +295,7 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
                           && eqSpec(x.taType, y.taType)
                           && eqSpecs(x.taWheres, y.taWheres)
                           && eqLine(x.pstLine, y.pstLine)
+                          && eqStmtsOpt(x.taImports, y.taImports)
       (o: PStmt)       => false
     (x: PsImport) => match(b)
       (y: PsImport) => x.importPath == y.importPath
@@ -417,3 +442,75 @@ fun [tail] eqGenLoop(a: Chain<PGen>, b: Chain<PGen>): Bool
     (x: ChainLink)  => match(b)
       (nil2: ChainEnd) => false
       (y: ChainLink)   => !eqGen(x.value, y.value) ? false : eqGenLoop(x.next, y.next)
+
+# ── set-wise comparisons ─────────────────────────────────────────────────────
+# Python holds _all_parents and a slot's provides as SETS: equality is mutual
+# membership, order-free. The port's lists are deduplicated on construction,
+# so equal length + one-way containment would do — mutual containment is the
+# direct spelling of the same rule.
+
+fun eqSpecSetOpt(a: List<Spec>|None, b: List<Spec>|None): Bool
+  ret match(a)
+    (x: List<Spec>) => match(b)
+      (y: List<Spec>) => eqSpecSet(x, y)
+      ()              => false
+    () => match(b)
+      (y: List<Spec>) => false
+      ()              => true
+
+fun eqSpecSet(a: List<Spec>, b: List<Spec>): Bool
+  ret listLen(a) == listLen(b) && specsSubset(chain(a), b)
+      && specsSubset(chain(b), a)
+
+fun [tail] specsSubset(xs: Chain<Spec>, ys: List<Spec>): Bool
+  ret match(xs)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => containsSpec(ys, l.value)
+      ? specsSubset(l.next, ys)
+      : false
+
+fun eqStrSet(a: List<String>, b: List<String>): Bool
+  ret listLen(a) == listLen(b) && strsSubset(chain(a), b)
+      && strsSubset(chain(b), a)
+
+fun [tail] strsSubset(xs: Chain<String>, ys: List<String>): Bool
+  ret match(xs)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => contains2(ys, l.value) ? strsSubset(l.next, ys) : false
+
+fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None): Bool
+  ret match(a)
+    (x: List<Slot>) => match(b)
+      (y: List<Slot>) => eqSlots(x, y)
+      ()              => false
+    () => match(b)
+      (y: List<Slot>) => false
+      ()              => true
+
+# The slot LIST is ordered (own slots first, surviving parent slots after);
+# each slot's provides is a set.
+fun eqSlots(a: List<Slot>, b: List<Slot>): Bool
+  ret listLen(a) != listLen(b) ? false : eqSlotLoop(chain(a), chain(b))
+
+fun [tail] eqSlotLoop(a: Chain<Slot>, b: Chain<Slot>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqSlot(x.value, y.value)
+        ? false
+        : eqSlotLoop(x.next, y.next)
+
+fun eqSlot(a: Slot, b: Slot): Bool
+  ret a.slotName == b.slotName
+      && eqSpecOpt(a.slotType, b.slotType)
+      && eqStrSet(a.slotProvides, b.slotProvides)
+
+fun eqStmtsOpt(a: List<PStmt>|None, b: List<PStmt>|None): Bool
+  ret match(a)
+    (x: List<PStmt>) => match(b)
+      (y: List<PStmt>) => eqStmts(x, y)
+      ()               => false
+    () => match(b)
+      (y: List<PStmt>) => false
+      ()               => true

@@ -1,0 +1,20 @@
+# Converge-contract corpus: USE-SITE resolution through a class (B6).
+# Two things must resolve here that a port with only ctor-param lookup misses:
+#   * a METHOD call through a dot (`c.bump(3)`) — the member lookup walks the
+#     class's constructor params PLUS its body statements (member_index), then
+#     its implemented interfaces;
+#   * a bare FIELD name inside a method body (`start` in bump) — MEMBER scope,
+#     rewritten by compile to `this.start`.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+fun plus(a: Int, b: Int): Int
+  ret __builtin_op__<bigint>("integer_add", a, b)
+
+class Counter(start: Int)
+  fun bump(by: Int): Int
+    ret plus(start, by)
+
+fun run(c: Counter): Int
+  ret plus(c.bump(3), c.start)

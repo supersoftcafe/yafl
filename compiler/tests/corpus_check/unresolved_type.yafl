@@ -1,0 +1,10 @@
+# check-contract corpus: a declared type that never resolves. The named-spec
+# scan runs only when the check phase found NO errors, so this file carries a
+# valid main() — without one, the no-main error masks the scan entirely.
+typealias Int : __builtin_type__<bigint>
+
+fun use(x: Nope): Int
+  ret 0
+
+fun main(): Int
+  ret 0

@@ -1,0 +1,266 @@
+# bootstrap/check_types.yafl — TypeSpec.check per kind, ported from
+# pyast/typespec/specs.py, plus the shared default-value rule and
+# check_caller_type_params (base.py). Every message string is copied VERBATIM:
+# the contract diffs the printed diagnostics byte for byte.
+namespace Bootstrap
+
+import System
+
+# One diagnostic. `errWarn` mirrors Error.severity ("warning" reports and
+# continues; anything else fails the build).
+class [final] PErr(errLine: PLine, errMsg: String, errWarn: Bool = false)
+
+fun noErrs(): List<PErr>
+  ret List<PErr>()
+
+fun oneErr(lr: PLine, msg: String): List<PErr>
+  ret append(List<PErr>(), PErr(lr, msg))
+
+# ── TypeSpec.check ──────────────────────────────────────────────────────────
+
+fun checkSpec(sp: Spec, r: Resolver): List<PErr>
+  ret match(sp)
+    (b: SBuiltin)      => isKnownBuiltin(b.sbName)
+      ? noErrs()
+      : oneErr(b.sbLine, "Unresolved reference to '" + b.sbName + "'")
+    (n: SNamed)        => checkNamed(n, r)
+    (c: SClass)        => checkClassSpec(c, r)
+    (e2: SEnum)        => checkFields(chain(e2.seAllFields), r, noErrs())
+    (g2: SGeneric)     => noErrs()
+    (cl: SCallable)    => concat(checkSpec(cl.scParams2, r),
+                                 checkSpecOpt(cl.scResult, r))
+    (cm: SCombination) => checkSpecs(chain(cm.scTypes), r, noErrs())
+    (t2: STuple)       => checkTuple(t2, r)
+    (af: SArrayField)  => checkSpec(af.safElem, r)
+    (ls: SLazyStub)    => checkSpecOpt(ls.slsTarget, r)
+
+fun checkSpecOpt(sp: Spec|None, r: Resolver): List<PErr>
+  ret match(sp)
+    (s2: Spec) => checkSpec(s2, r)
+    ()         => noErrs()
+
+fun [tail] checkSpecs(ss: Chain<Spec>, r: Resolver,
+                      acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => checkSpecs(l.next, r, concat(acc, checkSpec(l.value, r)))
+
+fun [tail] checkFields(fs: Chain<SField>, r: Resolver,
+                       acc: List<PErr>): List<PErr>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => checkFields(l.next, r,
+                                   concat(acc, checkSpec(l.value.sfType, r)))
+
+fun isKnownBuiltin(name: String): Bool
+  ret name == "str" || name == "bigint" || name == "bool"
+      || name == "int8" || name == "int16" || name == "int32"
+      || name == "int64" || name == "float32" || name == "float64"
+
+fun checkNamed(n: SNamed, r: Resolver): List<PErr>
+  let found = findType(r, n.snName)
+  if bagSize(found) > 1
+    ret oneErr(n.snLine, "Ambiguous reference to '" + n.snName + "'")
+  if bagSize(found) == 1
+    ret noErrs()
+  ret oneErr(n.snLine, "Unresolved reference to '" + n.snName + "'")
+
+fun checkClassSpec(c: SClass, r: Resolver): List<PErr>
+  let tpErrs = checkSpecs(chain(c.scParams), r, noErrs())
+  let found = findType(r, c.scName)
+  if bagSize(found) == 0
+    ret concat(oneErr(c.scLine, "Failed to resolve class " + c.scName), tpErrs)
+  if bagSize(found) > 1
+    ret concat(oneErr(c.scLine, "Found too many classes named " + c.scName),
+               tpErrs)
+  ret match(soleItem(found))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => concat(checkCallerTypeParams(cs, c.scParams, c.scLine, r),
+                              tpErrs)
+      (o: PStmt)    => concat(oneErr(c.scLine, "Not a class " + c.scName),
+                              tpErrs)
+    ()         => tpErrs
+
+# A tuple: all named entries after all positional ones, then each entry.
+fun checkTuple(t2: STuple, r: Resolver): List<PErr>
+  if namedBeforePositional(t2.stEntries)
+    ret oneErr(t2.stLine,
+               "Named parameters are not allowed before positional parameters")
+  ret checkEntries(chain(t2.stEntries), r, noErrs())
+
+fun namedBeforePositional(es: List<SEntry>): Bool
+  ret maxUnnamedIndex(chain(es), 0, 0) > minNamedIndex(chain(es), 0, listLen(es))
+
+fun [tail] maxUnnamedIndex(es: Chain<SEntry>, i: Int, best: Int): Int
+  ret match(es)
+    (nil: ChainEnd) => best
+    (l: ChainLink)  => maxUnnamedIndex(l.next, i + 1,
+                                       l.value.seName == "" ? i : best)
+
+fun [tail] minNamedIndex(es: Chain<SEntry>, i: Int, best: Int): Int
+  ret match(es)
+    (nil: ChainEnd) => best
+    (l: ChainLink)  => minNamedIndex(l.next, i + 1,
+                                     l.value.seName != "" && i < best ? i : best)
+
+fun [tail] checkEntries(es: Chain<SEntry>, r: Resolver,
+                        acc: List<PErr>): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => checkEntries(l.next, r, concat(acc, checkEntry(l.value, r)))
+
+fun checkEntry(en: SEntry, r: Resolver): List<PErr>
+  let err1 = checkSpecOpt(en.seType, r)
+  let err2 = checkExprOpt(en.seDefault, r, en.seType)
+  ret concat(err1,
+             concat(err2, defaultValueErrors(en.seDefault, r,
+                                             entryLine(en), "tuple field")))
+
+fun entryLine(en: SEntry): PLine
+  ret match(en.seType)
+    (t2: Spec) => ctSpecLine(t2)
+    ()         => PLine("", 0, 0)
+
+# ── the default-value rule ──────────────────────────────────────────────────
+# A default is cloned into every site that omits the field, so it must be a
+# literal or a [const] value: no captures, no effects, no evaluation order.
+
+fun defaultValueErrors(default: PExpr|None, r: Resolver, lr: PLine,
+                       what: String): List<PErr>
+  ret match(default)
+    (d: PExpr) => isLiteralValue(d)
+      ? noErrs()
+      : (isConstReference(stripConversions(d), r)
+         ? noErrs()
+         : oneErr(lr, "a " + what + " default must be a literal or a [const] value"))
+    ()         => noErrs()
+
+fun isLiteralValue(x: PExpr): Bool
+  ret match(stripConversions(x))
+    (i: PeInt)     => true
+    (f: PeFloat)   => true
+    (s2: PeStr)    => true
+    (b: PeBool)    => true
+    (ng: PeNothing) => true
+    (tp: PeTuple)  => allLiteralEntries(chain(tp.exprs))
+    (o: PExpr)     => false
+
+fun [tail] allLiteralEntries(es: Chain<PTupEnt>): Bool
+  ret match(es)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => !l.value.tupSpread && isLiteralValue(l.value.tupValue)
+      ? allLiteralEntries(l.next)
+      : false
+
+fun stripConversions(x: PExpr): PExpr
+  ret match(x)
+    (cv: PeConvert) => stripConversions(cv.convInner)
+    (o: PExpr)      => x
+
+fun isConstReference(x: PExpr, r: Resolver): Bool
+  ret match(x)
+    (nm: PeName) => match(soleItem(findData(r, nm.refName)))
+      (f: Found) => hasAttr(stmtAttrs(f.fStmt), "const")
+      ()         => false
+    (o: PExpr)   => false
+
+fun stmtAttrs(st: PStmt): List<PAttr>
+  ret match(st)
+    (f: PsFun)        => f.fAttrs
+    (l: PsLet)        => l.lAttrs
+    (d: PsDestructure) => d.dAttrs
+    (c: PsClass)      => c.cAttrs
+    (ta: PsTypealias) => ta.taAttrs
+    (o: PStmt)        => List<PAttr>()
+
+# ── check_caller_type_params (NamedStatement) ───────────────────────────────
+# Arity first; then each `where` constraint, compiled with the caller's type
+# args in scope, must match some in-scope [trait] instance's declared type.
+
+fun checkCallerTypeParams(st: PsClass, callerParams: List<Spec>, lr: PLine,
+                          r: Resolver): List<PErr>
+  ret callerTypeParamErrs(narrowClassStmt(st), callerParams, lr, r)
+
+fun narrowClassStmt(st: PsClass): PStmt
+  ret st
+
+# check_caller_type_params on ANY named statement (a function reference with
+# explicit type args checks the same arity + where-discharge rules).
+fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
+                        r: Resolver): List<PErr>
+  let gens = stmtGens(st)
+  let want = listLen(gens)
+  let got = listLen(callerParams)
+  if got > want
+    ret oneErr(lr, "Excess type parameters")
+  if got < want
+    ret oneErr(lr, "Not enough type parameters")
+  ret checkWheres(chain(stmtWheres(st)),
+                  RTypes(callerGenFounds(chain(gens), chain(callerParams),
+                                         List<Found>()),
+                         r),
+                  lr, noErrs())
+
+fun [tail] callerGenFounds(gs: Chain<PGen>, cs: Chain<Spec>,
+                           acc: List<Found>): List<Found>
+  ret match(gs)
+    (nil: ChainEnd) => acc
+    (g2: ChainLink) => match(cs)
+      (nil2: ChainEnd) => acc
+      (c: ChainLink)   => callerGenFounds(g2.next, c.next,
+          append(acc, Found(g2.value.genName,
+                            PsTypealias(g2.value.genName, List<PAttr>(),
+                                        List<PGen>(), c.value, List<Spec>(),
+                                        g2.value.pgLine),
+                            ScLocal())))
+
+fun [tail] checkWheres(ws: Chain<Spec>, r: Resolver, lr: PLine,
+                       acc: List<PErr>): List<PErr>
+  ret match(ws)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => checkWheres(l.next, r, lr,
+                                   concat(acc, checkOneWhere(l.value, r, lr)))
+
+fun checkOneWhere(w: Spec, r: Resolver, lr: PLine): List<PErr>
+  let compiled = compileSpec(w, r)
+  if !isEmpty(compiled.soGlobals)
+    ret oneErr(lr, "Compile steps incomplete for '" + ctWhereName(w)
+                   + "'. Seeing this message indicates a compiler error.")
+  ret anyTraitMatches(chain(traitLets(r)), compiled.soSpec, r)
+    ? noErrs()
+    : oneErr(lr, "Trait parameter '" + ctWhereName(w)
+                 + "' does not match any trait")
+
+fun [tail] anyTraitMatches(ts: Chain<PStmt>, compiled: Spec,
+                           r: Resolver): Bool
+  ret match(ts)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => triTrue2(assignableEq(r, compiled, let2.lType))
+        ? true
+        : anyTraitMatches(l.next, compiled, r)
+      (o: PStmt)    => anyTraitMatches(l.next, compiled, r)
+
+# Python uses the RAW truthiness of trivially_assignable_equals here (None is
+# falsy), so only a definite True matches.
+fun triTrue2(x: Tri): Bool
+  ret triTrue(x)
+
+fun ctWhereName(sp: Spec): String
+  ret match(sp)
+    (n: SNamed) => n.snName
+    (c: SClass) => c.scName
+    (o: Spec)   => ""
+
+fun ctSpecLine(sp: Spec): PLine
+  ret match(sp)
+    (b: SBuiltin)      => b.sbLine
+    (n: SNamed)        => n.snLine
+    (c: SClass)        => c.scLine
+    (e2: SEnum)        => e2.seLine
+    (g2: SGeneric)     => g2.sgLine
+    (cl: SCallable)    => cl.sclLine
+    (cm: SCombination) => cm.scmLine
+    (t2: STuple)       => t2.stLine
+    (af: SArrayField)  => af.safLine
+    (ls: SLazyStub)    => ls.slsLine

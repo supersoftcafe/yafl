@@ -1,0 +1,5 @@
+# check-contract corpus: a reference to a name that exists nowhere.
+typealias Int : __builtin_type__<bigint>
+
+fun use(x: Int): Int
+  ret missing(x)

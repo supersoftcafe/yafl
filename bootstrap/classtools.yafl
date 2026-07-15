@@ -1,0 +1,245 @@
+# bootstrap/classtools.yafl — class utilities, ported from pyast/classtools.py.
+#
+# The COMPILE-time half only: find_classes_or_error, create_slots_from_members,
+# override_inherited_slots, and the parameter flatten they rest on. The thunk
+# and fragile-base machinery is check/codegen work and waits for those stages.
+namespace Bootstrap
+
+import System
+
+# ── parameters.flatten() ─────────────────────────────────────────────────────
+# The constructor's LEAF lets — a nested destructure flattens to its leaves.
+
+fun flattenParams(params: PStmt): List<PStmt>
+  ret match(params)
+    (d: PsDestructure) => flattenTargets(chain(d.dTargets), List<PStmt>())
+    (l: PsLet)         => append(List<PStmt>(), params)
+    (o: PStmt)         => List<PStmt>()
+
+fun flattenTargets(ts: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (d: PsDestructure) => flattenTargets(l.next,
+                                           concat(acc,
+                                                  flattenTargets(chain(d.dTargets),
+                                                                 List<PStmt>())))
+      (o: PStmt)         => flattenTargets(l.next, append(acc, l.value))
+
+# ── find_classes_or_error ────────────────────────────────────────────────────
+# Resolve each inherited type to (resolved spec, class statement). A spec that
+# does not resolve to exactly one CLASS keeps its ORIGINAL spelling and yields
+# no class — Python pairs it with an Error, which is check's to report;
+# compile just skips it. On success the resolved spec is an SClass of the
+# statement's unique name with the type params COMPILED through (aliases
+# resolved), so cAllParents retains parameterisation for monomorphisation.
+
+class [final] FoundClass(fcSpec: Spec, fcClass: PsClass|None)
+
+fun findClassesOrError(types: List<Spec>, r: Resolver): List<FoundClass>
+  ret fceLoop(chain(types), r, List<FoundClass>())
+
+fun [tail] fceLoop(ts: Chain<Spec>, r: Resolver,
+                   acc: List<FoundClass>): List<FoundClass>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fceLoop(l.next, r,
+                               append(acc, findClassOrError(l.value, r)))
+
+fun findClassOrError(xtype: Spec, r: Resolver): FoundClass
+  ret match(xtype)
+    (n: SNamed) => resolveClassSpec(xtype, n.snName, n.snParams, n.snLine, r)
+    (c: SClass) => resolveClassSpec(xtype, c.scName, c.scParams, c.scLine, r)
+    (o: Spec)   => FoundClass(xtype, None)
+
+fun resolveClassSpec(xtype: Spec, name: String, params: List<Spec>,
+                     lr: PLine, r: Resolver): FoundClass
+  ret match(soleItem(findType(r, name)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => FoundClass(SClass(cs.cName, compileSpecsPlain(params, r),
+                                         lr),
+                                  cs)
+      (o: PStmt)    => FoundClass(xtype, None)
+    ()         => FoundClass(xtype, None)
+
+# The type params compile through (an alias resolves); their globals are
+# discarded exactly as Python's `rp.compile(resolver)[0]` discards them.
+fun compileSpecsPlain(ps: List<Spec>, r: Resolver): List<Spec>
+  ret cspLoop(chain(ps), r, List<Spec>())
+
+fun [tail] cspLoop(ps: Chain<Spec>, r: Resolver, acc: List<Spec>): List<Spec>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => cspLoop(l.next, r,
+                               append(acc, compileSpec(l.value, r).soSpec))
+
+# ── create_slots_from_members ────────────────────────────────────────────────
+# One slot per CALLABLE member (constructor params + body statements). A slot
+# provides its own name when it can actually dispatch: a fun WITH a body, or a
+# fun-typed field. An interface's bodiless fun provides nothing.
+
+fun createSlotsFromMembers(cs: PsClass): List<Slot>
+  ret slotLoop(chain(concat(flattenParams(cs.cParams), cs.cMembers)),
+               List<Slot>())
+
+fun [tail] slotLoop(ms: Chain<PStmt>, acc: List<Slot>): List<Slot>
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => isCallableMember(l.value)
+      ? slotLoop(l.next, append(acc, toSlot(l.value)))
+      : slotLoop(l.next, acc)
+
+fun isCallableMember(st: PStmt): Bool
+  ret match(stmtType(st))
+    (t2: Spec) => match(t2)
+      (c: SCallable) => true
+      (o: Spec)      => false
+    () => false
+
+fun toSlot(st: PStmt): Slot
+  ret Slot(stmtName(st), stmtType(st), providesOwn(st))
+
+fun providesOwn(st: PStmt): List<String>
+  ret match(st)
+    (l: PsLet) => append(List<String>(), l.lName)
+    (f: PsFun) => match(f.fBody)
+      (b: PExpr) => append(List<String>(), f.fName)
+      ()         => List<String>()
+    (o: PStmt) => List<String>()
+
+# ── override_inherited_slots ─────────────────────────────────────────────────
+# Each own slot ABSORBS every parent slot it overrides (same simple name AND
+# assignable type — strictly TRUE, an undecided comparison does not override):
+# the parent slot's name and everything it in turn provided join this slot's
+# provides set. Parent slots so absorbed disappear from the table.
+
+fun overrideInheritedSlots(r: Resolver, base: List<Slot>,
+                           parents: List<Slot>): List<Slot>
+  let enhanced = enhanceLoop(chain(base), r, parents, List<Slot>())
+  let exclusion = allProvides(chain(enhanced), List<String>())
+  ret concat(enhanced, keepUnabsorbed(chain(parents), exclusion, List<Slot>()))
+
+fun [tail] enhanceLoop(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
+                       acc: List<Slot>): List<Slot>
+  ret match(bs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => enhanceLoop(l.next, r, parents,
+                                   append(acc, absorbMatches(l.value, r,
+                                                             parents)))
+
+fun absorbMatches(slot: Slot, r: Resolver, parents: List<Slot>): Slot
+  ret Slot(slot.slotName, slot.slotType,
+           matchedNames(chain(parents), slot, r, slot.slotProvides))
+
+fun [tail] matchedNames(ps: Chain<Slot>, slot: Slot, r: Resolver,
+                        acc: List<String>): List<String>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
+                       && triTrue(assignableEq(r, l.value.slotType,
+                                               slot.slotType))
+      ? matchedNames(l.next, slot, r,
+                     addNameOnce(addNamesOnce(acc,
+                                              chain(l.value.slotProvides)),
+                                 l.value.slotName))
+      : matchedNames(l.next, slot, r, acc)
+
+fun [tail] allProvides(ss: Chain<Slot>, acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => allProvides(l.next,
+                                   addNamesOnce(acc,
+                                                chain(l.value.slotProvides)))
+
+fun [tail] keepUnabsorbed(ps: Chain<Slot>, exclusion: List<String>,
+                          acc: List<Slot>): List<Slot>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => contains2(exclusion, l.value.slotName)
+      ? keepUnabsorbed(l.next, exclusion, acc)
+      : keepUnabsorbed(l.next, exclusion, append(acc, l.value))
+
+# ── set helpers (List with set semantics) ────────────────────────────────────
+
+fun addNameOnce(acc: List<String>, n: String): List<String>
+  ret contains2(acc, n) ? acc : append(acc, n)
+
+fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => addNamesOnce(addNameOnce(acc, l.value), l.next)
+
+fun addSpecOnce(acc: List<Spec>, sp: Spec): List<Spec>
+  ret containsSpec(acc, sp) ? acc : append(acc, sp)
+
+fun [tail] addSpecsOnce(acc: List<Spec>, ss: Chain<Spec>): List<Spec>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => addSpecsOnce(addSpecOnce(acc, l.value), l.next)
+
+# ── ClassStatement.find_data ─────────────────────────────────────────────────
+# A member lookup: the class's OWN members first (constructor params minus the
+# internal array-storage field, plus body statements) — anything found masks
+# the parents — else every implemented interface's, accumulated. Member access
+# to the array field resolves to the generated ACCESSOR (same name), never the
+# raw storage.
+
+fun classFindData(cs: PsClass, r: Resolver, query: String): List<Found>
+  let own = memberFinds(chain(concat(nonArrayFields(cs), cs.cMembers)), query,
+                        List<Found>())
+  ret isEmpty(own)
+    ? parentFinds(chain(findClassesOrError(cs.cImplements, r)), r, query,
+                  List<Found>())
+    : own
+
+fun nonArrayFields(cs: PsClass): List<PStmt>
+  ret dropArrayField(chain(flattenParams(cs.cParams)), List<PStmt>())
+
+fun [tail] dropArrayField(ls: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => isArrayStorage(l.value)
+      ? dropArrayField(l.next, acc)
+      : dropArrayField(l.next, append(acc, l.value))
+
+fun isArrayStorage(st: PStmt): Bool
+  ret match(st)
+    (l: PsLet) => match(arrayElem(l.lType))
+      (el: Spec) => true
+      ()         => false
+    (o: PStmt) => false
+
+fun [tail] memberFinds(ms: Chain<PStmt>, query: String,
+                       acc: List<Found>): List<Found>
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameMatches(stmtName(l.value), query)
+      ? memberFinds(l.next, query, append(acc, Found(stmtName(l.value),
+                                                     l.value, ScMember())))
+      : memberFinds(l.next, query, acc)
+
+fun [tail] parentFinds(fs: Chain<FoundClass>, r: Resolver, query: String,
+                       acc: List<Found>): List<Found>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value.fcClass)
+      (p: PsClass) => parentFinds(l.next, r, query,
+                                  concat(acc, classFindData(p, r, query)))
+      ()           => parentFinds(l.next, r, query, acc)
+
+# `this` inside a generic class carries the class's own placeholders — a bare
+# ClassSpec would fail the declared-arity check later.
+fun thisFound(cs: PsClass, query: String): List<Found>
+  ret query == "this"
+    ? append(List<Found>(), Found("this", thisLet(cs), ScLocal()))
+    : List<Found>()
+
+fun thisLet(cs: PsClass): PStmt
+  ret PsLet("this", List<PAttr>(), List<PGen>(), thisType(cs), None, "",
+            List<Spec>(), cs.pscLine)
+
+fun thisType(cs: PsClass): Spec
+  ret SClass(cs.cName,
+             map(cs.cGens, (g2: PGen) => SGeneric(g2.genName, isLinearGen(g2),
+                                                  g2.pgLine)),
+             cs.pscLine)

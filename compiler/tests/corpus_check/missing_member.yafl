@@ -1,0 +1,7 @@
+# check-contract corpus: a field read that names no member.
+typealias Int : __builtin_type__<bigint>
+
+class Box(v: Int)
+
+fun use(b: Box): Int
+  ret b.nope

@@ -460,14 +460,70 @@ def __check_untyped_params(statements: list[s.Statement]) -> list[Error]:
     return errors
 
 
-def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Resolver]:
+def __collect_diagnostics(statements: list[s.Statement],
+                          resolver: g.Resolver) -> tuple[list[Error], list[Error]]:
+    """The post-convergence diagnostic phases, in driver order. Returns
+    (failures, warnings): a non-empty `failures` is exactly the list the
+    driver fails with (which may include warnings — on failure everything
+    prints together); `warnings` carries through on success. Shared by the
+    driver and the bootstrap check contract, so the two cannot drift."""
+    # A non-generic parameter left untyped after convergence is uninferable —
+    # surface it (with call-site clues) before the check phase, where it would
+    # otherwise show up as a confusing downstream "Failed to resolve" instead.
+    untyped_errors = __check_untyped_params(statements)
+    if untyped_errors:
+        return untyped_errors, []
+
+    # `[future]` is a LOCAL-let feature: a global initialises at startup,
+    # before the worker pool is useful, and the global lazy codegen path has
+    # no post site — it would silently behave as `[lazy]`. Reject instead.
+    future_global_errors = [
+        Error(stmt.line_ref, "[future] is not supported on a global let — "
+                             "it initialises at startup; use [lazy]")
+        for stmt in statements
+        if isinstance(stmt, s.LetStatement) and stmt.is_future_init()]
+    if future_global_errors:
+        return future_global_errors, []
+
+    diagnostics = [x for stmt in statements for x in stmt.check(__stmt_scope_resolver(stmt, resolver), None)]
+    mains = [stmt for stmt in statements
+             if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
+    if not mains:
+        diagnostics += [Error(LineRef("none", 0, 0), "No main function found")]
+    elif len(mains) > 1:
+        diagnostics += [Error(LineRef("none", 0, 0), "Too many main functions defined")]
+
+    # Warnings never fail the build: split them out and carry them to the
+    # caller. On failure return everything — errors and warnings print together.
+    warnings = [x for x in diagnostics if x.severity == "warning"]
+    new_errors = [x for x in diagnostics if x.severity != "warning"]
+    if new_errors:
+        return diagnostics, warnings
+
+    # Catch any NamedSpec that the compile loop failed to resolve
+    named_spec_errors: list[Error] = []
+    def _find_named_specs(_, thing):
+        if isinstance(thing, t.NamedSpec):
+            named_spec_errors.append(Error(thing.line_ref, f"Failed to resolve type '{thing.name}'"))
+        return thing
+    for stmt in statements:
+        stmt.search_and_replace(resolver, _find_named_specs)
+    if named_spec_errors:
+        return named_spec_errors, warnings
+    return [], warnings
+
+
+def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Resolver, int]:
     """Run the compile fixpoint: rewrite every statement until a whole pass
-    changes nothing. Returns the converged statements and the final resolver."""
-    for _ in range(1, _MAX_COMPILE_ITERATIONS + 1):
+    changes nothing. Returns the converged statements, the final resolver and
+    the number of passes taken (the bootstrap contract pins the port to the
+    same count — a port that reached the same answer in a different number of
+    passes is doing more or less per pass than this compiler)."""
+    for passes in range(1, _MAX_COMPILE_ITERATIONS + 1):
         resolver = g.ResolverRoot(statements, __collect_param_suggestions(statements))
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
         if new_statements == statements:
-            return new_statements, resolver
+            return new_statements, resolver, passes
         statements = new_statements
     raise RuntimeError(
         f"Compile loop failed to converge after {_MAX_COMPILE_ITERATIONS} iterations. "
@@ -484,7 +540,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     statements, regex_errors = lowering.regexes.fix_global_regexes(statements)
     if regex_errors:
         return regex_errors
-    new_statements, resolver = __converge(statements)
+    new_statements, resolver, _passes = __converge(statements)
 
     # A global `let` holding a lambda is a function by another name — rewrite
     # it to one now that inference is done (every lambda is fully typed), so
@@ -497,52 +553,13 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # afterwards so the inserted calls resolve like ordinary code.
     new_statements, dropped = lowering.drops.insert_drops(new_statements)
     if dropped:
-        new_statements, resolver = __converge(new_statements)
+        new_statements, resolver, _passes = __converge(new_statements)
 
     mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
-    # A non-generic parameter left untyped after convergence is uninferable —
-    # surface it (with call-site clues) before the check phase, where it would
-    # otherwise show up as a confusing downstream "Failed to resolve" instead.
-    untyped_errors = __check_untyped_params(new_statements)
-    if untyped_errors:
-        return untyped_errors
-
-    # `[future]` is a LOCAL-let feature: a global initialises at startup,
-    # before the worker pool is useful, and the global lazy codegen path has
-    # no post site — it would silently behave as `[lazy]`. Reject instead.
-    future_global_errors = [
-        Error(stmt.line_ref, "[future] is not supported on a global let — "
-                             "it initialises at startup; use [lazy]")
-        for stmt in new_statements
-        if isinstance(stmt, s.LetStatement) and stmt.is_future_init()]
-    if future_global_errors:
-        return future_global_errors
-
-    diagnostics = [x for stmt in new_statements for x in stmt.check(__stmt_scope_resolver(stmt, resolver), None)]
-    if not mains:
-        diagnostics += [Error(LineRef("none", 0, 0), "No main function found")]
-    elif len(mains) > 1:
-        diagnostics += [Error(LineRef("none", 0, 0), "Too many main functions defined")]
-
-    # Warnings never fail the build: split them out and carry them to the
-    # caller. On failure return everything — errors and warnings print together.
-    warnings = [x for x in diagnostics if x.severity == "warning"]
-    new_errors = [x for x in diagnostics if x.severity != "warning"]
-    if new_errors:
-        # Nothing more to do, just errors
-        return diagnostics
-
-    # Catch any NamedSpec that the compile loop failed to resolve
-    named_spec_errors: list[Error] = []
-    def _find_named_specs(_, thing):
-        if isinstance(thing, t.NamedSpec):
-            named_spec_errors.append(Error(thing.line_ref, f"Failed to resolve type '{thing.name}'"))
-        return thing
-    for stmt in new_statements:
-        stmt.search_and_replace(resolver, _find_named_specs)
-    if named_spec_errors:
-        return named_spec_errors
+    failures, warnings = __collect_diagnostics(new_statements, resolver)
+    if failures:
+        return failures
 
     # Linear-type check: runs on the converged, type-resolved templates
     # (pre-monomorphisation). Each `<[linear] T>` generic body is checked
@@ -568,7 +585,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # node-owns-its-conversion step every ground node already ran during the
     # main converge. Sits before tail-loop lowering so a recursive call's boxed
     # arguments carry over to the loop back-edge.
-    new_statements, resolver = __converge(new_statements)
+    new_statements, resolver, _passes = __converge(new_statements)
     new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
     new_statements = lowering.constants.inline_constants(new_statements)
     # `[tail]` self-recursion → loop. Runs before inlining / closure conversion,

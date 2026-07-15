@@ -35,8 +35,10 @@ fun compileStmt(st: PStmt, r: Resolver, retType: Spec|None): StmtOut
     (rt: PsRet)        => compileRet(rt, r, retType)
     (a: PsAction)      => compileAction(a, r)
     (i: PsIf)          => compileIf(i, r, retType)
-    # else-if / else are collapsed into their `if` before this runs; imports and
-    # namespaces carry no behaviour of their own.
+    # An else-if / else reaching here is an ORPHAN (collapseElseIf folds the
+    # proper ones into their if at both fold sites); it passes through
+    # unchanged and check reports it. Imports and namespaces carry no
+    # behaviour of their own.
     (ei: PsElseIf)     => StmtOut(st, List<PStmt>())
     (el: PsElse)       => StmtOut(st, List<PStmt>())
     (im: PsImport)     => StmtOut(st, List<PStmt>())
@@ -46,9 +48,10 @@ fun compileStmt(st: PStmt, r: Resolver, retType: Spec|None): StmtOut
 
 # A let: compile the initialiser against the declared type (so the RHS knows
 # what it is converging toward), compile the type, then EITHER refine a declared
-# type (holes only) OR widen an inferred one.
-fun compileLet(l: PsLet, r0: Resolver): StmtOut
-  let r = letScope(l, r0)
+# type (holes only) OR widen an inferred one. The gen/trait scope of a TOP-LEVEL
+# let is supplied by the caller (scopeResolver — Python's _initialiser_resolver);
+# a block-scoped let adds none, exactly as LetStatement.compile adds none.
+fun compileLet(l: PsLet, r: Resolver): StmtOut
   let ty = compileSpecOpt(l.lType, r)
   let declaredTy = specOf(ty)
   let init = compileExprOpt(l.lDefault, r, declaredTy)
@@ -57,7 +60,8 @@ fun compileLet(l: PsLet, r0: Resolver): StmtOut
   let inferredNow = declared ? l.lTypeInferred : true
   let finalTy = inferType(declaredTy, initType(init, r), declared, r)
   ret StmtOut(PsLet(l.lName, l.lAttrs, l.lGens, finalTy, exprOf(init),
-                    l.lArrayLen, wheres.psSpecs, l.pslLine, inferredNow),
+                    l.lArrayLen, wheres.psSpecs, l.pslLine, inferredNow,
+                    l.lImports),
               concat(globalsOf(init), concat(globalsOfSpec(ty), wheres.psGlobals)))
 
 # DECLARED means: the source wrote a type, and inference has not since claimed
@@ -72,7 +76,7 @@ fun inferType(current: Spec|None, fresh: Spec|None, declared: Bool,
               r: Resolver): Spec|None
   ret match(fresh)
     (f: Spec) => declared
-      ? refine(current, fresh)              # holes fill; the declaration stands
+      ? refine(current, r, fresh)           # holes fill; the declaration stands
       : refineWidening(current, fresh, r)   # converge, and stay free to widen
     ()        => current                    # no initialiser: nothing to infer from
 
@@ -86,19 +90,36 @@ fun initType(init: ExprOut|None, r: Resolver): Spec|None
 # (so it keeps tracking a late widening); one with its own annotation keeps it,
 # refined but never overwritten.
 fun compileDestructure(d: PsDestructure, r: Resolver): StmtOut
+  # The inherited LetStatement.compile half first: the RHS's sink is the
+  # TARGETS' tuple type (_rhs_expected override — lets.py:50), and an untyped
+  # destructure converges on the RHS like any let (refine when declared,
+  # refine-widening when inferred).
+  let init = compileExprOpt(d.dDefault, r, destructureType(d))
   let ty = compileSpecOpt(d.dType, r)
-  let parentTy = specOf(ty)
-  let init = compileExprOpt(d.dDefault, r, parentTy)
-  # Each TARGET compiles in its own right first — a target is a let, and its
-  # written type (`left: TVal`) has to resolve like any other. Only then does
-  # the parent tuple's entry type propagate onto it.
-  let compiled = compileStmts(chain(d.dTargets), r, None, List<PStmt>(),
+  let declaredTy = specOf(ty)
+  let dDeclared = destructureDeclared(d)
+  let hasInit2 = match(init)
+    (i: ExprOut) => true
+    ()           => false
+  let finalTy = hasInit2 ? inferType(declaredTy, initType(init, r),
+                                     dDeclared, r)
+                         : declaredTy
+  let inferredNow = hasInit2 ? (dDeclared ? d.dTypeInferred : true)
+                             : d.dTypeInferred
+  # THEN propagate the parent tuple's entry types onto the RAW targets, and
+  # only then compile them — Python refines first (lets.py:518-534).
+  let refined = propagate(finalTy, d.dTargets, r)
+  let compiled = compileStmts(chain(refined), r, None, List<PStmt>(),
                               List<PStmt>())
-  let targets = propagate(parentTy, compiled.slStmts, r)
-  ret StmtOut(PsDestructure(d.dName, d.dAttrs, parentTy, targets,
-                            exprOf(init), d.psdLine, d.dTypeInferred),
+  ret StmtOut(PsDestructure(d.dName, d.dAttrs, finalTy, compiled.slStmts,
+                            exprOf(init), d.psdLine, inferredNow),
               concat(globalsOf(init),
                      concat(globalsOfSpec(ty), compiled.slGlobals)))
+
+fun destructureDeclared(d: PsDestructure): Bool
+  ret match(d.dType)
+    (t2: Spec) => !d.dTypeInferred
+    ()         => false
 
 fun propagate(parentTy: Spec|None, targets: List<PStmt>,
               r: Resolver): List<PStmt>
@@ -136,15 +157,25 @@ fun adoptLet(l: PsLet, entryTy: Spec|None, r: Resolver): PStmt
 # combinator's body grounds off it), and an undeclared return then converges on
 # the body — widening, for the same reason an untyped let does.
 
-# The SIGNATURE (return type, parameters, wheres) resolves in the generic scope;
-# the BODY additionally sees the parameters as locals.
+# The SIGNATURE (return type, parameters, wheres) resolves in the generic scope
+# WITHOUT the trait layer (Python compiles them against `resolver` before
+# __body_resolver runs); the BODY additionally sees the trait/operator scope —
+# for a TOP-LEVEL function only, an inner one inherits its owner's lexically —
+# and its parameters as locals.
 fun compileFun(f: PsFun, r0: Resolver): StmtOut
-  let r = traitScope(f.fWheres, genScope(f.fGens, r0))
+  let r = genScope(f.fGens, r0)
   let ret2 = compileSpecOpt(f.fRet, r)
   let declaredRet = specOf(ret2)
-  let params = compileStmt(f.fParams, r, None)
+  # Path 3: an UN-annotated parameter adopts the call-site suggestion first
+  # (per parameter; a declared type always wins).
+  let params = compileStmt(withParamSuggestion(f, r), r, None)
   let wheres = compileParams(f.fWheres, r)
-  let bodyR = localScope(paramLets(stmtOr(params, f.fParams)), r)
+  # The body scope reads the PASS-INPUT parameters (Python's __body_resolver
+  # closes over self.parameters) — a type the params resolved THIS pass only
+  # becomes visible to the body on the NEXT pass, and the fixpoint's pass
+  # count depends on it.
+  let bodyR = localScope(paramLets(f.fParams),
+                         f.fNested ? r : traitScope(f.fWheres, r))
   let body = compileExprOpt(f.fBody, bodyR, declaredRet)
   let declared = hasDeclaredRet(f)
   let inferredNow = declared ? f.fRetInferred : hasBody(f)
@@ -155,7 +186,7 @@ fun compileFun(f: PsFun, r0: Resolver): StmtOut
     ()           => declaredRet
   ret StmtOut(PsFun(f.fName, f.fAttrs, f.fGens, stmtOr(params, f.fParams),
                     exprOf(body), finalRet, wheres.psSpecs, f.psfLine,
-                    inferredNow),
+                    inferredNow, f.fNested, f.fImports),
               concat(globalsOf(body),
                      concat(globalsOfSpec(ret2),
                             concat(params.soExtra, wheres.psGlobals))))
@@ -177,32 +208,188 @@ fun compileTypealias(ta: PsTypealias, r0: Resolver): StmtOut
   let ty = compileSpec(ta.taType, r)
   let wheres = compileParams(ta.taWheres, r)
   ret StmtOut(PsTypealias(ta.taName, ta.taAttrs, ta.taGens, ty.soSpec,
-                          wheres.psSpecs, ta.pstLine),
+                          wheres.psSpecs, ta.pstLine, ta.taImports),
               concat(ty.soGlobals, wheres.psGlobals))
 
+# Resolve the inherited types (find_classes_or_error) — the resolved specs ARE
+# the new implements list; build the SLOT TABLE (own callable members absorb
+# the parent slots they override) and the TRANSITIVE parent set with type
+# params substituted through (Foo : Bar<Int> where Bar<T> : Baz<T> records
+# Baz<Int>). Both tables ground one inheritance level per PASS — a parent's
+# own tables settled on an earlier pass — and both are program identity, so
+# the fixpoint is not done until they are.
 fun compileClass(c: PsClass, r0: Resolver): StmtOut
   let r = classScope(c, r0)
+  let inh = findClassesOrError(c.cImplements, r)
+  let allSlots = overrideInheritedSlots(r0, createSlotsFromMembers(c),
+                                        parentSlotsOf(chain(inh), List<Slot>()))
+  let allParents = buildAllParents(chain(inh), r, List<Spec>())
   let params = compileStmt(c.cParams, r, None)
-  let impls = compileParams(c.cImplements, r)
   let wheres = compileParams(c.cWheres, r)
-  let members = compileStmts(chain(c.cMembers), r, None, List<PStmt>(),
-                             List<PStmt>())
+  # Members compile in the class-BODY scope: the class's fields and methods
+  # (MEMBER-scoped) plus `this`, under the generic type params.
+  let members = compileStmts(chain(c.cMembers),
+                             genScope(c.cGens, RClassBody(c, r0)), None,
+                             List<PStmt>(), List<PStmt>())
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
-                      impls.psSpecs, wheres.psSpecs, members.slStmts,
-                      c.cIsInterface, c.pscLine, c.cAllParents),
+                      resolvedImplements(chain(inh), List<Spec>()),
+                      wheres.psSpecs, members.slStmts,
+                      c.cIsInterface, c.pscLine, allParents, allSlots,
+                      c.cImports),
               concat(params.soExtra,
-                     concat(impls.psGlobals,
-                            concat(wheres.psGlobals, members.slGlobals))))
+                     concat(wheres.psGlobals, members.slGlobals)))
 
+fun [tail] resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>): List<Spec>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => resolvedImplements(l.next, append(acc, l.value.fcSpec))
+
+fun [tail] parentSlotsOf(fs: Chain<FoundClass>, acc: List<Slot>): List<Slot>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value.fcClass)
+      (cs: PsClass) => parentSlotsOf(l.next, concat(acc, slotsOr(cs.cAllSlots)))
+      ()            => parentSlotsOf(l.next, acc)
+
+fun slotsOr(slots: List<Slot>|None): List<Slot>
+  ret match(slots)
+    (ss: List<Slot>) => ss
+    ()               => List<Slot>()
+
+# Each resolved parent joins the set, then its OWN transitive parents join —
+# substituted through this instantiation's type args when both sides carry
+# them, so monomorphisation and trait lookup see the concrete spelling.
+fun [tail] buildAllParents(fs: Chain<FoundClass>, r: Resolver,
+                           acc: List<Spec>): List<Spec>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value.fcClass)
+      (cs: PsClass) => buildAllParents(l.next, r,
+                                       parentClosure(l.value.fcSpec, cs, r,
+                                                     addSpecOnce(acc,
+                                                                 l.value.fcSpec)))
+      ()            => buildAllParents(l.next, r, acc)
+
+fun parentClosure(spec: Spec, cs: PsClass, r: Resolver,
+                  acc: List<Spec>): List<Spec>
+  ret match(cs.cAllParents)
+    (ps: List<Spec>) => closureNeedsMapping(spec, cs)
+      ? addSubstituted(chain(ps), paramMapping(cs.cGens, specArgsOf(spec)), acc)
+      : addSpecsOnce(acc, chain(ps))
+    ()               => acc
+
+fun closureNeedsMapping(spec: Spec, cs: PsClass): Bool
+  ret !isEmpty(cs.cGens) && !isEmpty(specArgsOf(spec))
+
+fun specArgsOf(spec: Spec): List<Spec>
+  ret match(spec)
+    (c: SClass) => c.scParams
+    (o: Spec)   => List<Spec>()
+
+fun [tail] addSubstituted(ps: Chain<Spec>, mapping: List<Binding>,
+                          acc: List<Spec>): List<Spec>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => addSubstituted(l.next, mapping,
+                                      addSpecOnce(acc, substitute(l.value,
+                                                                  mapping)))
+
+# The enum's LAYOUT is assigned here (_assign_specs): the root's name threads
+# down to every variant, the leaf sets are collected, and the field list is
+# `$tag` plus every data field any variant declares (deduplicated by name).
+# Each node — root and variants alike — gets an EnumSpec whose valid leaves
+# are ITS OWN subtree's. Both derived caches are compare=False metadata:
+# equality ignores them, so the layout settling never keeps the loop spinning.
 fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
   let r = enumScope(e, r0)
   let params = compileStmt(e.eParams, r, None)
   let variants = compileStmts(chain(e.eVariants), r, None, List<PStmt>(),
                               List<PStmt>())
-  ret StmtOut(PsEnum(e.eName, e.eGens, stmtOr(params, e.eParams),
-                     variants.slStmts, e.eHasParams, e.pseLine,
-                     e.eRootName, e.eSpec),
-              concat(params.soExtra, variants.slGlobals))
+  let glb = concat(params.soExtra, variants.slGlobals)
+  # The constructor returns the ROOT statement type — narrow back to the
+  # variant to run the layout over the freshly compiled node.
+  ret match(PsEnum(e.eName, e.eGens, stmtOr(params, e.eParams),
+                   variants.slStmts, e.eHasParams, e.pseLine,
+                   None, None, e.eImports))
+    (t2: PsEnum) => StmtOut(layoutEnum(t2), glb)
+    (o: PStmt)   => StmtOut(o, glb)
+
+fun layoutEnum(t2: PsEnum): PStmt
+  let allLeaves = collectLeafNames(t2)
+  let allFields = prepend(SField("$tag", SBuiltin("int32", t2.pseLine)),
+                          collectDataFields(t2))
+  ret assignSpecs(t2, t2.eName, allLeaves, allFields)
+
+# _collect_leaf_names: a node with no variants IS a leaf — unless it also has
+# no parameter list, which is the uninhabited empty type (`enum Never`).
+fun collectLeafNames(e: PsEnum): List<String>
+  ret isEmpty(e.eVariants)
+    ? (e.eHasParams ? append(List<String>(), e.eName) : List<String>())
+    : leafLoop(chain(e.eVariants), List<String>())
+
+fun [tail] leafLoop(vs: Chain<PStmt>, acc: List<String>): List<String>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (v: PsEnum) => leafLoop(l.next, concat(acc, collectLeafNames(v)))
+      (o: PStmt)  => leafLoop(l.next, acc)
+
+# _collect_data_fields: every TYPED constructor field in the whole tree, first
+# declaration wins (deduplicated by name).
+fun collectDataFields(e: PsEnum): List<SField>
+  ret dfVariants(chain(e.eVariants),
+                 dfParams(chain(flattenParams(e.eParams)), List<SField>()))
+
+fun dfVariants(vs: Chain<PStmt>, acc: List<SField>): List<SField>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (v: PsEnum) => dfVariants(l.next,
+                                dfVariants(chain(v.eVariants),
+                                           dfParams(chain(flattenParams(v.eParams)),
+                                                    acc)))
+      (o: PStmt)  => dfVariants(l.next, acc)
+
+fun [tail] dfParams(ls: Chain<PStmt>, acc: List<SField>): List<SField>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => match(let2.lType)
+        (ty: Spec) => dfParams(l.next, addFieldOnce(acc, let2.lName, ty))
+        ()         => dfParams(l.next, acc)
+      (o: PStmt)    => dfParams(l.next, acc)
+
+fun addFieldOnce(acc: List<SField>, name: String, ty: Spec): List<SField>
+  ret hasFieldNamed(chain(acc), name) ? acc : append(acc, SField(name, ty))
+
+fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
+  ret match(fs)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value.sfName == name ? true : hasFieldNamed(l.next, name)
+
+# _assign_specs: root name, the SHARED all-leaves/all-fields, and each node's
+# OWN valid-leaf subset, recursively onto every variant.
+fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>,
+                allFields: List<SField>): PStmt
+  ret PsEnum(e.eName, e.eGens, e.eParams,
+             assignAllSpecs(chain(e.eVariants), root, allLeaves, allFields,
+                            List<PStmt>()),
+             e.eHasParams, e.pseLine, root,
+             SEnum(root, collectLeafNames(e), allLeaves, List<Spec>(),
+                   e.pseLine, allFields, false),
+             e.eImports)
+
+fun [tail] assignAllSpecs(vs: Chain<PStmt>, root: String,
+                          allLeaves: List<String>, allFields: List<SField>,
+                          acc: List<PStmt>): List<PStmt>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (v: PsEnum) => assignAllSpecs(l.next, root, allLeaves, allFields,
+                                    append(acc, assignSpecs(v, root, allLeaves,
+                                                            allFields)))
+      (o: PStmt)  => assignAllSpecs(l.next, root, allLeaves, allFields,
+                                    append(acc, l.value))
 
 # ── control ─────────────────────────────────────────────────────────────────
 
@@ -216,14 +403,78 @@ fun compileAction(a: PsAction, r: Resolver): StmtOut
   let v = compileExpr(a.action, r, None)
   ret StmtOut(PsAction(v.eoExpr, a.psaLine), v.eoGlobals)
 
+# Each branch folds its OWN else-if chain before compiling (the second fold
+# site — a block's statement list is the first).
 fun compileIf(i: PsIf, r: Resolver, retType: Spec|None): StmtOut
   let cond = compileExpr(i.ifCond, r, SBuiltin("bool", i.psifLine))
-  let t2 = compileStmts(chain(i.ifTrue), blockScope(i.ifTrue, r), retType,
+  let t0 = collapseElseIf(i.ifTrue)
+  let f0 = collapseElseIf(i.ifFalse)
+  let t2 = compileStmts(chain(t0), blockScope(t0, r), retType,
                         List<PStmt>(), List<PStmt>())
-  let f = compileStmts(chain(i.ifFalse), blockScope(i.ifFalse, r), retType,
+  let f = compileStmts(chain(f0), blockScope(f0, r), retType,
                        List<PStmt>(), List<PStmt>())
   ret StmtOut(PsIf(cond.eoExpr, t2.slStmts, f.slStmts, i.psifLine),
               concat(cond.eoGlobals, concat(t2.slGlobals, f.slGlobals)))
+
+# ── collapse_else_if ─────────────────────────────────────────────────────────
+# Fold an IfStatement followed by zero or more ElseIfStatements and at most
+# one ElseStatement into a single RIGHT-NESTED IfStatement. An orphan else-if
+# / else (no preceding if) passes through unchanged; check reports it.
+#
+# Idempotent: an if with no trailing arms passes through untouched, preserving
+# the false branch a previous pass folded in.
+
+fun collapseElseIf(stmts: List<PStmt>): List<PStmt>
+  ret ceiLoop(chain(stmts), List<PStmt>())
+
+fun [tail] ceiLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (i: PsIf)  => foldChain(i, l.next)
+        |> (fc) => ceiLoop(fc.fcRest, append(acc, fc.fcIf))
+      (o: PStmt) => ceiLoop(l.next, append(acc, l.value))
+
+class [final] FoldedChain(fcIf: PStmt, fcRest: Chain<PStmt>)
+
+# Gather the trailing else-if siblings; an else CONSUMES and stops, anything
+# else stops without consuming.
+fun foldChain(i: PsIf, rest: Chain<PStmt>): FoldedChain
+  ret gatherArms(rest, List<PStmt>(), i)
+
+fun [tail] gatherArms(ss: Chain<PStmt>, arms: List<PStmt>, i: PsIf): FoldedChain
+  ret match(ss)
+    (nil: ChainEnd) => finishFold(i, arms, None, ss)
+    (l: ChainLink)  => match(l.value)
+      (ei: PsElseIf) => gatherArms(l.next, append(arms, l.value), i)
+      (el: PsElse)   => finishFold(i, arms, el.elStmts, l.next)
+      (o: PStmt)     => finishFold(i, arms, None, ss)
+
+fun finishFold(i: PsIf, arms: List<PStmt>, elseBody: List<PStmt>|None,
+               rest: Chain<PStmt>): FoldedChain
+  ret isEmpty(arms) && elseBody is None
+    ? FoldedChain(i, rest)
+    : FoldedChain(PsIf(i.ifCond, i.ifTrue,
+                       nestArms(chain(reverse(arms)), elseTail(elseBody)),
+                       i.psifLine),
+                  rest)
+
+fun elseTail(elseBody: List<PStmt>|None): List<PStmt>
+  ret match(elseBody)
+    (b: List<PStmt>) => b
+    ()               => List<PStmt>()
+
+# Right-nest the arms, innermost first: each else-if becomes an If whose false
+# branch is everything folded so far.
+fun [tail] nestArms(armsRev: Chain<PStmt>, tail2: List<PStmt>): List<PStmt>
+  ret match(armsRev)
+    (nil: ChainEnd) => tail2
+    (l: ChainLink)  => match(l.value)
+      (ei: PsElseIf) => nestArms(l.next,
+                                 append(List<PStmt>(),
+                                        PsIf(ei.eiCond, ei.eiStmts, tail2,
+                                             ei.pseiLine)))
+      (o: PStmt)     => nestArms(l.next, tail2)
 
 # ── lists ───────────────────────────────────────────────────────────────────
 

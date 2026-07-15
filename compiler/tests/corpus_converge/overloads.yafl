@@ -1,0 +1,27 @@
+# Converge-contract corpus: OVERLOAD resolution by expected shape (B6).
+# Two functions share a bare name; the call site's argument tuple selects the
+# winner through _resolve_overloads' verdict partition. The Bool-returning
+# variant also exercises the parameters-only RETRY: a call whose result slot
+# is a union member still picks its candidate.
+namespace Corpus
+
+typealias Int  : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+
+fun pick(a: Int): Int
+  ret a
+
+fun pick(a: Int, b: Int): Int
+  ret b
+
+fun flag(a: Int): Bool
+  ret __builtin_op__<bool>("integer_test_lt", a, 0)
+
+fun one(x: Int): Int
+  ret pick(x)
+
+fun two(x: Int): Int
+  ret pick(x, x)
+
+fun boxed(x: Int): Bool|None
+  ret flag(x)

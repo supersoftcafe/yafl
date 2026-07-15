@@ -1017,23 +1017,38 @@ fun parseStmt(ps: Ps): (v: PStmt|PFail, rest: Ps)
       : parseElse(post, bump(ps))
   ret parseAction(lr, ps)
 
+# The statement expression's PARSE START. Python's productions carry the
+# LEFT-most consumed token's line_ref (parselib `&` keeps left.line_ref, and
+# discard keeps the symbol's) — so a leading unary op token IS the start. The
+# structural startLine agrees everywhere EXCEPT a folded negative literal
+# (`ret -1`): the folded node keeps the DIGIT's line, losing the minus. Peek
+# the first token instead when it is a unary op; identical to startLine in
+# every other case.
+fun stmtExprStart(ps: Ps, x: PExpr): PLine
+  let t = peek(ps)
+  ret match(t.kind)
+    (k: KSymbol) => t.text == "-" || t.text == "!" || t.text == "~"
+      ? lineAt(ps)
+      : startLine(x)
+    ()           => startLine(x)
+
 fun parseAction(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   let e = parseExpr(ps)
   ret match(e.v)
     (f: PFail) => e
-    (a: PExpr) => (PsAction(a, startLine(a)), e.rest)
+    (a: PExpr) => (PsAction(a, stmtExprStart(ps, a)), e.rest)
 
 fun parseRet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   let e = parseExpr(ps)
   ret match(e.v)
     (f: PFail) => (harden(f, "missing return value"), e.rest)
-    (a: PExpr) => (PsRet(a, startLine(a)), e.rest)
+    (a: PExpr) => (PsRet(a, stmtExprStart(ps, a)), e.rest)
 
 fun parseIf(lr: PLine, ps: Ps, kindSel: Int): (v: PStmt|PFail, rest: Ps)
   let c = parseExpr(ps)
   ret match(c.v)
     (f: PFail)  => (harden(f, "invalid if statement"), c.rest)
-    (cond: PExpr) => parseIfBody(cond, kindSel, startLine(cond), c.rest)
+    (cond: PExpr) => parseIfBody(cond, kindSel, stmtExprStart(ps, cond), c.rest)
 
 fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine,
                 ps: Ps): (v: PStmt|PFail, rest: Ps)

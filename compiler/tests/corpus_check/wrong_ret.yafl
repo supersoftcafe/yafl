@@ -1,0 +1,6 @@
+# check-contract corpus: a return whose value cannot be the declared type.
+typealias Int  : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+
+fun bad(x: Int): Bool
+  ret x

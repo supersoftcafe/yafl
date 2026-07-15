@@ -1,0 +1,29 @@
+# check-contract corpus: DROP INSERTION. `h` is linear and never used — with
+# a Drop instance in scope the drops pass consumes it by policy (drop(h) at
+# scope exit, then a re-convergence), so linearity reports NOTHING for it.
+# `k` has no Drop instance and keeps its error. In namespace System so the
+# pass's System::Drop lookup finds the interface.
+namespace System
+
+typealias Int : __builtin_type__<bigint>
+
+interface Drop<T>
+  fun drop(v: T): ()
+
+class [linear, final] Handle(v: Int)
+class [linear, final] Krux(v: Int)
+
+class _DropHandle() : Drop<Handle>
+  fun drop(v: Handle): ()
+    ret ()
+
+let [trait] _drop_handle: _DropHandle = _DropHandle()
+
+fun withHandle(h: Handle): Int
+  ret 0
+
+fun withKrux(k: Krux): Int
+  ret 0
+
+fun main(): Int
+  ret 0
