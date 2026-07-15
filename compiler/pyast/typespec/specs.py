@@ -756,6 +756,14 @@ def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
 class CombinationSpec(TypeSpec):
     types: tuple[TypeSpec, ...]
 
+    def __post_init__(self):
+        # The parser hands a list (parser.py __to_tagged_spec_or_simple_type);
+        # a frozen dataclass hashes its fields, so a surviving list member
+        # makes the whole spec unhashable — first seen as a TypeError from
+        # generics' ref sets on files whose unions never recompile (unresolved
+        # single-file runs). Same guard as TupleSpec.entries.
+        object.__setattr__(self, 'types', tuple(self.types))
+
     def is_concrete(self) -> bool:
         return all(x.is_concrete() for x in self.types)
 

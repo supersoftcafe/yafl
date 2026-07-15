@@ -48,6 +48,13 @@ def _ty(spec) -> str:
     if isinstance(spec, t.ClassSpec):
         args = ",".join(_ty(a) for a in spec.type_params)
         return f"C({spec.name}{'<' + args + '>' if spec.type_params else ''})"
+    if isinstance(spec, t.EnumSpec):
+        # valid_leaf_names is a frozenset — sorted for a deterministic dump.
+        # `!cx` marks is_complex so the complex-enums lowering contract has
+        # teeth (always absent before mark_complex_enums runs — earlier
+        # contracts' output is unchanged).
+        cx = "!cx" if spec.is_complex else ""
+        return f"E({spec.root_name}:{','.join(sorted(spec.valid_leaf_names))}{cx})"
     return type(spec).__name__
 
 
@@ -146,6 +153,20 @@ def dump(statements) -> str:
             walk_expr(x.index, depth + 1)
         elif isinstance(x, e.NothingExpression):
             line(depth, "Nothing", x, "")
+        elif isinstance(x, e.ConvertExpression):
+            # Compile-phase only — the parser never builds one, so this case
+            # is exercised by the CONVERGED-tree contract, not the parse one.
+            line(depth, "Convert", x, _ty(x.target))
+            walk_expr(x.inner, depth + 1)
+        elif isinstance(x, e.LoopExpression):
+            # tail_loop lowering only — exercised by the tail-stage contract.
+            # The loop-carried params are NamedExpression references.
+            line(depth, "Loop", x, ",".join(p.name for p in x.params))
+            walk_expr(x.body, depth + 1)
+        elif isinstance(x, e.RecurExpression):
+            line(depth, "Recur", x, str(x.index))
+            for a in x.args:
+                walk_expr(a, depth + 1)
         else:
             line(depth, type(x).__name__, x, "")
 
