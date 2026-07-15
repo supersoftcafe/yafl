@@ -64,24 +64,12 @@ class TestBootstrapConversions(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        import compiler as c
-        inputs = [c.Input(p.read_text(), p.name) for p in sorted(_BOOTSTRAP.glob("*.yafl"))]
-        c_code = c.compile(inputs, use_stdlib=True, just_testing=False, optimization_level=1)
-        assert c_code, "bootstrap compilation failed"
-        with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
-            cls.binary = tmp.name
-        r = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK,
-             "-o", cls.binary],
-            input=c_code, text=True, capture_output=True, timeout=90)
-        assert r.returncode == 0, f"clang failed:\n{r.stderr[:2000]}"
+        from tests.testutil import shared_bootstrap_binary
+        cls.binary = shared_bootstrap_binary()
 
     @classmethod
     def tearDownClass(cls):
-        try:
-            os.unlink(cls.binary)
-        except OSError:
-            pass
+        pass  # the shared binary is cache-owned
 
     def test_conversion_decision_agrees_with_python(self):
         lines, expected = [], []

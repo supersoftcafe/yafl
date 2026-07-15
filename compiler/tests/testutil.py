@@ -198,3 +198,80 @@ def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5
 
         run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
         return run.returncode
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared bootstrap binary — built ONCE per source-tree state, reused by every
+# bootstrap contract module (and safely across the unittest-parallel worker
+# processes: the first taker holds an flock while building, the rest wait and
+# reuse). Previously each module's setUpClass rebuilt the identical binary,
+# ~3.5 minutes apiece.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import fcntl
+import hashlib
+import subprocess as _sp
+import sys as _sys
+import tempfile as _tf
+from pathlib import Path as _Path
+
+_BOOT_DIR = _Path(__file__).parent.parent.parent / "bootstrap"
+_STDLIB_DIR = _Path(__file__).parent.parent / "stdlib"
+_COMPILER_DIR = _Path(__file__).parent.parent
+
+
+def _bootstrap_tree_hash() -> str:
+    """Everything the binary depends on: bootstrap sources, stdlib, and the
+    Python compiler itself (a compiler change must invalidate the cache)."""
+    h = hashlib.sha256()
+    roots = [sorted(_BOOT_DIR.glob("*.yafl")),
+             sorted(_STDLIB_DIR.glob("*.yafl")),
+             sorted(_COMPILER_DIR.rglob("*.py"))]
+    for group in roots:
+        for p in group:
+            if "__pycache__" in str(p) or "/tests/" in str(p):
+                continue
+            h.update(str(p).encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()[:16]
+
+
+def shared_bootstrap_binary() -> str:
+    """Path to a bootstrap binary for the CURRENT tree, building it at most
+    once across processes."""
+    _sys.setrecursionlimit(20000)
+    tree = _bootstrap_tree_hash()
+    cache_dir = _Path(_tf.gettempdir()) / f"yafl-bootstrap-cache-{os.getuid()}"
+    cache_dir.mkdir(exist_ok=True)
+    binary = cache_dir / f"bootstrap-{tree}"
+    lock_path = cache_dir / f"bootstrap-{tree}.lock"
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if binary.exists():
+                return str(binary)
+            import compiler as _c
+            inputs = [_c.Input(p.read_text(), p.name)
+                      for p in sorted(_BOOT_DIR.glob("*.yafl"))]
+            c_code = _c.compile(inputs, use_stdlib=True, just_testing=False,
+                                optimization_level=1)
+            assert c_code, "bootstrap compilation failed"
+            tmp = binary.with_suffix(".tmp")
+            r = _sp.run(["clang", "-g", "-x", "c", "-", "-O0",
+                         *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", str(tmp)],
+                        input=c_code, text=True, capture_output=True,
+                        timeout=180)
+            assert r.returncode == 0, f"clang failed:\n{r.stderr[:2000]}"
+            tmp.rename(binary)
+            # Keep the cache small: drop binaries for other tree states.
+            for old in cache_dir.glob("bootstrap-*"):
+                if old.suffix in (".lock", ".tmp"):
+                    continue
+                if old.name != binary.name:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+            return str(binary)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
