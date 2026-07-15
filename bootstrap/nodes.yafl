@@ -59,6 +59,12 @@ enum PExpr
   # The back-edge: re-bind the loop vars to recArgs and jump to the head.
   # Bottom-typed. recIndex = per-function ordinal assigned at lowering.
   enum PeRecur(recArgs: List<PExpr>, recIndex: Int, percLine: PLine)
+  # lower_lazy_lets only: auto-forced reference to a [lazy] let's stub.
+  # capturedClass = the closure class holding the stub when the reference is
+  # inside a lifted lambda body; stubOnly = the raw stub pointer (a lambda's
+  # capture site), not the forced value.
+  enum PeLazy(stubName: String, lzTarget: Spec, lzCaptured: String|None,
+              lzStubOnly: Bool, pelzLine: PLine)
 
 class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr)
 

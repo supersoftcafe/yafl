@@ -186,6 +186,13 @@ fun eqExpr(a: PExpr, b: PExpr): Bool
                       && eqExprs(x.recArgs, y.recArgs)
                       && eqLine(x.percLine, y.percLine)
       (o: PExpr)   => false
+    (x: PeLazy) => match(b)
+      (y: PeLazy) => x.stubName == y.stubName
+                     && eqSpec(x.lzTarget, y.lzTarget)
+                     && eqStrOpt(x.lzCaptured, y.lzCaptured)
+                     && eqBool(x.lzStubOnly, y.lzStubOnly)
+                     && eqLine(x.pelzLine, y.pelzLine)
+      (o: PExpr)  => false
 
 fun eqTupEnt(a: PTupEnt, b: PTupEnt): Bool
   ret a.tupName == b.tupName && eqBool(a.tupSpread, b.tupSpread)
@@ -330,6 +337,15 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
 # One walk per element type: a generic `eqList` would need a function
 # parameter, and the element types are few enough that spelling them out is
 # both clearer and safe from the generic-lambda instantiation gap.
+
+fun eqStrOpt(a: String|None, b: String|None): Bool
+  ret match(a)
+    (x: String) => match(b)
+      (y: String) => x == y
+      ()          => false
+    ()          => match(b)
+      (y2: String) => false
+      ()           => true
 
 fun eqStrs(a: List<String>, b: List<String>): Bool
   ret listLen(a) != listLen(b) ? false : eqStrLoop(chain(a), chain(b))

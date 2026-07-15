@@ -57,6 +57,7 @@ fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
     # compile returns (self, []) for both.
     (lp: PeLoop)    => noGlobals(x)
     (rc: PeRecur)   => noGlobals(x)
+    (lz: PeLazy)    => noGlobals(x)
     (nm: PeName)   => compileName(nm, r, expected)
     (d: PeDot)     => compileDot(d, r, expected)
     (c: PeCall)    => compileCall(c, r, expected)

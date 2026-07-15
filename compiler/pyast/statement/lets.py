@@ -390,7 +390,14 @@ class LetStatement(DataStatement):
         rp = rec(self.default_value, f"{self.name}$static")
         if rp is None or not leaf_ok(rp):
             return None
-        xtype = self.get_type().generate(resolver)
+        try:
+            xtype = self.get_type().generate(resolver)
+        except Exception:
+            # An unresolvable declared type (a NamedSpec surviving a
+            # single-file compile) cannot be emitted as a static — fall back
+            # to the lazy path, the same recovery rec() applies to an
+            # ungenerable RHS above.
+            return None
         out.append(cg_ir.Global(self.name, xtype, rp))
         return out
 

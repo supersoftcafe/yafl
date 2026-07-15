@@ -75,6 +75,11 @@ fun exprType(x: PExpr, r: Resolver): Spec|None
     # tail_loop lowering only: a loop types as its body; recur is bottom.
     (lp: PeLoop)     => exprType(lp.loopBody, r)
     (rc: PeRecur)    => None
+    # lower_lazy_lets only: the forced value's type; the raw stub when
+    # stubOnly.
+    (lz: PeLazy)     => lz.lzStubOnly
+      ? SLazyStub(lz.lzTarget, lz.pelzLine)
+      : lz.lzTarget
     (nm: PeName)     => nameType(nm, r)
     (d: PeDot)       => dotType(d, r)
     (c: PeCall)      => callType(c, r)

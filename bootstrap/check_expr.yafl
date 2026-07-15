@@ -39,6 +39,7 @@ fun checkExpr(x: PExpr, r: Resolver, expected: Spec|None): List<PErr>
     # loop.py's check methods for completeness.
     (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
     (rc: PeRecur)   => checkRecurArgs(chain(rc.recArgs), r, noErrs())
+    (lz: PeLazy)    => noErrs()
 
 # ── NamedExpression ─────────────────────────────────────────────────────────
 # Duplicate-route resolutions of one statement are ONE candidate here (only in

@@ -173,6 +173,16 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
     (rc: PeRecur)     => dumpExprs(rc.recArgs, depth + 1,
                                    dLine(sb, depth, "Recur", rc.percLine,
                                          String(rc.recIndex)))
+    (lz: PeLazy)      => dLine(sb, depth, "Lazy", lz.pelzLine,
+                               lz.stubName + ":" + tyOf(lz.lzTarget)
+                                 + lazyCapMark(lz.lzCaptured)
+                                 + (lz.lzStubOnly ? "!stub" : ""))
+
+
+fun lazyCapMark(c: String|None): String
+  ret match(c)
+    (n: String) => "!cap=" + n
+    ()          => ""
 
 fun [tail] loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
   ret match(ps)

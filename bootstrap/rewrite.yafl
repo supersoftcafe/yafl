@@ -156,6 +156,9 @@ fun rwExprKids(x: PExpr, w: Rw): PExpr
                              rwExprs(lp.loopParams, w), lp.pelpLine)
     (rc: PeRecur)  => PeRecur(rwExprs(rc.recArgs, w), rc.recIndex,
                               rc.percLine)
+    # LazyExpression visits ONLY its target type (access.py:597-599).
+    (lz: PeLazy)   => PeLazy(lz.stubName, rwSpec(lz.lzTarget, w),
+                             lz.lzCaptured, lz.lzStubOnly, lz.pelzLine)
     (o: PExpr)     => x
 
 # A penTrait replacement that is not a class spec becomes None
@@ -324,6 +327,7 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                   foldExprs<T>(chain(lp.loopParams), f, fx,
                                                acc2))
     (rc: PeRecur)  => foldExprs<T>(chain(rc.recArgs), f, fx, acc2)
+    (lz: PeLazy)   => acc2
     (o: PExpr)     => acc2
 
 fun [tail] foldExprs<T>(es: Chain<PExpr>, f: (:T, :PStmt): T,
@@ -513,6 +517,7 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
     (rc: PeRecur)  => rwnExprs(chain(rc.recArgs), w, n, List<PExpr>())
       |> (as3) => RwNE(as3.rnesN, PeRecur(as3.rnesExprs, rc.recIndex,
                                           rc.percLine))
+    (lz: PeLazy)   => RwNE(n, x)   # target type carries no counter work
     (o: PExpr)     => RwNE(n, x)
 
 fun [tail] rwnExprs(es: Chain<PExpr>, w: RwN, n: Int,

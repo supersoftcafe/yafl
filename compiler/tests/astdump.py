@@ -167,6 +167,11 @@ def dump(statements) -> str:
             line(depth, "Recur", x, str(x.index))
             for a in x.args:
                 walk_expr(a, depth + 1)
+        elif isinstance(x, e.LazyExpression):
+            # lower_lazy_lets only — exercised by the lazy-stage contract.
+            cap = f"!cap={x.captured_class}" if x.captured_class else ""
+            so = "!stub" if x.stub_only else ""
+            line(depth, "Lazy", x, f"{x.stub_name}:{_ty(x.target_type)}{cap}{so}")
         else:
             line(depth, type(x).__name__, x, "")
 
