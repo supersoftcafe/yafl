@@ -1,0 +1,81 @@
+# bootstrap/integers.yafl — lowering/integers.py: hoist every BIGINT literal
+# (precision 0; sized literals stay) to a global `let $integers::integer@pN`
+# (`@nN` for negatives), replacing each use with a reference. Sorted before
+# numbering (parity with the determinism-fixed Python), so the $integers
+# line refs are stable.
+namespace Bootstrap
+
+import System
+
+fun fixGlobalIntegers(statements: List<PStmt>): List<PStmt>
+  let values = giSortInts(chain(foldStmts<List<Int>>(statements, giIdInts,
+                                                     giCollect,
+                                                     List<Int>())),
+                          List<Int>())
+  if isEmpty(values)
+    ret statements
+  let globals2 = giGlobals(chain(values), 0, List<PStmt>())
+  ret concat(globals2,
+             rwStmts(statements, rwOnExpr((x: PExpr) => giReplace(x,
+                                                                  values))))
+
+fun giIdInts(acc: List<Int>, st: PStmt): List<Int>
+  ret acc
+
+fun giCollect(acc: List<Int>, x: PExpr): List<Int>
+  ret match(x)
+    (i: PeInt) => i.precision == 0 && !giHas(chain(acc), i.value)
+      ? append(acc, i.value)
+      : acc
+    (o: PExpr) => acc
+
+fun [tail] giHas(vs: Chain<Int>, v: Int): Bool
+  ret match(vs)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value == v ? true : giHas(l.next, v)
+
+fun [tail] giSortInts(vs: Chain<Int>, acc: List<Int>): List<Int>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => giSortInts(l.next,
+                                  giInsert(chain(acc), l.value, List<Int>()))
+
+fun [tail] giInsert(vs: Chain<Int>, v: Int, acc: List<Int>): List<Int>
+  ret match(vs)
+    (nil: ChainEnd) => append(acc, v)
+    (l: ChainLink)  => v < l.value
+      ? concat(append(acc, v), List<Int>(vs))
+      : giInsert(l.next, v, append(acc, l.value))
+
+fun giName(v: Int): String
+  ret v < 0 ? "$integers::integer@n" + String(0 - v)
+            : "$integers::integer@p" + String(v)
+
+fun [tail] giGlobals(vs: Chain<Int>, index: Int,
+                     acc: List<PStmt>): List<PStmt>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => giGlobals(l.next, index + 1,
+        append(acc, PsLet(giName(l.value), List<PAttr>(), List<PGen>(),
+                          SBuiltin("bigint",
+                                   PLine("$integers", index + 1, 1)),
+                          PeInt(l.value, 0,
+                                PLine("$integers", index + 1, 1)),
+                          "", List<Spec>(),
+                          PLine("$integers", index + 1, 1), false,
+                          List<PStmt>())))
+
+fun giReplace(x: PExpr, values: List<Int>): PExpr|None
+  ret match(x)
+    (i: PeInt) => i.precision == 0
+      ? PeName(giName(i.value), List<Spec>(),
+               PLine("$integers", giIndexOf(chain(values), i.value, 0) + 1,
+                     1),
+               None)
+      : None
+    (o: PExpr) => None
+
+fun [tail] giIndexOf(vs: Chain<Int>, v: Int, i: Int): Int
+  ret match(vs)
+    (nil: ChainEnd) => -1
+    (l: ChainLink)  => l.value == v ? i : giIndexOf(l.next, v, i + 1)

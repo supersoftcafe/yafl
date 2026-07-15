@@ -403,6 +403,20 @@ fun inlineStageDump(stmts: List<PStmt>): (out: String, code: Int)
     ? (dumpProgram(inlineAst(tl.tlStmts)), 0)
     : (printedDiagnostics(tl.tlErrs), 0)
 
+# literals mode: inline, then string and bigint literal hoisting — the
+# driver's compiler.py:613-614.
+fun literalsMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => literalsStageDump(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun literalsStageDump(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  ret isEmpty(tl.tlErrs)
+    ? (dumpProgram(fixGlobalIntegers(fixGlobalStrings(
+                     inlineAst(tl.tlStmts)))), 0)
+    : (printedDiagnostics(tl.tlErrs), 0)
+
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
@@ -458,6 +472,7 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "postmono" ? postmonoMode(text)
         : mode == "tail" ? tailMode(text)
         : mode == "inline" ? inlineMode(text)
+        : mode == "literals" ? literalsMode(text)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code

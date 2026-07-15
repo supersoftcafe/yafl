@@ -1,0 +1,57 @@
+# bootstrap/strings.yafl — lowering/strings.py: hoist every string literal to
+# a global `let $strings::string@N`, replacing each use with a reference.
+# Sorted before numbering, so the per-string index is deterministic.
+namespace Bootstrap
+
+import System
+
+fun fixGlobalStrings(statements: List<PStmt>): List<PStmt>
+  let values = sortNamesAsc(chain(foldStmts<List<String>>(statements,
+                                                          gsIdNames,
+                                                          gsCollect,
+                                                          List<String>())),
+                            List<String>())
+  if isEmpty(values)
+    ret statements
+  let globals2 = gsGlobals(chain(values), 0, List<PStmt>())
+  ret concat(globals2,
+             rwStmts(statements, rwOnExpr((x: PExpr) => gsReplace(x,
+                                                                  values))))
+
+fun gsIdNames(acc: List<String>, st: PStmt): List<String>
+  ret acc
+
+fun gsCollect(acc: List<String>, x: PExpr): List<String>
+  ret match(x)
+    (s2: PeStr) => contains2(acc, s2.strValue) ? acc
+                                               : append(acc, s2.strValue)
+    (o: PExpr)  => acc
+
+fun [tail] gsGlobals(vs: Chain<String>, index: Int,
+                     acc: List<PStmt>): List<PStmt>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => gsGlobals(l.next, index + 1,
+        append(acc, PsLet("$strings::string@" + String(index),
+                          List<PAttr>(), List<PGen>(),
+                          SBuiltin("str", PLine("$strings", index + 1, 1)),
+                          PeStr(l.value, PLine("$strings", index + 1, 1)),
+                          "", List<Spec>(), PLine("$strings", index + 1, 1),
+                          false, List<PStmt>())))
+
+fun gsReplace(x: PExpr, values: List<String>): PExpr|None
+  ret match(x)
+    (s2: PeStr) => PeName("$strings::string@"
+                            + String(gsIndexOf(chain(values), s2.strValue,
+                                               0)),
+                          List<Spec>(),
+                          PLine("$strings",
+                                gsIndexOf(chain(values), s2.strValue, 0) + 1,
+                                1),
+                          None)
+    (o: PExpr)  => None
+
+fun [tail] gsIndexOf(vs: Chain<String>, v: String, i: Int): Int
+  ret match(vs)
+    (nil: ChainEnd) => -1
+    (l: ChainLink)  => l.value == v ? i : gsIndexOf(l.next, v, i + 1)

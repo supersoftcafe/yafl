@@ -33,7 +33,11 @@ def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:
                               ImportGroup(()), {}, (),
                               e.IntegerExpression(lr, value, 0),
                               t.BuiltinSpec(lr, "bigint"))
-    global_statements = {value: create_integer(index, value) for index,value in enumerate(all_integer_literals)}
+    # Sort before numbering, like strings.py: the set's iteration order is
+    # implementation-defined — the NAMES are value-derived so never collide,
+    # but the $integers line refs (index+1) would differ run to run and be
+    # unportable to the bootstrap.
+    global_statements = {value: create_integer(index, value) for index,value in enumerate(sorted(all_integer_literals))}
 
     # For each string generate a global reference
     global_references = {value: e.NamedExpression(statement.line_ref, statement.name) for value, statement in global_statements.items()}
