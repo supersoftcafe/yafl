@@ -1,0 +1,91 @@
+# bootstrap/copy_propagation.yafl — ported from lowering/copy_propagation.py:
+# a Move(M, S) of StackVar into StackVar immediately followed by an op that
+# reads M substitutes S into that op; the Move is dropped only when M's TOTAL
+# read count was exactly 1 (other readers keep it). Never across a Label (a
+# merge could see M carrying another value). Iterates to a fixpoint so Move
+# chains collapse one hop at a time; finally prunes stack_var declarations no
+# longer referenced. The substitution is opRenameVars(M → S.name) — both
+# sides are StackVars, so a rename IS the substitution.
+namespace Bootstrap
+
+import System
+
+fun propagateCopies(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions, cpFunction))
+
+fun cpFunction(f: CgFunction): CgFunction
+  let out = cpOnce(f)
+  ret out.cpChanged ? cpFunction(out.cpFn) : f
+
+class [final] CpOut(cpFn: CgFunction, cpChanged: Bool)
+
+fun cpOnce(f: CgFunction): CpOut
+  let readCounts = cpCountReads(f.fnOps)
+  let walked = cpWalk(chain(f.fnOps), readCounts, List<Op>(), false)
+  ret walked.cpwChanged
+    ? CpOut(cpPruneStackVars(f, walked.cpwOps), true)
+    : CpOut(f, false)
+
+fun cpCountReads(ops: List<Op>): List<StrCount>
+  ret fold(ops, List<StrCount>(),
+           (acc: List<StrCount>, op: Op) => fold(opReadVarNames(op), acc, strCountIncr))
+
+class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
+
+fun [tail] cpWalk(ops: Chain<Op>, readCounts: List<StrCount>,
+                  acc: List<Op>, changed: Bool): CpWalkOut
+  ret match(ops)
+    (nil: ChainEnd) => CpWalkOut(acc, changed)
+    (l: ChainLink)  => match(cpTryPropagate(l, readCounts))
+      (s2: CpStep) => cpWalk(s2.cpsRest, readCounts, concat(acc, s2.cpsEmit), true)
+      ()            => cpWalk(l.next, readCounts, append(acc, l.value), changed)
+
+class [final] CpStep(cpsEmit: List<Op>, cpsRest: Chain<Op>)
+
+# The candidate shape: Move(M:StackVar, S:StackVar); next op not a Label and
+# reads M. Emits the substituted next op (keeping the Move when M has other
+# readers) and consumes both ops.
+fun cpTryPropagate(l: ChainLink<Op>, readCounts: List<StrCount>): CpStep|None
+  ret match(l.value)
+    (m: OpMove) => cpTryMove(l, m, readCounts)
+    (o: Op)     => None
+
+fun cpTryMove(l: ChainLink<Op>, m: OpMove, readCounts: List<StrCount>): CpStep|None
+  ret match(m.moveTarget)
+    (mt: RpStackVar) => match(m.moveSource)
+      (ms: RpStackVar) => cpTryNext(l, m, mt, ms, readCounts)
+      (o: RParam)       => None
+    (o2: RParam)      => None
+
+fun cpTryNext(l: ChainLink<Op>, m: OpMove, mt: RpStackVar, ms: RpStackVar,
+              readCounts: List<StrCount>): CpStep|None
+  ret match(l.next)
+    (nil: ChainEnd) => None
+    (nx: ChainLink) => match(nx.value)
+      (lb: OpLabel) => None
+      (o: Op)       => strListMember(opReadVarNames(nx.value), mt.name)
+        ? cpEmit(m, mt, ms, nx, readCounts)
+        : None
+
+# `m` is the Move being (possibly) kept — but this helper only re-emits it,
+# so it takes the ROOT type: a narrowed variant type in a signature is for
+# helpers that read variant fields.
+fun cpEmit(m: Op, mt: RpStackVar, ms: RpStackVar, nx: ChainLink<Op>,
+           readCounts: List<StrCount>): CpStep
+  let substituted = opRenameVars(nx.value, list1(RpRename(mt.name, ms.name)))
+  # M's only read was the one just substituted → drop the Move entirely;
+  # other readers elsewhere keep it.
+  ret strCountGet(readCounts, mt.name) == 1
+    ? CpStep(list1(substituted), nx.next)
+    : CpStep(list2(m, substituted), nx.next)
+
+# Drop stack_var declarations no longer referenced anywhere (reads OR writes).
+fun cpPruneStackVars(f: CgFunction, newOps: List<Op>): CgFunction
+  let mentioned = fold(newOps, List<String>(),
+                       (acc: List<String>, op: Op) => fold(concat(opReadVarNames(op), cpWriteNames(op)), acc, strListAdd))
+  ret cgFunctionWith(f, newOps,
+        CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
+                        (fld: CgField) => strListMember(mentioned, fld.fieldName))))
+
+fun cpWriteNames(op: Op): List<String>
+  ret fold(ssavOpWrites(op), List<String>(), rpTakeStackVarName)

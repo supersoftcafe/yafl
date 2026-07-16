@@ -414,3 +414,44 @@ fun opToCCallIndirect(x: OpCall, returnType: String, tailreturn: String, typesSt
 
 fun opToCCallIndirectFinish(funDecl: String, unpack: String, assignR: (text: String, cache: List<CgCacheEntry>)): (text: String, cache: List<CgCacheEntry>)
   ret ("    {\n" + funDecl + unpack + assignR.text + "    }\n", assignR.cache)
+
+# ── get_live_vars: the READS half (writes live in ssa_validate's walker) ─────
+# Python: reads = StackVars in read positions; a non-StackVar TARGET (an
+# ObjectField store) contributes its inner reads (the pointer) as reads.
+
+fun rpReadVarNames(r: RParam): List<String>
+  ret fold(rpFlatten(r, true), List<String>(), rpTakeStackVarName)
+
+fun rpTakeStackVarName(acc: List<String>, x: RParam): List<String>
+  ret match(x)
+    (sv: RpStackVar) => append(acc, sv.name)
+    (o: RParam)       => acc
+
+fun rpTargetReadNames(target: RParam): List<String>
+  ret match(target)
+    (sv: RpStackVar) => List<String>()
+    (o: RParam)       => rpReadVarNames(target)
+
+fun rpOptReadNames(r: RParam|None): List<String>
+  ret match(r)
+    (x: RParam) => rpReadVarNames(x)
+    ()           => List<String>()
+
+fun opReadVarNames(op: Op): List<String>
+  ret match(op)
+    (m: OpMove)          => concat(rpReadVarNames(m.moveSource), rpTargetReadNames(m.moveTarget))
+    (ji: OpJumpIf)       => rpReadVarNames(ji.jumpIfCondition)
+    (t2: OpIfTask)       => concat(rpReadVarNames(t2.taskCondition), rpReadVarNames(t2.taskSource))
+    (sw: OpSwitchJump)   => rpReadVarNames(sw.switchCondition)
+    (n: OpNewObject)     => concat(rpOptReadNames(n.newObjSize), rpTargetReadNames(n.newObjRegister))
+    (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
+                                   rpOptTargetReadNames(c.callRegister))
+    (r: OpReturn)        => rpReadVarNames(r.returnValue)
+    (pc: OpParallelCall) => fold(pc.parCalls, List<String>(), (acc: List<String>, x: RParam) => concat(acc, rpReadVarNames(x)))
+    (ph: OpPhi)          => fold(ph.phiSources, List<String>(), (acc: List<String>, s2: OpPhiSource) => concat(acc, rpReadVarNames(s2.sourceValue)))
+    (o: Op)              => List<String>()
+
+fun rpOptTargetReadNames(r: RParam|None): List<String>
+  ret match(r)
+    (x: RParam) => rpTargetReadNames(x)
+    ()           => List<String>()
