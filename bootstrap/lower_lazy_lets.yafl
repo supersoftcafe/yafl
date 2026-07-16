@@ -12,61 +12,15 @@ fun isDeferredInit(l: PsLet): Bool
 # ── the static-plan PREDICATE ────────────────────────────────────────────────
 # AST-level mirror of LetStatement.static_global_plan's DECISION half
 # (lets.py:272-395): can this global be emitted as a direct C static?
-# PREDICATE-ONLY until PORT 8 lands the emitter and the two unify into one
-# routine (Python documents the drift hazard at lets.py:281-284; meanwhile
-# the lazy-stage contract pins every promotion decision against Python's
-# REAL plan over the whole corpus). Acceptance, per Python's rec/leaf_ok:
-#   int/float/bool literals    → constant leaves (Integer/Float)
-#   string literals            → String leaves (a direct string static)
-#   Nothing                    → pure unit
-#   tuples of accepted leaves  → NewStruct
-#   constructor calls/PeNew    → anonymous static instances (class not an
-#                                interface, no array field, arity matches,
-#                                every argument an accepted leaf)
-#   references to other globals→ chased into THEIR plan; only a constant
-#                                (int/float/bool) or static-object tail is
-#                                borrowable — a string-init global stays a
-#                                runtime read and disqualifies
-#   conversions                → rejected (Python accepts only op-free
-#                                emissions, which needs the union repr —
-#                                revisit if the contract diffs)
-#   anything else              → rejected
-
-enum SgRes
-  enum SgNo()
-  enum SgConst()
-  enum SgObj()
-  enum SgString()
-  enum SgStruct()
-  enum SgUnit()
-
-fun sgAccepted(v: SgRes): Bool
-  ret match(v)
-    (n: SgNo)  => false
-    (o: SgRes) => true
-
-fun sgChaseable(v: SgRes): Bool
-  ret match(v)
-    (c: SgConst) => true
-    (o2: SgObj)  => true
-    (o: SgRes)   => false
+# UNIFIED (PORT 8): staticGlobalPlan in generate_globals.yafl is now BOTH the
+# emitter and the predicate — hasStaticGlobalPlan below merely asks it for a
+# plan, so promotion decision and emission cannot disagree (Python's own
+# rule, lets.py:281-284).
 
 fun hasStaticGlobalPlan(l: PsLet, r: Resolver, chasing: List<String>): Bool
-  ret sgAccepted(sgpPlan(l, r, chasing))
-
-fun sgpPlan(l: PsLet, r: Resolver, chasing: List<String>): SgRes
-  if contains2(chasing, l.lName)
-    ret SgNo()
-  ret match(l.lDefault)
-    (dv: PExpr) => match(l.lType)
-      # A declared type still holding an unresolved NAME cannot be emitted
-      # as a static (Python: get_type().generate raises for NamedSpec and
-      # the plan falls back to lazy).
-      (t2: Spec) => specHasNamed(t2)
-        ? SgNo()
-        : sgpRec(dv, r, append(chasing, l.lName))
-      ()         => SgNo()
-    ()          => SgNo()
+  ret match(staticGlobalPlan(l, r, chasing))
+    (plan: List<CgGlobal>) => true
+    ()                      => false
 
 fun specHasNamed(sp: Spec): Bool
   ret match(sp)
@@ -95,86 +49,6 @@ fun sgOptNamed(sp: Spec|None): Bool
   ret match(sp)
     (s2: Spec) => specHasNamed(s2)
     ()         => false
-
-fun sgpRec(x: PExpr, r: Resolver, chasing: List<String>): SgRes
-  ret match(x)
-    (i: PeInt)     => SgConst()
-    (f: PeFloat)   => SgConst()
-    (b: PeBool)    => SgConst()
-    (s2: PeStr)    => SgString()
-    (ng: PeNothing) => SgUnit()
-    (tp: PeTuple)  => sgpEntries(chain(tp.exprs), r, chasing)
-    (c: PeCall)    => match(c.function)
-      (nm: PeName) => match(c.parameter)
-        (args: PeTuple) => sgpCtor(nm.refName, args, r, chasing)
-        (o: PExpr)      => SgNo()
-      (o2: PExpr)  => SgNo()
-    (nw: PeNew)    => match(nw.newType)
-      (ct: SClass) => match(nw.newParam)
-        (args: PeTuple) => sgpCtor(ct.scName, args, r, chasing)
-        (o: PExpr)      => SgNo()
-      (o2: Spec)   => SgNo()
-    (nm: PeName)   => sgpChase(nm.refName, r, chasing)
-    (o: PExpr)     => SgNo()
-
-fun [tail] sgpEntries(es: Chain<PTupEnt>, r: Resolver,
-                      chasing: List<String>): SgRes
-  ret match(es)
-    (nil: ChainEnd) => SgStruct()
-    (l: ChainLink)  => sgAccepted(sgpRec(l.value.tupValue, r, chasing))
-      ? sgpEntries(l.next, r, chasing)
-      : SgNo()
-
-fun sgpCtor(name: String, args: PeTuple, r: Resolver,
-            chasing: List<String>): SgRes
-  ret match(soleItem(findType(r, name)))
-    (f: Found) => match(f.fStmt)
-      (cls: PsClass) => sgpInstance(cls, args, r, chasing)
-      (o: PStmt)     => SgNo()
-    ()         => SgNo()
-
-fun sgpInstance(cls: PsClass, args: PeTuple, r: Resolver,
-                chasing: List<String>): SgRes
-  if cls.cIsInterface || sgpHasArrayField(chain(flattenParams(cls.cParams)))
-    ret SgNo()
-  let fields = flattenParams(cls.cParams)
-  if chainLength(chain(args.exprs)) != chainLength(chain(fields))
-    ret SgNo()
-  ret sgpArgs(chain(args.exprs), r, chasing)
-
-fun [tail] sgpHasArrayField(ps: Chain<PStmt>): Bool
-  ret match(ps)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => match(let2.lType)
-        (t2: Spec) => match(t2)
-          (af: SArrayField) => true
-          (o: Spec)         => sgpHasArrayField(l.next)
-        ()         => sgpHasArrayField(l.next)
-      (o2: PStmt)   => sgpHasArrayField(l.next)
-
-fun [tail] sgpArgs(es: Chain<PTupEnt>, r: Resolver,
-                   chasing: List<String>): SgRes
-  ret match(es)
-    (nil: ChainEnd) => SgObj()
-    (l: ChainLink)  => sgAccepted(sgpRec(l.value.tupValue, r, chasing))
-      ? sgpArgs(l.next, r, chasing)
-      : SgNo()
-
-# A reference to another global let: borrow its constant or its address —
-# only when its own plan's tail is a constant or static object.
-fun sgpChase(name: String, r: Resolver, chasing: List<String>): SgRes
-  ret match(soleItem(findData(r, name)))
-    (f: Found) => match(f.fStmt)
-      (let2: PsLet) => !isDeferredInit(let2)
-        ? sgpChaseInto(let2, r, chasing)
-        : SgNo()
-      (o: PStmt)    => SgNo()
-    ()         => SgNo()
-
-fun sgpChaseInto(let2: PsLet, r: Resolver, chasing: List<String>): SgRes
-  let sub = sgpPlan(let2, r, chasing)
-  ret sgChaseable(sub) ? sub : SgNo()
 
 # ── auto-promotion ───────────────────────────────────────────────────────────
 
