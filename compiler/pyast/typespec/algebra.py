@@ -81,6 +81,21 @@ def has_free_placeholders(spec: "TypeSpec | None", resolver: "g.Resolver") -> bo
                for name in placeholder_names_in(spec))
 
 
+def _contains_named_spec(spec: "TypeSpec") -> bool:
+    """True when `spec` is or contains a raw NamedSpec spelling — a signature
+    view that hasn't compiled yet. Its names are only meaningful in the
+    declaring scope, so it must never escape into a type-param binding that
+    outlives that scope (compiled at a use site, the `T` inside a latched
+    `List<T>` can never resolve and survives to the post-converge scan)."""
+    found = [False]
+    def visit(_, thing):
+        if isinstance(thing, NamedSpec):
+            found[0] = True
+        return thing
+    spec.search_and_replace(None, visit)
+    return found[0]
+
+
 class _Conflict:
     """Sentinel returned by `meet` for two ground types that cannot be reconciled.
     Distinct from None, which `meet` uses for a hole (no information yet)."""
@@ -345,6 +360,12 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
         # Don't let a placeholder bind to itself (or to any other placeholder):
         # the concrete side is not concrete enough to pin down.
         if isinstance(concrete, GenericPlaceholderSpec):
+            return mapping
+        # Nor to a spec still carrying raw NamedSpec spellings (an uncompiled
+        # signature view): those names must not escape their declaring scope
+        # (see _contains_named_spec). DEFER — the fixpoint retries once the
+        # callee's signature grounds.
+        if _contains_named_spec(concrete):
             return mapping
         existing = mapping.get(generic.name)
         if existing is None:

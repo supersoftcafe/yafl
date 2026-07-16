@@ -56,3 +56,32 @@ class TestNestedGenericInference(TestCase):
             "fun main(): System::Int\n"
             "  ret unwrap(wrap(Box(5))).n\n")
         self.assertEqual(5, compile_and_run_stdlib(src))
+
+    def test_generic_result_into_generic_param(self):
+        # The OUTER callee is itself generic and the INNER's result is a generic
+        # ENUM instance (List<T>). Early passes latch the outer's T to the raw
+        # `List<T>` spelling of the inner's uncompiled signature; compiled in
+        # main's scope that spelling became EnumSpec(type_params=(NamedSpec T))
+        # — a hole has_free_placeholders couldn't see, so the latch never
+        # refreshed and 'T' survived to the post-converge NamedSpec scan.
+        src = (
+            "namespace Main\nimport System\n"
+            "fun single<T>(a: T): List<T>\n"
+            "  ret append(List<T>(), a)\n"
+            "fun outer<T>(a: T): List<T>\n"
+            "  ret append(List<T>(), a)\n"
+            "fun main(): System::Int\n"
+            "  let xs = outer(single(42))\n"
+            "  ret isEmpty(xs) ? 0 : 9\n")
+        self.assertEqual(9, compile_and_run_stdlib(src))
+
+    def test_generic_result_into_same_generic(self):
+        # Same shape, same function on both levels: list1(list1(42)).
+        src = (
+            "namespace Main\nimport System\n"
+            "fun list1<T>(a: T): List<T>\n"
+            "  ret append(List<T>(), a)\n"
+            "fun main(): System::Int\n"
+            "  let xs = list1(list1(42))\n"
+            "  ret isEmpty(xs) ? 0 : 9\n")
+        self.assertEqual(9, compile_and_run_stdlib(src))

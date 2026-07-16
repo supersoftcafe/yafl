@@ -281,6 +281,39 @@ fun refineWith(current: Spec|None, inferred: Spec|None): Spec|None
 fun hasFreePlaceholders(sp: Spec, r: Resolver): Bool
   ret anyFreePh(chain(placeholderNames(sp)), r)
 
+# _contains_named_spec: `sp` is or contains a raw SNamed spelling — a signature
+# view that hasn't compiled yet. Its names are only meaningful in the declaring
+# scope, so it must never escape into a type-param binding that outlives that
+# scope (compiled at a use site, the `T` inside a latched `List<T>` can never
+# resolve and survives to the post-converge scan).
+fun containsNamedSpec(sp: Spec): Bool
+  ret match(sp)
+    (n: SNamed)        => true
+    (c: SClass)        => cnsList(chain(c.scParams))
+    (e: SEnum)         => cnsList(chain(e.seParams))
+    (cm: SCombination) => cnsList(chain(cm.scTypes))
+    (cl: SCallable)    => containsNamedSpec(cl.scParams2) || cnsOpt(cl.scResult)
+    (t2: STuple)       => cnsEntries(chain(t2.stEntries))
+    (af: SArrayField)  => containsNamedSpec(af.safElem)
+    (ls: SLazyStub)    => cnsOpt(ls.slsTarget)
+    (g: SGeneric)      => false
+    (b: SBuiltin)      => false
+
+fun [tail] cnsList(ts: Chain<Spec>): Bool
+  ret match(ts)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => containsNamedSpec(l.value) ? true : cnsList(l.next)
+
+fun [tail] cnsEntries(es: Chain<SEntry>): Bool
+  ret match(es)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => cnsOpt(l.value.seType) ? true : cnsEntries(l.next)
+
+fun cnsOpt(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => containsNamedSpec(s2)
+    ()         => false
+
 fun [tail] anyFreePh(ns: Chain<String>, r: Resolver): Bool
   ret match(ns)
     (nil: ChainEnd) => false
@@ -318,9 +351,14 @@ fun unifyGeneric(generic: Spec, concrete: Spec, names: List<String>,
 
 # Two bindings for one placeholder MEET rather than collide: a hole refines to
 # ground; only a genuine ground-vs-ground clash fails.
+# A bind is a COPY out of the concrete side's scope, and a NamedSpec is only
+# safely resolvable in its original context — so a spec that is or contains
+# one must never bind (containsNamedSpec, deep); nor may a bare placeholder
+# (not concrete enough to pin anything down). DEFER — the fixpoint retries
+# once the callee's signature grounds.
 fun bindHole(name: String, concrete: Spec, names: List<String>,
              mapping: List<Binding>): Unify
-  if isHoleSpec(concrete)
+  if isHoleSpec(concrete) || containsNamedSpec(concrete)
     ret UMap(mapping)
   ret match(bindingOf(mapping, name))
     (prior: Spec) => mergeBinding(name, prior, concrete, mapping)
