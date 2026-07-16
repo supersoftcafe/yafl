@@ -1,0 +1,140 @@
+# bootstrap/globalfuncs.yafl — devirtualisation + indirect-call resolution,
+# ported from lowering/globalfuncs.py: a Call through a VirtualFunction whose
+# slot has exactly ONE implementation becomes a direct GlobalFunction call;
+# an indirect fun_t call whose value traces (through single-assignment copies
+# and known-struct fields) to one known function becomes direct too — which
+# is what lets the inliner absorb it (an indirect call inside a loop blocks
+# clang's vectoriser outright).
+namespace Bootstrap
+
+import System
+
+fun discoverGlobalFunctionCalls(a: CgApp): CgApp
+  let slots = gfSlotFuncs(a)
+  ret appWithFunctions(a, map(a.appFunctions,
+        (f: CgFunction) => gfOptimizeFunctionCalls(f, slots)))
+
+# slot name → implementing function names, across every object.
+class [final] SlotFuncs(sfSlot: String, sfFuncs: List<String>)
+
+fun gfSlotFuncs(a: CgApp): List<SlotFuncs>
+  ret fold(a.appObjects, List<SlotFuncs>(),
+           (acc: List<SlotFuncs>, o: CgObject) => fold(o.objFunctions, acc, gfSlotAdd))
+
+fun gfSlotAdd(acc: List<SlotFuncs>, s2: CgFuncSlot): List<SlotFuncs>
+  ret any(acc, (e2: SlotFuncs) => e2.sfSlot == s2.slotVirtualName)
+    ? map(acc, (e2: SlotFuncs) => e2.sfSlot == s2.slotVirtualName
+                 ? SlotFuncs(e2.sfSlot, append(e2.sfFuncs, s2.slotGlobalName))
+                 : e2)
+    : append(acc, SlotFuncs(s2.slotVirtualName, list1(s2.slotGlobalName)))
+
+fun gfSlotLookup(slots: List<SlotFuncs>, name: String): List<String>
+  ret match(head(filter(slots, (e2: SlotFuncs) => e2.sfSlot == name)))
+    (e2: SlotFuncs) => e2.sfFuncs
+    ()               => List<String>()
+
+# ── the single-assignment fun_t value map ────────────────────────────────────
+
+# StackVar name → source for names Moved exactly once; a Phi or Call write
+# makes the name opaque (counted twice).
+class [final] FunValue(fvName: String, fvValue: RParam, fvCount: Int)
+
+fun gfFunValueMap(f: CgFunction): List<FunValue>
+  ret filter(fold(f.fnOps, List<FunValue>(), gfFvStep),
+             (e2: FunValue) => e2.fvCount == 1)
+
+fun gfFvStep(acc: List<FunValue>, op: Op): List<FunValue>
+  ret match(op)
+    (m: OpMove) => match(m.moveTarget)
+      (sv: RpStackVar) => gfFvAdd(acc, sv.name, m.moveSource, 1)
+      (o: RParam)       => acc
+    (ph: OpPhi) => gfFvOpaque(acc, ph.phiTarget)
+    (c: OpCall) => match(c.callRegister)
+      (r: RParam) => gfFvOpaque(acc, r)
+      ()           => acc
+    (o: Op)      => acc
+
+fun gfFvOpaque(acc: List<FunValue>, target: RParam): List<FunValue>
+  ret match(target)
+    (sv: RpStackVar) => gfFvAdd(acc, sv.name, RpNullPointer(), 2)
+    (o: RParam)       => acc
+
+fun gfFvAdd(acc: List<FunValue>, name: String, value: RParam, n: Int): List<FunValue>
+  ret any(acc, (e2: FunValue) => e2.fvName == name)
+    ? map(acc, (e2: FunValue) => e2.fvName == name
+                 ? FunValue(name, value, e2.fvCount + n)
+                 : e2)
+    : append(acc, FunValue(name, value, n))
+
+fun gfFvLookup(vmap: List<FunValue>, name: String): RParam|None
+  ret match(head(filter(vmap, (e2: FunValue) => e2.fvName == name)))
+    (e2: FunValue) => e2.fvValue
+    ()              => None
+
+# Chase an indirect call's fun_t expression through single-assignment copies
+# (and fields of known structs) to a GlobalFunction, depth-capped at 16.
+fun [tail] gfResolveFun(rp: RParam, vmap: List<FunValue>, depth: Int): RpGlobalFunction|None
+  if depth <= 0
+    ret None
+  ret match(rp)
+    (gf: RpGlobalFunction) => gf
+    (sv: RpStackVar)       => match(gfFvLookup(vmap, sv.name))
+      (nxt: RParam) => gfResolveFun(nxt, vmap, depth - 1)
+      ()             => None
+    (sf: RpStructField)    => match(gfFieldValue(sf, vmap))
+      (val: RParam) => gfResolveFun(val, vmap, depth - 1)
+      ()             => None
+    (o: RParam)            => None
+
+fun gfFieldValue(sf: RpStructField, vmap: List<FunValue>): RParam|None
+  let base = match(sf.structVal)
+    (sv: RpStackVar) => gfFvLookup(vmap, sv.name)
+    (o: RParam)       => sf.structVal
+  ret match(base)
+    (b: RParam) => match(b)
+      (ns: RpNewStruct) => gfNamedValue(ns.values, sf.field)
+      (o: RParam)        => None
+    ()           => None
+
+fun gfNamedValue(vs: List<RpNamedValue>, field: String): RParam|None
+  ret match(head(filter(vs, (nv: RpNamedValue) => nv.name == field)))
+    (nv: RpNamedValue) => nv.value
+    ()                  => None
+
+# ── the rewrite ──────────────────────────────────────────────────────────────
+
+fun gfOptimizeFunctionCalls(f: CgFunction, slots: List<SlotFuncs>): CgFunction
+  let vmap = gfFunValueMap(f)
+  ret cgFunctionWith(f, map(f.fnOps, (op: Op) => gfOptimizeOp(op, slots, vmap)), f.fnStackVars)
+
+fun gfOptimizeOp(op: Op, slots: List<SlotFuncs>, vmap: List<FunValue>): Op
+  ret match(op)
+    (c: OpCall) => gfOptimizeCall(c, slots, vmap)
+    (o: Op)     => op
+
+fun gfOptimizeCall(c: OpCall, slots: List<SlotFuncs>, vmap: List<FunValue>): Op
+  ret match(c.callFunction)
+    (vf: RpVirtualFunction) => gfDevirtualise(c, vf, slots)
+    (sv: RpStackVar)        => gfDirectify(c, sv, vmap)
+    (sf: RpStructField)     => gfDirectify(c, sf, vmap)
+    (o: RParam)             => c
+
+fun gfDevirtualise(c: OpCall, vf: RpVirtualFunction, slots: List<SlotFuncs>): Op
+  let globals2 = gfSlotLookup(slots, vf.name)
+  ret listLen(globals2) == 1
+    ? OpCall(RpGlobalFunction(forceHead(globals2), vf.object, false, None, false, false),
+             c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
+             c.callResultType, c.callSavedVars)
+    : c
+
+fun gfDirectify(c: OpCall, expr: RParam, vmap: List<FunValue>): Op
+  ret match(gfResolveFun(expr, vmap, 16))
+    (gf: RpGlobalFunction) => OpCall(gf, c.callParameters, c.callRegister,
+                                     c.callMusttail, c.callImpure,
+                                     c.callResultType, c.callSavedVars)
+    ()                      => c
+
+fun forceHead(ss: List<String>): String
+  ret match(head(ss))
+    (s2: String) => s2
+    ()            => ""   # unreachable: caller checked length == 1

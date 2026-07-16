@@ -1,0 +1,56 @@
+# bootstrap/app.yafl — the whole-program IR container (codegen/gen.py's
+# Application data half; the C-emission half ports with gen). Python keys
+# functions/objects/globals by name in insertion-ordered dicts; the port
+# keeps insertion-ordered Lists with name lookups — same iteration order,
+# which C emission depends on. A shared library module (multiple passes
+# consume it), per the one-stage-per-file rule's shared-core clause.
+namespace Bootstrap
+
+import System
+
+class [final] CgApp(appFunctions: List<CgFunction>, appObjects: List<CgObject>,
+                    appGlobals: List<CgGlobal>)
+
+fun emptyApp(): CgApp
+  ret CgApp(List<CgFunction>(), List<CgObject>(), List<CgGlobal>())
+
+# ── name lookups ─────────────────────────────────────────────────────────────
+
+fun appFunction(a: CgApp, name: String): CgFunction|None
+  ret head(filter(a.appFunctions, (f: CgFunction) => f.fnName == name))
+
+fun appObject(a: CgApp, name: String): CgObject|None
+  ret head(filter(a.appObjects, (o: CgObject) => o.objName == name))
+
+fun appGlobal(a: CgApp, name: String): CgGlobal|None
+  ret head(filter(a.appGlobals, (g2: CgGlobal) => g2.globalName == name))
+
+fun appHasObject(a: CgApp, name: String): Bool
+  ret any(a.appObjects, (o: CgObject) => o.objName == name)
+
+fun appHasFunction(a: CgApp, name: String): Bool
+  ret any(a.appFunctions, (f: CgFunction) => f.fnName == name)
+
+# ── insertion (dict semantics: same name replaces in place) ──────────────────
+
+fun appPutFunction(a: CgApp, f: CgFunction): CgApp
+  ret appHasFunction(a, f.fnName)
+    ? CgApp(map(a.appFunctions, (x: CgFunction) => x.fnName == f.fnName ? f : x),
+            a.appObjects, a.appGlobals)
+    : CgApp(append(a.appFunctions, f), a.appObjects, a.appGlobals)
+
+fun appPutObject(a: CgApp, o: CgObject): CgApp
+  ret appHasObject(a, o.objName)
+    ? CgApp(a.appFunctions,
+            map(a.appObjects, (x: CgObject) => x.objName == o.objName ? o : x),
+            a.appGlobals)
+    : CgApp(a.appFunctions, append(a.appObjects, o), a.appGlobals)
+
+fun appPutGlobal(a: CgApp, g2: CgGlobal): CgApp
+  ret any(a.appGlobals, (x: CgGlobal) => x.globalName == g2.globalName)
+    ? CgApp(a.appFunctions, a.appObjects,
+            map(a.appGlobals, (x: CgGlobal) => x.globalName == g2.globalName ? g2 : x))
+    : CgApp(a.appFunctions, a.appObjects, append(a.appGlobals, g2))
+
+fun appWithFunctions(a: CgApp, fns: List<CgFunction>): CgApp
+  ret CgApp(fns, a.appObjects, a.appGlobals)
