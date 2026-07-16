@@ -87,7 +87,10 @@ fun exprType(x: PExpr, r: Resolver): Spec|None
     (te: PeTernary)  => join(exprType(te.trueResult, r),
                             exprType(te.falseResult, r))
     (lm: PeLambda)   => lm.lamRet       # its compile fills this each pass
-    (bk: PeBlock)    => exprType(bk.blockValue, r)
+    # Python's BlockExpression.get_type wraps the resolver in the block's
+    # local scope before typing the value (a value reading a block-local let
+    # must see it — the drops pass inserts such bindings before check).
+    (bk: PeBlock)    => exprType(bk.blockValue, blockScope(bk.blockStmts, r))
     (mt: PeMatch)    => matchType(mt, r)
     (op: PeBuiltinOp) => op.opType
     (pl: PeParallel) => None

@@ -40,7 +40,23 @@ fun checkFun2(f: PsFun, r0: Resolver): List<PErr>
       concat(err4,
       concat(funAttrErrs(f),
       concat(paramDefaultErrs(chain(flattenParams(f.fParams)), r, noErrs()),
-             unusedParamWarns(f)))))))
+      concat(missingRetErrs(f, bodyR),
+             unusedParamWarns(f))))))))
+
+# A declared result must actually be produced: a body that type-checks to no
+# value (no `ret` reaches the function block and no trailing value) would
+# generate `Return(None)` and crash codegen — a bare tail-call STATEMENT where
+# `ret f(...)` was meant.
+fun missingRetErrs(f: PsFun, bodyR: Resolver): List<PErr>
+  ret match(f.fBody)
+    (b: PExpr) => match(f.fRet)
+      (rt: Spec) => match(exprType(b, bodyR))
+        (bt: Spec) => noErrs()
+        ()          => oneErr(f.psfLine,
+                              "function '" + bareOfUnique(f.fName)
+                              + "' declares a result but its body never returns a value — missing `ret`?")
+      ()         => noErrs()
+    ()         => noErrs()
 
 fun funAttrErrs(f: PsFun): List<PErr>
   ret concat(foreignErrs(f),

@@ -190,9 +190,19 @@ class FunctionStatement(DataStatement):
                        for err in t.default_value_errors(let.default_value, resolver,
                                                          let.line_ref, "parameter")]
 
+        # A declared result must actually be produced: a body that type-checks
+        # to no value (no `ret` reaches the function block and no trailing
+        # value) would generate `Return(None)` and crash codegen — a bare
+        # tail-call STATEMENT where `ret f(...)` was meant.
+        missing_ret_err: list[Error] = []
+        if (self.body is not None and self.return_type is not None
+                and self.body.get_type(body_resolver) is None):
+            missing_ret_err.append(Error(self.line_ref,
+                f"function '{g.bare_name(self.name)}' declares a result but its body never returns a value — missing `ret`?"))
+
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
                 + tail_err + terminal_err + inner_where_err + default_err
-                + self.__unused_param_warnings())
+                + missing_ret_err + self.__unused_param_warnings())
 
     def __unused_param_warnings(self) -> list[Error]:
         # No value vanishes silently: a parameter the body never reads receives

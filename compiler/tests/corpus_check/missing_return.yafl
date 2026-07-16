@@ -1,0 +1,16 @@
+# A function with a declared result whose body ends in a bare expression
+# STATEMENT (no `ret`) never yields a value: must be a check error naming the
+# function, never a codegen crash on Return(None).
+namespace Corpus
+
+import System
+
+fun helper(a: Int): Int
+  let b = a + 1
+  ignore(b)
+
+fun ignore(x: Int): Int
+  ret x
+
+fun main(): Int
+  ret helper(1)
