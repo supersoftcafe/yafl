@@ -72,14 +72,35 @@ def task_subtype_name(result_type: Type) -> str | None:
     if isinstance(result_type, TaskWrapper):
         return task_subtype_name(result_type.inner)
     # Struct (and any other type): unique subtype per distinct layout. The
-    # digest is taken over the type's structural repr with a STABLE hash —
-    # NOT Python's built-in hash(), which is per-process randomised for
-    # anything containing strings (the struct's field names), and would make
-    # both this name and the anonymous-struct numbering it drives differ on
-    # every compile. Distinct layouts get distinct reprs; 64 bits makes
+    # digest is sha1 over the same structural SIGNATURE lazy_thunks'
+    # _ir_mangle hashes (field names + recursive kind mangles) — a stable,
+    # language-neutral string, unlike Python's repr (which the bootstrap
+    # port cannot reproduce) or the built-in hash() (per-process
+    # randomised). Distinct layouts get distinct signatures; 64 bits makes
     # collision negligible within one compilation.
-    digest = hashlib.blake2b(repr(result_type).encode(), digest_size=8).hexdigest()
+    digest = hashlib.sha1(_type_sig(result_type).encode()).hexdigest()[:16]
     return f"task$T{digest}"
+
+
+def _type_sig(t: Type) -> str:
+    """The structural signature string task_subtype_name hashes: the same
+    shape _ir_mangle builds for struct fields ("name:kind|..."), defined
+    here (pure, no registry) so both compilers derive identical bytes."""
+    if isinstance(t, DataPointer):
+        return "ptr"
+    if isinstance(t, Int):
+        return f"i{t.precision}"
+    if isinstance(t, FuncPointer):
+        return "fun"
+    if isinstance(t, TaskWrapper):
+        return _type_sig(t.inner)
+    if isinstance(t, Struct):
+        return "|".join(f"{n}:{_type_sig(ft)}" for n, ft in t.fields)
+    # Float and anything else: precision-bearing kinds mirror _ir_mangle.
+    from codegen.typedecl import Float as _Float
+    if isinstance(t, _Float):
+        return f"f{t.precision}"
+    return repr(t)   # unreachable for shapes that can carry a task result
 
 
 def make_task_foreign_object() -> Object:
@@ -107,7 +128,9 @@ def make_task_subtype_object(subtype_name: str, result_type: Type) -> Object:
         extends=("task",),
         functions=(),
         fields=ImmediateStruct(TASK_FIELDS + (("result", result_type),)),
-        comment=f"task subtype for result type {result_type}",
+        # The structural signature, not repr(): this lands in the emitted C
+        # and must be reproducible by the bootstrap port byte for byte.
+        comment=f"task subtype for result type {_type_sig(result_type)}",
         is_foreign=subtype_name == "task_obj",
         is_mutable=True,   # state/result/next written after construction — not compactable
     )
