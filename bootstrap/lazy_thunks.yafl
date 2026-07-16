@@ -1,0 +1,260 @@
+# bootstrap/lazy_thunks.yafl — lazy thunk machinery, ported from
+# lowering/lazy_thunks.py: per unique IR value-type T, the stub class
+# Lazy$<mangle>, waiter task subtype, lazy_fetch$/lazy_finish$/lazy_drain$
+# functions and the [future] worker runner. See the Python module docstring
+# for the stub layout and the fetch/drain protocols — the op sequences below
+# are 1:1 with it.
+#
+# DELIBERATE DEVIATION (pure port): Python reverses Lazy$<mangle> class names
+# back to IR types through the mutable _STRUCT_REGISTRY (sha1 isn't
+# invertible). Here the DRIVER carries (mangle → CgType) pairs from the
+# creation sites (genLazyAlloc / letLazyGlobal — both know the type), and
+# lazyMachinery below is a pure function of the type; ensure-idempotence is
+# the driver's name-keyed dedupe. Output is byte-identical; only the
+# plumbing differs.
+namespace Bootstrap
+
+import System
+
+# ── naming (stubClassName / futureRunnerName live in generate_stmt.yafl,
+#    fetchFunctionName in generate_expr.yafl) ────────────────────────────────
+
+fun finisherFunctionName(t2: CgType): String
+  ret "lazy_finish$" + irMangle(t2)
+
+fun drainFunctionName(t2: CgType): String
+  ret "lazy_drain$" + irMangle(t2)
+
+# The task subtype every [lazy] waiter is an instance of — shared with
+# async_lower's naming so reads of a completed task's `result` cast to the
+# actual emitted struct. Goes through wrapReturnType because async_lower
+# keys subtypes by unwrapped result types.
+fun waiterSubtypeName(t2: CgType): String
+  ret match(taskSubtypeName(wrapReturnType(t2)))
+    (name: String) => name
+    ()              => ""   # unreachable: a lazy value type is never Void
+
+# ── shared helpers ───────────────────────────────────────────────────────────
+
+fun svLazyDiscard(): RParam
+  ret RpStackVar(CgDataPointer(), "$sv_lazy_discard")
+
+fun lazyRuntimeCall1(name: String, argName: String, argVal: RParam): Op
+  ret OpMove(svLazyDiscard(),
+             RpRuntimeInvoke(name, RpNewStruct(list1(RpNamedValue(argName, argVal))), CgDataPointer()),
+             true, List<RParam>())
+
+# Recover the raw value from the wrapped form an async-ABI callee returns:
+# pass-through wraps ARE the value; CgTaskWrapper extracts `.value`.
+fun lazyExtractValue(svWrapped: RParam, valueType: CgType, wrapped: CgType): RParam
+  ret match(wrapped)
+    (w: CgTaskWrapper) => RpStructField(svWrapped, "value")
+    (o: CgType)        => svWrapped
+
+# SyncWrap applies only to a CgTaskWrapper-promoted return; pass-through
+# wraps already have the correct ABI shape.
+fun lazySyncWrap(value: RParam, wrapped: CgType): RParam
+  ret match(wrapped)
+    (w: CgTaskWrapper) => RpSyncWrap(value, wrapped)
+    (o: CgType)        => value
+
+# ── stub class ───────────────────────────────────────────────────────────────
+
+fun makeStubObject(valueType: CgType): CgObject
+  ret CgObject(stubClassName(valueType), List<String>(), List<CgFuncSlot>(),
+               CgImmediateStruct(list4(CgField("type", CgDataPointer()),
+                                       CgField("flag", CgDataPointer()),
+                                       CgField("closure", CgFuncPointer()),
+                                       CgField("value", valueType))),
+               None, "lazy stub for " + irMangle(valueType),
+               false, true, 0)   # is_mutable: flag/value memoised after construction
+
+# ── drain: walk the waiter chain, write value into each result, complete ────
+
+fun makeDrainFunction(valueType: CgType): CgFunction
+  let waiterTy = waiterSubtypeName(valueType)
+  let flagField = RpStackVar(CgDataPointer(), "flag_field")
+  let value = RpStackVar(valueType, "value")
+  let svHead = RpStackVar(CgDataPointer(), "$sv_head")
+  let svNext = RpStackVar(CgDataPointer(), "$sv_next")
+  let ops = append(append(append(append(append(append(append(append(append(List<Op>(),
+      OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
+                                     RpNewStruct(list1(RpNamedValue("flag", flagField))),
+                                     CgDataPointer()), false, List<RParam>())),
+      OpLabel("$loop", List<RParam>())),
+      OpJumpIf("$done", svHead, true, List<RParam>())),
+      # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
+      OpMove(RpObjectField(valueType, svHead, waiterTy, "result", None, false), value, false, List<RParam>())),
+      OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",
+                                     RpNewStruct(list1(RpNamedValue("head", svHead))),
+                                     CgDataPointer()), false, List<RParam>())),
+      lazyRuntimeCall1("task_complete_deferred", "self", svHead)),
+      OpMove(svHead, svNext, false, List<RParam>())),
+      OpJump("$loop", List<RParam>())),
+      OpLabel("$done", List<RParam>()))
+  ret CgFunction(drainFunctionName(valueType),
+                 CgStruct(list3(CgField("this", CgDataPointer()),
+                                CgField("flag_field", CgDataPointer()),
+                                CgField("value", valueType))),
+                 CgDataPointer(),
+                 CgStruct(list3(CgField("$sv_head", CgDataPointer()),
+                                CgField("$sv_next", CgDataPointer()),
+                                CgField("$sv_lazy_discard", CgDataPointer()))),
+                 append(ops, OpReturn(RpNullPointer(), List<RParam>())),
+                 "lazy chain drain for " + irMangle(valueType),
+                 None, false, false, true, false)
+
+# `this`-less call to the per-IR-type drain (drain ignores its this).
+fun emitDrainCall(valueType: CgType, flagAddr: RParam, value: RParam): Op
+  ret OpCall(RpGlobalFunction(drainFunctionName(valueType), None, false, None, false, false),
+             RpNewStruct(list2(RpNamedValue("flag_field", flagAddr),
+                               RpNamedValue("value", value))),
+             None, false, false, CgDataPointer(), List<RParam>())
+
+# ── fetch: the force protocol (bypass_async, hand-built IS_TASK branching) ──
+
+fun makeFetchFunction(valueType: CgType): CgFunction
+  let cls = stubClassName(valueType)
+  let waiterTy = waiterSubtypeName(valueType)
+  let wrapped = wrapReturnType(valueType)
+  let this = RpStackVar(CgDataPointer(), "this")
+  let waiter = RpStackVar(CgDataPointer(), "waiter")
+  let status = RpStackVar(CgInt(32), "status")
+  let flagAddr = RpStackVar(CgDataPointer(), "flag_addr")
+  let closure = RpStackVar(CgFuncPointer(), "closure")
+  let rwrapped = RpStackVar(wrapped, "result_wrapped")
+  let value = RpStackVar(valueType, "value")
+  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
+  let closureF = RpObjectField(CgFuncPointer(), this, cls, "closure", None, false)
+  let valueF = RpObjectField(valueType, this, cls, "value", None, false)
+  let isComplete = RpRuntimeInvoke("lazy_global_init_complete",
+                                   RpNewStruct(list1(RpNamedValue("p", flagF))), CgInt(32))
+  ret CgFunction(fetchFunctionName(valueType),
+                 CgStruct(list1(CgField("this", CgDataPointer()))),
+                 wrapped,
+                 CgStruct(append(append(list5(CgField("waiter", CgDataPointer()),
+                                              CgField("status", CgInt(32)),
+                                              CgField("flag_addr", CgDataPointer()),
+                                              CgField("closure", CgFuncPointer()),
+                                              CgField("result_wrapped", wrapped)),
+                                        CgField("value", valueType)),
+                                 CgField("$sv_lazy_discard", CgDataPointer()))),
+                 fetchOps(valueType, cls, waiterTy, wrapped, this, waiter, status, flagAddr,
+                          closure, rwrapped, value, flagF, closureF, valueF, isComplete),
+                 "lazy fetch for " + irMangle(valueType),
+                 None, false, false, true, false)
+
+fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
+             this: RParam, waiter: RParam, status: RParam, flagAddr: RParam,
+             closure: RParam, rwrapped: RParam, value: RParam,
+             flagF: RParam, closureF: RParam, valueF: RParam, isComplete: RParam): List<Op>
+  let finisher = finisherFunctionName(valueType)
+  ret concat(concat(concat(concat(list5(
+      OpJumpIf("$slow", isComplete, true, List<RParam>()),
+      OpReturn(lazySyncWrap(valueF, wrapped), List<RParam>()),
+      OpLabel("$slow", List<RParam>()),
+      OpNewObject(waiterTy, waiter, None, List<RParam>()),
+      lazyRuntimeCall1("task_init", "self", waiter)),
+    list5(
+      OpMove(flagAddr, RpPointerTo(flagF), false, List<RParam>()),
+      OpMove(status, RpRuntimeInvoke("lazy_thunk_enqueue",
+                                     RpNewStruct(list2(RpNamedValue("flag", flagAddr),
+                                                       RpNamedValue("waiter", waiter))),
+                                     CgInt(32)), false, List<RParam>()),
+      OpJumpIf("$already_done", RpIntEqConst(status, 2), false, List<RParam>()),
+      OpJumpIf("$return_waiter", RpIntEqConst(status, 0), false, List<RParam>()),
+      # status == 1: won init race
+      OpMove(closure, closureF, false, List<RParam>()))),
+    list5(
+      OpCall(closure, RpNewStruct(List<RpNamedValue>()), rwrapped, false, false, None, List<RParam>()),
+      OpJumpIf("$async_init",
+               RpRuntimeInvoke("UNLIKELY",
+                               RpNewStruct(list1(RpNamedValue("x", isTaskParam(rwrapped, wrapped)))),
+                               CgInt(32)), false, List<RParam>()),
+      # Sync init: unwrap, store, clear closure, drain
+      OpMove(value, lazyExtractValue(rwrapped, valueType, wrapped), false, List<RParam>()),
+      OpMove(valueF, value, false, List<RParam>()),
+      OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List<RParam>()))),
+    list4(
+      emitDrainCall(valueType, RpPointerTo(flagF), value),
+      OpReturn(lazySyncWrap(value, wrapped), List<RParam>()),
+      OpLabel("$async_init", List<RParam>()),
+      OpMove(svLazyDiscard(),
+             RpRuntimeInvoke("task_on_complete",
+                             RpNewStruct(list2(
+                               RpNamedValue("task", RpRuntimeInvoke("TASK_UNTAG",
+                                              RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(rwrapped, wrapped)))),
+                                              CgDataPointer())),
+                               RpNamedValue("cb", RpGlobalFunction(finisher, this, false, None, false, false)))),
+                             CgDataPointer()),
+             true, List<RParam>()))),
+    list5(
+      OpReturn(RpTagTask(waiter, wrapped), List<RParam>()),
+      OpLabel("$already_done", List<RParam>()),
+      OpReturn(lazySyncWrap(valueF, wrapped), List<RParam>()),
+      OpLabel("$return_waiter", List<RParam>()),
+      OpReturn(RpTagTask(waiter, wrapped), List<RParam>())))
+
+# ── [future] worker runner ───────────────────────────────────────────────────
+
+# Fire signature (this=stub, task) -> object_t*, matching _task_fire exactly —
+# the fetch must NOT be fired directly (its wrapped(T) result can be a hidden
+# sret and would misread the fire's two-pointer frame). Runs the fetch and
+# discards the result; either race outcome leaves the protocol consistent.
+fun makeFutureRunnerFunction(valueType: CgType): CgFunction
+  let wrapped = wrapReturnType(valueType)
+  let this = RpStackVar(CgDataPointer(), "this")
+  let rwrapped = RpStackVar(wrapped, "result_wrapped")
+  ret CgFunction(futureRunnerName(valueType),
+                 CgStruct(list2(CgField("this", CgDataPointer()),
+                                CgField("$task", CgDataPointer()))),
+                 CgDataPointer(),
+                 CgStruct(list1(CgField("result_wrapped", wrapped))),
+                 list2(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
+                              RpNewStruct(List<RpNamedValue>()), rwrapped, false, false, None, List<RParam>()),
+                       OpReturn(RpNullPointer(), List<RParam>())),
+                 "[future] worker runner for " + irMangle(valueType),
+                 None, false, false, true, false)
+
+# ── finisher (async-completion callback) ─────────────────────────────────────
+
+fun makeFinisherFunction(valueType: CgType): CgFunction
+  let cls = stubClassName(valueType)
+  let waiterTy = waiterSubtypeName(valueType)
+  let this = RpStackVar(CgDataPointer(), "this")
+  let completed = RpStackVar(CgDataPointer(), "completed")
+  let value = RpStackVar(valueType, "value")
+  let closureF = RpObjectField(CgFuncPointer(), this, cls, "closure", None, false)
+  let valueF = RpObjectField(valueType, this, cls, "value", None, false)
+  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
+  let completedResult = RpObjectField(valueType, completed, waiterTy, "result", None, false)
+  ret CgFunction(finisherFunctionName(valueType),
+                 CgStruct(list2(CgField("this", CgDataPointer()),
+                                CgField("completed", CgDataPointer()))),
+                 CgDataPointer(),
+                 CgStruct(list2(CgField("value", valueType),
+                                CgField("$sv_lazy_discard", CgDataPointer()))),
+                 list5(OpMove(value, completedResult, false, List<RParam>()),
+                       OpMove(valueF, value, false, List<RParam>()),
+                       OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List<RParam>()),
+                       emitDrainCall(valueType, RpPointerTo(flagF), value),
+                       OpReturn(RpNullPointer(), List<RParam>())),
+                 "lazy fetch async-finisher for " + irMangle(valueType),
+                 None, true, false, true, false)
+
+# ── the full per-type machinery (pure ensure_lazy_machinery) ─────────────────
+
+class [final] LazyMachineryOut(lmObjects: List<CgObject>, lmFunctions: List<CgFunction>)
+
+# The stub class, canonical task subtype and the four functions for one value
+# type. The driver dedupes by name against what async_lower will later
+# register (same subtype names ⇒ same emitted structs, no cross-type punning)
+# and adds the foreign `task` object once.
+fun lazyMachinery(valueType: CgType): LazyMachineryOut
+  ret LazyMachineryOut(
+        list2(makeTaskSubtypeObject(waiterSubtypeName(valueType), valueType),
+              makeStubObject(valueType)),
+        list4(makeFetchFunction(valueType),
+              makeFinisherFunction(valueType),
+              makeDrainFunction(valueType),
+              makeFutureRunnerFunction(valueType)))

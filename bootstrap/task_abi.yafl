@@ -1,0 +1,114 @@
+# bootstrap/task_abi.yafl — the task ABI, ported from lowering/task_abi.py:
+# how functions signal "the result is a task" to callers, at the IR level
+# (tagged task values, inspection) and the type level (which return shapes
+# need a CgTaskWrapper). Shared by async_lower, tail_trampoline and
+# lazy_thunks — one source of truth for the ABI.
+namespace Bootstrap
+
+import System
+
+# Layout of every task subtype's prefix — must match `task_t` in yafl.h byte
+# for byte so a `(task_t*)` cast of any subtype hits each field at the right
+# offset.
+fun taskFields(): List<CgField>
+  ret append(append(append(append(append(List<CgField>(),
+      CgField("type", CgDataPointer())),        # object_t.vtable
+      CgField("state", CgInt(32))),             # _Atomic(int32_t)
+      CgField("thread_id", CgInt(32))),         # originating worker thread index
+      CgField("callback", CgFuncPointer())),    # fun_t
+      CgField("next", CgDataPointer()))         # _Atomic(task_t*) — intrusive queue link
+
+# Adjust a function's return type so it can carry the task-pending signal: a
+# pointer-shaped type carries the tag in-band; anything else wraps in
+# CgTaskWrapper {value, task*}.
+fun wrapReturnType(t2: CgType): CgType
+  ret match(t2)
+    (v: CgVoid)         => t2
+    (d: CgDataPointer)  => t2
+    (fp: CgFuncPointer) => t2
+    (s2: CgStruct)      => wrapIfNoPointer(t2)
+    (o: CgType)         => CgTaskWrapper(t2)
+
+fun wrapIfNoPointer(t2: CgType): CgType
+  ret match(cgFirstPointerField(t2))
+    (name: String) => t2
+    ()              => CgTaskWrapper(t2)
+
+# Canonical name of the compiler-generated task subtype carrying
+# `resultType`, or None for Void (base task_t). Types storing the same C
+# value in the result field share one subtype; distinct struct layouts get a
+# unique name — sha1 over the same structural signature _ir_mangle hashes
+# (taskTypeSig below), byte-identical to Python's task_abi._type_sig.
+fun taskSubtypeName(resultType: CgType): String|None
+  ret match(resultType)
+    (v: CgVoid)          => None
+    # DataPointer (bigint, str, class pointers) — all stored as object_t*;
+    # maps to yafllib's pre-declared task_obj_t (yafl.h).
+    (d: CgDataPointer)   => "task_obj"
+    (fp: CgFuncPointer)  => "task$FuncPointer"
+    (i: CgInt)           => "task$Int" + String(i.precision)
+    (w: CgTaskWrapper)   => taskSubtypeName(w.inner)
+    (o: CgType)          => "task$T" + slice(sha1Hex(taskTypeSig(o)), 0, 16)
+
+# The structural signature taskSubtypeName hashes — Python task_abi._type_sig.
+fun taskTypeSig(t2: CgType): String
+  ret match(t2)
+    (d: CgDataPointer)  => "ptr"
+    (i: CgInt)          => "i" + String(i.precision)
+    (fp: CgFuncPointer) => "fun"
+    (w: CgTaskWrapper)  => taskTypeSig(w.inner)
+    (s2: CgStruct)      => taskSigFields(s2.fields)
+    (im: CgImmediateStruct) => taskSigFields(im.fields)
+    (f: CgFloat)        => "f" + String(f.precision)
+    (o: CgType)         => ""   # unreachable for shapes that can carry a task result
+
+fun taskSigFields(fields: List<CgField>): String
+  ret join(map(fields, (f2: CgField) => f2.fieldName + ":" + taskTypeSig(f2.fieldType)), "|")
+
+# Foreign 'task' Object — its typedef lives in yafl.h; the field list is
+# published so subtypes extend it via normal inheritance and ObjectField
+# accesses to inherited fields resolve at the correct offsets.
+fun makeTaskForeignObject(): CgObject
+  ret CgObject("task", List<String>(), List<CgFuncSlot>(),
+               CgImmediateStruct(taskFields()), None,
+               "foreign task_t — declared in yafllib/yafl.h",
+               true, false, 0)
+
+# A task subtype carrying `resultType` in its trailing `result` field.
+# task_obj is pre-declared in yafllib so it stays foreign; other subtypes are
+# compiler-emitted. is_mutable: state/result/next written after construction.
+fun makeTaskSubtypeObject(subtypeName: String, resultType: CgType): CgObject
+  ret CgObject(subtypeName, list1("task"), List<CgFuncSlot>(),
+               CgImmediateStruct(append(taskFields(), CgField("result", resultType))),
+               None, "task subtype for result type " + taskTypeSig(resultType),
+               subtypeName == "task_obj", true, 0)
+
+# Truthy (Int32) when `resultVar` carries a task signal; `wrappedType` is the
+# ALREADY-wrapped return type.
+fun isTaskParam(resultVar: RParam, wrappedType: CgType): RParam
+  ret match(wrappedType)
+    (d: CgDataPointer)  => RpRuntimeInvoke("PTR_IS_TASK",
+                             RpNewStruct(list1(RpNamedValue("p", resultVar))), CgInt(32))
+    (fp: CgFuncPointer) => RpRuntimeInvoke("PTR_IS_TASK",
+                             RpNewStruct(list1(RpNamedValue("p", RpStructField(resultVar, "o")))), CgInt(32))
+    (w: CgTaskWrapper)  => RpStructField(resultVar, "task")
+    (o: CgType)         => isTaskParamStruct(resultVar, o)
+
+fun isTaskParamStruct(resultVar: RParam, wrappedType: CgType): RParam
+  ret match(cgFirstPointerField(wrappedType))
+    (name: String) => RpRuntimeInvoke("PTR_IS_TASK",
+                        RpNewStruct(list1(RpNamedValue("p", RpStructField(resultVar, name)))), CgInt(32))
+    ()              => RpNullPointer()   # unreachable (Python raises ValueError)
+
+# The pointer-to-task (suitable for TASK_UNTAG) from a task-carrying result.
+fun taskPtrFrom(resultVar: RParam, wrappedType: CgType): RParam
+  ret match(wrappedType)
+    (d: CgDataPointer)  => resultVar
+    (fp: CgFuncPointer) => RpStructField(resultVar, "o")
+    (w: CgTaskWrapper)  => RpStructField(resultVar, "task")
+    (o: CgType)         => taskPtrFromStruct(resultVar, o)
+
+fun taskPtrFromStruct(resultVar: RParam, wrappedType: CgType): RParam
+  ret match(cgFirstPointerField(wrappedType))
+    (name: String) => RpStructField(resultVar, name)
+    ()              => RpNullPointer()   # unreachable (Python raises ValueError)
