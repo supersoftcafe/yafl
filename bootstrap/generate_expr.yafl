@@ -1027,18 +1027,18 @@ fun genTernaryJoin(condBundle: GBundle, falseBundle: GBundle, trueBundle: GBundl
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 11: BlockExpression (pyast/expression/block.py).
-# genStmt is a STUB — statement-side generate is a future PORT stage; see the
-# report. It aborts if actually reached so a real miswiring is loud, not silent.
+# Statement-side generate lives in generate_stmt.yafl; these are the block's
+# dispatch points into it.
 # ══════════════════════════════════════════════════════════════════════════
 
 fun genStmt(st: PStmt, r: Resolver, expected: Spec|None): GBundle
-  ret bundleOp1(OpAbort("genStmt: statement-side generate is not ported yet (out of scope for the expression-generate port)", List<RParam>()))
+  ret gsStmt(st, r, expected)
 
 fun genStmtLazyAlloc(st: PStmt, r: Resolver): GBundle
-  ret bundleOp1(OpAbort("genStmtLazyAlloc: not ported yet", List<RParam>()))
+  ret gsStmtLazyAlloc(st, r)
 
 fun genStmtLazyPopulate(st: PStmt, r: Resolver): GBundle
-  ret bundleOp1(OpAbort("genStmtLazyPopulate: not ported yet", List<RParam>()))
+  ret gsStmtLazyPopulate(st, r)
 
 fun genBlockTo(bk: PeBlock, r: Resolver, expected: Spec|None): GBundle
   let slotType = match(expected)
