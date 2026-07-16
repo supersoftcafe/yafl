@@ -183,7 +183,13 @@ fun lookup(idx: Statements, query: String): List<PStmt>
 enum Resolver
   # rrSuggest: {function unique-name → suggested param TupleSpec}, computed
   # once per compile pass from the previous pass's call sites (path 3).
-  enum RRoot(rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None)
+  # rrDiscriminators / rrOptLevel: GENERATE-only config (ResolverDiscriminators
+  # in Python), read by union_repr/generate through getDiscriminators/getOptLevel
+  # in generate_expr.yafl. Carried on the root (rather than as a wrapping layer,
+  # as Python does) because generate always starts from a fresh root built for
+  # that one codegen run — there is no nested rebinding to support.
+  enum RRoot(rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
+             rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
   # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
@@ -200,10 +206,19 @@ enum Resolver
   # enclosing scope like any local layer. No trait data here: each method
   # establishes its own in its body resolver.
   enum RClassBody(rcbClass: PsClass, rcbParent: Resolver)
+  # GENERATE-only: carries the innermost in-progress [tail] loop's or
+  # BlockExpression's (immutable) frame — ResolverLoop/ResolverBlock in Python.
+  # `rgFrame` is a GenFrame (defined in generate_expr.yafl); read via
+  # getLoopFrame/getBlockFrame there, never interpreted here. One variant
+  # serves both roles (mirrors DelegatingResolver's default pass-through: a
+  # loop frame leaves get_block_frame to fall through to the parent, and vice
+  # versa) so this file need not carry two near-identical cases.
+  enum RGen(rgFrame: GenFrame, rgParent: Resolver)
 
 fun findData(r: Resolver, query: String): Bag
   ret match(r)
     (root: RRoot) => globalBag(root.rrStmts, query, false)
+    (rg: RGen)    => findData(rg.rgParent, query)
     # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
     # same name in every enclosing scope — the parent is consulted only on a
     # miss. Merging instead would poison a complete local hit with an
@@ -219,6 +234,7 @@ fun findData(r: Resolver, query: String): Bag
 fun findType(r: Resolver, query: String): Bag
   ret match(r)
     (root: RRoot) => globalBag(root.rrStmts, query, true)
+    (rg: RGen)    => findType(rg.rgParent, query)
     (d: RData)    => findType(d.rdParent, query)
     (t2: RTypes)  => addBags(matchingFound(t2.rtNames, query),
                              findType(t2.rtParent, query))
@@ -250,6 +266,7 @@ fun [tail] paramSuggestion(r: Resolver, name: String): Spec|None
     (t2: RTypes)     => paramSuggestion(t2.rtParent, name)
     (tr: RTraits)    => paramSuggestion(tr.rtrParent, name)
     (cb: RClassBody) => paramSuggestion(cb.rcbParent, name)
+    (rg: RGen)       => paramSuggestion(rg.rgParent, name)
 
 # get_traits: every `[trait]` let in the statement set (precomputed by the
 # index) — no scope filter, exactly like Python's root.
@@ -261,6 +278,7 @@ fun [tail] traitLets(r: Resolver): List<PStmt>
     (t2: RTypes)     => traitLets(t2.rtParent)
     (tr: RTraits)    => traitLets(tr.rtrParent)
     (cb: RClassBody) => traitLets(cb.rcbParent)
+    (rg: RGen)       => traitLets(rg.rgParent)
 
 fun [tail] whereWalk(r: Resolver, scopes: List<String>): List<Spec>
   ret match(r)
@@ -272,6 +290,7 @@ fun [tail] whereWalk(r: Resolver, scopes: List<String>): List<Spec>
     (t2: RTypes)  => whereWalk(t2.rtParent, scopes)
     (tr: RTraits) => whereWalk(tr.rtrParent, scopes)
     (cb: RClassBody) => whereWalk(cb.rcbParent, scopes)
+    (rg: RGen)    => whereWalk(rg.rgParent, scopes)
 
 fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
   ret match(ns)
