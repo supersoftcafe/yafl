@@ -744,7 +744,9 @@ fun irMangle(t: CgType): String
     (i: CgInt) => "i" + String(i.precision)
     (f: CgFloat) => "f" + String(f.precision)
     (fp: CgFuncPointer) => "fun"
-    (s: CgStruct) => "s_" + structFieldSig(s.fields)
+    # Python hashes the signature (hashlib.sha1(sig).hexdigest()[:16]); the
+    # collision registry assert is Python-only — the C contract is the judge.
+    (s: CgStruct) => "s_" + slice(sha1Hex(structFieldSig(s.fields)), 0, 16)
     (o: CgType) => "unsupported"
 
 fun structFieldSig(fields: List<CgField>): String

@@ -8,11 +8,9 @@
 # genStmtLazyAlloc/genStmtLazyPopulate dispatch points, replacing the stubs
 # the expression-generate port left loud.
 #
-# KNOWN PARITY GAP (fails the C contract when first exercised): Python's
-# lazy_thunks._ir_mangle hashes a struct's field signature (sha1 hex, 16
-# chars); the port's irMangle (generate_expr.yafl) joins the raw signature.
-# Struct-typed lazy stub class names diverge until sha1 is ported into
-# hashes.yafl. Scalar/pointer mangles ("ptr"/"i64"/…) agree.
+# irMangle parity: struct field signatures hash via sha1Hex (hashes.yafl),
+# byte-identical to Python's hashlib.sha1(sig).hexdigest()[:16] — pinned by
+# tests/test_bootstrap_sha1.py.
 namespace Bootstrap
 
 import System

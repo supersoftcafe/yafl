@@ -49,6 +49,21 @@ fun hash6Line(line: System::String, sb: StringBuilder): StringBuilder
       ()               => sb
     ()               => sb
 
+# sha1 mode: each stdin line prints its sha1 hexdigest — diffed against
+# hashlib.sha1 by tests/test_bootstrap_sha1.py (irMangle's struct hashing).
+fun sha1Mode(text: System::String): (out: System::String, code: System::Int)
+  ret (sha1Lines(chain(splitLines(text)), StringBuilder())
+       |> (sb: StringBuilder) => toString(sb), 0)
+
+# Empty segments are skipped: splitLines yields a trailing one after the
+# final newline, which must not hash.
+fun [tail] sha1Lines(lines: Chain<System::String>, sb: StringBuilder): StringBuilder
+  ret match(lines)
+    (nil: ChainEnd) => sb
+    (l: ChainLink)  => sha1Lines(l.next, length(l.value) == 0
+                                   ? sb
+                                   : append(sb, sha1Hex(l.value) + "\n"))
+
 fun unescMode(text: String): (out: String, code: Int)
   ret (unescDump(chain(splitLines(text)), StringBuilder()) |> (sb) => toString(sb), 0)
 
@@ -526,6 +541,7 @@ fun run(text: System::String, i: IO): System::Int
   let mode = modeOf(args())
   let r = mode == "tokens" ? tokensMode(text)
         : mode == "hash6" ? hash6Mode(text)
+        : mode == "sha1" ? sha1Mode(text)
         : mode == "unesc" ? unescMode(text)
         : mode == "specs" ? specsMode(text)
         : mode == "resolve" ? resolveMode(text)
