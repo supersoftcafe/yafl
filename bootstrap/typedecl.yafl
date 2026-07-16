@@ -1,0 +1,694 @@
+namespace Bootstrap
+
+import System
+
+# bootstrap/typedecl.yafl — port of compiler/codegen/typedecl.py: the C-level
+# type declarations that back every RParam/Op/Function/Object/Global in
+# param.yafl/ops.yafl/ir.yafl.
+#
+# NAMING: every top-level name here is "Cg"-prefixed (Codegen) rather than
+# Python's bare names (Int, Float, Array, String, Struct, Void, ...) — those
+# collide with System builtins in this single flat namespace (bootstrap/*.yafl
+# and stdlib/*.yafl compile together as one program: `fun Int(...)`,
+# `fun Float(...)`, `fun String(...)` all already exist). The porting brief
+# flagged "Struct" alone as risky; in practice the whole hierarchy collides,
+# so it is prefixed uniformly for consistency.
+#
+# CACHING CONTRACT (`declare`/`_declare` in Python): Python's `type_cache` is
+# ONE shared mutable dict threaded (by reference, in place) through the whole
+# codegen output — every anonymous CgStruct/CgTaskWrapper shape seen anywhere
+# in the program gets a single canonical `struct_anon_N_t` typedef, reused
+# everywhere it recurs. YAFL has no mutable containers, so the cache is an
+# ordinary immutable `List<CgCacheEntry>` threaded explicitly: every function
+# that can grow it takes the current cache and RETURNS the (possibly grown)
+# next one as part of its result tuple, exactly the way `StringBuilder`
+# threading works in astdump.yafl. Callers MUST feed the returned cache into
+# the next call in sequence — dropping it silently reintroduces Python's
+# by-reference sharing as accidental resets (duplicate/colliding anon names).
+#
+# `CgImmediateStruct` never grows the cache (dont_cache=True in Python) and
+# `CgArray` never even consults it (Python's Array overrides `_declare`
+# directly, always inlining its body) — only `CgStruct` and `CgTaskWrapper`
+# go through the generic caching path.
+
+let maxInt: Int = 2147483647
+let minInt: Int = -2147483648
+let maskInt: Int = 4294967295
+
+# ── the type tree ────────────────────────────────────────────────────────────
+
+enum CgType
+  enum CgInt(precision: Int)                     # bit precision: 8 | 16 | 32 | 64 only
+  enum CgFloat(precision: Int)                   # 32 | 64
+  enum CgIntPtr()
+  enum CgDataPointer()
+  enum CgFuncPointer()
+  enum CgStruct(fields: List<CgField>)
+  enum CgImmediateStruct(fields: List<CgField>)  # never dedupes into the shared anon-struct cache
+  enum CgVoid()
+  enum CgArray(elemType: CgType, arrLength: Int)
+  enum CgTaskWrapper(inner: CgType)              # struct { <inner> value; object_t* task; }
+
+class [final] CgField(fieldName: String, fieldType: CgType)
+
+# One entry in the shared anonymous-struct cache: the CgType it was declared
+# for, the generated `struct_anon_N_t` name, and the full `typedef ... ;\n`
+# text to emit once at the end (Python: `type_cache[self] = (name, text)`).
+class [final] CgCacheEntry(entryType: CgType, entryName: String, entryTypedef: String)
+
+# ── literal payloads for `initialise`/`_initialise` ─────────────────────────
+# Python's `data: Any` accepts an int, a float, a {'f':.., 'o':..} mapping
+# (FuncPointer), a dict keyed by field name (Struct), or a list (Array) —
+# recursively. CgLit is that shape made explicit.
+
+enum CgLit
+  enum CgLitInt(value: Int)
+  enum CgLitFloat(value: Float)
+  enum CgLitStr(value: String)                # a bare non-mapping value (str(data) in Python)
+  enum CgLitFun(f: String, o: String|None)
+  enum CgLitFields(entries: List<CgLitField>)
+  enum CgLitItems(items: List<CgLit>)
+
+class [final] CgLitField(fieldName: String, fieldValue: CgLit)
+
+# ── small helpers shared across this file ───────────────────────────────────
+
+fun dedent4(s: String): String
+  ret length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
+
+fun memberInt(l: List<Int>, x: Int): Bool
+  ret match(head<Int>(l))
+    (h: Int) => h == x ? true : memberInt(tail<Int>(l), x)
+    ()       => false
+
+fun disjointInt(a: List<Int>, b: List<Int>): Bool
+  ret !any<Int>(a, (x: Int) => memberInt(b, x))
+
+fun unionInt(a: List<Int>, b: List<Int>): List<Int>
+  ret fold(b, a, (acc: List<Int>, x: Int) => memberInt(acc, x) ? acc : append(acc, x))
+
+fun listAt<T>(l: List<T>, i: Int): T|None
+  ret head<T>(drop<T>(l, i))
+
+# ── isinstance(_, Struct) — matches CgStruct AND CgImmediateStruct, exactly
+# like Python's isinstance sees ImmediateStruct as a Struct subclass ─────────
+
+fun cgFieldsOf(t: CgType): List<CgField>|None
+  ret match(t)
+    (s: CgStruct)          => s.fields
+    (m: CgImmediateStruct) => m.fields
+    (o: CgType)            => None
+
+fun cgIsStructLike(t: CgType): Bool
+  ret match(cgFieldsOf(t))
+    (fields: List<CgField>) => true
+    ()                      => false
+
+# ── equality (dict-key semantics: Python's frozen-dataclass structural eq) ──
+
+fun eqCgType(a: CgType, b: CgType): Bool
+  ret match(a)
+    (x: CgInt) => match(b)
+      (y: CgInt) => x.precision == y.precision
+      (o: CgType) => false
+    (x: CgFloat) => match(b)
+      (y: CgFloat) => x.precision == y.precision
+      (o: CgType) => false
+    (x: CgIntPtr) => match(b)
+      (y: CgIntPtr) => true
+      (o: CgType)   => false
+    (x: CgDataPointer) => match(b)
+      (y: CgDataPointer) => true
+      (o: CgType)        => false
+    (x: CgFuncPointer) => match(b)
+      (y: CgFuncPointer) => true
+      (o: CgType)        => false
+    (x: CgVoid) => match(b)
+      (y: CgVoid) => true
+      (o: CgType) => false
+    (x: CgStruct) => match(b)
+      (y: CgStruct) => eqCgFields(x.fields, y.fields)
+      (o: CgType)   => false
+    (x: CgImmediateStruct) => match(b)
+      (y: CgImmediateStruct) => eqCgFields(x.fields, y.fields)
+      (o: CgType)            => false
+    (x: CgArray) => match(b)
+      (y: CgArray) => x.arrLength == y.arrLength && eqCgType(x.elemType, y.elemType)
+      (o: CgType)  => false
+    (x: CgTaskWrapper) => match(b)
+      (y: CgTaskWrapper) => eqCgType(x.inner, y.inner)
+      (o: CgType)        => false
+
+fun eqCgFields(a: List<CgField>, b: List<CgField>): Bool
+  ret match(head<CgField>(a))
+    (fa: CgField) => match(head<CgField>(b))
+      (fb: CgField) => fa.fieldName == fb.fieldName && eqCgType(fa.fieldType, fb.fieldType)
+                       && eqCgFields(tail<CgField>(a), tail<CgField>(b))
+      ()            => false
+    () => isEmpty<CgField>(b)
+
+# ── words_upper_bound / has_pointers / dont_cache / get_pointer_paths ───────
+
+fun cgWordsUpperBound(t: CgType): Int
+  ret match(t)
+    (i: CgInt)  => 1
+    (f: CgFloat) => 1
+    (p: CgIntPtr) => 1
+    (d: CgDataPointer) => 1
+    (fp: CgFuncPointer) => 2   # fun_t = { void* f; void* o; }
+    (s: CgStruct) => cgFieldsWordsUpperBound(s.fields)
+    (m: CgImmediateStruct) => cgFieldsWordsUpperBound(m.fields)
+    (v: CgVoid) => 0
+    (a: CgArray) => cgWordsUpperBound(a.elemType) * a.arrLength
+    (w: CgTaskWrapper) => cgWordsUpperBound(w.inner) + 1
+
+fun cgFieldsWordsUpperBound(fields: List<CgField>): Int
+  ret fold(fields, 0, (acc: Int, fld: CgField) => acc + cgWordsUpperBound(fld.fieldType))
+
+fun cgHasPointers(t: CgType): Bool
+  ret match(t)
+    (i: CgInt) => false
+    (f: CgFloat) => false
+    (p: CgIntPtr) => false
+    (d: CgDataPointer) => true
+    (fp: CgFuncPointer) => true
+    (s: CgStruct) => any<CgField>(s.fields, (fld: CgField) => cgHasPointers(fld.fieldType))
+    (m: CgImmediateStruct) => any<CgField>(m.fields, (fld: CgField) => cgHasPointers(fld.fieldType))
+    (v: CgVoid) => false
+    (a: CgArray) => cgHasPointers(a.elemType)
+    (w: CgTaskWrapper) => true   # the task field is a GC pointer
+
+fun cgDontCache(t: CgType): Bool
+  ret match(t)
+    (m: CgImmediateStruct) => true
+    (o: CgType)            => false
+
+fun cgGetPointerPaths(t: CgType, path: String): List<String>
+  ret match(t)
+    (i: CgInt) => List<String>()
+    (f: CgFloat) => List<String>()
+    (p: CgIntPtr) => List<String>()
+    (d: CgDataPointer) => append(List<String>(), path)
+    (fp: CgFuncPointer) => append(List<String>(), path + ".o")
+    (v: CgVoid) => List<String>()
+    (s: CgStruct) => cgStructPointerPaths(s.fields, path)
+    (m: CgImmediateStruct) => cgStructPointerPaths(m.fields, path)
+    (a: CgArray) => cgArrayPointerPaths(a.elemType, a.arrLength, path, 0)
+    (w: CgTaskWrapper) => append(List<String>(), path + ".task")
+
+fun cgStructPointerPaths(fields: List<CgField>, path: String): List<String>
+  ret fold(fields, List<String>(), (acc: List<String>, fld: CgField) =>
+    concat<String>(acc, cgGetPointerPaths(fld.fieldType, path + "." + mangleName(fld.fieldName))))
+
+fun cgArrayPointerPaths(elemType: CgType, len: Int, path: String, index: Int): List<String>
+  ret index >= len
+    ? List<String>()
+    : concat<String>(cgGetPointerPaths(elemType, path + ".a[" + String(index) + "]"),
+                      cgArrayPointerPaths(elemType, len, path, index + 1))
+
+# `Struct.__add__` — always rebuilds a plain CgStruct (Python's `Struct(...)`
+# constructor call, regardless of self's actual subtype).
+fun cgStructAdd(a: CgType, b: CgType): CgType
+  ret CgStruct(concat<CgField>(cgFieldsOfOrEmpty(a), cgFieldsOfOrEmpty(b)))
+
+fun cgFieldsOfOrEmpty(t: CgType): List<CgField>
+  ret match(cgFieldsOf(t))
+    (f: List<CgField>) => f
+    ()                  => List<CgField>()
+
+# `NewStruct.__add__` in param.yafl reuses this same shape for RParam values;
+# see param.yafl.
+
+# ── declare (`_declare`/`declare`) — threads the shared anon-struct cache ───
+
+fun cgDeclare(t: CgType, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret cgDeclareIndent(t, cache, "    ")
+
+fun cgDeclareIndent(t: CgType, cache: List<CgCacheEntry>, fieldIndent: String): (text: String, cache: List<CgCacheEntry>)
+  ret match(t)
+    (i: CgInt)  => ("int" + String(i.precision) + "_t", cache)
+    (f: CgFloat) => (cgDeclareFloatType(f), cache)
+    (p: CgIntPtr) => ("intptr_t", cache)
+    (d: CgDataPointer) => ("object_t*", cache)
+    (fp: CgFuncPointer) => ("fun_t", cache)
+    (v: CgVoid) => ("void", cache)
+    (a: CgArray) => cgDeclareArrayInline(a, cache, fieldIndent)
+    (m: CgImmediateStruct) => cgDeclareStructBody(t, "    ", cache)
+    (s: CgStruct) => cgDeclareCached(t, cache)
+    (w: CgTaskWrapper) => cgDeclareCached(t, cache)
+
+fun cgDeclareFloatType(f: CgFloat): String
+  ret f.precision == 32 ? "float" : "double"
+
+fun cgDeclareArrayInline(a: CgArray, cache0: List<CgCacheEntry>, fieldIndent: String): (text: String, cache: List<CgCacheEntry>)
+  let newIndent = fieldIndent + "    "
+  let sub = cgDeclareIndent(a.elemType, cache0, newIndent)
+  ret ("struct {\n" + fieldIndent + sub.text + " a[" + String(a.arrLength) + "];\n" + dedent4(fieldIndent) + "}",
+       sub.cache)
+
+fun cgDeclareCached(t: CgType, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret match(cgCacheLookup(cache0, t))
+    (name: String) => (name, cache0)
+    ()             => cgDeclareCachedMiss(t, cache0)
+
+fun cgDeclareCachedMiss(t: CgType, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let built = cgDeclareStructBody(t, "    ", cache0)
+  let name = "struct_anon_" + String(chainLength(chain(built.cache))) + "_t"
+  let typedefText = "typedef " + built.text + " " + name + ";\n"
+  ret (name, append(built.cache, CgCacheEntry(t, name, typedefText)))
+
+fun cgCacheLookup(cache: List<CgCacheEntry>, t: CgType): String|None
+  ret match(head<CgCacheEntry>(cache))
+    (e: CgCacheEntry) => eqCgType(e.entryType, t) ? e.entryName : cgCacheLookup(tail<CgCacheEntry>(cache), t)
+    ()                => None
+
+# `_declare_struct` — only CgStruct/CgImmediateStruct/CgTaskWrapper define it;
+# it is only ever called (from `cgDeclareIndent`/`cgDeclareCached`) with
+# fieldIndent == "    ", exactly as in Python.
+fun cgDeclareStructBody(t: CgType, fieldIndent: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret match(t)
+    (s: CgStruct)          => cgDeclareStructFields(s.fields, fieldIndent, cache0)
+    (m: CgImmediateStruct) => cgDeclareStructFields(m.fields, fieldIndent, cache0)
+    (w: CgTaskWrapper)     => cgDeclareTaskWrapperBody(w, fieldIndent, cache0)
+    (o: CgType)            => ("", cache0)   # unreachable
+
+fun cgDeclareStructFields(fields: List<CgField>, fieldIndent: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let newIndent = fieldIndent + "    "
+  let result = fold(fields, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), fld: CgField) =>
+    cgDeclareStructFieldStep(acc, fld, fieldIndent, newIndent))
+  ret ("struct { " + result.text + "\n" + dedent4(fieldIndent) + "}", result.cache)
+
+fun cgDeclareStructFieldStep(acc: (text: String, cache: List<CgCacheEntry>), fld: CgField, fieldIndent: String, newIndent: String): (text: String, cache: List<CgCacheEntry>)
+  let sub = cgDeclareIndent(fld.fieldType, acc.cache, newIndent)
+  ret (acc.text + "\n" + fieldIndent + sub.text + " " + mangleName(fld.fieldName) + ";", sub.cache)
+
+fun cgDeclareTaskWrapperBody(w: CgTaskWrapper, fieldIndent: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  # NOTE: unlike Struct, TaskWrapper passes fieldIndent UNCHANGED to its inner
+  # type's declare — no `+ "    "` — exactly matching Python.
+  let sub = cgDeclareIndent(w.inner, cache0, fieldIndent)
+  ret ("struct {\n" + fieldIndent + sub.text + " value;\n" + fieldIndent + "object_t* task;\n" + dedent4(fieldIndent) + "}",
+       sub.cache)
+
+# ── initialise (`_initialise`/`initialise`) ─────────────────────────────────
+
+fun cgInitialise(t: CgType, data: CgLit, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret cgInitialiseIndent(t, data, "    ", cache)
+
+fun cgInitialiseIndent(t: CgType, data: CgLit, fieldIndent: String, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret match(t)
+    (i: CgInt)  => (cgInitInt(i, data), cache)
+    (f: CgFloat) => (cgInitFloat(f, data), cache)
+    (p: CgIntPtr) => (cgLitToString(data), cache)          # base passthrough (unused in practice)
+    (d: CgDataPointer) => (cgLitToString(data), cache)     # base passthrough (unused in practice)
+    (v: CgVoid) => (cgLitToString(data), cache)            # base passthrough (unused in practice)
+    (fp: CgFuncPointer) => (cgInitFuncPointer(data), cache)
+    (s: CgStruct) => cgInitStructFields(s.fields, data, fieldIndent, cache)
+    (m: CgImmediateStruct) => cgInitStructFields(m.fields, data, fieldIndent, cache)
+    (a: CgArray) => cgInitArray(a, data, fieldIndent, cache)
+    (w: CgTaskWrapper) => (cgLitToString(data), cache)     # base passthrough (unused in practice)
+
+fun cgLitToString(data: CgLit): String
+  ret match(data)
+    (li: CgLitInt) => String(li.value)
+    (lf: CgLitFloat) => String(lf.value)
+    (ls: CgLitStr) => ls.value
+    (lfn: CgLitFun) => "<fun>"       # Python's f"{dict}" — unreachable path, never exercised
+    (lfs: CgLitFields) => "<fields>" # ditto
+    (lit: CgLitItems) => "<items>"   # ditto
+
+fun cgInitInt(i: CgInt, data: CgLit): String
+  ret match(data)
+    (li: CgLitInt) => cgInitIntValue(i.precision, li.value)
+    (o: CgLit)     => "((int" + String(i.precision) + "_t)0)"   # unreachable (Python raises ValueError)
+
+fun cgInitIntValue(precision: Int, data: Int): String
+  let suffix = precision == 64 ? "LL" : ""
+  let halfSpan = pow2(precision - 1)
+  let minVal = 0 - halfSpan
+  ret data == minVal
+    ? "((int" + String(precision) + "_t)(-" + String(halfSpan - 1) + suffix + " - 1))"
+    : "((int" + String(precision) + "_t)" + String(data) + suffix + ")"
+
+fun pow2(n: Int): Int
+  ret n <= 0 ? 1 : 2 * pow2(n - 1)
+
+fun cgInitFloat(f: CgFloat, data: CgLit): String
+  let v = cgLitAsFloat(data)
+  ret f.precision == 32 ? "((float)" + floatRepr(v) + "f)" : "((double)" + floatRepr(v) + ")"
+
+fun cgLitAsFloat(data: CgLit): Float
+  ret match(data)
+    (lf: CgLitFloat) => lf.value
+    (li: CgLitInt)   => Float(li.value)
+    (o: CgLit)       => 0.0
+
+# Python uses `repr(float(data))` — the shortest round-trippable decimal
+# text. Reuses the stdlib Float formatter; NOT verified byte-for-byte against
+# CPython's repr() for every edge case (exponent-notation thresholds, "inf"/
+# "nan" spelling, trailing ".0").
+fun floatRepr(v: Float): String
+  ret String(v)
+
+fun cgInitFuncPointer(data: CgLit): String
+  ret match(data)
+    (lf: CgLitFun) => "(fun_t){ .f = " + lf.f + ", .o = " + orNullString(lf.o) + " }"
+    (ls: CgLitStr) => "(fun_t){ .f = " + ls.value + ", .o = NULL }"
+    (o: CgLit)     => "(fun_t){ .f = , .o = NULL }"   # unreachable
+
+fun orNullString(o: String|None): String
+  ret match(o)
+    (s: String) => length(s) == 0 ? "NULL" : s
+    ()          => "NULL"
+
+fun cgInitStructFields(fields: List<CgField>, data: CgLit, fieldIndent: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let newIndent = fieldIndent + "    "
+  let entries = cgLitFieldsEntries(data)
+  let result = fold(fields, ("", cache0, true), (acc: (text: String, cache: List<CgCacheEntry>, first: Bool), fld: CgField) =>
+    cgInitStructFieldStep(acc, fld, entries, newIndent))
+  ret ("{ " + result.text + " \n" + fieldIndent + "}", result.cache)
+
+fun cgInitStructFieldStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), fld: CgField, entries: List<CgLitField>, newIndent: String): (text: String, cache: List<CgCacheEntry>, first: Bool)
+  ret match(cgLitFieldsGet(entries, fld.fieldName))
+    (v: CgLit) => cgInitStructFieldStepHit(acc, fld, v, newIndent)
+    ()          => acc
+
+fun cgInitStructFieldStepHit(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), fld: CgField, v: CgLit, newIndent: String): (text: String, cache: List<CgCacheEntry>, first: Bool)
+  let sub = cgInitialiseIndent(fld.fieldType, v, newIndent, acc.cache)
+  let piece = "\n" + newIndent + "." + mangleName(fld.fieldName) + " = " + sub.text
+  ret (acc.first ? piece : acc.text + "," + piece, sub.cache, false)
+
+fun cgLitFieldsEntries(data: CgLit): List<CgLitField>
+  ret match(data)
+    (lf: CgLitFields) => lf.entries
+    (o: CgLit)        => List<CgLitField>()
+
+fun cgLitFieldsGet(entries: List<CgLitField>, name: String): CgLit|None
+  ret match(head<CgLitField>(entries))
+    (f: CgLitField) => f.fieldName == name ? f.fieldValue : cgLitFieldsGet(tail<CgLitField>(entries), name)
+    ()              => None
+
+fun cgInitArray(a: CgArray, data: CgLit, fieldIndent: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let newIndent = fieldIndent + "    "
+  let items = cgLitItemsOf(data)
+  let result = cgInitArrayItems(a.elemType, chain<CgLit>(items), 0, fieldIndent, newIndent, "", true, cache0)
+  ret ("{ " + result.text + " \n" + dedent4(fieldIndent) + "}", result.cache)
+
+fun cgLitItemsOf(data: CgLit): List<CgLit>
+  ret match(data)
+    (li: CgLitItems) => li.items
+    (o: CgLit)        => List<CgLit>()
+
+fun cgInitArrayItems(elemType: CgType, items: Chain<CgLit>, index: Int, fieldIndent: String, newIndent: String, acc: String, first: Bool, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let step = chainNext<CgLit>(items)
+  ret match(step.head)
+    (item: CgLit) => cgInitArrayItemsHit(elemType, item, step.rest, index, fieldIndent, newIndent, acc, first, cache)
+    ()            => (acc, cache)
+
+fun cgInitArrayItemsHit(elemType: CgType, item: CgLit, rest: Chain<CgLit>, index: Int, fieldIndent: String, newIndent: String, acc: String, first: Bool, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let sub = cgInitialiseIndent(elemType, item, newIndent, cache)
+  let piece = "\n" + fieldIndent + ".a[" + String(index) + "] = " + sub.text
+  ret cgInitArrayItems(elemType, rest, index + 1, fieldIndent, newIndent, first ? piece : acc + "," + piece, false, sub.cache)
+
+# ── string / bigint literal encoders (free functions in Python too) ────────
+
+fun cgStrLiteral(value: String): String
+  ret "STR(\"" + strLiteralBytes(value, 0, "") + "\")"
+
+fun [tail] strLiteralBytes(value: String, i: Int, acc: String): String
+  ret i >= length(value) ? acc : strLiteralBytes(value, i + 1, acc + strLiteralByte(byteAt(value, i)))
+
+fun strLiteralByte(b: Int32): String
+  ret b == '\\' ? "\\\\"
+    : b == '"' ? "\\\""
+    : (b >= 32i32 && b < 127i32) ? asciiToString(b)
+    : "\\" + octByte(b)
+
+fun octByte(b: Int32): String
+  let n = Int(b)
+  ret String(n / 64) + String((n / 8) % 8) + String(n % 8)
+
+fun cgBigintLiteral(valueIn: Int): String
+  let sign = valueIn < 0 ? -1 : 0
+  let value = valueIn < 0 ? (0 - valueIn) : valueIn
+  let array = bigintArray(value)
+  ret isEmpty<Int>(array)
+    ? "INTEGER_LITERAL_1(0, 0)"
+    : chainLength(chain(array)) == 1
+      ? "INTEGER_LITERAL_1(" + String(sign) + ", " + String(forceInt(head<Int>(array))) + ")"
+      : chainLength(chain(array)) == 2
+        ? "INTEGER_LITERAL_2(" + String(sign) + ", " + String(forceInt(head<Int>(array))) + ", " + String(forceInt(head<Int>(tail<Int>(array)))) + ")"
+        : "INTEGER_LITERAL_N(" + String(sign) + ", " + String(chainLength(chain(array))) + ", " + join(bigintGroups(array), " INTEGER_LITERAL_SEP ") + ")"
+
+fun forceInt(x: Int|None): Int
+  ret match(x)
+    (v: Int) => v
+    ()       => 0
+
+fun [tail] bigintArrayLoop(value: Int, acc: List<Int>): List<Int>
+  ret value == 0 ? acc : bigintArrayLoop(value >> 32, append(acc, value & maskInt))
+
+fun bigintArray(value: Int): List<Int>
+  ret bigintArrayLoop(value, List<Int>())
+
+fun bigintGroups(array: List<Int>): List<String>
+  ret bigintGroupsLoop(array, List<String>())
+
+fun [tail] bigintGroupsLoop(items: List<Int>, acc: List<String>): List<String>
+  ret match(head<Int>(items))
+    (a: Int) => match(head<Int>(tail<Int>(items)))
+      (b: Int) => bigintGroupsLoop(tail<Int>(tail<Int>(items)), append(acc, "INTEGER_LITERAL_N_2(" + String(a) + ", " + String(b) + ")"))
+      ()       => append(acc, "INTEGER_LITERAL_N_1(" + String(a) + ")")
+    () => acc
+
+# ── first_pointer_field / is_task_check ─────────────────────────────────────
+
+fun cgFirstPointerField(t: CgType): String|None
+  ret match(cgFieldsOf(t))
+    (fields: List<CgField>) => cgFirstPointerFieldLoop(fields)
+    ()                       => None
+
+fun [tail] cgFirstPointerFieldLoop(fields: List<CgField>): String|None
+  ret match(head<CgField>(fields))
+    (f: CgField) => match(f.fieldType)
+      (d: CgDataPointer) => f.fieldName
+      (o: CgType)        => cgFirstPointerFieldLoop(tail<CgField>(fields))
+    () => None
+
+fun cgIsTaskCheck(expr: String, t: CgType): String
+  ret match(t)
+    (d: CgDataPointer) => "PTR_IS_TASK(" + expr + ")"
+    (fp: CgFuncPointer) => "PTR_IS_TASK((" + expr + ").o)"
+    (w: CgTaskWrapper) => "(" + expr + ").task"
+    (o: CgType) => cgIsTaskCheckStruct(expr, o)
+
+fun cgIsTaskCheckStruct(expr: String, t: CgType): String
+  ret match(cgFirstPointerField(t))
+    (name: String) => "PTR_IS_TASK((" + expr + ")." + mangleName(name) + ")"
+    ()             => ""   # unreachable (Python raises ValueError)
+
+# ── union-slot layout (`compute_union_slots` and its helpers) ──────────────
+
+fun cgFlattenPrimitives(t: CgType): List<CgType>
+  ret match(cgFieldsOf(t))
+    (fields: List<CgField>) => fold(fields, List<CgType>(), (acc: List<CgType>, fld: CgField) => concat<CgType>(acc, cgFlattenPrimitives(fld.fieldType)))
+    () => match(t)
+      (fp: CgFuncPointer) => append(append(List<CgType>(), CgIntPtr()), CgDataPointer())
+      (o: CgType)         => append(List<CgType>(), o)
+
+fun cgPrimitiveRank(t: CgType): Int
+  ret match(t)
+    (i: CgInt) => i.precision == 64 ? 0 : i.precision == 32 ? 3 : i.precision == 16 ? 4 : i.precision == 8 ? 5 : 6
+    (f: CgFloat) => f.precision == 64 ? 0 : f.precision == 32 ? 3 : 6
+    (d: CgDataPointer) => 1
+    (p: CgIntPtr) => 2
+    (o: CgType) => 6
+
+fun canMergeInto(small: CgType, large: CgType): Bool
+  ret match(small)
+    (si: CgInt) => match(large)
+      (li: CgInt) => 0 < si.precision && si.precision < li.precision
+      (o: CgType) => false
+    (o: CgType) => false
+
+fun cgSlotKey(t: CgType): CgType => t
+
+fun cgTagType(n: Int): CgType
+  ret n <= 127 ? CgInt(8) : n <= 32767 ? CgInt(16) : CgInt(32)
+
+class [final] CgSlot(slotType: CgType, users: List<Int>, active: Bool)
+class [final] CgSlotEntry(slotIndex: Int, origType: CgType)
+
+# Phase 1: assign each variant's flattened primitives to slots, reusing an
+# existing slot of the same type that the current variant doesn't already
+# occupy (so two primitives of the same variant never alias one slot).
+fun [tail] cgFindSlotIndex(slots: List<CgSlot>, idx: Int, prim: CgType, vi: Int): Int
+  ret match(head<CgSlot>(slots))
+    (s: CgSlot) => (s.active && eqCgType(s.slotType, prim) && !memberInt(s.users, vi)) ? idx : cgFindSlotIndex(tail<CgSlot>(slots), idx + 1, prim, vi)
+    ()          => -1
+
+fun [tail] cgUpdateSlotUsersLoop(slots: List<CgSlot>, idx: Int, vi: Int, i: Int, acc: List<CgSlot>): List<CgSlot>
+  ret match(head<CgSlot>(slots))
+    (s: CgSlot) => cgUpdateSlotUsersLoop(tail<CgSlot>(slots), idx, vi, i + 1, append(acc, i == idx ? CgSlot(s.slotType, append(s.users, vi), s.active) : s))
+    ()          => acc
+
+fun cgUpdateSlotUsers(slots: List<CgSlot>, idx: Int, vi: Int): List<CgSlot>
+  ret cgUpdateSlotUsersLoop(slots, idx, vi, 0, List<CgSlot>())
+
+fun cgAddPrimitive(slots: List<CgSlot>, vi: Int, prim: CgType, vmapVi: List<CgSlotEntry>): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
+  let found = cgFindSlotIndex(slots, 0, prim, vi)
+  ret found >= 0
+    ? (cgUpdateSlotUsers(slots, found, vi), append(vmapVi, CgSlotEntry(found, prim)))
+    : (append(slots, CgSlot(prim, append(List<Int>(), vi), true)), append(vmapVi, CgSlotEntry(chainLength(chain(slots)), prim)))
+
+fun cgAddPrimitivesForVariant(slots: List<CgSlot>, vi: Int, prims: List<CgType>, vmapVi: List<CgSlotEntry>): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
+  ret match(head<CgType>(prims))
+    (p: CgType) => cgAddPrimitivesForVariantHit(slots, vi, p, tail<CgType>(prims), vmapVi)
+    ()          => (slots, vmapVi)
+
+fun cgAddPrimitivesForVariantHit(slots: List<CgSlot>, vi: Int, p: CgType, restPrims: List<CgType>, vmapVi: List<CgSlotEntry>): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
+  let step = cgAddPrimitive(slots, vi, p, vmapVi)
+  ret cgAddPrimitivesForVariant(step.slots, vi, restPrims, step.vmapVi)
+
+fun cgBuildInitialSlotsLoop(flatVariants: List<List<CgType> >, vi: Int, slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >): (slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >)
+  ret match(head<List<CgType> >(flatVariants))
+    (prims: List<CgType>) => cgBuildInitialSlotsLoopHit(prims, tail<List<CgType> >(flatVariants), vi, slots, vmap)
+    ()                     => (slots, vmap)
+
+fun cgBuildInitialSlotsLoopHit(prims: List<CgType>, restVariants: List<List<CgType> >, vi: Int, slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >): (slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >)
+  let step = cgAddPrimitivesForVariant(slots, vi, prims, List<CgSlotEntry>())
+  ret cgBuildInitialSlotsLoop(restVariants, vi + 1, step.slots, append(vmap, step.vmapVi))
+
+# Phase 2: repeatedly merge a smaller fixed-width int slot into a disjoint
+# larger int slot, restarting the scan from the beginning after every merge
+# (mirrors Python's `while changed: ... break` restart-from-top behaviour).
+fun cgFindMergeInner(slots: List<CgSlot>, si: Int, s: CgSlot, li: Int): Int|None
+  ret li >= chainLength(chain(slots))
+    ? None
+    : (li == si ? cgFindMergeInner(slots, si, s, li + 1) : cgFindMergeInnerAt(slots, si, s, li))
+
+fun cgFindMergeInnerAt(slots: List<CgSlot>, si: Int, s: CgSlot, li: Int): Int|None
+  ret match(listAt<CgSlot>(slots, li))
+    (l: CgSlot) => (l.active && canMergeInto(s.slotType, l.slotType) && disjointInt(s.users, l.users)) ? li : cgFindMergeInner(slots, si, s, li + 1)
+    ()          => cgFindMergeInner(slots, si, s, li + 1)
+
+fun cgFindMergeOuter(slots: List<CgSlot>, si: Int): (si: Int, li: Int)|None
+  ret si >= chainLength(chain(slots)) ? None : cgFindMergeOuterAt(slots, si)
+
+fun cgFindMergeOuterAt(slots: List<CgSlot>, si: Int): (si: Int, li: Int)|None
+  ret match(listAt<CgSlot>(slots, si))
+    (s: CgSlot) => s.active ? cgFindMergeOuterActive(slots, si, s) : cgFindMergeOuter(slots, si + 1)
+    ()          => cgFindMergeOuter(slots, si + 1)
+
+fun cgFindMergeOuterActive(slots: List<CgSlot>, si: Int, s: CgSlot): (si: Int, li: Int)|None
+  ret match(cgFindMergeInner(slots, si, s, 0))
+    (li: Int) => (si, li)
+    ()        => cgFindMergeOuter(slots, si + 1)
+
+fun [tail] cgMergeApplyLoop(slots: List<CgSlot>, si: Int, li: Int, newL: CgSlot, i: Int, acc: List<CgSlot>): List<CgSlot>
+  ret match(head<CgSlot>(slots))
+    (s: CgSlot) => cgMergeApplyLoop(tail<CgSlot>(slots), si, li, newL, i + 1,
+        append(acc, i == si ? CgSlot(s.slotType, s.users, false) : i == li ? newL : s))
+    () => acc
+
+fun cgMergeApply(slots: List<CgSlot>, si: Int, li: Int, s: CgSlot, l: CgSlot): List<CgSlot>
+  ret cgMergeApplyLoop(slots, si, li, CgSlot(l.slotType, unionInt(l.users, s.users), true), 0, List<CgSlot>())
+
+fun cgRewriteVmapEntry(e: CgSlotEntry, si: Int, li: Int): CgSlotEntry
+  ret e.slotIndex == si ? CgSlotEntry(li, e.origType) : e
+
+fun cgRewriteVmapOne(vm: List<CgSlotEntry>, si: Int, li: Int): List<CgSlotEntry>
+  ret map(vm, (e: CgSlotEntry) => cgRewriteVmapEntry(e, si, li))
+
+fun cgRewriteVmap(vmap: List<List<CgSlotEntry> >, si: Int, li: Int): List<List<CgSlotEntry> >
+  ret map(vmap, (vm: List<CgSlotEntry>) => cgRewriteVmapOne(vm, si, li))
+
+fun cgMergeSlotsLoop(slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >): (slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >)
+  ret match(cgFindMergeOuter(slots, 0))
+    (pair: (si: Int, li: Int)) => cgMergeSlotsLoopHit(slots, vmap, pair.si, pair.li)
+    ()                          => (slots, vmap)
+
+fun cgMergeSlotsLoopHit(slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >, si: Int, li: Int): (slots: List<CgSlot>, vmap: List<List<CgSlotEntry> >)
+  let s = forceSlot(listAt<CgSlot>(slots, si))
+  let l = forceSlot(listAt<CgSlot>(slots, li))
+  ret cgMergeSlotsLoop(cgMergeApply(slots, si, li, s, l), cgRewriteVmap(vmap, si, li))
+
+fun forceSlot(x: CgSlot|None): CgSlot
+  ret match(x)
+    (s: CgSlot) => s
+    ()          => CgSlot(CgVoid(), List<Int>(), false)   # unreachable
+
+# Phase 3: collect the surviving (active) slots WITH their original indices,
+# stable-sort by primitive rank, and renumber positionally — this becomes the
+# `$s0`, `$s1`, ... fields, plus a trailing `$tag`. Positional, exactly like
+# Python's `renumber = {old_si: new_si for new_si, (old_si, _) in
+# enumerate(active)}` — never by slot VALUE, which would mis-map two active
+# slots that happen to share both type and user set (a variant carrying two
+# primitives of the same type produces exactly that).
+class [final] CgIdxSlot(isIndex: Int, isSlot: CgSlot)
+
+fun cgActiveWithIndicesLoop(slots: List<CgSlot>, i: Int, acc: List<CgIdxSlot>): List<CgIdxSlot>
+  ret match(head<CgSlot>(slots))
+    (s: CgSlot) => cgActiveWithIndicesLoop(tail<CgSlot>(slots), i + 1,
+        s.active ? append<CgIdxSlot>(acc, CgIdxSlot(i, s)) : acc)
+    ()          => acc
+
+fun cgActiveWithIndices(slots: List<CgSlot>): List<CgIdxSlot>
+  ret cgActiveWithIndicesLoop(slots, 0, List<CgIdxSlot>())
+
+# Stable insertion sort by primitive rank (Python's list.sort is stable; the
+# active-slot lists here are small, so O(n^2) is not a concern).
+fun cgSortIdxByRank(slots: List<CgIdxSlot>): List<CgIdxSlot>
+  ret fold(slots, List<CgIdxSlot>(), (acc: List<CgIdxSlot>, s: CgIdxSlot) => cgInsertIdxByRank(acc, s))
+
+fun cgInsertIdxByRank(sorted: List<CgIdxSlot>, s: CgIdxSlot): List<CgIdxSlot>
+  ret match(head<CgIdxSlot>(sorted))
+    (h: CgIdxSlot) => cgPrimitiveRank(s.isSlot.slotType) < cgPrimitiveRank(h.isSlot.slotType)
+      ? prepend<CgIdxSlot>(s, sorted)
+      : prepend<CgIdxSlot>(h, cgInsertIdxByRank(tail<CgIdxSlot>(sorted), s))
+    () => append(List<CgIdxSlot>(), s)
+
+class [final] CgUnionLayout(fieldsStruct: CgType, variantMap: List<List<CgSlotEntry> >)
+
+fun computeUnionSlots(variantTypes: List<CgType>, maxTag: Int|None): CgUnionLayout
+  let flat = map(variantTypes, (vt: CgType) => cgFlattenPrimitives(vt))
+  let built = cgBuildInitialSlotsLoop(flat, 0, List<CgSlot>(), List<List<CgSlotEntry> >())
+  let merged = cgMergeSlotsLoop(built.slots, built.vmap)
+  let active = cgSortIdxByRank(cgActiveWithIndices(merged.slots))
+  let renumber = cgBuildRenumber(active)
+  let tagBound = maxOf(chainLength(chain(variantTypes)), orZero(maxTag) + 1)
+  let slotFields = append(cgSlotFieldsOf(active, 0), CgField("$tag", cgTagType(tagBound)))
+  let variantMap = map(merged.vmap, (vm: List<CgSlotEntry>) => cgRenumberVmapOne(vm, renumber))
+  ret CgUnionLayout(CgStruct(slotFields), variantMap)
+
+fun cgRenumberVmapOne(vm: List<CgSlotEntry>, renumber: List<CgRenumberEntry>): List<CgSlotEntry>
+  ret map(vm, (e: CgSlotEntry) => CgSlotEntry(cgRenumberLookup(renumber, e.slotIndex), e.origType))
+
+fun orZero(x: Int|None): Int
+  ret match(x)
+    (v: Int) => v
+    ()       => 0
+
+fun maxOf(a: Int, b: Int): Int
+  ret a > b ? a : b
+
+fun cgSlotFieldsOf(active: List<CgIdxSlot>, i: Int): List<CgField>
+  ret match(head<CgIdxSlot>(active))
+    (s: CgIdxSlot) => prepend<CgField>(CgField("$s" + String(i), s.isSlot.slotType), cgSlotFieldsOf(tail<CgIdxSlot>(active), i + 1))
+    ()              => List<CgField>()
+
+# renumber: old slot index (position in the ORIGINAL `slots` list) -> new
+# index (position in `active`, post sort).
+class [final] CgRenumberEntry(oldIndex: Int, newIndex: Int)
+
+fun cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx: Int, acc: List<CgRenumberEntry>): List<CgRenumberEntry>
+  ret match(head<CgIdxSlot>(active))
+    (s: CgIdxSlot) => cgBuildRenumberLoop(tail<CgIdxSlot>(active), newIdx + 1, append<CgRenumberEntry>(acc, CgRenumberEntry(s.isIndex, newIdx)))
+    ()              => acc
+
+fun cgBuildRenumber(active: List<CgIdxSlot>): List<CgRenumberEntry>
+  ret cgBuildRenumberLoop(active, 0, List<CgRenumberEntry>())
+
+fun [tail] cgRenumberLookup(renumber: List<CgRenumberEntry>, oldIndex: Int): Int
+  ret match(head<CgRenumberEntry>(renumber))
+    (e: CgRenumberEntry) => e.oldIndex == oldIndex ? e.newIndex : cgRenumberLookup(tail<CgRenumberEntry>(renumber), oldIndex)
+    ()                    => -1

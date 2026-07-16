@@ -1,0 +1,67 @@
+namespace Bootstrap
+
+import System
+
+# bootstrap/cgtools.yafl — port of compiler/codegen/tools.py: C identifier
+# mangling + pointer-mask expression helpers, shared by every codegen node
+# ported below (typedecl/param/ops/ir). Named "cgtools" rather than Python's
+# bare "tools" — too generic for this single flat namespace.
+
+fun isValidMangleChar(c: Int32): Bool
+  ret (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+
+fun operatorCharName(c: Int32): String|None
+  ret match(c)
+    ('+') => "plus"
+    ('-') => "minus"
+    ('*') => "star"
+    ('/') => "slash"
+    ('=') => "eq"
+    ('>') => "gt"
+    ('<') => "lt"
+    ('?') => "bind"
+    ('|') => "or"
+    ('&') => "and"
+    ('!') => "bang"
+    ('%') => "mod"
+    ('^') => "xor"
+    ('~') => "tilde"
+    ()    => None
+
+fun hexDigit(n: Int): String
+  let hexd = "0123456789abcdef"
+  ret slice(hexd, n, n + 1)
+
+fun hexDigits(n: Int): String
+  ret n < 16 ? hexDigit(n) : hexDigits(n / 16) + hexDigit(n % 16)
+
+fun hexMin2(v: Int32): String
+  let n = Int(v)
+  ret n < 16 ? "0" + hexDigit(n) : hexDigits(n)
+
+# `::` (namespace separator) becomes `__` before individual char processing.
+fun joinDoubleColon(s: String): String
+  ret join(split(s, "::"), "__")
+
+fun mangleChar(c: Int32): String
+  if isValidMangleChar(c)
+    ret asciiToString(c)
+  if c == '@' || c == '$'
+    ret "_"
+  if c == '`'
+    ret ""
+  ret match(operatorCharName(c))
+    (name: String) => name
+    ()             => "X" + hexMin2(c)
+
+fun mangleName(symbol: String): String
+  ret fold(codepoints(joinDoubleColon(symbol)), "", (acc: String, c: Int32) => acc + mangleChar(c))
+
+fun toPointerMask(fieldType: CgType, typeStr: String): String
+  ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path: String) => "|maskof(" + typeStr + ", " + path + ")"), "") + ")"
+
+# One 64-slot window of a wide object's pointer map. maskof_w is 0 for a field
+# outside the window (modulo keeps the shift defined), so every field appears
+# in every window's expression and C folds each to its constant.
+fun toPointerMaskWindow(fieldType: CgType, typeStr: String, window: Int): String
+  ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path: String) => "|maskof_w(" + typeStr + ", " + path + ", " + String(window) + ")"), "") + ")"

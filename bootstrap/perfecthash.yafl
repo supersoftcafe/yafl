@@ -1,0 +1,194 @@
+namespace Bootstrap
+
+import System
+
+# bootstrap/perfecthash.yafl — port of compiler/codegen/perfecthash.py: a
+# greedy near-perfect hash assignment for vtable dispatch slots.
+#
+# Python threads two pieces of MUTABLE state across the whole algorithm: a
+# `new_id` counter (closed over by `next_method_id()`) and a `conflict_graph`
+# dict-of-sets that is rebuilt every outer iteration and mutated in place
+# during the greedy vertex-cover pass. Both become explicit values threaded
+# through as extra parameters/return fields — same discipline as the
+# `type_cache` threading in typedecl.yafl.
+#
+# DETERMINISM CAVEAT: Python's re-randomisation loop does
+# `for method in cover: method_ids[method] = next_method_id()` where `cover`
+# is a `set` — CPython's set iteration order is hash-seed dependent (the
+# whole compiler is normally run with PYTHONHASHSEED=0 to make this
+# reproducible). This port always processes `cover` in the order the greedy
+# algorithm discovered it, which need not match any particular Python run's
+# set order. The algorithm is still CORRECT (every method still gets a
+# fresh, unique id), but the exact id numbers assigned to colliding methods
+# may differ from a given Python run. Flagged as low-confidence for
+# byte-identical parity with Python on this narrow point.
+#
+# Despite the Python docstring/import ("Generate random 32-bit ids"), no
+# randomness is actually used anywhere — `random` is imported but never
+# called; ids are assigned by the sequential `next_method_id()` counter.
+# Ported as-is (see the port report for this being flagged as dead
+# import / stale comment upstream, not a behavioural bug).
+
+class [final] VtableEntry(className: String, methods: List<String>)
+class [final] MethodId(mName: String, mId: Int)
+class [final] VtableSize(vsClassName: String, vsSize: Int)
+class [final] PerfectHashResult(methodIds: List<MethodId>, vtableSizes: List<VtableSize>)
+
+fun bitLength(n: Int): Int
+  ret n <= 0 ? 0 : 1 + bitLength(n / 2)
+
+fun nextPowerOfTwo(n: Int): Int
+  ret pow2(bitLength(n - 1))
+
+fun phAllMethodNames(vtables: List<VtableEntry>): List<String>
+  ret sort<String>(phDedupeNames(fold(vtables, List<String>(), (acc: List<String>, v: VtableEntry) => concat<String>(acc, v.methods))))
+
+fun phDedupeNames(names: List<String>): List<String>
+  ret fold(names, List<String>(), (acc: List<String>, n: String) => strListAdd(acc, n))
+
+fun phAssignIdsLoop(names: List<String>, nextId: Int, acc: List<MethodId>): List<MethodId>
+  ret match(head<String>(names))
+    (n: String) => phAssignIdsLoop(tail<String>(names), nextId + 1, append<MethodId>(acc, MethodId(n, nextId)))
+    ()           => acc
+
+fun phAssignIds(names: List<String>): List<MethodId>
+  ret phAssignIdsLoop(names, 0, List<MethodId>())
+
+fun phVtableSizes(vtables: List<VtableEntry>): List<VtableSize>
+  ret map(vtables, (v: VtableEntry) => VtableSize(v.className, nextPowerOfTwo(chainLength(chain(v.methods)) * 2)))
+
+fun methodIdGet(ids: List<MethodId>, name: String): Int
+  ret match(head<MethodId>(ids))
+    (m: MethodId) => m.mName == name ? m.mId : methodIdGet(tail<MethodId>(ids), name)
+    ()             => 0   # unreachable: every method name has an assigned id
+
+fun vtableSizeGet(sizes: List<VtableSize>, className: String): Int
+  ret match(head<VtableSize>(sizes))
+    (v: VtableSize) => v.vsClassName == className ? v.vsSize : vtableSizeGet(tail<VtableSize>(sizes), className)
+    ()                => 0   # unreachable: every class has an assigned size
+
+# ── one collision-detection scan over all vtables (using the CURRENT ids) ──
+
+class [final] SlotEntry(slotIndex: Int, slotMethod: String)
+class [final] CollisionPair(pairA: String, pairB: String)
+
+fun slotEntryGet(slots: List<SlotEntry>, idx: Int): String|None
+  ret match(head<SlotEntry>(slots))
+    (s: SlotEntry) => s.slotIndex == idx ? s.slotMethod : slotEntryGet(tail<SlotEntry>(slots), idx)
+    ()              => None
+
+fun phScanClassSlotsStep(m: String, rest: List<String>, methodIds: List<MethodId>, mask: Int, slots: List<SlotEntry>, pairs: List<CollisionPair>): (slots: List<SlotEntry>, pairs: List<CollisionPair>)
+  let idx = methodIdGet(methodIds, m) & mask
+  ret match(slotEntryGet(slots, idx))
+    (existing: String) => phScanClassSlots(rest, methodIds, mask, slots, append<CollisionPair>(pairs, CollisionPair(m, existing)))
+    ()                   => phScanClassSlots(rest, methodIds, mask, append<SlotEntry>(slots, SlotEntry(idx, m)), pairs)
+
+fun phScanClassSlots(methods: List<String>, methodIds: List<MethodId>, mask: Int, slots: List<SlotEntry>, pairs: List<CollisionPair>): (slots: List<SlotEntry>, pairs: List<CollisionPair>)
+  ret match(head<String>(methods))
+    (m: String) => phScanClassSlotsStep(m, tail<String>(methods), methodIds, mask, slots, pairs)
+    ()           => (slots, pairs)
+
+fun phScanAllSlotsStep(v: VtableEntry, rest: List<VtableEntry>, methodIds: List<MethodId>, vtableSizes: List<VtableSize>, pairs: List<CollisionPair>): List<CollisionPair>
+  let mask = vtableSizeGet(vtableSizes, v.className) - 1
+  let scanned = phScanClassSlots(v.methods, methodIds, mask, List<SlotEntry>(), pairs)
+  ret phScanAllSlots(rest, methodIds, vtableSizes, scanned.pairs)
+
+fun phScanAllSlots(vtables: List<VtableEntry>, methodIds: List<MethodId>, vtableSizes: List<VtableSize>, pairs: List<CollisionPair>): List<CollisionPair>
+  ret match(head<VtableEntry>(vtables))
+    (v: VtableEntry) => phScanAllSlotsStep(v, tail<VtableEntry>(vtables), methodIds, vtableSizes, pairs)
+    ()                => pairs
+
+# ── conflict graph + greedy vertex cover ─────────────────────────────────────
+
+class [final] ConflictEntry(cfMethod: String, cfNeighbors: List<String>)
+
+fun conflictNeighborsGet(graph: List<ConflictEntry>, method: String): List<String>
+  ret match(head<ConflictEntry>(graph))
+    (e: ConflictEntry) => e.cfMethod == method ? e.cfNeighbors : conflictNeighborsGet(tail<ConflictEntry>(graph), method)
+    ()                   => List<String>()
+
+fun conflictGraphHas(graph: List<ConflictEntry>, method: String): Bool
+  ret any<ConflictEntry>(graph, (e: ConflictEntry) => e.cfMethod == method)
+
+fun conflictGraphAddDirected(graph: List<ConflictEntry>, from2: String, to: String): List<ConflictEntry>
+  ret conflictGraphHas(graph, from2)
+    ? map(graph, (e: ConflictEntry) => e.cfMethod == from2 ? ConflictEntry(e.cfMethod, strListAdd(e.cfNeighbors, to)) : e)
+    : append<ConflictEntry>(graph, ConflictEntry(from2, append<String>(List<String>(), to)))
+
+fun conflictGraphAddEdge(graph: List<ConflictEntry>, a: String, b: String): List<ConflictEntry>
+  ret conflictGraphAddDirected(conflictGraphAddDirected(graph, a, b), b, a)
+
+fun buildConflictGraph(pairs: List<CollisionPair>): List<ConflictEntry>
+  ret fold(pairs, List<ConflictEntry>(), (acc: List<ConflictEntry>, p: CollisionPair) => conflictGraphAddEdge(acc, p.pairA, p.pairB))
+
+fun conflictGraphHasAnyEdges(graph: List<ConflictEntry>): Bool
+  ret any<ConflictEntry>(graph, (e: ConflictEntry) => !isEmpty<String>(e.cfNeighbors))
+
+# Ties broken by first occurrence — matches Python's max(dict, key=...) over
+# an insertion-ordered dict (this graph is built in the same discovery order
+# as `phScanAllSlots`, so insertion order matches Python's exactly).
+fun pickMaxDegreeLoop(graph: List<ConflictEntry>, bestMethod: String, bestDegree: Int): String
+  ret match(head<ConflictEntry>(graph))
+    (e: ConflictEntry) => pickMaxDegreeNext(tail<ConflictEntry>(graph), e, bestMethod, bestDegree)
+    ()                   => bestMethod
+
+fun pickMaxDegreeNext(rest: List<ConflictEntry>, e: ConflictEntry, bestMethod: String, bestDegree: Int): String
+  let degree = chainLength(chain(e.cfNeighbors))
+  ret degree > bestDegree
+    ? pickMaxDegreeLoop(rest, e.cfMethod, degree)
+    : pickMaxDegreeLoop(rest, bestMethod, bestDegree)
+
+fun pickMaxDegree(graph: List<ConflictEntry>): String
+  ret pickMaxDegreeLoop(graph, "", -1)
+
+fun conflictGraphRemoveOne(graph: List<ConflictEntry>, from2: String, target: String): List<ConflictEntry>
+  ret map(graph, (e: ConflictEntry) => e.cfMethod == from2 ? ConflictEntry(e.cfMethod, filter<String>(e.cfNeighbors, (x: String) => x != target)) : e)
+
+fun removeFromNeighbors(graph: List<ConflictEntry>, neighbors: List<String>, method: String): List<ConflictEntry>
+  ret fold(neighbors, graph, (g: List<ConflictEntry>, n: String) => conflictGraphRemoveOne(g, n, method))
+
+fun conflictGraphClearMethod(graph: List<ConflictEntry>, method: String): List<ConflictEntry>
+  ret map(graph, (e: ConflictEntry) => e.cfMethod == method ? ConflictEntry(e.cfMethod, List<String>()) : e)
+
+fun greedyVertexCoverStep(graph: List<ConflictEntry>, cover: List<String>): List<String>
+  let method = pickMaxDegree(graph)
+  let neighbors = conflictNeighborsGet(graph, method)
+  let graph2 = removeFromNeighbors(graph, neighbors, method)
+  let graph3 = conflictGraphClearMethod(graph2, method)
+  ret greedyVertexCover(graph3, append<String>(cover, method))
+
+fun greedyVertexCover(graph: List<ConflictEntry>, cover: List<String>): List<String>
+  ret conflictGraphHasAnyEdges(graph) ? greedyVertexCoverStep(graph, cover) : cover
+
+# ── re-assign fresh ids to every method in the cover, then re-iterate ──────
+
+fun phReassignOne(acc: (methodIds: List<MethodId>, nextId: Int), m: String): (methodIds: List<MethodId>, nextId: Int)
+  ret (map(acc.methodIds, (e: MethodId) => e.mName == m ? MethodId(e.mName, acc.nextId) : e), acc.nextId + 1)
+
+fun phReassignCover(methodIds: List<MethodId>, cover: List<String>, nextId0: Int): (methodIds: List<MethodId>, nextId: Int)
+  ret fold(cover, (methodIds, nextId0), (acc: (methodIds: List<MethodId>, nextId: Int), m: String) => phReassignOne(acc, m))
+
+fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int, pairs: List<CollisionPair>): List<MethodId>
+  let graph = buildConflictGraph(pairs)
+  let cover = greedyVertexCover(graph, List<String>())
+  let reassigned = phReassignCover(methodIds0, cover, nextId0)
+  ret phFixpoint(vtables, reassigned.methodIds, vtableSizes, iteration + 1, reassigned.nextId)
+
+fun phFixpointStep(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int): List<MethodId>
+  let pairs = phScanAllSlots(vtables, methodIds0, vtableSizes, List<CollisionPair>())
+  ret isEmpty<CollisionPair>(pairs)
+    ? methodIds0
+    : phFixpointCollision(vtables, methodIds0, vtableSizes, iteration, nextId0, pairs)
+
+fun phFixpoint(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int): List<MethodId>
+  ret iteration >= 1000 ? methodIds0 : phFixpointStep(vtables, methodIds0, vtableSizes, iteration, nextId0)
+
+# ── public entry point ───────────────────────────────────────────────────────
+
+fun createPerfectLookups(vtables: List<VtableEntry>): PerfectHashResult
+  let names = phAllMethodNames(vtables)
+  let methodIds0 = phAssignIds(names)
+  let nextId0 = chainLength(chain(names))
+  let vtableSizes = phVtableSizes(vtables)
+  let finalIds = phFixpoint(vtables, methodIds0, vtableSizes, 0, nextId0)
+  ret PerfectHashResult(finalIds, vtableSizes)
