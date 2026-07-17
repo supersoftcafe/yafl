@@ -867,3 +867,32 @@ one token; parselib.close_angle() peels a single `>` off the front (pushing the
 remainder back) and replaces discard_sym(">") in the two type-arg-list rules.
 Shift/comparison operators are untouched (close_angle only fires after a matched
 `<` opening a type-arg list). Tests in test_parser.py.
+
+OPEN 2026-07-17 — GC use-after-free, pre-existing on compiler-port (found
+while validating the prune-pacing decoupling; unrelated to it — proven by
+stash baseline). Two surfaces of what is likely one bug:
+  * test_gc_pressure: FLAKY poison DANGLE abort — a live object's field
+    points at a reclaimed one ("live 0x... (vt=node) field#1 -> reclaimed
+    0x...", cycle ~23). Intermittent ⇒ a race, not a deterministic
+    lifetime error.
+  * test_large_objects: deterministic SEGFAULT in
+    mixed_sizes_survive_gc_churn.
+Repro: yafllib/build/release && ctest -R "test_gc_pressure|test_large_objects"
+--output-on-failure (poison is on for all C tests via CMake ENVIRONMENT).
+
+DONE 2026-07-17 — GC prune pacing decoupled from the scan ratio (user
+ruling: deriving prune from scan is backwards — a lower scan ratio stretches
+sweep completion and grows the garbage backlog per completed sweep, exactly
+when prune must not slow down). GC_PACE_PRUNE_PAGES (default 64, the old
+effective 16x4) with its own YAFL_GC_PRUNE_PAGES env var; YAFL_GC_STEP_PAGES
+now tunes scan only.
+
+OPEN 2026-07-17 — Bool-through-union-slot precision inconsistency: rebuilding
+an Op variant inside a match arm (opWithSavedVars, ops.yafl) mints the SAME
+inlined-ctor StackVar at two precisions — the union-slot view (i16, e.g. $s9)
+on the write and the Bool param (i8) on the read — and uninit_check's
+(type,name)-keyed sets reject it ("missing: moveKeep@...$inl... i8" while the
+init set holds the i16 twin). Small repros (3- and 5-variant enums with
+multi-Bool payloads + rebuild arms) do NOT trigger it; needs Op's 12-slot
+layout. Worked around in ops.yafl (opWsvMove/JumpIf/Call let-bind the Bools);
+the real fix is in the slot-read/boxing precision handling.

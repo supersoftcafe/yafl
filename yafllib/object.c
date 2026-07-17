@@ -68,7 +68,9 @@
 // stated in PAGES, and nothing else: per page allocated,
 //
 //     scan  GC_PACE_SCAN_PAGES  (r) pages, and
-//     prune GC_PACE_PRUNE_RATIO x r (pruning is that much cheaper per page).
+//     prune GC_PACE_PRUNE_PAGES  (p) pages — INDEPENDENT of r: a lower scan
+//     ratio stretches sweep completion and so grows the garbage backlog per
+//     completed sweep, which is exactly when prune must NOT slow with it.
 //
 // The progress guarantee is STRUCTURAL, not feedback-driven: a cycle over S
 // pages is scanned within S/r allocations — the world is scanned before the
@@ -84,21 +86,26 @@
 // debt recorded when an allocation-driven step failed to win fsa_lock
 // (lag_counter + GC_SAFE_POINT_CATCH_UP, one bounded step per safe point).
 //
-// YAFL_GC_STEP_PAGES overrides the scan ratio (prune stays 16x it): larger =
-// more GC work per allocation = tighter heap, higher GC share of CPU.
+// YAFL_GC_STEP_PAGES overrides the scan ratio; YAFL_GC_PRUNE_PAGES overrides
+// the prune ratio independently (default 64 = the old 16x-of-4 coupling's
+// effective value): larger = more GC work per allocation = tighter heap,
+// higher GC share of CPU.
 #define GC_PACE_SCAN_PAGES  4     // pages scanned per page allocated — THE knob.
                                   // Peak heap ≈ live x (r+1)/(r-1): r=2 is 3x
                                   // live (measured), r=4 is 1.67x with most of
                                   // the GC-CPU win kept; tune via env per
                                   // deployment.
-#define GC_PACE_PRUNE_RATIO 16    // prune pages per scan page (prune is cheap)
+#define GC_PACE_PRUNE_PAGES 64    // pages pruned per page allocated (prune is
+                                  // cheap per page); deliberately NOT derived
+                                  // from the scan ratio — see pacing comment
 #define GC_PACE_CREDIT_MAX  16    // max allocation-pages consumed per gc_fsa
                                   // call; a backlog (multi-page allocation,
                                   // credit accrued across the roots phase)
                                   // drains over a few calls instead of
                                   // spiking one
 #define GC_PACE_LAG_MAX     4096  // cap on a thread's accumulated catch-up debt
-static unsigned gc_step_base = GC_PACE_SCAN_PAGES;
+static unsigned gc_step_base  = GC_PACE_SCAN_PAGES;
+static unsigned gc_prune_base = GC_PACE_PRUNE_PAGES;
 
 // Scavenger call-site knobs (the scavenger itself lives in mmap.c, with its
 // own age/hysteresis tuning). The retain floor only smooths intra-cycle
@@ -139,6 +146,10 @@ static void gc_read_config(void) {
     if ((e = getenv("YAFL_GC_STEP_PAGES")) != NULL) {
         int base = atoi(e);
         if (base > 0) gc_step_base = (unsigned)base;
+    }
+    if ((e = getenv("YAFL_GC_PRUNE_PAGES")) != NULL) {
+        int base = atoi(e);
+        if (base > 0) gc_prune_base = (unsigned)base;
     }
     gc_poison_enabled = (e = getenv("YAFL_GC_POISON")) && e[0] && e[0] != '0';
     gc_stats_enabled  = getenv("YAFL_GC_STATS") != NULL;
@@ -506,8 +517,8 @@ static _Atomic(size_t) gc_cycle_survivors  = 0;   // pages surviving PRUNE this 
 static _Atomic(size_t) gc_cycle_survivor_slots = 0; // live SLOTS on young survivors (byte-honest)
 
 // Pacing is stated in PAGES, and nothing else: per page allocated, the
-// collector scans GC_PACE_SCAN_PAGES pages and prunes GC_PACE_PRUNE_RATIO
-// times that. The progress guarantee is structural, not feedback-driven — with a
+// collector scans GC_PACE_SCAN_PAGES pages and prunes GC_PACE_PRUNE_PAGES
+// pages. The progress guarantee is structural, not feedback-driven — with a
 // scan ratio of 2, a cycle over S pages completes within S/2 allocations
 // (the world is scanned before the young set grows 50%), and pruning lands
 // within a further ~3%. Every gc_fsa call costs a similar, predictable
@@ -1722,12 +1733,12 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
 // the prune list looks empty — a hint to attempt the exclusive transition.
 static NOINLINE_DEBUG bool gc_fsa_prune_body() {
     GC_STAT_BUMP(gc_stat_prune_steps);
-    const unsigned step_pages = gc_step_base * GC_PACE_PRUNE_RATIO * gc_pace_credit();
+    const unsigned step_pages = gc_prune_base * gc_pace_credit();
     // BATCHED claims and publication: one pool-lock hold claims up to
     // PRUNE_CLAIM_BATCH pages, one more publishes the whole batch's
     // survivors and promotions. Per-page holds made the pool lock the
     // machine-wide bottleneck at T=12 (~47% of ALL cycles waiting on it —
-    // perf c2c, 2026-07-08); prune is the heaviest client at 16x the scan
+    // perf c2c, 2026-07-08); prune is the heaviest client at ~16x the scan by default
     // claim rate. Batch results collect on LOCAL chains — claimed pages are
     // unlinked and invisible, so no lock is needed until publication, and
     // promotion simplifies: the page joins old_pages directly instead of
