@@ -30,7 +30,8 @@ fun checkExpr(x: PExpr, r: Resolver, expected: Spec|None): List<PErr>
     (mt: PeMatch)   => checkMatch(mt, r, expected)
     (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
     (nw: PeNew)     => checkNew(nw, r)
-    (ne: PeNewEnum) => noErrs()
+    (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2: List<PErr>, fa: PFieldArg) =>
+                            concat(a2, checkExpr(fa.faValue, r, None)))
     (ar: PeArrayRead) => concat(checkExpr(ar.arrObj, r, None),
                                 checkExpr(ar.arrIndex, r, None))
     (pl: PeParallel) => checkExpr(pl.parParams, r, None)
@@ -524,9 +525,9 @@ fun referencedNames(x: PExpr, acc: List<String>): List<String>
     (ar: PeArrayRead) => referencedNames(ar.arrIndex,
                                          referencedNames(ar.arrObj, acc))
     (cv: PeConvert) => referencedNames(cv.convInner, acc)
-    # A NewEnum references its fields by NAME (Python holds them as
-    # NamedExpressions; the port as the names themselves).
-    (ne: PeNewEnum) => concat(acc, ne.fieldArgs)
+    # A NewEnum's references live in its field-arg VALUE expressions.
+    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: List<String>, fa: PFieldArg) =>
+                            referencedNames(fa.faValue, a2))
     (pl: PeParallel) => referencedNames(pl.parParams, acc)
     (o: PExpr)     => acc
 

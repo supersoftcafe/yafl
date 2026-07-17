@@ -145,6 +145,10 @@ fun icExpr(x: PExpr, c: IcConsts): PExpr
     (cv: PeConvert) => PeConvert(icExpr(cv.convInner, c), cv.convTarget,
                                  cv.pecvLine)
     (pl: PeParallel) => PeParallel(icExpr(pl.parParams, c), pl.pepLine)
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
+                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                   PFieldArg(fa.faName, icExpr(fa.faValue, c))),
+                                 ne.neTypeParams, ne.penewLine)
     (o: PExpr)     => x
 
 fun [tail] icTupEnts(es: Chain<PTupEnt>, c: IcConsts,

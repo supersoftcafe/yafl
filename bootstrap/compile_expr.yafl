@@ -42,6 +42,32 @@ fun converted(x: PExpr, expected: Spec|None, r: Resolver): PExpr
 fun convertedOut(out: ExprOut, expected: Spec|None, r: Resolver): ExprOut
   ret ExprOut(converted(out.eoExpr, expected, r), out.eoGlobals)
 
+# A Convert node RE-COMPILES its inner every pass (Python conversion.py:56):
+# the inner compiles with NO expected type — this node is the adapter to the
+# receiver, and feeding the receiver's type back down would make the inner
+# wrap itself again. The wrap is inserted over ground TYPES, but a NAME inside
+# may still be waiting on its unique spelling — freezing the subtree here
+# would strand it bare forever (the whole-program corpus caught exactly that:
+# `Err("bad", st.pos)` in a union slot kept `pos` unresolved). The receiver's
+# view wins: a ground expected that differs from our target means the receiver
+# WIDENED since this wrap was inserted — retarget to it. The wrap dissolves
+# when no conversion remains.
+fun compileConvert(cv: PeConvert, r: Resolver, expected: Spec|None): ExprOut
+  let inner = compileExpr(cv.convInner, r, None)
+  let spec = compileSpec(cv.convTarget, r)
+  let target = retargeted(spec.soSpec, expected)
+  ret needsConversion(r, exprType(inner.eoExpr, r), target)
+    ? ExprOut(PeConvert(inner.eoExpr, target, cv.pecvLine),
+              concat(inner.eoGlobals, spec.soGlobals))
+    : ExprOut(inner.eoExpr, concat(inner.eoGlobals, spec.soGlobals))
+
+fun retargeted(target: Spec, expected: Spec|None): Spec
+  ret match(expected)
+    (e2: Spec) => isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target)
+      ? e2
+      : target
+    ()         => target
+
 # ── the pass ────────────────────────────────────────────────────────────────
 
 fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
@@ -67,12 +93,11 @@ fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
     (mt: PeMatch)  => compileMatch(mt, r, expected)
     (op: PeBuiltinOp) => compileBuiltinOp(op, r, expected)
     (nw: PeNew)    => compileNew(nw, r, expected)
-    (ne: PeNewEnum) => noGlobals(converted(x, expected, r))
+    (ne: PeNewEnum) => compileNewEnum(ne, r, expected)
     (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
     (pl: PeParallel) => compileParallel(pl, r)
     (lm: PeLambda) => compileLambda(lm, r, expected)
-    # Already converted: idempotent, so re-wrapping must not happen.
-    (cv: PeConvert) => noGlobals(x)
+    (cv: PeConvert) => compileConvert(cv, r, expected)
 
 # A name RESOLVES: once its declaration is known the node carries the unique
 # (hashed) name. Never commit against an INCOMPLETE search — the candidate
@@ -348,6 +373,45 @@ fun mapEnumField(r: Resolver, receiver: SEnum, ft: Spec): Spec|None
 # settled to a tuple, the callee is NOT recompiled and the call does not wrap
 # itself: retry next pass. Once it has, the CALLEE compiles against the full
 # shape this call site needs — CallableSpec(argument tuple, expected result).
+# NewEnumExpression.compile (new.py:185-210): thread each construction
+# argument's declared FIELD type down — the argument node owns any boxing
+# toward it; the constructed value owns its conversion to the receiver.
+fun compileNewEnum(ne: PeNewEnum, r: Resolver, expected: Spec|None): ExprOut
+  let leafFields = cneLeafFields(ne, r)
+  let out = cneArgs(chain(ne.fieldArgs), leafFields, r, List<PFieldArg>(),
+                    List<PStmt>())
+  let e2 = PeNewEnum(ne.rootName, ne.leafName, out.cneFas, ne.neTypeParams,
+                     ne.penewLine)
+  ret ExprOut(converted(e2, expected, r), out.cneGlobals)
+
+fun cneLeafFields(ne: PeNewEnum, r: Resolver): List<PStmt>
+  ret match(soleItem(findType(r, ne.rootName)))
+    (f: Found) => match(f.fStmt)
+      (root: PsEnum) => cneLeafFieldsOf(ne, root)
+      (o: PStmt)     => List<PStmt>()
+    ()          => List<PStmt>()
+
+fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt>
+  ret match(asEnumVariant(root.eSpec))
+    (sp: SEnum) => contains2(sp.seAllLeaves, ne.leafName)
+      ? forceNth(collectLeafFieldSets(root, List<PStmt>()),
+                 indexOfString(sp.seAllLeaves, ne.leafName, 0))
+      : List<PStmt>()
+    ()           => List<PStmt>()
+
+class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>)
+
+fun [tail] cneArgs(fas: Chain<PFieldArg>, leafFields: List<PStmt>, r: Resolver,
+                   acc: List<PFieldArg>, globals2: List<PStmt>): CneOut
+  ret match(fas)
+    (nil: ChainEnd) => CneOut(acc, globals2)
+    (l: ChainLink)  => compileExpr(l.value.faValue, r,
+                                   letTypeOf(letNamed(leafFields,
+                                                      l.value.faName)))
+      |> (o) => cneArgs(l.next, leafFields, r,
+                        append(acc, PFieldArg(l.value.faName, o.eoExpr)),
+                        concat(globals2, o.eoGlobals))
+
 fun compileCall(c: PeCall, r: Resolver, expected: Spec|None): ExprOut
   let arg = compileExpr(c.parameter, r, paramShapeOf(exprType(c.function, r)))
   ret match(exprType(arg.eoExpr, r))

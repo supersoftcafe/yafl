@@ -1,0 +1,19 @@
+# A ConvertExpression must RE-COMPILE its inner every pass (conversion.py:56).
+# The union-typed return slot wraps `Err(...)` in a Convert on an early pass,
+# while the member `pos` inside is still waiting for its unique spelling. A
+# port that freezes the wrapped subtree strands `pos` bare forever — Python
+# converges it to `pos@<hash>`. Found via the whole-program C contract
+# (json.yafl's `(other) => (r.state, JsonParseError(..., r.state.pos))` arms).
+namespace Main
+
+typealias String : __builtin_type__<str>
+typealias Int : __builtin_type__<bigint>
+
+class [final] St(s: String, pos: Int)
+class [final] Err(msg: String, at: Int)
+
+fun tailCase(st: St): Int|Err
+  ret Err("bad", st.pos)
+
+fun main(): Int
+  ret 0

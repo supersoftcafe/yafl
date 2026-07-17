@@ -4,8 +4,9 @@
 # read count was exactly 1 (other readers keep it). Never across a Label (a
 # merge could see M carrying another value). Iterates to a fixpoint so Move
 # chains collapse one hop at a time; finally prunes stack_var declarations no
-# longer referenced. The substitution is opRenameVars(M → S.name) — both
-# sides are StackVars, so a rename IS the substitution.
+# longer referenced. The substitution swaps in the SOURCE INSTANCE (Python's
+# replace_params semantics) — never a name-only rename, which would keep the
+# old instance's TYPE and mint a same-name-different-type chimera.
 namespace Bootstrap
 
 import System
@@ -26,9 +27,14 @@ fun cpOnce(f: CgFunction): CpOut
     ? CpOut(cpPruneStackVars(f, walked.cpwOps), true)
     : CpOut(f, false)
 
+# Python's get_live_vars returns a frozenset PER OP: an op reading the same
+# var twice (done.io, done.v in one call) counts ONCE. Counting occurrences
+# instead keeps the Move on the multi-reader path where Python drops it.
 fun cpCountReads(ops: List<Op>): List<StrCount>
   ret fold(ops, List<StrCount>(),
-           (acc: List<StrCount>, op: Op) => fold(opReadVarNames(op), acc, strCountIncr))
+           (acc: List<StrCount>, op: Op) =>
+             fold(fold(opReadVarNames(op), List<String>(), strListAdd),
+                  acc, strCountIncr))
 
 class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
 
@@ -72,12 +78,21 @@ fun cpTryNext(l: ChainLink<Op>, m: OpMove, mt: RpStackVar, ms: RpStackVar,
 # helpers that read variant fields.
 fun cpEmit(m: Op, mt: RpStackVar, ms: RpStackVar, nx: ChainLink<Op>,
            readCounts: List<StrCount>): CpStep
-  let substituted = opRenameVars(nx.value, list1(RpRename(mt.name, ms.name)))
+  # Python substitutes the SOURCE INSTANCE (replace_params swaps the whole
+  # StackVar node for `s`, TYPE INCLUDED) — a name-only rename would keep the
+  # target instance's type and mint a same-name-different-type chimera when
+  # the two declarations disagree (the $par_result|unsupported uninit ghost).
+  let substituted = opReplaceParams(nx.value, (p: RParam) => cpSubstVar(p, mt.name, ms))
   # M's only read was the one just substituted → drop the Move entirely;
   # other readers elsewhere keep it.
   ret strCountGet(readCounts, mt.name) == 1
     ? CpStep(list1(substituted), nx.next)
     : CpStep(list2(m, substituted), nx.next)
+
+fun cpSubstVar(p: RParam, m: String, s: RpStackVar): RParam
+  ret match(p)
+    (sv: RpStackVar) => sv.name == m ? s : p
+    (o: RParam)      => p
 
 # Drop stack_var declarations no longer referenced anywhere (reads OR writes).
 fun cpPruneStackVars(f: CgFunction, newOps: List<Op>): CgFunction

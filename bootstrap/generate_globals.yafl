@@ -82,7 +82,11 @@ fun inlineAlways(f: PsFun): Bool
 class [final] ClassCodegenOut(ccObject: CgObject, ccFunctions: List<CgFunction>)
 
 fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
-  let r = genScope(c.cGens, localScope(flattenParams(c.cParams), r0))
+  # Python: ResolverType(ResolverData(resolver, __find_locals)) — the class's
+  # find_data (params + members + parents) PLUS `this`, no trait data.
+  # RClassBody is that exact scope (classBodyBag); params-only localScope
+  # left `this` unresolvable inside member bodies at generate.
+  let r = genScope(c.cGens, RClassBody(c, r0))
   let genFunctions = classMemberFunctions(chain(c.cMembers), r, List<CgFunction>())
   let extends = c.cIsInterface ? List<String>() : sortNamesAsc(chain(classParentUids(c)), List<String>())
   let functions = c.cIsInterface ? List<CgFuncSlot>() : classSlotEntries(c)

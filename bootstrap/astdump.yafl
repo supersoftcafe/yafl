@@ -152,9 +152,12 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
     (pl: PeParallel)  => dLine(sb, depth, "Parallel", pl.pepLine, "")
       |> (s1) => dumpExpr(pl.parParams, depth + 1, s1)
     (ng: PeNothing)   => dLine(sb, depth, "Nothing", ng.pengLine, "")
+    # Names only, SORTED — the value expressions are deliberately not dumped
+    # (Python's astdump prints the dict keys; keep the bytes identical).
     (ne: PeNewEnum)   => dLine(sb, depth, "NewEnum", ne.penewLine,
                                ne.rootName + "|" + ne.leafName + "|"
-                               + join(sort(ne.fieldArgs), ","))
+                               + join(sort<String>(map(ne.fieldArgs,
+                                       (fa: PFieldArg) => fa.faName)), ","))
     (nw: PeNew)       => dLine(sb, depth, "New", nw.penwLine, tyOf(nw.newType))
       |> (s1) => dumpExpr(nw.newParam, depth + 1, s1)
     (ar: PeArrayRead) => dLine(sb, depth, "ArrayRead", ar.pearLine, "")

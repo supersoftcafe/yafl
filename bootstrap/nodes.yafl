@@ -12,6 +12,11 @@ import System
 
 class [final] PLine(plFile: String, plLine: Int, plCol: Int)
 
+# One enum-constructor argument: the DECLARED field name and the argument
+# EXPRESSION (Python: NewEnumExpression.field_args dict entry). Never a bare
+# name pun — inlining's alpha-renames rewrite the expression like any other.
+class [final] PFieldArg(faName: String, faValue: PExpr)
+
 # Types in the AST are `Spec` (specs.yafl) — the SAME tree the type system
 # refines. The parser only ever builds the unresolved subset (SNamed, SBuiltin,
 # STuple, SCombination, SCallable, SGeneric, SClass, SArrayField); compile()
@@ -43,7 +48,7 @@ enum PExpr
   enum PeBuiltinOp(opType: Spec, opName: PExpr, opParams: PExpr, peboLine: PLine)
   enum PeParallel(parParams: PExpr, pepLine: PLine)
   enum PeNothing(pengLine: PLine)
-  enum PeNewEnum(rootName: String, leafName: String, fieldArgs: List<String>,
+  enum PeNewEnum(rootName: String, leafName: String, fieldArgs: List<PFieldArg>,
                  neTypeParams: List<Spec>, penewLine: PLine)
   enum PeNew(newType: Spec, newParam: PExpr, penwLine: PLine)
   enum PeArrayRead(arrObj: PExpr, arrIndex: PExpr, pearLine: PLine)

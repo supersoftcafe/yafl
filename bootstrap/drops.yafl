@@ -206,7 +206,30 @@ fun drExpr(x: PExpr, wheres: List<Spec>, r: Resolver,
     (pl: PeParallel) => drExpr(pl.parParams, wheres, r, ids)
       |> (o) => DrE(o.deChanged ? PeParallel(o.deExpr, pl.pepLine) : x,
                     o.deChanged)
+    (ne: PeNewEnum) => drFieldArgs(ne, wheres, r, ids)
     (o: PExpr)     => DrE(x, false)
+
+fun drFieldArgs(ne: PeNewEnum, wheres: List<Spec>, r: Resolver,
+                ids: List<String>): DrE
+  let out = drFaLoop(chain(ne.fieldArgs), wheres, r, ids, List<PFieldArg>(),
+                     false)
+  ret DrE(out.dfChanged
+            ? PeNewEnum(ne.rootName, ne.leafName, out.dfArgs,
+                        ne.neTypeParams, ne.penewLine)
+            : ne,
+          out.dfChanged)
+
+class [final] DrFa(dfArgs: List<PFieldArg>, dfChanged: Bool)
+
+fun [tail] drFaLoop(fas: Chain<PFieldArg>, wheres: List<Spec>, r: Resolver,
+                    ids: List<String>, acc: List<PFieldArg>,
+                    changed: Bool): DrFa
+  ret match(fas)
+    (nil: ChainEnd) => DrFa(acc, changed)
+    (l: ChainLink)  => drExpr(l.value.faValue, wheres, r, ids)
+      |> (o) => drFaLoop(l.next, wheres, r, ids,
+                         append(acc, PFieldArg(l.value.faName, o.deExpr)),
+                         changed || o.deChanged)
 
 # A two-child rebuild packs the pair into a synthetic tuple to ride the DrE
 # slot; unpacked immediately by the caller.

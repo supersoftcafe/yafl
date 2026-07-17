@@ -831,8 +831,53 @@ fun isImpureCall(funRef: RParam): Bool
 
 fun genTuple(tp: PeTuple, r: Resolver): GBundle
   let paramBundles = genTupleEntryBundles(chain(tp.exprs), r, 0, List<GBundle>())
+  # NewStruct field-name → result mapping is pinned to DECLARED positions, so
+  # the tuple value is unaffected by any reordering of evaluation below.
   let value = RpNewStruct(namedValuesOf(paramBundles))
-  ret bundleJoin(bundleJoinAll(paramBundles), bundleValue(value))
+  # At -O0, randomise the order in which children's side-effects fire so that
+  # code accidentally relying on left-to-right tuple evaluation surfaces.
+  # Seeded from the source location via FNV-1a + xorshift32 Fisher–Yates —
+  # Python's _location_shuffle (tuple_expr.py) runs the identical arithmetic.
+  let evalBundles = getOptLevel(r) == 0 && listLen(paramBundles) > 1
+    ? locationShuffle(paramBundles,
+                      tp.petLine.plFile + ":" + String(tp.petLine.plLine)
+                      + ":" + String(tp.petLine.plCol))
+    : paramBundles
+  ret bundleJoin(bundleJoinAll(evalBundles), bundleValue(value))
+
+fun locationShuffle(items: List<GBundle>, key: String): List<GBundle>
+  let seed = fnv1a(key, 0, 2166136261)
+  ret fisherYates(items, listLen(items) - 1, seed == 0 ? 1 : seed)
+
+fun [tail] fnv1a(key: String, at: Int, h: Int): Int
+  ret at >= length(key)
+    ? h
+    : fnv1a(key, at + 1, ((h ^ Int(byteAt(key, at))) * 16777619) & mask32)
+
+# One Fisher–Yates step per i from n-1 down to 1: advance the xorshift32
+# state, pick j = state % (i + 1), swap positions i and j.
+fun [tail] fisherYates(xs: List<GBundle>, i: Int, h: Int): List<GBundle>
+  if i < 1
+    ret xs
+  let h1 = h ^ ((h << 13) & mask32)
+  let h2 = h1 ^ (h1 >> 17)
+  let h3 = h2 ^ ((h2 << 5) & mask32)
+  ret fisherYates(bundleSwap(xs, i, h3 % (i + 1)), i - 1, h3)
+
+fun bundleSwap(xs: List<GBundle>, i: Int, j: Int): List<GBundle>
+  ret i == j
+    ? xs
+    : swapLoop(chain(xs), 0, i, j, forceNth<GBundle>(xs, i),
+               forceNth<GBundle>(xs, j), List<GBundle>())
+
+fun [tail] swapLoop(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
+                    vj: GBundle, acc: List<GBundle>): List<GBundle>
+  ret match(cs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => swapLoop(l.next, at + 1, i, j, vi, vj,
+                                append(acc, at == i ? vj
+                                            : at == j ? vi
+                                            : l.value))
 
 fun [tail] genTupleEntryBundles(es: Chain<PTupEnt>, r: Resolver, idx: Int, acc: List<GBundle>): List<GBundle>
   ret match(es)
@@ -980,13 +1025,11 @@ fun genNewEnumOn(ne: PeNewEnum, root: PsEnum, r: Resolver): GBundle
 
 class [final] PunArg(paName: String, paExpr: PExpr)
 
-fun punFieldArgs(names: List<String>, lr: PLine): List<PunArg>
-  ret punFieldArgsLoop(chain(names), lr, List<PunArg>())
-
-fun [tail] punFieldArgsLoop(ns: Chain<String>, lr: PLine, acc: List<PunArg>): List<PunArg>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => punFieldArgsLoop(l.next, lr, append(acc, PunArg(l.value, PeName(l.value, List<Spec>(), lr))))
+# The carried field-arg expressions, as (declared field name, value expr)
+# pairs — no name punning (the value is a real expression, alpha-renamed by
+# the lowerings like any other).
+fun punFieldArgs(fas: List<PFieldArg>, lr: PLine): List<PunArg>
+  ret map(fas, (fa: PFieldArg) => PunArg(fa.faName, fa.faValue))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 10: TernaryExpression (pyast/expression/ternary.py).
@@ -1257,32 +1300,39 @@ fun genRecur(rc: PeRecur, r: Resolver): GBundle
 
 fun genRecurOn(rc: PeRecur, fl: FrLoop, r: Resolver): GBundle
   let k = rc.recIndex
-  let step = genRecurArgs(chain(rc.recArgs), r, fl, k, 0, emptyBundle(), List<RParam>())
-  let exitLabel = "recurexit" + String(k) + "$" + fl.flTag
+  # Read the frame's parameter lists ONCE here (a FrLoop lives in the GenFrame
+  # union; re-reading its List fields per recur-arg re-narrows through the
+  # union each time, which mis-reads the packed slot) and thread the plain
+  # lists + tag down.
+  let ctypes = fl.flParamCTypes
+  let specs = fl.flParamSpecs
+  let tag = fl.flTag
+  let step = genRecurArgs(chain(rc.recArgs), r, ctypes, specs, tag, k, 0, emptyBundle(), List<RParam>())
+  let exitLabel = "recurexit" + String(k) + "$" + tag
   # Python's return here omits exit_sources (OperationBundle default: empty),
   # even though generating an arg could in principle carry one forward —
   # ported exactly (flagged in the report as a candidate suspected bug,
   # not fixed).
   ret GBundle(step.grBundle.gbStackVars,
-             concat(step.grBundle.gbOps, list2(OpLabel(exitLabel, List<RParam>()), OpJump(loopHead(fl), List<RParam>()))),
+             concat(step.grBundle.gbOps, list2(OpLabel(exitLabel, List<RParam>()), OpJump("loophead$" + tag, List<RParam>()))),
              None,
              append(step.grBundle.gbRecurSources, RecurSource(exitLabel, step.grPhiIns)),
              List<ExitSource>())
 
 class [final] RecurArgsOut(grBundle: GBundle, grPhiIns: List<RParam>)
 
-fun genRecurArgs(args: Chain<PExpr>, r: Resolver, fl: FrLoop, k: Int, i: Int,
-                        bundle: GBundle, phiIns: List<RParam>): RecurArgsOut
+fun genRecurArgs(args: Chain<PExpr>, r: Resolver, ctypes: List<CgType>, specs: List<Spec>,
+                 tag: String, k: Int, i: Int, bundle: GBundle, phiIns: List<RParam>): RecurArgsOut
   ret match(args)
     (nil: ChainEnd) => RecurArgsOut(bundle, phiIns)
-    (l: ChainLink)  => genRecurArgsStep(l, r, fl, k, i, bundle, phiIns)
+    (l: ChainLink)  => genRecurArgsStep(l, r, ctypes, specs, tag, k, i, bundle, phiIns)
 
-fun genRecurArgsStep(l: ChainLink<PExpr>, r: Resolver, fl: FrLoop, k: Int, i: Int,
-                    bundle: GBundle, phiIns: List<RParam>): RecurArgsOut
-  let ab = withPrefix(genExprTo(l.value, r, forceNth(fl.flParamSpecs, i)), "recur" + String(i))
-  let phiin = RpStackVar(forceNth(fl.flParamCTypes, i), "phiin$" + fl.flTag + "$" + String(k) + "$" + String(i))
+fun genRecurArgsStep(l: ChainLink<PExpr>, r: Resolver, ctypes: List<CgType>, specs: List<Spec>,
+                     tag: String, k: Int, i: Int, bundle: GBundle, phiIns: List<RParam>): RecurArgsOut
+  let ab = withPrefix(genExprTo(l.value, r, forceNth<Spec>(specs, i)), "recur" + String(i))
+  let phiin = RpStackVar(forceNth<CgType>(ctypes, i), "phiin$" + tag + "$" + String(k) + "$" + String(i))
   let withMove = bundleJoin(bundle, bundleJoin(ab, bundleFull(list1(phiin), list1(OpMove(phiin, mustResult(ab), false, List<RParam>())), None)))
-  ret genRecurArgs(l.next, r, fl, k, i + 1, withMove, append(phiIns, phiin))
+  ret genRecurArgs(l.next, r, ctypes, specs, tag, k, i + 1, withMove, append(phiIns, phiin))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 13: ParallelExpression (pyast/expression/parallel.py).

@@ -145,7 +145,10 @@ fun rwExprKids(x: PExpr, w: Rw): PExpr
                                      rwExpr(op.opParams, w), op.peboLine)
     (nw: PeNew)    => PeNew(rwSpec(nw.newType, w), rwExpr(nw.newParam, w),
                             nw.penwLine)
-    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName, ne.fieldArgs,
+    # Python's s&r visits every field_args VALUE expression.
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
+                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                   PFieldArg(fa.faName, rwExpr(fa.faValue, w))),
                                  rwSpecs(ne.neTypeParams, w), ne.penewLine)
     (ar: PeArrayRead) => PeArrayRead(rwExpr(ar.arrObj, w),
                                      rwExpr(ar.arrIndex, w), ar.pearLine)
@@ -323,6 +326,8 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                      foldExpr<T>(ar.arrObj, f, fx, acc2))
     (cv: PeConvert) => foldExpr<T>(cv.convInner, f, fx, acc2)
     (pl: PeParallel) => foldExpr<T>(pl.parParams, f, fx, acc2)
+    (ne: PeNewEnum) => fold<PFieldArg, T>(ne.fieldArgs, acc2, (a3: T, fa: PFieldArg) =>
+                            foldExpr<T>(fa.faValue, f, fx, a3))
     (lp: PeLoop)   => foldExpr<T>(lp.loopBody, f, fx,
                                   foldExprs<T>(chain(lp.loopParams), f, fx,
                                                acc2))
@@ -510,6 +515,10 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
                                          cv.pecvLine))
     (pl: PeParallel) => rwnExpr(pl.parParams, w, n)
       |> (p) => RwNE(p.rneN, PeParallel(p.rneExpr, pl.pepLine))
+    (ne: PeNewEnum) => rwnFieldArgs(chain(ne.fieldArgs), w, n, List<PFieldArg>())
+      |> (fas) => RwNE(fas.rnfN, PeNewEnum(ne.rootName, ne.leafName,
+                                           fas.rnfArgs, ne.neTypeParams,
+                                           ne.penewLine))
     (lp: PeLoop)   => rwnExprs(chain(lp.loopParams), w, n, List<PExpr>())
       |> (ps) => (ps, rwnExpr(lp.loopBody, w, ps.rnesN))
       |> (ps, b) => RwNE(b.rneN, PeLoop(b.rneExpr, ps.rnesExprs,
@@ -519,6 +528,16 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
                                           rc.percLine))
     (lz: PeLazy)   => RwNE(n, x)   # target type carries no counter work
     (o: PExpr)     => RwNE(n, x)
+
+class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
+
+fun [tail] rwnFieldArgs(fas: Chain<PFieldArg>, w: RwN, n: Int,
+                        acc: List<PFieldArg>): RwNFas
+  ret match(fas)
+    (nil: ChainEnd) => RwNFas(n, acc)
+    (l: ChainLink)  => rwnExpr(l.value.faValue, w, n)
+      |> (v) => rwnFieldArgs(l.next, w, v.rneN,
+                             append(acc, PFieldArg(l.value.faName, v.rneExpr)))
 
 fun [tail] rwnExprs(es: Chain<PExpr>, w: RwN, n: Int,
                     acc: List<PExpr>): RwNEs
@@ -635,7 +654,9 @@ fun fasExpr<T>(x: PExpr, f: (:T, :Spec): T, acc: T): T
     (mt: PeMatch)   => fasArms<T>(chain(mt.arms), f, fasExpr<T>(mt.subject, f, acc))
     (op: PeBuiltinOp) => fasExpr<T>(op.opParams, f, fasSpec<T>(op.opType, f, acc))
     (nw: PeNew)     => fasExpr<T>(nw.newParam, f, fasSpec<T>(nw.newType, f, acc))
-    (ne: PeNewEnum) => fasSpecs<T>(chain(ne.neTypeParams), f, acc)
+    (ne: PeNewEnum) => fasSpecs<T>(chain(ne.neTypeParams), f,
+                                   fold<PFieldArg, T>(ne.fieldArgs, acc, (a2: T, fa: PFieldArg) =>
+                                     fasExpr<T>(fa.faValue, f, a2)))
     (ar: PeArrayRead) => fasExpr<T>(ar.arrIndex, f, fasExpr<T>(ar.arrObj, f, acc))
     (cv: PeConvert) => fasSpec<T>(cv.convTarget, f, fasExpr<T>(cv.convInner, f, acc))
     (pl: PeParallel) => fasExpr<T>(pl.parParams, f, acc)

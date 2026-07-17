@@ -149,7 +149,9 @@ fun cpExpr(x: PExpr, path: List<String>, acc: ClPaths): ClPaths
     (mt: PeMatch)     => cpArms(chain(mt.arms), path, cpExpr(mt.subject, path, acc))
     (op: PeBuiltinOp) => cpExpr(op.opParams, path, cpSpec(op.opType, path, acc))
     (nw: PeNew)       => cpExpr(nw.newParam, path, cpSpec(nw.newType, path, acc))
-    (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path, acc)
+    (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path,
+                                 fold(ne.fieldArgs, acc, (a2, fa: PFieldArg) =>
+                                   cpExpr(fa.faValue, path, a2)))
     (ar: PeArrayRead) => cpExpr(ar.arrIndex, path, cpExpr(ar.arrObj, path, acc))
     (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
     (pl: PeParallel)  => cpExpr(pl.parParams, path, acc)

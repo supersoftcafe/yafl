@@ -237,10 +237,13 @@ fun tjSetLow(st: Tj, v: String, x: Int): Tj
 fun minInt(a: Int, b: Int): Int
   ret a < b ? a : b
 
-# Pop the stack down to v inclusive — that suffix is one SCC.
+# Pop the stack down to v inclusive — that suffix is one SCC. Python pops
+# ONE AT A TIME, appending: the member list is [latest-discovered … v], the
+# REVERSE of the stack suffix. The order is observable (hoisted-statement
+# order in ast_inline's SCC hoisting), so it must match exactly.
 fun tjPop(st: Tj, v: String): Tj
   let at = tjLastIndex(chain(st.tjStack), v, 0, -1)
-  let scc = drop(st.tjStack, at)
+  let scc = reverse<String>(drop(st.tjStack, at))
   ret Tj(st.tjIndex, st.tjLow, take(st.tjStack, at),
          tjRemoveAll(chain(st.tjOn), scc, List<String>()),
          append(st.tjSccs, scc), st.tjN)
@@ -490,7 +493,9 @@ fun ceExpr(x: PExpr, c: CeCtx): PExpr
                                      ceExpr(op.opParams, c), op.peboLine)
     (nw: PeNew)    => PeNew(ceSpec(nw.newType, c), ceExpr(nw.newParam, c),
                             nw.penwLine)
-    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName, ne.fieldArgs,
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
+                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                   PFieldArg(fa.faName, ceExpr(fa.faValue, c))),
                                  ceSpecList(ne.neTypeParams, c),
                                  ne.penewLine)
     (ar: PeArrayRead) => PeArrayRead(ceExpr(ar.arrObj, c),

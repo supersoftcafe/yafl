@@ -146,6 +146,8 @@ fun tlCountSelf(x: PExpr, fName: String, n: Int): Int
                                      tlCountSelf(ar.arrObj, fName, n2))
     (cv: PeConvert) => tlCountSelf(cv.convInner, fName, n2)
     (pl: PeParallel) => tlCountSelf(pl.parParams, fName, n2)
+    (ne: PeNewEnum) => fold(ne.fieldArgs, n2, (a2: Int, fa: PFieldArg) =>
+                            tlCountSelf(fa.faValue, fName, a2))
     (o: PExpr)     => n2
 
 fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName: String, n: Int): Int

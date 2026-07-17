@@ -53,6 +53,23 @@ _CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
 
 _CONVERGE = c.__dict__["__converge"]
 
+# WHOLE-PROGRAM entries: the per-file corpus can never exercise cross-file
+# resolution (trait providers in another file, overloads spread over files,
+# member classes used from another namespace) — the C contract found three
+# such divergences that every single-file stage contract was blind to. Each
+# entry concatenates real files into ONE text compiled identically ("x") by
+# both sides.
+_WHOLE_PROGRAMS = [
+    ("stdlib+helloWorld",
+     "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+             ) + (_REPO / "examples" / "helloWorld.yafl").read_text()),
+    # __parallel__ coverage: its type is the tuple of the callables' results,
+    # which only grounds when the callees resolve — i.e. whole-program.
+    ("stdlib+findstr",
+     "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+             ) + (_REPO / "examples" / "findstr.yafl").read_text()),
+]
+
 
 class TestBootstrapConverge(TestCase):
     # N-scaled: the corpus is ~60 files and each of the two tests converges
@@ -93,6 +110,27 @@ class TestBootstrapConverge(TestCase):
                                             f"at line {i + 1}")
                 self.assertEqual(len(expected), len(got),
                                  f"{path.name}: converged AST length differs")
+
+    def test_whole_program_converged_matches_python(self):
+        # Cross-file resolution: trait providers, overload sets and member
+        # classes that live in OTHER files than their uses. Red until the
+        # port resolves whole programs exactly as Python (found via the C
+        # contract: penTrait not rewritten by monomorphisation; `append`
+        # overload left unresolved; a member `pos` left un-uniquified).
+        for name, text in _WHOLE_PROGRAMS:
+            with self.subTest(program=name):
+                statements, _passes = self._python_converged(text)
+                expected = dump(statements).splitlines()
+                r = subprocess.run([self.binary, "converge"], input=text,
+                                   capture_output=True, timeout=300, text=True,
+                                   env=_RUN_ENV)
+                self.assertEqual(0, r.returncode, f"{name}: {r.stdout[:300]}")
+                got = r.stdout.splitlines()
+                for i, (e, gg) in enumerate(zip(expected, got)):
+                    self.assertEqual(e, gg, f"{name}: converged AST differs "
+                                            f"at line {i + 1}")
+                self.assertEqual(len(expected), len(got),
+                                 f"{name}: converged AST length differs")
 
     def test_pass_count_matches_python(self):
         # The port must settle in the SAME number of iterations: a port that

@@ -628,36 +628,40 @@ fun [tail] alIoiLoop(l: List<Int>, x: Int, i: Int): Int
 
 # ── store/load between locals and the state object ───────────────────────────
 
-fun alArrayElem(stateName: String, index: Int): RParam
-  ret RpObjectField(CgDataPointer(), alStateParam(), stateName, "array",
+# `sp` = the state-object base (Python's state_param argument): the HOT PATH
+# and stub launch address the freshly-allocated $sv_state; the STATE MACHINE
+# addresses its $state parameter. Hardcoding one base here read a never-
+# written $state in the hot path's save block (uninit_check caught it).
+fun alArrayElem(sp: RParam, stateName: String, index: Int): RParam
+  ret RpObjectField(CgDataPointer(), sp, stateName, "array",
                     RpInteger(index, 32), false)
 
 # Frame local reference: trailing-array slot | shared inline slot | named field.
-fun alStateField(name: String, t2: CgType, stateName: String, layout: AFrame): RParam
+fun alStateField(name: String, t2: CgType, sp: RParam, stateName: String, layout: AFrame): RParam
   ret match(niLookup(layout.afPtrSlots, name))
-    (i: Int) => alArrayElem(stateName, i)
+    (i: Int) => alArrayElem(sp, stateName, i)
     ()        => match(nsLookup(layout.afInlineSlots, name))
-      (slot: String) => RpObjectField(t2, alStateParam(), stateName, slot, None, false)
-      ()              => RpObjectField(t2, alStateParam(), stateName, name, None, false)
+      (slot: String) => RpObjectField(t2, sp, stateName, slot, None, false)
+      ()              => RpObjectField(t2, sp, stateName, name, None, false)
 
 # local → state; a decomposed struct stores one leaf per array element.
-fun alStoreVar(v: RParam, stateName: String, layout: AFrame): List<Op>
+fun alStoreVar(v: RParam, sp: RParam, stateName: String, layout: AFrame): List<Op>
   ret match(niLookup(layout.afDecomposed, stackVarName(v)))
-    (base: Int) => alStoreDecomposed(v, stateName, base)
-    ()           => list1(OpMove(alStateField(stackVarName(v), rpGetType(v), stateName, layout),
+    (base: Int) => alStoreDecomposed(v, sp, stateName, base)
+    ()           => list1(OpMove(alStateField(stackVarName(v), rpGetType(v), sp, stateName, layout),
                                  v, false, List<RParam>()))
 
-fun alStoreDecomposed(v: RParam, stateName: String, base: Int): List<Op>
+fun alStoreDecomposed(v: RParam, sp: RParam, stateName: String, base: Int): List<Op>
   ret match(alPtrLeaves(rpGetType(v)))
-    (paths: List<String>) => alSdLoop(paths, v, stateName, base, 0, List<Op>())
+    (paths: List<String>) => alSdLoop(paths, v, sp, stateName, base, 0, List<Op>())
     ()                     => List<Op>()   # unreachable: decomposed entries are all-ptr structs
 
-fun [tail] alSdLoop(paths: List<String>, v: RParam, stateName: String,
+fun [tail] alSdLoop(paths: List<String>, v: RParam, sp: RParam, stateName: String,
                     base: Int, i: Int, acc: List<Op>): List<Op>
   if i >= listLen(paths)
     ret acc
-  ret alSdLoop(paths, v, stateName, base, i + 1,
-        append(acc, OpMove(alArrayElem(stateName, base + i),
+  ret alSdLoop(paths, v, sp, stateName, base, i + 1,
+        append(acc, OpMove(alArrayElem(sp, stateName, base + i),
                            alPathField(v, forceNth(paths, i)), false, List<RParam>())))
 
 fun alPathField(v: RParam, path: String): RParam
@@ -675,34 +679,34 @@ fun [tail] splitPathLoop(path: String, start: Int, i: Int, acc: List<String>): L
 
 # state → local; a decomposed struct is rebuilt from its array elements via
 # nested NewStructs (index walk in leaf order).
-fun alLoadVar(v: RParam, stateName: String, layout: AFrame): List<Op>
+fun alLoadVar(v: RParam, sp: RParam, stateName: String, layout: AFrame): List<Op>
   ret match(niLookup(layout.afDecomposed, stackVarName(v)))
-    (base: Int) => list1(OpMove(v, alRebuild(rpGetType(v), stateName, base).rbValue,
+    (base: Int) => list1(OpMove(v, alRebuild(rpGetType(v), sp, stateName, base).rbValue,
                                 false, List<RParam>()))
-    ()           => list1(OpMove(v, alStateField(stackVarName(v), rpGetType(v), stateName, layout),
+    ()           => list1(OpMove(v, alStateField(stackVarName(v), rpGetType(v), sp, stateName, layout),
                                  false, List<RParam>()))
 
 class [final] Rebuilt(rbValue: RParam, rbNext: Int)
 
-fun alRebuild(t2: CgType, stateName: String, idx: Int): Rebuilt
-  ret alRebuildFields(cgFieldsOfOrEmpty(t2), stateName, idx, List<RpNamedValue>())
+fun alRebuild(t2: CgType, sp: RParam, stateName: String, idx: Int): Rebuilt
+  ret alRebuildFields(cgFieldsOfOrEmpty(t2), sp, stateName, idx, List<RpNamedValue>())
 
-fun [tail] alRebuildFields(fields: List<CgField>, stateName: String, idx: Int,
+fun [tail] alRebuildFields(fields: List<CgField>, sp: RParam, stateName: String, idx: Int,
                            acc: List<RpNamedValue>): Rebuilt
   if isEmpty(fields)
     ret Rebuilt(RpNewStruct(acc), idx)
   let f2 = forceNth(fields, 0)
   let rest = tail(fields)
   ret match(f2.fieldType)
-    (s2: CgStruct) => alRebuildNested(f2, rest, stateName, idx, acc)
-    (im: CgImmediateStruct) => alRebuildNested(f2, rest, stateName, idx, acc)
-    (o: CgType)    => alRebuildFields(rest, stateName, idx + 1,
-                        append(acc, RpNamedValue(f2.fieldName, alArrayElem(stateName, idx))))
+    (s2: CgStruct) => alRebuildNested(f2, rest, sp, stateName, idx, acc)
+    (im: CgImmediateStruct) => alRebuildNested(f2, rest, sp, stateName, idx, acc)
+    (o: CgType)    => alRebuildFields(rest, sp, stateName, idx + 1,
+                        append(acc, RpNamedValue(f2.fieldName, alArrayElem(sp, stateName, idx))))
 
-fun alRebuildNested(f2: CgField, rest: List<CgField>, stateName: String, idx: Int,
+fun alRebuildNested(f2: CgField, rest: List<CgField>, sp: RParam, stateName: String, idx: Int,
                     acc: List<RpNamedValue>): Rebuilt
-  let inner = alRebuild(f2.fieldType, stateName, idx)
-  ret alRebuildFields(rest, stateName, inner.rbNext,
+  let inner = alRebuild(f2.fieldType, sp, stateName, idx)
+  ret alRebuildFields(rest, sp, stateName, inner.rbNext,
                       append(acc, RpNamedValue(f2.fieldName, inner.rbValue)))
 
 # ── musttail unroll (SM view) + state object ────────────────────────────────
@@ -979,8 +983,10 @@ fun [tail] alSaveBlocks(bbs: List<ABlock>, stateName: String, layout: AFrame,
   if i >= listLen(bbs)
     ret acc
   let bb = forceNth(bbs, i)
+  # Hot-path $asynccommon save: the base is the freshly-allocated $sv_state
+  # (Python 948: __store_var(var, __sv_state, ...)).
   let stores = fold(svSortedByName(bb.abLive), List<Op>(),
-                    (a: List<Op>, v: RParam) => concat(a, alStoreVar(v, stateName, layout)))
+                    (a: List<Op>, v: RParam) => concat(a, alStoreVar(v, alSvState(), stateName, layout)))
   ret alSaveBlocks(bbs, stateName, layout, i + 1,
         concat(append(acc, OpLabel("$save$" + String(i), List<RParam>())),
                append(stores, OpJump("$save$done", List<RParam>()))))
@@ -1022,8 +1028,9 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName: String, subtype: String|Non
                            layout: AFrame, entryIdx: Int): CgFunction
   let wrappedResult = wrapReturnType(f.fnResult)
   let ops0 = list1(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List<RParam>()))
+  # Stub launch stores into its own fresh $sv_state (Python 1053).
   let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc: List<Op>, p: CgField) =>
-               concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), stateName, layout)))
+               concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), alSvState(), stateName, layout)))
   let ops2 = concat(ops1, list2(
       OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
              RpNullPointer(), false, List<RParam>()),
@@ -1115,9 +1122,10 @@ fun alSmSite(bb: ABlock, f: CgFunction, stateName: String, subtype: String|None,
              layout: AFrame, bodyDefs: List<String>, idxField: RParam,
              myTaskField: RParam, i: Int, acc: SmOut): SmOut
   let bodyOps = alConvertReturnsSm(alDropLast(bb.abOps), myTaskField, f.fnResult, subtype)
+  # SM saves address the $state parameter (Python 1179).
   let saveStores = fold(svSortedByName(bb.abLive), List<Op>(), (a: List<Op>, v: RParam) =>
                      strListMember(bodyDefs, stackVarName(v))
-                       ? concat(a, alStoreVar(v, stateName, layout))
+                       ? concat(a, alStoreVar(v, alStateParam(), stateName, layout))
                        : a)
   ret match(lastOp(chain(bb.abOps)))
     (op: Op) => match(op)
@@ -1227,7 +1235,7 @@ fun [tail] alSmDtLoop(bbs: List<ABlock>, f: CgFunction, stateName: String,
 fun alSmDtCase(bb: ABlock, f: CgFunction, stateName: String, layout: AFrame,
                i: Int, acc: List<Op>): List<Op>
   let loads = fold(svSortedByName(bb.abLive), List<Op>(), (a: List<Op>, v: RParam) =>
-                concat(a, alLoadVar(v, stateName, layout)))
+                concat(a, alLoadVar(v, alStateParam(), stateName, layout)))
   let ops1 = concat(append(acc, OpLabel("$case$" + String(i + 1), List<RParam>())), loads)
   let ops2 = concat(ops1, alSmDtExtract(bb, f, i))
   ret append(ops2, OpJump("$resume$" + String(i), List<RParam>()))
@@ -1272,14 +1280,14 @@ fun alSmEntryCase(f: CgFunction, stateName: String, layout: AFrame,
   let ops0 = list1(OpLabel("$case$entry", List<RParam>()))
   let paramLoads = fold(cgFieldsOfOrEmpty(f.fnParams), (ops0, List<String>()),
                         (acc: (ops: List<Op>, seen: List<String>), p: CgField) =>
-                          (concat(acc.ops, alLoadVar(RpStackVar(p.fieldType, p.fieldName), stateName, layout)),
+                          (concat(acc.ops, alLoadVar(RpStackVar(p.fieldType, p.fieldName), alStateParam(), stateName, layout)),
                            strListAdd(acc.seen, p.fieldName)))
   let liveLoads = fold(nonTerminal, paramLoads, (acc: (ops: List<Op>, seen: List<String>), bb: ABlock) =>
                     fold(svSortedByName(bb.abLive), acc,
                          (a: (ops: List<Op>, seen: List<String>), v: RParam) =>
                            strListMember(a.seen, stackVarName(v))
                              ? a
-                             : (concat(a.ops, alLoadVar(v, stateName, layout)),
+                             : (concat(a.ops, alLoadVar(v, alStateParam(), stateName, layout)),
                                 strListAdd(a.seen, stackVarName(v)))))
   ret append(liveLoads.ops, OpJump("$sm$body", List<RParam>()))
 
@@ -1299,8 +1307,10 @@ fun alSmAssemble(f: CgFunction, allOps: List<Op>, bbs: List<ABlock>,
                  CgStruct(list2(CgField("$state", CgDataPointer()),
                                 CgField("$completed_task", CgDataPointer()))),
                  CgVoid(),
+                 # extra_stack = ($sv_discard,) + sm_wrap_fields — discard FIRST
+                 # (Python async_lower.py:1343; declaration order is C order).
                  CgStruct(concat(concat(cgFieldsOfOrEmpty(f.fnStackVars), withResults.fs),
-                                 append(wrapFields, CgField("$sv_discard", CgDataPointer())))),
+                                 prepend<CgField>(CgField("$sv_discard", CgDataPointer()), wrapFields))),
                  allOps, f.fnComment, None, false, false, false, false)
 
 fun alSmDeclareResult(acc: (fs: List<CgField>, seen: List<String>), bb: ABlock): (fs: List<CgField>, seen: List<String>)

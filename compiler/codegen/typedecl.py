@@ -150,9 +150,17 @@ class Float(Type):
     def _initialise(self, type_cache: dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         if not isinstance(data, (int, float)):
             raise ValueError("Float literal must be int or float")
+        # %.17g, not repr: repr's SHORTEST-round-trip search is not portably
+        # re-implementable in the bootstrap, while 17 significant digits
+        # round-trip any double exactly and match the bootstrap's printer
+        # byte for byte. Integral values keep a trailing ".0" (C reads both,
+        # but the two compilers must agree on the bytes).
+        s = f"{float(data):.17g}"
+        if not any(c in s for c in ".en"):
+            s += ".0"
         if self.precision == 32:
-            return f"((float){float(data)!r}f)"
-        return f"((double){float(data)!r})"
+            return f"((float){s}f)"
+        return f"((double){s})"
 
     def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
         if self.precision == 32:

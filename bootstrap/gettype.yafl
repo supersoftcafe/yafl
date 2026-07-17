@@ -93,7 +93,7 @@ fun exprType(x: PExpr, r: Resolver): Spec|None
     (bk: PeBlock)    => exprType(bk.blockValue, blockScope(bk.blockStmts, r))
     (mt: PeMatch)    => matchType(mt, r)
     (op: PeBuiltinOp) => op.opType
-    (pl: PeParallel) => None
+    (pl: PeParallel) => parallelType(pl, r)
     (ne: PeNewEnum)  => newEnumType(ne, r)
     (nw: PeNew)      => nw.newType
     (ar: PeArrayRead) => arrayReadType(ar, r)
@@ -204,6 +204,25 @@ fun [tail] tupEntries(es: Chain<PTupEnt>, r: Resolver,
                                   append(acc, SEntry(l.value.tupName,
                                                      exprType(l.value.tupValue, r),
                                                      None)))
+
+# A __parallel__'s type is the TUPLE of its callables' results — None while
+# any callee has not resolved to a callable with a result yet
+# (ParallelExpression.get_type, parallel.py:32-39).
+fun parallelType(pl: PeParallel, r: Resolver): Spec|None
+  ret parTypeLoop(chain(exprsOfParallel(pl)), r, List<SEntry>(), pl.pepLine)
+
+fun [tail] parTypeLoop(es: Chain<PExpr>, r: Resolver, acc: List<SEntry>,
+                       lr: PLine): Spec|None
+  ret match(es)
+    (nil: ChainEnd) => STuple(acc, lr)
+    (l: ChainLink)  => match(exprType(l.value, r))
+      (ft: Spec) => match(ft)
+        (cl: SCallable) => match(cl.scResult)
+          (res: Spec) => parTypeLoop(l.next, r,
+                                     append(acc, SEntry("", res, None)), lr)
+          ()           => None
+        (o: Spec)       => None
+      ()          => None
 
 # An enum constructor yields the ROOT enum type, read from the declaration —
 # never from a spec instance in hand (which may be a stale copy).

@@ -114,3 +114,25 @@ class TestBootstrapExits(TestCase):
                                             f"differs at line {i + 1}")
                 self.assertEqual(len(expected), len(got),
                                  f"{path.name}: exits AST length differs")
+
+    def test_whole_program_exits_matches_python(self):
+        # Cross-file effects through the FULL lowering chain: hoisted-SCC
+        # statement order (Tarjan pop order — found via the C contract: the
+        # port emitted the stack suffix unreversed, coincidentally identical
+        # on every single-file corpus name set), lambda/lift interactions,
+        # lazy machinery. One concatenated text, compiled identically as "x"
+        # by both sides.
+        stdlib = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+        text = "".join(p.read_text() for p in stdlib) \
+            + (_REPO / "examples" / "linenumbers.yafl").read_text()
+        expected = self._python_exits(text).splitlines()
+        r = subprocess.run([self.binary, "exits"], input=text,
+                           capture_output=True, timeout=300, text=True,
+                           env=_RUN_ENV)
+        self.assertEqual(0, r.returncode, r.stdout[:300])
+        got = r.stdout.splitlines()
+        for i, (e, gg) in enumerate(zip(expected, got)):
+            self.assertEqual(e, gg,
+                             f"whole-program exits AST differs at line {i + 1}")
+        self.assertEqual(len(expected), len(got),
+                         "whole-program exits AST length differs")

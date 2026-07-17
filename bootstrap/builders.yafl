@@ -285,7 +285,10 @@ fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>,
   let retTy = SNamed(root.eName, tps, lr)
   let body = PeBlock(List<PStmt>(),
                      PeNewEnum(root.eName, leaf.eName,
-                               map(params, (p: PStmt) => letName(p)), tps, lr), "", lr)
+                               map(params, (p: PStmt) =>
+                                 PFieldArg(letName(p),
+                                           PeName(letName(p), List<Spec>(), lr))),
+                               tps, lr), "", lr)
   # A leaf constructor carries the file's ImportGroup, like any top-level fun.
   ret PsFun(leaf.eName, List<PAttr>(), root.eGens,
             PsDestructure("_", List<PAttr>(), None, params, None, lr),

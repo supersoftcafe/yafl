@@ -227,7 +227,9 @@ fun nsExpr(x: PExpr, acc: List<PErr>): List<PErr>
     (nw: PeNew)    => nsExpr(nw.newParam, nsSpec(nw.newType, acc))
     (ar: PeArrayRead) => nsExpr(ar.arrIndex, nsExpr(ar.arrObj, acc))
     (cv: PeConvert) => nsSpec(cv.convTarget, nsExpr(cv.convInner, acc))
-    (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams), acc)
+    (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams),
+                                fold(ne.fieldArgs, acc, (a2: List<PErr>, fa: PFieldArg) =>
+                                  nsExpr(fa.faValue, a2)))
     (o: PExpr)     => acc
 
 fun [tail] nsEntries(es: Chain<PTupEnt>, acc: List<PErr>): List<PErr>

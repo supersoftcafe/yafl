@@ -34,8 +34,11 @@ class [final] MethodId(mName: String, mId: Int)
 class [final] VtableSize(vsClassName: String, vsSize: Int)
 class [final] PerfectHashResult(methodIds: List<MethodId>, vtableSizes: List<VtableSize>)
 
+# Python's int.bit_length() measures the ABSOLUTE value, so
+# (-1).bit_length() == 1 and next_power_of_two(0) == 2 — a method-less
+# vtable still gets two catch-all rows. The port must keep the quirk.
 fun bitLength(n: Int): Int
-  ret n <= 0 ? 0 : 1 + bitLength(n / 2)
+  ret n < 0 ? bitLength(0 - n) : n == 0 ? 0 : 1 + bitLength(n / 2)
 
 fun nextPowerOfTwo(n: Int): Int
   ret pow2(bitLength(n - 1))

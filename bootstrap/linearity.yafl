@@ -440,7 +440,7 @@ fun linCount(x: PExpr, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
     (tp: PeTuple)  => countEntries(chain(tp.exprs), env, r, linZero(acc))
     (nw: PeNew)    => linCount(nw.newParam, env, r, acc)
     (ar: PeArrayRead) => linPair(ar.arrObj, ar.arrIndex, env, r, acc)
-    (ne: PeNewEnum) => linZero(acc)      # port fieldArgs are names, counted 0
+    (ne: PeNewEnum) => linFieldArgs(chain(ne.fieldArgs), env, r, acc)
     (op: PeBuiltinOp) => linCount(op.opParams, env, r, acc)
     (cv: PeConvert) => linCount(cv.convInner, env, r, acc)
     (te: PeTernary) => countTernary(te, env, r, acc)
@@ -461,6 +461,21 @@ fun linPair(a: PExpr, b: PExpr, env: LinEnv, r: Resolver,
             acc: List<PErr>): LinOut
   let o1 = linCount(a, env, r, acc)
   let o2 = linCount(b, env, r, o1.loErrs)
+  ret LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
+
+# Field-arg value expressions count like any other reads (Python counts the
+# NamedExpressions inside field_args). Not [tail]: the counts sum on the way
+# back up; fieldArgs lists are tiny.
+fun linFieldArgs(fas: Chain<PFieldArg>, env: LinEnv, r: Resolver,
+                 acc: List<PErr>): LinOut
+  ret match(fas)
+    (nil: ChainEnd) => linZero(acc)
+    (l: ChainLink)  => linFaStep(l, env, r, acc)
+
+fun linFaStep(l: ChainLink<PFieldArg>, env: LinEnv, r: Resolver,
+              acc: List<PErr>): LinOut
+  let o1 = linCount(l.value.faValue, env, r, acc)
+  let o2 = linFieldArgs(l.next, env, r, o1.loErrs)
   ret LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
 
 fun [tail] countEntries(es: Chain<PTupEnt>, env: LinEnv, r: Resolver,

@@ -157,7 +157,7 @@ fun eqExpr(a: PExpr, b: PExpr): Bool
       (o: PExpr)     => false
     (x: PeNewEnum) => match(b)
       (y: PeNewEnum) => x.rootName == y.rootName && x.leafName == y.leafName
-                        && eqStrs(x.fieldArgs, y.fieldArgs)
+                        && eqFieldArgs(x.fieldArgs, y.fieldArgs)
                         && eqSpecs(x.neTypeParams, y.neTypeParams)
                         && eqLine(x.penewLine, y.penewLine)
       (o: PExpr)     => false
@@ -347,6 +347,20 @@ fun eqStrOpt(a: String|None, b: String|None): Bool
     ()          => match(b)
       (y2: String) => false
       ()           => true
+
+# Python's field_args dict equality: same keys in order AND equal value exprs.
+fun eqFieldArgs(a: List<PFieldArg>, b: List<PFieldArg>): Bool
+  ret listLen(a) != listLen(b) ? false : eqFaLoop(chain(a), chain(b))
+
+fun [tail] eqFaLoop(a: Chain<PFieldArg>, b: Chain<PFieldArg>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => x.value.faName == y.value.faName
+                          && eqExpr(x.value.faValue, y.value.faValue)
+        ? eqFaLoop(x.next, y.next)
+        : false
 
 fun eqStrs(a: List<String>, b: List<String>): Bool
   ret listLen(a) != listLen(b) ? false : eqStrLoop(chain(a), chain(b))

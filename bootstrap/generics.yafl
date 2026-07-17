@@ -158,7 +158,9 @@ fun fciExpr(x: PExpr, acc: GRefs): GRefs
     (nm: PeName)   => fciSpecs(chain(nm.refTypeParams),
                                nameRef(nm.refName, nm.refTypeParams, acc))
     (ne: PeNewEnum) => fciSpecs(chain(ne.neTypeParams),
-                                nameRef(ne.rootName, ne.neTypeParams, acc))
+                                nameRef(ne.rootName, ne.neTypeParams,
+                                        fold(ne.fieldArgs, acc, (a2: GRefs, fa: PFieldArg) =>
+                                          fciExpr(fa.faValue, a2))))
     (d: PeDot)     => fciExpr(d.base, acc)
     (c: PeCall)    => fciExpr(c.parameter, fciExpr(c.function, acc))
     (tp: PeTuple)  => fciEntries(chain(tp.exprs), acc)
@@ -502,7 +504,9 @@ fun gsubExpr(x: PExpr, sub: GSub, visited: List<String>): PExpr
                                      op.peboLine)
     (nw: PeNew)    => PeNew(gsubSpec(nw.newType, sub, visited),
                             gsubExpr(nw.newParam, sub, visited), nw.penwLine)
-    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName, ne.fieldArgs,
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
+                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                   PFieldArg(fa.faName, gsubExpr(fa.faValue, sub, visited))),
                                  gsubList(ne.neTypeParams, sub, visited),
                                  ne.penewLine)
     (ar: PeArrayRead) => PeArrayRead(gsubExpr(ar.arrObj, sub, visited),
@@ -873,18 +877,28 @@ fun rcrSpecsOpt(ss: List<Spec>|None, refs: GRefs): List<Spec>|None
     (l: List<Spec>) => rcrSpecs(l, refs)
     ()              => None
 
+fun rcrFieldArgs(fas: List<PFieldArg>, refs: GRefs): List<PFieldArg>
+  ret map(fas, (fa: PFieldArg) => PFieldArg(fa.faName, rcrExpr(fa.faValue, refs)))
+
 fun rcrExpr(x: PExpr, refs: GRefs): PExpr
   ret match(x)
+    # penTrait is a SPEC field: Python's search_and_replace rewrites
+    # resolved_trait_scope with the same redirect (access.py:375), so a
+    # cached ClassSpec(BasicPlus,[bigint]) becomes BasicPlus$generic$bigint.
+    # Forgetting it strands the cache on the pre-mono spelling and every
+    # trait-scope disambiguation downstream fails.
     (nm: PeName)   => inRefs(refs.gdData, nm.refName, nm.refTypeParams)
       ? PeName(mangledName(nm.refName, nm.refTypeParams), List<Spec>(),
-               nm.penLine, nm.penTrait)
+               nm.penLine, rcrSpecOpt(nm.penTrait, refs))
       : PeName(nm.refName, rcrSpecs(nm.refTypeParams, refs), nm.penLine,
-               nm.penTrait)
+               rcrSpecOpt(nm.penTrait, refs))
+    # Python's redirect table rewrites root_spec_name ONLY — the leaf keeps
+    # its unmangled spelling (the mono'd root's spec carries the leaf map).
     (ne: PeNewEnum) => inRefs(refs.gdData, ne.rootName, ne.neTypeParams)
       ? PeNewEnum(mangledName(ne.rootName, ne.neTypeParams),
-                  mangledName(ne.leafName, ne.neTypeParams), ne.fieldArgs,
+                  ne.leafName, rcrFieldArgs(ne.fieldArgs, refs),
                   List<Spec>(), ne.penewLine)
-      : PeNewEnum(ne.rootName, ne.leafName, ne.fieldArgs,
+      : PeNewEnum(ne.rootName, ne.leafName, rcrFieldArgs(ne.fieldArgs, refs),
                   rcrSpecs(ne.neTypeParams, refs), ne.penewLine)
     (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine)
     (c: PeCall)    => PeCall(rcrExpr(c.function, refs),
@@ -1942,7 +1956,9 @@ fun rfrExpr(x: PExpr, c: Canon): PExpr
                                      rfrExpr(op.opParams, c), op.peboLine)
     (nw: PeNew)    => PeNew(rfrSpec(nw.newType, c), rfrExpr(nw.newParam, c),
                             nw.penwLine)
-    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName, ne.fieldArgs,
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
+                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                   PFieldArg(fa.faName, rfrExpr(fa.faValue, c))),
                                  rfrSpecList(ne.neTypeParams, c),
                                  ne.penewLine)
     (ar: PeArrayRead) => PeArrayRead(rfrExpr(ar.arrObj, c),

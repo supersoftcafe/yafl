@@ -896,3 +896,25 @@ init set holds the i16 twin). Small repros (3- and 5-variant enums with
 multi-Bool payloads + rebuild arms) do NOT trigger it; needs Op's 12-slot
 layout. Worked around in ops.yafl (opWsvMove/JumpIf/Call let-bind the Bools);
 the real fix is in the slot-read/boxing precision handling.
+
+OPEN 2026-07-17 — union-member field read miscompiled on REPEATED access.
+Reading a narrowed union member's field more than once (e.g. fl.flParamSpecs
+where fl: FrLoop came from GenFrame = FrLoop|FrBlock, re-read per loop
+iteration) returns a SHORT/garbage value on later reads though the first read
+is correct — a live abort (forceNth on an apparently-4-elem list hit empty at
+index 2) that a length guard reading the same field passed moments earlier.
+Worked around in generate_expr.yafl genRecurOn (read the frame's lists ONCE,
+thread the plain Lists down). Likely same root as the bool-slot precision bug
+(both union-slot read/repr). Repro: the pre-fix genRecurArgsStep re-reading
+fl.flParamSpecs; the io-copy [tail] loop in examples/helloWorld.yafl triggers
+it. Real fix in union_repr read-field / slot codegen — task #15.
+
+OPEN 2026-07-18 — PORT 8: json_pretty.yafl is the LAST C-contract red (17/18
+byte-identical). The `v` pipe-binder union in Main::runStdio (and pipe@2rohx3)
+lays out as {_s0 ptr, _s1 ptr, _s2 i8, $tag} in Python but {_s0 ptr, _s1 i8,
+_s2 VOID, $tag} in the port — one union member's ctype flattens to CgVoid in
+the port's tagged-container build (a specGenerate silent fallback, or a
+variant-slot merge divergence vs union_repr.py TaggedRepr). Evidence + the
+diagnosis recipe (fndump twin scripts) are in the session memory ledger; the
+port's temp fndump mode was removed pre-gate and can be re-added from the
+git history of this commit.

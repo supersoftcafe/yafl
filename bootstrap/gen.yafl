@@ -200,7 +200,10 @@ fun [tail] genMaskWindows(o: CgObject, n: Int, w: Int, acc: List<String>): List<
 # ── per-global: emission + GC roots ──────────────────────────────────────────
 
 fun genGlobal(acc: GenAcc, g2: CgGlobal, a: CgApp): GenAcc
-  let proto = cgGlobalPrototypePlain(g2, acc.gaCache)
+  # to_c_prototype: the FULL dispatch (static-object globals tentatively
+  # declare their `<name>_data` struct too) plus the ";\n" terminator —
+  # not the bare Plain form.
+  let proto = cgGlobalToCPrototype(g2, acc.gaCache)
   let impl = cgGlobalToCImplement(g2, proto.cache)
   let roots = genGlobalRoots(g2, a)
   ret GenAcc(impl.cache, acc.gaTypedefs, append(acc.gaForwards, proto.text),

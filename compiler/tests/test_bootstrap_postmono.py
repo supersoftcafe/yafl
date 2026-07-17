@@ -87,3 +87,24 @@ class TestBootstrapPostmono(TestCase):
                                             f"differs at line {i + 1}")
                 self.assertEqual(len(expected), len(got),
                                  f"{path.name}: postmono AST length differs")
+
+    def test_whole_program_postmono_matches_python(self):
+        # Cross-file resolution through MONOMORPHISATION: the per-file corpus
+        # never has a trait provider in another file, so the post-mono trait
+        # redirect (__resolve_trait_references) never fired under contract.
+        # Found via the C contract: rcrExpr passed penTrait through unmangled,
+        # stranding every trait-scope cache on its pre-mono spelling.
+        stdlib = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+        text = "".join(p.read_text() for p in stdlib) \
+            + (_REPO / "examples" / "helloWorld.yafl").read_text()
+        expected = self._python_postmono(text).splitlines()
+        r = subprocess.run([self.binary, "postmono"], input=text,
+                           capture_output=True, timeout=300, text=True,
+                           env=_RUN_ENV)
+        self.assertEqual(0, r.returncode, r.stdout[:300])
+        got = r.stdout.splitlines()
+        for i, (e, gg) in enumerate(zip(expected, got)):
+            self.assertEqual(e, gg,
+                             f"whole-program postmono AST differs at line {i + 1}")
+        self.assertEqual(len(expected), len(got),
+                         "whole-program postmono AST length differs")

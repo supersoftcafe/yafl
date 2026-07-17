@@ -501,10 +501,45 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 
 # `c` mode: the full -O0 pipeline to C text — the byte contract diffs it
 # against Python __create_c_code output (PYTHONHASHSEED=0) per corpus file.
+# stdin may be a MULTI-FILE stream — each part preceded by a `#FILE# <name>`
+# line — so the contract compiles stdlib + target as a whole program; a
+# stream without markers is a single file named "x" (the stage convention).
 fun cMode(text: String): (out: String, code: Int)
-  ret match(postmonoRes(text))
-    (ok: PmOk)   => cStage(ok.pmStmts)
-    (tx: PmText) => (tx.pmOut, tx.pmCode)
+  ret match(parseMulti(text))
+    (stmts: List<PStmt>) => match(convergeToPostmono(stmts))
+      (ok: PmOk)   => cStage(ok.pmStmts)
+      (tx: PmText) => (tx.pmOut, tx.pmCode)
+    ()                    => ("parse error\n", 1)
+
+fun convergeToPostmono(stmts: List<PStmt>): PmRes
+  ret match(converge(stmts))
+    (ok: CvOk)      => postmonoRes2(ok.cvStatements)
+    (d: CvDiverged) => PmText("diverged\n", 2)
+
+fun parseMulti(text: String): List<PStmt>|None
+  if !startsWith(text, "#FILE# ")
+    ret parseSingle(text)
+  ret parseParts(text, 0, List<PStmt>())
+
+fun parseSingle(text: String): List<PStmt>|None
+  ret match(parseProgram(text, "x"))
+    (fp: PFail)          => None
+    (stmts: List<PStmt>) => stmts
+
+# Each part: `#FILE# <name>\n` then content up to the next marker (markers
+# sit at line starts — search for `\n#FILE# `).
+fun [tail] parseParts(text: String, at: Int, acc: List<PStmt>): List<PStmt>|None
+  let nameEnd = findByte(text, '\n', at + 7)
+  if nameEnd < 0
+    ret acc
+  let name = slice(text, at + 7, nameEnd)
+  let nextMark = indexOf(text, "\n#FILE# ", nameEnd)
+  let contentEnd = nextMark < 0 ? length(text) : nextMark + 1
+  ret match(parseProgram(slice(text, nameEnd + 1, contentEnd), name))
+    (fp: PFail)          => None
+    (stmts: List<PStmt>) => nextMark < 0
+      ? concat(acc, stmts)
+      : parseParts(text, nextMark + 1, concat(acc, stmts))
 
 fun cStage(stmts: List<PStmt>): (out: String, code: Int)
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
@@ -519,12 +554,31 @@ fun cStage(stmts: List<PStmt>): (out: String, code: Int)
     (nm: System::String) => cEmit(final2, nm)
     ()                    => ("No main function found\n", 1)
 
+# __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
+# `main` in no namespace is not a main), the return type must be the bigint
+# builtin, and the parameter tuple must be empty.
 fun [tail] cFindMain(ss: Chain<PStmt>): System::String|None
   ret match(ss)
     (nil: ChainEnd) => None
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => bareOfUnique(f.fName) == "main" ? f.fName : cFindMain(l.next)
+      (f: PsFun) => cIsMainFunction(f) ? f.fName : cFindMain(l.next)
       (o: PStmt) => cFindMain(l.next)
+
+fun cIsMainFunction(f: PsFun): Bool
+  if !contains(f.fName, "::main@")
+    ret false
+  if !cIsBigintRet(f.fRet)
+    ret false
+  ret match(paramsTupleOf(f.fParams))
+    (tp: STuple) => isEmpty(tp.stEntries)
+    (o: Spec)    => false
+
+fun cIsBigintRet(ret2: Spec|None): Bool
+  ret match(ret2)
+    (sp: Spec) => match(sp)
+      (b: SBuiltin) => b.sbName == "bigint"
+      (o: Spec)     => false
+    ()          => false
 
 fun cEmit(stmts: List<PStmt>, mainName: System::String): (out: String, code: Int)
   let out = createCCode(stmts, mainName, 0, append(List<System::String>(), "yafl.h"))

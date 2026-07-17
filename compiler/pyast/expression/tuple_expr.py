@@ -3,9 +3,28 @@ from __future__ import annotations
 from typing import Callable, Any
 import dataclasses
 import pyast.rewrite as rw
-import random
 from dataclasses import dataclass, field
 from functools import reduce
+
+
+def _location_shuffle(items: list, key: str) -> list:
+    """Deterministic, PORTABLE permutation of `items` keyed on a source
+    location. FNV-1a over the key seeds an xorshift32 stream driving a
+    Fisher–Yates shuffle — every step is 32-bit integer arithmetic the YAFL
+    bootstrap reproduces exactly (see bootstrap/generate_expr.yafl)."""
+    h = 2166136261
+    for byte in key.encode():
+        h = ((h ^ byte) * 16777619) & 0xFFFFFFFF
+    if h == 0:
+        h = 1  # xorshift must never run on a zero state
+    xs = list(items)
+    for i in range(len(xs) - 1, 0, -1):
+        h ^= (h << 13) & 0xFFFFFFFF
+        h ^= h >> 17
+        h ^= (h << 5) & 0xFFFFFFFF
+        j = h % (i + 1)
+        xs[i], xs[j] = xs[j], xs[i]
+    return xs
 
 from langtools import checked_cast
 from parsing.tokenizer import LineRef
@@ -180,12 +199,15 @@ class TupleExpression(Expression):
         # At -O0, randomise the order in which children's side-effects fire so that
         # any code accidentally relying on left-to-right tuple evaluation surfaces.
         # Seed deterministically from the source location: same .yafl in → same .c out,
-        # but order varies across tuple sites within a program.
+        # but order varies across tuple sites within a program. The PRNG is a
+        # hand-rolled FNV-1a seed + xorshift32 Fisher–Yates — NOT random.Random —
+        # so the YAFL bootstrap can reproduce the identical permutation (CPython's
+        # Mersenne Twister is not portably re-implementable in a page of code).
         eval_bundles = param_bundles
         if resolver.get_optimization_level() == 0 and len(eval_bundles) > 1:
-            rng = random.Random(f"{self.line_ref.filename}:{self.line_ref.line}:{self.line_ref.offset}")
-            eval_bundles = list(param_bundles)
-            rng.shuffle(eval_bundles)
+            eval_bundles = _location_shuffle(
+                param_bundles,
+                f"{self.line_ref.filename}:{self.line_ref.line}:{self.line_ref.offset}")
         total_bundle = reduce(lambda x, y: y + x, reversed(eval_bundles), final_bundle)
         return total_bundle
 

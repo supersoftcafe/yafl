@@ -346,8 +346,14 @@ fun cgLitAsFloat(data: CgLit): Float
 # text. Reuses the stdlib Float formatter; NOT verified byte-for-byte against
 # CPython's repr() for every edge case (exponent-notation thresholds, "inf"/
 # "nan" spelling, trailing ".0").
+# Python repr(float): an INTEGRAL value still prints its ".0" (255.0, not
+# 255). YAFL's String(Float) drops it; append when no '.', exponent or
+# nan/inf marker is present.
 fun floatRepr(v: Float): String
-  ret String(v)
+  let s2 = String(v)
+  ret contains(s2, ".") || contains(s2, "e") || contains(s2, "n")
+    ? s2
+    : s2 + ".0"
 
 fun cgInitFuncPointer(data: CgLit): String
   ret match(data)
