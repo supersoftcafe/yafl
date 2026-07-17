@@ -1,0 +1,108 @@
+# bootstrap/staticinit.yafl — ported from lowering/staticinit.py, the -O0
+# half: resolve_flat_struct_global_inits replaces GlobalVar references inside
+# a flat-struct global's init (no object_name, no lazy init) with their
+# traced Integer/String constants, leaving the init untouched when any part
+# fails to trace. The O1+ halves (promote_static_objects with its $si$N
+# counter, inline_single_use_globals, convert_static_objects_pass) port with
+# the optimisation blocks — NOT PORTED YET, deliberately.
+namespace Bootstrap
+
+import System
+
+fun resolveFlatStructGlobalInits(a: CgApp): CgApp
+  ret CgApp(a.appFunctions, a.appObjects,
+            map(a.appGlobals, (g2: CgGlobal) => siResolveGlobal(g2, a)))
+
+fun siResolveGlobal(g2: CgGlobal, a: CgApp): CgGlobal
+  if !isNoneStr(g2.globalObjectName) || !isNoneStr(g2.globalLazyInitFunction)
+    ret g2
+  ret match(g2.globalInit)
+    (init: RParam) => match(init)
+      (ns: RpNewStruct) => siResolvedGlobal(g2, siResolveConstants(init, a))
+      (o: RParam)        => g2
+    ()              => g2
+
+fun siResolvedGlobal(g2: CgGlobal, resolved: RParam|None): CgGlobal
+  ret match(resolved)
+    (r: RParam) => CgGlobal(g2.globalName, g2.globalType, r, g2.globalObjectName,
+                            g2.globalLazyInitFunction, g2.globalLazyInitFlag)
+    ()           => g2
+
+# _resolve_rparam_constants: Integer/String pass through; a GlobalVar traces
+# to its constant; a NewStruct resolves field-wise (all or nothing).
+fun siResolveConstants(val: RParam, a: CgApp): RParam|None
+  ret match(val)
+    (i: RpInteger)   => val
+    (s2: RpString)   => val
+    (gv: RpGlobalVar) => siTraceToConstant(val, List<FunValue>(), a)
+    (ns: RpNewStruct) => siResolveStruct(ns, a)
+    (o: RParam)       => None
+
+fun siResolveStruct(ns: RpNewStruct, a: CgApp): RParam|None
+  let resolved = fold(ns.values, SiVals(List<RpNamedValue>(), true), (acc: SiVals, nv: RpNamedValue) => siResolveField(acc, nv, a))
+  ret resolved.svOk ? RpNewStruct(resolved.svVals) : None
+
+class [final] SiVals(svVals: List<RpNamedValue>, svOk: Bool)
+
+fun siResolveField(acc: SiVals, nv: RpNamedValue, a: CgApp): SiVals
+  if !acc.svOk
+    ret acc
+  ret match(siResolveConstants(nv.value, a))
+    (r: RParam) => SiVals(append(acc.svVals, RpNamedValue(nv.name, r)), true)
+    ()           => SiVals(acc.svVals, false)
+
+# _trace_to_constant (the subset the -O0 path exercises: no function-local
+# value map — resolve_flat_struct passes an empty one). Integer/String/ZeroOf
+# are constants; a NewStruct is constant when every field is (rebuilt from
+# the traced constants); a GlobalVar reads a non-lazy, non-object global's
+# Integer/String init; a StackVar dead-ends without a value map.
+fun siTraceToConstant(val: RParam, vmap: List<FunValue>, a: CgApp): RParam|None
+  ret match(val)
+    (i: RpInteger)    => val
+    (s2: RpString)    => val
+    (z: RpZeroOf)     => val
+    (ns: RpNewStruct) => siTraceStruct(ns, vmap, a)
+    (sv: RpStackVar)  => match(gfFvLookup(vmap, sv.name))
+      (src: RParam) => siTraceToConstant(src, vmap, a)
+      ()             => None
+    (gv: RpGlobalVar) => siTraceGlobal(gv, a)
+    (sf: RpStructField) => siTraceField(sf, vmap, a)
+    (o: RParam)       => None
+
+fun siTraceStruct(ns: RpNewStruct, vmap: List<FunValue>, a: CgApp): RParam|None
+  let out = fold(ns.values, SiVals(List<RpNamedValue>(), true),
+                 (acc: SiVals, nv: RpNamedValue) => siTraceStructField(acc, nv, vmap, a))
+  ret out.svOk ? RpNewStruct(out.svVals) : None
+
+fun siTraceStructField(acc: SiVals, nv: RpNamedValue, vmap: List<FunValue>, a: CgApp): SiVals
+  if !acc.svOk
+    ret acc
+  ret match(siTraceToConstant(nv.value, vmap, a))
+    (r: RParam) => SiVals(append(acc.svVals, RpNamedValue(nv.name, r)), true)
+    ()           => SiVals(acc.svVals, false)
+
+# Object-typed globals can't be C static initialiser values; lazy globals
+# have no compile-time value at all.
+fun siTraceGlobal(gv: RpGlobalVar, a: CgApp): RParam|None
+  ret match(appGlobal(a, gv.name))
+    (g2: CgGlobal) => !isNoneStr(g2.globalLazyInitFunction) || !isNoneStr(g2.globalObjectName)
+      ? None
+      : siConstInit(g2.globalInit)
+    ()              => None
+
+fun siConstInit(init: RParam|None): RParam|None
+  ret match(init)
+    (r: RParam) => match(r)
+      (i: RpInteger) => r
+      (s2: RpString) => r
+      (o: RParam)     => None
+    ()           => None
+
+fun siTraceField(sf: RpStructField, vmap: List<FunValue>, a: CgApp): RParam|None
+  ret match(siTraceToConstant(sf.structVal, vmap, a))
+    (r: RParam) => match(r)
+      (ns: RpNewStruct) => match(gfNamedValue(ns.values, sf.field))
+        (fv: RParam) => siTraceToConstant(fv, vmap, a)
+        ()            => None
+      (o: RParam)        => None
+    ()           => None

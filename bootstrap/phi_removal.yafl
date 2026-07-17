@@ -1,0 +1,160 @@
+# bootstrap/phi_removal.yafl — leave SSA before async lowering, ported from
+# lowering/phi_removal.py: (1) cgFunctionLowerPhis (ir.yafl) turns every Phi
+# into per-edge Moves; (2) copy coalescing folds a phi web's edge copy
+# Move(T, src) into src's defining op when src is defined once and read once
+# (by the copy) and nothing touches T between definition and copy within the
+# block — the definition is renamed to write T and the copy disappears.
+# saved_vars count as READS. From here the IR is deliberately NOT single-
+# assignment; the final ssa_validate runs with ssa=false.
+namespace Bootstrap
+
+import System
+
+fun removePhis(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions,
+        (f: CgFunction) => prCoalesceCopies(cgFunctionLowerPhis(f))))
+
+# ── def/read counts (saved_vars are reads) ──────────────────────────────────
+
+class [final] PrCounts(prDefs: List<StrCount>, prReads: List<StrCount>)
+
+fun prCountVars(ops: List<Op>): PrCounts
+  ret fold(ops, PrCounts(List<StrCount>(), List<StrCount>()), prCountOp)
+
+fun prCountOp(acc: PrCounts, op: Op): PrCounts
+  let reads1 = fold(opReadVarNames(op), acc.prReads, strCountIncr)
+  let reads2 = fold(opSavedVars(op), reads1,
+                    (r: List<StrCount>, sv: RParam) => prIncrIfStackVar(r, sv))
+  let defs1 = fold(ssavOpWrites(op), acc.prDefs,
+                   (d: List<StrCount>, sv: RParam) => prIncrIfStackVar(d, sv))
+  ret PrCounts(defs1, reads2)
+
+fun prIncrIfStackVar(acc: List<StrCount>, sv: RParam): List<StrCount>
+  ret match(sv)
+    (s2: RpStackVar) => strCountIncr(acc, s2.name)
+    (o: RParam)       => acc
+
+# ── the coalescer ────────────────────────────────────────────────────────────
+
+fun prCoalesceCopies(f: CgFunction): CgFunction
+  let counts = prCountVars(f.fnOps)
+  let out = prScan(f.fnOps, counts, 0, List<Int>(), List<PrRename>(), counts.prDefs)
+  ret isEmpty(out.proRemoved)
+    ? f
+    : prRebuild(f, out)
+
+# proRemoved: op indices to drop. proRenames: (def-op index, s→t) renames.
+class [final] PrRename(prrIdx: Int, prrOld: String, prrNew: String)
+class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
+
+fun [tail] prScan(ops: List<Op>, counts: PrCounts, i: Int,
+                  removed: List<Int>, renames: List<PrRename>,
+                  defs: List<StrCount>): PrOut
+  if i >= listLen(ops)
+    ret PrOut(removed, renames)
+  ret match(prCandidate(forceNth(ops, i)))
+    (c: PrCand) => c.pcSelf
+      ? prScan(ops, counts, i + 1, append(removed, i), renames, defs)
+      : prTryCoalesce(ops, counts, i, c, removed, renames, defs)
+    ()           => prScan(ops, counts, i + 1, removed, renames, defs)
+
+# A coalescible copy: Move without keep, StackVar := StackVar. pcSelf marks
+# the degenerate T := T (dropped outright).
+class [final] PrCand(pcT: String, pcS: String, pcSelf: Bool)
+
+fun prCandidate(op: Op): PrCand|None
+  ret match(op)
+    (m: OpMove) => m.moveKeep ? None : prCandTargets(m)
+    (o: Op)     => None
+
+fun prCandTargets(m: OpMove): PrCand|None
+  ret match(m.moveTarget)
+    (t2: RpStackVar) => match(m.moveSource)
+      (s2: RpStackVar) => PrCand(t2.name, s2.name, t2.name == s2.name)
+      (o: RParam)       => None
+    (o2: RParam)      => None
+
+fun prTryCoalesce(ops: List<Op>, counts: PrCounts, i: Int, c: PrCand,
+                  removed: List<Int>, renames: List<PrRename>,
+                  defs: List<StrCount>): PrOut
+  if strCountGet(defs, c.pcS) != 1 || strCountGet(counts.prReads, c.pcS) != 1
+    ret prScan(ops, counts, i + 1, removed, renames, defs)
+  ret match(prFindDef(ops, i - 1, c))
+    (di: Int) => prScan(ops, counts, i + 1, append(removed, i),
+                        append(renames, PrRename(di, c.pcS, c.pcT)),
+                        strCountIncr(defs, c.pcT))
+    ()         => prScan(ops, counts, i + 1, removed, renames, defs)
+
+# Walk back within the block to src's definition; bail on a block boundary
+# (labels/jumps/returns — value flow beyond the block is invisible here) or
+# when T or S is touched in between.
+fun [tail] prFindDef(ops: List<Op>, j: Int, c: PrCand): Int|None
+  if j < 0
+    ret None
+  let prev = forceNth(ops, j)
+  if prBlockBoundary(prev)
+    ret None
+  if prWritesName(prev, c.pcS)
+    ret j
+  if prTouches(prev, c.pcT) || prTouches(prev, c.pcS)
+    ret None
+  ret prFindDef(ops, j - 1, c)
+
+fun prBlockBoundary(op: Op): Bool
+  ret match(op)
+    (lb: OpLabel)      => true
+    (j: OpJump)        => true
+    (ji: OpJumpIf)     => true
+    (sw: OpSwitchJump) => true
+    (t2: OpIfTask)     => true
+    (r: OpReturn)      => true
+    (rv: OpReturnVoid) => true
+    (a: OpAbort)       => true
+    (o: Op)            => false
+
+fun prWritesName(op: Op, name: String): Bool
+  ret any(ssavOpWrites(op), (sv: RParam) => prIsNamed(sv, name))
+
+fun prIsNamed(sv: RParam, name: String): Bool
+  ret match(sv)
+    (s2: RpStackVar) => s2.name == name
+    (o: RParam)       => false
+
+fun prTouches(op: Op, name: String): Bool
+  ret strListMember(opReadVarNames(op), name) || prWritesName(op, name)
+
+# ── rebuild: apply renames, drop removed ops and dead source stackvars ──────
+
+fun prRebuild(f: CgFunction, out: PrOut): CgFunction
+  let newOps = prRebuildOps(f.fnOps, out)
+  let dead = prDeadSources(f.fnOps, out.proRemoved)
+  ret cgFunctionWith(f, newOps,
+        CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
+                        (fld: CgField) => !strListMember(dead, fld.fieldName))))
+
+fun prRebuildOps(ops: List<Op>, out: PrOut): List<Op>
+  ret prRebuildLoop(ops, out, 0, List<Op>())
+
+fun [tail] prRebuildLoop(ops: List<Op>, out: PrOut, i: Int, acc: List<Op>): List<Op>
+  if i >= listLen(ops)
+    ret acc
+  if contains2Int(out.proRemoved, i)
+    ret prRebuildLoop(ops, out, i + 1, acc)
+  ret prRebuildLoop(ops, out, i + 1, append(acc, prApplyRename(forceNth(ops, i), i, out.proRenames)))
+
+fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
+  ret fold(renames, op, (o: Op, r: PrRename) => r.prrIdx == i
+             ? opRenameVars(o, list1(RpRename(r.prrOld, r.prrNew)))
+             : o)
+
+# Dead = each removed non-self copy's SOURCE name.
+fun prDeadSources(ops: List<Op>, removed: List<Int>): List<String>
+  ret fold(removed, List<String>(), (acc: List<String>, i: Int) => prDeadOne(acc, forceNth(ops, i)))
+
+fun prDeadOne(acc: List<String>, op: Op): List<String>
+  ret match(prCandidate(op))
+    (c: PrCand) => c.pcSelf ? acc : strListAdd(acc, c.pcS)
+    ()           => acc
+
+fun contains2Int(l: List<Int>, x: Int): Bool
+  ret any(l, (v: Int) => v == x)
