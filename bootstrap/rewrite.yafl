@@ -567,3 +567,144 @@ fun [tail] rwnLits(ls: Chain<PLit>, w: RwN, n: Int,
         |> (lo, hi) => rwnLits(l.next, w, hi.rneN,
                                append(acc, PlRange(lo.rneExpr, hi.rneExpr,
                                                    lr.plrLine)))
+
+# ── foldAllSpecs: a BOTTOM-UP spec fold over the whole tree ──────────────────
+# Mirrors rwStmt/rwExprKids/rwSpecKids' traversal and visit sets EXACTLY, but
+# fires the callback on each SPEC in the same order Python's search_and_replace
+# `replace` fires (children before parents) — encounter-order consumers
+# (discriminator-id assignment) depend on that order, which the PRE-order fold
+# twins above deliberately do not provide.
+
+fun foldAllSpecs<T>(ss: List<PStmt>, f: (:T, :Spec): T, acc: T): T
+  ret fasStmts<T>(chain(ss), f, acc)
+
+fun [tail] fasStmts<T>(ss: Chain<PStmt>, f: (:T, :Spec): T, acc: T): T
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasStmts<T>(l.next, f, fasStmt<T>(l.value, f, acc))
+
+fun fasStmt<T>(st: PStmt, f: (:T, :Spec): T, acc: T): T
+  ret match(st)
+    (f2: PsFun) => fasSpecs<T>(chain(f2.fWheres), f,
+                     fasSpecOpt<T>(f2.fRet, f,
+                       fasExprOpt<T>(f2.fBody, f,
+                         fasStmt<T>(f2.fParams, f, acc))))
+    (l: PsLet)  => fasExprOpt<T>(l.lDefault, f, fasSpecOpt<T>(l.lType, f, acc))
+    (d: PsDestructure) => fasExprOpt<T>(d.dDefault, f,
+                            fasStmts<T>(chain(d.dTargets), f,
+                              fasSpecOpt<T>(d.dType, f, acc)))
+    (c: PsClass) => fasStmts<T>(chain(c.cMembers), f,
+                      fasSpecs<T>(chain(c.cWheres), f,
+                        fasSpecs<T>(chain(c.cImplements), f,
+                          fasStmt<T>(c.cParams, f,
+                            fasSpecsOpt<T>(c.cAllParents, f, acc)))))
+    (e2: PsEnum) => fasSpecOpt<T>(e2.eSpec, f,
+                      fasStmts<T>(chain(e2.eVariants), f,
+                        fasStmt<T>(e2.eParams, f, acc)))
+    (ta: PsTypealias) => fasSpec<T>(ta.taType, f, acc)
+    (rt: PsRet)  => fasExpr<T>(rt.retValue, f, acc)
+    (a: PsAction) => fasExpr<T>(a.action, f, acc)
+    (i: PsIf)    => fasStmts<T>(chain(i.ifFalse), f,
+                      fasStmts<T>(chain(i.ifTrue), f,
+                        fasExpr<T>(i.ifCond, f, acc)))
+    (o: PStmt)   => acc
+
+fun fasExprOpt<T>(x: PExpr|None, f: (:T, :Spec): T, acc: T): T
+  ret match(x)
+    (e2: PExpr) => fasExpr<T>(e2, f, acc)
+    ()           => acc
+
+fun [tail] fasExprs<T>(es: Chain<PExpr>, f: (:T, :Spec): T, acc: T): T
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasExprs<T>(l.next, f, fasExpr<T>(l.value, f, acc))
+
+fun fasExpr<T>(x: PExpr, f: (:T, :Spec): T, acc: T): T
+  ret match(x)
+    (nm: PeName)    => fasTrait<T>(nm.penTrait, f, fasSpecs<T>(chain(nm.refTypeParams), f, acc))
+    (d: PeDot)      => fasExpr<T>(d.base, f, acc)
+    (c: PeCall)     => fasExpr<T>(c.parameter, f, fasExpr<T>(c.function, f, acc))
+    (tp: PeTuple)   => fasTupEnts<T>(chain(tp.exprs), f, acc)
+    (te: PeTernary) => fasExpr<T>(te.falseResult, f,
+                         fasExpr<T>(te.trueResult, f,
+                           fasExpr<T>(te.condition, f, acc)))
+    (lm: PeLambda)  => fasSpecOpt<T>(lm.lamRet, f,
+                         fasExpr<T>(lm.lamBody, f,
+                           fasStmt<T>(lm.lamParams, f, acc)))
+    (bk: PeBlock)   => fasExpr<T>(bk.blockValue, f, fasStmts<T>(chain(bk.blockStmts), f, acc))
+    (mt: PeMatch)   => fasArms<T>(chain(mt.arms), f, fasExpr<T>(mt.subject, f, acc))
+    (op: PeBuiltinOp) => fasExpr<T>(op.opParams, f, fasSpec<T>(op.opType, f, acc))
+    (nw: PeNew)     => fasExpr<T>(nw.newParam, f, fasSpec<T>(nw.newType, f, acc))
+    (ne: PeNewEnum) => fasSpecs<T>(chain(ne.neTypeParams), f, acc)
+    (ar: PeArrayRead) => fasExpr<T>(ar.arrIndex, f, fasExpr<T>(ar.arrObj, f, acc))
+    (cv: PeConvert) => fasSpec<T>(cv.convTarget, f, fasExpr<T>(cv.convInner, f, acc))
+    (pl: PeParallel) => fasExpr<T>(pl.parParams, f, acc)
+    (lp: PeLoop)    => fasExprs<T>(chain(lp.loopParams), f, fasExpr<T>(lp.loopBody, f, acc))
+    (rc: PeRecur)   => fasExprs<T>(chain(rc.recArgs), f, acc)
+    (lz: PeLazy)    => fasSpec<T>(lz.lzTarget, f, acc)
+    (o: PExpr)      => acc
+
+fun fasTrait<T>(sp: Spec|None, f: (:T, :Spec): T, acc: T): T
+  ret fasSpecOpt<T>(sp, f, acc)
+
+fun [tail] fasTupEnts<T>(es: Chain<PTupEnt>, f: (:T, :Spec): T, acc: T): T
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasTupEnts<T>(l.next, f, fasExpr<T>(l.value.tupValue, f, acc))
+
+fun [tail] fasArms<T>(as2: Chain<PArm>, f: (:T, :Spec): T, acc: T): T
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasArms<T>(l.next, f,
+        fasExprOpt<T>(l.value.armGuard, f,
+          fasLits<T>(chain(l.value.armLiterals), f,
+            fasExpr<T>(l.value.armBody, f,
+              fasSpecOpt<T>(l.value.armType, f, acc)))))
+
+fun [tail] fasLits<T>(ls: Chain<PLit>, f: (:T, :Spec): T, acc: T): T
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasLits<T>(l.next, f, fasLit<T>(l.value, f, acc))
+
+fun fasLit<T>(lt: PLit, f: (:T, :Spec): T, acc: T): T
+  ret match(lt)
+    (le: PlExpr)  => fasExpr<T>(le.litExpr, f, acc)
+    (lr: PlRange) => fasExpr<T>(lr.rangeHi, f, fasExpr<T>(lr.rangeLo, f, acc))
+
+# Specs: kids first (bottom-up), then the node itself.
+fun fasSpec<T>(sp: Spec, f: (:T, :Spec): T, acc: T): T
+  ret f(fasSpecKids<T>(sp, f, acc), sp)
+
+fun fasSpecOpt<T>(sp: Spec|None, f: (:T, :Spec): T, acc: T): T
+  ret match(sp)
+    (s2: Spec) => fasSpec<T>(s2, f, acc)
+    ()          => acc
+
+fun [tail] fasSpecs<T>(ts: Chain<Spec>, f: (:T, :Spec): T, acc: T): T
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasSpecs<T>(l.next, f, fasSpec<T>(l.value, f, acc))
+
+fun fasSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :Spec): T, acc: T): T
+  ret match(ss)
+    (l: List<Spec>) => fasSpecs<T>(chain(l), f, acc)
+    ()               => acc
+
+fun fasSpecKids<T>(sp: Spec, f: (:T, :Spec): T, acc: T): T
+  ret match(sp)
+    (e2: SEnum)        => fasSpecs<T>(chain(e2.seParams), f, acc)
+    (cl: SClass)       => fasSpecs<T>(chain(cl.scParams), f, acc)
+    (n: SNamed)        => acc   # traversal LEAF
+    (cm: SCombination) => fasSpecs<T>(chain(cm.scTypes), f, acc)
+    (t2: STuple)       => fasEntries<T>(chain(t2.stEntries), f, acc)
+    (cb: SCallable)    => fasSpecOpt<T>(cb.scResult, f, fasSpec<T>(cb.scParams2, f, acc))
+    (af: SArrayField)  => fasSpec<T>(af.safElem, f, acc)
+    (ls: SLazyStub)    => fasSpecOpt<T>(ls.slsTarget, f, acc)
+    (o: Spec)          => acc
+
+fun [tail] fasEntries<T>(es: Chain<SEntry>, f: (:T, :Spec): T, acc: T): T
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasEntries<T>(l.next, f,
+        fasExprOpt<T>(l.value.seDefault, f,
+          fasSpecOpt<T>(l.value.seType, f, acc)))

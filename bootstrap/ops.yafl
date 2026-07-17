@@ -455,3 +455,77 @@ fun rpOptTargetReadNames(r: RParam|None): List<String>
   ret match(r)
     (x: RParam) => rpTargetReadNames(x)
     ()           => List<String>()
+
+# ── saved_vars setter (async_lower's liveness fixpoint rewrites them) ────────
+
+fun opWithSavedVars(op: Op, sv: List<RParam>): Op
+  ret match(op)
+    (x: OpLabel)        => OpLabel(x.labelName, sv)
+    (x: OpMove)         => opWsvMove(x, sv)
+    (x: OpJump)         => OpJump(x.jumpName, sv)
+    (x: OpJumpIf)       => opWsvJumpIf(x, sv)
+    (x: OpIfTask)       => OpIfTask(x.taskCondition, x.taskSource, x.taskLhs, x.callIdLhs, x.callId, x.taskTarget, sv)
+    (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
+    (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, sv)
+    (x: OpCall)         => opWsvCall(x, sv)
+    (x: OpReturnVoid)   => OpReturnVoid(sv)
+    (x: OpAbort)        => OpAbort(x.abortReason, sv)
+    (x: OpReturn)       => OpReturn(x.returnValue, sv)
+    (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
+    (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
+
+# The Bool fields are LET-BOUND with explicit types before the rebuild: a
+# union-slot Bool read feeding an inlined constructor mints precision-
+# inconsistent StackVars (i16 slot view vs i8 param) that Python's
+# uninit_check rejects — TODO.md OPEN 2026-07-17 (bool slot precision).
+fun opWsvMove(x: OpMove, sv: List<RParam>): Op
+  let keep: Bool = x.moveKeep
+  ret OpMove(x.moveTarget, x.moveSource, keep, sv)
+
+fun opWsvJumpIf(x: OpJumpIf, sv: List<RParam>): Op
+  let invert: Bool = x.jumpIfInvert
+  ret OpJumpIf(x.jumpIfLabel, x.jumpIfCondition, invert, sv)
+
+fun opWsvCall(x: OpCall, sv: List<RParam>): Op
+  let musttail: Bool = x.callMusttail
+  let impure: Bool = x.callImpure
+  ret OpCall(x.callFunction, x.callParameters, x.callRegister, musttail, impure, x.callResultType, sv)
+
+# Reads as StackVar RPARAMS (types intact — the liveness sets feed state-field
+# layout); the names-only twin is opReadVarNames above.
+fun rpReadStackVars(r: RParam): List<RParam>
+  ret fold(rpFlatten(r, true), List<RParam>(), rpTakeStackVar)
+
+fun rpTakeStackVar(acc: List<RParam>, x: RParam): List<RParam>
+  ret match(x)
+    (sv: RpStackVar) => append(acc, x)
+    (o: RParam)       => acc
+
+fun rpTargetReadStackVars(target: RParam): List<RParam>
+  ret match(target)
+    (sv: RpStackVar) => List<RParam>()
+    (o: RParam)       => rpReadStackVars(target)
+
+fun rpOptReadStackVars(r: RParam|None): List<RParam>
+  ret match(r)
+    (x: RParam) => rpReadStackVars(x)
+    ()           => List<RParam>()
+
+fun rpOptTargetReadStackVars(r: RParam|None): List<RParam>
+  ret match(r)
+    (x: RParam) => rpTargetReadStackVars(x)
+    ()           => List<RParam>()
+
+fun opReadStackVars(op: Op): List<RParam>
+  ret match(op)
+    (m: OpMove)          => concat(rpReadStackVars(m.moveSource), rpTargetReadStackVars(m.moveTarget))
+    (ji: OpJumpIf)       => rpReadStackVars(ji.jumpIfCondition)
+    (t2: OpIfTask)       => concat(rpReadStackVars(t2.taskCondition), rpReadStackVars(t2.taskSource))
+    (sw: OpSwitchJump)   => rpReadStackVars(sw.switchCondition)
+    (n: OpNewObject)     => concat(rpOptReadStackVars(n.newObjSize), rpTargetReadStackVars(n.newObjRegister))
+    (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),
+                                   rpOptTargetReadStackVars(c.callRegister))
+    (r: OpReturn)        => rpReadStackVars(r.returnValue)
+    (pc: OpParallelCall) => fold(pc.parCalls, List<RParam>(), (acc: List<RParam>, x: RParam) => concat(acc, rpReadStackVars(x)))
+    (ph: OpPhi)          => fold(ph.phiSources, List<RParam>(), (acc: List<RParam>, s2: OpPhiSource) => concat(acc, rpReadStackVars(s2.sourceValue)))
+    (o: Op)              => List<RParam>()

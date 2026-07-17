@@ -26,7 +26,7 @@ fun ucCheckFunction(f: CgFunction): List<String>
   if isEmpty(f.fnOps)
     ret List<String>()
   let labels = ucLabelIndex(f.fnOps)
-  let params = map(cgFieldsOfOrEmpty(f.fnParams), (fld: CgField) => fld.fieldName)
+  let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
   let entry0 = ucEntryInit(listLen(f.fnOps), sortNamesAsc(chain(params), List<String>()))
   let entry = ucFixpoint(f.fnOps, labels, entry0, list1(0))
   ret concat(ucVerify(f, entry), ucCheckPhiSources(f, labels, entry))
@@ -86,19 +86,33 @@ fun ucLabelOnly(labels: List<LabelIdx>, name: String): List<Int>
 # Phi: zero unconditional reads, target written on block entry (sources are
 # checked per-edge below). IfTask: get_live_vars omits task_lhs/call_id_lhs;
 # they land only on the taken branch.
+#
+# Sets key by NAME + TYPE (ucKey), matching Python's frozenset of StackVar
+# dataclasses exactly: a variable written at one precision and read at
+# another must NOT unify — that (type,name) strictness is how Python caught
+# the bool-slot precision bug (TODO.md OPEN 2026-07-17).
+fun ucKey(sv: RParam): String
+  ret stackVarName(sv) + "|" + irMangle(rpGetType(sv))
+
+fun ucKeyField(fld: CgField): String
+  ret fld.fieldName + "|" + irMangle(fld.fieldType)
+
+fun ucTakeKey(acc: List<String>, sv: RParam): List<String>
+  ret match(sv)
+    (s2: RpStackVar) => append(acc, ucKey(sv))
+    (o: RParam)       => acc
+
 fun ucReads(op: Op): List<String>
   ret match(op)
     (ph: OpPhi) => List<String>()
-    (o: Op)     => opReadVarNames(op)
+    (o: Op)     => fold(opReadStackVars(op), List<String>(), ucTakeKey)
 
 fun ucWrites(op: Op): List<String>
-  ret match(op)
-    (ph: OpPhi) => fold(ssavOpWrites(op), List<String>(), rpTakeStackVarName)
-    (o: Op)     => fold(ssavOpWrites(op), List<String>(), rpTakeStackVarName)
+  ret fold(ssavOpWrites(op), List<String>(), ucTakeKey)
 
 fun ucBranchOnlyWrites(op: Op): List<String>
   ret match(op)
-    (t2: OpIfTask) => fold(list2(t2.taskLhs, t2.callIdLhs), List<String>(), rpTakeStackVarName)
+    (t2: OpIfTask) => fold(list2(t2.taskLhs, t2.callIdLhs), List<String>(), ucTakeKey)
     (o: Op)        => List<String>()
 
 # ── the fixpoint ─────────────────────────────────────────────────────────────
@@ -297,7 +311,8 @@ fun ucCheckPhiEdge(f: CgFunction, ph: Op, ed: PhiEdge): List<String>
     (o: Op)     => List<String>()
 
 fun ucCheckSource(f: CgFunction, ed: PhiEdge, s2: OpPhiSource): List<String>
-  let missing = filter(rpReadVarNames(s2.sourceValue), (n: String) => !strListMember(ed.pheExit, n))
+  let missing = filter(fold(rpReadStackVars(s2.sourceValue), List<String>(), ucTakeKey),
+                       (n: String) => !strListMember(ed.pheExit, n))
   ret isEmpty(missing)
     ? List<String>()
     : list1(f.fnName + ": Phi at block " + ed.pheTo + ", source from predecessor "

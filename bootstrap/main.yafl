@@ -499,6 +499,39 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
     ? (dumpProgram(assignBlockExits(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered))))), 0)
     : (printedDiagnostics(fwd), 0)
 
+# `c` mode: the full -O0 pipeline to C text — the byte contract diffs it
+# against Python __create_c_code output (PYTHONHASHSEED=0) per corpus file.
+fun cMode(text: String): (out: String, code: Int)
+  ret match(postmonoRes(text))
+    (ok: PmOk)   => cStage(ok.pmStmts)
+    (tx: PmText) => (tx.pmOut, tx.pmCode)
+
+fun cStage(stmts: List<PStmt>): (out: String, code: Int)
+  let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  if !isEmpty(tl.tlErrs)
+    ret (printedDiagnostics(tl.tlErrs), 1)
+  let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
+  let fwd = checkLazyForwardRefs(lowered)
+  if !isEmpty(fwd)
+    ret (printedDiagnostics(fwd), 1)
+  let final2 = assignBlockExits(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered))))
+  ret match(cFindMain(chain(final2)))
+    (nm: System::String) => cEmit(final2, nm)
+    ()                    => ("No main function found\n", 1)
+
+fun [tail] cFindMain(ss: Chain<PStmt>): System::String|None
+  ret match(ss)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => bareOfUnique(f.fName) == "main" ? f.fName : cFindMain(l.next)
+      (o: PStmt) => cFindMain(l.next)
+
+fun cEmit(stmts: List<PStmt>, mainName: System::String): (out: String, code: Int)
+  let out = createCCode(stmts, mainName, 0, append(List<System::String>(), "yafl.h"))
+  ret isEmpty(out.ccErrors)
+    ? (out.ccText, 0)
+    : (join(out.ccErrors, "\n") + "\n", 1)
+
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
@@ -560,6 +593,7 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "lambdas" ? lambdasMode(text)
         : mode == "simple" ? simpleMode(text)
         : mode == "exits" ? exitsMode(text)
+        : mode == "c" ? cMode(text)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code
