@@ -909,12 +909,15 @@ thread the plain Lists down). Likely same root as the bool-slot precision bug
 fl.flParamSpecs; the io-copy [tail] loop in examples/helloWorld.yafl triggers
 it. Real fix in union_repr read-field / slot codegen — task #15.
 
-OPEN 2026-07-18 — PORT 8: json_pretty.yafl is the LAST C-contract red (17/18
-byte-identical). The `v` pipe-binder union in Main::runStdio (and pipe@2rohx3)
-lays out as {_s0 ptr, _s1 ptr, _s2 i8, $tag} in Python but {_s0 ptr, _s1 i8,
-_s2 VOID, $tag} in the port — one union member's ctype flattens to CgVoid in
-the port's tagged-container build (a specGenerate silent fallback, or a
-variant-slot merge divergence vs union_repr.py TaggedRepr). Evidence + the
-diagnosis recipe (fndump twin scripts) are in the session memory ledger; the
-port's temp fndump mode was removed pre-gate and can be re-added from the
-git history of this commit.
+CLOSED 2026-07-21 (551edb0) — PORT 8: json_pretty.yafl C now byte-identical
+(18/18). The void slot was an UNBOUND generic placeholder surviving to
+codegen, from two port bugs in one family — specs compared by uid string
+where Python compares structurally (uid "" on placeholder-bearing/unresolved
+specs made compares silently defer or conflict): (1) unify's union
+set-fallback matched ground members by uid, so a raw NamedSpec ground member
+deferred forever and collect's E never bound; (2) meetSpecs had no UNION arm
+at all (and no CALLABLE arm), so a $pipe let that latched a generic call's
+raw declared-result view could never refine to the ground view — meet on the
+holey union conflicted every pass, freezing writeStream's E. Pinned by
+corpus_converge/pipe_generic_result.yafl and the stdlib+json_pretty
+whole-program converge entry.
