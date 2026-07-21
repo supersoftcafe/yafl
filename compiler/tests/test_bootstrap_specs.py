@@ -51,6 +51,18 @@ def _spec(text: str) -> t.TypeSpec | None:
     if kind == "U":
         inner = text[text.index("(") + 1: -1]
         return t.CombinationSpec(_LR, tuple(_spec(p) for p in inner.split(",")))
+    if kind == "T":
+        inner = text[text.index("(") + 1: -1]
+        entries = []
+        for part in inner.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, _, spec = part.partition("=")
+            name = name.strip()
+            entries.append(t.TupleEntrySpec(None if name == "_" else name,
+                                            _spec(spec)))
+        return t.TupleSpec(_LR, tuple(entries))
     raise AssertionError(f"bad case spelling: {text!r}")
 
 
@@ -107,6 +119,13 @@ def _cases() -> tuple[list[str], list[str]]:
     for u in unions:
         lines.append(f"uid {u}")
         expected.append(_py_uid(_spec(u)))
+    # Tuples: entry uids are ','-JOINED (no trailing separator — the port once
+    # emitted "(str,bigint,)"); a placeholder entry voids the whole uid.
+    tuples = ["T()", "T(_=i)", "T(_=i,_=b)", "T(x=s,y=C:Foo@1)",
+              "T(_=G:T@1,_=i)", "T(_=s,_=i,_=b)"]
+    for tp in tuples:
+        lines.append(f"uid {tp}")
+        expected.append(_py_uid(_spec(tp)))
     for a, b in itertools.product(_ATOMS + unions[:6], repeat=2):
         lines.append(f"meet {a} ;; {b}")
         expected.append(_py_meet(a, b))

@@ -68,6 +68,14 @@ _WHOLE_PROGRAMS = [
     ("stdlib+findstr",
      "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
              ) + (_REPO / "examples" / "findstr.yafl").read_text()),
+    # Result-side generic inference through a union: collect<S,E>'s `String|E`
+    # unifies against the caller's declared `String|JsonParseError|Never`, and
+    # the set-fallback must bind E by STRUCTURAL ground-member removal (the
+    # port once matched by uid and deferred forever on the raw
+    # `NamedSpec System::String` member, leaving E's placeholder in the C).
+    ("stdlib+json_pretty",
+     "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+             ) + (_REPO / "examples" / "json_pretty.yafl").read_text()),
 ]
 
 

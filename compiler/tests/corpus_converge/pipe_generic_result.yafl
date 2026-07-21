@@ -1,0 +1,31 @@
+# Converge-contract corpus: meet's UNION arm. The generic call is the entire
+# body of a pipe-stage lambda, so the next stage's $pipe let latches the raw
+# declared-result view `(out: S, v: E|MyNone)` on an early pass, and must
+# REFINE to the ground view once the call's params bind (E via where-discharge
+# against the [trait] instance). refine's merge is meet: a port whose meet has
+# no set-wise union arm (holey-union uid "" => conflict) keeps the stale
+# placeholder view forever, and E's placeholder survives to codegen as a void
+# union slot.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+typealias MyStr : __builtin_type__<str>
+
+class MySrc()
+class MyErr()
+class MyNone()
+
+interface MyTrait<A2, B2, C2>
+
+class MyImpl() : MyTrait<MySrc, MyStr, MyErr>
+let [trait] myInst: MyImpl = MyImpl()
+
+fun drain<S, E>(s: S): (out: S, v: E|MyNone) where MyTrait<S, MyStr, E>
+  ret (s, MyNone())
+
+fun use(): Int
+  ret MySrc()
+    |> (y) => drain(y)
+    |> (o, v) => match(v)
+      (e: MyErr)  => 1
+      (n: MyNone) => 0

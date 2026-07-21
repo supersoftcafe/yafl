@@ -162,10 +162,64 @@ fun optMeet(sp: Spec|None): Meet
 
 fun meetSpecs(a: Spec, b: Spec): Meet
   ret match(a)
-    (ca: SClass)  => meetClass(ca, b)
-    (ea: SEnum)   => meetEnum(ea, b)
-    (ta: STuple)  => meetTuple(ta, b)
-    (o)           => uid(a) != "" && uid(a) == uid(b) ? MSpec(a) : MConflict()
+    (ca: SClass)       => meetClass(ca, b)
+    (ea: SEnum)        => meetEnum(ea, b)
+    (ta: STuple)       => meetTuple(ta, b)
+    (ua: SCombination) => meetUnion(ua, b)
+    (cla: SCallable)   => meetCallable(cla, b)
+    (o)                => eqSpec(a, b) ? MSpec(a) : MConflict()
+
+# A union is a SET, and its member list is NOT canonically ordered (only the
+# id is sorted), so meet set-wise, never positionally. Two fully-ground unions
+# meet iff they are the same set. If one side is ground, the other's ground
+# members must all be present in it — its holes then absorb the remainder —
+# otherwise it carries a member the ground side lacks: a real conflict. Both
+# sides still holey: defer (CONFLICT here just skips this pass; a later pass
+# grounds one side and resolves it).
+fun meetUnion(ua: SCombination, b: Spec): Meet
+  ret match(b)
+    (ub2: SCombination) => meetUnionPair(ua, ub2)
+    (o)                 => MConflict()
+
+fun meetUnionPair(a: SCombination, b: SCombination): Meet
+  fun [tail] groundUids(ms: Chain<Spec>, acc: List<String>): List<String>
+    ret match(ms)
+      (nil: ChainEnd) => acc
+      (l: ChainLink)  => uid(l.value) == ""
+        ? groundUids(l.next, acc)
+        : groundUids(l.next, append(acc, uid(l.value)))
+  fun [tail] subLoop(xs: Chain<String>, ys: List<String>): Bool
+    ret match(xs)
+      (nil: ChainEnd) => true
+      (l: ChainLink)  => contains2(ys, l.value) ? subLoop(l.next, ys) : false
+  let ia = uid(a)
+  let ib = uid(b)
+  if ia != "" && ib != ""
+    ret ia == ib ? MSpec(a) : MConflict()
+  let ga = groundUids(chain(a.scTypes), List<String>())
+  let gb = groundUids(chain(b.scTypes), List<String>())
+  if ia != ""
+    ret subLoop(chain(gb), ga) ? MSpec(a) : MConflict()
+  if ib != ""
+    ret subLoop(chain(ga), gb) ? MSpec(b) : MConflict()
+  ret MConflict()
+
+fun meetCallable(a: SCallable, b: Spec): Meet
+  ret match(b)
+    (cb: SCallable) => meetCallablePair(a, cb)
+    (o)             => MConflict()
+
+fun meetCallablePair(a: SCallable, b: SCallable): Meet
+  fun mcParams(pm: Meet): Spec
+    ret match(pm)
+      (ms: MSpec) => ms.mSpec
+      (o: Meet)   => a.scParams2
+  ret match(meet(a.scParams2, b.scParams2))
+    (pc: MConflict) => MConflict()
+    (pm: Meet)      => match(meet(a.scResult, b.scResult))
+      (rc: MConflict) => MConflict()
+      (rm: MSpec)     => MSpec(SCallable(mcParams(pm), rm.mSpec, a.sclLine))
+      (rn: Meet)      => MSpec(SCallable(mcParams(pm), None, a.sclLine))
 
 fun meetClass(ca: SClass, b: Spec): Meet
   ret match(b)
@@ -512,7 +566,7 @@ fun unifyUnionBySet(cm: SCombination, cc: SCombination, names: List<String>,
   if listLen(holes) != 1 || anyGroundHole(chain(ground), names)
     ret UMap(mapping)                      # no single-hole partition: defer
   ret match(removeGround(chain(ground), con))
-    (rest: List<Spec>) => bindRemainder(holes, rest, cm, mapping)
+    (rest: List<Spec>) => bindRemainder(holes, rest, con, cm, mapping)
     ()                 => UMap(mapping)    # a ground member is absent: defer
 
 fun [tail] ownHoles(ms: Chain<Spec>, names: List<String>,
@@ -557,41 +611,71 @@ fun [tail] sharesLoop(a: Chain<String>, b: List<String>): Bool
 
 # Remove each ground pattern member from the concrete set; None when one is
 # absent (deferral, not failure — the concrete side may still be settling).
+# Matched by STRUCTURAL equality (Python `cm == gm`): a raw SNamed spelling has
+# no uid yet must still match its equal spelling on the concrete side.
 fun removeGround(gs: Chain<Spec>, con: List<Spec>): List<Spec>|None
   ret match(gs)
     (nil: ChainEnd) => con
-    (l: ChainLink)  => match(removeOne(con, uid(l.value)))
+    (l: ChainLink)  => match(removeOne(con, l.value))
       (rest: List<Spec>) => removeGround(l.next, rest)
       ()                 => None
 
-fun removeOne(con: List<Spec>, u: String): List<Spec>|None
-  ret u == "" ? None : removeLoop(chain(con), u, List<Spec>(), false)
+fun removeOne(con: List<Spec>, gm: Spec): List<Spec>|None
+  ret removeLoop(chain(con), gm, List<Spec>(), false)
 
-fun [tail] removeLoop(ms: Chain<Spec>, u: String, acc: List<Spec>,
+fun [tail] removeLoop(ms: Chain<Spec>, gm: Spec, acc: List<Spec>,
                       dropped: Bool): List<Spec>|None
   ret match(ms)
     (nil: ChainEnd) => dropped ? acc : None
-    (l: ChainLink)  => !dropped && uid(l.value) == u
-      ? removeLoop(l.next, u, acc, true)
-      : removeLoop(l.next, u, append(acc, l.value), dropped)
+    (l: ChainLink)  => !dropped && eqSpec(l.value, gm)
+      ? removeLoop(l.next, gm, acc, true)
+      : removeLoop(l.next, gm, append(acc, l.value), dropped)
 
-# `E | X` against bare `X` leaves nothing for E: ambiguous, so defer.
-fun bindRemainder(holes: List<String>, rest: List<Spec>, cm: SCombination,
-                  mapping: List<Binding>): Unify
-  if isEmpty(rest)
-    ret UMap(mapping)
+# An already-pinned hole makes the slot a set-equality CHECK, not a binding
+# site: `existing ∪ ground` must equal the concrete set — every leftover
+# concrete member is in the binding and every binding member is in the
+# concrete union; a mismatch fails unless the concrete side still holds a
+# hole of its own. Otherwise `E | X` against bare `X` leaves nothing for E:
+# ambiguous, so defer.
+fun bindRemainder(holes: List<String>, rest: List<Spec>, con: List<Spec>,
+                  cm: SCombination, mapping: List<Binding>): Unify
   ret match(head(holes))
-    (name: String) => bindHoleTo(name, rest, cm, mapping)
+    (name: String) => match(bindingOf(mapping, name))
+      (prior: Spec) => checkPinned(prior, rest, con, mapping)
+      ()            => isEmpty(rest)
+        ? UMap(mapping)
+        : bindHoleTo(name, rest, cm, mapping)
     ()             => UMap(mapping)
+
+fun checkPinned(prior: Spec, rest: List<Spec>, con: List<Spec>,
+                mapping: List<Binding>): Unify
+  fun hasSpec(ys: List<Spec>, x: Spec): Bool
+    ret hasLoop(chain(ys), x)
+  fun [tail] hasLoop(ys: Chain<Spec>, x: Spec): Bool
+    ret match(ys)
+      (nil: ChainEnd) => false
+      (l: ChainLink)  => eqSpec(l.value, x) ? true : hasLoop(l.next, x)
+  fun [tail] allInSet(xs: Chain<Spec>, ys: List<Spec>): Bool
+    ret match(xs)
+      (nil: ChainEnd) => true
+      (l: ChainLink)  => hasSpec(ys, l.value) ? allInSet(l.next, ys) : false
+  fun [tail] anyHole(ms: Chain<Spec>): Bool
+    ret match(ms)
+      (nil: ChainEnd) => false
+      (l: ChainLink)  => isHoleSpec(l.value) ? true : anyHole(l.next)
+  let bound = match(prior)
+    (u: SCombination) => reprMembers(u)
+    (o: Spec)         => append(List<Spec>(), o)
+  if allInSet(chain(rest), bound) && allInSet(chain(bound), con)
+    ret UMap(mapping)
+  ret anyHole(chain(con)) ? UMap(mapping) : UFail()
 
 fun bindHoleTo(name: String, rest: List<Spec>, cm: SCombination,
                mapping: List<Binding>): Unify
   let value = match(head(rest))
     (only: Spec) => isEmpty(tail(rest)) ? only : SCombination(rest, cm.scmLine)
     ()           => SCombination(rest, cm.scmLine)
-  ret match(bindingOf(mapping, name))
-    (prior: Spec) => UMap(mapping)          # already pinned: this slot is a check
-    ()            => UMap(append(mapping, Binding(name, value)))
+  ret UMap(append(mapping, Binding(name, value)))
 
 # ── join ────────────────────────────────────────────────────────────────────
 # The type of a BRANCH (a match, a ternary) whose sides yield `a` and `b`: the

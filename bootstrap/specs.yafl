@@ -69,20 +69,17 @@ fun uidCallable(cl: SCallable): String
   ret p == "" ? "" : "f" + p
 
 fun uidTuple(t2: STuple): String
-  ret closeUid(entryUids(chain(t2.stEntries), "("))
+  ret match(entryUidList(chain(t2.stEntries), List<String>()))
+    (ids: List<String>) => "(" + join(ids, ",") + ")"
+    ()                  => ""
 
-fun closeUid(s: String): String
-  ret s == "" ? "" : s + ")"
-
-fun entryUids(es: Chain<SEntry>, acc: String): String
+fun entryUidList(es: Chain<SEntry>, acc: List<String>): List<String>|None
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value.seType)
-      (t2: Spec) => entryUidStep(uid(t2), l.next, acc)
-      ()         => ""
-
-fun entryUidStep(u: String, rest: Chain<SEntry>, acc: String): String
-  ret u == "" ? "" : entryUids(rest, acc + u + ",")
+      (t2: Spec) => uid(t2)
+        |> (u) => u == "" ? None : entryUidList(l.next, append(acc, u))
+      ()         => None
 
 # A union's identity is its SORTED member ids — set semantics, so `A|B` and
 # `B|A` are the same type.

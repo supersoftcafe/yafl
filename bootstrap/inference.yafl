@@ -105,18 +105,20 @@ fun inferTypeParams(stmt: PStmt, gens: List<PGen>, declared: SCallable,
   let names = genNames(chain(gens), List<String>())
   ret match(unifyGeneric(declared.scParams2, want.scParams2, names,
                          List<Binding>()))
-    (m: UMap)  => viaWhere(stmt, gens,
-                           resultUnified(declared, want, names, m.uBindings),
-                           r, declared.scParams2)
+    (m: UMap)  => match(resultUnified(declared, want, names, m.uBindings))
+      (rm: List<Binding>) => viaWhere(stmt, gens, rm, r, declared.scParams2)
+      ()                  => None
     (f: UFail) => None
 
+# A result-unify FAILURE fails the whole inference (Python: `mapping = ...;
+# if mapping is None: return None`), not just this source.
 fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
-                  mapping: List<Binding>): List<Binding>
+                  mapping: List<Binding>): List<Binding>|None
   ret match(declared.scResult)
     (dr: Spec) => match(want.scResult)
       (wr: Spec) => match(unifyGeneric(dr, wr, names, mapping))
         (m: UMap)  => m.uBindings
-        (f: UFail) => mapping
+        (f: UFail) => None
       ()         => mapping
     ()         => mapping
 
