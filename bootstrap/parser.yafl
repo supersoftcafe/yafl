@@ -5,8 +5,8 @@
 # import, fun, let, class, interface, enum, typealias, ret, if/else-if/else,
 # action), the colon-precedes-type type grammar (tuples/callables/unions/
 # generics with fused `>>`/`>=` closers), and the complete expression ladder
-# (postfix call/dot/index, unary, |> pipeline, arithmetic, shifts, bitwise,
-# comparison, is/!is, ?>, && , ||, right-associative ternary), plus lambdas,
+# (postfix call/dot/index, unary, arithmetic, shifts, bitwise, comparison,
+# is/!is, the shared ?>/|> level, && , ||, right-associative ternary), plus
 # match with multi-literal/range/guarded arms, spread and named tuple
 # entries, attributes, generics and where clauses.
 #
@@ -490,8 +490,31 @@ fun andLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
     (rhs: PExpr) => andLoop(PeTernary(lhs, rhs, PeBool(false, exprLine(lhs)),
                                       exprLine(lhs)), r.rest)
 
+# `|>` and `?>` share ONE level so mixed chains fold strictly left-to-right.
+# The pipe lives here — LOOSER than the arithmetic/comparison operators (like
+# every ML-family pipe), so `n - 1 |> f` pipes `n - 1`, not `1` (Python
+# __parse_bind / __to_bind_or_pipeline).
 fun parseBind(ps: Ps): (v: PExpr|PFail, rest: Ps)
-  ret binLevel(ps, " ?> ", parseIs)
+  let lr = lineAt(ps)
+  let a = parseIs(ps)
+  ret match(a.v)
+    (f: PFail) => a
+    (l: PExpr) => bindPipeLoop(l, lr, a.rest)
+
+fun bindPipeLoop(lhs: PExpr, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
+  let t = peek(ps)
+  let op = match(t.kind)
+    (k: KSymbol) => t.text == "?>" || t.text == "|>" ? t.text : ""
+    ()           => ""
+  if op == ""
+    ret (lhs, ps)
+  let r = parseIs(bump(ps))
+  ret match(r.v)
+    (f: PFail)   => f.hard ? (f, r.rest) : (lhs, ps)
+    (rhs: PExpr) => bindPipeLoop(op == "|>"
+                                   ? pipeStage(lhs, rhs)
+                                   : foldBinary("?>", lhs, rhs, lr),
+                                 lr, r.rest)
 
 # `L is R` / `L !is R` => match(L) (_: R) => Bool ; () => Bool — no Is node.
 fun parseIs(ps: Ps): (v: PExpr|PFail, rest: Ps)
@@ -554,22 +577,7 @@ fun parseShift(ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun parseAddSub(ps: Ps): (v: PExpr|PFail, rest: Ps)
   ret binLevel(ps, " + - ", parseDivMul)
 fun parseDivMul(ps: Ps): (v: PExpr|PFail, rest: Ps)
-  ret binLevel(ps, " % / * ", parsePipe)
-
-# `l |> stage` — beta-reduction / placeholder handling via builders.pipeStage.
-fun parsePipe(ps: Ps): (v: PExpr|PFail, rest: Ps)
-  let a = parseUnary(ps)
-  ret match(a.v)
-    (f: PFail) => a
-    (l: PExpr) => pipeLoop(l, a.rest)
-
-fun pipeLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
-  if !atSym(ps, "|>")
-    ret (lhs, ps)
-  let r = parseUnary(bump(ps))
-  ret match(r.v)
-    (f: PFail)     => f.hard ? (f, r.rest) : (lhs, ps)
-    (stage: PExpr) => pipeLoop(pipeStage(lhs, stage), r.rest)
+  ret binLevel(ps, " % / * ", parseUnary)
 
 # Unary: `-` folds into a literal (negating the stored value), else the
 # operator call; `!` and `~` are always operator calls.

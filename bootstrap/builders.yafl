@@ -309,6 +309,11 @@ fun startLine(x: PExpr): PLine
     (d: PeDot)      => startLine(d.base)
     (t3: PeTernary) => startLine(t3.condition)
     (bk: PeBlock)   => blockStart(bk)
+    # The `is`/`!is` sugar lowers to a match over the LEFT operand, so the
+    # expression's parse start is the subject's start (`g2.f is None` starts
+    # at `g2`, not at the match node's own line — which is the left's line,
+    # a dot's MEMBER position).
+    (m2: PeMatch)   => startLine(m2.subject)
     (other)         => exprLine(x)
 
 # A pipe stage beta-reduces to `{ let $pipe = <piped value>; ... }` — the

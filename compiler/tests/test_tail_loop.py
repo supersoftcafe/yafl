@@ -255,3 +255,38 @@ class TestTailEarlyReturn(TestCase):
         rc, out = compile_and_run_stdlib_capture(_EARLY_RETURN_TAIL, timeout=30)
         self.assertEqual(0, rc, f"early-return [tail] failed; stdout:\n{out}")
         self.assertEqual(["15", "1500000"], out.split())
+
+
+# The self-call sits in the FINAL LAMBDA of a pipeline, not directly in the
+# function body. `|>` lowers structurally into let-bindings (no closure), so
+# the call must still be recognised as tail position and lower to a loop —
+# proven by running to 1,000,000 without overflowing the C stack. Two shapes:
+# a single stage, and a two-stage pipeline whose middle stage re-tuples.
+_PIPELINE_TAIL = """\
+import System
+
+fun [tail] one(n: System::Int, acc: System::Int): System::Int
+  ret n == 0
+    ? acc
+    : n - 1
+      |> (m) => one(m, acc + 1)
+
+fun [tail] two(n: System::Int, acc: System::Int): System::Int
+  ret n == 0
+    ? acc
+    : (n, acc)
+      |> (a, b) => (a - 1, b + 1)
+      |> (a2, b2) => two(a2, b2)
+
+fun main(): System::Int
+  print(String(one(1000000, 0)) + "\\n")
+  print(String(two(1000000, 0)) + "\\n")
+  ret 0
+"""
+
+
+class TestTailPipelineLambda(TestCase):
+    def test_tail_self_call_in_pipeline_lambda_runs_constant_stack(self):
+        rc, out = compile_and_run_stdlib_capture(_PIPELINE_TAIL, timeout=30)
+        self.assertEqual(0, rc, f"pipeline-lambda [tail] failed; stdout:\n{out}")
+        self.assertEqual(["1000000", "1000000"], out.splitlines())

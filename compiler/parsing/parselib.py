@@ -245,12 +245,16 @@ def block(parser: Parser[T]) -> Parser[T]:
 
         result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref)])
 
-        # Only fall back to the generic leftover-tokens message when nothing
-        # more specific was reported — a real diagnostic (bad escape, orphan
-        # `else`, …) explains the failure better than "extra unexpected
-        # characters", which is otherwise just noise on top of it.
+        # Only fall back to the generic leftover-tokens message when the inner
+        # parser MATCHED and nothing more specific was reported — a real
+        # diagnostic (bad escape, orphan `else`, …) explains the failure
+        # better than "extra unexpected characters". A NON-match stays a
+        # clean non-match: a speculative block attempt (e.g. `many` probing
+        # for one more match arm when the next line is a ternary's `: …`
+        # continuation) must not leave a ghost error behind on the parse
+        # that then legitimately consumes those tokens.
         errors = []
-        if not is_eof(result.tokens) and not result.errors:
+        if result and not is_eof(result.tokens) and not result.errors:
             errors = [Error(result.tokens[0].line_ref, "extra unexpected characters")]
 
         return Result(result.value, tokens[index:], result.line_ref, result.errors + errors)

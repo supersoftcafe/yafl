@@ -77,3 +77,41 @@ class TestIfCompileErrors(TestCase):
         )
         result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
         self.assertEqual("", result)
+
+
+# A multi-line `match` as a ternary BRANCH: the arm block is indentation-
+# delimited, and the `? …` / `: …` continuation lines that follow must
+# terminate it cleanly — in either branch position, and nested.
+_MATCH_IN_TERNARY = """\
+import System
+
+fun pickFalse(x: System::Int|System::None, y: System::Int): System::Int
+  ret y == 0
+    ? y
+    : match(x)
+      (i: System::Int)  => i
+      (n: System::None) => 0 - 1
+
+fun pickTrue(x: System::Int|System::None, y: System::Int): System::Int
+  ret y == 0
+    ? match(x)
+      (i: System::Int)  => i + 100
+      (n: System::None) => 0 - 100
+    : y
+
+fun main(): System::Int
+  print(String(pickFalse(7, 1)) + "\\n")
+  let none: System::Int|System::None = System::None
+  print(String(pickFalse(none, 1)) + "\\n")
+  print(String(pickTrue(7, 0)) + "\\n")
+  print(String(pickFalse(3, 0)) + "\\n")
+  ret 0
+"""
+
+
+class TestMatchInTernary(TestCase):
+    def test_match_as_ternary_branch(self):
+        from tests.testutil import compile_and_run_stdlib_capture
+        rc, out = compile_and_run_stdlib_capture(_MATCH_IN_TERNARY, timeout=30)
+        self.assertEqual(0, rc, f"match-in-ternary failed; stdout:\n{out}")
+        self.assertEqual(["7", "-1", "107", "0"], out.splitlines())

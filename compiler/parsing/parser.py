@@ -284,61 +284,56 @@ def __placeholder_entries(function: e.Expression) -> list[int]:
             if isinstance(entry.value, e.NamedExpression) and entry.value.name == "_"]
 
 
-def __to_pipeline(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    pipeline_errors: list[p.Error] = []
-
-    def accumulate(last_result: e.Expression, function: e.Expression) -> e.Expression:
-        # `l |> f(a, _)`: the `_` placeholder receives the piped value — a
-        # point-free stage. Same capture-avoiding shape as the lambda case
-        # below: bind `l` to a fresh path-derived name OUTSIDE the call, then
-        # substitute that name for the placeholder.
-        holes = __placeholder_entries(function)
-        if len(holes) > 1:
-            pipeline_errors.append(p.Error(function.line_ref,
-                "at most one `_` placeholder per pipeline stage"))
-            return last_result
-        if len(holes) == 1:
-            lr = function.line_ref
-            tmp = f"$pipe@{lr.hash6()}"
-            entries = list(function.parameter.expressions)
-            entries[holes[0]] = dataclasses.replace(
-                entries[holes[0]], value=e.NamedExpression(lr, tmp))
-            call = dataclasses.replace(function,
-                parameter=dataclasses.replace(function.parameter, expressions=entries))
-            return e.BlockExpression(lr,
-                [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], call)
-        # `l |> (a, b) => body` is a beta-redex: lower it to BLOCKS binding the
-        # lambda's parameters from `l` and running the body inline — not a
-        # call. No closure is created, a piped TUPLE value binds its entries
-        # positionally through the ordinary destructure (the "let without
-        # let"), and a linear value pipes through without tripping the
-        # nested-function capture rule.
-        #
-        # Substitution is CAPTURE-AVOIDING: lambda parameters scope to the
-        # lambda's body only, so they must not be visible to `l` (the argument
-        # belongs to the enclosing scope — `x |> (x) => …` reads the OUTER x).
-        # Hence two blocks: the outer binds `l` to a fresh path-derived
-        # intermediate (unique by construction — nothing in `l` can resolve to
-        # it), the inner binds the parameters from that intermediate.
-        if isinstance(function, e.LambdaExpression):
-            lr = function.line_ref
-            tmp = f"$pipe@{lr.hash6()}"
-            targets = function.parameters.targets
-            binder: s.Statement = (
-                dataclasses.replace(targets[0], default_value=e.NamedExpression(lr, tmp))
-                if len(targets) == 1
-                else dataclasses.replace(function.parameters, default_value=e.NamedExpression(lr, tmp)))
-            inner = e.BlockExpression(lr, [binder], function.expression)
-            return e.BlockExpression(lr,
-                [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], inner)
-        # Wrap last result in a tuple, just-in-case it isn't a tuple already.
-        parameter = last_result if isinstance(last_result, e.TupleExpression)\
-            else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression(None, last_result)])
-        call = e.CallExpression(function.line_ref, function, parameter)
-        return call
-    left_expr, right_list = result.value
-    expr = reduce(accumulate, right_list, left_expr)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors + pipeline_errors)
+def __pipe_stage(last_result: e.Expression, function: e.Expression,
+             pipeline_errors: list[p.Error]) -> e.Expression:
+    # `l |> f(a, _)`: the `_` placeholder receives the piped value — a
+    # point-free stage. Same capture-avoiding shape as the lambda case
+    # below: bind `l` to a fresh path-derived name OUTSIDE the call, then
+    # substitute that name for the placeholder.
+    holes = __placeholder_entries(function)
+    if len(holes) > 1:
+        pipeline_errors.append(p.Error(function.line_ref,
+            "at most one `_` placeholder per pipeline stage"))
+        return last_result
+    if len(holes) == 1:
+        lr = function.line_ref
+        tmp = f"$pipe@{lr.hash6()}"
+        entries = list(function.parameter.expressions)
+        entries[holes[0]] = dataclasses.replace(
+            entries[holes[0]], value=e.NamedExpression(lr, tmp))
+        call = dataclasses.replace(function,
+            parameter=dataclasses.replace(function.parameter, expressions=entries))
+        return e.BlockExpression(lr,
+            [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], call)
+    # `l |> (a, b) => body` is a beta-redex: lower it to BLOCKS binding the
+    # lambda's parameters from `l` and running the body inline — not a
+    # call. No closure is created, a piped TUPLE value binds its entries
+    # positionally through the ordinary destructure (the "let without
+    # let"), and a linear value pipes through without tripping the
+    # nested-function capture rule.
+    #
+    # Substitution is CAPTURE-AVOIDING: lambda parameters scope to the
+    # lambda's body only, so they must not be visible to `l` (the argument
+    # belongs to the enclosing scope — `x |> (x) => …` reads the OUTER x).
+    # Hence two blocks: the outer binds `l` to a fresh path-derived
+    # intermediate (unique by construction — nothing in `l` can resolve to
+    # it), the inner binds the parameters from that intermediate.
+    if isinstance(function, e.LambdaExpression):
+        lr = function.line_ref
+        tmp = f"$pipe@{lr.hash6()}"
+        targets = function.parameters.targets
+        binder: s.Statement = (
+            dataclasses.replace(targets[0], default_value=e.NamedExpression(lr, tmp))
+            if len(targets) == 1
+            else dataclasses.replace(function.parameters, default_value=e.NamedExpression(lr, tmp)))
+        inner = e.BlockExpression(lr, [binder], function.expression)
+        return e.BlockExpression(lr,
+            [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], inner)
+    # Wrap last result in a tuple, just-in-case it isn't a tuple already.
+    parameter = last_result if isinstance(last_result, e.TupleExpression)\
+        else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression(None, last_result)])
+    call = e.CallExpression(function.line_ref, function, parameter)
+    return call
 
 
 def __invert_operand(expr: e.Expression) -> e.Expression | None:
@@ -384,6 +379,28 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
     left_expr, right_list = result.value
     expr = reduce(accumulate, right_list, left_expr)
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
+
+
+def __to_bind_or_pipeline(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    """The shared `?>`/`|>` level: fold left, dispatching per operator —
+    `?>` is an ordinary operator call, `|>` is the pipeline stage lowering
+    (placeholder substitution / lambda beta-redex, __pipe_stage)."""
+    pipeline_errors: list[p.Error] = []
+
+    def accumulate(left: e.Expression, entry: tuple[str, e.Expression]) -> e.Expression:
+        op, right = entry
+        if op == "|>":
+            return __pipe_stage(left, right, pipeline_errors)
+        line = tokens[0].line_ref
+        return e.CallExpression(line,
+            e.NamedExpression(line, f"`{op}`"),
+            e.TupleExpression(line, [
+                    e.TupleEntryExpression(None, left),
+                    e.TupleEntryExpression(None, right)]))
+
+    left_expr, right_list = result.value
+    expr = reduce(accumulate, right_list, left_expr)
+    return p.Result(expr, result.tokens, result.line_ref, result.errors + pipeline_errors)
 
 
 def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -871,8 +888,7 @@ __parse_unary   = ((p.discard_sym("-") & __parse_invoke) >> __to_negate
                  | (p.discard_sym("!") & __parse_invoke) >> __to_not
                  | (p.discard_sym("~") & __parse_invoke) >> __to_invert
                  | __parse_invoke)
-__parse_pipeline= (__parse_unary   & p.many(p.discard_sym("|>")    & __parse_unary    )) >> __to_pipeline
-__parse_divmul  = (__parse_pipeline & p.many(p.sym(["%", "/", "*"]) & __parse_pipeline  )) >> __to_call_operators
+__parse_divmul  = (__parse_unary    & p.many(p.sym(["%", "/", "*"]) & __parse_unary     )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
 # Shifts bind looser than +/- but tighter than the bitwise/comparison ops
 # (C order: `a + b << c` is `(a + b) << c`).
@@ -887,7 +903,12 @@ __parse_compare = (__parse_bitor    & p.many(p.sym(["<", "==", ">", "!=", "<=", 
 # `?>`/`&&`/`||`. The right operand is a TYPE (so `is` is a contextual keyword —
 # an identifier in operator position — needing no tokeniser change).
 __parse_is      = (__parse_compare  & p.maybe(p.maybe(p.sym("!")) & p.ident("is") & __parse_type)) >> __to_is
-__parse_bind    = (__parse_is       & p.many(p.sym("?>")             & __parse_is        )) >> __to_call_operators
+# `|>` and `?>` share ONE level so mixed chains fold strictly left-to-right.
+# The pipe lives here — LOOSER than the arithmetic/comparison operators (like
+# every ML-family pipe), so `n - 1 |> f` pipes `n - 1`, not `1`; it once sat
+# between unary and `*`, which silently turned `n - 1 |> (m) => self(m, …)`
+# into `n - self(1, …)` — a non-tail self-call.
+__parse_bind    = (__parse_is       & p.many(p.sym(["?>", "|>"])     & __parse_is        )) >> __to_bind_or_pipeline
 # Short-circuit logical operators: `&&` binds tighter than `||`, both looser than
 # the comparison/bind level and tighter than the ternary `?:`. They are parse-time
 # sugar for the ternary (see __to_logical_and/__to_logical_or), so short-circuit

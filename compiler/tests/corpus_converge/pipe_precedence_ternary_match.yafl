@@ -1,0 +1,24 @@
+# Converge-contract corpus: the two 2026-07-21 parser rulings.
+# (1) `|>` binds at the `?>` level, LOOSER than arithmetic: `n - 1 |> f`
+#     pipes `n - 1`, not `1` — the old tight binding silently turned a
+#     pipeline tail self-call into a non-tail argument of `-`.
+# (2) a multi-line `match` parses as a ternary BRANCH, with the `: …`
+#     continuation terminating the arm block (Python's block combinator once
+#     left a ghost "extra unexpected characters" from the failed next-arm
+#     probe).
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+fun [tail] countPipe(n: Int, acc: Int): Int
+  ret n == 0
+    ? acc
+    : n - 1
+      |> (m) => countPipe(m, acc + 1)
+
+fun pick(x: Int|(:Int, :Int), y: Int): Int
+  ret y == 0
+    ? match(x)
+      (i: Int)            => i
+      (p: (:Int, :Int))   => 0 - 1
+    : y
