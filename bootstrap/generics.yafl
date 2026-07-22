@@ -574,13 +574,30 @@ fun renameSpecialized(st: PStmt, newName: String, args: List<Spec>): PStmt
                          l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
                          l.lImports)
     (c: PsClass) => specializedClass(c, newName, args)
-    (e2: PsEnum) => PsEnum(newName, List<PGen>(), e2.eParams, e2.eVariants,
+    # The VARIANT tree renames with the same $generic$ suffix — the redirect
+    # mangles leaf names inside every EnumSpec it visits, and every enum-spec
+    # rebuild collects the variant STATEMENT names, so the two must agree
+    # (Python __rename_variant_tree; a stale root-mangled/leaves-original
+    # spec silently skipped union boxing at emit).
+    (e2: PsEnum) => PsEnum(newName, List<PGen>(), e2.eParams,
+                           renameVariantTree(e2.eVariants, args),
                            e2.eHasParams, e2.pseLine, e2.eRootName, e2.eSpec,
                            e2.eImports)
     (ta: PsTypealias) => PsTypealias(newName, ta.taAttrs, List<PGen>(),
                                      ta.taType, ta.taWheres, ta.pstLine,
                                      ta.taImports)
     (o: PStmt)  => st
+
+fun renameVariantTree(vs: List<PStmt>, args: List<Spec>): List<PStmt>
+  ret map(vs, (v: PStmt) => renameVariant(v, args))
+
+fun renameVariant(v: PStmt, args: List<Spec>): PStmt
+  ret match(v)
+    (ve: PsEnum) => PsEnum(mangledName(ve.eName, args), ve.eGens, ve.eParams,
+                           renameVariantTree(ve.eVariants, args),
+                           ve.eHasParams, ve.pseLine, ve.eRootName, ve.eSpec,
+                           ve.eImports)
+    (o: PStmt)   => v
 
 fun specializedClass(c: PsClass, newName: String, args: List<Spec>): PStmt
   let sig = joinUids(chain(args), "")
@@ -892,11 +909,13 @@ fun rcrExpr(x: PExpr, refs: GRefs): PExpr
                nm.penLine, rcrSpecOpt(nm.penTrait, refs))
       : PeName(nm.refName, rcrSpecs(nm.refTypeParams, refs), nm.penLine,
                rcrSpecOpt(nm.penTrait, refs))
-    # Python's redirect table rewrites root_spec_name ONLY — the leaf keeps
-    # its unmangled spelling (the mono'd root's spec carries the leaf map).
+    # Python's redirect table rewrites root_spec_name AND leaf_name — the
+    # specialised enum's variant tree carries mangled names (2026-07-21 fix),
+    # so the constructor's leaf reference must match.
     (ne: PeNewEnum) => inRefs(refs.gdData, ne.rootName, ne.neTypeParams)
       ? PeNewEnum(mangledName(ne.rootName, ne.neTypeParams),
-                  ne.leafName, rcrFieldArgs(ne.fieldArgs, refs),
+                  mangledName(ne.leafName, ne.neTypeParams),
+                  rcrFieldArgs(ne.fieldArgs, refs),
                   List<Spec>(), ne.penewLine)
       : PeNewEnum(ne.rootName, ne.leafName, rcrFieldArgs(ne.fieldArgs, refs),
                   rcrSpecs(ne.neTypeParams, refs), ne.penewLine)

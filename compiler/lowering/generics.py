@@ -277,6 +277,17 @@ def __create_specialized_version(
     return checked_cast(s.NamedStatement, new_stmt)
 
 
+def __rename_variant_tree(stmt: s.EnumStatement, type_args: tuple) -> s.EnumStatement:
+    """Suffix every variant statement's name (all nesting depths) with the
+    specialisation signature, exactly as __create_unique_name mangles the
+    corresponding leaf-name strings inside redirected EnumSpecs."""
+    new_variants = [
+        dataclasses.replace(__rename_variant_tree(v, type_args),
+                            name=__create_unique_name(v.name, type_args))
+        for v in stmt.variants]
+    return dataclasses.replace(stmt, variants=new_variants)
+
+
 def __rebuild_enum_spec(stmt: s.EnumStatement) -> s.EnumStatement:
     """Rebuild _enum_spec for a specialized EnumStatement from its (now-concrete) variants."""
     root_name = stmt.name
@@ -318,9 +329,19 @@ def __create_specialized_statements(
                     if key in existing_keys:
                         continue  # already specialized in a prior iteration
                     specialized_stmt = __create_specialized_version(stmt, type_args)
-                    # For enum statements, rebuild _enum_spec from the substituted variants
-                    # (substitution updates variant parameters but not the cached _enum_spec).
+                    # For enum statements, rename the cloned VARIANT tree with
+                    # the same $generic$ suffix — the redirect pass mangles
+                    # leaf names inside every EnumSpec it visits, so the
+                    # statements those names refer to must match, and
+                    # _collect_leaf_names (which every _enum_spec rebuild
+                    # calls) reads the variant statement names. Leaving them
+                    # un-mangled baked ORIGINAL leaf names under the MANGLED
+                    # root, and that stale spec (served by
+                    # NewEnumExpression.get_type) failed assignability against
+                    # the correctly-mangled view — a specialised enum value
+                    # silently skipped its union boxing at emit.
                     if isinstance(specialized_stmt, s.EnumStatement):
+                        specialized_stmt = __rename_variant_tree(specialized_stmt, type_args)
                         specialized_stmt = __rebuild_enum_spec(specialized_stmt)
                     specialized.append(specialized_stmt)
                     existing_keys.add(key)  # prevent duplicate in the same iteration
@@ -345,7 +366,9 @@ def __replace_concrete_references(
     # (matcher class, name attribute, refs source, extra-field rewrites)
     redirect_table: tuple = (
         (e.NamedExpression,    "name",           data_refs, ()),
-        (e.NewEnumExpression,  "root_spec_name", data_refs, ()),
+        (e.NewEnumExpression,  "root_spec_name", data_refs, (
+            ("leaf_name", lambda v, tp: __create_unique_name(v, tp)),
+        )),
         (t.ClassSpec,          "name",           type_refs, ()),
         (t.EnumSpec,           "root_name",      data_refs, (
             ("valid_leaf_names", lambda v, tp: frozenset(__create_unique_name(ln, tp) for ln in v)),
