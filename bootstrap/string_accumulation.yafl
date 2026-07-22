@@ -1,0 +1,490 @@
+# bootstrap/string_accumulation.yafl — ported from
+# lowering/string_accumulation.py: deforest string accumulation loops into
+# in-place builder writes. The naive `go(acc + x, …)` [tail] loop is O(n²);
+# at the IR level (post tail_loop) the pattern is a loop-carried Phi:
+#
+#     A   = Phi[(entry, init), (backedge, B)]
+#     ...
+#     B   = string_append(A, x)          # or a concat_n rooted at A
+#
+# The accumulator becomes two loop-carried variables — a heap buffer and a
+# byte offset — appended in place via string_builder_reserve +
+# string_copy_to_dangerously; every OTHER read of A becomes
+# string_resize(buf, off): an exact-size snapshot, correct at ANY point of
+# the accumulation. Bail-outs (all conservative, all per-Phi): at least one
+# step edge and one init edge; A read exactly once within a step chain;
+# pushes and inits DUPLICABLE; chain intermediates read only by the chain;
+# an acc buried deep inside another Phi's source bails; an acc read INSIDE
+# the loop span (outside the chains) bails — an in-loop snapshot copies the
+# whole buffer every iteration, strictly worse than the append it replaced.
+# Runs in the pre-async fixpoint at -O1+ AFTER string_concat. Idempotent.
+namespace Bootstrap
+
+import System
+
+fun saInvoke1(function: String, a0: RParam): RParam
+  ret RpRuntimeInvoke(function,
+                      RpNewStruct(append<RpNamedValue>(List<RpNamedValue>(),
+                                         RpNamedValue("a0", a0))),
+                      CgDataPointer())
+
+fun saInvoke2(function: String, a0: RParam, a1: RParam): RParam
+  ret RpRuntimeInvoke(function,
+                      RpNewStruct(append<RpNamedValue>(append<RpNamedValue>(List<RpNamedValue>(),
+                                                RpNamedValue("a0", a0)),
+                                         RpNamedValue("a1", a1))),
+                      CgDataPointer())
+
+fun saInvoke3(function: String, a0: RParam, a1: RParam, a2: RParam): RParam
+  ret RpRuntimeInvoke(function,
+                      RpNewStruct(append<RpNamedValue>(append<RpNamedValue>(append<RpNamedValue>(List<RpNamedValue>(),
+                                                       RpNamedValue("a0", a0)),
+                                                RpNamedValue("a1", a1)),
+                                         RpNamedValue("a2", a2))),
+                      CgDataPointer())
+
+fun saLengthOf(value: RParam): RParam
+  ret saInvoke1("string_length_int", value)
+
+# One back-edge's recognised push chain.
+class [final] SaStep(saEdge: String, saResult: String, saPushes: List<RParam>,
+                     saChainMoves: List<String>)
+
+# The ordered operand list of an append/concat_n invoke, else None.
+fun saOperandsOf(inv: RpRuntimeInvoke): List<RParam>|None
+  ret match(inv.parameters)
+    (ns: RpNewStruct) => map(filter(ns.values,
+                                    (v: RpNamedValue) => v.name != "count"),
+                             (v: RpNamedValue) => v.value)
+      |> (values) =>
+        inv.function == scAppendName() && listLen(values) == 2 ? values
+        : inv.function == scConcatName() ? values
+        : None
+    (o: RParam)       => None
+
+# ── recognise one Phi source as a push chain ────────────────────────────────
+
+# Chase a Phi source to an append/concat_n chain left-rooted at `acc`. The
+# Phi source itself must be a single-read var defined by the chain's final
+# invoke (the Phi counts as its one read).
+fun saRecogniseStep(edge: String, source: RParam, acc: String,
+                    defs: List<SsaDef>, reads: List<StrCount>): SaStep|None
+  ret match(source)
+    (sv: RpStackVar) => scReadOnce(reads, sv.name)
+      ? saStepFromRoot(edge, sv.name, acc, defs, reads)
+      : None
+    (o: RParam)      => None
+
+fun saStepFromRoot(edge: String, resultName: String, acc: String,
+                   defs: List<SsaDef>, reads: List<StrCount>): SaStep|None
+  ret match(sdGet(chain(defs), resultName))
+    (rootDef: RParam) => match(saFlatten(rootDef, acc, defs, reads))
+      (sp: (ops: List<RParam>, moves: List<String>)) =>
+        saStepFromSpine(edge, resultName, acc, sp.ops, sp.moves)
+      ()                                             => None
+    ()                => None
+
+# Operand spine of the append tree at `param`; None = not a chain. Names of
+# single-read locals the chase passed through ride along in `moves`.
+fun saFlatten(param: RParam, acc: String, defs: List<SsaDef>,
+              reads: List<StrCount>): (ops: List<RParam>, moves: List<String>)|None
+  ret match(param)
+    (inv: RpRuntimeInvoke) => match(saOperandsOf(inv))
+      (ops: List<RParam>) => saFlattenInvoke(ops, acc, defs, reads)
+      ()                  => None
+    (sv: RpStackVar)       => sv.name == acc
+      ? (append<RParam>(List<RParam>(), sv), List<String>())
+      : scReadOnce(reads, sv.name)
+        ? saFlattenChase(sv, acc, defs, reads)
+        : None
+    (o: RParam)            => None
+
+fun saFlattenInvoke(ops: List<RParam>, acc: String, defs: List<SsaDef>,
+                    reads: List<StrCount>): (ops: List<RParam>, moves: List<String>)|None
+  ret match(head(ops))
+    (first: RParam) => match(saFlatten(first, acc, defs, reads))
+      (left: (ops: List<RParam>, moves: List<String>)) =>
+        (concat(left.ops, tail(ops)), left.moves)
+      ()                                               => None
+    ()              => None
+
+fun saFlattenChase(sv: RpStackVar, acc: String, defs: List<SsaDef>,
+                   reads: List<StrCount>): (ops: List<RParam>, moves: List<String>)|None
+  ret match(sdGet(chain(defs), sv.name))
+    (inner: RParam) => match(saFlatten(inner, acc, defs, reads))
+      (deeper: (ops: List<RParam>, moves: List<String>)) =>
+        (deeper.ops, prepend(sv.name, deeper.moves))
+      ()                                                 => None
+    ()              => None
+
+fun saStepFromSpine(edge: String, resultName: String, acc: String,
+                    spine: List<RParam>, moves: List<String>): SaStep|None
+  if listLen(spine) < 2
+    ret None
+  let pushes = tail(spine)
+  ret saRootIsAcc(head(spine), acc)
+     && !any(pushes, (p: RParam) => saMentionsVar(p, acc))
+     && !any(pushes, (p: RParam) => !sdIsDuplicable(p))
+    ? SaStep(edge, resultName, pushes, append(moves, resultName))
+    : None
+
+fun saRootIsAcc(root: RParam|None, acc: String): Bool
+  ret match(root)
+    (r: RParam) => match(r)
+      (sv: RpStackVar) => sv.name == acc
+      (o: RParam)      => false
+    ()          => false
+
+fun saMentionsVar(p: RParam, name: String): Bool
+  ret rpTest(p, (q: RParam) => saIsVarNamed(q, name))
+
+fun saIsVarNamed(q: RParam, name: String): Bool
+  ret match(q)
+    (sv: RpStackVar) => sv.name == name
+    (o: RParam)      => false
+
+# ── the pass ────────────────────────────────────────────────────────────────
+
+fun deforestStringAccumulation(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions, saFunction))
+
+# One accumulator Phi at a time (the -O1 fixpoint reruns us).
+class [final] SaPlan(saPhiIdx: Int, saAcc: String, saSteps: List<SaStep>,
+                     saInits: List<OpPhiSource>)
+
+fun saFunction(f: CgFunction): CgFunction
+  let defs = singleDefs(f)
+  let reads = sdReadCounts(f)
+  ret match(saFindPlan(chain(f.fnOps), 0, defs, reads))
+    (plan: SaPlan) => saApplyPlan(f, plan, defs, reads)
+    ()             => f
+
+fun [tail] saFindPlan(ops: Chain<Op>, i: Int, defs: List<SsaDef>,
+                      reads: List<StrCount>): SaPlan|None
+  ret match(ops)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => match(saPlanForOp(l.value, i, defs, reads))
+      (plan: SaPlan) => plan
+      ()             => saFindPlan(l.next, i + 1, defs, reads)
+
+fun saPlanForOp(op: Op, i: Int, defs: List<SsaDef>,
+                reads: List<StrCount>): SaPlan|None
+  ret match(op)
+    (ph: OpPhi) => match(ph.phiTarget)
+      (sv: RpStackVar) => saPlanForPhi(ph, sv.name, i, defs, reads)
+      (o: RParam)      => None
+    (o: Op)     => None
+
+fun saPlanForPhi(ph: OpPhi, acc: String, i: Int, defs: List<SsaDef>,
+                 reads: List<StrCount>): SaPlan|None
+  let split = saSplitSources(chain(ph.phiSources), acc, defs, reads,
+                             List<SaStep>(), List<OpPhiSource>())
+  ret !isEmpty(split.steps) && !isEmpty(split.inits)
+     && !any(split.inits,
+             (s2: OpPhiSource) => !sdIsDuplicable(s2.sourceValue))
+    ? SaPlan(i, acc, split.steps, split.inits)
+    : None
+
+fun [tail] saSplitSources(ss: Chain<OpPhiSource>, acc: String,
+                          defs: List<SsaDef>, reads: List<StrCount>,
+                          steps: List<SaStep>,
+                          inits: List<OpPhiSource>): (steps: List<SaStep>, inits: List<OpPhiSource>)
+  ret match(ss)
+    (nil: ChainEnd) => (steps, inits)
+    (l: ChainLink)  => match(saRecogniseStep(l.value.sourceLabel,
+                                             l.value.sourceValue, acc,
+                                             defs, reads))
+      (step: SaStep) => saSplitSources(l.next, acc, defs, reads,
+                                       append(steps, step), inits)
+      ()             => saSplitSources(l.next, acc, defs, reads, steps,
+                                       append(inits, l.value))
+
+# ── plan-level bail-outs ────────────────────────────────────────────────────
+
+# An acc buried deeper inside ANOTHER Phi's source has no safe rewrite point
+# (its value is consumed on the predecessor edge, where an inserted snapshot
+# Move would not execute); a DIRECT acc source takes the snapshot expression
+# itself, so only the buried shape bails.
+fun saPhiSourceBuriesAcc(op: Op, i: Int, plan: SaPlan): Bool
+  ret match(op)
+    (ph: OpPhi) => i != plan.saPhiIdx
+      && any(ph.phiSources,
+             (s2: OpPhiSource) => !saIsDirectAcc(s2.sourceValue, plan.saAcc)
+                                  && saMentionsVar(s2.sourceValue, plan.saAcc))
+    (o: Op)     => false
+
+fun saIsDirectAcc(v: RParam, acc: String): Bool
+  ret match(v)
+    (sv: RpStackVar) => sv.name == acc
+    (o: RParam)      => false
+
+# Loop body ≈ the op span from the accumulator's Phi to the last jump back
+# to its label; any acc read in that span (outside the recognised chains)
+# bails the plan.
+fun saLoopLabel(f: CgFunction, phiIdx: Int): String|None
+  ret saLabelScan(chain(f.fnOps), 0, phiIdx, None)
+
+fun [tail] saLabelScan(ops: Chain<Op>, i: Int, phiIdx: Int,
+                       latest: String|None): String|None
+  ret match(ops)
+    (nil: ChainEnd) => latest
+    (l: ChainLink)  => i >= phiIdx
+      ? latest
+      : saLabelScan(l.next, i + 1, phiIdx, saLabelName(l.value, latest))
+
+fun saLabelName(op: Op, latest: String|None): String|None
+  ret match(op)
+    (lb: OpLabel) => lb.labelName
+    (o: Op)       => latest
+
+fun saJumpTarget(op: Op): String|None
+  ret match(op)
+    (ji: OpJumpIf) => ji.jumpIfLabel
+    (j: OpJump)    => j.jumpName
+    (o: Op)        => None
+
+fun saSpanEnd(f: CgFunction, loopLabel: String|None, phiIdx: Int): Int
+  ret match(loopLabel)
+    (lbl: String) => saSpanScan(chain(f.fnOps), 0, lbl, phiIdx)
+    ()            => phiIdx
+
+fun [tail] saSpanScan(ops: Chain<Op>, i: Int, lbl: String, latest: Int): Int
+  ret match(ops)
+    (nil: ChainEnd) => latest
+    (l: ChainLink)  => saSpanScan(l.next, i + 1, lbl,
+                                  saTargets(l.value, lbl) ? i : latest)
+
+fun saTargets(op: Op, lbl: String): Bool
+  ret match(saJumpTarget(op))
+    (t2: String) => t2 == lbl
+    ()           => false
+
+fun saReadsAccOutsideChain(op: Op, acc: String, chainAll: List<String>): Bool
+  ret saChainMoveTarget(op, chainAll)
+    ? false
+    : any(opGetLiveVars(op).reads,
+          (sv: RParam) => saIsDirectAcc(sv, acc))
+
+fun saChainMoveTarget(op: Op, chainAll: List<String>): Bool
+  ret match(op)
+    (m: OpMove) => match(m.moveTarget)
+      (sv: RpStackVar) => strListMember(chainAll, sv.name)
+      (o: RParam)      => false
+    (o: Op)     => false
+
+fun [tail] saAnyInSpan(ops: Chain<Op>, i: Int, from2: Int, to2: Int,
+                       acc: String, chainAll: List<String>): Bool
+  ret match(ops)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => i > to2
+      ? false
+      : i >= from2 && saReadsAccOutsideChain(l.value, acc, chainAll)
+        ? true
+        : saAnyInSpan(l.next, i + 1, from2, to2, acc, chainAll)
+
+# ── the rewrite ─────────────────────────────────────────────────────────────
+
+fun saBufName(base: String): String   ret base + "$sb_buf"
+fun saOffName(base: String): String   ret base + "$sb_off"
+
+fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: List<SsaDef>,
+                reads: List<StrCount>): CgFunction
+  let chainAll = fold(plan.saSteps, List<String>(),
+                      (acc2: List<String>, s2: SaStep) =>
+                        fold(s2.saChainMoves, acc2, strListAdd))
+  if saAnyBuried(chain(f.fnOps), 0, plan)
+    ret f
+  let spanEnd = saSpanEnd(f, saLoopLabel(f, plan.saPhiIdx), plan.saPhiIdx)
+  if saAnyInSpan(chain(f.fnOps), 0, plan.saPhiIdx + 1, spanEnd,
+                 plan.saAcc, chainAll)
+    ret f
+  let out = saRewriteOps(chain(f.fnOps), 0, plan, chainAll,
+                         (List<Op>(), List<RParam>()))
+  ret saRestack(f, plan, chainAll, out.ops, out.snaps)
+
+fun [tail] saAnyBuried(ops: Chain<Op>, i: Int, plan: SaPlan): Bool
+  ret match(ops)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => saPhiSourceBuriesAcc(l.value, i, plan)
+      ? true
+      : saAnyBuried(l.next, i + 1, plan)
+
+fun saBufVar(plan: SaPlan): RParam
+  ret RpStackVar(CgDataPointer(), saBufName(plan.saAcc))
+
+fun saOffVar(plan: SaPlan): RParam
+  ret RpStackVar(CgDataPointer(), saOffName(plan.saAcc))
+
+fun saSnapshot(plan: SaPlan): RParam
+  ret saInvoke2("string_resize", saBufVar(plan), saOffVar(plan))
+
+fun [tail] saRewriteOps(ops: Chain<Op>, i: Int, plan: SaPlan,
+                        chainAll: List<String>,
+                        acc: (ops: List<Op>, snaps: List<RParam>)): (ops: List<Op>, snaps: List<RParam>)
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => saRewriteOps(l.next, i + 1, plan, chainAll,
+                                    saRewriteOne(l.value, i, plan, chainAll,
+                                                 acc))
+
+fun saRewriteOne(op: Op, i: Int, plan: SaPlan, chainAll: List<String>,
+                 acc: (ops: List<Op>, snaps: List<RParam>)): (ops: List<Op>, snaps: List<RParam>)
+  if i == plan.saPhiIdx
+    ret (concat(acc.ops, saPhiPair(plan)), acc.snaps)
+  ret match(saStepOrChainMove(op, plan, chainAll))
+    (kind: Int) => kind == 1
+      ? (concat(acc.ops, saPushSeq(saStepFor(op, plan), plan)), acc.snaps)
+      : acc                          # kind 2: absorbed intermediate — drop
+    ()          => saRewriteRead(op, plan, acc)
+
+# 1 = the chain's final Move (becomes the push sequence); 2 = an absorbed
+# intermediate; None = anything else.
+fun saStepOrChainMove(op: Op, plan: SaPlan, chainAll: List<String>): Int|None
+  ret match(op)
+    (m: OpMove) => match(m.moveTarget)
+      (sv: RpStackVar) =>
+        any(plan.saSteps, (s2: SaStep) => s2.saResult == sv.name) ? 1
+        : strListMember(chainAll, sv.name) ? 2
+        : None
+      (o: RParam)      => None
+    (o: Op)     => None
+
+fun saStepFor(op: Op, plan: SaPlan): SaStep
+  let name = match(op)
+    (m: OpMove) => match(m.moveTarget)
+      (sv: RpStackVar) => sv.name
+      (o: RParam)      => ""
+    (o: Op)     => ""
+  ret match(head(filter(plan.saSteps, (s2: SaStep) => s2.saResult == name)))
+    (s2: SaStep) => s2
+    ()           => SaStep("", "", List<RParam>(), List<String>())
+
+# The accumulator Phi becomes the (buf, off) Phi pair. (Python constructs
+# both with DEFAULT saved_vars — the original Phi's set is discarded.)
+fun saPhiPair(plan: SaPlan): List<Op>
+  let bufSources = concat(
+        map(plan.saInits, (s2: OpPhiSource) => s2),
+        map(plan.saSteps,
+            (s2: SaStep) => OpPhiSource(s2.saEdge,
+                                        RpStackVar(CgDataPointer(),
+                                                   saBufName(s2.saResult)))))
+  let offSources = concat(
+        map(plan.saInits,
+            (s2: OpPhiSource) => OpPhiSource(s2.sourceLabel,
+                                             saLengthOf(s2.sourceValue))),
+        map(plan.saSteps,
+            (s2: SaStep) => OpPhiSource(s2.saEdge,
+                                        RpStackVar(CgDataPointer(),
+                                                   saOffName(s2.saResult)))))
+  ret append<Op>(append<Op>(List<Op>(),
+                    OpPhi(saBufVar(plan), bufSources, List<RParam>())),
+             OpPhi(saOffVar(plan), offSources, List<RParam>()))
+
+# The chain's final Move becomes the in-place push sequence: reserve →
+# dangerous copy, then advance the offset, once per operand.
+fun saPushSeq(step: SaStep, plan: SaPlan): List<Op>
+  ret saPushLoop(chain(step.saPushes), 0, listLen(step.saPushes), step,
+                 saBufVar(plan), saOffVar(plan), List<Op>())
+
+fun saPushLoop(ps: Chain<RParam>, i: Int, n: Int, step: SaStep,
+                      curBuf: RParam, curOff: RParam,
+                      acc: List<Op>): List<Op>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => saPushStep(l, i, n, step, curBuf, curOff, acc)
+
+fun saPushStep(l: ChainLink<RParam>, i: Int, n: Int, step: SaStep,
+                      curBuf: RParam, curOff: RParam,
+                      acc: List<Op>): List<Op>
+  let names = saPushNames(step, i, n)
+  let nbuf = RpStackVar(CgDataPointer(), names.buf)
+  let noff = RpStackVar(CgDataPointer(), names.off)
+  let grown = saInvoke3("string_builder_reserve", curBuf, curOff,
+                        saLengthOf(l.value))
+  let pushed = append(append(acc,
+        OpMove(nbuf,
+               saInvoke3("string_copy_to_dangerously", grown, curOff,
+                         l.value),
+               false, List<RParam>())),
+        OpMove(noff, saInvoke2("integer_add", curOff, saLengthOf(l.value)),
+               false, List<RParam>()))
+  ret saPushLoop(l.next, i + 1, n, step, nbuf, noff, pushed)
+
+fun saPushNames(step: SaStep, i: Int, n: Int): (buf: String, off: String)
+  ret i == n - 1
+    ? (saBufName(step.saResult), saOffName(step.saResult))
+    : (saBufName(step.saResult) + "@" + String(i),
+       saOffName(step.saResult) + "@" + String(i))
+
+# Everything else: reads of the accumulator become snapshots, and a saved
+# accumulator becomes a saved (buf, off) pair.
+fun saRewriteRead(op: Op, plan: SaPlan,
+                  acc: (ops: List<Op>, snaps: List<RParam>)): (ops: List<Op>, snaps: List<RParam>)
+  let stage1 = match(op)
+    (ph: OpPhi) => saPhiRead(ph, plan, acc.snaps)
+    (o: Op)     => saSnapRead(op, plan, acc.snaps)
+  let staged = saResave(stage1.op, plan)
+  ret (append(concat(acc.ops, stage1.pre), staged), stage1.snaps)
+
+fun saPhiRead(ph: OpPhi, plan: SaPlan,
+              snaps: List<RParam>): (op: Op, pre: List<Op>, snaps: List<RParam>)
+  ret (saOtherPhi(ph, plan), List<Op>(), snaps)
+
+fun saOtherPhi(ph: OpPhi, plan: SaPlan): Op
+  ret OpPhi(ph.phiTarget,
+            map(ph.phiSources,
+                (s2: OpPhiSource) => saIsDirectAcc(s2.sourceValue, plan.saAcc)
+                  ? OpPhiSource(s2.sourceLabel, saSnapshot(plan))
+                  : s2),
+            ph.phiSavedVars)
+
+fun saSnapRead(op: Op, plan: SaPlan,
+               snaps: List<RParam>): (op: Op, pre: List<Op>, snaps: List<RParam>)
+  if !any(opGetLiveVars(op).reads,
+          (sv: RParam) => saIsDirectAcc(sv, plan.saAcc))
+    ret (op, List<Op>(), snaps)
+  let snap = RpStackVar(CgDataPointer(),
+                        plan.saAcc + "$snap@" + String(listLen(snaps)))
+  ret (opRenameVars(op, append<RpRename>(List<RpRename>(),
+                               RpRename(plan.saAcc, stackVarName(snap)))),
+       append<Op>(List<Op>(), OpMove(snap, saSnapshot(plan), false,
+                                 List<RParam>())),
+       append(snaps, snap))
+
+fun saResave(op: Op, plan: SaPlan): Op
+  ret any(opSavedVars(op), (sv: RParam) => saIsDirectAcc(sv, plan.saAcc))
+    ? opWithSavedVars(op,
+        svSetUnion(filter(opSavedVars(op),
+                          (sv: RParam) => !saIsDirectAcc(sv, plan.saAcc)),
+                   append<RParam>(append<RParam>(List<RParam>(), saBufVar(plan)),
+                          saOffVar(plan))))
+    : op
+
+# Declare the introduced locals; retire the replaced ones (the accumulator,
+# the step results and the absorbed intermediates).
+fun saRestack(f: CgFunction, plan: SaPlan, chainAll: List<String>,
+              newOps: List<Op>, snaps: List<RParam>): CgFunction
+  let retired = append(chainAll, plan.saAcc)
+  let kept = filter(cgFieldsOfOrEmpty(f.fnStackVars),
+                    (fld: CgField) => !strListMember(retired, fld.fieldName))
+  let base = append(append(kept,
+                           CgField(saBufName(plan.saAcc), CgDataPointer())),
+                    CgField(saOffName(plan.saAcc), CgDataPointer()))
+  let withSnaps = fold(snaps, base,
+                       (acc2: List<CgField>, sv: RParam) =>
+                         append(acc2, CgField(stackVarName(sv),
+                                              CgDataPointer())))
+  ret cgFunctionWith(f, newOps,
+                     CgStruct(fold(plan.saSteps, withSnaps, saStepFields)))
+
+fun saStepFields(acc: List<CgField>, step: SaStep): List<CgField>
+  ret saStepFieldLoop(0, listLen(step.saPushes), step, acc)
+
+fun [tail] saStepFieldLoop(i: Int, n: Int, step: SaStep,
+                           acc: List<CgField>): List<CgField>
+  if i >= n
+    ret acc
+  ret saPushNames(step, i, n)
+    |> (names) => saStepFieldLoop(i + 1, n, step,
+                    append(append(acc, CgField(names.buf, CgDataPointer())),
+                           CgField(names.off, CgDataPointer())))

@@ -504,10 +504,10 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # stdin may be a MULTI-FILE stream — each part preceded by a `#FILE# <name>`
 # line — so the contract compiles stdlib + target as a whole program; a
 # stream without markers is a single file named "x" (the stage convention).
-fun cMode(text: String): (out: String, code: Int)
+fun cMode(text: String, optLevel: Int): (out: String, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => match(convergeToPostmono(stmts))
-      (ok: PmOk)   => cStage(ok.pmStmts)
+      (ok: PmOk)   => cStage(ok.pmStmts, optLevel)
       (tx: PmText) => (tx.pmOut, tx.pmCode)
     ()                    => ("parse error\n", 1)
 
@@ -541,7 +541,7 @@ fun [tail] parseParts(text: String, at: Int, acc: List<PStmt>): List<PStmt>|None
       ? concat(acc, stmts)
       : parseParts(text, nextMark + 1, concat(acc, stmts))
 
-fun cStage(stmts: List<PStmt>): (out: String, code: Int)
+fun cStage(stmts: List<PStmt>, optLevel: Int): (out: String, code: Int)
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
   if !isEmpty(tl.tlErrs)
     ret (printedDiagnostics(tl.tlErrs), 1)
@@ -551,7 +551,7 @@ fun cStage(stmts: List<PStmt>): (out: String, code: Int)
     ret (printedDiagnostics(fwd), 1)
   let final2 = assignBlockExits(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered))))
   ret match(cFindMain(chain(final2)))
-    (nm: System::String) => cEmit(final2, nm)
+    (nm: System::String) => cEmit(final2, nm, optLevel)
     ()                    => ("No main function found\n", 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
@@ -580,8 +580,10 @@ fun cIsBigintRet(ret2: Spec|None): Bool
       (o: Spec)     => false
     ()          => false
 
-fun cEmit(stmts: List<PStmt>, mainName: System::String): (out: String, code: Int)
-  let out = createCCode(stmts, mainName, 0, append(List<System::String>(), "yafl.h"))
+fun cEmit(stmts: List<PStmt>, mainName: System::String,
+          optLevel: Int): (out: String, code: Int)
+  let out = createCCode(stmts, mainName, optLevel,
+                        append(List<System::String>(), "yafl.h"))
   ret isEmpty(out.ccErrors)
     ? (out.ccText, 0)
     : (join(out.ccErrors, "\n") + "\n", 1)
@@ -647,7 +649,8 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "lambdas" ? lambdasMode(text)
         : mode == "simple" ? simpleMode(text)
         : mode == "exits" ? exitsMode(text)
-        : mode == "c" ? cMode(text)
+        : mode == "c" ? cMode(text, 0)
+        : mode == "c1" ? cMode(text, 1)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code

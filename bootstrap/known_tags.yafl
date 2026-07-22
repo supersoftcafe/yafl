@@ -1,0 +1,41 @@
+# bootstrap/known_tags.yafl — ported from lowering/known_tags.py: resolve
+# dispatch on statically-known tags (case-of-known-constructor). After
+# fusion, a union packed with a constant `$tag` is dispatched on a few ops
+# later; in SSA the tag is statically decidable (ssa_defs), so the `JumpIf`
+# hardens to an unconditional `Jump` (taken) or evaporates (never taken).
+# The dead pack then falls to deadstores, and the straightened flow lets
+# branch threading collapse further. Runs in the pre-async fixpoint at -O1+.
+# Phi-safe: no labels renamed or removed; a hardened/dropped JumpIf can
+# strand its other edge as unreachable code — harmless, and a folded
+# function is re-stripped so the dropped arm stops pinning otherwise-dead
+# functions against the reachability prune.
+namespace Bootstrap
+
+import System
+
+fun resolveKnownTags(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions, ktFunction))
+
+fun ktFunction(f: CgFunction): CgFunction
+  let defs = singleDefs(f)
+  let walked = ktWalk(chain(f.fnOps), defs, List<Op>(), false)
+  if !walked.folded
+    ret f
+  ret cgFunctionStripUnusedOperations(cgFunctionWith(f, walked.ops,
+                                                     f.fnStackVars))
+
+fun [tail] ktWalk(ops: Chain<Op>, defs: List<SsaDef>,
+                  acc: List<Op>, folded: Bool): (ops: List<Op>, folded: Bool)
+  ret match(ops)
+    (nil: ChainEnd) => (acc, folded)
+    (l: ChainLink)  => match(l.value)
+      (ji: OpJumpIf) => match(staticInt(ji.jumpIfCondition, defs))
+        (cond: Int) => ktWalk(l.next, defs, ktHarden(acc, ji, cond), true)
+        ()          => ktWalk(l.next, defs, append(acc, l.value), folded)
+      (o: Op)        => ktWalk(l.next, defs, append(acc, l.value), folded)
+
+# Taken: `Jump(label)`; never taken: the guard evaporates.
+fun ktHarden(acc: List<Op>, ji: OpJumpIf, cond: Int): List<Op>
+  ret (cond != 0) != ji.jumpIfInvert
+    ? append(acc, OpJump(ji.jumpIfLabel, List<RParam>()))
+    : acc

@@ -139,14 +139,18 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   if !isEmpty(v1)
     ret CreateCOut("", v1)
   let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
-  # [O1+ blocks: inlining/vtable trim/staticinit-promotion — NOT PORTED YET]
-  let a4 = resolveFlatStructGlobalInits(a3)
+  # [O2/O3 blocks: inlining + vtable trim — NOT PORTED YET]
+  let a3b = optLevel > 0 ? ccO1Block(a3) : a3
+  let a4 = resolveFlatStructGlobalInits(a3b)
   let a5 = inferSync(a4)
-  let a6 = propagateCopies(threadBranches(a5))
+  let a6 = optLevel >= 1
+    ? ccFoldFixpoint(a5, 0, List<String>())
+    : propagateCopies(threadBranches(a5))
   # Space correctness, every -O level (see sroa.yafl).
   let a7 = splitProjectedAggregates(a6)
   let a8 = removePhis(a7)
-  let a9 = removedUnusedStuff(lowerAsync(a8))
+  let a8b = optLevel >= 1 ? promoteToStack(a8) : a8
+  let a9 = removedUnusedStuff(lowerAsync(a8b))
   let v2 = checkApplication(a9)
   if !isEmpty(v2)
     ret CreateCOut("", v2)
@@ -157,6 +161,60 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   if !isEmpty(v4)
     ret CreateCOut("", v4)
   ret CreateCOut(genApplication(a9, headers), List<String>())
+
+# ── the -O1+ pass blocks ─────────────────────────────────────────────────────
+# Python compiler.py: inside `if optimization_level > 0` — bounds-check
+# elimination, dead-store elimination, four rounds of static-object
+# promotion, dead stores again. (The >=2 inlining and >=3 single-caller
+# blocks are NOT PORTED YET; at -O1 Python skips them too.)
+fun ccO1Block(a0: CgApp): CgApp
+  let a1 = eliminateProvableBoundsChecks(a0)
+  let a2 = removedUnusedStuff(eliminateDeadStores(a1))
+  let a3 = ccStaticRounds(a2, 0, 0)
+  ret removedUnusedStuff(eliminateDeadStores(a3))
+
+# Static init promotion runs FOUR rounds; the $si$N counter threads across
+# rounds AND functions (Python's module-level itertools.count).
+fun [tail] ccStaticRounds(a: CgApp, round2: Int, counter: Int): CgApp
+  if round2 >= 4
+    ret a
+  let out = convertStaticObjectsPass(a, counter)
+  ret ccStaticRounds(out.app, round2 + 1, out.counter)
+
+# The pre-async collapse fixpoint (Python compiler.py `optimization_level >=
+# 1`): branch threading + copy propagation + the known-value folds, to a
+# 16-round bound or SHAPE stability — shape = every function's (name, op
+# count), exactly Python's `tuple((n, len(f.ops)) ...)`.
+fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
+                          prevShape: List<String>): CgApp
+  if round2 >= 16
+    ret a0
+  let a1 = threadBranches(a0)
+  let a2 = propagateCopies(a1)
+  let a3 = foldStructReads(a2)
+  let a4 = resolveKnownDiscriminators(a3)
+  let a5 = resolveKnownTags(a4)
+  let a6 = flattenStringAppends(a5)
+  let a7 = deforestStringAccumulation(a6)
+  let a8 = eliminateDeadStores(a7)
+  let shape = ccShape(a8)
+  ret ccShapeEq(shape, prevShape) ? a8 : ccFoldFixpoint(a8, round2 + 1, shape)
+
+fun ccShape(a: CgApp): List<String>
+  ret map(a.appFunctions,
+          (f: CgFunction) => f.fnName + ":" + String(listLen(f.fnOps)))
+
+fun ccShapeEq(a: List<String>, b: List<String>): Bool
+  ret listLen(a) == listLen(b) && ccShapeLoop(chain(a), chain(b))
+
+fun [tail] ccShapeLoop(a: Chain<String>, b: Chain<String>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(b)
+      (lb: ChainLink) => l.value == lb.value
+        ? ccShapeLoop(l.next, lb.next)
+        : false
+      ()              => false
 
 fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
   let r2 = scopeResolver(st, r)

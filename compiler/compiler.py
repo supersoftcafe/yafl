@@ -193,6 +193,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # inlines `[inline(always)]` functions regardless of size, recursively (to a
     # fixpoint) so a chain of marked stages fuses fully into its consumer.
     if optimization_level > 0:
+        lowering.staticinit.reset_si_counter()
         if optimization_level >= 2:
             inline_always = optimization_level >= 3
             prev_shape: tuple | None = None

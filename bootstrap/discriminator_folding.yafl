@@ -1,0 +1,71 @@
+# bootstrap/discriminator_folding.yafl — ported from
+# lowering/discriminator_folding.py: fold vtable-discriminator reads of
+# locally-constructed objects. Union dispatch over pointer-repr members
+# compares `VtableDiscriminator(value)` — `value->vtable->discriminator` —
+# against arm leaves' registry ids. When `value` chases (through single-read
+# SSA copies) to a `NewObject` in the same function, the discriminator is a
+# per-class compile-time constant: the read folds to that integer,
+# known_tags then hardens the comparison and jump in the same fixpoint
+# round, and the object's remaining uses collapse to plain field reads —
+# exactly what stack_promotion needs to delete the allocation outright.
+# Case-of-known-constructor for vtable-tagged variants.
+namespace Bootstrap
+
+import System
+
+# StackVar name → class name for every NewObject register in the function.
+class [final] DfoNewObj(dfoVar: String, dfoClass: String)
+
+fun resolveKnownDiscriminators(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions,
+                              (f: CgFunction) => dfoFunction(f, a)))
+
+fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
+  let newobjs = fold(f.fnOps, List<DfoNewObj>(), dfoCollect)
+  if isEmpty(newobjs)
+    ret f
+  let defs = singleDefs(f)
+  ret cgFunctionWith(f, map(f.fnOps,
+                            (op: Op) => opReplaceParams(op,
+                              (p: RParam) => dfoReplace(p, newobjs, defs, a))),
+                     f.fnStackVars)
+
+fun dfoCollect(acc: List<DfoNewObj>, op: Op): List<DfoNewObj>
+  ret match(op)
+    (no: OpNewObject) => match(no.newObjRegister)
+      (sv: RpStackVar) => append(acc, DfoNewObj(sv.name, no.newObjName))
+      (o: RParam)      => acc
+    (o: Op)           => acc
+
+fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
+                      defs: List<SsaDef>, depth: Int): String|None
+  if depth <= 0
+    ret None
+  ret match(param)
+    (p: RParam) => match(p)
+      (sv: RpStackVar) => match(dfoLookup(chain(newobjs), sv.name))
+        (cls: String) => cls
+        ()            => dfoClassOf(sdGet(chain(defs), sv.name), newobjs,
+                                    defs, depth - 1)
+      (o: RParam)      => None
+    ()          => None
+
+fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String): String|None
+  ret match(ns)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => l.value.dfoVar == name
+      ? l.value.dfoClass
+      : dfoLookup(l.next, name)
+
+fun dfoReplace(p: RParam, newobjs: List<DfoNewObj>, defs: List<SsaDef>,
+               a: CgApp): RParam
+  ret match(p)
+    (vd: RpVtableDiscriminator) =>
+      match(dfoClassOf(vd.value, newobjs, defs, sdMaxChase()))
+        (cls: String) => match(appObject(a, cls))
+          (obj: CgObject) => obj.objDiscriminator != 0
+            ? RpInteger(obj.objDiscriminator, 32)
+            : p
+          ()              => p
+        ()            => p
+    (o: RParam)                 => p

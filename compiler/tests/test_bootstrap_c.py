@@ -94,6 +94,29 @@ class TestBootstrapC(TestCase):
                                      f"{path.name}: C length differs "
                                      f"(python {len(expected)}, port {len(got)})")
 
+    def test_c_matches_python_O1(self):
+        # The same whole-program byte-compare at -O1: bounds_elim, dead
+        # stores, static-object promotion, and the pre-async collapse
+        # fixpoint (struct/tag/discriminator folds, string concat/
+        # accumulation) plus stack promotion all run on both sides.
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=4) as pool:
+            py_futs = {path: pool.submit(_python_c_text, path.name, 1)
+                       for path in _CORPUS}
+            port_futs = {path: pool.submit(_run_port_c, self.binary,
+                                           _port_stream(path), "c1")
+                         for path in _CORPUS}
+            for path in _CORPUS:
+                with self.subTest(file=path.name):
+                    expected = py_futs[path].result().splitlines()
+                    got = port_futs[path].result().splitlines()
+                    for i, (e, gg) in enumerate(zip(expected, got)):
+                        self.assertEqual(e, gg,
+                                         f"{path.name}: -O1 C differs at line {i + 1}")
+                    self.assertEqual(len(expected), len(got),
+                                     f"{path.name}: -O1 C length differs "
+                                     f"(python {len(expected)}, port {len(got)})")
+
 
 def _port_stream(target: Path) -> str:
     parts = [f"#FILE# {p.name}\n{p.read_text()}" for p in _STDLIB]
@@ -101,13 +124,13 @@ def _port_stream(target: Path) -> str:
     return "".join(parts)
 
 
-def _run_port_c(binary: str, text: str) -> str:
-    r = subprocess.run([binary, "c"], input=text, capture_output=True,
+def _run_port_c(binary: str, text: str, mode: str = "c") -> str:
+    r = subprocess.run([binary, mode], input=text, capture_output=True,
                        timeout=600, text=True, env=_RUN_ENV)
     return r.stdout
 
 
-def _python_c_text(target_name: str) -> str:
+def _python_c_text(target_name: str, optimization_level: int = 0) -> str:
     target = next(p for p in _CORPUS if p.name == target_name)
     statements = []
     for p in _STDLIB + [target]:
@@ -149,5 +172,5 @@ def _python_c_text(target_name: str) -> str:
         return "No main function found\n"
     discs = lowering.unions.collect_discriminator_ids(statements)
     return _CREATE_C(statements, mains[0], just_testing=True,
-                     optimization_level=0, union_discriminators=discs,
-                     headers=("yafl.h",))
+                     optimization_level=optimization_level,
+                     union_discriminators=discs, headers=("yafl.h",))

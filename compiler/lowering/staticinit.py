@@ -14,6 +14,17 @@ from codegen.typedecl import DataPointer
 _si_counter = itertools.count()
 
 
+def reset_si_counter() -> None:
+    """Restart $si$N numbering. Called once per __create_c_code, so the
+    emitted names depend only on the program being compiled — not on how many
+    compiles this process ran before (a reused test-pool worker previously
+    leaked the counter across files, making the -O1 output compile-order
+    dependent). The bootstrap port threads its counter from 0 per compile;
+    this keeps the reference implementation identical."""
+    global _si_counter
+    _si_counter = itertools.count()
+
+
 def _build_value_map(ops) -> dict[str, RParam]:
     """Build a map from StackVar name to its source for singly-assigned vars."""
     counts: dict[str, int] = {}
