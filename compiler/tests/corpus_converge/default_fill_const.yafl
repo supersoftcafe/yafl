@@ -1,0 +1,13 @@
+import System
+
+# An OMITTED defaulted parameter whose default is a [const] global (`false` is
+# `let [const] false: Bool` in stdlib/integer.yafl): the conversion inserted at
+# the call site carries the default expression inside its target TupleSpec, so
+# inline_constants must rewrite spec-stored defaults too — a walker that skips
+# Convert targets leaves a dangling name and the fill degenerates to a null.
+fun describe(name: System::String, inferred: Bool = false,
+             nested: Bool = false): System::Int
+  ret inferred || nested ? 1 : 0
+
+fun main(): System::Int
+  ret describe("a")

@@ -72,50 +72,51 @@ class TestBootstrapC(TestCase):
         pass  # the shared binary is cache-owned
 
     def test_c_matches_python(self):
-        # Every corpus file is independent, and per file the two compiles
-        # are independent — a bounded pool takes BOTH job kinds (Python
-        # mirrors need processes for the GIL; port runs are subprocess
-        # wrappers), capped so memory stays sane. Results compare in corpus
-        # order, so the first diff reported is always the simplest file's.
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=4) as pool:
-            py_futs = {path: pool.submit(_python_c_text, path.name)
-                       for path in _CORPUS}
-            port_futs = {path: pool.submit(_run_port_c, self.binary, _port_stream(path))
-                         for path in _CORPUS}
-            for path in _CORPUS:
-                with self.subTest(file=path.name):
-                    expected = py_futs[path].result().splitlines()
-                    got = port_futs[path].result().splitlines()
-                    for i, (e, gg) in enumerate(zip(expected, got)):
-                        self.assertEqual(e, gg,
-                                         f"{path.name}: C differs at line {i + 1}")
-                    self.assertEqual(len(expected), len(got),
-                                     f"{path.name}: C length differs "
-                                     f"(python {len(expected)}, port {len(got)})")
+        self._compare_corpus(0, "c")
 
     def test_c_matches_python_O1(self):
         # The same whole-program byte-compare at -O1: bounds_elim, dead
         # stores, static-object promotion, and the pre-async collapse
         # fixpoint (struct/tag/discriminator folds, string concat/
         # accumulation) plus stack promotion all run on both sides.
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=4) as pool:
-            py_futs = {path: pool.submit(_python_c_text, path.name, 1)
-                       for path in _CORPUS}
-            port_futs = {path: pool.submit(_run_port_c, self.binary,
-                                           _port_stream(path), "c1")
-                         for path in _CORPUS}
-            for path in _CORPUS:
-                with self.subTest(file=path.name):
-                    expected = py_futs[path].result().splitlines()
-                    got = port_futs[path].result().splitlines()
-                    for i, (e, gg) in enumerate(zip(expected, got)):
-                        self.assertEqual(e, gg,
-                                         f"{path.name}: -O1 C differs at line {i + 1}")
-                    self.assertEqual(len(expected), len(got),
-                                     f"{path.name}: -O1 C length differs "
-                                     f"(python {len(expected)}, port {len(got)})")
+        self._compare_corpus(1, "c1")
+
+    def _compare_corpus(self, optimization_level: int, mode: str):
+        # Every corpus file is independent, and per file the two compiles
+        # are independent — a bounded pool takes BOTH job kinds (Python
+        # mirrors need processes for the GIL; port runs are subprocess
+        # wrappers), capped so memory stays sane. Results compare in corpus
+        # order, so the first diff reported is always the simplest file's.
+        # Under a parallel test runner this process is daemonic and cannot
+        # fork a pool — compute serially instead.
+        import multiprocessing
+        if multiprocessing.current_process().daemon:
+            py = {path: _python_c_text(path.name, optimization_level)
+                  for path in _CORPUS}
+            port = {path: _run_port_c(self.binary, _port_stream(path), mode)
+                    for path in _CORPUS}
+        else:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=4) as pool:
+                py_futs = {path: pool.submit(_python_c_text, path.name,
+                                             optimization_level)
+                           for path in _CORPUS}
+                port_futs = {path: pool.submit(_run_port_c, self.binary,
+                                               _port_stream(path), mode)
+                             for path in _CORPUS}
+                py = {path: py_futs[path].result() for path in _CORPUS}
+                port = {path: port_futs[path].result() for path in _CORPUS}
+        tag = "" if optimization_level == 0 else f"-O{optimization_level} "
+        for path in _CORPUS:
+            with self.subTest(file=path.name):
+                expected = py[path].splitlines()
+                got = port[path].splitlines()
+                for i, (e, gg) in enumerate(zip(expected, got)):
+                    self.assertEqual(e, gg,
+                                     f"{path.name}: {tag}C differs at line {i + 1}")
+                self.assertEqual(len(expected), len(got),
+                                 f"{path.name}: {tag}C length differs "
+                                 f"(python {len(expected)}, port {len(got)})")
 
 
 def _port_stream(target: Path) -> str:

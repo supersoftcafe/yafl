@@ -4,6 +4,13 @@
 # is replaced by a fresh copy of the literal (re-stamped with the USE SITE's
 # line so errors point there), then the declaration itself is dropped. The
 # later literal-hoisting passes deduplicate the copies.
+#
+# Python drives this through the generic search_and_replace walker, which
+# descends into type specs too — TupleEntrySpec.search_and_replace rewrites
+# each entry's DEFAULT expression (specs.py:957), so a const name stored as a
+# parameter default inside a Convert target is inlined like any other use.
+# The port therefore rides the shared Rw walker (rewrite.yafl), whose
+# rwEntries mirrors that spec descent.
 namespace Bootstrap
 
 import System
@@ -15,7 +22,8 @@ fun inlineConstants(statements: List<PStmt>): List<PStmt>
                          IcConsts(List<String>(), List<PExpr>()))
   if isEmpty(consts.icNames)
     ret statements
-  ret icTop(chain(statements), consts, List<PStmt>())
+  ret rwStmts(icDropDecls(chain(statements), consts, List<PStmt>()),
+              Rw((x: PExpr) => icReplace(x, consts), rwNoSpec, rwNoStmt))
 
 fun [tail] icCollect(ss: Chain<PStmt>, acc: IcConsts): IcConsts
   ret match(ss)
@@ -62,108 +70,21 @@ fun icRestamp(v: PExpr, line: PLine): PExpr
     (o: PExpr)   => v
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.
-fun [tail] icTop(ss: Chain<PStmt>, c: IcConsts,
-                 acc: List<PStmt>): List<PStmt>
+fun [tail] icDropDecls(ss: Chain<PStmt>, c: IcConsts,
+                       acc: List<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => contains2(c.icNames, let2.lName)
-        ? icTop(l.next, c, acc)
-        : icTop(l.next, c, append(acc, icStmt(l.value, c)))
-      (o: PStmt)    => icTop(l.next, c, append(acc, icStmt(l.value, c)))
+        ? icDropDecls(l.next, c, acc)
+        : icDropDecls(l.next, c, append(acc, l.value))
+      (o: PStmt)    => icDropDecls(l.next, c, append(acc, l.value))
 
-fun icStmt(st: PStmt, c: IcConsts): PStmt
-  ret match(st)
-    (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, icStmt(f.fParams, c),
-                         icExprOpt(f.fBody, c), f.fRet, f.fWheres,
-                         f.psfLine, f.fRetInferred, f.fNested, f.fImports)
-    (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
-                         icExprOpt(l.lDefault, c), l.lArrayLen, l.lWheres,
-                         l.pslLine, l.lTypeInferred, l.lImports)
-    (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
-                                        icStmts(chain(d.dTargets), c,
-                                                List<PStmt>()),
-                                        icExprOpt(d.dDefault, c),
-                                        d.psdLine, d.dTypeInferred)
-    (cl: PsClass) => PsClass(cl.cName, cl.cAttrs, cl.cGens,
-                             icStmt(cl.cParams, c), cl.cImplements,
-                             cl.cWheres,
-                             icStmts(chain(cl.cMembers), c, List<PStmt>()),
-                             cl.cIsInterface, cl.pscLine, cl.cAllParents,
-                             cl.cAllSlots, cl.cImports)
-    (e2: PsEnum) => PsEnum(e2.eName, e2.eGens, icStmt(e2.eParams, c),
-                           icStmts(chain(e2.eVariants), c, List<PStmt>()),
-                           e2.eHasParams, e2.pseLine, e2.eRootName, e2.eSpec,
-                           e2.eImports)
-    (rt: PsRet)  => PsRet(icExpr(rt.retValue, c), rt.psrLine)
-    (a: PsAction) => PsAction(icExpr(a.action, c), a.psaLine)
-    (i: PsIf)    => PsIf(icExpr(i.ifCond, c),
-                         icStmts(chain(i.ifTrue), c, List<PStmt>()),
-                         icStmts(chain(i.ifFalse), c, List<PStmt>()),
-                         i.psifLine)
-    (o: PStmt)   => st
-
-fun [tail] icStmts(ss: Chain<PStmt>, c: IcConsts,
-                   acc: List<PStmt>): List<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => icStmts(l.next, c, append(acc, icStmt(l.value, c)))
-
-fun icExprOpt(x: PExpr|None, c: IcConsts): PExpr|None
+# The walker callback: a bare name that aliases a const becomes the literal.
+fun icReplace(x: PExpr, c: IcConsts): PExpr|None
   ret match(x)
-    (e2: PExpr) => icExpr(e2, c)
-    ()          => None
-
-fun icExpr(x: PExpr, c: IcConsts): PExpr
-  ret match(x)
-    (nm: PeName)   => match(icValueOf(chain(c.icNames), chain(c.icValues),
-                                      nm.refName))
+    (nm: PeName) => match(icValueOf(chain(c.icNames), chain(c.icValues),
+                                    nm.refName))
       (v: PExpr) => icRestamp(v, nm.penLine)
-      ()         => x
-    (d: PeDot)     => PeDot(icExpr(d.base, c), d.member, d.pedLine)
-    (cc: PeCall)   => PeCall(icExpr(cc.function, c), icExpr(cc.parameter, c),
-                             cc.pecLine)
-    (tp: PeTuple)  => PeTuple(icTupEnts(chain(tp.exprs), c, List<PTupEnt>()),
-                              tp.petLine)
-    (te: PeTernary) => PeTernary(icExpr(te.condition, c),
-                                 icExpr(te.trueResult, c),
-                                 icExpr(te.falseResult, c), te.pety)
-    (lm: PeLambda) => PeLambda(icStmt(lm.lamParams, c),
-                               icExpr(lm.lamBody, c), lm.pelLine, lm.lamRet)
-    (bk: PeBlock)  => PeBlock(icStmts(chain(bk.blockStmts), c,
-                                      List<PStmt>()),
-                              icExpr(bk.blockValue, c), bk.blockTag,
-                              bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(icExpr(mt.subject, c),
-                              icArms(chain(mt.arms), c, List<PArm>()),
-                              mt.pemLine)
-    (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
-                                     icExpr(op.opParams, c), op.peboLine)
-    (nw: PeNew)    => PeNew(nw.newType, icExpr(nw.newParam, c), nw.penwLine)
-    (ar: PeArrayRead) => PeArrayRead(icExpr(ar.arrObj, c),
-                                     icExpr(ar.arrIndex, c), ar.pearLine)
-    (cv: PeConvert) => PeConvert(icExpr(cv.convInner, c), cv.convTarget,
-                                 cv.pecvLine)
-    (pl: PeParallel) => PeParallel(icExpr(pl.parParams, c), pl.pepLine)
-    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                                 map(ne.fieldArgs, (fa: PFieldArg) =>
-                                   PFieldArg(fa.faName, icExpr(fa.faValue, c))),
-                                 ne.neTypeParams, ne.penewLine)
-    (o: PExpr)     => x
-
-fun [tail] icTupEnts(es: Chain<PTupEnt>, c: IcConsts,
-                     acc: List<PTupEnt>): List<PTupEnt>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => icTupEnts(l.next, c,
-        append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
-                            icExpr(l.value.tupValue, c))))
-
-fun [tail] icArms(as2: Chain<PArm>, c: IcConsts,
-                  acc: List<PArm>): List<PArm>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => icArms(l.next, c,
-        append(acc, PArm(l.value.armName, l.value.armType,
-                         icExpr(l.value.armBody, c), l.value.armLiterals,
-                         icExprOpt(l.value.armGuard, c), l.value.parmLine)))
+      ()         => None
+    (o: PExpr)   => None
