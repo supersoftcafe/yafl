@@ -286,66 +286,102 @@ fun alLivenessIterate(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<S
   let newOps = alLivenessPass(ops, labels, blockLabels)
   ret alOpsSavedEq(ops, newOps, 0) ? newOps : alLivenessIterate(newOps, labels, blockLabels)
 
-fun [tail] alOpsSavedEq(a: List<Op>, b: List<Op>, i: Int): Bool
-  if i >= listLen(a)
-    ret true
-  ret svSetEq(opSavedVars(forceNth(a, i)), opSavedVars(forceNth(b, i)))
-    ? alOpsSavedEq(a, b, i + 1)
-    : false
+fun alOpsSavedEq(a: List<Op>, b: List<Op>, i: Int): Bool
+  ret alOpsSavedEqLoop(chain(a), chain(b))
+
+fun [tail] alOpsSavedEqLoop(a: Chain<Op>, b: Chain<Op>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (la: ChainLink) => match(b)
+      (lb: ChainLink) => svSetEq(opSavedVars(la.value), opSavedVars(lb.value))
+        ? alOpsSavedEqLoop(la.next, lb.next)
+        : false
+      ()              => true
+
+# Per-pass O(1)-indexed snapshot (user ruling 2026-07-22): the old forceNth
+# walk was O(i) per read, O(n^2) per pass, times the fixpoint iterations —
+# async liveness ran 79+ minutes at self-host scale without completing.
+class [final] AlIx(aiOps: Dict<Int, Op>, aiBlocks: Dict<Int, String>,
+                   aiN: Int)
+
+fun alIndexPass(ops: List<Op>, blockLabels: List<String>): AlIx
+  ret AlIx(alIxLoop(chain(ops), 0, Dict<Int, Op>()),
+           alIxLoopS(chain(blockLabels), 0, Dict<Int, String>()),
+           listLen(ops))
+
+fun [tail] alIxLoop(os: Chain<Op>, i: Int, acc: Dict<Int, Op>): Dict<Int, Op>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alIxLoop(l.next, i + 1, put(acc, i, l.value))
+
+fun [tail] alIxLoopS(ss: Chain<String>, i: Int,
+                     acc: Dict<Int, String>): Dict<Int, String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alIxLoopS(l.next, i + 1, put(acc, i, l.value))
+
+fun alIxOp(ix: AlIx, i: Int): Op
+  ret match(get(ix.aiOps, i))
+    (op: Op) => op
+    ()       => OpReturnVoid(List<RParam>())   # unreachable: 0 <= i < aiN
+
+fun alIxBlock(ix: AlIx, i: Int): String
+  ret match(get(ix.aiBlocks, i))
+    (s2: String) => s2
+    ()           => ""
 
 fun alLivenessPass(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>): List<Op>
-  ret alLivenessCalc(ops, labels, blockLabels, 0, List<Op>())
+  ret alLivenessCalc(chain(ops), alIndexPass(ops, blockLabels), labels, 0,
+                     List<Op>())
 
-fun [tail] alLivenessCalc(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>,
+fun [tail] alLivenessCalc(os: Chain<Op>, ix: AlIx, labels: List<LabelIdx>,
                           i: Int, acc: List<Op>): List<Op>
-  if i >= listLen(ops)
-    ret acc
-  ret alLivenessCalc(ops, labels, blockLabels, i + 1,
-                     append(acc, alLivenessOne(ops, labels, blockLabels, i)))
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alLivenessCalc(l.next, ix, labels, i + 1,
+                         append(acc, alLivenessOne(l.value, ix, labels, i)))
 
 # saved(op) = (edge-in of the fall-through/Jump successor ∪ edge-in of the
 # JumpIf target) − op's own writes.
-fun alLivenessOne(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>, i: Int): Op
-  let op = forceNth(ops, i)
-  let n = listLen(ops)
-  let ss1 = i >= n - 1
+fun alLivenessOne(op: Op, ix: AlIx, labels: List<LabelIdx>, i: Int): Op
+  let ss1 = i >= ix.aiN - 1
     ? List<RParam>()
-    : alSs1(ops, labels, blockLabels, i, op)
-  let ss2 = alSs2(ops, labels, blockLabels, i, op)
+    : alSs1(ix, labels, i, op)
+  let ss2 = alSs2(ix, labels, i, op)
   ret opWithSavedVars(op, svSetSub(svSetUnion(ss1, ss2), alWritesOf(op)))
 
-fun alSs1(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>, i: Int, op: Op): List<RParam>
+fun alSs1(ix: AlIx, labels: List<LabelIdx>, i: Int, op: Op): List<RParam>
   ret match(op)
     (j: OpJump) => match(ucLabelAt(labels, j.jumpName))
-      (t2: Int) => alEdgeIn(ops, blockLabels, i, t2)
+      (t2: Int) => alEdgeIn(ix, i, t2)
       ()         => List<RParam>()
-    (o: Op)     => alEdgeIn(ops, blockLabels, i, i + 1)
+    (o: Op)     => alEdgeIn(ix, i, i + 1)
 
-fun alSs2(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>, i: Int, op: Op): List<RParam>
+fun alSs2(ix: AlIx, labels: List<LabelIdx>, i: Int, op: Op): List<RParam>
   ret match(op)
     (ji: OpJumpIf) => match(ucLabelAt(labels, ji.jumpIfLabel))
-      (t2: Int) => alEdgeIn(ops, blockLabels, i, t2)
+      (t2: Int) => alEdgeIn(ix, i, t2)
       ()         => List<RParam>()
     (o: Op)        => List<RParam>()
 
-fun alEdgeIn(ops: List<Op>, blockLabels: List<String>, fromIdx: Int, targetIdx: Int): List<RParam>
-  ret svSetUnion(alSavedSetAt(ops, targetIdx),
-                 alPhiSourcesInto(ops, targetIdx, forceNth(blockLabels, fromIdx)))
+fun alEdgeIn(ix: AlIx, fromIdx: Int, targetIdx: Int): List<RParam>
+  ret svSetUnion(alSavedSetAt(ix, targetIdx),
+                 alPhiSourcesInto(ix, targetIdx, alIxBlock(ix, fromIdx)))
 
-fun alSavedSetAt(ops: List<Op>, index: Int): List<RParam>
-  let op = forceNth(ops, index)
+fun alSavedSetAt(ix: AlIx, index: Int): List<RParam>
+  let op = alIxOp(ix, index)
   ret svSetUnion(fold(alReadsOf(op), List<RParam>(), svSetAdd), opSavedVars(op))
 
 # Phi sources arriving on the edge from `pred`: scan the run of Phis at the
 # target.
-fun alPhiSourcesInto(ops: List<Op>, j: Int, pred: String): List<RParam>
-  ret alPhiSourcesLoop(ops, j + 1, pred, List<RParam>())
+fun alPhiSourcesInto(ix: AlIx, j: Int, pred: String): List<RParam>
+  ret alPhiSourcesLoop(ix, j + 1, pred, List<RParam>())
 
-fun [tail] alPhiSourcesLoop(ops: List<Op>, j: Int, pred: String, acc: List<RParam>): List<RParam>
-  if j >= listLen(ops)
+fun [tail] alPhiSourcesLoop(ix: AlIx, j: Int, pred: String, acc: List<RParam>): List<RParam>
+  if j >= ix.aiN
     ret acc
-  ret match(forceNth(ops, j))
-    (ph: OpPhi) => alPhiSourcesLoop(ops, j + 1, pred,
+  ret match(alIxOp(ix, j))
+    (ph: OpPhi) => alPhiSourcesLoop(ix, j + 1, pred,
                      fold(ph.phiSources, acc, (a: List<RParam>, s2: OpPhiSource) =>
                        s2.sourceLabel == pred
                          ? fold(rpReadStackVars(s2.sourceValue), a, svSetAdd)
@@ -451,56 +487,83 @@ fun alFftPutR(acc: List<CgField>, v: RParam): List<CgField>
 # authoritative; hot view keeps coalescing safe there too). live-out pairs;
 # writes × live-out; live-IN pairs (reads + live-out survivors not redefined)
 # — reads do NOT interfere with the op's own write (slot = f(slot) is sound).
-class [final] IEdge(ieA: String, ieB: String)
+# The graph is DICT-backed (user ruling 2026-07-22): the old edge LIST paid
+# a full scan per insertion and per neighbour query — cubic at self-host
+# scale, where big state machines have hundreds of frame vars (async ran
+# 79+ min without completing). Both directed keys are stored so presence is
+# one get; adjacency lists keep first-seen order, which is the edge-list
+# order alNeighbours used to produce per node.
+class [final] IGraph(igEdges: Dict<String, Bool>,
+                     igAdj: Dict<String, List<String>>)
 
-fun alBuildInterference(opSeqs: List<List<Op>>, frameNames: List<String>): List<IEdge>
-  ret fold(opSeqs, List<IEdge>(),
-           (acc: List<IEdge>, ops: List<Op>) => fold(ops, acc,
-             (a: List<IEdge>, op: Op) => alInterfereOp(a, op, frameNames)))
+fun alEmptyGraph(): IGraph
+  ret IGraph(Dict<String, Bool>(), Dict<String, List<String>>())
 
-fun alInterfereOp(acc: List<IEdge>, op: Op, frameNames: List<String>): List<IEdge>
-  let liveOut = filter(map(opSavedVars(op), stackVarName), (n: String) => strListMember(frameNames, n))
+fun alBuildInterference(opSeqs: List<List<Op>>,
+                        frameNames: List<String>): IGraph
+  let frameIx = fold(frameNames, Dict<String, Bool>(),
+                     (ix: Dict<String, Bool>, n: String) => put(ix, n, true))
+  ret fold(opSeqs, alEmptyGraph(),
+           (acc: IGraph, ops: List<Op>) => fold(ops, acc,
+             (a: IGraph, op: Op) => alInterfereOp(a, op, frameIx)))
+
+fun alInFrame(frameIx: Dict<String, Bool>, n: String): Bool
+  ret !(get(frameIx, n) is None)
+
+fun alInterfereOp(acc: IGraph, op: Op,
+                  frameIx: Dict<String, Bool>): IGraph
+  let liveOut = filter(map(opSavedVars(op), stackVarName),
+                       (n: String) => alInFrame(frameIx, n))
   let writes = map(alWritesOf(op), stackVarName)
   let acc1 = alLinkAllPairs(acc, liveOut)
-  let acc2 = fold(writes, acc1, (a: List<IEdge>, w: String) =>
-               strListMember(frameNames, w)
-                 ? fold(liveOut, a, (a2: List<IEdge>, n: String) => alLink(a2, w, n))
+  let acc2 = fold(writes, acc1, (a: IGraph, w: String) =>
+               alInFrame(frameIx, w)
+                 ? fold(liveOut, a, (a2: IGraph, n: String) => alLink(a2, w, n))
                  : a)
-  let liveIn = concat(filter(map(alReadsOf(op), stackVarName), (n: String) => strListMember(frameNames, n)),
-                      filter(liveOut, (n: String) => !strListMember(writes, n)))
+  let liveIn = concat(filter(map(alReadsOf(op), stackVarName),
+                             (n: String) => alInFrame(frameIx, n)),
+                      filter(liveOut,
+                             (n: String) => !strListMember(writes, n)))
   ret alLinkAllPairs(acc2, liveIn)
 
-fun alLink(acc: List<IEdge>, a: String, b: String): List<IEdge>
+fun alLink(acc: IGraph, a: String, b: String): IGraph
   if a == b
     ret acc
-  ret any(acc, (e2: IEdge) => (e2.ieA == a && e2.ieB == b) || (e2.ieA == b && e2.ieB == a))
-    ? acc
-    : append(acc, IEdge(a, b))
-
-fun alLinkAllPairs(acc: List<IEdge>, names: List<String>): List<IEdge>
-  ret alLapLoop(acc, names, 0)
-
-fun [tail] alLapLoop(acc: List<IEdge>, names: List<String>, i: Int): List<IEdge>
-  if i >= listLen(names)
+  if !(get(acc.igEdges, a + "\u{a7}" + b) is None)
     ret acc
-  ret alLapLoop(alLapInner(acc, names, i, i + 1), names, i + 1)
+  ret IGraph(put(put(acc.igEdges, a + "\u{a7}" + b, true),
+                 b + "\u{a7}" + a, true),
+             alAdjAdd(alAdjAdd(acc.igAdj, a, b), b, a))
 
-fun [tail] alLapInner(acc: List<IEdge>, names: List<String>, i: Int, j: Int): List<IEdge>
-  if j >= listLen(names)
-    ret acc
-  ret alLapInner(alLink(acc, forceNth(names, i), forceNth(names, j)), names, i, j + 1)
+fun alAdjAdd(adj: Dict<String, List<String>>, from2: String,
+             to2: String): Dict<String, List<String>>
+  ret match(get(adj, from2))
+    (prev: List<String>) => put(adj, from2, append(prev, to2))
+    ()                   => put(adj, from2, list1(to2))
 
-fun alNeighbours(graph: List<IEdge>, name: String): List<String>
-  ret fold(graph, List<String>(), (acc: List<String>, e2: IEdge) =>
-        e2.ieA == name ? strListAdd(acc, e2.ieB)
-        : e2.ieB == name ? strListAdd(acc, e2.ieA)
-        : acc)
+fun alLinkAllPairs(acc: IGraph, names: List<String>): IGraph
+  ret alLapLoop(acc, chain(names))
+
+fun [tail] alLapLoop(acc: IGraph, ns: Chain<String>): IGraph
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alLapLoop(alLapInner(acc, l.value, l.next), l.next)
+
+fun [tail] alLapInner(acc: IGraph, a: String, ns: Chain<String>): IGraph
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alLapInner(alLink(acc, a, l.value), a, l.next)
+
+fun alNeighbours(graph: IGraph, name: String): List<String>
+  ret match(get(graph.igAdj, name))
+    (ns: List<String>) => ns
+    ()                 => List<String>()
 
 # Greedy colouring in the given name order.
-fun alColour(names: List<String>, graph: List<IEdge>): List<NameIdx>
+fun alColour(names: List<String>, graph: IGraph): List<NameIdx>
   ret fold(names, List<NameIdx>(), (acc: List<NameIdx>, n: String) => alColourOne(acc, n, graph))
 
-fun alColourOne(acc: List<NameIdx>, name: String, graph: List<IEdge>): List<NameIdx>
+fun alColourOne(acc: List<NameIdx>, name: String, graph: IGraph): List<NameIdx>
   let used = fold(alNeighbours(graph, name), List<Int>(), (u: List<Int>, nb: String) =>
                alUsedColour(u, acc, nb))
   ret append(acc, NameIdx(name, alFirstFree(used, 0)))
@@ -566,12 +629,12 @@ fun alGbtPut(acc: List<TypeGroup>, f2: CgField): List<TypeGroup>
                  ? TypeGroup(g2.tgType, append(g2.tgNames, f2.fieldName)) : g2)
     : append(acc, TypeGroup(f2.fieldType, list1(f2.fieldName)))
 
-fun [tail] alLayoutLoop(groups: List<TypeGroup>, graph: List<IEdge>, ti: Int, acc: AFrame): AFrame
+fun [tail] alLayoutLoop(groups: List<TypeGroup>, graph: IGraph, ti: Int, acc: AFrame): AFrame
   if ti >= listLen(groups)
     ret acc
   ret alLayoutLoop(groups, graph, ti + 1, alLayoutGroup(forceNth(groups, ti), graph, ti, acc))
 
-fun alLayoutGroup(g2: TypeGroup, graph: List<IEdge>, ti: Int, acc: AFrame): AFrame
+fun alLayoutGroup(g2: TypeGroup, graph: IGraph, ti: Int, acc: AFrame): AFrame
   let colour = alColour(g2.tgNames, graph)
   let nColours = alDistinctColourCount(colour)
   ret match(g2.tgType)
@@ -1729,7 +1792,7 @@ fun lowerAsync(a: CgApp): CgApp
   let converted = fold(all, AlOut(List<CgFunction>(), List<CgObject>()),
                        (acc: AlOut, f: CgFunction) => alMergeOut(acc, alConvertFunction(f)))
   let withObjs = fold(converted.aloObjects,
-                      CgApp(converted.aloFunctions, a.appObjects, a.appGlobals),
+                      appOf(converted.aloFunctions, a.appObjects, a.appGlobals),
                       appPutObject)
   # Subtypes union: APP WINS on collisions (lazy_thunks pre-registrations).
   ret fold(collectTaskSubtypes(withObjs), withObjs, alPutIfAbsent)

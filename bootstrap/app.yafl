@@ -8,49 +8,75 @@ namespace Bootstrap
 
 import System
 
+# Lists carry ITERATION ORDER (emission, trim's sorted rebuilds); the Dicts
+# carry LOOKUP (user ruling 2026-07-22 — appFunction over ~10^4 functions was
+# a linear scan per call). appOf is the ONE wholesale constructor; the
+# appPut* helpers maintain the indexes incrementally.
 class [final] CgApp(appFunctions: List<CgFunction>, appObjects: List<CgObject>,
-                    appGlobals: List<CgGlobal>)
+                    appGlobals: List<CgGlobal>,
+                    appFnIx: Dict<String, CgFunction>,
+                    appObjIx: Dict<String, CgObject>,
+                    appGlbIx: Dict<String, CgGlobal>)
+
+fun appOf(fns: List<CgFunction>, objs: List<CgObject>,
+          globals: List<CgGlobal>): CgApp
+  ret CgApp(fns, objs, globals,
+            fold(fns, Dict<String, CgFunction>(),
+                 (ix: Dict<String, CgFunction>, f: CgFunction) => put(ix, f.fnName, f)),
+            fold(objs, Dict<String, CgObject>(),
+                 (ix: Dict<String, CgObject>, o: CgObject) => put(ix, o.objName, o)),
+            fold(globals, Dict<String, CgGlobal>(),
+                 (ix: Dict<String, CgGlobal>, g2: CgGlobal) => put(ix, g2.globalName, g2)))
 
 fun emptyApp(): CgApp
-  ret CgApp(List<CgFunction>(), List<CgObject>(), List<CgGlobal>())
+  ret appOf(List<CgFunction>(), List<CgObject>(), List<CgGlobal>())
 
 # ── name lookups ─────────────────────────────────────────────────────────────
 
 fun appFunction(a: CgApp, name: String): CgFunction|None
-  ret head(filter(a.appFunctions, (f: CgFunction) => f.fnName == name))
+  ret get(a.appFnIx, name)
 
 fun appObject(a: CgApp, name: String): CgObject|None
-  ret head(filter(a.appObjects, (o: CgObject) => o.objName == name))
+  ret get(a.appObjIx, name)
 
 fun appGlobal(a: CgApp, name: String): CgGlobal|None
-  ret head(filter(a.appGlobals, (g2: CgGlobal) => g2.globalName == name))
+  ret get(a.appGlbIx, name)
 
 fun appHasObject(a: CgApp, name: String): Bool
-  ret any(a.appObjects, (o: CgObject) => o.objName == name)
+  ret !(get(a.appObjIx, name) is None)
 
 fun appHasFunction(a: CgApp, name: String): Bool
-  ret any(a.appFunctions, (f: CgFunction) => f.fnName == name)
+  ret !(get(a.appFnIx, name) is None)
 
 # ── insertion (dict semantics: same name replaces in place) ──────────────────
 
 fun appPutFunction(a: CgApp, f: CgFunction): CgApp
   ret appHasFunction(a, f.fnName)
     ? CgApp(map(a.appFunctions, (x: CgFunction) => x.fnName == f.fnName ? f : x),
-            a.appObjects, a.appGlobals)
-    : CgApp(append(a.appFunctions, f), a.appObjects, a.appGlobals)
+            a.appObjects, a.appGlobals,
+            put(a.appFnIx, f.fnName, f), a.appObjIx, a.appGlbIx)
+    : CgApp(append(a.appFunctions, f), a.appObjects, a.appGlobals,
+            put(a.appFnIx, f.fnName, f), a.appObjIx, a.appGlbIx)
 
 fun appPutObject(a: CgApp, o: CgObject): CgApp
   ret appHasObject(a, o.objName)
     ? CgApp(a.appFunctions,
             map(a.appObjects, (x: CgObject) => x.objName == o.objName ? o : x),
-            a.appGlobals)
-    : CgApp(a.appFunctions, append(a.appObjects, o), a.appGlobals)
+            a.appGlobals, a.appFnIx, put(a.appObjIx, o.objName, o),
+            a.appGlbIx)
+    : CgApp(a.appFunctions, append(a.appObjects, o), a.appGlobals,
+            a.appFnIx, put(a.appObjIx, o.objName, o), a.appGlbIx)
 
 fun appPutGlobal(a: CgApp, g2: CgGlobal): CgApp
-  ret any(a.appGlobals, (x: CgGlobal) => x.globalName == g2.globalName)
+  ret !(get(a.appGlbIx, g2.globalName) is None)
     ? CgApp(a.appFunctions, a.appObjects,
-            map(a.appGlobals, (x: CgGlobal) => x.globalName == g2.globalName ? g2 : x))
-    : CgApp(a.appFunctions, a.appObjects, append(a.appGlobals, g2))
+            map(a.appGlobals, (x: CgGlobal) => x.globalName == g2.globalName ? g2 : x),
+            a.appFnIx, a.appObjIx, put(a.appGlbIx, g2.globalName, g2))
+    : CgApp(a.appFunctions, a.appObjects, append(a.appGlobals, g2),
+            a.appFnIx, a.appObjIx, put(a.appGlbIx, g2.globalName, g2))
 
 fun appWithFunctions(a: CgApp, fns: List<CgFunction>): CgApp
-  ret CgApp(fns, a.appObjects, a.appGlobals)
+  ret CgApp(fns, a.appObjects, a.appGlobals,
+            fold(fns, Dict<String, CgFunction>(),
+                 (ix: Dict<String, CgFunction>, f: CgFunction) => put(ix, f.fnName, f)),
+            a.appObjIx, a.appGlbIx)

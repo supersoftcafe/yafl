@@ -68,7 +68,7 @@ fun saOperandsOf(inv: RpRuntimeInvoke): List<RParam>|None
 # Phi source itself must be a single-read var defined by the chain's final
 # invoke (the Phi counts as its one read).
 fun saRecogniseStep(edge: String, source: RParam, acc: String,
-                    defs: List<SsaDef>, reads: List<StrCount>): SaStep|None
+                    defs: SsaDefs, reads: Dict<String, Int>): SaStep|None
   ret match(source)
     (sv: RpStackVar) => scReadOnce(reads, sv.name)
       ? saStepFromRoot(edge, sv.name, acc, defs, reads)
@@ -76,8 +76,8 @@ fun saRecogniseStep(edge: String, source: RParam, acc: String,
     (o: RParam)      => None
 
 fun saStepFromRoot(edge: String, resultName: String, acc: String,
-                   defs: List<SsaDef>, reads: List<StrCount>): SaStep|None
-  ret match(sdGet(chain(defs), resultName))
+                   defs: SsaDefs, reads: Dict<String, Int>): SaStep|None
+  ret match(sdGet(defs, resultName))
     (rootDef: RParam) => match(saFlatten(rootDef, acc, defs, reads))
       (sp: (ops: List<RParam>, moves: List<String>)) =>
         saStepFromSpine(edge, resultName, acc, sp.ops, sp.moves)
@@ -86,8 +86,8 @@ fun saStepFromRoot(edge: String, resultName: String, acc: String,
 
 # Operand spine of the append tree at `param`; None = not a chain. Names of
 # single-read locals the chase passed through ride along in `moves`.
-fun saFlatten(param: RParam, acc: String, defs: List<SsaDef>,
-              reads: List<StrCount>): (ops: List<RParam>, moves: List<String>)|None
+fun saFlatten(param: RParam, acc: String, defs: SsaDefs,
+              reads: Dict<String, Int>): (ops: List<RParam>, moves: List<String>)|None
   ret match(param)
     (inv: RpRuntimeInvoke) => match(saOperandsOf(inv))
       (ops: List<RParam>) => saFlattenInvoke(ops, acc, defs, reads)
@@ -99,8 +99,8 @@ fun saFlatten(param: RParam, acc: String, defs: List<SsaDef>,
         : None
     (o: RParam)            => None
 
-fun saFlattenInvoke(ops: List<RParam>, acc: String, defs: List<SsaDef>,
-                    reads: List<StrCount>): (ops: List<RParam>, moves: List<String>)|None
+fun saFlattenInvoke(ops: List<RParam>, acc: String, defs: SsaDefs,
+                    reads: Dict<String, Int>): (ops: List<RParam>, moves: List<String>)|None
   ret match(head(ops))
     (first: RParam) => match(saFlatten(first, acc, defs, reads))
       (left: (ops: List<RParam>, moves: List<String>)) =>
@@ -108,9 +108,9 @@ fun saFlattenInvoke(ops: List<RParam>, acc: String, defs: List<SsaDef>,
       ()                                               => None
     ()              => None
 
-fun saFlattenChase(sv: RpStackVar, acc: String, defs: List<SsaDef>,
-                   reads: List<StrCount>): (ops: List<RParam>, moves: List<String>)|None
-  ret match(sdGet(chain(defs), sv.name))
+fun saFlattenChase(sv: RpStackVar, acc: String, defs: SsaDefs,
+                   reads: Dict<String, Int>): (ops: List<RParam>, moves: List<String>)|None
+  ret match(sdGet(defs, sv.name))
     (inner: RParam) => match(saFlatten(inner, acc, defs, reads))
       (deeper: (ops: List<RParam>, moves: List<String>)) =>
         (deeper.ops, prepend(sv.name, deeper.moves))
@@ -159,24 +159,24 @@ fun saFunction(f: CgFunction): CgFunction
     (plan: SaPlan) => saApplyPlan(f, plan, defs, reads)
     ()             => f
 
-fun [tail] saFindPlan(ops: Chain<Op>, i: Int, defs: List<SsaDef>,
-                      reads: List<StrCount>): SaPlan|None
+fun [tail] saFindPlan(ops: Chain<Op>, i: Int, defs: SsaDefs,
+                      reads: Dict<String, Int>): SaPlan|None
   ret match(ops)
     (nil: ChainEnd) => None
     (l: ChainLink)  => match(saPlanForOp(l.value, i, defs, reads))
       (plan: SaPlan) => plan
       ()             => saFindPlan(l.next, i + 1, defs, reads)
 
-fun saPlanForOp(op: Op, i: Int, defs: List<SsaDef>,
-                reads: List<StrCount>): SaPlan|None
+fun saPlanForOp(op: Op, i: Int, defs: SsaDefs,
+                reads: Dict<String, Int>): SaPlan|None
   ret match(op)
     (ph: OpPhi) => match(ph.phiTarget)
       (sv: RpStackVar) => saPlanForPhi(ph, sv.name, i, defs, reads)
       (o: RParam)      => None
     (o: Op)     => None
 
-fun saPlanForPhi(ph: OpPhi, acc: String, i: Int, defs: List<SsaDef>,
-                 reads: List<StrCount>): SaPlan|None
+fun saPlanForPhi(ph: OpPhi, acc: String, i: Int, defs: SsaDefs,
+                 reads: Dict<String, Int>): SaPlan|None
   let split = saSplitSources(chain(ph.phiSources), acc, defs, reads,
                              List<SaStep>(), List<OpPhiSource>())
   ret !isEmpty(split.steps) && !isEmpty(split.inits)
@@ -186,7 +186,7 @@ fun saPlanForPhi(ph: OpPhi, acc: String, i: Int, defs: List<SsaDef>,
     : None
 
 fun [tail] saSplitSources(ss: Chain<OpPhiSource>, acc: String,
-                          defs: List<SsaDef>, reads: List<StrCount>,
+                          defs: SsaDefs, reads: Dict<String, Int>,
                           steps: List<SaStep>,
                           inits: List<OpPhiSource>): (steps: List<SaStep>, inits: List<OpPhiSource>)
   ret match(ss)
@@ -287,8 +287,8 @@ fun [tail] saAnyInSpan(ops: Chain<Op>, i: Int, from2: Int, to2: Int,
 fun saBufName(base: String): String   ret base + "$sb_buf"
 fun saOffName(base: String): String   ret base + "$sb_off"
 
-fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: List<SsaDef>,
-                reads: List<StrCount>): CgFunction
+fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: SsaDefs,
+                reads: Dict<String, Int>): CgFunction
   let chainAll = fold(plan.saSteps, List<String>(),
                       (acc2: List<String>, s2: SaStep) =>
                         fold(s2.saChainMoves, acc2, strListAdd))

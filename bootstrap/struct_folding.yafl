@@ -21,14 +21,14 @@ fun sfoFunction(f: CgFunction): CgFunction
                               (p: RParam) => sfoReplace(p, defs))),
                      f.fnStackVars)
 
-fun sfoReplace(p: RParam, defs: List<SsaDef>): RParam
+fun sfoReplace(p: RParam, defs: SsaDefs): RParam
   ret match(p)
     (sf: RpStructField) => match(sf.structVal)
       (sv: RpStackVar) => sfoFold(sf, sv, defs)
       (o: RParam)      => p
     (o: RParam)         => p
 
-fun sfoFold(sf: RpStructField, sv: RpStackVar, defs: List<SsaDef>): RParam
+fun sfoFold(sf: RpStructField, sv: RpStackVar, defs: SsaDefs): RParam
   ret match(resolveValue(sv, defs, sdMaxChase()))
     (base: RParam) => match(base)
       (ns: RpNewStruct) => sfoField(chain(ns.values), sf)

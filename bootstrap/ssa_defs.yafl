@@ -9,20 +9,21 @@ namespace Bootstrap
 
 import System
 
-# Each StackVar's sole defining source; a None VALUE means unknowable (Phi
-# merge, call result, or — defensively — a repeated definition). Entries with
-# sdSource: RParam|None keep "absent" and "known-unknowable" distinct, exactly
-# like Python's dict-with-None-values (both answer None from sdGet, which is
-# also Python's `defs.get(name)` behaviour).
-class [final] SsaDef(sdName: String, sdSource: RParam|None)
+# Each StackVar's sole defining source, DICT-backed (user ruling 2026-07-22:
+# Python dicts port as Dict for lookup). The SdEntry wrapper keeps "absent"
+# and "known-unknowable" (Phi merge, call result, repeated definition)
+# distinct, exactly like Python's dict-with-None-values — both answer None
+# from sdGet, which is also Python's `defs.get(name)` behaviour.
+class [final] SdEntry(sdSource: RParam|None)
+class [final] SsaDefs(sdMap: Dict<String, SdEntry>)
 
 fun sdMaxChase(): Int
   ret 8   # def-chain depth bound (copies of copies of packs)
 
-fun singleDefs(f: CgFunction): List<SsaDef>
-  ret fold(f.fnOps, List<SsaDef>(), sdCollectOp)
+fun singleDefs(f: CgFunction): SsaDefs
+  ret fold(f.fnOps, SsaDefs(Dict<String, SdEntry>()), sdCollectOp)
 
-fun sdCollectOp(acc: List<SsaDef>, op: Op): List<SsaDef>
+fun sdCollectOp(acc: SsaDefs, op: Op): SsaDefs
   ret match(op)
     (m: OpMove)  => match(m.moveTarget)
       (sv: RpStackVar) => sdDefine(acc, sv.name, m.moveSource)
@@ -39,47 +40,50 @@ fun sdCollectOp(acc: List<SsaDef>, op: Op): List<SsaDef>
 
 # A REPEATED definition poisons to None (defensive — ssa_validate should
 # forbid it pre-async).
-fun sdDefine(acc: List<SsaDef>, name: String, source: RParam|None): List<SsaDef>
-  ret sdHas(chain(acc), name)
-    ? map(acc, (d: SsaDef) => d.sdName == name ? SsaDef(name, None) : d)
-    : append(acc, SsaDef(name, source))
+fun sdDefine(acc: SsaDefs, name: String, source: RParam|None): SsaDefs
+  ret match(get(acc.sdMap, name))
+    (prior: SdEntry) => SsaDefs(put(acc.sdMap, name, SdEntry(None)))
+    ()               => SsaDefs(put(acc.sdMap, name, SdEntry(source)))
 
-fun [tail] sdHas(ds: Chain<SsaDef>, name: String): Bool
-  ret match(ds)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => l.value.sdName == name ? true : sdHas(l.next, name)
-
-fun [tail] sdGet(ds: Chain<SsaDef>, name: String): RParam|None
-  ret match(ds)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.sdName == name
-      ? l.value.sdSource
-      : sdGet(l.next, name)
+fun sdGet(defs: SsaDefs, name: String): RParam|None
+  ret match(get(defs.sdMap, name))
+    (e: SdEntry) => e.sdSource
+    ()           => None
 
 # How many ops read each StackVar (a def whose value is read exactly once can
 # be absorbed into its sole reader). saved_vars count as reads — a var marked
 # to persist across a call has a future reader (async lowering's state
 # machine) that get_live_vars cannot see; deadstores applies the same rule,
 # and dropping such a def segfaults at resumption.
-fun sdReadCounts(f: CgFunction): List<StrCount>
-  ret fold(f.fnOps, List<StrCount>(), sdCountOp)
+fun sdReadCounts(f: CgFunction): Dict<String, Int>
+  ret fold(f.fnOps, Dict<String, Int>(), sdCountOp)
 
-fun sdCountOp(acc: List<StrCount>, op: Op): List<StrCount>
+fun sdCountOp(acc: Dict<String, Int>, op: Op): Dict<String, Int>
   ret fold(opSavedVars(op),
            fold(opGetLiveVars(op).reads, acc, sdCountVar), sdCountVar)
 
-fun sdCountVar(acc: List<StrCount>, rp: RParam): List<StrCount>
+fun sdCountVar(acc: Dict<String, Int>, rp: RParam): Dict<String, Int>
   ret match(rp)
-    (sv: RpStackVar) => strCountIncr(acc, sv.name)
+    (sv: RpStackVar) => sdBump(acc, sv.name)
     (o: RParam)      => acc
+
+fun sdBump(acc: Dict<String, Int>, name: String): Dict<String, Int>
+  ret match(get(acc, name))
+    (n: Int) => put(acc, name, n + 1)
+    ()       => put(acc, name, 1)
+
+fun sdCountOf(counts: Dict<String, Int>, name: String): Int
+  ret match(get(counts, name))
+    (n: Int) => n
+    ()       => 0
 
 # Chase `param` through StackVar copies to its defining value, if that value
 # is statically known. Returns a NewStruct/Integer/... or None.
-fun resolveValue(param: RParam, defs: List<SsaDef>, depth: Int): RParam|None
+fun resolveValue(param: RParam, defs: SsaDefs, depth: Int): RParam|None
   if depth <= 0
     ret None
   ret match(param)
-    (sv: RpStackVar)       => match(sdGet(chain(defs), sv.name))
+    (sv: RpStackVar)       => match(sdGet(defs, sv.name))
       (src: RParam) => resolveValue(src, defs, depth - 1)
       ()            => None
     (sf: RpStructField)    => sdResolveField(sf, defs, depth)
@@ -92,7 +96,7 @@ fun resolveValue(param: RParam, defs: List<SsaDef>, depth: Int): RParam|None
     (gf: RpGlobalFunction) => param
     (o: RParam)            => None
 
-fun sdResolveField(sf: RpStructField, defs: List<SsaDef>, depth: Int): RParam|None
+fun sdResolveField(sf: RpStructField, defs: SsaDefs, depth: Int): RParam|None
   ret match(resolveValue(sf.structVal, defs, depth - 1))
     (base: RParam) => match(base)
       (ns: RpNewStruct) => sdFieldValue(chain(ns.values), sf.field, defs, depth)
@@ -101,14 +105,14 @@ fun sdResolveField(sf: RpStructField, defs: List<SsaDef>, depth: Int): RParam|No
 
 # `resolve_value(fval) or fval`: prefer the chased value, else the raw one.
 fun [tail] sdFieldValue(vs: Chain<RpNamedValue>, field: String,
-                        defs: List<SsaDef>, depth: Int): RParam|None
+                        defs: SsaDefs, depth: Int): RParam|None
   ret match(vs)
     (nil: ChainEnd) => None
     (l: ChainLink)  => l.value.name == field
       ? sdPreferChased(l.value.value, defs, depth)
       : sdFieldValue(l.next, field, defs, depth)
 
-fun sdPreferChased(v: RParam, defs: List<SsaDef>, depth: Int): RParam
+fun sdPreferChased(v: RParam, defs: SsaDefs, depth: Int): RParam
   ret match(resolveValue(v, defs, depth - 1))
     (rv: RParam) => rv
     ()           => v
@@ -128,7 +132,7 @@ fun sdIsDuplicable(p: RParam): Bool
     (o: RParam)            => false
 
 # The compile-time integer value of `param`, or None if not decidable.
-fun staticInt(param: RParam, defs: List<SsaDef>): Int|None
+fun staticInt(param: RParam, defs: SsaDefs): Int|None
   ret match(param)
     (eq: RpIntEqConst) => match(staticInt(eq.value, defs))
       (v: Int) => v == eq.constVal ? 1 : 0

@@ -752,37 +752,47 @@ fun cssOne(ref: GRef, st: PStmt, keys: List<String>,
 # clears them — the EnumSpec also mangles its LEAF names.
 
 fun replaceConcreteReferences(statements: List<PStmt>,
-                              refs: GRefs): List<PStmt>
+                              refs: GRefsIx): List<PStmt>
   ret rcrStmts(chain(statements), refs, List<PStmt>())
 
-fun [tail] rcrStmts(ss: Chain<PStmt>, refs: GRefs,
+fun [tail] rcrStmts(ss: Chain<PStmt>, refs: GRefsIx,
                     acc: List<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcrStmts(l.next, refs, append(acc, rcrStmt(l.value,
                                                                   refs)))
 
-fun inRefs(refs: List<GRef>, name: String, args: List<Spec>): Bool
+# The redirect's ref test is DICT-backed (user ruling 2026-07-22: lookups
+# are dict-backed — Python's is an O(1) frozen-set hit, and the linear pair
+# of scans here dominated the self-host mono phase). addRef dedups by
+# refKey, so each key holds exactly one GRef; the exact name compare on the
+# hit preserves hasExactRef's collision guard.
+class [final] GRefsIx(giData: Dict<String, GRef>, giTypes: Dict<String, GRef>)
+
+fun indexRefs(refs: GRefs): GRefsIx
+  ret GRefsIx(fold(refs.gdData, Dict<String, GRef>(), ixAdd),
+              fold(refs.gdTypes, Dict<String, GRef>(), ixAdd))
+
+fun ixAdd(acc: Dict<String, GRef>, g2: GRef): Dict<String, GRef>
+  ret get(acc, refKey(g2)) is None ? put(acc, refKey(g2), g2) : acc
+
+fun inRefs(ix: Dict<String, GRef>, name: String, args: List<Spec>): Bool
   ret !isEmpty(args) && isConcreteTypeArgs(args)
-      && hasRefKey(chain(refs), mangledName(name, args))
-      && hasExactRef(chain(refs), name, args)
+      && inRefsHit(ix, name, mangledName(name, args))
 
-fun [tail] hasExactRef(rs: Chain<GRef>, name: String, args: List<Spec>): Bool
-  ret match(rs)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => l.value.grName == name
-                       && refKey(l.value) == mangledName(name, args)
-      ? true
-      : hasExactRef(l.next, name, args)
+fun inRefsHit(ix: Dict<String, GRef>, name: String, key: String): Bool
+  ret match(get(ix, key))
+    (g2: GRef) => g2.grName == name && refKey(g2) == key
+    ()         => false
 
-fun rcrSpec(sp: Spec, refs: GRefs): Spec
+fun rcrSpec(sp: Spec, refs: GRefsIx): Spec
   ret match(sp)
-    (c: SClass)        => inRefs(refs.gdTypes, c.scName, c.scParams)
+    (c: SClass)        => inRefs(refs.giTypes, c.scName, c.scParams)
       ? SClass(mangledName(c.scName, c.scParams), List<Spec>(), c.scLine)
       : SClass(c.scName, rcrSpecs(c.scParams, refs), c.scLine)
     # all_fields is COPIED, not redirected — EnumSpec.search_and_replace never
     # visits it; __refresh_enum_spec_all_fields syncs the copies later.
-    (e2: SEnum)        => inRefs(refs.gdData, e2.seRoot, e2.seParams)
+    (e2: SEnum)        => inRefs(refs.giData, e2.seRoot, e2.seParams)
       ? SEnum(mangledName(e2.seRoot, e2.seParams),
               mangleLeaves(e2.seValidLeaves, e2.seParams),
               mangleLeaves(e2.seAllLeaves, e2.seParams),
@@ -792,7 +802,7 @@ fun rcrSpec(sp: Spec, refs: GRefs): Spec
               e2.seComplex)
     # NamedSpec is a traversal LEAF (base-class search_and_replace): redirect
     # applies to the node itself; its params are never visited.
-    (n: SNamed)        => inRefs(refs.gdData, n.snName, n.snParams)
+    (n: SNamed)        => inRefs(refs.giData, n.snName, n.snParams)
       ? SNamed(mangledName(n.snName, n.snParams), List<Spec>(), n.snLine)
       : sp
     (cm: SCombination) => canonUnion(SCombination(rcrSpecs(cm.scTypes, refs),
@@ -819,10 +829,10 @@ fun [tail] mlLoop(ls: Chain<String>, args: List<Spec>,
     (l: ChainLink)  => mlLoop(l.next, args,
                               append(acc, mangledName(l.value, args)))
 
-fun rcrSpecs(ss: List<Spec>, refs: GRefs): List<Spec>
+fun rcrSpecs(ss: List<Spec>, refs: GRefsIx): List<Spec>
   ret rcrSpecLoop(chain(ss), refs, List<Spec>())
 
-fun [tail] rcrSpecLoop(ss: Chain<Spec>, refs: GRefs,
+fun [tail] rcrSpecLoop(ss: Chain<Spec>, refs: GRefsIx,
                        acc: List<Spec>): List<Spec>
   ret match(ss)
     (nil: ChainEnd) => acc
@@ -830,12 +840,12 @@ fun [tail] rcrSpecLoop(ss: Chain<Spec>, refs: GRefs,
                                                         rcrSpec(l.value,
                                                                 refs)))
 
-fun rcrSpecOpt(sp: Spec|None, refs: GRefs): Spec|None
+fun rcrSpecOpt(sp: Spec|None, refs: GRefsIx): Spec|None
   ret match(sp)
     (s2: Spec) => rcrSpec(s2, refs)
     ()         => None
 
-fun [tail] rcrEntries(es: Chain<SEntry>, refs: GRefs,
+fun [tail] rcrEntries(es: Chain<SEntry>, refs: GRefsIx,
                       acc: List<SEntry>): List<SEntry>
   ret match(es)
     (nil: ChainEnd) => acc
@@ -843,7 +853,7 @@ fun [tail] rcrEntries(es: Chain<SEntry>, refs: GRefs,
         append(acc, SEntry(l.value.seName, rcrSpecOpt(l.value.seType, refs),
                            rcrExprOpt(l.value.seDefault, refs))))
 
-fun rcrStmt(st: PStmt, refs: GRefs): PStmt
+fun rcrStmt(st: PStmt, refs: GRefsIx): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcrStmt(f.fParams, refs),
                          rcrExprOpt(f.fBody, refs), rcrSpecOpt(f.fRet, refs),
@@ -889,22 +899,22 @@ fun rcrStmt(st: PStmt, refs: GRefs): PStmt
                          i.psifLine)
     (o: PStmt)   => st
 
-fun rcrSpecsOpt(ss: List<Spec>|None, refs: GRefs): List<Spec>|None
+fun rcrSpecsOpt(ss: List<Spec>|None, refs: GRefsIx): List<Spec>|None
   ret match(ss)
     (l: List<Spec>) => rcrSpecs(l, refs)
     ()              => None
 
-fun rcrFieldArgs(fas: List<PFieldArg>, refs: GRefs): List<PFieldArg>
+fun rcrFieldArgs(fas: List<PFieldArg>, refs: GRefsIx): List<PFieldArg>
   ret map(fas, (fa: PFieldArg) => PFieldArg(fa.faName, rcrExpr(fa.faValue, refs)))
 
-fun rcrExpr(x: PExpr, refs: GRefs): PExpr
+fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
   ret match(x)
     # penTrait is a SPEC field: Python's search_and_replace rewrites
     # resolved_trait_scope with the same redirect (access.py:375), so a
     # cached ClassSpec(BasicPlus,[bigint]) becomes BasicPlus$generic$bigint.
     # Forgetting it strands the cache on the pre-mono spelling and every
     # trait-scope disambiguation downstream fails.
-    (nm: PeName)   => inRefs(refs.gdData, nm.refName, nm.refTypeParams)
+    (nm: PeName)   => inRefs(refs.giData, nm.refName, nm.refTypeParams)
       ? PeName(mangledName(nm.refName, nm.refTypeParams), List<Spec>(),
                nm.penLine, rcrSpecOpt(nm.penTrait, refs))
       : PeName(nm.refName, rcrSpecs(nm.refTypeParams, refs), nm.penLine,
@@ -912,7 +922,7 @@ fun rcrExpr(x: PExpr, refs: GRefs): PExpr
     # Python's redirect table rewrites root_spec_name AND leaf_name — the
     # specialised enum's variant tree carries mangled names (2026-07-21 fix),
     # so the constructor's leaf reference must match.
-    (ne: PeNewEnum) => inRefs(refs.gdData, ne.rootName, ne.neTypeParams)
+    (ne: PeNewEnum) => inRefs(refs.giData, ne.rootName, ne.neTypeParams)
       ? PeNewEnum(mangledName(ne.rootName, ne.neTypeParams),
                   mangledName(ne.leafName, ne.neTypeParams),
                   rcrFieldArgs(ne.fieldArgs, refs),
@@ -949,12 +959,12 @@ fun rcrExpr(x: PExpr, refs: GRefs): PExpr
     (pl: PeParallel) => PeParallel(rcrExpr(pl.parParams, refs), pl.pepLine)
     (o: PExpr)     => x
 
-fun rcrExprOpt(x: PExpr|None, refs: GRefs): PExpr|None
+fun rcrExprOpt(x: PExpr|None, refs: GRefsIx): PExpr|None
   ret match(x)
     (e2: PExpr) => rcrExpr(e2, refs)
     ()          => None
 
-fun [tail] rcrTupEnts(es: Chain<PTupEnt>, refs: GRefs,
+fun [tail] rcrTupEnts(es: Chain<PTupEnt>, refs: GRefsIx,
                       acc: List<PTupEnt>): List<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
@@ -962,7 +972,7 @@ fun [tail] rcrTupEnts(es: Chain<PTupEnt>, refs: GRefs,
         append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                             rcrExpr(l.value.tupValue, refs))))
 
-fun [tail] rcrArms(as2: Chain<PArm>, refs: GRefs,
+fun [tail] rcrArms(as2: Chain<PArm>, refs: GRefsIx,
                    acc: List<PArm>): List<PArm>
   ret match(as2)
     (nil: ChainEnd) => acc
@@ -1405,7 +1415,7 @@ fun [tail] monoRound(statements: List<PStmt>, round2: Int,
   # specialized statement from the PREVIOUS iteration may carry un-redirected
   # refs that only became concrete after substitution.
   let redirected = replaceConcreteReferences(concat(statements, specialized),
-                                             refs)
+                                             indexRefs(refs))
   # Step 4: rebuild _enum_spec for EVERY known specialized enum, not just this
   # iteration's — cross-enum field references update as redirects land.
   let allSpecEnums2 = addNamesAll(chain(enumNamesOf(chain(specialized))),

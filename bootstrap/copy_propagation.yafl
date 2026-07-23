@@ -30,15 +30,15 @@ fun cpOnce(f: CgFunction): CpOut
 # Python's get_live_vars returns a frozenset PER OP: an op reading the same
 # var twice (done.io, done.v in one call) counts ONCE. Counting occurrences
 # instead keeps the Move on the multi-reader path where Python drops it.
-fun cpCountReads(ops: List<Op>): List<StrCount>
-  ret fold(ops, List<StrCount>(),
-           (acc: List<StrCount>, op: Op) =>
+fun cpCountReads(ops: List<Op>): Dict<String, Int>
+  ret fold(ops, Dict<String, Int>(),
+           (acc: Dict<String, Int>, op: Op) =>
              fold(fold(opReadVarNames(op), List<String>(), strListAdd),
-                  acc, strCountIncr))
+                  acc, sdBump))
 
 class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
 
-fun [tail] cpWalk(ops: Chain<Op>, readCounts: List<StrCount>,
+fun [tail] cpWalk(ops: Chain<Op>, readCounts: Dict<String, Int>,
                   acc: List<Op>, changed: Bool): CpWalkOut
   ret match(ops)
     (nil: ChainEnd) => CpWalkOut(acc, changed)
@@ -51,12 +51,12 @@ class [final] CpStep(cpsEmit: List<Op>, cpsRest: Chain<Op>)
 # The candidate shape: Move(M:StackVar, S:StackVar); next op not a Label and
 # reads M. Emits the substituted next op (keeping the Move when M has other
 # readers) and consumes both ops.
-fun cpTryPropagate(l: ChainLink<Op>, readCounts: List<StrCount>): CpStep|None
+fun cpTryPropagate(l: ChainLink<Op>, readCounts: Dict<String, Int>): CpStep|None
   ret match(l.value)
     (m: OpMove) => cpTryMove(l, m, readCounts)
     (o: Op)     => None
 
-fun cpTryMove(l: ChainLink<Op>, m: OpMove, readCounts: List<StrCount>): CpStep|None
+fun cpTryMove(l: ChainLink<Op>, m: OpMove, readCounts: Dict<String, Int>): CpStep|None
   ret match(m.moveTarget)
     (mt: RpStackVar) => match(m.moveSource)
       (ms: RpStackVar) => cpTryNext(l, m, mt, ms, readCounts)
@@ -64,7 +64,7 @@ fun cpTryMove(l: ChainLink<Op>, m: OpMove, readCounts: List<StrCount>): CpStep|N
     (o2: RParam)      => None
 
 fun cpTryNext(l: ChainLink<Op>, m: OpMove, mt: RpStackVar, ms: RpStackVar,
-              readCounts: List<StrCount>): CpStep|None
+              readCounts: Dict<String, Int>): CpStep|None
   ret match(l.next)
     (nil: ChainEnd) => None
     (nx: ChainLink) => match(nx.value)
@@ -77,7 +77,7 @@ fun cpTryNext(l: ChainLink<Op>, m: OpMove, mt: RpStackVar, ms: RpStackVar,
 # so it takes the ROOT type: a narrowed variant type in a signature is for
 # helpers that read variant fields.
 fun cpEmit(m: Op, mt: RpStackVar, ms: RpStackVar, nx: ChainLink<Op>,
-           readCounts: List<StrCount>): CpStep
+           readCounts: Dict<String, Int>): CpStep
   # Python substitutes the SOURCE INSTANCE (replace_params swaps the whole
   # StackVar node for `s`, TYPE INCLUDED) — a name-only rename would keep the
   # target instance's type and mint a same-name-different-type chimera when
@@ -85,7 +85,7 @@ fun cpEmit(m: Op, mt: RpStackVar, ms: RpStackVar, nx: ChainLink<Op>,
   let substituted = opReplaceParams(nx.value, (p: RParam) => cpSubstVar(p, mt.name, ms))
   # M's only read was the one just substituted → drop the Move entirely;
   # other readers elsewhere keep it.
-  ret strCountGet(readCounts, mt.name) == 1
+  ret sdCountOf(readCounts, mt.name) == 1
     ? CpStep(list1(substituted), nx.next)
     : CpStep(list2(m, substituted), nx.next)
 

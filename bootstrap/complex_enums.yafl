@@ -16,11 +16,17 @@ import System
 # Parallel lists everywhere (Dict has no key iteration); insertion order is
 # load-bearing — the NamedSpec suffix fallback takes the FIRST map hit.
 
-class [final] ERoots(erNames: List<String>, erSpecs: List<SEnum>)
-class [final] NameMap(nmNames: List<String>, nmRoots: List<String>)
+# Lists carry ITERATION ORDER (edge walk, table build, the suffix
+# fallback); the Dict carries LOOKUP (user ruling 2026-07-22).
+class [final] ERoots(erNames: List<String>, erSpecs: List<SEnum>,
+                     erIndex: Dict<String, SEnum>)
+class [final] NameMap(nmNames: List<String>, nmRoots: List<String>,
+                      nmIndex: Dict<String, String>)
 
 fun ceCollectRoots(statements: List<PStmt>): ERoots
-  ret ceRootsLoop(chain(statements), ERoots(List<String>(), List<SEnum>()))
+  ret ceRootsLoop(chain(statements),
+                  ERoots(List<String>(), List<SEnum>(),
+                         Dict<String, SEnum>()))
 
 fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc: ERoots): ERoots
   ret match(ss)
@@ -34,26 +40,21 @@ fun ceRootAdd(acc: ERoots, e2: PsEnum): ERoots
     (sp: Spec) => match(sp)
       (es: SEnum) => contains2(acc.erNames, es.seRoot)
         ? acc
-        : ERoots(append(acc.erNames, es.seRoot), append(acc.erSpecs, es))
+        : ERoots(append(acc.erNames, es.seRoot), append(acc.erSpecs, es),
+                 put(acc.erIndex, es.seRoot, es))
       (o: Spec)   => acc
     ()         => acc
 
-fun [tail] ceRootSpec(ns: Chain<String>, sps: Chain<SEnum>,
-                      root: String): SEnum|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(sps)
-      (nil2: ChainEnd) => None
-      (s2: ChainLink)  => n.value == root
-        ? s2.value
-        : ceRootSpec(n.next, s2.next, root)
+fun ceRootSpecOf(roots: ERoots, root: String): SEnum|None
+  ret get(roots.erIndex, root)
 
 # Every name form of an enum root maps to its canonical root_name: the
 # no-hash namespaced form and the bare name (Name@hash itself is NOT a key —
 # NamedSpec.name typically lacks the hash). First form wins (setdefault).
 fun ceNameMap(roots: ERoots): NameMap
   ret ceMapLoop(chain(roots.erNames),
-                NameMap(List<String>(), List<String>()))
+                NameMap(List<String>(), List<String>(),
+                        Dict<String, String>()))
 
 fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
   ret match(ns)
@@ -64,28 +65,19 @@ fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
                                           bareOfUnique(l.value), l.value))
 
 fun ceMapAdd(acc: NameMap, key: String, root: String): NameMap
-  ret contains2(acc.nmNames, key)
-    ? acc
-    : NameMap(append(acc.nmNames, key), append(acc.nmRoots, root))
+  ret get(acc.nmIndex, key) is None
+    ? NameMap(append(acc.nmNames, key), append(acc.nmRoots, root),
+              put(acc.nmIndex, key, root))
+    : acc
 
 # Direct hit first (dict get), then the suffix fallback: "Foo::Bar" matches
 # "AnyNs::Foo::Bar" in either direction — FIRST map entry (insertion order)
 # wins, exactly like Python's two-step lookup.
 fun ceLookup2(map: NameMap, name: String): String|None
-  ret match(ceDirectLoop(chain(map.nmNames), chain(map.nmRoots), name))
+  ret match(get(map.nmIndex, name))
     (hit: String) => hit
     ()            => ceSuffixLoop(chain(map.nmNames), chain(map.nmRoots),
                                   name)
-
-fun [tail] ceDirectLoop(ks: Chain<String>, rs: Chain<String>,
-                        name: String): String|None
-  ret match(ks)
-    (nil: ChainEnd) => None
-    (k: ChainLink)  => match(rs)
-      (nil2: ChainEnd) => None
-      (r: ChainLink)   => k.value == name
-        ? r.value
-        : ceDirectLoop(k.next, r.next, name)
 
 fun [tail] ceSuffixLoop(ks: Chain<String>, rs: Chain<String>,
                         name: String): String|None
@@ -338,7 +330,7 @@ fun ceIsSystem(name: String): Bool
   ret startsWith(simpleName(name), "System::")
 
 fun ceFieldCount(roots: ERoots, name: String): Int
-  ret match(ceRootSpec(chain(roots.erNames), chain(roots.erSpecs), name))
+  ret match(ceRootSpecOf(roots, name))
     (es: SEnum) => chainLength(chain(es.seAllFields))
     ()          => 0
 
@@ -367,7 +359,12 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 # Pruned generic EnumSpecs (not in roots) are marked complex so generate()
 # never expands their placeholder fields.
 
-class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>)
+# ceDoneRoots/ceDoneSpecs: the per-pass resolved-by-root table — each
+# canonical root's full resolution with EMPTY visited, precomputed once with
+# a single shared memo (Python's per-pass amortisation). Tree sites hit it
+# in O(1) when their spec matches canonical content.
+class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>,
+                    ceDoneRoots: List<String>, ceDoneSpecs: List<Spec>)
 
 fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let roots = ceCollectRoots(statements)
@@ -377,41 +374,129 @@ fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let complexSet = cePickBreakers(ceEdges(roots, map), roots)
   if isEmpty(complexSet)
     ret statements
-  ret ceStmts(chain(statements), CeCtx(roots, map, complexSet),
+  let c0 = CeCtx(roots, map, complexSet, List<String>(), List<Spec>())
+  let table = ceBuildTable(chain(roots.erNames), chain(roots.erSpecs), c0,
+                           List<String>(), List<Spec>(),
+                           Dict<String, Spec>())
+  ret ceStmts(chain(statements),
+              CeCtx(roots, map, complexSet, table.roots2, table.specs2),
               List<PStmt>())
 
-fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx): Spec
-  ret match(ft)
-    (n: SNamed) => match(ceLookup2(c.ceMap, n.snName))
-      (canonical: String) => match(ceRootSpec(chain(c.ceRoots.erNames),
-                                              chain(c.ceRoots.erSpecs),
-                                              canonical))
-        (spec: SEnum) => ceWithFlag(spec, contains2(c.ceSet, canonical))
-        ()            => ft
-      ()                  => ft
-    (e2: SEnum) => ceResolveEnum(e2, visited, c)
-    (o: Spec)   => ft
+# `visited` breaks CYCLES, but on its own it does not stop the walk
+# re-deriving a SHARED subgraph once per path that reaches it — and the
+# number of paths through a densely mutually-recursive enum graph is
+# exponential in its size. Python's cure is a per-pass memo keyed on OBJECT
+# IDENTITY + visited — a free O(1) key the pure port doesn't have (a full
+# structural key re-created the collapse but paid O(subtree) per call, which
+# timed the giant node/param graphs out). The port keys on ROOT NAME plus a
+# depth-0 fingerprint (field names, valid leaves, flag) plus the sorted
+# visited set: within one pass, embedded enum copies are SNAPPED to their
+# canonical all_fields (the generics finalize refresh), so same root + same
+# shallow shape means same content and hence same resolution — verified
+# byte-for-byte by the postmono and C contracts. Threaded, seeded fresh per
+# ceMarkEnumNode entry.
+fun ceMemoKey(e2: SEnum, visited: List<String>): String
+  ret e2.seRoot + "#" + join(e2.seValidLeaves, "|")
+      + "#" + ceFieldNames(chain(e2.seAllFields), StringBuilder())
+      + "#" + (e2.seComplex ? "1" : "0")
+      + "S" + join(sort(visited), ",")
 
-fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx): Spec
+fun [tail] ceFieldNames(fs: Chain<SField>, sb: StringBuilder): String
+  ret match(fs)
+    (nil: ChainEnd) => toString(sb)
+    (l: ChainLink)  => ceFieldNames(l.next, append(sb, l.value.sfName + ","))
+
+fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx,
+                   memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  ret match(ft)
+    (n: SNamed) => (ceResolveNamedLeaf(n, ft, c), memo)
+    (e2: SEnum) => ceResolveEnumMemo(e2, visited, c, memo)
+    (o: Spec)   => (ft, memo)
+
+fun ceResolveNamedLeaf(n: SNamed, ft: Spec, c: CeCtx): Spec
+  ret match(ceLookup2(c.ceMap, n.snName))
+    (canonical: String) => match(ceRootSpecOf(c.ceRoots, canonical))
+      (spec: SEnum) => ceWithFlag(spec, contains2(c.ceSet, canonical))
+      ()            => ft
+    ()                  => ft
+
+# The per-pass table (built once, empty-visited resolutions of the CANONICAL
+# roots) serves every tree site whose spec matches canonical content — O(1),
+# Python's cross-site amortisation. Anything else (stale copies; recursion
+# with a non-empty visited during the table build itself) goes through the
+# threaded memo.
+fun [tail] ceBuildTable(ns: Chain<String>, sps: Chain<SEnum>, c0: CeCtx,
+                        roots2: List<String>, specs2: List<Spec>,
+                        memo: Dict<String, Spec>): (roots2: List<String>, specs2: List<Spec>)
+  ret match(ns)
+    (nil: ChainEnd) => (roots2, specs2)
+    (n: ChainLink)  => match(sps)
+      (nil2: ChainEnd) => (roots2, specs2)
+      (s2: ChainLink)  => ceResolveEnumMemo(s2.value, List<String>(), c0,
+                                            memo)
+        |> (out) => ceBuildTable(n.next, s2.next, c0,
+                                 append(roots2, n.value),
+                                 append(specs2, out.spec), out.memo)
+
+fun [tail] ceTableLookup(ns: Chain<String>, sps: Chain<Spec>,
+                         root: String): Spec|None
+  ret match(ns)
+    (nil: ChainEnd) => None
+    (n: ChainLink)  => match(sps)
+      (nil2: ChainEnd) => None
+      (s2: ChainLink)  => n.value == root
+        ? s2.value
+        : ceTableLookup(n.next, s2.next, root)
+
+fun ceResolveEnumMemo(e2: SEnum, visited: List<String>, c: CeCtx,
+                      memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  ret match(ceTableHit(e2, visited, c))
+    (hit: Spec) => (hit, memo)
+    ()          => ceResolveEnumKeyed(e2, visited, c, memo)
+
+# A tree site (empty visited) whose spec matches the CANONICAL root's
+# depth-0 shape resolves to the precomputed table entry.
+fun ceTableHit(e2: SEnum, visited: List<String>, c: CeCtx): Spec|None
+  if !isEmpty(visited) || isEmpty(c.ceDoneRoots)
+    ret None
+  ret match(ceRootSpecOf(c.ceRoots, e2.seRoot))
+    (canonical: SEnum) => ceMemoKey(e2, visited)
+                          == ceMemoKey(canonical, visited)
+      ? ceTableLookup(chain(c.ceDoneRoots), chain(c.ceDoneSpecs), e2.seRoot)
+      : None
+    ()                 => None
+
+fun ceResolveEnumKeyed(e2: SEnum, visited: List<String>, c: CeCtx,
+                       memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  let key = ceMemoKey(e2, visited)
+  ret match(get(memo, key))
+    (hit: Spec) => (hit, memo)
+    ()          => ceResolveEnum(e2, visited, c, memo)
+      |> (out) => (out.spec, put(out.memo, key, out.spec))
+
+fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx,
+                  memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
   let isComplex = contains2(c.ceSet, e2.seRoot)
   # A stale reference to a PRUNED generic: mark complex unconditionally.
   if !isComplex && !contains2(c.ceRoots.erNames, e2.seRoot)
-    ret ceWithFlag(e2, true)
+    ret (ceWithFlag(e2, true), memo)
   if contains2(visited, e2.seRoot)
-    ret ceWithFlag(e2, isComplex)
+    ret (ceWithFlag(e2, isComplex), memo)
   let v2 = append(visited, e2.seRoot)
-  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
-            e2.seLine, ceFields(chain(e2.seAllFields), v2, c,
-                                List<SField>()),
-            isComplex)
+  let out = ceFields(chain(e2.seAllFields), v2, c, List<SField>(), memo)
+  ret (SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
+             e2.seLine, out.fields, isComplex),
+       out.memo)
 
 fun [tail] ceFields(fs: Chain<SField>, visited: List<String>, c: CeCtx,
-                    acc: List<SField>): List<SField>
+                    acc: List<SField>,
+                    memo: Dict<String, Spec>): (fields: List<SField>, memo: Dict<String, Spec>)
   ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceFields(l.next, visited, c,
-        append(acc, SField(l.value.sfName,
-                           ceResolveNamed(l.value.sfType, visited, c))))
+    (nil: ChainEnd) => (acc, memo)
+    (l: ChainLink)  => ceResolveNamed(l.value.sfType, visited, c, memo)
+      |> (out) => ceFields(l.next, visited, c,
+                           append(acc, SField(l.value.sfName, out.spec)),
+                           out.memo)
 
 fun ceWithFlag(e2: SEnum, flag: Bool): Spec
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
@@ -560,10 +645,10 @@ fun ceSpec(sp: Spec, c: CeCtx): Spec
 
 # EnumSpec traversal: params visited generally, then the mark callback.
 fun ceMarkEnumNode(e2: SEnum, c: CeCtx): Spec
+  let out = ceFields(chain(e2.seAllFields), List<String>(), c,
+                     List<SField>(), Dict<String, Spec>())
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-            ceSpecList(e2.seParams, c), e2.seLine,
-            ceFields(chain(e2.seAllFields), List<String>(), c,
-                     List<SField>()),
+            ceSpecList(e2.seParams, c), e2.seLine, out.fields,
             contains2(c.ceSet, e2.seRoot))
 
 fun [tail] ceEntries(es: Chain<SEntry>, c: CeCtx,

@@ -9,40 +9,66 @@ namespace Bootstrap
 
 import System
 
-class [final] ScanSets(ssGlobals: List<String>, ssObjects: List<String>,
-                       ssFunctions: List<String>)
+# Name SETS with dict membership (user ruling 2026-07-22) — the ordered
+# lists feed trim's sorted rebuild; the dicts make union/difference linear
+# (the old list-membership algebra was quadratic in the reachable set).
+class [final] StrSet(setNames: List<String>, setIx: Dict<String, Bool>)
+
+fun setEmpty(): StrSet
+  ret StrSet(List<String>(), Dict<String, Bool>())
+
+fun set1(name: String): StrSet
+  ret StrSet(list1(name), put(Dict<String, Bool>(), name, true))
+
+fun setHas(s2: StrSet, name: String): Bool
+  ret !(get(s2.setIx, name) is None)
+
+fun setAdd(s2: StrSet, name: String): StrSet
+  ret setHas(s2, name)
+    ? s2
+    : StrSet(append(s2.setNames, name), put(s2.setIx, name, true))
+
+fun setOfList(names: List<String>): StrSet
+  ret fold(names, setEmpty(), setAdd)
+
+fun setUnion(a: StrSet, b: StrSet): StrSet
+  ret fold(b.setNames, a, setAdd)
+
+fun setSub(a: StrSet, b: StrSet): StrSet
+  ret setOfList(filter(a.setNames, (x: String) => !setHas(b, x)))
+
+fun setIsEmpty(s2: StrSet): Bool
+  ret isEmpty(s2.setNames)
+
+class [final] ScanSets(ssGlobals: StrSet, ssObjects: StrSet,
+                       ssFunctions: StrSet)
 
 fun ssEmpty(): ScanSets
-  ret ScanSets(List<String>(), List<String>(), List<String>())
+  ret ScanSets(setEmpty(), setEmpty(), setEmpty())
 
 fun ssIsEmpty(s2: ScanSets): Bool
-  ret isEmpty(s2.ssGlobals) && isEmpty(s2.ssObjects) && isEmpty(s2.ssFunctions)
+  ret setIsEmpty(s2.ssGlobals) && setIsEmpty(s2.ssObjects)
+      && setIsEmpty(s2.ssFunctions)
 
 fun ssGlobal1(name: String): ScanSets
-  ret ScanSets(list1(name), List<String>(), List<String>())
+  ret ScanSets(set1(name), setEmpty(), setEmpty())
 
 fun ssObject1(name: String): ScanSets
-  ret ScanSets(List<String>(), list1(name), List<String>())
+  ret ScanSets(setEmpty(), set1(name), setEmpty())
 
 fun ssFunction1(name: String): ScanSets
-  ret ScanSets(List<String>(), List<String>(), list1(name))
+  ret ScanSets(setEmpty(), setEmpty(), set1(name))
 
 # Set-semantic union / difference over the name lists.
 fun ssUnion(a: ScanSets, b: ScanSets): ScanSets
-  ret ScanSets(strSetUnion(a.ssGlobals, b.ssGlobals),
-               strSetUnion(a.ssObjects, b.ssObjects),
-               strSetUnion(a.ssFunctions, b.ssFunctions))
+  ret ScanSets(setUnion(a.ssGlobals, b.ssGlobals),
+               setUnion(a.ssObjects, b.ssObjects),
+               setUnion(a.ssFunctions, b.ssFunctions))
 
 fun ssSub(a: ScanSets, b: ScanSets): ScanSets
-  ret ScanSets(strSetSub(a.ssGlobals, b.ssGlobals),
-               strSetSub(a.ssObjects, b.ssObjects),
-               strSetSub(a.ssFunctions, b.ssFunctions))
-
-fun strSetUnion(a: List<String>, b: List<String>): List<String>
-  ret fold(b, a, (acc: List<String>, x: String) => strListAdd(acc, x))
-
-fun strSetSub(a: List<String>, b: List<String>): List<String>
-  ret filter(a, (x: String) => !strListMember(b, x))
+  ret ScanSets(setSub(a.ssGlobals, b.ssGlobals),
+               setSub(a.ssObjects, b.ssObjects),
+               setSub(a.ssFunctions, b.ssFunctions))
 
 # ── the reference scan (trim.py __scan_rparam / __scan_op) ───────────────────
 
@@ -114,8 +140,9 @@ fun scanOptGlobal(name: String|None): ScanSets
     ()           => ssEmpty()
 
 fun scanObject(o: CgObject): ScanSets
-  ret ScanSets(List<String>(), o.objExtends,
-               map(o.objFunctions, (s2: CgFuncSlot) => s2.slotGlobalName))
+  ret ScanSets(setEmpty(), setOfList(o.objExtends),
+               setOfList(map(o.objFunctions,
+                             (s2: CgFuncSlot) => s2.slotGlobalName)))
 
 fun scanFunction(f: CgFunction): ScanSets
   ret fold(f.fnOps, ssEmpty(), (a: ScanSets, op: Op) => ssUnion(a, scanOp(op)))
@@ -126,11 +153,11 @@ fun removedUnusedStuff(a: CgApp): CgApp
   ret trimLoop(a, ssFunction1("__entrypoint__"), ssEmpty())
 
 fun trimLoop(a: CgApp, scanSets: ScanSets, toApp: ScanSets): CgApp
-  let fromGlobals = fold(scanSets.ssGlobals, ssEmpty(),
+  let fromGlobals = fold(scanSets.ssGlobals.setNames, ssEmpty(),
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppGlobal(a, n)))
-  let fromObjects = fold(scanSets.ssObjects, fromGlobals,
+  let fromObjects = fold(scanSets.ssObjects.setNames, fromGlobals,
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppObject(a, n)))
-  let seenSets = ssUnion(scanSets, fold(scanSets.ssFunctions, fromObjects,
+  let seenSets = ssUnion(scanSets, fold(scanSets.ssFunctions.setNames, fromObjects,
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppFunction(a, n))))
   let newScanSets = ssSub(seenSets, toApp)
   ret ssIsEmpty(newScanSets)
@@ -155,10 +182,10 @@ fun scanAppFunction(a: CgApp, name: String): ScanSets
 # Survivors rebuild in SORTED name order (Python `sorted(...)`) — the
 # deterministic emission order the C contract pins.
 fun trimRebuild(a: CgApp, toApp: ScanSets): CgApp
-  ret CgApp(
-    trimPick(sortNamesAsc(chain(toApp.ssFunctions), List<String>()), (n: String) => appFunction(a, n)),
-    trimPickObjects(sortNamesAsc(chain(toApp.ssObjects), List<String>()), a),
-    trimPickGlobals(sortNamesAsc(chain(toApp.ssGlobals), List<String>()), a))
+  ret appOf(
+    trimPick(sortNamesAsc(chain(toApp.ssFunctions.setNames), List<String>()), (n: String) => appFunction(a, n)),
+    trimPickObjects(sortNamesAsc(chain(toApp.ssObjects.setNames), List<String>()), a),
+    trimPickGlobals(sortNamesAsc(chain(toApp.ssGlobals.setNames), List<String>()), a))
 
 fun trimPick(names: List<String>, get: (:String): CgFunction|None): List<CgFunction>
   ret fold(names, List<CgFunction>(), (acc: List<CgFunction>, n: String) => trimPickOne(acc, get(n)))

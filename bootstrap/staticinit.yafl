@@ -10,7 +10,7 @@ namespace Bootstrap
 import System
 
 fun resolveFlatStructGlobalInits(a: CgApp): CgApp
-  ret CgApp(a.appFunctions, a.appObjects,
+  ret appOf(a.appFunctions, a.appObjects,
             map(a.appGlobals, (g2: CgGlobal) => siResolveGlobal(g2, a)))
 
 fun siResolveGlobal(g2: CgGlobal, a: CgApp): CgGlobal
@@ -34,7 +34,7 @@ fun siResolveConstants(val: RParam, a: CgApp): RParam|None
   ret match(val)
     (i: RpInteger)   => val
     (s2: RpString)   => val
-    (gv: RpGlobalVar) => siTraceToConstant(val, List<FunValue>(), a)
+    (gv: RpGlobalVar) => siTraceToConstant(val, FunValues(Dict<String, FunValue>()), a)
     (ns: RpNewStruct) => siResolveStruct(ns, a)
     (o: RParam)       => None
 
@@ -56,7 +56,7 @@ fun siResolveField(acc: SiVals, nv: RpNamedValue, a: CgApp): SiVals
 # are constants; a NewStruct is constant when every field is (rebuilt from
 # the traced constants); a GlobalVar reads a non-lazy, non-object global's
 # Integer/String init; a StackVar dead-ends without a value map.
-fun siTraceToConstant(val: RParam, vmap: List<FunValue>, a: CgApp): RParam|None
+fun siTraceToConstant(val: RParam, vmap: FunValues, a: CgApp): RParam|None
   ret match(val)
     (i: RpInteger)    => val
     (s2: RpString)    => val
@@ -69,12 +69,12 @@ fun siTraceToConstant(val: RParam, vmap: List<FunValue>, a: CgApp): RParam|None
     (sf: RpStructField) => siTraceField(sf, vmap, a)
     (o: RParam)       => None
 
-fun siTraceStruct(ns: RpNewStruct, vmap: List<FunValue>, a: CgApp): RParam|None
+fun siTraceStruct(ns: RpNewStruct, vmap: FunValues, a: CgApp): RParam|None
   let out = fold(ns.values, SiVals(List<RpNamedValue>(), true),
                  (acc: SiVals, nv: RpNamedValue) => siTraceStructField(acc, nv, vmap, a))
   ret out.svOk ? RpNewStruct(out.svVals) : None
 
-fun siTraceStructField(acc: SiVals, nv: RpNamedValue, vmap: List<FunValue>, a: CgApp): SiVals
+fun siTraceStructField(acc: SiVals, nv: RpNamedValue, vmap: FunValues, a: CgApp): SiVals
   if !acc.svOk
     ret acc
   ret match(siTraceToConstant(nv.value, vmap, a))
@@ -98,7 +98,7 @@ fun siConstInit(init: RParam|None): RParam|None
       (o: RParam)     => None
     ()           => None
 
-fun siTraceField(sf: RpStructField, vmap: List<FunValue>, a: CgApp): RParam|None
+fun siTraceField(sf: RpStructField, vmap: FunValues, a: CgApp): RParam|None
   ret match(siTraceToConstant(sf.structVal, vmap, a))
     (r: RParam) => match(r)
       (ns: RpNewStruct) => match(gfNamedValue(ns.values, sf.field))
@@ -139,29 +139,32 @@ fun siNopOne(acc: List<SiNewObj>, op: Op, i: Int): List<SiNewObj>
     (o: Op)           => acc
 
 fun siFieldAssigns(ops: List<Op>, news: List<SiNewObj>): List<SiAssign>
-  ret siFaLoop(chain(ops), 0, news, List<SiAssign>())
+  let regIx = fold(news, Dict<String, Bool>(),
+                   (ix: Dict<String, Bool>, n: SiNewObj) =>
+                     put(ix, n.snReg, true))
+  ret siFaLoop(chain(ops), 0, regIx, List<SiAssign>())
 
-fun [tail] siFaLoop(ops: Chain<Op>, i: Int, news: List<SiNewObj>,
+fun [tail] siFaLoop(ops: Chain<Op>, i: Int, regIx: Dict<String, Bool>,
                     acc: List<SiAssign>): List<SiAssign>
   ret match(ops)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => siFaLoop(l.next, i + 1, news,
-                                siFaOne(acc, l.value, i, news))
+    (l: ChainLink)  => siFaLoop(l.next, i + 1, regIx,
+                                siFaOne(acc, l.value, i, regIx))
 
 fun siFaOne(acc: List<SiAssign>, op: Op, i: Int,
-            news: List<SiNewObj>): List<SiAssign>
+            regIx: Dict<String, Bool>): List<SiAssign>
   ret match(op)
     (m: OpMove) => match(m.moveTarget)
       (of: RpObjectField) => of.index is None
-        ? siFaStore(acc, of, m.moveSource, i, news)
+        ? siFaStore(acc, of, m.moveSource, i, regIx)
         : acc
       (o: RParam)         => acc
     (o: Op)     => acc
 
 fun siFaStore(acc: List<SiAssign>, of: RpObjectField, src: RParam, i: Int,
-              news: List<SiNewObj>): List<SiAssign>
+              regIx: Dict<String, Bool>): List<SiAssign>
   ret match(of.pointer)
-    (sv: RpStackVar) => any(news, (n: SiNewObj) => n.snReg == sv.name)
+    (sv: RpStackVar) => !(get(regIx, sv.name) is None)
       ? siFaPut(acc, sv.name, of.field, i, src)
       : acc
     (o: RParam)      => acc
@@ -221,7 +224,7 @@ fun siPromoteOne(f: CgFunction, a: CgApp,
        out.counter)
 
 fun [tail] siPromoLoop(ns: Chain<SiNewObj>, f: CgFunction, a: CgApp,
-                       assigns: List<SiAssign>, vmap: List<FunValue>,
+                       assigns: List<SiAssign>, vmap: FunValues,
                        counter: Int,
                        acc: List<SiPromo>): (promos: List<SiPromo>, counter: Int)
   ret match(ns)
@@ -234,7 +237,7 @@ fun [tail] siPromoLoop(ns: Chain<SiNewObj>, f: CgFunction, a: CgApp,
                                      t2.counter, acc)
 
 fun siPromoTry(cand: SiNewObj, f: CgFunction, a: CgApp,
-               assigns: List<SiAssign>, vmap: List<FunValue>,
+               assigns: List<SiAssign>, vmap: FunValues,
                counter: Int): (promo: SiPromo|None, counter: Int)
   ret match(siPayload(a, cand.snClass))
     (dataFields: List<CgField>) =>
@@ -245,7 +248,7 @@ fun siPromoTry(cand: SiNewObj, f: CgFunction, a: CgApp,
     ()                          => (None, counter)
 
 fun siPromoCommit(cand: SiNewObj, dataFields: List<CgField>,
-                  own: List<SiAssign>, vmap: List<FunValue>, a: CgApp,
+                  own: List<SiAssign>, vmap: FunValues, a: CgApp,
                   counter: Int): (promo: SiPromo|None, counter: Int)
   ret match(siTracedFields(chain(dataFields), own, vmap, a,
                            List<RpNamedValue>()))
@@ -264,7 +267,7 @@ fun siPromoCommit(cand: SiNewObj, dataFields: List<CgField>,
 
 # Trace each field IN dataFields ORDER to a compile-time constant.
 fun [tail] siTracedFields(fs: Chain<CgField>, own: List<SiAssign>,
-                          vmap: List<FunValue>, a: CgApp,
+                          vmap: FunValues, a: CgApp,
                           acc: List<RpNamedValue>): List<RpNamedValue>|None
   ret match(fs)
     (nil: ChainEnd) => acc
@@ -305,7 +308,7 @@ fun contains3(l: List<Int>, x: Int): Bool
 fun siPromoteStaticObjects(a: CgApp, counter: Int): (app: CgApp, counter: Int)
   let out = siPsLoop(chain(a.appFunctions), a, counter,
                      List<CgFunction>(), List<CgGlobal>())
-  ret (CgApp(out.fns, a.appObjects, concat(out.globals, a.appGlobals)),
+  ret (appOf(out.fns, a.appObjects, concat(out.globals, a.appGlobals)),
        out.counter)
 
 fun [tail] siPsLoop(fs: Chain<CgFunction>, a: CgApp, counter: Int,
@@ -360,44 +363,30 @@ fun siCallRegisterName(r: RParam|None): List<String>
 fun siDedup(names: List<String>): List<String>
   ret fold(names, List<String>(), strListAdd)
 
-fun siCountGlobalRefs(a: CgApp): List<StrCount>
-  let fromOps = fold(a.appFunctions, List<StrCount>(), siCountFn)
+fun siCountGlobalRefs(a: CgApp): Dict<String, Int>
+  let fromOps = fold(a.appFunctions, Dict<String, Int>(), siCountFn)
   ret fold(a.appGlobals, fromOps, siCountGlobal)
 
-fun siCountFn(acc: List<StrCount>, f: CgFunction): List<StrCount>
+fun siCountFn(acc: Dict<String, Int>, f: CgFunction): Dict<String, Int>
   ret fold(f.fnOps, acc,
-           (a2: List<StrCount>, op: Op) =>
-             fold(siGlobalNamesInOp(op), a2, strCountIncr))
+           (a2: Dict<String, Int>, op: Op) =>
+             fold(siGlobalNamesInOp(op), a2, sdBump))
 
-fun siCountGlobal(acc: List<StrCount>, g2: CgGlobal): List<StrCount>
+fun siCountGlobal(acc: Dict<String, Int>, g2: CgGlobal): Dict<String, Int>
   let withInit = match(g2.globalInit)
-    (init: RParam) => fold(siGlobalNamesInRp(init), acc, strCountIncr)
+    (init: RParam) => fold(siGlobalNamesInRp(init), acc, sdBump)
     ()             => acc
   ret match(g2.globalLazyInitFlag)
-    (flag: String) => strCountIncr(withInit, flag)
+    (flag: String) => sdBump(withInit, flag)
     ()             => withInit
 
-fun [tail] siRefCount(cs: Chain<StrCount>, name: String): Int
-  ret match(cs)
-    (nil: ChainEnd) => 0
-    (l: ChainLink)  => l.value.scName == name
-      ? l.value.scCount
-      : siRefCount(l.next, name)
-
-fun [tail] siTraceToGlobal(val: RParam, vmap: List<FunValue>): String|None
+fun [tail] siTraceToGlobal(val: RParam, vmap: FunValues): String|None
   ret match(val)
     (gv: RpGlobalVar) => gv.name
-    (sv: RpStackVar)  => match(fvLookup(chain(vmap), sv.name))
+    (sv: RpStackVar)  => match(gfFvLookup(vmap, sv.name))
       (src: RParam) => siTraceToGlobal(src, vmap)
       ()            => None
     (o: RParam)       => None
-
-fun [tail] fvLookup(vs: Chain<FunValue>, name: String): RParam|None
-  ret match(vs)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.fvName == name
-      ? l.value.fvValue
-      : fvLookup(l.next, name)
 
 # fn does nothing but copy the source global to the target global.
 fun siIsTrivialCopyFn(f: CgFunction, source: String, target: String): Bool
@@ -439,7 +428,7 @@ fun siInlineSingleUseGlobals(a: CgApp): CgApp
                      siTryFold(acc, g2, a, refs))
   if isEmpty(folds)
     ret a
-  ret CgApp(filter(a.appFunctions,
+  ret appOf(filter(a.appFunctions,
                    (f: CgFunction) => !any(folds,
                                            (fd: SiFold) => fd.sfFn == f.fnName)),
             a.appObjects,
@@ -457,10 +446,10 @@ fun siFolded(g2: CgGlobal, folds: List<SiFold>): CgGlobal
 # A static global (objectName set, no lazy init) referenced EXACTLY once,
 # from a lazy-init function that is a trivial copy into its target.
 fun siTryFold(acc: List<SiFold>, g2: CgGlobal, a: CgApp,
-              refs: List<StrCount>): List<SiFold>
+              refs: Dict<String, Int>): List<SiFold>
   if g2.globalObjectName is None || !(g2.globalLazyInitFunction is None)
     ret acc
-  if siRefCount(chain(refs), g2.globalName) != 1
+  if sdCountOf(refs, g2.globalName) != 1
     ret acc
   ret match(siReferencingFn(chain(a.appFunctions), g2.globalName))
     (fnName: String) => siFoldAgainst(acc, g2, a, fnName)

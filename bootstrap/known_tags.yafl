@@ -24,7 +24,7 @@ fun ktFunction(f: CgFunction): CgFunction
   ret cgFunctionStripUnusedOperations(cgFunctionWith(f, walked.ops,
                                                      f.fnStackVars))
 
-fun [tail] ktWalk(ops: Chain<Op>, defs: List<SsaDef>,
+fun [tail] ktWalk(ops: Chain<Op>, defs: SsaDefs,
                   acc: List<Op>, folded: Bool): (ops: List<Op>, folded: Bool)
   ret match(ops)
     (nil: ChainEnd) => (acc, folded)

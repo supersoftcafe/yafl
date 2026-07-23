@@ -37,13 +37,17 @@ fun gfSlotLookup(slots: List<SlotFuncs>, name: String): List<String>
 
 # StackVar name → source for names Moved exactly once; a Phi or Call write
 # makes the name opaque (counted twice).
+# DICT-backed (user ruling 2026-07-22): the map is lookup-only — no caller
+# iterates it — so it is a plain Dict keyed by StackVar name. fvCount > 1
+# marks a multiply-assigned (opaque) name; the singly-assigned entries are
+# the usable ones, exactly like the old filtered list.
 class [final] FunValue(fvName: String, fvValue: RParam, fvCount: Int)
+class [final] FunValues(fvMap: Dict<String, FunValue>)
 
-fun gfFunValueMap(f: CgFunction): List<FunValue>
-  ret filter(fold(f.fnOps, List<FunValue>(), gfFvStep),
-             (e2: FunValue) => e2.fvCount == 1)
+fun gfFunValueMap(f: CgFunction): FunValues
+  ret fold(f.fnOps, FunValues(Dict<String, FunValue>()), gfFvStep)
 
-fun gfFvStep(acc: List<FunValue>, op: Op): List<FunValue>
+fun gfFvStep(acc: FunValues, op: Op): FunValues
   ret match(op)
     (m: OpMove) => match(m.moveTarget)
       (sv: RpStackVar) => gfFvAdd(acc, sv.name, m.moveSource, 1)
@@ -54,26 +58,22 @@ fun gfFvStep(acc: List<FunValue>, op: Op): List<FunValue>
       ()           => acc
     (o: Op)      => acc
 
-fun gfFvOpaque(acc: List<FunValue>, target: RParam): List<FunValue>
+fun gfFvOpaque(acc: FunValues, target: RParam): FunValues
   ret match(target)
     (sv: RpStackVar) => gfFvAdd(acc, sv.name, RpNullPointer(), 2)
     (o: RParam)       => acc
 
-fun gfFvAdd(acc: List<FunValue>, name: String, value: RParam, n: Int): List<FunValue>
-  ret any(acc, (e2: FunValue) => e2.fvName == name)
-    ? map(acc, (e2: FunValue) => e2.fvName == name
-                 ? FunValue(name, value, e2.fvCount + n)
-                 : e2)
-    : append(acc, FunValue(name, value, n))
+fun gfFvAdd(acc: FunValues, name: String, value: RParam, n: Int): FunValues
+  ret match(get(acc.fvMap, name))
+    (e2: FunValue) => FunValues(put(acc.fvMap, name,
+                                    FunValue(name, value, e2.fvCount + n)))
+    ()             => FunValues(put(acc.fvMap, name, FunValue(name, value, n)))
 
-fun gfFvLookup(vmap: List<FunValue>, name: String): RParam|None
-  ret match(head(filter(vmap, (e2: FunValue) => e2.fvName == name)))
-    (e2: FunValue) => e2.fvValue
-    ()              => None
-
-# Chase an indirect call's fun_t expression through single-assignment copies
-# (and fields of known structs) to a GlobalFunction, depth-capped at 16.
-fun [tail] gfResolveFun(rp: RParam, vmap: List<FunValue>, depth: Int): RpGlobalFunction|None
+fun gfFvLookup(vmap: FunValues, name: String): RParam|None
+  ret match(get(vmap.fvMap, name))
+    (e2: FunValue) => e2.fvCount == 1 ? e2.fvValue : None
+    ()             => None
+fun [tail] gfResolveFun(rp: RParam, vmap: FunValues, depth: Int): RpGlobalFunction|None
   if depth <= 0
     ret None
   ret match(rp)
@@ -86,7 +86,7 @@ fun [tail] gfResolveFun(rp: RParam, vmap: List<FunValue>, depth: Int): RpGlobalF
       ()             => None
     (o: RParam)            => None
 
-fun gfFieldValue(sf: RpStructField, vmap: List<FunValue>): RParam|None
+fun gfFieldValue(sf: RpStructField, vmap: FunValues): RParam|None
   let base = match(sf.structVal)
     (sv: RpStackVar) => gfFvLookup(vmap, sv.name)
     (o: RParam)       => sf.structVal
@@ -107,12 +107,12 @@ fun gfOptimizeFunctionCalls(f: CgFunction, slots: List<SlotFuncs>): CgFunction
   let vmap = gfFunValueMap(f)
   ret cgFunctionWith(f, map(f.fnOps, (op: Op) => gfOptimizeOp(op, slots, vmap)), f.fnStackVars)
 
-fun gfOptimizeOp(op: Op, slots: List<SlotFuncs>, vmap: List<FunValue>): Op
+fun gfOptimizeOp(op: Op, slots: List<SlotFuncs>, vmap: FunValues): Op
   ret match(op)
     (c: OpCall) => gfOptimizeCall(c, slots, vmap)
     (o: Op)     => op
 
-fun gfOptimizeCall(c: OpCall, slots: List<SlotFuncs>, vmap: List<FunValue>): Op
+fun gfOptimizeCall(c: OpCall, slots: List<SlotFuncs>, vmap: FunValues): Op
   ret match(c.callFunction)
     (vf: RpVirtualFunction) => gfDevirtualise(c, vf, slots)
     (sv: RpStackVar)        => gfDirectify(c, sv, vmap)
@@ -127,7 +127,7 @@ fun gfDevirtualise(c: OpCall, vf: RpVirtualFunction, slots: List<SlotFuncs>): Op
              c.callResultType, c.callSavedVars)
     : c
 
-fun gfDirectify(c: OpCall, expr: RParam, vmap: List<FunValue>): Op
+fun gfDirectify(c: OpCall, expr: RParam, vmap: FunValues): Op
   ret match(gfResolveFun(expr, vmap, 16))
     (gf: RpGlobalFunction) => OpCall(gf, c.callParameters, c.callRegister,
                                      c.callMusttail, c.callImpure,

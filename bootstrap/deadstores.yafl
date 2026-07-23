@@ -20,19 +20,23 @@ fun dsFunction(f: CgFunction): CgFunction
   ret out.changed ? dsFunction(out.fn) : f
 
 # All StackVar names ever READ across all ops — the get_live_vars reads half,
-# plus every op's saved_vars.
-fun dsCollectReads(ops: List<Op>): List<String>
-  ret fold(ops, List<String>(), dsOpReads)
+# plus every op's saved_vars. Dict-backed SET (Python's is a set; user ruling
+# 2026-07-22: lookups are dict-backed).
+fun dsCollectReads(ops: List<Op>): Dict<String, Bool>
+  ret fold(ops, Dict<String, Bool>(), dsOpReads)
 
-fun dsOpReads(acc: List<String>, op: Op): List<String>
+fun dsOpReads(acc: Dict<String, Bool>, op: Op): Dict<String, Bool>
   ret fold(opSavedVars(op),
            fold(opGetLiveVars(op).reads, acc, dsAddStackVarName),
            dsAddStackVarName)
 
-fun dsAddStackVarName(acc: List<String>, rp: RParam): List<String>
+fun dsAddStackVarName(acc: Dict<String, Bool>, rp: RParam): Dict<String, Bool>
   ret match(rp)
-    (sv: RpStackVar) => strListAdd(acc, sv.name)
+    (sv: RpStackVar) => put(acc, sv.name, true)
     (o: RParam)      => acc
+
+fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
+  ret !(get(reads, name) is None)
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
@@ -41,7 +45,7 @@ fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
     ? (cpPruneStackVars(f, walked.ops), true)
     : (f, false)
 
-fun [tail] dsWalk(ops: Chain<Op>, reads: List<String>,
+fun [tail] dsWalk(ops: Chain<Op>, reads: Dict<String, Bool>,
                   acc: List<Op>, changed: Bool): (ops: List<Op>, changed: Bool)
   ret match(ops)
     (nil: ChainEnd) => (acc, changed)
@@ -53,24 +57,24 @@ fun [tail] dsWalk(ops: Chain<Op>, reads: List<String>,
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.
-fun dsStep(op: Op, reads: List<String>): (op: Op|None, changed: Bool)
+fun dsStep(op: Op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   ret match(op)
     (m: OpMove)         => dsStepMove(m, reads)
     (c: OpCall)         => dsStepCall(c, reads)
     (p: OpParallelCall) => dsStepParallel(p, reads)
     (o: Op)             => (op, false)
 
-fun dsStepMove(m: OpMove, reads: List<String>): (op: Op|None, changed: Bool)
+fun dsStepMove(m: OpMove, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   ret match(m.moveTarget)
-    (sv: RpStackVar) => !strListMember(reads, sv.name) && !m.moveKeep
+    (sv: RpStackVar) => !dsIsRead(reads, sv.name) && !m.moveKeep
       ? (None, true)
       : (m, false)
     (o: RParam)      => (m, false)
 
-fun dsStepCall(c: OpCall, reads: List<String>): (op: Op|None, changed: Bool)
+fun dsStepCall(c: OpCall, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   ret match(c.callRegister)
     (r0: RParam) => match(r0)
-      (sv: RpStackVar) => !strListMember(reads, sv.name)
+      (sv: RpStackVar) => !dsIsRead(reads, sv.name)
         ? (OpCall(c.callFunction, c.callParameters, None, c.callMusttail,
                   c.callImpure, rpGetType(r0), c.callSavedVars), true)
         : (c, false)
@@ -78,7 +82,7 @@ fun dsStepCall(c: OpCall, reads: List<String>): (op: Op|None, changed: Bool)
     ()           => (c, false)
 
 fun dsStepParallel(p: OpParallelCall,
-                   reads: List<String>): (op: Op|None, changed: Bool)
+                   reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   let outputs = concat(dsOptList(p.parRegister), p.parResults)
   ret !isEmpty(outputs) && dsAllUnread(chain(outputs), reads)
     ? (None, true)
@@ -89,11 +93,11 @@ fun dsOptList(r: RParam|None): List<RParam>
     (x: RParam) => append<RParam>(List<RParam>(), x)
     ()          => List<RParam>()
 
-fun [tail] dsAllUnread(os: Chain<RParam>, reads: List<String>): Bool
+fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>): Bool
   ret match(os)
     (nil: ChainEnd) => true
     (l: ChainLink)  => match(l.value)
-      (sv: RpStackVar) => strListMember(reads, sv.name)
+      (sv: RpStackVar) => dsIsRead(reads, sv.name)
         ? false
         : dsAllUnread(l.next, reads)
       (o: RParam)      => dsAllUnread(l.next, reads)

@@ -22,22 +22,40 @@ enum InitSet
   enum IsUnreached()
   enum IsSet(isNames: List<String>)
 
+# The dataflow state is DICT-backed (user ruling 2026-07-22): entry[i]
+# updates were whole-list rebuilds and reads O(i) walks — quadratic per
+# worklist step at self-host scale. Absent key = Unreached; ops snapshot in
+# a Dict<Int, Op> for O(log n) random access at jump targets.
+class [final] UcIx(uiOps: Dict<Int, Op>, uiN: Int)
+
+fun ucIndexOps(ops: List<Op>): UcIx
+  ret UcIx(ucIxLoop(chain(ops), 0, Dict<Int, Op>()), listLen(ops))
+
+fun [tail] ucIxLoop(os: Chain<Op>, i: Int, acc: Dict<Int, Op>): Dict<Int, Op>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ucIxLoop(l.next, i + 1, put(acc, i, l.value))
+
+fun ucIxOp(ix: UcIx, i: Int): Op
+  ret match(get(ix.uiOps, i))
+    (op: Op) => op
+    ()       => OpReturnVoid(List<RParam>())   # unreachable: 0 <= i < uiN
+
+fun ucEntryAt(entry: Dict<Int, InitSet>, i: Int): InitSet
+  ret match(get(entry, i))
+    (s2: InitSet) => s2
+    ()            => IsUnreached()
+
 fun ucCheckFunction(f: CgFunction): List<String>
   if isEmpty(f.fnOps)
     ret List<String>()
   let labels = ucLabelIndex(f.fnOps)
   let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
-  let entry0 = ucEntryInit(listLen(f.fnOps), sortNamesAsc(chain(params), List<String>()))
-  let entry = ucFixpoint(f.fnOps, labels, entry0, list1(0))
+  let ix = ucIndexOps(f.fnOps)
+  let entry0 = put(Dict<Int, InitSet>(), 0,
+                   IsSet(sortNamesAsc(chain(params), List<String>())))
+  let entry = ucFixpoint(ix, labels, entry0, list1(0))
   ret concat(ucVerify(f, entry), ucCheckPhiSources(f, labels, entry))
-
-fun ucEntryInit(n: Int, params: List<String>): List<InitSet>
-  ret ucEntryInitLoop(n, params, 0, List<InitSet>())
-
-fun [tail] ucEntryInitLoop(n: Int, params: List<String>, i: Int, acc: List<InitSet>): List<InitSet>
-  if i >= n
-    ret acc
-  ret ucEntryInitLoop(n, params, i + 1, append<InitSet>(acc, i == 0 ? IsSet(params) : IsUnreached()))
 
 class [final] LabelIdx(liName: String, liIndex: Int)
 
@@ -58,9 +76,9 @@ fun ucLabelAt(labels: List<LabelIdx>, name: String): Int|None
 
 # ── CFG successors ───────────────────────────────────────────────────────────
 
-fun ucSuccessors(ops: List<Op>, labels: List<LabelIdx>, i: Int): List<Int>
-  let n = listLen(ops)
-  ret match(forceNth(ops, i))
+fun ucSuccessors(ix: UcIx, labels: List<LabelIdx>, i: Int): List<Int>
+  let n = ix.uiN
+  ret match(ucIxOp(ix, i))
     (r: OpReturn)      => List<Int>()
     (rv: OpReturnVoid) => List<Int>()
     (a: OpAbort)       => List<Int>()
@@ -117,30 +135,32 @@ fun ucBranchOnlyWrites(op: Op): List<String>
 
 # ── the fixpoint ─────────────────────────────────────────────────────────────
 
-fun ucFixpoint(ops: List<Op>, labels: List<LabelIdx>,
-                      entry: List<InitSet>, worklist: List<Int>): List<InitSet>
+fun ucFixpoint(ix: UcIx, labels: List<LabelIdx>,
+                      entry: Dict<Int, InitSet>, worklist: List<Int>): Dict<Int, InitSet>
   ret match(head(worklist))
-    (i: Int) => ucStep(ops, labels, entry, tail(worklist), i)
+    (i: Int) => ucStep(ix, labels, entry, tail(worklist), i)
     ()        => entry
 
-fun ucStep(ops: List<Op>, labels: List<LabelIdx>, entry: List<InitSet>,
-           rest: List<Int>, i: Int): List<InitSet>
-  ret match(forceNth(entry, i))
-    (u: IsUnreached) => ucFixpoint(ops, labels, entry, rest)
-    (e2: IsSet)      => ucFlow(ops, labels, entry, rest, i, e2.isNames)
+fun ucStep(ix: UcIx, labels: List<LabelIdx>, entry: Dict<Int, InitSet>,
+                  rest: List<Int>, i: Int): Dict<Int, InitSet>
+  ret match(ucEntryAt(entry, i))
+    (u: IsUnreached) => ucFixpoint(ix, labels, entry, rest)
+    (e2: IsSet)      => ucFlow(ix, labels, entry, rest, i, e2.isNames)
 
-fun ucFlow(ops: List<Op>, labels: List<LabelIdx>, entry: List<InitSet>,
-           rest: List<Int>, i: Int, e2: List<String>): List<InitSet>
-  let op = forceNth(ops, i)
+fun ucFlow(ix: UcIx, labels: List<LabelIdx>, entry: Dict<Int, InitSet>,
+                  rest: List<Int>, i: Int, e2: List<String>): Dict<Int, InitSet>
+  let op = ucIxOp(ix, i)
   let writes = ucWrites(op)
   let branchOnly = ucBranchOnlyWrites(op)
-  let exitFall = fold(strSetSub(writes, branchOnly), e2, strListAdd)
+  let exitFall = fold(filter(writes,
+                             (w: String) => !strListMember(branchOnly, w)),
+                      e2, strListAdd)
   let exitBranch = fold(writes, e2, strListAdd)
-  let out = fold(ucSuccessors(ops, labels, i), (entry, rest),
-                 (acc: (e: List<InitSet>, w: List<Int>), succ: Int) =>
+  let out = fold(ucSuccessors(ix, labels, i), (entry, rest),
+                 (acc: (e: Dict<Int, InitSet>, w: List<Int>), succ: Int) =>
                    ucJoinInto(acc.e, acc.w, succ,
                               ucIsBranchTarget(op, labels, succ) ? exitBranch : exitFall))
-  ret ucFixpoint(ops, labels, out.e, out.w)
+  ret ucFixpoint(ix, labels, out.e, out.w)
 
 fun ucIsBranchTarget(op: Op, labels: List<LabelIdx>, succ: Int): Bool
   ret match(op)
@@ -155,40 +175,32 @@ fun ucLabelIs(labels: List<LabelIdx>, name: String, succ: Int): Bool
     ()        => false
 
 # meet = intersection; a change re-queues the successor.
-fun ucJoinInto(entry: List<InitSet>, worklist: List<Int>, succ: Int,
-               incoming: List<String>): (e: List<InitSet>, w: List<Int>)
-  let old = forceNth(entry, succ)
-  ret match(old)
-    (u: IsUnreached) => (ucSetAt(entry, succ, IsSet(incoming)), append(worklist, succ))
+fun ucJoinInto(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
+               incoming: List<String>): (e: Dict<Int, InitSet>, w: List<Int>)
+  ret match(ucEntryAt(entry, succ))
+    (u: IsUnreached) => (put(entry, succ, IsSet(incoming)), append(worklist, succ))
     (s2: IsSet)      => ucJoinExisting(entry, worklist, succ, s2.isNames, incoming)
 
-fun ucJoinExisting(entry: List<InitSet>, worklist: List<Int>, succ: Int,
-                   old: List<String>, incoming: List<String>): (e: List<InitSet>, w: List<Int>)
+fun ucJoinExisting(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
+                   old: List<String>, incoming: List<String>): (e: Dict<Int, InitSet>, w: List<Int>)
   let met = filter(old, (n: String) => strListMember(incoming, n))
   ret listLen(met) == listLen(old)
     ? (entry, worklist)
-    : (ucSetAt(entry, succ, IsSet(met)), append(worklist, succ))
-
-fun ucSetAt(entry: List<InitSet>, i: Int, v: InitSet): List<InitSet>
-  ret ucSetAtLoop(entry, i, v, 0, List<InitSet>())
-
-fun [tail] ucSetAtLoop(entry: List<InitSet>, i: Int, v: InitSet, j: Int, acc: List<InitSet>): List<InitSet>
-  if j >= listLen(entry)
-    ret acc
-  ret ucSetAtLoop(entry, i, v, j + 1, append(acc, j == i ? v : forceNth(entry, j)))
+    : (put(entry, succ, IsSet(met)), append(worklist, succ))
 
 # ── verification ─────────────────────────────────────────────────────────────
 
-fun ucVerify(f: CgFunction, entry: List<InitSet>): List<String>
-  ret ucVerifyLoop(f, entry, 0, List<String>())
+fun ucVerify(f: CgFunction, entry: Dict<Int, InitSet>): List<String>
+  ret ucVerifyLoop(f, chain(f.fnOps), entry, 0, List<String>())
 
-fun [tail] ucVerifyLoop(f: CgFunction, entry: List<InitSet>, i: Int, acc: List<String>): List<String>
-  if i >= listLen(f.fnOps)
-    ret acc
-  ret match(forceNth(entry, i))
-    (u: IsUnreached) => ucVerifyLoop(f, entry, i + 1, acc)
-    (e2: IsSet)      => ucVerifyLoop(f, entry, i + 1,
-                          concat(acc, ucVerifyOp(f, forceNth(f.fnOps, i), i, e2.isNames)))
+fun [tail] ucVerifyLoop(f: CgFunction, os: Chain<Op>, entry: Dict<Int, InitSet>,
+                        i: Int, acc: List<String>): List<String>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(ucEntryAt(entry, i))
+      (u: IsUnreached) => ucVerifyLoop(f, l.next, entry, i + 1, acc)
+      (e2: IsSet)      => ucVerifyLoop(f, l.next, entry, i + 1,
+                            concat(acc, ucVerifyOp(f, l.value, i, e2.isNames)))
 
 fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: List<String>): List<String>
   let missing = filter(ucReads(op), (n: String) => !strListMember(e2, n))
@@ -202,7 +214,7 @@ fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: List<String>): List<String>
 
 class [final] PhiEdge(pheFrom: String, pheTo: String, pheExit: List<String>)
 
-fun ucCheckPhiSources(f: CgFunction, labels: List<LabelIdx>, entry: List<InitSet>): List<String>
+fun ucCheckPhiSources(f: CgFunction, labels: List<LabelIdx>, entry: Dict<Int, InitSet>): List<String>
   let phiBlocks = ucPhiBlocks(f.fnOps)
   if isEmpty(phiBlocks)
     ret List<String>()
@@ -236,28 +248,38 @@ fun ucIsPhiBlock(phiBlocks: List<PhiBlock>, name: String): Bool
 
 # Every edge from a labelled block into a Phi block, with the exit set at the
 # transfer point (fall-through edges use the PREVIOUS op's entry|writes).
-fun ucPhiEdges(ops: List<Op>, entry: List<InitSet>, phiBlocks: List<PhiBlock>): List<PhiEdge>
-  ret ucPhiEdgesLoop(ops, entry, phiBlocks, 0, "", List<PhiEdge>())
+fun ucPhiEdges(ops: List<Op>, entry: Dict<Int, InitSet>, phiBlocks: List<PhiBlock>): List<PhiEdge>
+  ret ucPhiEdgesLoop(chain(ops), entry, phiBlocks, 0, "", None, List<PhiEdge>())
 
-fun [tail] ucPhiEdgesLoop(ops: List<Op>, entry: List<InitSet>, phiBlocks: List<PhiBlock>,
-                          i: Int, current: String, acc: List<PhiEdge>): List<PhiEdge>
-  if i >= listLen(ops)
-    ret acc
-  let op = forceNth(ops, i)
-  ret match(op)
-    (lb: OpLabel) => ucPhiEdgesLoop(ops, entry, phiBlocks, i + 1, lb.labelName,
-                       ucFallEdge(ops, entry, phiBlocks, i, current, lb, acc))
-    (o: Op)       => ucPhiEdgesLoop(ops, entry, phiBlocks, i + 1, current,
-                       ucJumpEdges(op, entry, phiBlocks, i, current, acc))
+fun [tail] ucPhiEdgesLoop(os: Chain<Op>, entry: Dict<Int, InitSet>, phiBlocks: List<PhiBlock>,
+                          i: Int, current: String, prev: Op|None,
+                          acc: List<PhiEdge>): List<PhiEdge>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (lb: OpLabel) => ucPhiEdgesLoop(l.next, entry, phiBlocks, i + 1,
+                         lb.labelName, lb,
+                         ucFallEdge(entry, phiBlocks, i, current, prev, lb,
+                                    acc))
+      (o: Op)       => ucPhiEdgesLoop(l.next, entry, phiBlocks, i + 1,
+                         current, l.value,
+                         ucJumpEdges(l.value, entry, phiBlocks, i, current,
+                                     acc))
 
-fun ucFallEdge(ops: List<Op>, entry: List<InitSet>, phiBlocks: List<PhiBlock>,
-               i: Int, current: String, lb: OpLabel, acc: List<PhiEdge>): List<PhiEdge>
+fun ucFallEdge(entry: Dict<Int, InitSet>, phiBlocks: List<PhiBlock>,
+               i: Int, current: String, prev0: Op|None, lb: OpLabel,
+               acc: List<PhiEdge>): List<PhiEdge>
   if !ucIsPhiBlock(phiBlocks, lb.labelName) || length(current) == 0 || i == 0
     ret acc
-  let prev = forceNth(ops, i - 1)
-  if !ucPrevFallsIntoLabel(prev)
-    ret acc
-  ret match(forceNth(entry, i - 1))
+  ret match(prev0)
+    (prev: Op) => !ucPrevFallsIntoLabel(prev)
+      ? acc
+      : ucFallEdgeOn(entry, i, current, prev, lb, acc)
+    ()         => acc
+
+fun ucFallEdgeOn(entry: Dict<Int, InitSet>, i: Int, current: String,
+                 prev: Op, lb: OpLabel, acc: List<PhiEdge>): List<PhiEdge>
+  ret match(ucEntryAt(entry, i - 1))
     (u: IsUnreached) => acc
     (pe: IsSet)      => append(acc, PhiEdge(current, lb.labelName,
                                             fold(ucWrites(prev), pe.isNames, strListAdd)))
@@ -271,11 +293,11 @@ fun ucPrevFallsIntoLabel(prev: Op): Bool
     (c: OpCall)        => !c.callMusttail
     (o: Op)            => true
 
-fun ucJumpEdges(op: Op, entry: List<InitSet>, phiBlocks: List<PhiBlock>,
+fun ucJumpEdges(op: Op, entry: Dict<Int, InitSet>, phiBlocks: List<PhiBlock>,
                 i: Int, current: String, acc: List<PhiEdge>): List<PhiEdge>
   if length(current) == 0
     ret acc
-  ret match(forceNth(entry, i))
+  ret match(ucEntryAt(entry, i))
     (u: IsUnreached) => acc
     (e2: IsSet)      => ucJumpEdgesOn(op, phiBlocks, current,
                                       fold(ucWrites(op), e2.isNames, strListAdd), acc)

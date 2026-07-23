@@ -160,7 +160,8 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let v4 = ccValidateEntrypoint(a9)
   if !isEmpty(v4)
     ret CreateCOut("", v4)
-  ret CreateCOut(genApplication(a9, headers), List<String>())
+  let text = genApplication(a9, headers)
+  ret CreateCOut(text, List<String>())
 
 # ── the -O1+ pass blocks ─────────────────────────────────────────────────────
 # Python compiler.py: inside `if optimization_level > 0` — bounds-check

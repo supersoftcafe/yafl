@@ -38,14 +38,14 @@ fun dfoCollect(acc: List<DfoNewObj>, op: Op): List<DfoNewObj>
     (o: Op)           => acc
 
 fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
-                      defs: List<SsaDef>, depth: Int): String|None
+                      defs: SsaDefs, depth: Int): String|None
   if depth <= 0
     ret None
   ret match(param)
     (p: RParam) => match(p)
       (sv: RpStackVar) => match(dfoLookup(chain(newobjs), sv.name))
         (cls: String) => cls
-        ()            => dfoClassOf(sdGet(chain(defs), sv.name), newobjs,
+        ()            => dfoClassOf(sdGet(defs, sv.name), newobjs,
                                     defs, depth - 1)
       (o: RParam)      => None
     ()          => None
@@ -57,7 +57,7 @@ fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String): String|None
       ? l.value.dfoClass
       : dfoLookup(l.next, name)
 
-fun dfoReplace(p: RParam, newobjs: List<DfoNewObj>, defs: List<SsaDef>,
+fun dfoReplace(p: RParam, newobjs: List<DfoNewObj>, defs: SsaDefs,
                a: CgApp): RParam
   ret match(p)
     (vd: RpVtableDiscriminator) =>
