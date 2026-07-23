@@ -35,8 +35,12 @@ _REPO = Path(__file__).parent.parent.parent
 _SELF_TIMEOUT = 8 * 3600   # a self-compile stage is GC-bound; be generous
 
 # A compiler-sized workload: the default 1 GiB managed heap and 8 MiB C stack
-# are both too small (heap exhaustion / stackguard exit 134).
-_SELF_ENV = dict(_RUN_ENV, YAFL_HEAP_SIZE="6G")
+# are both too small (heap exhaustion / stackguard exit 134). 6 GiB flaked
+# once at the finish line: the FINAL output-assembly append needs the whole
+# ~83 MB C text as one contiguous large-object run, and a fragmented heap
+# couldn't supply it (core: _string_append2 → memory_pages_alloc(5093) →
+# "Aborting due to memory allocation failure").
+_SELF_ENV = dict(_RUN_ENV, YAFL_HEAP_SIZE="12G")
 _STACK_BYTES = 1 << 30
 
 
