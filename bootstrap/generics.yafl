@@ -28,13 +28,20 @@ fun uidOrUnknown(sp: Spec): String
 fun refKey(g2: GRef): String
   ret mangledName(g2.grName, g2.grArgs)
 
+# Dedupe STRUCTURALLY, not by mangled key: Python's set holds (name, args)
+# tuples, so two spellings that collide on an id-less "unknown" key are BOTH
+# kept — the redirect must match whichever spelling a given node carries.
+# Creation stays single per mangled name via existingKeys.
 fun addRef(refs: List<GRef>, g2: GRef): List<GRef>
-  ret hasRefKey(chain(refs), refKey(g2)) ? refs : append(refs, g2)
+  ret hasRefStruct(chain(refs), g2) ? refs : append(refs, g2)
 
-fun [tail] hasRefKey(rs: Chain<GRef>, key: String): Bool
+fun [tail] hasRefStruct(rs: Chain<GRef>, g2: GRef): Bool
   ret match(rs)
     (nil: ChainEnd) => false
-    (l: ChainLink)  => refKey(l.value) == key ? true : hasRefKey(l.next, key)
+    (l: ChainLink)  => (l.value.grName == g2.grName
+                        && eqSpecs(l.value.grArgs, g2.grArgs))
+      ? true
+      : hasRefStruct(l.next, g2)
 
 fun [tail] addRefs(refs: List<GRef>, rs: Chain<GRef>): List<GRef>
   ret match(rs)
@@ -767,39 +774,86 @@ fun [tail] rcrStmts(ss: Chain<PStmt>, refs: GRefsIx,
 # of scans here dominated the self-host mono phase). addRef dedups by
 # refKey, so each key holds exactly one GRef; the exact name compare on the
 # hit preserves hasExactRef's collision guard.
-class [final] GRefsIx(giData: Dict<String, GRef>, giTypes: Dict<String, GRef>)
+# The mangled key is only a FAST PATH: id-less args all spell "unknown", so
+# DISTINCT (name, args) pairs can collide onto one key — the index buckets
+# every ref per key and membership is Python's STRUCTURAL set test on
+# (name, type_params), mirrored with eqSpecs over the bucket. A single-entry
+# dict either swallowed unresolved-spelling references (redirected to a
+# stale unknown-keyed instantiation) or, with an equality guard alone,
+# missed spellings recorded behind the bucket head.
+class [final] GRefsIx(giData: Dict<String, List<GRef>>,
+                      giTypes: Dict<String, List<GRef>>)
 
 fun indexRefs(refs: GRefs): GRefsIx
-  ret GRefsIx(fold(refs.gdData, Dict<String, GRef>(), ixAdd),
-              fold(refs.gdTypes, Dict<String, GRef>(), ixAdd))
+  ret GRefsIx(fold(refs.gdData, Dict<String, List<GRef>>(), ixAdd),
+              fold(refs.gdTypes, Dict<String, List<GRef>>(), ixAdd))
 
-fun ixAdd(acc: Dict<String, GRef>, g2: GRef): Dict<String, GRef>
-  ret get(acc, refKey(g2)) is None ? put(acc, refKey(g2), g2) : acc
+fun ixAdd(acc: Dict<String, List<GRef>>, g2: GRef): Dict<String, List<GRef>>
+  ret match(get(acc, refKey(g2)))
+    (bucket: List<GRef>) => put(acc, refKey(g2), append(bucket, g2))
+    ()                    => put(acc, refKey(g2), list1(g2))
 
-fun inRefs(ix: Dict<String, GRef>, name: String, args: List<Spec>): Bool
+fun inRefs(ix: Dict<String, List<GRef>>, name: String,
+           args: List<Spec>): Bool
   ret !isEmpty(args) && isConcreteTypeArgs(args)
-      && inRefsHit(ix, name, mangledName(name, args))
+      && inRefsHit(ix, name, args, mangledName(name, args))
 
-fun inRefsHit(ix: Dict<String, GRef>, name: String, key: String): Bool
+fun inRefsHit(ix: Dict<String, List<GRef>>, name: String, args: List<Spec>,
+              key: String): Bool
   ret match(get(ix, key))
-    (g2: GRef) => g2.grName == name && refKey(g2) == key
-    ()         => false
+    (bucket: List<GRef>) => inBucket(chain(bucket), name, args)
+    ()                    => false
+
+fun [tail] inBucket(bs: Chain<GRef>, name: String, args: List<Spec>): Bool
+  ret match(bs)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => (l.value.grName == name && eqSpecs(l.value.grArgs, args))
+      ? true
+      : inBucket(l.next, name, args)
+
+fun rcrClass(c: SClass, refs: GRefsIx): Spec
+  let ps = rcrSpecs(c.scParams, refs)
+  ret inRefs(refs.giTypes, c.scName, ps)
+    ? SClass(mangledName(c.scName, ps), List<Spec>(), c.scLine)
+    : SClass(c.scName, ps, c.scLine)
+
+fun rcrEnum(e2: SEnum, refs: GRefsIx): Spec
+  let ps = rcrSpecs(e2.seParams, refs)
+  ret inRefs(refs.giData, e2.seRoot, ps)
+    ? SEnum(mangledName(e2.seRoot, ps),
+            mangleLeaves(e2.seValidLeaves, ps),
+            mangleLeaves(e2.seAllLeaves, ps),
+            List<Spec>(), e2.seLine, e2.seAllFields, e2.seComplex)
+    : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine,
+            e2.seAllFields, e2.seComplex)
+
+fun rcrName(nm: PeName, refs: GRefsIx): PExpr
+  let tps = rcrSpecs(nm.refTypeParams, refs)
+  let tr = rcrSpecOpt(nm.penTrait, refs)
+  ret inRefs(refs.giData, nm.refName, tps)
+    ? PeName(mangledName(nm.refName, tps), List<Spec>(), nm.penLine, tr)
+    : PeName(nm.refName, tps, nm.penLine, tr)
+
+fun rcrNewEnum(ne: PeNewEnum, refs: GRefsIx): PExpr
+  let tps = rcrSpecs(ne.neTypeParams, refs)
+  let fas = rcrFieldArgs(ne.fieldArgs, refs)
+  ret inRefs(refs.giData, ne.rootName, tps)
+    ? PeNewEnum(mangledName(ne.rootName, tps), mangledName(ne.leafName, tps),
+                fas, List<Spec>(), ne.penewLine)
+    : PeNewEnum(ne.rootName, ne.leafName, fas, tps, ne.penewLine)
 
 fun rcrSpec(sp: Spec, refs: GRefsIx): Spec
   ret match(sp)
-    (c: SClass)        => inRefs(refs.giTypes, c.scName, c.scParams)
-      ? SClass(mangledName(c.scName, c.scParams), List<Spec>(), c.scLine)
-      : SClass(c.scName, rcrSpecs(c.scParams, refs), c.scLine)
+    # CHILDREN FIRST, exactly Python's rw.rewrite order: the redirect callback
+    # fires on the REBUILT node, so the table lookup sees params that already
+    # carry this round's inner renames. Looking up with the RAW params matched
+    # a stale bare-spelling instantiation and froze it into the name — two
+    # fold<F,(List<str>,List<bigint>)>-style instantiations differing only
+    # INSIDE a param collapsed onto one symbol.
+    (c: SClass)        => rcrClass(c, refs)
     # all_fields is COPIED, not redirected — EnumSpec.search_and_replace never
     # visits it; __refresh_enum_spec_all_fields syncs the copies later.
-    (e2: SEnum)        => inRefs(refs.giData, e2.seRoot, e2.seParams)
-      ? SEnum(mangledName(e2.seRoot, e2.seParams),
-              mangleLeaves(e2.seValidLeaves, e2.seParams),
-              mangleLeaves(e2.seAllLeaves, e2.seParams),
-              List<Spec>(), e2.seLine, e2.seAllFields, e2.seComplex)
-      : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-              rcrSpecs(e2.seParams, refs), e2.seLine, e2.seAllFields,
-              e2.seComplex)
+    (e2: SEnum)        => rcrEnum(e2, refs)
     # NamedSpec is a traversal LEAF (base-class search_and_replace): redirect
     # applies to the node itself; its params are never visited.
     (n: SNamed)        => inRefs(refs.giData, n.snName, n.snParams)
@@ -914,21 +968,12 @@ fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
     # cached ClassSpec(BasicPlus,[bigint]) becomes BasicPlus$generic$bigint.
     # Forgetting it strands the cache on the pre-mono spelling and every
     # trait-scope disambiguation downstream fails.
-    (nm: PeName)   => inRefs(refs.giData, nm.refName, nm.refTypeParams)
-      ? PeName(mangledName(nm.refName, nm.refTypeParams), List<Spec>(),
-               nm.penLine, rcrSpecOpt(nm.penTrait, refs))
-      : PeName(nm.refName, rcrSpecs(nm.refTypeParams, refs), nm.penLine,
-               rcrSpecOpt(nm.penTrait, refs))
+    # Children first (see rcrSpec): lookup with the REWRITTEN type params.
+    (nm: PeName)   => rcrName(nm, refs)
     # Python's redirect table rewrites root_spec_name AND leaf_name — the
     # specialised enum's variant tree carries mangled names (2026-07-21 fix),
     # so the constructor's leaf reference must match.
-    (ne: PeNewEnum) => inRefs(refs.giData, ne.rootName, ne.neTypeParams)
-      ? PeNewEnum(mangledName(ne.rootName, ne.neTypeParams),
-                  mangledName(ne.leafName, ne.neTypeParams),
-                  rcrFieldArgs(ne.fieldArgs, refs),
-                  List<Spec>(), ne.penewLine)
-      : PeNewEnum(ne.rootName, ne.leafName, rcrFieldArgs(ne.fieldArgs, refs),
-                  rcrSpecs(ne.neTypeParams, refs), ne.penewLine)
+    (ne: PeNewEnum) => rcrNewEnum(ne, refs)
     (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine)
     (c: PeCall)    => PeCall(rcrExpr(c.function, refs),
                              rcrExpr(c.parameter, refs), c.pecLine)
