@@ -8,6 +8,7 @@
 
 // Internal accessor — not declared in yafl.h because it exists only for tests.
 extern size_t memory_watermark(void);
+extern size_t memory_total_pages(void);
 
 
 // Each test captures the watermark at its start; allocations may grow it by at
@@ -247,11 +248,59 @@ TEST(scan_cap_reaches_holes_beyond_cap_distance)
 TEST_END()
 
 
+// FRAGMENTATION REGRESSION: keep one single page alive between every run,
+// then free all the runs. Under a single shared fresh-allocation watermark
+// the kept singles pepper the address space at RUN-page intervals, so after
+// the frees no window wider than RUN exists anywhere — and a request for
+// 2*RUN pages aborts out-of-memory even though ~98% of the heap is free
+// (the self-host stage3 abort: the final 83MB output string). With
+// two-ended fresh allocation (singles bump bottom-up, runs claim top-down
+// from the end of the map) the kept singles pack the bottom, the freed run
+// band at the top re-merges, and the big run is trivially satisfied.
+TEST(interleaved_singles_and_runs_leave_a_run_window)
+    enum { RUN = 64 };
+    // Force heap init so total is known, without perturbing the layout.
+    void* probe = memory_pages_alloc(1);
+    memory_pages_free(probe, 1);
+    size_t total = memory_total_pages();
+
+    // Fill until fewer than 2*RUN pages of virgin space remain under the old
+    // single-watermark layout: M singles + M runs of RUN pages, leaving
+    // total - M*(RUN+1) < 2*RUN virgin pages so the final request cannot be
+    // satisfied by a watermark bump.
+    size_t m = total / (RUN + 1);
+    void** singles = malloc(m * sizeof(void*));
+    void** runs    = malloc(m * sizeof(void*));
+    ASSERT(singles != NULL && runs != NULL);
+
+    for (size_t i = 0; i < m; ++i) {
+        singles[i] = memory_pages_alloc(1);
+        runs[i]    = memory_pages_alloc(RUN);
+    }
+    for (size_t i = 0; i < m; ++i)
+        memory_pages_free(runs[i], RUN);
+
+    // ~98% of the heap is free now; a run twice the churn size must be
+    // satisfiable without aborting.
+    void* big = memory_pages_alloc(2 * RUN);
+    ASSERT(big != NULL);
+    memory_pages_free(big, 2 * RUN);
+
+    for (size_t i = 0; i < m; ++i)
+        memory_pages_free(singles[i], 1);
+    free(singles);
+    free(runs);
+TEST_END()
+
+
 int main(void) {
     struct test_results results = {0};
     struct test_results* _r = &results;
 
     printf("=== mmap watermark test ===\n");
+    // Runs FIRST: it sizes its fill from the total heap, so it needs the
+    // virgin map before other tests latch the band watermarks.
+    RUN(interleaved_singles_and_runs_leave_a_run_window);
     RUN(single_page_watermark_tracks_live_set);
     RUN(alloc_free_churn_does_not_grow_heap);
     RUN(multi_page_watermark_tracks_live_set);

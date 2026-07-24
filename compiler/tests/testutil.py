@@ -221,12 +221,15 @@ _COMPILER_DIR = _Path(__file__).parent.parent
 
 
 def _bootstrap_tree_hash() -> str:
-    """Everything the binary depends on: bootstrap sources, stdlib, and the
-    Python compiler itself (a compiler change must invalidate the cache)."""
+    """Everything the binary depends on: bootstrap sources, stdlib, the
+    Python compiler itself, and the RUNTIME the binary links (a yafllib
+    change must invalidate the cache — a stale binary silently runs the old
+    allocator/GC)."""
     h = hashlib.sha256()
     roots = [sorted(_BOOT_DIR.glob("*.yafl")),
              sorted(_STDLIB_DIR.glob("*.yafl")),
-             sorted(_COMPILER_DIR.rglob("*.py"))]
+             sorted(_COMPILER_DIR.rglob("*.py")),
+             sorted(_YAFLLIB_DIR.glob("*.c")) + sorted(_YAFLLIB_DIR.glob("*.h"))]
     for group in roots:
         for p in group:
             if "__pycache__" in str(p) or "/tests/" in str(p):

@@ -28,8 +28,15 @@ static vtable_t* _hunt_vt(object_t* o) {
 }
 static void _hunt_each_live(void (*fn)(object_t*, void*), void* arg) {
     extern char* _memory_heap_base;
+    extern size_t memory_run_floor(void);
+    extern size_t memory_total_pages(void);
+    // Allocations live in two bands: singles in [0, watermark), runs in
+    // [run_floor, total). Hop the virgin middle.
     size_t wm = memory_watermark();
-    for (size_t pi = 0; pi < wm; pi++) {
+    size_t floor_ = memory_run_floor();
+    size_t total_ = memory_total_pages();
+    for (size_t pi = 0; pi < total_; pi++) {
+        if (pi == wm && floor_ > wm) pi = floor_;
         gc_page_t* page = (gc_page_t*)(_memory_heap_base + pi * GC_PAGE_SIZE);
         if (!memory_pages_is_alloc_head(page) || page->head.tag != PAGE_MAGIC_NUMBER) continue;
         for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {

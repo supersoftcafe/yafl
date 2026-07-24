@@ -78,7 +78,17 @@ static size_t           total_page_count;       // Total mmap size of the heap a
 // correct because no heap object can exist before the heap does.
 EXPORT char*  _memory_heap_base  = NULL;
 EXPORT size_t _memory_heap_bytes = 0;
-static _Atomic(size_t)  upper_watermark = 0;    // Highest page index ever part of an allocation
+static _Atomic(size_t)  upper_watermark = 0;    // Top of the SINGLES region (grows up from 0)
+// Bottom of the RUNS region (grows DOWN from total_page_count). Fresh
+// multi-page allocations claim below it; freed runs stay inside the band and
+// are found by the top-down reuse scan. Singles and runs thus never
+// interleave in address order: the virgin middle is consumed from both ends,
+// and the contiguous windows large objects need survive at the top instead
+// of being peppered with single pages the moment a bounded singles scan
+// misses its probe budget (the self-host stage3 abort: no 83MB window
+// despite gigabytes free). Initialised in init(); zero until then, which
+// rejects nothing because no allocation exists before init either.
+static _Atomic(size_t)  run_floor = 0;
 static _Atomic(size_t)  alloc_count = 0;        // Track real heap usage
 // Scavenger state: `pages_cold` marks pages returned to the OS (telemetry +
 // no point advising twice); `scavenge_cursor` resumes the top-down walk
@@ -190,6 +200,8 @@ static void init() {
 
     _memory_heap_base  = pages_heap;
     _memory_heap_bytes = heap_size;
+
+    atomic_store_explicit(&run_floor, total_page_count, memory_order_relaxed);
 }
 
 
@@ -340,15 +352,16 @@ static size_t scan_within(size_t snapshot, size_t page_count, size_t step_budget
 // scan_within (the fallback claim beats a watermark bump here too — and
 // large runs land on cold spans often, since dead transients are exactly
 // what the scavenger returns).
-static size_t scan_runs_topdown(size_t snapshot, size_t page_count, size_t step_budget) {
-    if (snapshot < page_count)
+static size_t scan_runs_topdown(size_t floor, size_t page_count, size_t step_budget) {
+    size_t span = total_page_count - floor;      // the runs band [floor, total)
+    if (span < page_count)
         return SIZE_MAX;
 
-    size_t top = snapshot - page_count;          // highest legal window start
+    size_t top = total_page_count - page_count;  // highest legal window start
     size_t i = top;
 
-    size_t steps_remaining = snapshot < step_budget ? snapshot : step_budget;
-    size_t lap_remaining = snapshot;   // hard bound: one full lap, free skips included
+    size_t steps_remaining = span < step_budget ? span : step_budget;
+    size_t lap_remaining = span;   // hard bound: one full lap, free skips included
     size_t fallback = SIZE_MAX;
 
     while (steps_remaining > 0 && lap_remaining > 0) {
@@ -371,7 +384,7 @@ static size_t scan_runs_topdown(size_t snapshot, size_t page_count, size_t step_
                 if (fallback == SIZE_MAX)
                     fallback = i;
                 lap_remaining = sat_sub(lap_remaining, page_count);
-                if (i < page_count) break;   // bottom reached: nothing warm fits
+                if (i < floor + page_count) break;   // band floor reached: nothing warm fits
                 i -= page_count;
                 continue;
             }
@@ -380,7 +393,7 @@ static size_t scan_runs_topdown(size_t snapshot, size_t page_count, size_t step_
             // Lost the race for this window; nudge downward and try again.
             steps_remaining -= 1;
             lap_remaining -= 1;
-            if (i == 0) break;               // bottom reached
+            if (i == floor) break;           // band floor reached
             i -= 1;
             continue;
         }
@@ -389,8 +402,8 @@ static size_t scan_runs_topdown(size_t snapshot, size_t page_count, size_t step_
         size_t probed = page_count - j + 1;
         steps_remaining = sat_sub(steps_remaining, probed);
         lap_remaining   = sat_sub(lap_remaining, probed);
-        if (obstruction < page_count)
-            break;                           // no window fits below the obstruction
+        if (obstruction < floor + page_count)
+            break;                           // no window in the band fits below the obstruction
         i = obstruction - page_count;
     }
 
@@ -439,55 +452,91 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
         alloc_cursor = 0;
     }
 
+    // Two-ended layout: SINGLES live in [0, upper_watermark) growing up,
+    // RUNS live in [run_floor, total_page_count) growing down. Fresh pages
+    // for each population come from its own end of the virgin middle, so the
+    // populations never interleave and the runs band keeps its windows.
+    if (page_count == 1) {
+        while (true) {
+            // Phase 1: reuse a free page within the singles region.
+            size_t snapshot = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
+            size_t idx = scan_within(snapshot, 1, MAX_SCAN_PROBES, false);
+            if (idx != SIZE_MAX) {
+                return claimed_run(idx, 1);
+            }
+
+            // Phase 2: extend the singles region upward by one page. The
+            // CAS-loop never advances into the runs band even under
+            // concurrent bumps.
+            size_t cur = snapshot;
+            while (true) {
+                if (cur >= atomic_load_explicit(&run_floor, memory_order_relaxed)) {
+                    // The regions have met. The bounded Phase-1 scan may have
+                    // missed a usable hole; scan the WHOLE map (both bands)
+                    // unbounded before declaring OOM.
+                    size_t last = scan_within(total_page_count, 1, SIZE_MAX, true);
+                    if (last != SIZE_MAX) {
+                        return claimed_run(last, 1);
+                    }
+                    abort_on_out_of_memory();
+                }
+                if (atomic_compare_exchange_weak_explicit(
+                        &upper_watermark, &cur, cur + 1,
+                        memory_order_acq_rel, memory_order_relaxed))
+                    break;
+            }
+
+            if (try_claim_run(cur, 1)) {
+                // Deliberately do not move alloc_cursor here. scan_within
+                // parked it just past where it gave up; preserving that lets
+                // the next allocation resume the walk instead of redoing the
+                // same fruitless probes from the bump location.
+                return claimed_run(cur, 1);
+            }
+            // A concurrent scanner that observed our new watermark snuck in
+            // and claimed the freshly exposed page first. The advance is not
+            // wasted — loop and re-enter Phase 1 against the larger region.
+        }
+    }
+
     while (true) {
-        // Phase 1: reuse free pages within the existing active region.
-        // Singles scan bottom-up, runs top-down (see scan_runs_topdown).
-        size_t snapshot = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
-        size_t idx = page_count == 1
-            ? scan_within(snapshot, 1, MAX_SCAN_PROBES, false)
-            : scan_runs_topdown(snapshot, page_count, MAX_SCAN_PROBES);
+        // Phase 1: reuse a free window within the runs band.
+        size_t floor = atomic_load_explicit(&run_floor, memory_order_relaxed);
+        size_t idx = scan_runs_topdown(floor, page_count, MAX_SCAN_PROBES);
         if (idx != SIZE_MAX) {
             return claimed_run(idx, page_count);
         }
 
-        // Phase 2: no reusable run inside the probe budget; extend the active
-        // region. CAS-loop bounds growth to total_page_count without
-        // overshooting and never advances past the heap end even under
-        // concurrent bumps.
-        size_t cur = snapshot;
-        size_t end;
+        // Phase 2: extend the runs band downward. Overflow-safe: check the
+        // room below the floor before subtracting, and never cross the
+        // singles watermark even under concurrent bumps from either end.
+        size_t cur = floor;
+        size_t begin;
         while (true) {
-            // Overflow-safe bounds check: `cur + page_count` could wrap if a
-            // caller asked for a pathological page_count.
-            if (page_count > total_page_count - cur) {
-                // The heap is too full to bump. The bounded Phase-1 scan may
-                // have missed a usable hole further along, so do a last-ditch
-                // unbounded scan before declaring OOM.
-                size_t last = scan_within(cur, page_count, SIZE_MAX, true);
+            size_t wm = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
+            if (cur < page_count || cur - page_count < wm) {
+                // The regions have met (or the request exceeds the heap).
+                // Last-ditch unbounded scan over the WHOLE map — a window may
+                // straddle what the banded scans never look at.
+                size_t last = scan_within(total_page_count, page_count, SIZE_MAX, true);
                 if (last != SIZE_MAX) {
                     return claimed_run(last, page_count);
                 }
                 abort_on_out_of_memory();
             }
-            end = cur + page_count;
+            begin = cur - page_count;
             if (atomic_compare_exchange_weak_explicit(
-                    &upper_watermark, &cur, end,
+                    &run_floor, &cur, begin,
                     memory_order_acq_rel, memory_order_relaxed))
                 break;
         }
 
-        if (try_claim_run(cur, page_count)) {
-            // Deliberately do not move alloc_cursor here. scan_within parked
-            // it just past where it gave up; preserving that lets the next
-            // allocation resume the walk and find any free region further
-            // along, instead of redoing the same fruitless probes from the
-            // bump location.
-            return claimed_run(cur, page_count);
+        if (try_claim_run(begin, page_count)) {
+            return claimed_run(begin, page_count);
         }
-        // A concurrent scanner that observed our new watermark snuck in and
-        // claimed the freshly exposed pages first. The watermark advance is
-        // not wasted — those pages now belong to whoever claimed them — so
-        // loop and re-enter Phase 1 against the larger region.
+        // A concurrent top-down scanner observed the lowered floor and took
+        // the freshly exposed window first. The advance is not wasted — loop
+        // and re-enter Phase 1 against the larger band.
     }
 }
 
@@ -497,14 +546,16 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
     assert(((uintptr_t)ptr & (GC_PAGE_SIZE-1)) == 0);
 
     ptrdiff_t offset = ((char*)ptr - pages_heap) / GC_PAGE_SIZE;
-    size_t watermark = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
-    assert((size_t)(offset + page_count) <= watermark);
+    // The run must lie inside one of the two active bands (or have been
+    // claimed by the whole-map last-ditch scan, which the total bound
+    // covers).
+    assert((size_t)(offset + page_count) <= total_page_count);
 
     // Caller claimed `page_count` pages. The page immediately following the
-    // run must be either HEAD (next allocation), FREE, or past the watermark.
+    // run must be either HEAD (next allocation), FREE, or past the heap end.
     // Anything else means the caller has truncated a multi-page allocation
     // and would leave dangling BODY markers no scanner could ever reclaim.
-    if ((size_t)(offset + page_count) < watermark) {
+    if ((size_t)(offset + page_count) < total_page_count) {
         uint8_t after = atomic_load_explicit(&pages_info[offset + page_count], memory_order_relaxed);
         assert(after == PAGE_MARKER_HEAD || after == PAGE_MARKER_FREE);
         (void)after;   // assert-only
@@ -531,9 +582,12 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
 }
 
 EXPORT bool memory_pages_is_alloc_head(void* ptr) {
+    // Allocations live in both bands, so the bound is the whole map; virgin
+    // middle pages read PAGE_MARKER_FREE (pages_info is zero-filled) and are
+    // rejected by the marker check alone.
     ptrdiff_t offset = ((char*)ptr - pages_heap) / GC_PAGE_SIZE;
     return offset >= 0
-        && (size_t)offset < atomic_load_explicit(&upper_watermark, memory_order_relaxed)
+        && (size_t)offset < total_page_count
         && atomic_load_explicit(&pages_info[offset], memory_order_relaxed) == PAGE_MARKER_HEAD;
 }
 
@@ -593,7 +647,11 @@ EXPORT void memory_scavenge(size_t retain, size_t max_pages) {
     if (pages_info == NULL)
         return;
     size_t watermark = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
-    if (watermark == 0)
+    size_t floor     = atomic_load_explicit(&run_floor, memory_order_relaxed);
+    // Pages ever part of an allocation live in the two bands; the virgin
+    // middle is skipped by the walk below.
+    size_t extent = watermark + (total_page_count - floor);
+    if (extent == 0)
         return;
 
     // The age clock is allocation volume, not this call's cadence: the GC
@@ -623,7 +681,7 @@ EXPORT void memory_scavenge(size_t retain, size_t max_pages) {
     // Quota: bounded by the per-call budget and by the warm slack above the
     // retain target. Sampled once — allocations racing past us only shrink
     // the real slack, and the next call corrects either way.
-    size_t warm_free = sat_sub(watermark, used + cold);
+    size_t warm_free = sat_sub(extent, used + cold);
     if (warm_free <= retain + SCAVENGE_HYSTERESIS)
         return;
     size_t quota = warm_free - retain;
@@ -631,20 +689,30 @@ EXPORT void memory_scavenge(size_t retain, size_t max_pages) {
         quota = max_pages;
 
     // Resume where the previous call stopped. Both 0 (bottom reached) and
-    // anything beyond the watermark (first call, or the watermark moved)
-    // mean "start a fresh pass from the top".
+    // anything beyond the heap end mean "start a fresh pass from the top of
+    // the runs band"; a cursor stranded in the virgin middle (the floor
+    // moved) snaps down to the singles band inside the loop.
     size_t i = scavenge_cursor;
-    if (i == 0 || i > watermark)
-        i = watermark;
+    if (i == 0 || i > total_page_count)
+        i = total_page_count;
 
     size_t scanned = 0;            // bounds the walk to one full lap
     size_t run_lo = 0, run_end = 0; // pending claimed run, growing downward
-    while (quota > 0 && scanned < watermark) {
+    while (quota > 0 && scanned < extent) {
         if (i == 0) {
             scavenge_release(run_lo, run_end);
             run_lo = run_end = 0;
-            i = watermark;
+            i = total_page_count;
             continue;   // wrap is free, like the allocation scans
+        }
+        if (i <= floor && i > watermark) {
+            // Crossing from the runs band into the virgin middle: flush the
+            // pending span (spans never straddle the gap) and hop to the top
+            // of the singles band. Free move, like the wrap.
+            scavenge_release(run_lo, run_end);
+            run_lo = run_end = 0;
+            i = watermark;
+            continue;
         }
         size_t cand = --i;
         ++scanned;
@@ -692,6 +760,13 @@ EXPORT size_t memory_count() {
 
 EXPORT size_t memory_watermark() {
     return atomic_load_explicit(&upper_watermark, memory_order_relaxed);
+}
+
+// Bottom of the runs band (multi-page allocations grow DOWN from the top of
+// the map). Pages ever part of an allocation live in [0, memory_watermark())
+// and [memory_run_floor(), memory_total_pages()).
+EXPORT size_t memory_run_floor() {
+    return atomic_load_explicit(&run_floor, memory_order_relaxed);
 }
 
 // Capacity of the whole managed heap in pages (YAFL_HEAP_SIZE / GC_PAGE_SIZE).
