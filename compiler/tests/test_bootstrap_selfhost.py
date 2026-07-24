@@ -34,20 +34,12 @@ from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 _REPO = Path(__file__).parent.parent.parent
 _SELF_TIMEOUT = 8 * 3600   # a self-compile stage is GC-bound; be generous
 
-# A compiler-sized workload: the default 1 GiB managed heap and 8 MiB C stack
-# are both too small (heap exhaustion / stackguard exit 134). 6 GiB flaked
-# once at the finish line: the FINAL output-assembly append needs the whole
-# ~83 MB C text as one contiguous large-object run, and a fragmented heap
-# couldn't supply it (core: _string_append2 → memory_pages_alloc(5093) →
-# "Aborting due to memory allocation failure").
+# A compiler-sized workload needs a big managed heap; the C-stack raise is
+# shared (testutil.raise_stack_limit). The heap was 6 GiB until the final
+# output-assembly append (one ~83 MB contiguous run) flaked on fragmentation;
+# the banded allocator fixed that, 12 GiB is belt-and-braces.
 _SELF_ENV = dict(_RUN_ENV, YAFL_HEAP_SIZE="12G")
-_STACK_BYTES = 1 << 30
-
-
-def _raise_stack_limit() -> None:
-    soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
-    want = _STACK_BYTES if hard == resource.RLIM_INFINITY else min(_STACK_BYTES, hard)
-    resource.setrlimit(resource.RLIMIT_STACK, (want, hard))
+from tests.testutil import raise_stack_limit as _raise_stack_limit
 
 
 def _stream() -> str:

@@ -631,8 +631,8 @@ fun modeOf(argv: List<System::String>): System::String
 
 fun run(text: System::String, i: IO): System::Int
   let mode = modeOf(args())
-  if mode == "c" || mode == "c1"
-    ret runC(text, mode == "c" ? 0 : 1, i)
+  if mode == "c" || mode == "c1" || mode == "c2" || mode == "c3"
+    ret runC(text, mode == "c" ? 0 : mode == "c1" ? 1 : mode == "c2" ? 2 : 3, i)
   let r = mode == "tokens" ? tokensMode(text)
         : mode == "hash6" ? hash6Mode(text)
         : mode == "sha1" ? sha1Mode(text)

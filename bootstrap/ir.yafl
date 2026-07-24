@@ -245,43 +245,56 @@ fun cgInvertJumpIfWithOp(ji: OpJumpIf, n: Op): Op
     (j: OpJump) => OpJumpIf(j.jumpName, ji.jumpIfCondition, true, ji.jumpIfSavedVars)
     (o: Op)      => ji
 
-fun cgSimplifyDispatch2(ops: List<Op>, i: Int, acc: List<Op>, changed: Bool, op: Op, nextOp: Op|None, next2Op: Op|None): (ops: List<Op>, changed: Bool)
-  ret isInvertibleJumpIfJumpLabel(op, nextOp, next2Op)
-    ? cgSimplifyOnePass(ops, i + 2, append<Op>(acc, cgInvertJumpIf(op, nextOp)), true)
-    : cgSimplifyOnePass(ops, i + 1, append<Op>(acc, op), changed)
+# One O(n) chain walk per pass (the index-based walk re-derived length and
+# position per op — quadratic with allocation, detonating on the mega
+# functions the -O3 single-caller fold builds).
+fun chainHeadOp(c: Chain<Op>): Op|None
+  ret match(c)
+    (l: ChainLink) => l.value
+    (nil: ChainEnd) => None
 
-fun cgSimplifyOnePassAt(ops: List<Op>, i: Int, acc: List<Op>, changed: Bool): (ops: List<Op>, changed: Bool)
-  let op = forceOp(listAt<Op>(ops, i))
-  let nextOp = listAt<Op>(ops, i + 1)
-  let next2Op = listAt<Op>(ops, i + 2)
-  ret (isJumpToImmediateLabel(op, nextOp) || isJumpIfToImmediateLabel(op, nextOp))
-    ? cgSimplifyOnePass(ops, i + 1, acc, true)
-    : cgSimplifyDispatch2(ops, i, acc, changed, op, nextOp, next2Op)
+fun chainTailOp(c: Chain<Op>): Chain<Op>
+  ret match(c)
+    (l: ChainLink) => l.next
+    (nil: ChainEnd) => c
 
-fun cgSimplifyOnePass(ops: List<Op>, i: Int, acc: List<Op>, changed: Bool): (ops: List<Op>, changed: Bool)
-  ret i >= chainLength(chain(ops)) ? (acc, changed) : cgSimplifyOnePassAt(ops, i, acc, changed)
+# ONE self-recursive stepper ([tail] accepts only direct self-recursion, so
+# the walk and its per-link body cannot be split into a mutual pair).
+fun [tail] cgSimplifyOnePass(c: Chain<Op>, acc: List<Op>, changed: Bool): (ops: List<Op>, changed: Bool)
+  ret match(c)
+    (nil: ChainEnd) => (acc, changed)
+    (l: ChainLink)  =>
+      (isJumpToImmediateLabel(l.value, chainHeadOp(l.next))
+       || isJumpIfToImmediateLabel(l.value, chainHeadOp(l.next)))
+      ? cgSimplifyOnePass(l.next, acc, true)
+      : isInvertibleJumpIfJumpLabel(l.value, chainHeadOp(l.next),
+                                    chainHeadOp(chainTailOp(l.next)))
+        ? cgSimplifyOnePass(chainTailOp(l.next),
+                            append<Op>(acc, cgInvertJumpIf(l.value, chainHeadOp(l.next))),
+                            true)
+        : cgSimplifyOnePass(l.next, append<Op>(acc, l.value), changed)
 
 fun cgSimplifyControlFlowFixpoint(ops: List<Op>): List<Op>
-  let pass2 = cgSimplifyOnePass(ops, 0, List<Op>(), false)
+  let pass2 = cgSimplifyOnePass(chain(ops), List<Op>(), false)
   ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
 
-fun cgCollectReferencedLabelsStep(acc: List<String>, op: Op): List<String>
+fun cgCollectReferencedLabelsStep(acc: StrSet, op: Op): StrSet
   ret match(op)
-    (j: OpJump) => strListAdd(acc, j.jumpName)
-    (ji: OpJumpIf) => strListAdd(acc, ji.jumpIfLabel)
-    (it: OpIfTask) => strListAdd(acc, it.taskTarget)
-    (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2: List<String>, c: OpCase) => strListAdd(acc2, c.caseLabel))
+    (j: OpJump) => setAdd(acc, j.jumpName)
+    (ji: OpJumpIf) => setAdd(acc, ji.jumpIfLabel)
+    (it: OpIfTask) => setAdd(acc, it.taskTarget)
+    (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2: StrSet, c: OpCase) => setAdd(acc2, c.caseLabel))
     (o: Op) => acc
 
-fun cgCollectReferencedLabels(ops: List<Op>): List<String>
-  ret fold(ops, List<String>(), (acc: List<String>, op: Op) => cgCollectReferencedLabelsStep(acc, op))
+fun cgCollectReferencedLabels(ops: List<Op>): StrSet
+  ret fold(ops, setEmpty(), (acc: StrSet, op: Op) => cgCollectReferencedLabelsStep(acc, op))
 
-fun cgIsUnreferencedLabel(op: Op, referenced: List<String>): Bool
+fun cgIsUnreferencedLabel(op: Op, referenced: StrSet): Bool
   ret match(op)
-    (l: OpLabel) => !strListMember(referenced, l.labelName)
+    (l: OpLabel) => !setHas(referenced, l.labelName)
     (o: Op)       => false
 
-fun cgRemoveUnreferencedLabels(ops: List<Op>, referenced: List<String>): List<Op>
+fun cgRemoveUnreferencedLabels(ops: List<Op>, referenced: StrSet): List<Op>
   ret filter<Op>(ops, (op: Op) => !cgIsUnreferencedLabel(op, referenced))
 
 fun cgFunctionSimplifyControlFlow(f: CgFunction): CgFunction
@@ -292,71 +305,96 @@ fun cgFunctionSimplifyControlFlow(f: CgFunction): CgFunction
 
 # ── strip_unused_operations ──────────────────────────────────────────────────
 
-class [final] LabelAt(laName: String, laIndex: Int)
+# Dict-indexed reachability (the list-of-pairs label index, per-index list
+# walks and O(n) membership were all quadratic-or-worse and cgKeepSeenIndices
+# recursed one C frame PER OP — the -O3 mega-function stack overflow).
+# Python: labels = {name: index} (LAST duplicate wins, dict semantics);
+# traversal order does not affect the seen SET, so the worklist is a stack.
 
-fun cgBuildLabelIndexStep(op: Op, i: Int, rest: List<Op>, acc: List<LabelAt>): List<LabelAt>
+class [final] StripIx(sxOps: Dict<Int, Op>, sxN: Int,
+                      sxLabels: Dict<String, Int>)
+
+fun cgStripIndex(ops: List<Op>): StripIx
+  let built = fold(ops, (Dict<Int, Op>(), 0, Dict<String, Int>()),
+        (acc: (byIx: Dict<Int, Op>, i: Int, labels: Dict<String, Int>), op: Op) =>
+          (put(acc.byIx, acc.i, op), acc.i + 1, cgStripLabelPut(acc.labels, op, acc.i)))
+  ret StripIx(built.byIx, built.i, built.labels)
+
+fun cgStripLabelPut(labels: Dict<String, Int>, op: Op, i: Int): Dict<String, Int>
   ret match(op)
-    (l: OpLabel) => cgBuildLabelIndexLoop(rest, i + 1, append<LabelAt>(acc, LabelAt(l.labelName, i)))
-    (o: Op)       => cgBuildLabelIndexLoop(rest, i + 1, acc)
+    (l: OpLabel) => put(labels, l.labelName, i)
+    (o: Op)       => labels
 
-fun cgBuildLabelIndexLoop(ops: List<Op>, i: Int, acc: List<LabelAt>): List<LabelAt>
-  ret match(head<Op>(ops))
-    (op: Op) => cgBuildLabelIndexStep(op, i, tail<Op>(ops), acc)
-    ()        => acc
+fun sxOpAt(ix: StripIx, i: Int): Op
+  ret match(get(ix.sxOps, i))
+    (op: Op) => op
+    ()        => OpReturnVoid(List<RParam>())   # unreachable: 0 <= i < sxN
 
-fun cgBuildLabelIndex(ops: List<Op>): List<LabelAt>
-  ret cgBuildLabelIndexLoop(ops, 0, List<LabelAt>())
+fun labelIndexLookup(ix: StripIx, name: String): Int
+  ret match(get(ix.sxLabels, name))
+    (i: Int) => i
+    ()        => -1
 
-fun labelIndexLookup(labels: List<LabelAt>, name: String): Int
-  ret match(head<LabelAt>(labels))
-    (l: LabelAt) => l.laName == name ? l.laIndex : labelIndexLookup(tail<LabelAt>(labels), name)
-    ()            => -1
+fun cgSuccessors(ix: StripIx, index: Int): List<Int>
+  let op = sxOpAt(ix, index)
+  let fallthrough = index + 1 < ix.sxN ? append<Int>(List<Int>(), index + 1) : List<Int>()
+  ret cgSuccessorsOf(op, ix, fallthrough)
 
-fun cgSuccessors(ops: List<Op>, n: Int, labels: List<LabelAt>, index: Int): List<Int>
-  let op = forceOp(listAt<Op>(ops, index))
-  let fallthrough = index + 1 < n ? append<Int>(List<Int>(), index + 1) : List<Int>()
-  ret cgSuccessorsOf(op, labels, fallthrough)
-
-fun cgSuccessorsOf(op: Op, labels: List<LabelAt>, fallthrough: List<Int>): List<Int>
+fun cgSuccessorsOf(op: Op, ix: StripIx, fallthrough: List<Int>): List<Int>
   ret match(op)
     (r: OpReturn) => List<Int>()
     (rv: OpReturnVoid) => List<Int>()
     (c: OpCall) => c.callMusttail ? List<Int>() : fallthrough
-    (j: OpJump) => append<Int>(List<Int>(), labelIndexLookup(labels, j.jumpName))
-    (ji: OpJumpIf) => prepend<Int>(labelIndexLookup(labels, ji.jumpIfLabel), fallthrough)
-    (it: OpIfTask) => prepend<Int>(labelIndexLookup(labels, it.taskTarget), fallthrough)
-    (sj: OpSwitchJump) => map(sj.switchCases, (c: OpCase) => labelIndexLookup(labels, c.caseLabel))
+    (j: OpJump) => append<Int>(List<Int>(), labelIndexLookup(ix, j.jumpName))
+    (ji: OpJumpIf) => prepend<Int>(labelIndexLookup(ix, ji.jumpIfLabel), fallthrough)
+    (it: OpIfTask) => prepend<Int>(labelIndexLookup(ix, it.taskTarget), fallthrough)
+    (sj: OpSwitchJump) => map(sj.switchCases, (c: OpCase) => labelIndexLookup(ix, c.caseLabel))
     (o: Op) => fallthrough
 
-fun cgAddOneSuccessor(acc: (seen: List<Int>, worklist: List<Int>), s: Int): (seen: List<Int>, worklist: List<Int>)
-  ret memberInt(acc.seen, s) ? acc : (append<Int>(acc.seen, s), append<Int>(acc.worklist, s))
+fun cgAddOneSuccessor(acc: (seen: Dict<Int, Bool>, worklist: Chain<Int>),
+                      s: Int): (seen: Dict<Int, Bool>, worklist: Chain<Int>)
+  ret get(acc.seen, s) is Bool
+    ? acc
+    : (put(acc.seen, s, true), chainPrependInt(s, acc.worklist))
 
-fun cgAddNewSuccessors(succs: List<Int>, seen0: List<Int>, worklist0: List<Int>): (seen: List<Int>, worklist: List<Int>)
-  ret fold(succs, (seen0, worklist0), (acc: (seen: List<Int>, worklist: List<Int>), s: Int) => cgAddOneSuccessor(acc, s))
+fun chainPrependInt(s: Int, c: Chain<Int>): Chain<Int>
+  ret ChainLink<Int>(s, c)
 
-fun cgReachableStep(ops: List<Op>, n: Int, labels: List<LabelAt>, idx: Int, restWorklist: List<Int>, seen: List<Int>): List<Int>
-  let succs = cgSuccessors(ops, n, labels, idx)
-  let added = cgAddNewSuccessors(succs, seen, restWorklist)
-  ret cgReachableLoop(ops, n, labels, added.worklist, added.seen)
+fun chainHeadIntOr(c: Chain<Int>, dflt: Int): Int
+  ret match(c)
+    (l: ChainLink) => l.value
+    (nil: ChainEnd) => dflt
 
-fun cgReachableLoop(ops: List<Op>, n: Int, labels: List<LabelAt>, worklist: List<Int>, seen: List<Int>): List<Int>
-  ret match(head<Int>(worklist))
-    (idx: Int) => cgReachableStep(ops, n, labels, idx, tail<Int>(worklist), seen)
-    ()          => seen
+fun chainTailInt(c: Chain<Int>): Chain<Int>
+  ret match(c)
+    (l: ChainLink) => l.next
+    (nil: ChainEnd) => c
 
-fun cgReachable(ops: List<Op>, n: Int, labels: List<LabelAt>): List<Int>
-  ret cgReachableLoop(ops, n, labels, append<Int>(List<Int>(), 0), append<Int>(List<Int>(), 0))
+fun [tail] cgReachableLoop(ix: StripIx, worklist: Chain<Int>,
+                           seen: Dict<Int, Bool>): Dict<Int, Bool>
+  if worklist is ChainEnd
+    ret seen
+  let idx = chainHeadIntOr(worklist, 0)
+  let added = fold(cgSuccessors(ix, idx), (seen, chainTailInt(worklist)),
+        (acc: (seen: Dict<Int, Bool>, worklist: Chain<Int>), s: Int) =>
+          cgAddOneSuccessor(acc, s))
+  ret cgReachableLoop(ix, added.worklist, added.seen)
 
-fun cgKeepSeenIndices(ops: List<Op>, i: Int, seen: List<Int>): List<Op>
-  ret match(head<Op>(ops))
-    (op: Op) => memberInt(seen, i) ? prepend<Op>(op, cgKeepSeenIndices(tail<Op>(ops), i + 1, seen)) : cgKeepSeenIndices(tail<Op>(ops), i + 1, seen)
-    ()        => List<Op>()
+fun cgReachable(ix: StripIx): Dict<Int, Bool>
+  ret cgReachableLoop(ix, chainPrependInt(0, chain(List<Int>())),
+                      put(Dict<Int, Bool>(), 0, true))
+
+fun [tail] cgKeepSeenIndices(ops: Chain<Op>, i: Int, seen: Dict<Int, Bool>,
+                             acc: List<Op>): List<Op>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => cgKeepSeenIndices(l.next, i + 1, seen,
+        get(seen, i) is Bool ? append<Op>(acc, l.value) : acc)
 
 fun cgFunctionStripUnusedOperations(f: CgFunction): CgFunction
-  let n = chainLength(chain(f.fnOps))
-  let labels = cgBuildLabelIndex(f.fnOps)
-  let seen = cgReachable(f.fnOps, n, labels)
-  let newOps = cgKeepSeenIndices(f.fnOps, 0, seen)
+  let ix = cgStripIndex(f.fnOps)
+  let seen = cgReachable(ix)
+  let newOps = cgKeepSeenIndices(chain(f.fnOps), 0, seen, List<Op>())
   ret cgFunctionWith(f, newOps, f.fnStackVars)
 
 # ── fold_struct_fields ───────────────────────────────────────────────────────

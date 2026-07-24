@@ -81,6 +81,16 @@ class TestBootstrapC(TestCase):
         # accumulation) plus stack promotion all run on both sides.
         self._compare_corpus(1, "c1")
 
+    def test_c_matches_python_O2(self):
+        # -O2 adds the bounded small-function inline fixpoint (IR inliner +
+        # trim to shape stability) on both sides.
+        self._compare_corpus(2, "c2")
+
+    def test_c_matches_python_O3(self):
+        # -O3 adds [inline(always)] fusion and the single-caller fold with
+        # vtable-slot trimming.
+        self._compare_corpus(3, "c3")
+
     def _compare_corpus(self, optimization_level: int, mode: str):
         # Every corpus file is independent, and per file the two compiles
         # are independent — a bounded pool takes BOTH job kinds (Python
@@ -134,8 +144,10 @@ def _terminated(p: Path) -> str:
 
 
 def _run_port_c(binary: str, text: str, mode: str = "c") -> str:
+    from tests.testutil import raise_stack_limit
     r = subprocess.run([binary, mode], input=text, capture_output=True,
-                       timeout=600, text=True, env=_RUN_ENV)
+                       timeout=600, text=True, env=_RUN_ENV,
+                       preexec_fn=raise_stack_limit)
     return r.stdout
 
 

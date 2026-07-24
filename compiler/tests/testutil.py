@@ -55,6 +55,19 @@ _CLANG_BUILD_FLAGS = [
 _STATIC_LINK = ["-x", "none", _LIBYAFL_A, "-lpthread", "-lm", "-ldl", "-Wl,--gc-sections"]
 _RUN_ENV = {**os.environ}   # static binaries need no LD_LIBRARY_PATH
 
+# The port keeps non-suspending calls on the C stack (heap frames only where
+# a call can suspend), so compiler-sized inputs recurse deeper than the 8MB
+# default — at -O3 the fatter post-inline op lists overflow it (stackguard
+# exit 134). Give port subprocesses a 1GiB stack; the real fix (iterative
+# walks / [tail] steppers) is a tracked investigation.
+_STACK_BYTES = 1 << 30
+
+def raise_stack_limit() -> None:
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+    want = _STACK_BYTES if hard == resource.RLIM_INFINITY else min(_STACK_BYTES, hard)
+    resource.setrlimit(resource.RLIMIT_STACK, (want, hard))
+
 
 def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
     """Assert that the yafl source compiles to C and clang accepts it with zero

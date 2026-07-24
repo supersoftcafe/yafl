@@ -139,8 +139,15 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   if !isEmpty(v1)
     ret CreateCOut(List<String>(), v1)
   let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
-  # [O2/O3 blocks: inlining + vtable trim — NOT PORTED YET]
-  let a3b = optLevel > 0 ? ccO1Block(a3) : a3
+  # -O2: bounded small-function/[inline(always)] inline fixpoint;
+  # -O3 adds the single-caller fold with vtable-slot trimming (compiler.py
+  # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
+  # tuples exactly).
+  let a3a = optLevel >= 2
+    ? ccO2Fixpoint(a3, 0, List<String>(), optLevel >= 3)
+    : a3
+  let a3s = optLevel >= 3 ? ccO3Fixpoint(a3a, 0, List<String>()) : a3a
+  let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
   let a4 = resolveFlatStructGlobalInits(a3b)
   let a5 = inferSync(a4)
   let a6 = optLevel >= 1
@@ -162,6 +169,38 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
     ret CreateCOut(List<String>(), v4)
   let parts = genApplication(a9, headers)
   ret CreateCOut(parts, List<String>())
+
+# ── the -O2/-O3 inline fixpoints ─────────────────────────────────────────────
+# Python compiler.py: `if optimization_level >= 2` — resolve indirect fun_t
+# calls to known targets first (a direct call is what makes the closure
+# inlinable), inline + trim, stop on shape stability; 16-round bound.
+fun [tail] ccO2Fixpoint(a0: CgApp, round2: Int, prevShape: List<String>,
+                        inlineAlways: Bool): CgApp
+  if round2 >= 16
+    ret a0
+  let a1 = discoverGlobalFunctionCalls(a0)
+  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways))
+  let shape = ccShape(a2)
+  ret ccShapeEq(shape, prevShape)
+    ? a2
+    : ccO2Fixpoint(a2, round2 + 1, shape, inlineAlways)
+
+# The -O3 single-caller fold: drop undispatched vtable entries, re-derive
+# direct calls, inline every function referenced exactly once, trim; the
+# shape adds the SORTED per-object slot counts so a cascade that only sheds
+# vtable entries still iterates.
+fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
+                        prevShape: List<String>): CgApp
+  if round2 >= 16
+    ret a0
+  let a1 = discoverGlobalFunctionCalls(trimUnusedVtableSlots(a0))
+  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1))
+  let shape = concat(ccShape(a2),
+                     sort(map(a2.appObjects, (o: CgObject) =>
+                       o.objName + ":" + String(listLen(o.objFunctions)))))
+  ret ccShapeEq(shape, prevShape)
+    ? a2
+    : ccO3Fixpoint(a2, round2 + 1, shape)
 
 # ── the -O1+ pass blocks ─────────────────────────────────────────────────────
 # Python compiler.py: inside `if optimization_level > 0` — bounds-check

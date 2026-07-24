@@ -1,0 +1,50 @@
+# bootstrap/vtable_trim.yafl — ported from lowering/vtable_trim.py: drop
+# vtable entries whose slot no surviving virtual call dispatches. After
+# devirtualisation a single-implementation slot is only ever called directly;
+# its vtable entry is dead weight yet still counts as a function reference,
+# blocking the single-caller fold. Dropping it lets fold + trim collapse
+# witness objects whose every method went direct: entry gone → refcount 1 →
+# fold → the witness `this` goes dead → deadstores + trim remove the
+# instance, its object and its whole vtable. Instance/`implements` checks are
+# untouched (they use implements_array, not the function table).
+namespace Bootstrap
+
+import System
+
+fun trimUnusedVtableSlots(a: CgApp): CgApp
+  let fromFns = fold(a.appFunctions, setEmpty(), vtuFunction)
+  let used = fold(a.appGlobals, fromFns, vtuGlobal)
+  let out = fold(a.appObjects,
+                 (List<CgObject>(), false),
+                 (acc: (objs: List<CgObject>, changed: Bool), o: CgObject) =>
+                   vtuObject(acc, o, used))
+  ret out.changed
+    ? appOf(a.appFunctions, out.objs, a.appGlobals)
+    : a
+
+fun vtuFunction(acc: StrSet, f: CgFunction): StrSet
+  ret fold(f.fnOps, acc, (a2: StrSet, op: Op) =>
+        fold(opAllParams(op), a2, (a3: StrSet, p: RParam) =>
+          fold(rpFlatten(p, true), a3, vtuAddVirtual)))
+
+fun vtuGlobal(acc: StrSet, g2: CgGlobal): StrSet
+  ret match(g2.globalInit)
+    (init: RParam) => fold(rpFlatten(init, true), acc, vtuAddVirtual)
+    ()              => acc
+
+fun vtuAddVirtual(acc: StrSet, p: RParam): StrSet
+  ret match(p)
+    (vf: RpVirtualFunction) => setAdd(acc, vf.name)
+    (o: RParam)             => acc
+
+fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
+              used: StrSet): (objs: List<CgObject>, changed: Bool)
+  let kept = filter(o.objFunctions,
+                    (s2: CgFuncSlot) => setHas(used, s2.slotVirtualName))
+  ret listLen(kept) != listLen(o.objFunctions)
+    ? (append(acc.objs,
+              CgObject(o.objName, o.objExtends, kept, o.objFields,
+                       o.objLengthField, o.objComment, o.objIsForeign,
+                       o.objIsMutable, o.objDiscriminator)),
+       true)
+    : (append(acc.objs, o), acc.changed)
