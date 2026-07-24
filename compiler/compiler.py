@@ -143,7 +143,7 @@ def __ensure_lazy_machinery(a: Application) -> None:
         lowering.lazy_thunks.ensure_lazy_machinery(a, ir_type)
 
 
-def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",)) -> str:
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",)) -> list[str]:
     a = Application(headers=headers)
     resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {}, optimization_level=optimization_level)
     for stmt in statements:
@@ -629,8 +629,8 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # pass that can create or copy blocks — so each block instance is unique.
     new_statements = lowering.block_exits.assign_block_exits(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
-    c_code = __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers)
-    return c_code, warnings
+    c_parts = __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers)
+    return "".join(c_parts), warnings
 
 
 def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[Error]]:

@@ -180,6 +180,6 @@ def _python_c_text(target_name: str, optimization_level: int = 0) -> str:
     if not mains:
         return "No main function found\n"
     discs = lowering.unions.collect_discriminator_ids(statements)
-    return _CREATE_C(statements, mains[0], just_testing=True,
-                     optimization_level=optimization_level,
-                     union_discriminators=discs, headers=("yafl.h",))
+    return "".join(_CREATE_C(statements, mains[0], just_testing=True,
+                             optimization_level=optimization_level,
+                             union_discriminators=discs, headers=("yafl.h",)))

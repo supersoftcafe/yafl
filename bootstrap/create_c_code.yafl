@@ -125,7 +125,7 @@ fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
 
 # ── the driver ───────────────────────────────────────────────────────────────
 
-class [final] CreateCOut(ccText: String, ccErrors: List<String>)
+class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
 fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
                 headers: List<String>): CreateCOut
@@ -137,7 +137,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # SSA + control-flow + Phi validation right after AST lowering.
   let v1 = ssaValidate(a2.appFunctions, true)
   if !isEmpty(v1)
-    ret CreateCOut("", v1)
+    ret CreateCOut(List<String>(), v1)
   let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
   # [O2/O3 blocks: inlining + vtable trim — NOT PORTED YET]
   let a3b = optLevel > 0 ? ccO1Block(a3) : a3
@@ -153,15 +153,15 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let a9 = removedUnusedStuff(lowerAsync(a8b))
   let v2 = checkApplication(a9)
   if !isEmpty(v2)
-    ret CreateCOut("", v2)
+    ret CreateCOut(List<String>(), v2)
   let v3 = ssaValidate(a9.appFunctions, false)
   if !isEmpty(v3)
-    ret CreateCOut("", v3)
+    ret CreateCOut(List<String>(), v3)
   let v4 = ccValidateEntrypoint(a9)
   if !isEmpty(v4)
-    ret CreateCOut("", v4)
-  let text = genApplication(a9, headers)
-  ret CreateCOut(text, List<String>())
+    ret CreateCOut(List<String>(), v4)
+  let parts = genApplication(a9, headers)
+  ret CreateCOut(parts, List<String>())
 
 # ── the -O1+ pass blocks ─────────────────────────────────────────────────────
 # Python compiler.py: inside `if optimization_level > 0` — bounds-check

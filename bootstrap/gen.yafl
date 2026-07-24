@@ -266,7 +266,7 @@ fun genDiagnostics(): String
         (w: String) => "#pragma GCC diagnostic ignored \"" + w + "\""), "\n")
       + "\n#pragma GCC diagnostic ignored \"-Wmissing-braces\""
 
-fun genApplication(a: CgApp, headers: List<String>): String
+fun genApplication(a: CgApp, headers: List<String>): List<String>
   let vtables = fold(a.appObjects, List<VtableEntry>(), (acc: List<VtableEntry>, o: CgObject) =>
                   o.objIsForeign
                     ? acc
@@ -278,15 +278,43 @@ fun genApplication(a: CgApp, headers: List<String>): String
   let acc2 = fold(objectsInExtendsOrder(a), acc1, (acc: GenAcc, o: CgObject) =>
                o.objIsForeign ? acc : genObject(acc, o, ph.methodIds, ph.vtableSizes))
   let acc3 = fold(a.appGlobals, acc2, (acc: GenAcc, g2: CgGlobal) => genGlobal(acc, g2, a))
-  ret join(append(append(append(append(append(append(append(append(append(append(List<String>(),
-        join(map(headers, (h: String) => "#include <" + h + ">"), "\n")),
-        genDiagnostics()),
-        genFunctionIds(ph.methodIds)),
-        join(map(acc3.gaCache, (e2: CgCacheEntry) => e2.entryTypedef), "\n")),
-        join(acc3.gaTypedefs, "\n")),
-        join(acc3.gaForwards, "\n")),
-        ""),
-        join(acc3.gaVariables, "\n")),
-        join(acc3.gaFunctions, "\n")),
-        genDeclareRoots(acc3.gaGcRoots)),
-      "\n\n") + "\n\n" + genDeclareMain()
+  # A flat list of modest fragments, never one giant string — the caller
+  # streams them to stdout in order (Application.gen returns the same parts
+  # shape). Separators are explicit elements: "\n" between the items of a
+  # section, "\n\n" between sections (including empty ones — the vtables
+  # section is always empty here, matching Python's unused __vtables list).
+  # Assembling the joined text needed one ~83MB contiguous allocation at the
+  # end of a compiler-sized run.
+  ret genFlatten(append(append(append(append(append(append(append(append(append(append(append(
+        List<List<String>>(),
+        map(headers, (h: String) => "#include <" + h + ">")),
+        append(List<String>(), genDiagnostics())),
+        append(List<String>(), genFunctionIds(ph.methodIds))),
+        map(acc3.gaCache, (e2: CgCacheEntry) => e2.entryTypedef)),
+        acc3.gaTypedefs),
+        acc3.gaForwards),
+        List<String>()),
+        acc3.gaVariables),
+        acc3.gaFunctions),
+        append(List<String>(), genDeclareRoots(acc3.gaGcRoots))),
+        append(List<String>(), genDeclareMain())))
+
+# Flatten sections into the parts list with separator elements. Byte-exact
+# twin of the old nested join: "\n\n" precedes every section but the first,
+# "\n" precedes every item but its section's first.
+fun genFlatten(sections: List<List<String>>): List<String>
+  ret gfSections(chain(sections), true, List<String>())
+
+fun [tail] gfSections(ss: Chain<List<String>>, first: Bool,
+                      acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => gfSections(l.next, false,
+        gfItems(chain(l.value), true, first ? acc : append(acc, "\n\n")))
+
+fun [tail] gfItems(is2: Chain<String>, first: Bool,
+                   acc: List<String>): List<String>
+  ret match(is2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => gfItems(l.next, false,
+        append(first ? acc : append(acc, "\n"), l.value))

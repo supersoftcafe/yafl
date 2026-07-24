@@ -504,12 +504,12 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # stdin may be a MULTI-FILE stream — each part preceded by a `#FILE# <name>`
 # line — so the contract compiles stdlib + target as a whole program; a
 # stream without markers is a single file named "x" (the stage convention).
-fun cMode(text: String, optLevel: Int): (out: String, code: Int)
+fun cMode(text: String, optLevel: Int): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => match(convergeToPostmono(stmts))
       (ok: PmOk)   => cStage(ok.pmStmts, optLevel)
-      (tx: PmText) => (tx.pmOut, tx.pmCode)
-    ()                    => ("parse error\n", 1)
+      (tx: PmText) => (append(List<String>(), tx.pmOut), tx.pmCode)
+    ()                    => (append(List<String>(), "parse error\n"), 1)
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
   ret match(converge(stmts))
@@ -541,21 +541,21 @@ fun [tail] parseParts(text: String, at: Int, acc: List<PStmt>): List<PStmt>|None
       ? concat(acc, stmts)
       : parseParts(text, nextMark + 1, concat(acc, stmts))
 
-fun cStage(stmts: List<PStmt>, optLevel: Int): (out: String, code: Int)
+fun cStage(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
   if !isEmpty(tl.tlErrs)
-    ret (printedDiagnostics(tl.tlErrs), 1)
+    ret (append(List<String>(), printedDiagnostics(tl.tlErrs)), 1)
   let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
   let fwd = checkLazyForwardRefs(lowered)
   if !isEmpty(fwd)
-    ret (printedDiagnostics(fwd), 1)
+    ret (append(List<String>(), printedDiagnostics(fwd)), 1)
   let low1 = lowerLazyLets(lowered)
   let low2 = convertLambdasToFunctions(low1)
   let low3 = lowerSimpleClasses(low2)
   let final2 = assignBlockExits(low3)
   ret match(cFindMain(chain(final2)))
     (nm: System::String) => cEmit(final2, nm, optLevel)
-    ()                    => ("No main function found\n", 1)
+    ()                    => (append(List<String>(), "No main function found\n"), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
 # `main` in no namespace is not a main), the return type must be the bigint
@@ -584,12 +584,12 @@ fun cIsBigintRet(ret2: Spec|None): Bool
     ()          => false
 
 fun cEmit(stmts: List<PStmt>, mainName: System::String,
-          optLevel: Int): (out: String, code: Int)
+          optLevel: Int): (outs: List<String>, code: Int)
   let out = createCCode(stmts, mainName, optLevel,
                         append(List<System::String>(), "yafl.h"))
   ret isEmpty(out.ccErrors)
-    ? (out.ccText, 0)
-    : (join(out.ccErrors, "\n") + "\n", 1)
+    ? (out.ccParts, 0)
+    : (append(List<String>(), join(out.ccErrors, "\n") + "\n"), 1)
 
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
@@ -631,6 +631,8 @@ fun modeOf(argv: List<System::String>): System::String
 
 fun run(text: System::String, i: IO): System::Int
   let mode = modeOf(args())
+  if mode == "c" || mode == "c1"
+    ret runC(text, mode == "c" ? 0 : 1, i)
   let r = mode == "tokens" ? tokensMode(text)
         : mode == "hash6" ? hash6Mode(text)
         : mode == "sha1" ? sha1Mode(text)
@@ -652,12 +654,26 @@ fun run(text: System::String, i: IO): System::Int
         : mode == "lambdas" ? lambdasMode(text)
         : mode == "simple" ? simpleMode(text)
         : mode == "exits" ? exitsMode(text)
-        : mode == "c" ? cMode(text, 0)
-        : mode == "c1" ? cMode(text, 1)
         : astMode(text)
   let w = writeAll(stdout(), r.out)
   let code = w.v is IOError ? 1 : r.code
   ret (w.io.close(), i.close(), code) |> (c1, c2, result) => result
+
+# The C modes emit a LIST of fragments streamed to stdout in order — the
+# joined text was the compiler's one giant contiguous allocation (~83MB on a
+# self-host) and the only consumer is this write loop.
+fun runC(text: System::String, optLevel: Int, i: IO): System::Int
+  let r = cMode(text, optLevel)
+  let w = writeParts(stdout(), chain(r.outs), false)
+  let code = w.failed2 ? 1 : r.code
+  ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
+
+fun [tail] writeParts(io2: IO, ps: Chain<String>,
+                      failed: Bool): (io3: IO, failed2: Bool)
+  ret match(ps)
+    (nil: ChainEnd) => (io2, failed)
+    (l: ChainLink)  => writeAll(io2, l.value)
+      |> (w) => writeParts(w.io, l.next, failed || w.v is IOError)
 
 fun main(): System::Int
   ret stdin().asStream()

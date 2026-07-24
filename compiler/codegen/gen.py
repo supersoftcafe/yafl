@@ -186,7 +186,7 @@ class Application:
                 "    return 0;\n"
                 "}\n")
 
-    def gen(self, just_testing = False) -> str:
+    def gen(self, just_testing = False) -> list[str]:
         entry_point_name = "__entrypoint__"
         if entry_point_name not in self.functions:
             raise ValueError(f"A function called '{entry_point_name}' is required")
@@ -224,16 +224,33 @@ class Application:
             "-Wunused-variable", "-Wunused-but-set-variable",
             "-Wunused-parameter", "-Wunused-const-variable", "-Wmissing-braces"))
 
-        return "\n\n".join([
-            "\n".join(f"#include <{h}>" for h in self.headers),
-            diagnostics,
-            _gen_function_ids(global_ids),
-            "\n".join(declaration for name, declaration in self.__type_cache.values()),
-            "\n".join(self.__typedefs),
-            "\n".join(self.__forwards),
-            "\n".join(self.__vtables),
-            "\n".join(self.__variables),
-            "\n".join(self.__functions),
-            self.__declare_roots(),
-            self.__declare_main()
-        ])
+        # The output is a flat list of modest fragments, never one giant
+        # string: the caller streams them to its sink in order. The join
+        # shape ("\n" within a section, "\n\n" between sections) is encoded
+        # as explicit separator elements so the concatenation of the parts is
+        # byte-identical to the old single join. This exists for the
+        # bootstrap port's benefit — assembling the whole text needed one
+        # ~83MB contiguous allocation at the end of a compiler-sized run —
+        # and the reference mirrors the shape per the parity rule.
+        sections: list[list[str]] = [
+            [f"#include <{h}>" for h in self.headers],
+            [diagnostics],
+            [_gen_function_ids(global_ids)],
+            [declaration for name, declaration in self.__type_cache.values()],
+            list(self.__typedefs),
+            list(self.__forwards),
+            list(self.__vtables),
+            list(self.__variables),
+            list(self.__functions),
+            [self.__declare_roots()],
+            [self.__declare_main()],
+        ]
+        parts: list[str] = []
+        for si, items in enumerate(sections):
+            if si:
+                parts.append("\n\n")
+            for ii, item in enumerate(items):
+                if ii:
+                    parts.append("\n")
+                parts.append(item)
+        return parts
