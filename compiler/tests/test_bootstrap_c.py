@@ -120,9 +120,17 @@ class TestBootstrapC(TestCase):
 
 
 def _port_stream(target: Path) -> str:
-    parts = [f"#FILE# {p.name}\n{p.read_text()}" for p in _STDLIB]
-    parts.append(f"#FILE# {target.name}\n{target.read_text()}")
+    # Each part must END WITH A NEWLINE or the next "#FILE#" marker glues onto
+    # the previous file's last line and the port misattributes that file's
+    # statements (79 silently re-hashed names, found via the self-host diff).
+    parts = [f"#FILE# {p.name}\n{_terminated(p)}" for p in _STDLIB]
+    parts.append(f"#FILE# {target.name}\n{_terminated(target)}")
     return "".join(parts)
+
+
+def _terminated(p: Path) -> str:
+    text = p.read_text()
+    return text if text.endswith("\n") else text + "\n"
 
 
 def _run_port_c(binary: str, text: str, mode: str = "c") -> str:

@@ -51,10 +51,16 @@ def _raise_stack_limit() -> None:
 
 
 def _stream() -> str:
-    """The #FILE#-marked whole-program stream: stdlib then the bootstrap."""
-    parts = [f"#FILE# {p.name}\n{p.read_text()}"
+    """The #FILE#-marked whole-program stream: stdlib then the bootstrap.
+    Every part is newline-terminated — a file without a final newline would
+    otherwise glue the next #FILE# marker onto its last line and the port
+    would misattribute that whole file's statements."""
+    def terminated(p: Path) -> str:
+        text = p.read_text()
+        return text if text.endswith("\n") else text + "\n"
+    parts = [f"#FILE# {p.name}\n{terminated(p)}"
              for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))]
-    parts += [f"#FILE# {p.name}\n{p.read_text()}"
+    parts += [f"#FILE# {p.name}\n{terminated(p)}"
               for p in sorted((_REPO / "bootstrap").glob("*.yafl"))]
     return "".join(parts)
 
