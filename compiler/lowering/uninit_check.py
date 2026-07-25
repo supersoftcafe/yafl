@@ -61,40 +61,46 @@ def _successors(ops: tuple[Op, ...], labels: dict[str, int], i: int) -> list[int
     return [i + 1] if i + 1 < n else []
 
 
-def _reads_writes(op: Op) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
-    """Return (reads, writes) for a single op."""
+def _names(vars_) -> frozenset[str]:
+    """StackVars keyed by NAME: a variable's identity is its name — the same
+    var can be SPELLED with different types at different sites (an inlined
+    constructor's param struct adopts enum SLOT types, e.g. a Bool param
+    declared int16 by the slot but read back as its natural int8), and a
+    structural set treats the spellings as distinct variables, reporting a
+    false uninitialised read. The bootstrap port has always keyed by name."""
+    return frozenset(v.name for v in vars_)
+
+
+def _reads_writes(op: Op) -> tuple[frozenset[str], frozenset[str]]:
+    """Return (read names, written names) for a single op."""
     if isinstance(op, Phi):
         # Phi sources are conditional reads on their predecessor edges, not
         # unconditional reads at the Phi's location. The per-edge verification
         # in `_check_phi_sources` catches a genuinely uninitialised source.
         # The target is written when the block is entered.
-        writes = frozenset({op.target}) if isinstance(op.target, StackVar) else frozenset()
+        writes = frozenset({op.target.name}) if isinstance(op.target, StackVar) else frozenset()
         return frozenset(), writes
 
-    reads, writes = op.get_live_vars()
+    reads_v, writes_v = op.get_live_vars()
+    reads, writes = _names(reads_v), _names(writes_v)
 
     # Op.get_live_vars() does not report IfTask's task_lhs / call_id_lhs
     # writes because IfTask is a conditional jump and the writes only land
     # on the jumped-to branch.  We conservatively treat them as writes on
     # that branch by noting them here; the caller handles the branch split.
     if isinstance(op, IfTask):
-        taken: set[StackVar] = set()
-        if isinstance(op.task_lhs, StackVar):
-            taken.add(op.task_lhs)
-        if isinstance(op.call_id_lhs, StackVar):
-            taken.add(op.call_id_lhs)
-        writes = writes | frozenset(taken)
+        writes = writes | _iftask_taken_writes(op)
 
     return reads, writes
 
 
-def _iftask_taken_writes(op: IfTask) -> frozenset[StackVar]:
-    """Subset of writes that only happen on the branch taken."""
-    s: set[StackVar] = set()
+def _iftask_taken_writes(op: IfTask) -> frozenset[str]:
+    """Subset of written names that only land on the branch taken."""
+    s: set[str] = set()
     if isinstance(op.task_lhs, StackVar):
-        s.add(op.task_lhs)
+        s.add(op.task_lhs.name)
     if isinstance(op.call_id_lhs, StackVar):
-        s.add(op.call_id_lhs)
+        s.add(op.call_id_lhs.name)
     return frozenset(s)
 
 
@@ -118,11 +124,11 @@ def check_function(fn: Function) -> None:
         return
 
     labels = _build_label_index(ops)
-    params: frozenset[StackVar] = frozenset(StackVar(typ, name) for name, typ in fn.params.fields)
+    params: frozenset[str] = frozenset(name for name, typ in fn.params.fields)
 
-    # entry[i] = set of StackVars definitely initialised on entry to ops[i];
+    # entry[i] = names definitely initialised on entry to ops[i];
     # None means "not reached yet" during fixpoint iteration.
-    entry: list[frozenset[StackVar] | None] = [None] * n
+    entry: list[frozenset[str] | None] = [None] * n
     entry[0] = params
 
     worklist: list[int] = [0]
@@ -180,9 +186,9 @@ def check_function(fn: Function) -> None:
             raise UninitialisedReadError(
                 f"uninitialised StackVar read in function {fn.name!r} at op #{i}:\n"
                 f"  op       : {op!r}\n"
-                f"  needs    : {sorted(reads, key=lambda v: v.name)}\n"
-                f"  init set : {sorted(e, key=lambda v: v.name)}\n"
-                f"  missing  : {sorted(missing, key=lambda v: v.name)}\n"
+                f"  needs    : {sorted(reads)}\n"
+                f"  init set : {sorted(e)}\n"
+                f"  missing  : {sorted(missing)}\n"
                 f"This is a codegen bug — either the lowering produced a read-"
                 f"before-write, or the variable should have been promoted to "
                 f"the task-heap state object.")
@@ -198,7 +204,7 @@ def _check_phi_sources(
     fn: Function,
     ops: tuple[Op, ...],
     labels: dict[str, int],
-    entry: list[frozenset[StackVar] | None],
+    entry: list[frozenset[str] | None],
 ) -> None:
     """For each Phi source (P_label, source), verify `source`'s reads are
     defined in the exit set of every edge from block P_label into the
@@ -216,7 +222,7 @@ def _check_phi_sources(
 
     # Collect every edge from a labelled block into a Phi block:
     # list of (predecessor_label, phi_block_label, exit-set-at-transfer).
-    edges: list[tuple[str, str, frozenset[StackVar]]] = []
+    edges: list[tuple[str, str, frozenset[str]]] = []
     current_block = None
     for i, op in enumerate(ops):
         e = entry[i]
@@ -256,7 +262,7 @@ def _check_phi_sources(
             for source_label, source in phi.sources:
                 if source_label != pred_label:
                     continue
-                needed = source.get_live_vars()
+                needed = _names(source.get_live_vars())
                 missing = needed - pred_exit
                 if missing:
                     raise UninitialisedReadError(
@@ -265,9 +271,9 @@ def _check_phi_sources(
                         f"{pred_label!r}:\n"
                         f"  phi      : {phi!r}\n"
                         f"  source   : {source!r}\n"
-                        f"  needs    : {sorted(needed, key=lambda v: v.name)}\n"
-                        f"  exit set : {sorted(pred_exit, key=lambda v: v.name)}\n"
-                        f"  missing  : {sorted(missing, key=lambda v: v.name)}\n"
+                        f"  needs    : {sorted(needed)}\n"
+                        f"  exit set : {sorted(pred_exit)}\n"
+                        f"  missing  : {sorted(missing)}\n"
                         f"This is a codegen bug — the Phi source is read on "
                         f"the edge from this predecessor but isn't defined "
                         f"there.")
