@@ -215,8 +215,14 @@ fun genGlobalRoots(g2: CgGlobal, a: CgApp): List<String>
   if isNoneStr(g2.globalObjectName) && !isNoneStr(g2.globalLazyInitFunction)
     ret cgTypePointerPaths(g2.globalType, cgGlobalToCName(g2))
   # Static class-instance global: register the <name>_data in-struct pointer
-  # field addresses (skip the leading vtable `type` field).
+  # field addresses (skip the leading vtable `type` field). INTERNED STRING
+  # LITERALS are not roots: compile-time constants, bytes in .data, never
+  # written after static initialisation — they alone put thousands of dead
+  # roots into every cycle's scan. (Pruning ALL frozen statics broke the
+  # runtime — a non-string static holds a heap pointer; tracked separately.)
   if !isNoneStr(g2.globalObjectName) && !isNoneR2(g2.globalInit)
+     && !(isNoneStr(g2.globalLazyInitFunction)
+          && startsWith(g2.globalName, "$strings::"))
     ret genStaticInstanceRoots(g2, a)
   ret List<String>()
 

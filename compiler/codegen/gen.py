@@ -160,6 +160,17 @@ class Application:
             # pointer-field addresses instead.  Skip the leading vtable
             # `type` field (`Object.get_pointer_mask` applies the same
             # exclusion for the live-object scan).
+            #
+            # INTERNED STRING LITERALS are not roots: compile-time
+            # constants whose bytes live in .data, never written after
+            # static initialisation — they alone put thousands of dead
+            # roots into EVERY cycle's scan (measured: 29% of a
+            # self-compile in the root callback). NOTE: pruning ALL
+            # frozen statics (no lazy hook) broke the runtime — some
+            # non-string static does hold a heap pointer; tracked
+            # separately before widening this.
+            if g.lazy_init_function is None and name.startswith("$strings::"):
+                return
             cls = self.objects.get(g.object_name)
             if cls is not None and len(cls.fields.fields) > 1:
                 trailing = Struct(cls.fields.fields[1:])
