@@ -1481,7 +1481,7 @@ fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName: String,
   let smFn = any(afterTail.fnOps, alIsMusttailCall) ? alUnrollMusttail(afterTail) : afterTail
   let smBbs = any(afterTail.fnOps, alIsMusttailCall) ? alCreateBasicBlocks(smFn) : bbs
   let layout0 = alComputeFrameLayout(smBbs, bbs, alCalculateSavedVars(smFn).fnOps)
-  let useStub = !f.fnSync && listLen(smFn.fnOps) > alStubThresholdOps() && alHasBackEdge(smFn.fnOps)
+  let useStub = !f.fnSync && listLen(smFn.fnOps) > alStubThresholdOps() && alHasParkingLoop(smFn.fnOps)
   let layout = useStub ? alAugmentLayoutWithParams(layout0, cgFieldsOfOrEmpty(f.fnParams)) : layout0
   let hotFn = useStub
     ? alCreateStubLaunchFunc(afterTail, stateName, subtype, layout, listLen(smBbs))
@@ -1500,19 +1500,39 @@ fun alIsMusttailCall(op: Op): Bool
     (o: Op)     => false
 
 # Jump/JumpIf/Switch to an ALREADY-SEEN label = a loop.
-fun alHasBackEdge(ops: List<Op>): Bool
-  ret alHbeLoop(chain(ops), List<String>())
+# Stub only when a PARK SITE lies inside a loop (Python has_parking_loop): a
+# back edge alone is not enough — a compute-only loop never parks at runtime,
+# and stubbing it turns a zero-allocation call into a heap state allocation
+# per call. Walk once, recording the park count at each label; a jump back to
+# a seen label with parks accrued since is a parking loop. Park ops = exactly
+# what the basic-block builder splits on (non-musttail Call, ParallelCall).
+fun alHasParkingLoop(ops: List<Op>): Bool
+  ret alHplLoop(chain(ops), Dict<String, Int>(), 0)
 
-fun [tail] alHbeLoop(ops: Chain<Op>, seen: List<String>): Bool
+fun [tail] alHplLoop(ops: Chain<Op>, labelParks: Dict<String, Int>,
+                     parks: Int): Bool
   ret match(ops)
     (nil: ChainEnd) => false
     (l: ChainLink)  => match(l.value)
-      (lb: OpLabel)      => alHbeLoop(l.next, strListAdd(seen, lb.labelName))
-      (j: OpJump)        => strListMember(seen, j.jumpName) ? true : alHbeLoop(l.next, seen)
-      (ji: OpJumpIf)     => strListMember(seen, ji.jumpIfLabel) ? true : alHbeLoop(l.next, seen)
-      (sw: OpSwitchJump) => any(sw.switchCases, (cs: OpCase) => strListMember(seen, cs.caseLabel))
-        ? true : alHbeLoop(l.next, seen)
-      (o: Op)            => alHbeLoop(l.next, seen)
+      (lb: OpLabel)        => alHplLoop(l.next,
+                                        put(labelParks, lb.labelName, parks),
+                                        parks)
+      (c: OpCall)          => alHplLoop(l.next, labelParks,
+                                        c.callMusttail ? parks : parks + 1)
+      (pc: OpParallelCall) => alHplLoop(l.next, labelParks, parks + 1)
+      (j: OpJump)          => alHplHit(labelParks, j.jumpName, parks)
+        ? true : alHplLoop(l.next, labelParks, parks)
+      (ji: OpJumpIf)       => alHplHit(labelParks, ji.jumpIfLabel, parks)
+        ? true : alHplLoop(l.next, labelParks, parks)
+      (sw: OpSwitchJump)   => any(sw.switchCases, (cs: OpCase) =>
+                                    alHplHit(labelParks, cs.caseLabel, parks))
+        ? true : alHplLoop(l.next, labelParks, parks)
+      (o: Op)              => alHplLoop(l.next, labelParks, parks)
+
+fun alHplHit(labelParks: Dict<String, Int>, name: String, parks: Int): Bool
+  ret match(get(labelParks, name))
+    (atLabel: Int) => parks > atLabel
+    ()              => false
 
 # ── parallel machinery ───────────────────────────────────────────────────────
 

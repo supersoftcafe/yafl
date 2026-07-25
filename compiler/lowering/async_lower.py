@@ -1474,31 +1474,49 @@ def __convert_function_to_task_convention(
     layout = __compute_frame_layout(sm_basic_blocks, basic_blocks,
                                     __calculate_saved_vars(sm_fn).ops)
 
-    # Stub only when the body LOOPS as well as being large: a straight-line
-    # body runs once and the linear launch completes it synchronously with no
-    # state/task allocation at all — the stub would pay that on every call.
-    # A loopy body parks repeatedly, so it lives in the machine anyway and
-    # the duplicated launch body is pure size.
-    def has_back_edge(ops) -> bool:
-        seen: set[str] = set()
+    # Stub only when a PARK SITE lies inside a loop as well as the body being
+    # large: a straight-line body runs once and the linear launch completes it
+    # synchronously with no state/task allocation at all — the stub would pay
+    # that on every call. A body that parks INSIDE a loop lives in the machine
+    # anyway, so the duplicated launch body is pure size. A back edge alone is
+    # NOT enough: a compute-only loop (hash6's MD5 rounds after -O3 inlining)
+    # never parks at runtime, and stubbing it turns a zero-allocation call
+    # into a heap state allocation per call — measured on the bootstrap
+    # self-compile as 2.9x page allocations and 2.3x wall.
+    def has_parking_loop(ops) -> bool:
+        # park ops = exactly what __create_basic_blocks splits on
+        park_prefix = [0]
         for op in ops:
+            is_park = ((isinstance(op, Call) and not op.musttail)
+                       or isinstance(op, ParallelCall))
+            park_prefix.append(park_prefix[-1] + (1 if is_park else 0))
+        label_at: dict[str, int] = {}
+        for i, op in enumerate(ops):
             if isinstance(op, Label):
-                seen.add(op.name)
-            elif isinstance(op, Jump) and op.name in seen:
-                return True
-            elif isinstance(op, JumpIf) and op.label in seen:
-                return True
-            elif isinstance(op, SwitchJump) and any(l in seen for _, l in op.cases):
-                return True
+                label_at[op.name] = i
+                continue
+            if isinstance(op, Jump):
+                targets = [op.name]
+            elif isinstance(op, JumpIf):
+                targets = [op.label]
+            elif isinstance(op, SwitchJump):
+                targets = [l for _, l in op.cases]
+            else:
+                continue
+            for tname in targets:
+                j = label_at.get(tname)
+                # Back edge (target already seen) whose span contains a park.
+                if j is not None and park_prefix[i + 1] - park_prefix[j] > 0:
+                    return True
         return False
 
     # A stub defers ALL work to the state machine + state object, so it only
     # applies to functions that HAVE them: never a sync function (no
     # suspensions → no machine → nothing to duplicate, so the code-size
-    # rationale doesn't even arise). Large + looping + genuinely-async.
+    # rationale doesn't even arise). Large + park-in-loop + genuinely-async.
     use_stub = (_STUB_ENABLED and not fn.sync
                 and len(sm_fn.ops) > _STUB_THRESHOLD_OPS
-                and has_back_edge(sm_fn.ops))
+                and has_parking_loop(sm_fn.ops))
     if use_stub:
         layout = __augment_layout_with_params(layout, fn.params)
         hot_fn = __create_stub_launch_func(after_tail, state_name,
