@@ -29,7 +29,7 @@ import unittest
 from pathlib import Path
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
+from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, static_link_for
 
 _REPO = Path(__file__).parent.parent.parent
 _SELF_TIMEOUT = 8 * 3600   # a self-compile stage is GC-bound; be generous
@@ -84,7 +84,7 @@ class TestBootstrapSelfhost(TestCase):
         try:
             r = subprocess.run(
                 ["clang", "-g", "-x", "c", "-", "-O0",
-                 *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", stage2],
+                 *_CLANG_BUILD_FLAGS, *static_link_for(1), "-o", stage2],
                 input=c2, text=True, capture_output=True, timeout=600)
             self.assertEqual(0, r.returncode, f"clang on stage2 C failed:\n{r.stderr[:2000]}")
 

@@ -41,6 +41,27 @@ _YAFLLIB_BUILD_DIR = _YAFLLIB_DIR / "build" / "debug-unix"
 # CMake `check`/CTest target overrides it via YAFL_LIBYAFL_A so the suite runs
 # against the archive that build just produced (not a stale one).
 _LIBYAFL_A = os.environ.get("YAFL_LIBYAFL_A", str(_YAFLLIB_BUILD_DIR / "libyafl.a"))
+_YAFLLIB_RELEASE_DIR = _YAFLLIB_DIR / "build" / "release"
+
+
+def libyafl_for(optimization_level: int) -> str:
+    """Optimised builds (-O1..-O3) link the RELEASE runtime — measuring or
+    shipping against a Debug archive (no optimisation, NOINLINE_DEBUG)
+    silently misstates every runtime cost. -O0 keeps the Debug archive:
+    its asserts and poison hooks are what the correctness tests are for.
+    YAFL_LIBYAFL_A still overrides both."""
+    if "YAFL_LIBYAFL_A" in os.environ:
+        return os.environ["YAFL_LIBYAFL_A"]
+    if optimization_level >= 1:
+        rel = _YAFLLIB_RELEASE_DIR / "libyafl.a"
+        if rel.exists():
+            return str(rel)
+    return _LIBYAFL_A
+
+
+def static_link_for(optimization_level: int) -> list[str]:
+    return ["-x", "none", libyafl_for(optimization_level),
+            "-lpthread", "-lm", "-ldl", "-Wl,--gc-sections"]
 # Compile against the in-tree yafl.h, in strict ISO C to match the build.
 _CLANG_BUILD_FLAGS = [
     "-std=c11",   # ISO C, matching the compiler/runtime build (not gnu11)
@@ -139,7 +160,8 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
         binary = tmp.name
     try:
         result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
+            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS,
+             *static_link_for(optimization_level), "-o", binary],
             input=c_code, text=True, capture_output=True, timeout=30,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
@@ -244,6 +266,7 @@ def _bootstrap_tree_hash() -> str:
                 continue
             h.update(str(p).encode())
             h.update(p.read_bytes())
+    h.update(libyafl_for(1).encode())   # archive choice invalidates the cache
     return h.hexdigest()[:16]
 
 
@@ -269,7 +292,7 @@ def shared_bootstrap_binary() -> str:
             assert c_code, "bootstrap compilation failed"
             tmp = binary.with_suffix(".tmp")
             r = _sp.run(["clang", "-g", "-x", "c", "-", "-O0",
-                         *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", str(tmp)],
+                         *_CLANG_BUILD_FLAGS, *static_link_for(1), "-o", str(tmp)],
                         input=c_code, text=True, capture_output=True,
                         timeout=180)
             assert r.returncode == 0, f"clang failed:\n{r.stderr[:2000]}"
