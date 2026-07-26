@@ -152,7 +152,7 @@ fun [tail] allLiteralEntries(es: Chain<PTupEnt>): Bool
       ? allLiteralEntries(l.next)
       : false
 
-fun stripConversions(x: PExpr): PExpr
+fun [tail] stripConversions(x: PExpr): PExpr
   ret match(x)
     (cv: PeConvert) => stripConversions(cv.convInner)
     (o: PExpr)      => x

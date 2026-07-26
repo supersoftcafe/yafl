@@ -39,7 +39,7 @@ fun wrapIfNoPointer(t2: CgType): CgType
 # value in the result field share one subtype; distinct struct layouts get a
 # unique name — sha1 over the same structural signature _ir_mangle hashes
 # (taskTypeSig below), byte-identical to Python's task_abi._type_sig.
-fun taskSubtypeName(resultType: CgType): String|None
+fun [tail] taskSubtypeName(resultType: CgType): String|None
   ret match(resultType)
     (v: CgVoid)          => None
     # DataPointer (bigint, str, class pointers) — all stored as object_t*;
@@ -51,7 +51,7 @@ fun taskSubtypeName(resultType: CgType): String|None
     (o: CgType)          => "task$T" + slice(sha1Hex(taskTypeSig(o)), 0, 16)
 
 # The structural signature taskSubtypeName hashes — Python task_abi._type_sig.
-fun taskTypeSig(t2: CgType): String
+fun [tail] taskTypeSig(t2: CgType): String
   ret match(t2)
     (d: CgDataPointer)  => "ptr"
     (i: CgInt)          => "i" + String(i.precision)

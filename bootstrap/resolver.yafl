@@ -159,7 +159,7 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
       : acc
     (o: PStmt)  => acc
 
-fun indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
+fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => indexVariants(indexVariant(acc, l.value), l.next)

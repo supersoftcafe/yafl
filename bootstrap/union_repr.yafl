@@ -238,7 +238,7 @@ fun [tail] allDistinctKindsLoop(ks: Chain<PtrKind>, seen: List<PtrKind>): Bool
 
 # Rebuild a single-field newtype wrapper (a chain of one-field structs ending
 # in a DataPointer) from a bare pointer word.
-fun unwrapToPointerWord(value: RParam, ctype: CgType): RParam
+fun [tail] unwrapToPointerWord(value: RParam, ctype: CgType): RParam
   ret match(cgFieldsOf(ctype))
     (fields: List<CgField>) => match(soleField(fields))
       (f: CgField) => unwrapToPointerWord(RpStructField(value, f.fieldName), f.fieldType)
@@ -456,7 +456,7 @@ fun litTypeNameOfOne(l2: PLit, r: Resolver): String|None
     (b: SBuiltin) => b.sbName
     ()             => None
 
-fun indexWhereBuiltin(members: List<Spec>, typeName: String, i: Int): Int|None
+fun [tail] indexWhereBuiltin(members: List<Spec>, typeName: String, i: Int): Int|None
   ret match(head(members))
     (m: Spec) => isBuiltinNamed(m, typeName) ? i : indexWhereBuiltin(tail(members), typeName, i + 1)
     ()         => None
@@ -570,7 +570,7 @@ fun [tail] zipSlotFieldsLoop(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, nar
                             append(acc, RpNamedValue(fieldNameAt(narrowFields, l.value.slotIndex),
                                                      RpStructField(sv, fieldNameAt(wideSlotFields, w.value.slotIndex)))))
 
-fun indexWhereCgType(types2: List<CgType>, target: CgType, i: Int): Int|None
+fun [tail] indexWhereCgType(types2: List<CgType>, target: CgType, i: Int): Int|None
   ret match(head(types2))
     (t2: CgType) => eqCgType(t2, target) ? i : indexWhereCgType(tail(types2), target, i + 1)
     ()            => None
@@ -839,12 +839,12 @@ fun forceTagged(rep: GRepr): GTagged
     (gt: GTagged) => gt
     (o: GRepr)    => GTagged(SBuiltin("bool", noLine()), CgVoid(), List<List<CgSlotEntry>>())   # unreachable
 
-fun findPointerVariant(members: List<Spec>, r: Resolver): Spec|None
+fun [tail] findPointerVariant(members: List<Spec>, r: Resolver): Spec|None
   ret match(head(members))
     (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List<CgField>())) ? findPointerVariant(tail(members), r) : m
     ()         => None
 
-fun findUnitVariant(members: List<Spec>, r: Resolver): Spec|None
+fun [tail] findUnitVariant(members: List<Spec>, r: Resolver): Spec|None
   ret match(head(members))
     (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List<CgField>())) ? m : findUnitVariant(tail(members), r)
     ()         => None
@@ -1011,7 +1011,7 @@ fun [tail] complexReadFieldLeaves(leafNames: Chain<String>, leafFieldSets: Chain
         (found: RParam) => found
         ()               => complexReadFieldLeaves(l.next, lf.next, rootName, baseValue, fieldName, r)
 
-fun complexReadFieldInLeaf(fields: Chain<PStmt>, leafName: String, rootName: String, baseValue: RParam,
+fun [tail] complexReadFieldInLeaf(fields: Chain<PStmt>, leafName: String, rootName: String, baseValue: RParam,
                           fieldName: String, r: Resolver): RParam|None
   ret match(fields)
     (nil: ChainEnd) => None
@@ -1031,12 +1031,12 @@ fun reprConstructEnumValue(rep: GRepr, leafName: String, fieldArgs: List<PunArg>
     (gc: GComplexEnum) => complexConstructEnumValue(gc, leafName, fieldArgs, r)
     (gp: GPointer) => emptyBundle()   # unreachable: Python raises NotImplementedError (not an enum union)
 
-fun indexOfString(xs: List<String>, target: String, i: Int): Int
+fun [tail] indexOfString(xs: List<String>, target: String, i: Int): Int
   ret match(head(xs))
     (x: String) => x == target ? i : indexOfString(tail(xs), target, i + 1)
     ()           => 0   # unreachable: leafName is always a member (check() guarantees it)
 
-fun fieldTypeNamed(fields: List<CgField>, name: String): CgType
+fun [tail] fieldTypeNamed(fields: List<CgField>, name: String): CgType
   ret match(head(fields))
     (f: CgField) => f.fieldName == name ? f.fieldType : fieldTypeNamed(tail(fields), name)
     ()            => CgVoid()   # unreachable: every TaggedRepr container has a $tag field
@@ -1056,12 +1056,12 @@ fun [tail] primStartsOf(fields: Chain<PStmt>, offset: Int, r: Resolver, acc: Lis
                                     append(acc, PrimStart(let2.lName, offset)))
       (o: PStmt)    => primStartsOf(l.next, offset, r, acc)
 
-fun primStartFor(starts: List<PrimStart>, name: String): Int
+fun [tail] primStartFor(starts: List<PrimStart>, name: String): Int
   ret match(head(starts))
     (p: PrimStart) => p.psName == name ? p.psOffset : primStartFor(tail(starts), name)
     ()              => 0   # unreachable: every field arg names a declared field
 
-fun letNamed(fields: List<PStmt>, name: String): PStmt|None
+fun [tail] letNamed(fields: List<PStmt>, name: String): PStmt|None
   ret match(head(fields))
     (f: PStmt) => stmtName(f) == name ? f : letNamed(tail(fields), name)
     ()          => None
@@ -1187,7 +1187,7 @@ fun complexConstructFieldWithArg(pa: PunArg, let2: PsLet, fieldType: CgType, res
   let newOps = append(ops, OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true), mustResult(argBundle), false, List<RParam>()))
   ret complexConstructFields(rest, objName, resultVar, fieldArgs, r, newOps, append(bundles, argBundle))
 
-fun punArgNamed(args: List<PunArg>, name: String): PunArg|None
+fun [tail] punArgNamed(args: List<PunArg>, name: String): PunArg|None
   ret match(head(args))
     (a: PunArg) => a.paName == name ? a : punArgNamed(tail(args), name)
     ()           => None

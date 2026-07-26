@@ -55,7 +55,7 @@ class [final] RpRename(oldName: String, newName: String)
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
-fun renameLookup(renames: List<RpRename>, name: String): String
+fun [tail] renameLookup(renames: List<RpRename>, name: String): String
   ret match(head<RpRename>(renames))
     (r: RpRename) => r.oldName == name ? r.newName : renameLookup(tail<RpRename>(renames), name)
     ()            => name
@@ -115,7 +115,7 @@ fun rpStructFieldTypeSpecial(xtype: CgType, field: String): CgType
     (fp: CgFuncPointer) => CgDataPointer()   # both "f" and "o" are DataPointer per Python
     (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
 
-fun rpStructFieldLookup(fields: List<CgField>, name: String): CgType
+fun [tail] rpStructFieldLookup(fields: List<CgField>, name: String): CgType
   ret match(head<CgField>(fields))
     (f: CgField) => f.fieldName == name ? f.fieldType : rpStructFieldLookup(tail<CgField>(fields), name)
     ()           => CgVoid()   # unreachable (Python raises ValueError)
@@ -297,14 +297,14 @@ fun rpGetLiveVarsOpt(o: RParam|None): List<RParam>
 
 # ── full structural equality (dict-key semantics for the CSE cache) ────────
 
-fun eqRpNamedValues(a: List<RpNamedValue>, b: List<RpNamedValue>): Bool
+fun [tail] eqRpNamedValues(a: List<RpNamedValue>, b: List<RpNamedValue>): Bool
   ret match(head<RpNamedValue>(a))
     (fa: RpNamedValue) => match(head<RpNamedValue>(b))
       (fb: RpNamedValue) => fa.name == fb.name && eqRParam(fa.value, fb.value) && eqRpNamedValues(tail<RpNamedValue>(a), tail<RpNamedValue>(b))
       ()                  => false
     () => isEmpty<RpNamedValue>(b)
 
-fun eqRParamList(a: List<RParam>, b: List<RParam>): Bool
+fun [tail] eqRParamList(a: List<RParam>, b: List<RParam>): Bool
   ret match(head<RParam>(a))
     (xa: RParam) => match(head<RParam>(b))
       (xb: RParam) => eqRParam(xa, xb) && eqRParamList(tail<RParam>(a), tail<RParam>(b))
@@ -685,7 +685,7 @@ fun unionStructField(f: CgField, namedValues: List<RpNamedValue>): RpNamedValue
     (v: RParam) => RpNamedValue(f.fieldName, v)
     ()          => RpNamedValue(f.fieldName, rpZeroFor(f.fieldType))
 
-fun rpNamedValuesGet(values: List<RpNamedValue>, name: String): RParam|None
+fun [tail] rpNamedValuesGet(values: List<RpNamedValue>, name: String): RParam|None
   ret match(head<RpNamedValue>(values))
     (v: RpNamedValue) => v.name == name ? v.value : rpNamedValuesGet(tail<RpNamedValue>(values), name)
     ()                => None

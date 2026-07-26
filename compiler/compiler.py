@@ -5,7 +5,12 @@ import sys
 # Parser combinators and AST walks recurse with expression depth; a few
 # hundred lines of nested expressions clears Python's default 1000 frames
 # (found by examples/ylisp.yafl before it ever parsed).
-sys.setrecursionlimit(20000)
+# The compiler's own recursion is shallow by design (tree walks bounded by
+# source nesting; every whole-program pass iterates). The one true consumer
+# is the parser-combinator chain, ~1.5k frames on the most deeply nested
+# expression in the tree; 5000 is comfortable headroom. Measured 2026-07-26:
+# the full bootstrap compile at -O1 completes under a 4000 limit.
+sys.setrecursionlimit(5000)
 
 import lowering.ast_inline
 import lowering.hoist_nested

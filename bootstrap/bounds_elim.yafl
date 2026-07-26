@@ -33,7 +33,7 @@ enum BeVal
   enum BeInduction(beIndName: String)
   enum BeOpaque()
 
-fun beEq(a: BeVal, b: BeVal): Bool
+fun [tail] beEq(a: BeVal, b: BeVal): Bool
   ret match(a)
     (ia: BeInt)       => match(b)
       (ib: BeInt) => ia.beIntVal == ib.beIntVal && ia.beIntPrec == ib.beIntPrec

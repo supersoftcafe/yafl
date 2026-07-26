@@ -163,12 +163,14 @@ fun concat<T>(a: List<T>, b: List<T>): List<T>
 # First `n` elements (fewer if the list is shorter); `n <= 0` gives the empty
 # list. Counterpart `drop` discards them. Order is preserved.
 fun take<T>(l: List<T>, n: Int): List<T>
-  ret n <= 0 ? List<T>()
-    : match(head<T>(l))
-        (h: T)    => prepend<T>(h, take<T>(tail<T>(l), n - 1))
-        (e: None) => List<T>()
+  fun [tail] go(c: Chain<T>, k: Int, acc: List<T>): List<T>
+    ret k <= 0 ? acc
+      : match(c)
+          (nil: ChainEnd) => acc
+          (l2: ChainLink) => go(l2.next, k - 1, append<T>(acc, l2.value))
+  ret go(chain<T>(l), n, List<T>())
 
-fun drop<T>(l: List<T>, n: Int): List<T>
+fun [tail] drop<T>(l: List<T>, n: Int): List<T>
   ret n <= 0 ? l
     : match(head<T>(l))
         (h: T)    => drop<T>(tail<T>(l), n - 1)
@@ -221,26 +223,17 @@ fun reverse<T>(l: List<T>): List<T>
     (fl: ListFull) => _listFromChains<T>(fl.rear, fl.front)
 
 
+# map/filter run on fold + append (concat's idiom): the per-element ChainLink
+# recursion put one C frame on the stack per element and overflowed a standard
+# 8MB stack on compiler-sized lists (an -O3 mega-function's label index).
+# fold is [tail]; append is amortised O(1); order preserved by construction.
 fun map<T,U>(l: List<T>, f: (:T): U): List<U>
-  fun mapNode(n: Chain<T>): Chain<U>
-    ret match(n)
-      (nil: ChainEnd) => ChainEnd<U>()
-      (c: ChainLink)  => ChainLink<U>(f(c.value), mapNode(c.next))
-  ret match(l)
-    (e: ListEmpty) => ListEmpty<U>()
-    (fl: ListFull) => ListFull<U>(mapNode(fl.front), mapNode(fl.rear))
+  ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => append<U>(acc, f(x)))
 
 
 fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
-  fun filterNode(n: Chain<T>): Chain<T>
-    ret match(n)
-      (nil: ChainEnd) => ChainEnd<T>()
-      (c: ChainLink)  => f(c.value)
-        ? ChainLink<T>(c.value, filterNode(c.next))
-        : filterNode(c.next)
-  ret match(l)
-    (e: ListEmpty) => ListEmpty<T>()
-    (fl: ListFull) => _listFromChains<T>(filterNode(fl.front), filterNode(fl.rear))
+  ret fold<T, List<T> >(l, List<T>(), (acc: List<T>, x: T) =>
+        f(x) ? append<T>(acc, x) : acc)
 
 
 fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U

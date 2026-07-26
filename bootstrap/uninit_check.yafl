@@ -135,20 +135,20 @@ fun ucBranchOnlyWrites(op: Op): List<String>
 
 # ── the fixpoint ─────────────────────────────────────────────────────────────
 
-fun ucFixpoint(ix: UcIx, labels: List<LabelIdx>,
+# ONE self-recursive stepper — the fixpoint/step/flow trio was a mutual
+# recursion ([tail] refuses those), burning three C frames per worklist item:
+# an -O3 mega-function's worklist overflowed the standard 8MB stack. Fused,
+# the loop is [tail] and runs in constant stack.
+fun [tail] ucFixpoint(ix: UcIx, labels: List<LabelIdx>,
                       entry: Dict<Int, InitSet>, worklist: List<Int>): Dict<Int, InitSet>
-  ret match(head(worklist))
-    (i: Int) => ucStep(ix, labels, entry, tail(worklist), i)
-    ()        => entry
-
-fun ucStep(ix: UcIx, labels: List<LabelIdx>, entry: Dict<Int, InitSet>,
-                  rest: List<Int>, i: Int): Dict<Int, InitSet>
-  ret match(ucEntryAt(entry, i))
-    (u: IsUnreached) => ucFixpoint(ix, labels, entry, rest)
-    (e2: IsSet)      => ucFlow(ix, labels, entry, rest, i, e2.isNames)
-
-fun ucFlow(ix: UcIx, labels: List<LabelIdx>, entry: Dict<Int, InitSet>,
-                  rest: List<Int>, i: Int, e2: List<String>): Dict<Int, InitSet>
+  if isEmpty(worklist)
+    ret entry
+  let i = headIntOr(worklist, 0)
+  let rest = tail(worklist)
+  let cur = ucEntryAt(entry, i)
+  if cur is IsUnreached
+    ret ucFixpoint(ix, labels, entry, rest)
+  let e2 = ucNamesOf(cur)
   let op = ucIxOp(ix, i)
   let writes = ucWrites(op)
   let branchOnly = ucBranchOnlyWrites(op)
@@ -161,6 +161,16 @@ fun ucFlow(ix: UcIx, labels: List<LabelIdx>, entry: Dict<Int, InitSet>,
                    ucJoinInto(acc.e, acc.w, succ,
                               ucIsBranchTarget(op, labels, succ) ? exitBranch : exitFall))
   ret ucFixpoint(ix, labels, out.e, out.w)
+
+fun headIntOr(l: List<Int>, dflt: Int): Int
+  ret match(head(l))
+    (i: Int) => i
+    ()        => dflt
+
+fun ucNamesOf(s2: InitSet): List<String>
+  ret match(s2)
+    (i: IsSet)       => i.isNames
+    (u: IsUnreached) => List<String>()   # unreachable: caller tested
 
 fun ucIsBranchTarget(op: Op, labels: List<LabelIdx>, succ: Int): Bool
   ret match(op)

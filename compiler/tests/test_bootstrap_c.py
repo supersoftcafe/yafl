@@ -144,10 +144,8 @@ def _terminated(p: Path) -> str:
 
 
 def _run_port_c(binary: str, text: str, mode: str = "c") -> str:
-    from tests.testutil import raise_stack_limit
     r = subprocess.run([binary, mode], input=text, capture_output=True,
-                       timeout=600, text=True, env=_RUN_ENV,
-                       preexec_fn=raise_stack_limit)
+                       timeout=600, text=True, env=_RUN_ENV)
     return r.stdout
 
 

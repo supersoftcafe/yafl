@@ -505,7 +505,7 @@ fun [tail] entryNames(es: Chain<SEntry>, acc: List<String>): List<String>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => entryNames(l.next, append(acc, l.value.seName))
 
-fun unifyBound(ds: Chain<SEntry>, binding: List<Int>, supplied: List<SEntry>,
+fun [tail] unifyBound(ds: Chain<SEntry>, binding: List<Int>, supplied: List<SEntry>,
                names: List<String>, mapping: List<Binding>): Unify
   ret match(ds)
     (nil: ChainEnd) => UMap(mapping)
@@ -528,7 +528,7 @@ fun unifyEntryPair(d: SEntry, s2: SEntry|None, rest: Chain<SEntry>,
 fun nthEntry(es: List<SEntry>, ix: Int): SEntry|None
   ret head(drop(es, ix))
 
-fun unifyList(gs: Chain<Spec>, cs: Chain<Spec>, names: List<String>,
+fun [tail] unifyList(gs: Chain<Spec>, cs: Chain<Spec>, names: List<String>,
               mapping: List<Binding>): Unify
   ret match(gs)
     (nil: ChainEnd) => UMap(mapping)
@@ -613,7 +613,7 @@ fun [tail] sharesLoop(a: Chain<String>, b: List<String>): Bool
 # absent (deferral, not failure — the concrete side may still be settling).
 # Matched by STRUCTURAL equality (Python `cm == gm`): a raw SNamed spelling has
 # no uid yet must still match its equal spelling on the concrete side.
-fun removeGround(gs: Chain<Spec>, con: List<Spec>): List<Spec>|None
+fun [tail] removeGround(gs: Chain<Spec>, con: List<Spec>): List<Spec>|None
   ret match(gs)
     (nil: ChainEnd) => con
     (l: ChainLink)  => match(removeOne(con, l.value))

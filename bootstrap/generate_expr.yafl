@@ -263,7 +263,7 @@ fun [tail] getOptLevel(r: Resolver): Int
 # delegate to union_repr.classifyRepr(...).ctype() — the R1/R2/R3 decision.
 # ══════════════════════════════════════════════════════════════════════════
 
-fun specGenerate(sp: Spec, r: Resolver): CgType
+fun [tail] specGenerate(sp: Spec, r: Resolver): CgType
   ret match(sp)
     (b: SBuiltin)      => builtinCType(b.sbName)
     (cl: SCallable)    => CgFuncPointer()
@@ -1279,7 +1279,7 @@ fun buildLoopPhi(ctypes: List<CgType>, refs: List<RParam>, lv: List<LoopRename>,
 fun recurSourcesAt(recurSources: List<RecurSource>, i: Int): List<OpPhiSource>
   ret map(recurSources, (rs: RecurSource) => OpPhiSource(rs.rsLabel, forceNth(rs.rsPhiIns, i)))
 
-fun forceNth<T>(l: List<T>, i: Int): T
+fun [tail] forceNth<T>(l: List<T>, i: Int): T
   ret match(listAt<T>(l, i))
     (v: T) => v
     ()      => forceNth<T>(l, 0)   # unreachable: caller always indexes in range

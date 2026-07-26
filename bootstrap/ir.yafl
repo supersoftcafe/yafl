@@ -47,7 +47,7 @@ fun pyStrOpt(o: String|None): String
 
 class [final] StrCount(scName: String, scCount: Int)
 
-fun strCountGet(l: List<StrCount>, name: String): Int
+fun [tail] strCountGet(l: List<StrCount>, name: String): Int
   ret match(head<StrCount>(l))
     (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail<StrCount>(l), name)
     ()             => 0
@@ -55,7 +55,7 @@ fun strCountGet(l: List<StrCount>, name: String): Int
 fun strCountIncr(l: List<StrCount>, name: String): List<StrCount>
   ret strCountIncrLoop(l, name, false, List<StrCount>())
 
-fun strCountIncrLoop(l: List<StrCount>, name: String, found: Bool, acc: List<StrCount>): List<StrCount>
+fun [tail] strCountIncrLoop(l: List<StrCount>, name: String, found: Bool, acc: List<StrCount>): List<StrCount>
   ret match(head<StrCount>(l))
     (e: StrCount) => strCountIncrLoop(tail<StrCount>(l), name, found || e.scName == name,
                         append<StrCount>(acc, e.scName == name ? StrCount(e.scName, e.scCount + 1) : e))
@@ -140,7 +140,7 @@ fun phiSourceFor(phi: Op, predLabel: String): RParam
     (p: OpPhi) => phiSourceForSources(p.phiSources, predLabel)
     (o: Op)    => RpNullPointer()   # unreachable
 
-fun phiSourceForSources(sources: List<OpPhiSource>, predLabel: String): RParam
+fun [tail] phiSourceForSources(sources: List<OpPhiSource>, predLabel: String): RParam
   ret match(head<OpPhiSource>(sources))
     (s: OpPhiSource) => s.sourceLabel == predLabel ? s.sourceValue : phiSourceForSources(tail<OpPhiSource>(sources), predLabel)
     ()                => RpNullPointer()   # unreachable (Python raises AssertionError)
@@ -274,7 +274,7 @@ fun [tail] cgSimplifyOnePass(c: Chain<Op>, acc: List<Op>, changed: Bool): (ops: 
                             true)
         : cgSimplifyOnePass(l.next, append<Op>(acc, l.value), changed)
 
-fun cgSimplifyControlFlowFixpoint(ops: List<Op>): List<Op>
+fun [tail] cgSimplifyControlFlowFixpoint(ops: List<Op>): List<Op>
   let pass2 = cgSimplifyOnePass(chain(ops), List<Op>(), false)
   ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
 
@@ -399,7 +399,7 @@ fun cgFunctionStripUnusedOperations(f: CgFunction): CgFunction
 
 # ── fold_struct_fields ───────────────────────────────────────────────────────
 
-fun rpFoldStructFieldLookup(values: List<RpNamedValue>, field: String, fallback: RParam): RParam
+fun [tail] rpFoldStructFieldLookup(values: List<RpNamedValue>, field: String, fallback: RParam): RParam
   ret match(head<RpNamedValue>(values))
     (v: RpNamedValue) => v.name == field ? v.value : rpFoldStructFieldLookup(tail<RpNamedValue>(values), field, fallback)
     ()                  => fallback
@@ -482,7 +482,7 @@ fun cgBuildAliasesStep(acc: List<AliasEntry>, op: Op, writes: List<StrCount>, ze
 fun cgBuildAliases(ops: List<Op>, writes: List<StrCount>, zeroInit: List<String>, gcSafe: List<String>, paramNames: List<String>): List<AliasEntry>
   ret fold(ops, List<AliasEntry>(), (acc: List<AliasEntry>, op: Op) => cgBuildAliasesStep(acc, op, writes, zeroInit, gcSafe, paramNames))
 
-fun aliasLookup(aliases: List<AliasEntry>, name: String): RParam|None
+fun [tail] aliasLookup(aliases: List<AliasEntry>, name: String): RParam|None
   ret match(head<AliasEntry>(aliases))
     (e: AliasEntry) => e.aeVarName == name ? e.aeAliasOf : aliasLookup(tail<AliasEntry>(aliases), name)
     ()               => None
@@ -585,7 +585,7 @@ fun cseIsEligible(rparam: RParam, multiWrite: List<String>): Bool
 
 class [final] AvailEntry(cseExpr: RParam, cseTarget: RParam)
 
-fun availableGet(available: List<AvailEntry>, key: RParam): RParam|None
+fun [tail] availableGet(available: List<AvailEntry>, key: RParam): RParam|None
   ret match(head<AvailEntry>(available))
     (e: AvailEntry) => eqRParam(e.cseExpr, key) ? e.cseTarget : availableGet(tail<AvailEntry>(available), key)
     ()               => None

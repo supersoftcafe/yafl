@@ -432,7 +432,7 @@ fun countOf(counts: Dict<String, Int>, key: String): Int
 # ── the count flow analysis ─────────────────────────────────────────────────
 # Per-execution-path consumption of the env's obligations by an expression.
 
-fun linCount(x: PExpr, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
+fun [tail] linCount(x: PExpr, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
   ret match(x)
     (nm: PeName)   => LinOut(countPath(x, env, r), acc)
     (d: PeDot)     => LinOut(countPath(x, env, r), acc)
@@ -742,7 +742,7 @@ fun countPath(x: PExpr, env: LinEnv, r: Resolver): LinCnt
 
 class [final] RootPath(rpRoot: String, rpPath: String)
 
-fun resolvePathRoot(x: PExpr, fields: List<String>): RootPath|None
+fun [tail] resolvePathRoot(x: PExpr, fields: List<String>): RootPath|None
   ret match(x)
     (d: PeDot)   => resolvePathRoot(d.base, prepend(d.member, fields))
     (nm: PeName) => RootPath(nm.refName, join(fields, "/"))

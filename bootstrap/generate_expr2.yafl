@@ -248,7 +248,7 @@ fun adjustBoundValue(armCtype: CgType, value: RParam): RParam
           : value)
     ()                       => value
 
-fun eqCgTypeList(a: List<CgType>, b: List<CgType>): Bool
+fun [tail] eqCgTypeList(a: List<CgType>, b: List<CgType>): Bool
   ret match(head(a))
     (xa: CgType) => match(head(b))
       (xb: CgType) => eqCgType(xa, xb) && eqCgTypeList(tail(a), tail(b))

@@ -152,7 +152,7 @@ fun scanFunction(f: CgFunction): ScanSets
 fun removedUnusedStuff(a: CgApp): CgApp
   ret trimLoop(a, ssFunction1("__entrypoint__"), ssEmpty())
 
-fun trimLoop(a: CgApp, scanSets: ScanSets, toApp: ScanSets): CgApp
+fun [tail] trimLoop(a: CgApp, scanSets: ScanSets, toApp: ScanSets): CgApp
   let fromGlobals = fold(scanSets.ssGlobals.setNames, ssEmpty(),
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppGlobal(a, n)))
   let fromObjects = fold(scanSets.ssObjects.setNames, fromGlobals,

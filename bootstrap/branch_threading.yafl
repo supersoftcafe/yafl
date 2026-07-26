@@ -11,7 +11,7 @@ import System
 fun threadBranches(a: CgApp): CgApp
   ret appWithFunctions(a, map(a.appFunctions, btFunction))
 
-fun btFunction(f: CgFunction): CgFunction
+fun [tail] btFunction(f: CgFunction): CgFunction
   let out = btOnce(f.fnOps)
   ret out.btChanged
     ? btFunction(cgFunctionStripUnusedOperations(cgFunctionWith(f, out.btOps, f.fnStackVars)))

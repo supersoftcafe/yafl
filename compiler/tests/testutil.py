@@ -55,18 +55,13 @@ _CLANG_BUILD_FLAGS = [
 _STATIC_LINK = ["-x", "none", _LIBYAFL_A, "-lpthread", "-lm", "-ldl", "-Wl,--gc-sections"]
 _RUN_ENV = {**os.environ}   # static binaries need no LD_LIBRARY_PATH
 
-# The port keeps non-suspending calls on the C stack (heap frames only where
-# a call can suspend), so compiler-sized inputs recurse deeper than the 8MB
-# default — at -O3 the fatter post-inline op lists overflow it (stackguard
-# exit 134). Give port subprocesses a 1GiB stack; the real fix (iterative
-# walks / [tail] steppers) is a tracked investigation.
-_STACK_BYTES = 1 << 30
-
+# The port runs within the standard 8MB stack: every deep walk is a [tail]
+# loop or dict-indexed iteration (verified 2026-07-26 — yspell at c1/c3 and
+# a full self-host compile all complete at ulimit -s 8192; sampled depths
+# 23-84 frames). raise_stack_limit stays as a no-op shim only so external
+# callers need no change if a regression ever demands it back.
 def raise_stack_limit() -> None:
-    import resource
-    soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
-    want = _STACK_BYTES if hard == resource.RLIM_INFINITY else min(_STACK_BYTES, hard)
-    resource.setrlimit(resource.RLIMIT_STACK, (want, hard))
+    pass
 
 
 def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
@@ -255,7 +250,7 @@ def _bootstrap_tree_hash() -> str:
 def shared_bootstrap_binary() -> str:
     """Path to a bootstrap binary for the CURRENT tree, building it at most
     once across processes."""
-    _sys.setrecursionlimit(20000)
+    _sys.setrecursionlimit(5000)   # see compiler.py — parser needs ~1.5k
     tree = _bootstrap_tree_hash()
     cache_dir = _Path(_tf.gettempdir()) / f"yafl-bootstrap-cache-{os.getuid()}"
     cache_dir.mkdir(exist_ok=True)

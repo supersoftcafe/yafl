@@ -49,7 +49,7 @@ fun phAllMethodNames(vtables: List<VtableEntry>): List<String>
 fun phDedupeNames(names: List<String>): List<String>
   ret fold(names, List<String>(), (acc: List<String>, n: String) => strListAdd(acc, n))
 
-fun phAssignIdsLoop(names: List<String>, nextId: Int, acc: List<MethodId>): List<MethodId>
+fun [tail] phAssignIdsLoop(names: List<String>, nextId: Int, acc: List<MethodId>): List<MethodId>
   ret match(head<String>(names))
     (n: String) => phAssignIdsLoop(tail<String>(names), nextId + 1, append<MethodId>(acc, MethodId(n, nextId)))
     ()           => acc
@@ -60,12 +60,12 @@ fun phAssignIds(names: List<String>): List<MethodId>
 fun phVtableSizes(vtables: List<VtableEntry>): List<VtableSize>
   ret map(vtables, (v: VtableEntry) => VtableSize(v.className, nextPowerOfTwo(chainLength(chain(v.methods)) * 2)))
 
-fun methodIdGet(ids: List<MethodId>, name: String): Int
+fun [tail] methodIdGet(ids: List<MethodId>, name: String): Int
   ret match(head<MethodId>(ids))
     (m: MethodId) => m.mName == name ? m.mId : methodIdGet(tail<MethodId>(ids), name)
     ()             => 0   # unreachable: every method name has an assigned id
 
-fun vtableSizeGet(sizes: List<VtableSize>, className: String): Int
+fun [tail] vtableSizeGet(sizes: List<VtableSize>, className: String): Int
   ret match(head<VtableSize>(sizes))
     (v: VtableSize) => v.vsClassName == className ? v.vsSize : vtableSizeGet(tail<VtableSize>(sizes), className)
     ()                => 0   # unreachable: every class has an assigned size
@@ -75,37 +75,40 @@ fun vtableSizeGet(sizes: List<VtableSize>, className: String): Int
 class [final] SlotEntry(slotIndex: Int, slotMethod: String)
 class [final] CollisionPair(pairA: String, pairB: String)
 
-fun slotEntryGet(slots: List<SlotEntry>, idx: Int): String|None
+fun [tail] slotEntryGet(slots: List<SlotEntry>, idx: Int): String|None
   ret match(head<SlotEntry>(slots))
     (s: SlotEntry) => s.slotIndex == idx ? s.slotMethod : slotEntryGet(tail<SlotEntry>(slots), idx)
     ()              => None
 
-fun phScanClassSlotsStep(m: String, rest: List<String>, methodIds: List<MethodId>, mask: Int, slots: List<SlotEntry>, pairs: List<CollisionPair>): (slots: List<SlotEntry>, pairs: List<CollisionPair>)
-  let idx = methodIdGet(methodIds, m) & mask
-  ret match(slotEntryGet(slots, idx))
-    (existing: String) => phScanClassSlots(rest, methodIds, mask, slots, append<CollisionPair>(pairs, CollisionPair(m, existing)))
-    ()                   => phScanClassSlots(rest, methodIds, mask, append<SlotEntry>(slots, SlotEntry(idx, m)), pairs)
-
-fun phScanClassSlots(methods: List<String>, methodIds: List<MethodId>, mask: Int, slots: List<SlotEntry>, pairs: List<CollisionPair>): (slots: List<SlotEntry>, pairs: List<CollisionPair>)
+# Both scan loops are SINGLE self-recursive steppers ([tail] refuses mutual
+# pairs; the loop/step split left two C frames per element and the vtable
+# walk alone held 8,440 frames at self-host scale — the last 8MB overflow).
+# The per-element work rides inline; the class scan hands its tuple through
+# a pipe so the outer self-call stays direct.
+fun [tail] phScanClassSlots(methods: List<String>, methodIds: List<MethodId>, mask: Int, slots: List<SlotEntry>, pairs: List<CollisionPair>): (slots: List<SlotEntry>, pairs: List<CollisionPair>)
   ret match(head<String>(methods))
-    (m: String) => phScanClassSlotsStep(m, tail<String>(methods), methodIds, mask, slots, pairs)
+    (m: String) => match(slotEntryGet(slots, methodIdGet(methodIds, m) & mask))
+      (existing: String) => phScanClassSlots(tail<String>(methods), methodIds, mask, slots,
+                                             append<CollisionPair>(pairs, CollisionPair(m, existing)))
+      ()                   => phScanClassSlots(tail<String>(methods), methodIds, mask,
+                                               append<SlotEntry>(slots, SlotEntry(methodIdGet(methodIds, m) & mask, m)),
+                                               pairs)
     ()           => (slots, pairs)
 
-fun phScanAllSlotsStep(v: VtableEntry, rest: List<VtableEntry>, methodIds: List<MethodId>, vtableSizes: List<VtableSize>, pairs: List<CollisionPair>): List<CollisionPair>
-  let mask = vtableSizeGet(vtableSizes, v.className) - 1
-  let scanned = phScanClassSlots(v.methods, methodIds, mask, List<SlotEntry>(), pairs)
-  ret phScanAllSlots(rest, methodIds, vtableSizes, scanned.pairs)
-
-fun phScanAllSlots(vtables: List<VtableEntry>, methodIds: List<MethodId>, vtableSizes: List<VtableSize>, pairs: List<CollisionPair>): List<CollisionPair>
+fun [tail] phScanAllSlots(vtables: List<VtableEntry>, methodIds: List<MethodId>, vtableSizes: List<VtableSize>, pairs: List<CollisionPair>): List<CollisionPair>
   ret match(head<VtableEntry>(vtables))
-    (v: VtableEntry) => phScanAllSlotsStep(v, tail<VtableEntry>(vtables), methodIds, vtableSizes, pairs)
+    (v: VtableEntry) =>
+      phScanClassSlots(v.methods, methodIds, vtableSizeGet(vtableSizes, v.className) - 1,
+                       List<SlotEntry>(), pairs)
+      |> (slots2: List<SlotEntry>, pairs2: List<CollisionPair>) =>
+        phScanAllSlots(tail<VtableEntry>(vtables), methodIds, vtableSizes, pairs2)
     ()                => pairs
 
 # ── conflict graph + greedy vertex cover ─────────────────────────────────────
 
 class [final] ConflictEntry(cfMethod: String, cfNeighbors: List<String>)
 
-fun conflictNeighborsGet(graph: List<ConflictEntry>, method: String): List<String>
+fun [tail] conflictNeighborsGet(graph: List<ConflictEntry>, method: String): List<String>
   ret match(head<ConflictEntry>(graph))
     (e: ConflictEntry) => e.cfMethod == method ? e.cfNeighbors : conflictNeighborsGet(tail<ConflictEntry>(graph), method)
     ()                   => List<String>()

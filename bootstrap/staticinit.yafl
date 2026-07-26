@@ -56,7 +56,7 @@ fun siResolveField(acc: SiVals, nv: RpNamedValue, a: CgApp): SiVals
 # are constants; a NewStruct is constant when every field is (rebuilt from
 # the traced constants); a GlobalVar reads a non-lazy, non-object global's
 # Integer/String init; a StackVar dead-ends without a value map.
-fun siTraceToConstant(val: RParam, vmap: FunValues, a: CgApp): RParam|None
+fun [tail] siTraceToConstant(val: RParam, vmap: FunValues, a: CgApp): RParam|None
   ret match(val)
     (i: RpInteger)    => val
     (s2: RpString)    => val
@@ -322,7 +322,7 @@ fun [tail] siPsLoop(fs: Chain<CgFunction>, a: CgApp, counter: Int,
 
 # ── inline_single_use_globals ───────────────────────────────────────────────
 
-fun siGlobalNamesInRp(val: RParam): List<String>
+fun [tail] siGlobalNamesInRp(val: RParam): List<String>
   ret match(val)
     (gv: RpGlobalVar)   => list1(gv.name)
     (ns: RpNewStruct)   => fold(ns.values, List<String>(),

@@ -114,7 +114,7 @@ fun parseType(ps: Ps): (v: Spec|PFail, rest: Ps)
     (f: PFail) => a
     (t1: Spec)   => typeUnionLoop(t1, append(List<Spec>(), t1), lr, a.rest)
 
-fun typeUnionLoop(first: Spec, acc: List<Spec>, lr: PLine, ps: Ps): (v: Spec|PFail, rest: Ps)
+fun [tail] typeUnionLoop(first: Spec, acc: List<Spec>, lr: PLine, ps: Ps): (v: Spec|PFail, rest: Ps)
   if !atSym(ps, "|")
     ret match(head(acc))
       (only: Spec) => isEmpty(tail(acc)) ? (only, ps) : (SCombination(acc, lr), ps)
@@ -201,7 +201,7 @@ fun typeEntryDefault(name: System::String, ty: Spec|System::None,
     (f: PFail) => (harden(f, "missing default value"), d.rest)
     (a: PExpr) => (SEntry(name, ty, a), d.rest)
 
-fun parseTypeEntries(ps: Ps, acc: List<SEntry>): (v: List<SEntry>|PFail, rest: Ps)
+fun [tail] parseTypeEntries(ps: Ps, acc: List<SEntry>): (v: List<SEntry>|PFail, rest: Ps)
   let e = parseTypeEntry(ps)
   ret match(e.v)
     (f: PFail)  => f.hard ? (f, e.rest) : (acc, ps)
@@ -216,7 +216,7 @@ fun parseTypeNamed(ps: Ps): (v: Spec|PFail, rest: Ps)
     ret (softFail("expected type name", ps), ps)
   ret typeNamedPath(name.text, lineAt(ps), bump(ps))
 
-fun typeNamedPath(path: System::String, lr: PLine, ps: Ps): (v: Spec|PFail, rest: Ps)
+fun [tail] typeNamedPath(path: System::String, lr: PLine, ps: Ps): (v: Spec|PFail, rest: Ps)
   if atSym(ps, "::") && isIdentTok(peek(bump(ps)))
     ret typeNamedPath(path + "::" + peek(bump(ps)).text, lr, bump(bump(ps)))
   if !atSym(ps, "<")
@@ -229,7 +229,7 @@ fun typeNamedPath(path: System::String, lr: PLine, ps: Ps): (v: Spec|PFail, rest
 # "<" already consumed: type ("," type)* close-angle. A failure before the
 # closer is SOFT — `a < b` must fall back to comparison in expressions, and
 # the Python `maybe(requires(sym("<"), …))` backtracks the same way.
-fun parseTypeArgs(ps: Ps, acc: List<Spec>): (v: List<Spec>|PFail, rest: Ps)
+fun [tail] parseTypeArgs(ps: Ps, acc: List<Spec>): (v: List<Spec>|PFail, rest: Ps)
   let t = parseType(ps)
   ret match(t.v)
     (f: PFail) => (PFail(false, f.msg, f.line, f.col), t.rest)
@@ -266,7 +266,7 @@ fun attrNameText(t: Token): System::String
       isSymTok(t, t.text) ? t.text : ""
     () => ""
 
-fun parseAttrList(ps: Ps, acc: List<PAttr>): (v: List<PAttr>|PFail, rest: Ps)
+fun [tail] parseAttrList(ps: Ps, acc: List<PAttr>): (v: List<PAttr>|PFail, rest: Ps)
   let name = attrNameText(peek(ps))
   if name == ""
     ret (hardFail("expected attribute name", ps), ps)
@@ -333,7 +333,7 @@ fun parseTargetNamed(attrs: List<PAttr>, lr: PLine,
       (sl: List<PStmt>) => parseTargetTail(attrs, "", sl, lr, subs.rest)
   ret (softFail("expected binding name", ps), ps)
 
-fun parseTargetList(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
+fun [tail] parseTargetList(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
   if atSym(ps, ")")
     ret (acc, bump(ps))
   let t = parseTarget(ps)
@@ -466,7 +466,7 @@ fun parseOr(ps: Ps): (v: PExpr|PFail, rest: Ps)
     (f: PFail) => a
     (l: PExpr) => orLoop(l, a.rest)
 
-fun orLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
+fun [tail] orLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if !atSym(ps, "||")
     ret (lhs, ps)
   let r = parseAnd(bump(ps))
@@ -481,7 +481,7 @@ fun parseAnd(ps: Ps): (v: PExpr|PFail, rest: Ps)
     (f: PFail) => a
     (l: PExpr) => andLoop(l, a.rest)
 
-fun andLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
+fun [tail] andLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if !atSym(ps, "&&")
     ret (lhs, ps)
   let r = parseBind(bump(ps))
@@ -501,7 +501,7 @@ fun parseBind(ps: Ps): (v: PExpr|PFail, rest: Ps)
     (f: PFail) => a
     (l: PExpr) => bindPipeLoop(l, lr, a.rest)
 
-fun bindPipeLoop(lhs: PExpr, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
+fun [tail] bindPipeLoop(lhs: PExpr, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
   let t = peek(ps)
   let op = match(t.kind)
     (k: KSymbol) => t.text == "?>" || t.text == "|>" ? t.text : ""
@@ -551,7 +551,7 @@ fun binLevel(ps: Ps, ops: String,
     (f: PFail) => a
     (l: PExpr) => binLevelLoop(l, lr, a.rest, ops, sub)
 
-fun binLevelLoop(lhs: PExpr, lr: PLine, ps: Ps, ops: String,
+fun [tail] binLevelLoop(lhs: PExpr, lr: PLine, ps: Ps, ops: String,
                  sub: (:Ps): (v: PExpr|PFail, rest: Ps)): (v: PExpr|PFail, rest: Ps)
   let t = peek(ps)
   let hit = match(t.kind)
@@ -609,7 +609,7 @@ fun parsePostfix(ps: Ps): (v: PExpr|PFail, rest: Ps)
     (f: PFail) => t
     (a: PExpr) => postfixLoop(a, t.rest)
 
-fun postfixLoop(base: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
+fun [tail] postfixLoop(base: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if atSym(ps, "(")
     let lr = lineAt(bump(ps))
     let args = parseTupleTerm(ps)
@@ -709,7 +709,7 @@ fun parseSymbolTerminal(sym: String, ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun parseNamed(ps: Ps): (v: PExpr|PFail, rest: Ps)
   ret namedPath(peek(ps).text, lineAt(ps), bump(ps))
 
-fun namedPath(path: String, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
+fun [tail] namedPath(path: String, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if atSym(ps, "::") && isIdentTok(peek(bump(ps)))
     ret namedPath(path + "::" + peek(bump(ps)).text, lr, bump(bump(ps)))
   if !atSym(ps, "<")
@@ -765,7 +765,7 @@ fun parseTupleTerm(ps: Ps): (v: PExpr|PFail, rest: Ps)
     (list: List<PTupEnt>) => (PeTuple(list, lr), args.rest)
 
 # "(" already consumed: [name =] expr / *expr, comma separated, to ")".
-fun parseArgList(ps: Ps, acc: List<PTupEnt>): (v: List<PTupEnt>|PFail, rest: Ps)
+fun [tail] parseArgList(ps: Ps, acc: List<PTupEnt>): (v: List<PTupEnt>|PFail, rest: Ps)
   if atSym(ps, ")")
     ret (acc, bump(ps))
   let a = parseArg(ps)
@@ -841,7 +841,7 @@ fun parseMatch(kwLr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
       ? (hardFail("expected ')' after match subject", subj.rest), subj.rest)
       : parseArms(a, lr, bump(subj.rest), List<PArm>())
 
-fun parseArms(subj: PExpr, lr: PLine, ps: Ps,
+fun [tail] parseArms(subj: PExpr, lr: PLine, ps: Ps,
               acc: List<PArm>): (v: PExpr|PFail, rest: Ps)
   let t = peek(ps)
   if !isSymTok(t, "(")
@@ -866,7 +866,7 @@ fun parseLiteralArmHead(ps: Ps): (v: List<PLit>|PFail, rest: Ps)
     ret (List<PLit>(), bump(ps))
   ret parseLiteralList(ps, List<PLit>())
 
-fun parseLiteralList(ps: Ps, acc: List<PLit>): (v: List<PLit>|PFail, rest: Ps)
+fun [tail] parseLiteralList(ps: Ps, acc: List<PLit>): (v: List<PLit>|PFail, rest: Ps)
   let l = parseMatchLiteral(ps)
   ret match(l.v)
     (f: PFail) => (PFail(false, f.msg, f.line, f.col), l.rest)
@@ -980,7 +980,7 @@ fun armBodyNoGuard(name: String, ty: Spec|None, lits: List<PLit>, lr: PLine,
 fun blockExit(inner: Ps, outer: Ps): Ps
   ret Ps(inner.ts, outer.fline, outer.findent, outer.srcFile)
 
-fun parseStmts(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
+fun [tail] parseStmts(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
   let t = peek(ps)
   if isEof(t)
     ret (acc, ps)
@@ -1079,7 +1079,7 @@ fun parsePath(lr: PLine, ps: Ps, isNamespace: Bool): (v: PStmt|PFail, rest: Ps)
     ret (hardFail("expected name", ps), ps)
   ret parsePathRest(t.text, lr, bump(ps), isNamespace)
 
-fun parsePathRest(path: String, lr: PLine, ps: Ps,
+fun [tail] parsePathRest(path: String, lr: PLine, ps: Ps,
                   isNamespace: Bool): (v: PStmt|PFail, rest: Ps)
   if atSym(ps, "::") && isIdentTok(peek(bump(ps)))
     ret parsePathRest(path + "::" + peek(bump(ps)).text, lr, bump(bump(ps)), isNamespace)
@@ -1341,7 +1341,7 @@ fun parseEnumVariants(name: String, gen: List<PGen>, hasParams: Bool,
     (vl: List<PStmt>) => (PsEnum(hashName(name, lr), gen,
                                  funParamsStmt(pars, lr), vl, hasParams, lr), vs.rest)
 
-fun parseVariantList(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
+fun [tail] parseVariantList(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
   let t = peek(ps)
   if !isSymTok(t, "enum")
     ret (acc, ps)

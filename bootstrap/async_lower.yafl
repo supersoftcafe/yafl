@@ -282,7 +282,7 @@ fun [tail] alBlockLabelsLoop(ops: List<Op>, i: Int, cur: String, acc: List<Strin
     (o: Op)       => cur
   ret alBlockLabelsLoop(ops, i + 1, nxt, append(acc, nxt))
 
-fun alLivenessIterate(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>): List<Op>
+fun [tail] alLivenessIterate(ops: List<Op>, labels: List<LabelIdx>, blockLabels: List<String>): List<Op>
   let newOps = alLivenessPass(ops, labels, blockLabels)
   ret alOpsSavedEq(ops, newOps, 0) ? newOps : alLivenessIterate(newOps, labels, blockLabels)
 

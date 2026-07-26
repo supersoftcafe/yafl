@@ -79,7 +79,7 @@ fun sdCountOf(counts: Dict<String, Int>, name: String): Int
 
 # Chase `param` through StackVar copies to its defining value, if that value
 # is statically known. Returns a NewStruct/Integer/... or None.
-fun resolveValue(param: RParam, defs: SsaDefs, depth: Int): RParam|None
+fun [tail] resolveValue(param: RParam, defs: SsaDefs, depth: Int): RParam|None
   if depth <= 0
     ret None
   ret match(param)

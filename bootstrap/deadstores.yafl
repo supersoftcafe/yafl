@@ -15,7 +15,7 @@ import System
 fun eliminateDeadStores(a: CgApp): CgApp
   ret appWithFunctions(a, map(a.appFunctions, dsFunction))
 
-fun dsFunction(f: CgFunction): CgFunction
+fun [tail] dsFunction(f: CgFunction): CgFunction
   let out = dsOnce(f)
   ret out.changed ? dsFunction(out.fn) : f
 

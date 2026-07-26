@@ -14,7 +14,7 @@ import System
 fun propagateCopies(a: CgApp): CgApp
   ret appWithFunctions(a, map(a.appFunctions, cpFunction))
 
-fun cpFunction(f: CgFunction): CgFunction
+fun [tail] cpFunction(f: CgFunction): CgFunction
   let out = cpOnce(f)
   ret out.cpChanged ? cpFunction(out.cpFn) : f
 

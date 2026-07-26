@@ -39,7 +39,6 @@ _SELF_TIMEOUT = 8 * 3600   # a self-compile stage is GC-bound; be generous
 # output-assembly append (one ~83 MB contiguous run) flaked on fragmentation;
 # the banded allocator fixed that, 12 GiB is belt-and-braces.
 _SELF_ENV = dict(_RUN_ENV, YAFL_HEAP_SIZE="12G")
-from tests.testutil import raise_stack_limit as _raise_stack_limit
 
 
 def _stream() -> str:
@@ -59,8 +58,7 @@ def _stream() -> str:
 
 def _compile_self(binary: str, text: str) -> str:
     r = subprocess.run([binary, "c1"], input=text, capture_output=True,
-                       timeout=_SELF_TIMEOUT, text=True, env=_SELF_ENV,
-                       preexec_fn=_raise_stack_limit)
+                       timeout=_SELF_TIMEOUT, text=True, env=_SELF_ENV)
     assert r.returncode == 0, f"self-compile exited {r.returncode}: {r.stdout[:500]}"
     return r.stdout
 

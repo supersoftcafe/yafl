@@ -58,7 +58,7 @@ fun isNoneStr(s2: String|None): Bool
 
 # ── the fixed point ──────────────────────────────────────────────────────────
 
-fun siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: List<String>): List<String>
+fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: List<String>): List<String>
   let grown = fold(a.appFunctions, syncSet,
                    (acc: List<String>, f: CgFunction) => siTryAdd(acc, f, impls))
   ret listLen(grown) == listLen(syncSet) ? grown : siFixpoint(a, impls, grown)

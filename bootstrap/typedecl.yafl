@@ -76,7 +76,7 @@ class [final] CgLitField(fieldName: String, fieldValue: CgLit)
 fun dedent4(s: String): String
   ret length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
 
-fun memberInt(l: List<Int>, x: Int): Bool
+fun [tail] memberInt(l: List<Int>, x: Int): Bool
   ret match(head<Int>(l))
     (h: Int) => h == x ? true : memberInt(tail<Int>(l), x)
     ()       => false
@@ -106,7 +106,7 @@ fun cgIsStructLike(t: CgType): Bool
 
 # ── equality (dict-key semantics: Python's frozen-dataclass structural eq) ──
 
-fun eqCgType(a: CgType, b: CgType): Bool
+fun [tail] eqCgType(a: CgType, b: CgType): Bool
   ret match(a)
     (x: CgInt) => match(b)
       (y: CgInt) => x.precision == y.precision
@@ -139,7 +139,7 @@ fun eqCgType(a: CgType, b: CgType): Bool
       (y: CgTaskWrapper) => eqCgType(x.inner, y.inner)
       (o: CgType)        => false
 
-fun eqCgFields(a: List<CgField>, b: List<CgField>): Bool
+fun [tail] eqCgFields(a: List<CgField>, b: List<CgField>): Bool
   ret match(head<CgField>(a))
     (fa: CgField) => match(head<CgField>(b))
       (fb: CgField) => fa.fieldName == fb.fieldName && eqCgType(fa.fieldType, fb.fieldType)
@@ -165,7 +165,7 @@ fun cgWordsUpperBound(t: CgType): Int
 fun cgFieldsWordsUpperBound(fields: List<CgField>): Int
   ret fold(fields, 0, (acc: Int, fld: CgField) => acc + cgWordsUpperBound(fld.fieldType))
 
-fun cgHasPointers(t: CgType): Bool
+fun [tail] cgHasPointers(t: CgType): Bool
   ret match(t)
     (i: CgInt) => false
     (f: CgFloat) => false
@@ -257,7 +257,7 @@ fun cgDeclareCachedMiss(t: CgType, cache0: List<CgCacheEntry>): (text: String, c
   let typedefText = "typedef " + built.text + " " + name + ";\n"
   ret (name, append(built.cache, CgCacheEntry(t, name, typedefText)))
 
-fun cgCacheLookup(cache: List<CgCacheEntry>, t: CgType): String|None
+fun [tail] cgCacheLookup(cache: List<CgCacheEntry>, t: CgType): String|None
   ret match(head<CgCacheEntry>(cache))
     (e: CgCacheEntry) => eqCgType(e.entryType, t) ? e.entryName : cgCacheLookup(tail<CgCacheEntry>(cache), t)
     ()                => None
@@ -388,7 +388,7 @@ fun cgLitFieldsEntries(data: CgLit): List<CgLitField>
     (lf: CgLitFields) => lf.entries
     (o: CgLit)        => List<CgLitField>()
 
-fun cgLitFieldsGet(entries: List<CgLitField>, name: String): CgLit|None
+fun [tail] cgLitFieldsGet(entries: List<CgLitField>, name: String): CgLit|None
   ret match(head<CgLitField>(entries))
     (f: CgLitField) => f.fieldName == name ? f.fieldValue : cgLitFieldsGet(tail<CgLitField>(entries), name)
     ()              => None
@@ -567,7 +567,7 @@ fun cgBuildInitialSlotsLoopHit(prims: List<CgType>, restVariants: List<List<CgTy
 # Phase 2: repeatedly merge a smaller fixed-width int slot into a disjoint
 # larger int slot, restarting the scan from the beginning after every merge
 # (mirrors Python's `while changed: ... break` restart-from-top behaviour).
-fun cgFindMergeInner(slots: List<CgSlot>, si: Int, s: CgSlot, li: Int): Int|None
+fun [tail] cgFindMergeInner(slots: List<CgSlot>, si: Int, s: CgSlot, li: Int): Int|None
   ret li >= chainLength(chain(slots))
     ? None
     : (li == si ? cgFindMergeInner(slots, si, s, li + 1) : cgFindMergeInnerAt(slots, si, s, li))
@@ -632,7 +632,7 @@ fun forceSlot(x: CgSlot|None): CgSlot
 # primitives of the same type produces exactly that).
 class [final] CgIdxSlot(isIndex: Int, isSlot: CgSlot)
 
-fun cgActiveWithIndicesLoop(slots: List<CgSlot>, i: Int, acc: List<CgIdxSlot>): List<CgIdxSlot>
+fun [tail] cgActiveWithIndicesLoop(slots: List<CgSlot>, i: Int, acc: List<CgIdxSlot>): List<CgIdxSlot>
   ret match(head<CgSlot>(slots))
     (s: CgSlot) => cgActiveWithIndicesLoop(tail<CgSlot>(slots), i + 1,
         s.active ? append<CgIdxSlot>(acc, CgIdxSlot(i, s)) : acc)
@@ -686,7 +686,7 @@ fun cgSlotFieldsOf(active: List<CgIdxSlot>, i: Int): List<CgField>
 # index (position in `active`, post sort).
 class [final] CgRenumberEntry(oldIndex: Int, newIndex: Int)
 
-fun cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx: Int, acc: List<CgRenumberEntry>): List<CgRenumberEntry>
+fun [tail] cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx: Int, acc: List<CgRenumberEntry>): List<CgRenumberEntry>
   ret match(head<CgIdxSlot>(active))
     (s: CgIdxSlot) => cgBuildRenumberLoop(tail<CgIdxSlot>(active), newIdx + 1, append<CgRenumberEntry>(acc, CgRenumberEntry(s.isIndex, newIdx)))
     ()              => acc

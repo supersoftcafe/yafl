@@ -16,7 +16,7 @@ fun splitProjectedAggregates(a: CgApp): CgApp
   ret appWithFunctions(a, map(a.appFunctions,
         (f: CgFunction) => sroaFix(f, List<String>(), 8)))
 
-fun sroaFix(f: CgFunction, done: List<String>, left: Int): CgFunction
+fun [tail] sroaFix(f: CgFunction, done: List<String>, left: Int): CgFunction
   if left == 0
     ret f
   let sp = sroaFindSplittable(f, done)

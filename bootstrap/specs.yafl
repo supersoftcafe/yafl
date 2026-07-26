@@ -73,7 +73,7 @@ fun uidTuple(t2: STuple): String
     (ids: List<String>) => "(" + join(ids, ",") + ")"
     ()                  => ""
 
-fun entryUidList(es: Chain<SEntry>, acc: List<String>): List<String>|None
+fun [tail] entryUidList(es: Chain<SEntry>, acc: List<String>): List<String>|None
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value.seType)
@@ -89,7 +89,7 @@ fun uidUnion(cm: SCombination): String
     (l: List<String>) => "union(" + join(sort(l), ",") + ")"
     ()                => ""
 
-fun memberUids(ms: Chain<Spec>, acc: List<String>): List<String>|None
+fun [tail] memberUids(ms: Chain<Spec>, acc: List<String>): List<String>|None
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => uid(l.value)
@@ -305,7 +305,7 @@ fun bindOne(l: ChainLink<String>, i: Int, declared: List<SEntry>,
   ret bindLoop(l.next, i + 1, declared, bare, setSlot(slots, i, i), seenName)
 
 # An unbound field is filled by its default, or the binding fails.
-fun fillDefaults(ds: Chain<SEntry>, ss: Chain<Int>, i: Int,
+fun [tail] fillDefaults(ds: Chain<SEntry>, ss: Chain<Int>, i: Int,
                  acc: List<Int>): List<Int>|None
   ret match(ds)
     (nil: ChainEnd) => acc
@@ -401,7 +401,7 @@ fun parseUnionText(body: String): Spec|None
 fun parseTupleText(body: String): Spec|None
   ret tupleParts(chain(topLevelParts(body)), List<SEntry>())
 
-fun tupleParts(ps: Chain<String>, acc: List<SEntry>): Spec|None
+fun [tail] tupleParts(ps: Chain<String>, acc: List<SEntry>): Spec|None
   ret match(ps)
     (nil: ChainEnd) => STuple(acc, noLine())
     (l: ChainLink)  => trim(l.value) == ""
@@ -436,7 +436,7 @@ fun [tail] partLoop(body: String, at: Int, start: Int, depth: Int,
                  append(acc, slice(body, start, at)))
       : partLoop(body, at + 1, start, depth, acc)
 
-fun unionParts(ps: Chain<String>, acc: List<Spec>): Spec|None
+fun [tail] unionParts(ps: Chain<String>, acc: List<Spec>): Spec|None
   ret match(ps)
     (nil: ChainEnd) => SCombination(acc, noLine())
     (l: ChainLink)  => match(parseSpecText(l.value))
@@ -448,7 +448,7 @@ fun unionParts(ps: Chain<String>, acc: List<Spec>): Spec|None
 fun parseEntriesText(s: String): List<SEntry>
   ret entryParts(chain(split(s, ";")), List<SEntry>())
 
-fun entryParts(ps: Chain<String>, acc: List<SEntry>): List<SEntry>
+fun [tail] entryParts(ps: Chain<String>, acc: List<SEntry>): List<SEntry>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => entryParts(l.next, append(acc, oneEntry(trim(l.value))))

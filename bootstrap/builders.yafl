@@ -303,7 +303,7 @@ fun letName(p: PStmt): String
 # token of the expression — which for a call is its callee's start and for a
 # dot/ternary its left/condition start — except a parenthesised tuple, whose
 # own line is already the post-paren position (requires(sym("("), ...)).
-fun startLine(x: PExpr): PLine
+fun [tail] startLine(x: PExpr): PLine
   ret match(x)
     (c: PeCall)     => startLine(c.function)
     (d: PeDot)      => startLine(d.base)

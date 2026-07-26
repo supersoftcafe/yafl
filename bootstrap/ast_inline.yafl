@@ -731,14 +731,18 @@ fun [tail] hoDrive(ss: Chain<PStmt>, acc: List<PStmt>,
     (nil: ChainEnd) => isEmpty(extra)
       ? acc
       : concat(acc, hoistNestedFnsToLambdas(extra))
+    # The per-fn step returns a VALUE and the loop stays [tail] (the pipe
+    # beta-reduces before tail_loop, so the self-call is direct) — the old
+    # hoDriveFn mutual hop left TWO C frames per function statement on the
+    # stack, overflowing 8MB at self-host scale.
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => hoHasBlockBody(f)
-        ? hoDriveFn(f, l.next, acc, extra)
+        ? hoDriveFnStep(f) |> (st: PStmt, outs: List<PStmt>) =>
+            hoDrive(l.next, append(acc, st), concat(extra, outs))
         : hoDrive(l.next, append(acc, l.value), extra)
       (o: PStmt) => hoDrive(l.next, append(acc, l.value), extra)
 
-fun hoDriveFn(f: PsFun, rest: Chain<PStmt>, acc: List<PStmt>,
-              extra: List<PStmt>): List<PStmt>
+fun hoDriveFnStep(f: PsFun): (stmt: PStmt, outs: List<PStmt>)
   let ho = hoistFromBody(f)
   let renamed = isEmpty(ho.hoRenames.tmNames)
     ? ho
@@ -746,8 +750,7 @@ fun hoDriveFn(f: PsFun, rest: Chain<PStmt>, acc: List<PStmt>,
               ho.hoRenames,
               rnmStmts(chain(ho.hoOut), ho.hoRenames, List<PStmt>()))
   let newBody = hoRebuiltBody(f, renamed)
-  ret hoDrive(rest, append(acc, hoWithBody(f, newBody)),
-              concat(extra, renamed.hoOut))
+  ret (hoWithBody(f, newBody), renamed.hoOut)
 
 fun hoRebuiltBody(f: PsFun, ho: Hoisted): PExpr
   ret match(f.fBody)
@@ -1039,7 +1042,7 @@ fun aiLetRenStmt(st: PStmt, m: ThisMap): PStmt|None
 
 # ── cheapness + inlinability + the catalog ───────────────────────────────────
 
-fun aiIsCheap(x: PExpr): Bool
+fun [tail] aiIsCheap(x: PExpr): Bool
   ret match(x)
     (nm: PeName)   => true
     (i: PeInt)     => true
@@ -1637,7 +1640,7 @@ fun aiFlattenCb(x: PExpr): PExpr|None
     (bk: PeBlock) => aiFlattenLoop(bk, bk.blockStmts, bk.blockValue, false)
     (o: PExpr)    => None
 
-fun aiFlattenLoop(bk: PeBlock, merged: List<PStmt>, value: PExpr,
+fun [tail] aiFlattenLoop(bk: PeBlock, merged: List<PStmt>, value: PExpr,
                   changed: Bool): PExpr|None
   ret match(value)
     (ib: PeBlock)   => aiFlattenLoop(bk, concat(merged, ib.blockStmts),
