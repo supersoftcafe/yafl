@@ -824,12 +824,14 @@ EXPORT size_t object_get_size(object_t* ptr) {
 }
 
 EXPORT vtable_t *object_get_vtable(object_t *object) {
+    // Mask the pin bit (see yafl.h): a pinned object's vtable word carries
+    // VTABLE_PIN_BIT; every consumer of vtable FIELDS goes through here.
     vtable_t *vt = object->vtable;
     while (UNLIKELY(vtable_is_forward(vt))) {
         object_t *next_object = (object_t*)vt;
         vt = next_object->vtable;
     }
-    return vt;
+    return vtable_untag(vt);
 }
 
 EXPORT fun_t object_lookup_vtable(object_t *object, intptr_t id) {
@@ -955,7 +957,14 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
             unsigned slot = __builtin_ctzll(bits) + offset;
             bits &= bits-1;
 
-            size_t size = object_get_size((object_t*)&page->slots[slot]);
+            // PINNED objects stay at their address: a runtime primitive is
+            // mid-mutation on a raw pointer (see yafl.h object_pin). Leave it
+            // out of the evacuation set; the page simply keeps serving it.
+            object_t *candidate = (object_t*)&page->slots[slot];
+            if (vtable_is_pinned(candidate->vtable)) {
+                continue;
+            }
+            size_t size = object_get_size(candidate);
             objects[object_count].o = slot;
             objects[object_count].s = size;
             object_count += 1;
@@ -1684,8 +1693,9 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
             unsigned slot = __builtin_ctzll(bits) + offset;
             bits &= bits-1;
             object_t *object = (object_t*)&page->slots[slot];
-            // Non-compacted page: the vtable word is a real vtable.
-            vtable_t *vt = object->vtable;
+            // Non-compacted page: the vtable word is a real vtable (mask the
+            // pin bit before dereferencing fields).
+            vtable_t *vt = vtable_untag(object->vtable);
 
             GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
             while (m) {

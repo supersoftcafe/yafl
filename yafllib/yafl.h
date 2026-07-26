@@ -254,6 +254,41 @@ INLINE bool vtable_is_forward(vtable_t* vt) {
     return (size_t)((char*)vt - _memory_heap_base) < _memory_heap_bytes;
 }
 
+// ── object pinning ───────────────────────────────────────────────────────────
+// A marker bit in the OBJECT's vtable word: compaction skips a pinned object
+// (it stays at its address), letting a runtime primitive hold a raw pointer
+// and mutate a not-yet-published field without racing lazy relocation —
+// the concurrent-compaction contract ("either copy is fine") only covers
+// immutable objects. Real vtables are aligned statics so bit 0 is free, and
+// a pinned word still fails vtable_is_forward's heap-range test (the bit
+// never appears on a forwarding pointer: compaction skips pinned objects,
+// and pinning is only legal directly after allocation, before the object is
+// visible to anything but its allocator).
+enum { VTABLE_PIN_BIT = 0x1 };
+
+INLINE vtable_t* vtable_untag(vtable_t* vt) {
+    return (vtable_t*)((uintptr_t)vt & ~(uintptr_t)VTABLE_PIN_BIT);
+}
+
+INLINE bool vtable_is_pinned(vtable_t* vt) {
+    return ((uintptr_t)vt & VTABLE_PIN_BIT) != 0;
+}
+
+// Pin: DIRECTLY after allocation only — the object is not yet shared, so a
+// plain store is enough.
+INLINE void object_pin(object_t* o) {
+    o->vtable = (vtable_t*)((uintptr_t)o->vtable | VTABLE_PIN_BIT);
+}
+
+// Unpin: any time, but only on a pinned object. Release order so every
+// initialising store (the whole point of the pin) is visible before the
+// object becomes movable/publishable.
+INLINE void object_unpin(object_t* o) {
+    __atomic_store_n((uintptr_t*)&o->vtable,
+                     (uintptr_t)o->vtable & ~(uintptr_t)VTABLE_PIN_BIT,
+                     __ATOMIC_RELEASE);
+}
+
 enum {
     PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.
     PTR_TAG_TASK    = 0x1,  // If lowest bit is set, this is a task pointer. Invisible to GC, so must not be stored.
@@ -522,6 +557,7 @@ INLINE bool object_is_instance(object_t* obj, vtable_t* target) {
         obj = (object_t*)vt;
         vt = obj->vtable;
     }
+    vt = vtable_untag(vt);
     if (vt == target) return true;
     for (vtable_t** p = vt->implements_array; *p != NULL; p++) {
         if (*p == target) return true;

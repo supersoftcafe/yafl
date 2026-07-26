@@ -123,4 +123,5 @@ add_yafl_test(test_gc_fwd_chain)
 add_yafl_test(test_parallel)
 add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)
+add_yafl_test(test_pin)
 
