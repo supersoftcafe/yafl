@@ -861,16 +861,13 @@ EXPORT bool list_builder_seal(object_t *tail) {
     return true;
 }
 
+// Exported out-of-line alias of the inline accessor (yafl.h) for any caller
+// that takes its address or links against the symbol.
+#undef object_get_vtable
 EXPORT vtable_t *object_get_vtable(object_t *object) {
-    // Mask the pin bit (see yafl.h): a pinned object's vtable word carries
-    // VTABLE_PIN_BIT; every consumer of vtable FIELDS goes through here.
-    vtable_t *vt = object->vtable;
-    while (UNLIKELY(vtable_is_forward(vt))) {
-        object_t *next_object = (object_t*)vt;
-        vt = next_object->vtable;
-    }
-    return vtable_untag(vt);
+    return object_get_vtable_inline(object);
 }
+#define object_get_vtable object_get_vtable_inline
 
 EXPORT fun_t object_lookup_vtable(object_t *object, intptr_t id) {
     vtable_t* vtable = object_get_vtable(object);

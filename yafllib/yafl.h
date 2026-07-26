@@ -514,6 +514,19 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 
 
 EXTERN size_t object_get_size(object_t* ptr);
+// The hottest accessor in the system — 1.96e9 calls per compiler run when
+// out-of-line (every dispatch, instance test and marker visit). INLINE with
+// the pin-bit mask; object.c keeps an exported alias for existing callers.
+INLINE vtable_t *object_get_vtable_inline(object_t *object) {
+    vtable_t *vt = object->vtable;
+    while (UNLIKELY(vtable_is_forward(vt))) {
+        object_t *next_object = (object_t*)vt;
+        vt = next_object->vtable;
+    }
+    return vtable_untag(vt);
+}
+#define object_get_vtable object_get_vtable_inline
+
 EXTERN bool list_builder_pin(object_t *cell);
 EXTERN int64_t list_builder_slot(object_t *cell);
 EXTERN bool list_builder_link(object_t *prev, object_t *cell, int64_t slot);
