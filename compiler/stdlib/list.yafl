@@ -156,6 +156,21 @@ fun last<T>(l: List<T>): T|None
 
 # Concatenate two lists, preserving order: every element of `a` then every
 # element of `b`. O(length b) — each of b's elements is appended onto `a`.
+# Fold in REVERSE order (newest first) — no rear reversal: `rear` is stored
+# newest-first, so the walk visits it as-is; only the front (one element for
+# append-built lists) pays a small reversal. For order-invisible walks
+# (equality, uid spelling, membership) this replaces fold-over-chain(l) and
+# its O(n) reversal per call.
+fun foldRev<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
+  fun [tail] go(c: Chain<T>, acc: U): U
+    ret match(c)
+      (nil: ChainEnd) => acc
+      (c2: ChainLink) => go(c2.next, f(acc, c2.value))
+  ret match(l)
+    (e: ListEmpty) => init
+    (fl: ListFull) => go(_chainReverse<T>(fl.front, ChainEnd<T>()),
+                         go(fl.rear, init))
+
 fun concat<T>(a: List<T>, b: List<T>): List<T>
   ret fold<T, List<T> >(b, a, (acc: List<T>, x: T) => append<T>(acc, x))
 
@@ -227,13 +242,34 @@ fun reverse<T>(l: List<T>): List<T>
 # recursion put one C frame on the stack per element and overflowed a standard
 # 8MB stack on compiler-sized lists (an -O3 mega-function's label index).
 # fold is [tail]; append is amortised O(1); order preserved by construction.
+# map/filter walk in REVERSE (rear as stored, then the reversed front) and
+# PREPEND-build: the last element prepended is the first of the list, so the
+# result comes out in forward order as a FRONT-NORMAL list — later chain()
+# on it is free. Zero rear reversals; the only allocations are the result
+# links; [tail] walks throughout.
 fun map<T,U>(l: List<T>, f: (:T): U): List<U>
-  ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => append<U>(acc, f(x)))
+  fun [tail] go(c: Chain<T>, acc: Chain<U>): Chain<U>
+    ret match(c)
+      (nil: ChainEnd) => acc
+      (c2: ChainLink) => go(c2.next, ChainLink<U>(f(c2.value), acc))
+  ret match(l)
+    (e: ListEmpty) => ListEmpty<U>()
+    (fl: ListFull) => ListFull<U>(
+        go(_chainReverse<T>(fl.front, ChainEnd<T>()), go(fl.rear, ChainEnd<U>())),
+        ChainEnd<U>())
 
 
 fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
-  ret fold<T, List<T> >(l, List<T>(), (acc: List<T>, x: T) =>
-        f(x) ? append<T>(acc, x) : acc)
+  fun [tail] go(c: Chain<T>, acc: Chain<T>): Chain<T>
+    ret match(c)
+      (nil: ChainEnd) => acc
+      (c2: ChainLink) => f(c2.value) ? go(c2.next, ChainLink<T>(c2.value, acc))
+                                     : go(c2.next, acc)
+  ret match(l)
+    (e: ListEmpty) => ListEmpty<T>()
+    (fl: ListFull) => _listFromChains<T>(
+        go(_chainReverse<T>(fl.front, ChainEnd<T>()), go(fl.rear, ChainEnd<T>())),
+        ChainEnd<T>())
 
 
 fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
