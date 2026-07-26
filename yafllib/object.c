@@ -823,6 +823,44 @@ EXPORT size_t object_get_size(object_t* ptr) {
     return actual_size;
 }
 
+// ── ListBuilder support ──────────────────────────────────────────────────────
+// In-order list construction (stdlib ListBuilder): cells are ordinary
+// immutable ChainLinks; the ONE mutable step — writing the previous tail's
+// `next` — happens here, on a cell that is PINNED (compaction never moves
+// it) and not yet published (linearity: only the builder can reach it).
+// `next` is the LAST field of every ChainLink<T> instantiation (the value's
+// representation varies, the trailing pointer slot does not), so the slot is
+// object_size - sizeof(void*) from the cell base. No write barrier: under
+// SATB the barrier snapshots the OLD value, and the old value here is the
+// ChainEnd terminator the cell was constructed with — a static.
+EXPORT bool list_builder_pin(object_t *cell) {
+    object_pin(cell);
+    return true;
+}
+
+// The `next` slot index for this instantiation's cells: the TRAILING pointer
+// field = the highest set bit of the pointer mask (object_size is slot-
+// rounded and can land in padding; the mask indexes 8-byte slots from the
+// object base, vtable at bit 0). Computed ONCE per builder — the layout is
+// constant per instantiation — and carried in the builder; per-push linking
+// is then a single indexed store.
+EXPORT int64_t list_builder_slot(object_t *cell) {
+    vtable_t *vt = vtable_untag(cell->vtable);
+    ptr_mask_t mask = vt->object_pointer_locations;
+    return (int64_t)(63 - (unsigned)__builtin_clzll(mask));
+}
+
+EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
+    ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
+    object_unpin(prev);                          // prev is now frozen
+    return true;
+}
+
+EXPORT bool list_builder_seal(object_t *tail) {
+    object_unpin(tail);
+    return true;
+}
+
 EXPORT vtable_t *object_get_vtable(object_t *object) {
     // Mask the pin bit (see yafl.h): a pinned object's vtable word carries
     // VTABLE_PIN_BIT; every consumer of vtable FIELDS goes through here.

@@ -440,3 +440,37 @@ fun sort<T>(l: List<T>): List<T> where BasicCompare<T>
                        ChainEnd<T>(), true, false, List<Chain<T> >()),
           true),
         ChainEnd<T>())
+
+# ── ListBuilder ──────────────────────────────────────────────────────────────
+# Linear in-order construction: O(1) push, natural order, no reversals, and
+# build() hands back a FRONT-NORMAL list whose chain() is free. The cells are
+# ordinary immutable ChainLinks; the one mutable step — writing the previous
+# tail's `next` — lives in the runtime, on a cell that is PINNED (compaction
+# never moves it: concurrent lazy relocation's "either copy is fine" contract
+# only covers immutable objects) and not yet published. Linearity certifies
+# the confinement: the builder is consumed by every operation, so no push can
+# race another or follow build. Exactly one cell is pinned per live builder.
+# The runtime calls' results thread through _ok so no pass can discard them.
+class [linear,final] ListBuilder<T>(_head: Chain<T>, _tail: Chain<T>,
+                                     _slot: Int64, _ok: Bool)
+
+fun builder<T>(): ListBuilder<T>
+  ret ListBuilder<T>(ChainEnd<T>(), ChainEnd<T>(), truncateToInt64(0), true)
+
+fun push<T>([terminal] b: ListBuilder<T>, x: T): ListBuilder<T>
+  let cell = ChainLink<T>(x, ChainEnd<T>())
+  let pinned = __builtin_op__<bool>("list_builder_pin", cell)
+  ret match(b._tail)
+    (prev: ChainLink) => ListBuilder<T>(b._head, cell, b._slot,
+        pinned && __builtin_op__<bool>("list_builder_link", prev, cell, b._slot))
+    # First push: compute the cell layout's next-slot index ONCE; every later
+    # link is a single indexed store.
+    (nil: ChainEnd)   => ListBuilder<T>(cell, cell,
+        __builtin_op__<int64>("list_builder_slot", cell), pinned)
+
+fun build<T>([terminal] b: ListBuilder<T>): List<T>
+  ret match(b._tail)
+    (t2: ChainLink) => __builtin_op__<bool>("list_builder_seal", t2)
+      ? ListFull<T>(b._head, ChainEnd<T>())
+      : ListEmpty<T>()   # unreachable: seal always succeeds; keeps the call live
+    (nil: ChainEnd)  => ListEmpty<T>()
