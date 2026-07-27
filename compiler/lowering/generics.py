@@ -24,6 +24,39 @@ def __create_unique_name(base_name: str, type_args: tuple[t.TypeSpec, ...]) -> s
     return f"{base_name}$generic${type_sig}"
 
 
+def __deep_id(spec) -> str:
+    """A TOTAL recursive spelling of a spec, for the instantiation sort's
+    tie-break: as_unique_id_str collapses id-less specs to None/"unknown", so
+    structurally DIFFERENT argument lists can share a sort key — and the tie
+    then falls to set-iteration order, which the bootstrap port cannot
+    reproduce (it is hash-seed order, not structure). Every constructor is
+    spelled with its name and children; unions sort their member spellings
+    (set semantics). The port mirrors this function byte-for-byte."""
+    if spec is None:
+        return "_"
+    if isinstance(spec, t.BuiltinSpec):
+        return f"B({spec.type_name})"
+    if isinstance(spec, t.NamedSpec):
+        return f"N({spec.name};{','.join(__deep_id(p) for p in spec.type_params)})"
+    if isinstance(spec, t.ClassSpec):
+        return f"C({spec.name};{','.join(__deep_id(p) for p in spec.type_params)})"
+    if isinstance(spec, t.EnumSpec):
+        return f"E({spec.root_name};{','.join(__deep_id(p) for p in spec.type_params)})"
+    if isinstance(spec, t.TupleSpec):
+        return "T(" + ",".join(f"{en.name or ''}:{__deep_id(en.type)}" for en in spec.entries) + ")"
+    if isinstance(spec, t.CallableSpec):
+        return f"F({__deep_id(spec.parameters)};{__deep_id(spec.result)})"
+    if isinstance(spec, t.CombinationSpec):
+        return "U(" + "|".join(sorted(__deep_id(m) for m in spec.types)) + ")"
+    if isinstance(spec, t.GenericPlaceholderSpec):
+        return f"G({spec.name})"
+    if isinstance(spec, t.LazyStubSpec):
+        return f"L({__deep_id(spec.target_type)})"
+    if isinstance(spec, t.ArrayFieldSpec):
+        return f"A({__deep_id(spec.element)};{spec.length_field})"
+    return f"X({type(spec).__name__})"
+
+
 def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
     """Check if all type arguments are concrete AND ready to name an
     instantiation. A bare GenericPlaceholderSpec is obviously not; neither is
@@ -311,7 +344,13 @@ def __create_specialized_statements(
     Keep original generic statements (they'll be pruned later).
     """
     specialized: list[s.Statement] = []
-    all_refs = sorted(data_refs | type_refs, key=lambda item: (item[0], tuple(tp.as_unique_id_str() or "" for tp in item[1])))
+    # Tie-break beyond the uid spelling with the DEEP structural spelling:
+    # uid collapses id-less specs, and a hash-order tie is unreproducible in
+    # the bootstrap port (the last source of whole-compiler C divergence).
+    all_refs = sorted(data_refs | type_refs,
+                      key=lambda item: (item[0],
+                                        tuple(tp.as_unique_id_str() or "" for tp in item[1]),
+                                        tuple(__deep_id(tp) for tp in item[1])))
     # Dedup by (specialised name, statement kind), not name alone: a class and
     # its synthesised constructor share a name, so both want the same specialised
     # name and must each be produced. (Simple classes hide this — they're

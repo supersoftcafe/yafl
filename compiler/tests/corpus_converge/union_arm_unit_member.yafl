@@ -1,0 +1,22 @@
+# Pin: a union-typed match arm over a STRUCT-repr wide union, where the
+# narrow union is DataPointer-repr (one pointer class + None). The unit
+# member (None) must bind NULL on its entry edge — Python guards on the
+# MEMBER's generated ctype being the empty struct (union_repr.py, the
+# DataPointer-narrow branch); the port compared the ARM's narrow ctype
+# instead (always false on this path) and read a slot the unit variant
+# does not have.
+namespace Test
+
+import System
+
+class Word(w: Int)
+
+fun classify(v: Word|None|Int64): Int
+  ret match(v)
+    (x: Word|None) => match(x)
+      (y: Word) => y.w
+      ()        => 0 - 1
+    (i: Int64)   => Int(i)
+
+fun main(): Int
+  ret classify(Word(5)) + classify(None) + classify(truncateToInt64(7))

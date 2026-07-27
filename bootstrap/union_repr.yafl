@@ -504,49 +504,54 @@ fun combinationUnionArm(em: GEmit, arm: PArm, cm: SCombination, sv: RParam, tag:
     ? computeUnionSlots(map(narrowMembers, (m: Spec) => specGenerate(m, r)), None).variantMap
     : List<List<CgSlotEntry>>()
   let entries = combinationUnionEntries(chain(narrowMembers), 0, members, variantMap, slotFields, discs, tag, sv,
-                                        narrowCtype, narrowMap, hasNarrowMap, List<GEntry>())
+                                        narrowCtype, narrowMap, hasNarrowMap, r, List<GEntry>())
   ret emMultiEntryArm(em, r, resultType, arm, entries, narrowCtype)
 
 fun combinationUnionEntries(narrowMembers: Chain<Spec>, k: Int, members: List<Spec>,
                                    variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                                    discs: Dict<String, Int>, tag: RParam, sv: RParam, narrowCtype: CgType,
-                                   narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool,
+                                   narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
                                    acc: List<GEntry>): List<GEntry>
   ret match(narrowMembers)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => combinationUnionEntriesStep(l, k, members, variantMap, slotFields, discs, tag, sv,
-                                                   narrowCtype, narrowMap, hasNarrowMap, acc)
+                                                   narrowCtype, narrowMap, hasNarrowMap, r, acc)
 
 fun combinationUnionEntriesStep(l: ChainLink<Spec>, k: Int, members: List<Spec>,
                                variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                                discs: Dict<String, Int>, tag: RParam, sv: RParam, narrowCtype: CgType,
-                               narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, acc: List<GEntry>): List<GEntry>
+                               narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
+                               acc: List<GEntry>): List<GEntry>
   let u = uid(l.value)
-  ret combinationUnionEntries(l.next, k + 1, members, variantMap, slotFields, discs, tag, sv, narrowCtype, narrowMap, hasNarrowMap,
-        combinationUnionEntryFor(variantIndexOf(members, u), u, discs, k, variantMap, slotFields, tag, sv, narrowCtype, narrowMap, hasNarrowMap, acc))
+  ret combinationUnionEntries(l.next, k + 1, members, variantMap, slotFields, discs, tag, sv, narrowCtype, narrowMap, hasNarrowMap, r,
+        combinationUnionEntryFor(variantIndexOf(members, u), l.value, u, discs, k, variantMap, slotFields, tag, sv, narrowCtype, narrowMap, hasNarrowMap, r, acc))
 
-fun combinationUnionEntryFor(vi: Int|None, u: String, discs: Dict<String, Int>, k: Int,
+fun combinationUnionEntryFor(vi: Int|None, member: Spec, u: String, discs: Dict<String, Int>, k: Int,
                              variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>, tag: RParam, sv: RParam,
-                             narrowCtype: CgType, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool,
+                             narrowCtype: CgType, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
                              acc: List<GEntry>): List<GEntry>
   ret match(vi)
     (viv: Int) => contains(discs, u)
-      ? append(acc, combinationUnionEntry(viv, u, discs, variantMap, slotFields, tag, sv, k, narrowCtype, narrowMap, hasNarrowMap))
+      ? append(acc, combinationUnionEntry(viv, member, u, discs, variantMap, slotFields, tag, sv, k, narrowCtype, narrowMap, hasNarrowMap, r))
       : acc
     ()          => acc
 
-fun combinationUnionEntry(vi: Int, u: String, discs: Dict<String, Int>, variantMap: List<List<CgSlotEntry>>,
+fun combinationUnionEntry(vi: Int, member: Spec, u: String, discs: Dict<String, Int>, variantMap: List<List<CgSlotEntry>>,
                           slotFields: List<CgField>, tag: RParam, sv: RParam, k: Int,
-                          narrowCtype: CgType, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool): GEntry
+                          narrowCtype: CgType, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver): GEntry
   let memberTag = getOr0(discs, u)
   let value = hasNarrowMap
     ? combinationUnionValueTagged(narrowCtype, forceNth(narrowMap, k), forceNth(variantMap, vi), slotFields, sv, memberTag)
-    : combinationUnionValuePointer(narrowCtype, vi, variantMap, slotFields, sv)
+    : combinationUnionValuePointer(specGenerate(member, r), vi, variantMap, slotFields, sv)
   ret GEntry(RpIntEqConst(tag, memberTag), value)
 
-fun combinationUnionValuePointer(narrowCtype: CgType, vi: Int, variantMap: List<List<CgSlotEntry>>,
+# DataPointer narrow union: NULL for the unit member, else the member's single
+# pointer slot. The emptiness test is on the MEMBER's generated ctype (Python:
+# `member.generate(resolver) == Struct(())`) — NOT the arm's narrow ctype,
+# which on this path is a DataPointer and never the empty struct.
+fun combinationUnionValuePointer(memberCtype: CgType, vi: Int, variantMap: List<List<CgSlotEntry>>,
                                  slotFields: List<CgField>, sv: RParam): RParam
-  ret eqCgType(narrowCtype, CgStruct(List<CgField>()))
+  ret eqCgType(memberCtype, CgStruct(List<CgField>()))
     ? RpNullPointer()
     : RpStructField(sv, fieldNameAt(slotFields, forceSlotIndex(forceNth(variantMap, vi))))
 

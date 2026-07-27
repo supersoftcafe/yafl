@@ -27,7 +27,7 @@ import dataclasses
 from codegen.gen import Application
 from codegen.ir import Function
 from codegen.ops import Move, Label, Jump, JumpIf, SwitchJump, IfTask, Return, ReturnVoid, Abort
-from codegen.param import StackVar
+from codegen.param import StackVar, RParam
 
 
 def __coalesce_copies(fn: Function) -> Function:
@@ -77,8 +77,17 @@ def __coalesce_copies(fn: Function) -> Function:
             continue
         # The defining op itself may read T (e.g. T' = T + 1): reads happen
         # before the write in every op shape, so renaming its target to T is
-        # still safe.
-        ops[def_idx] = ops[def_idx].rename_vars({s_name: t_name})
+        # still safe. Substitute T's OWN spelling (name AND type), not a
+        # name-only rename: keeping the source's type minted the same name
+        # at two precisions (e.g. an i16 union-slot shard coalesced into an
+        # i8 Bool constructor param), and the twin spelling broke the
+        # (type,name)-keyed liveness kill in async_lower — the def never
+        # killed the use spelling, the var looked upward-exposed from the
+        # function head, and frame layouts grew spurious extra slots.
+        t_sv = op.target
+        def _sub(p: RParam, s=s_name, t_sv=t_sv) -> RParam:
+            return t_sv if isinstance(p, StackVar) and p.name == s else p
+        ops[def_idx] = ops[def_idx].replace_params(_sub)
         removed.add(i)
         defs[t_name] = defs.get(t_name, 0) + 1
 

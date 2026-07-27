@@ -76,8 +76,11 @@ def create_perfect_lookups(vtables: dict[str, list[str]]) -> tuple[dict[str, int
                 conflict_graph[method] = set()
                 edges = set((min(m1, m2), max(m1, m2)) for m1, neighbors in conflict_graph.items() for m2 in neighbors if neighbors)
 
-            # Re-randomize IDs of methods in the cover set
-            for method in cover:
+            # Re-randomize IDs of methods in the cover set. Sorted: `cover`
+            # is a set, and hash-order iteration here decides the final ids —
+            # the one place id assignment was not deterministic by
+            # construction (it leaked into which slot each method landed in).
+            for method in sorted(cover):
                 method_ids[method] = next_method_id()
 
         # print(f"Iteration {iteration}: {len(collision_methods)} collisions found.")

@@ -43,8 +43,11 @@ fun prCoalesceCopies(f: CgFunction): CgFunction
     ? f
     : prRebuild(f, out)
 
-# proRemoved: op indices to drop. proRenames: (def-op index, s→t) renames.
-class [final] PrRename(prrIdx: Int, prrOld: String, prrNew: String)
+# proRemoved: op indices to drop. proRenames: (def-op index, s → T's own
+# StackVar spelling) substitutions — name AND type, mirroring Python: a
+# name-only rename kept the source's type and minted the same name at two
+# precisions, breaking the (type,name)-keyed liveness kill in async_lower.
+class [final] PrRename(prrIdx: Int, prrOld: String, prrNewVar: RParam)
 class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
 
 fun [tail] prScan(ops: List<Op>, counts: PrCounts, i: Int,
@@ -60,7 +63,7 @@ fun [tail] prScan(ops: List<Op>, counts: PrCounts, i: Int,
 
 # A coalescible copy: Move without keep, StackVar := StackVar. pcSelf marks
 # the degenerate T := T (dropped outright).
-class [final] PrCand(pcT: String, pcS: String, pcSelf: Bool)
+class [final] PrCand(pcT: String, pcS: String, pcSelf: Bool, pcTVar: RParam)
 
 fun prCandidate(op: Op): PrCand|None
   ret match(op)
@@ -70,7 +73,7 @@ fun prCandidate(op: Op): PrCand|None
 fun prCandTargets(m: OpMove): PrCand|None
   ret match(m.moveTarget)
     (t2: RpStackVar) => match(m.moveSource)
-      (s2: RpStackVar) => PrCand(t2.name, s2.name, t2.name == s2.name)
+      (s2: RpStackVar) => PrCand(t2.name, s2.name, t2.name == s2.name, m.moveTarget)
       (o: RParam)       => None
     (o2: RParam)      => None
 
@@ -81,7 +84,7 @@ fun prTryCoalesce(ops: List<Op>, counts: PrCounts, i: Int, c: PrCand,
     ret prScan(ops, counts, i + 1, removed, renames, defs)
   ret match(prFindDef(ops, i - 1, c))
     (di: Int) => prScan(ops, counts, i + 1, append(removed, i),
-                        append(renames, PrRename(di, c.pcS, c.pcT)),
+                        append(renames, PrRename(di, c.pcS, c.pcTVar)),
                         strCountIncr(defs, c.pcT))
     ()         => prScan(ops, counts, i + 1, removed, renames, defs)
 
@@ -144,7 +147,7 @@ fun [tail] prRebuildLoop(ops: List<Op>, out: PrOut, i: Int, acc: List<Op>): List
 
 fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
   ret fold(renames, op, (o: Op, r: PrRename) => r.prrIdx == i
-             ? opRenameVars(o, list1(RpRename(r.prrOld, r.prrNew)))
+             ? opReplaceParams(o, (p: RParam) => prIsNamed(p, r.prrOld) ? r.prrNewVar : p)
              : o)
 
 # Dead = each removed non-self copy's SOURCE name.

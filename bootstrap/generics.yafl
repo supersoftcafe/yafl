@@ -718,10 +718,56 @@ fun [tail] insertRef(as2: Chain<GRef>, x: GRef, acc: List<GRef>): List<GRef>
       ? concat(append(acc, x), List<GRef>(as2))
       : insertRef(l.next, x, append(acc, l.value))
 
+# Order: name, then the uid spellings ELEMENT-WISE (Python compares the
+# tuple, not a joined string), then the DEEP structural spelling — uid
+# collapses id-less specs, and a tie decided by set-iteration order was the
+# last source of whole-compiler C divergence. deepId mirrors Python's
+# __deep_id byte-for-byte.
 fun refLess(a: GRef, b: GRef): Bool
   ret a.grName != b.grName ? a.grName < b.grName
-                           : joinUids(chain(a.grArgs), "")
-                             < joinUids(chain(b.grArgs), "")
+    : strsLess(chain(map(a.grArgs, refUid)), chain(map(b.grArgs, refUid)))
+      ? true
+      : strsLess(chain(map(b.grArgs, refUid)), chain(map(a.grArgs, refUid)))
+        ? false
+        : strsLess(chain(map(a.grArgs, deepId)), chain(map(b.grArgs, deepId)))
+
+# Python's sort key uses `as_unique_id_str() or ""` — the EMPTY string for
+# an id-less spec (mangledName's "unknown" belongs to naming, not sorting).
+fun refUid(sp: Spec): String
+  ret uid(sp)
+
+# Lexicographic list-of-strings compare (Python tuple <).
+fun [tail] strsLess(a: Chain<String>, b: Chain<String>): Bool
+  ret match(a)
+    (nil: ChainEnd) => b is ChainLink
+    (la: ChainLink) => match(b)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => la.value != lb.value
+        ? la.value < lb.value
+        : strsLess(la.next, lb.next)
+
+fun deepId(sp: Spec): String
+  ret match(sp)
+    (bi: SBuiltin)     => "B(" + bi.sbName + ")"
+    (n: SNamed)        => "N(" + n.snName + ";" + joinDeep(n.snParams) + ")"
+    (c: SClass)        => "C(" + c.scName + ";" + joinDeep(c.scParams) + ")"
+    (e2: SEnum)        => "E(" + e2.seRoot + ";" + joinDeep(e2.seParams) + ")"
+    (t2: STuple)       => "T(" + join(map(t2.stEntries, (en: SEntry) =>
+                            en.seName + ":" + deepIdOpt(en.seType)), ",") + ")"
+    (cl: SCallable)    => "F(" + deepId(cl.scParams2) + ";"
+                          + deepIdOpt(cl.scResult) + ")"
+    (cm: SCombination) => "U(" + join(sort(map(cm.scTypes, deepId)), "|") + ")"
+    (g2: SGeneric)     => "G(" + g2.sgName + ")"
+    (ls: SLazyStub)    => "L(" + deepIdOpt(ls.slsTarget) + ")"
+    (af: SArrayField)  => "A(" + deepId(af.safElem) + ";" + af.safLenField + ")"
+
+fun deepIdOpt(sp: Spec|None): String
+  ret match(sp)
+    (s2: Spec) => deepId(s2)
+    ()          => "_"
+
+fun joinDeep(ps: List<Spec>): String
+  ret join(map(ps, deepId), ",")
 
 class [final] CssState(csOut: List<PStmt>, csKeys: List<String>)
 

@@ -12,16 +12,11 @@ import System
 # through as extra parameters/return fields — same discipline as the
 # `type_cache` threading in typedecl.yafl.
 #
-# DETERMINISM CAVEAT: Python's re-randomisation loop does
-# `for method in cover: method_ids[method] = next_method_id()` where `cover`
-# is a `set` — CPython's set iteration order is hash-seed dependent (the
-# whole compiler is normally run with PYTHONHASHSEED=0 to make this
-# reproducible). This port always processes `cover` in the order the greedy
-# algorithm discovered it, which need not match any particular Python run's
-# set order. The algorithm is still CORRECT (every method still gets a
-# fresh, unique id), but the exact id numbers assigned to colliding methods
-# may differ from a given Python run. Flagged as low-confidence for
-# byte-identical parity with Python on this narrow point.
+# DETERMINISM: Python's re-randomisation loop iterates `sorted(cover)` —
+# the cover is a set, and hash-order iteration there was the one place id
+# assignment was not deterministic by construction (it showed up as a
+# single method id differing between the compilers at whole-program
+# scale). Both sides now sort the cover before reassigning ids.
 #
 # Despite the Python docstring/import ("Generate random 32-bit ids"), no
 # randomness is actually used anywhere — `random` is imported but never
@@ -171,8 +166,11 @@ fun greedyVertexCover(graph: List<ConflictEntry>, cover: List<String>): List<Str
 fun phReassignOne(acc: (methodIds: List<MethodId>, nextId: Int), m: String): (methodIds: List<MethodId>, nextId: Int)
   ret (map(acc.methodIds, (e: MethodId) => e.mName == m ? MethodId(e.mName, acc.nextId) : e), acc.nextId + 1)
 
+# Sorted to mirror Python's `for method in sorted(cover)` — see the
+# DETERMINISM note at the top of this file.
 fun phReassignCover(methodIds: List<MethodId>, cover: List<String>, nextId0: Int): (methodIds: List<MethodId>, nextId: Int)
-  ret fold(cover, (methodIds, nextId0), (acc: (methodIds: List<MethodId>, nextId: Int), m: String) => phReassignOne(acc, m))
+  ret fold(sortNamesAsc(chain(cover), List<String>()), (methodIds, nextId0),
+           (acc: (methodIds: List<MethodId>, nextId: Int), m: String) => phReassignOne(acc, m))
 
 fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int, pairs: List<CollisionPair>): List<MethodId>
   let graph = buildConflictGraph(pairs)
