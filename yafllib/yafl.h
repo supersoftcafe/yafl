@@ -1230,6 +1230,12 @@ EXTERN object_t* float32_hash(float f);
 typedef struct string {
     vtable_t* vtable;
     uint32_t length;
+    // Lazy FNV-1a hash cache (see string_hash): 0 = not yet computed. The
+    // write is a plain idempotent store on an immutable object — a race or
+    // a store lost to a compaction copy just means one recompute. Builder
+    // APIs that mutate bytes in place (the *_dangerously writes, truncate)
+    // reset it. Also moves `array` to offset 16 — word-aligned data.
+    uint32_t hash;
     uint8_t array[16];
 } ALIGNED string_t;
 
@@ -1300,8 +1306,9 @@ EXTERN struct string_vtable STRING_VTABLE;
             struct { \
                 vtable_t* v; \
                 uint32_t l; \
+                uint32_t h; \
                 char a[sizeof(contents)]; \
-            }){(vtable_t*)&STRING_VTABLE, sizeof(contents), contents})
+            }){(vtable_t*)&STRING_VTABLE, sizeof(contents), 0, contents})
 
 
 INLINE int32_t string_length(object_t* self) {
@@ -1369,6 +1376,7 @@ INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, o
     int32_t vlen;
     char* vstr = string_to_cstr(value, &local_buffer, &vlen);
     memcpy(((string_t*)self)->array + idx, vstr, vlen);
+    ((string_t*)self)->hash = 0;  // bytes changed: invalidate the lazy hash
     return self;
 }
 

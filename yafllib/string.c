@@ -25,6 +25,7 @@ EXPORT struct string_vtable STRING_VTABLE = {
 struct string_empty {
     vtable_t* vtable;
     uint32_t length;
+    uint32_t hash;   // mirrors string_t: lazy hash cache slot
     uint8_t array[1];
 };
 
@@ -32,6 +33,7 @@ struct string_empty {
 HIDDEN string_t* _string_allocate(int32_t length) {
     string_t* string = (string_t*)array_create((vtable_t*)&STRING_VTABLE, length+1);
     string->array[length] = 0; // Zero terminate all strings as a convenience for OS calls
+    string->hash = 0;          // lazy hash cache starts uncomputed
     return string;
 }
 
@@ -105,6 +107,7 @@ EXPORT object_t* string_truncate(object_t* self, int32_t new_length) {
         return _string_create_from_bytes(s->array, new_length);
     s->array[new_length] = 0;
     s->length = new_length + 1;
+    s->hash = 0;  // content window changed: invalidate the lazy hash
     return self;
 }
 
@@ -564,6 +567,7 @@ EXPORT object_t* string_copy_range_to_dangerously(object_t* self, object_t* o_in
     if (end > vlen) end = vlen;
     if (end > from)
         memcpy(((string_t*)self)->array + idx, vstr + from, (size_t)(end - from));
+    ((string_t*)self)->hash = 0;  // bytes changed: invalidate the lazy hash
     return self;
 }
 
