@@ -887,15 +887,18 @@ when prune must not slow down). GC_PACE_PRUNE_PAGES (default 64, the old
 effective 16x4) with its own YAFL_GC_PRUNE_PAGES env var; YAFL_GC_STEP_PAGES
 now tunes scan only.
 
-OPEN 2026-07-17 — Bool-through-union-slot precision inconsistency: rebuilding
-an Op variant inside a match arm (opWithSavedVars, ops.yafl) mints the SAME
-inlined-ctor StackVar at two precisions — the union-slot view (i16, e.g. $s9)
-on the write and the Bool param (i8) on the read — and uninit_check's
-(type,name)-keyed sets reject it ("missing: moveKeep@...$inl... i8" while the
-init set holds the i16 twin). Small repros (3- and 5-variant enums with
-multi-Bool payloads + rebuild arms) do NOT trigger it; needs Op's 12-slot
-layout. Worked around in ops.yafl (opWsvMove/JumpIf/Call let-bind the Bools);
-the real fix is in the slot-read/boxing precision handling.
+MOSTLY FIXED 2026-07-27 (was OPEN 2026-07-17) — Bool-through-union-slot
+precision inconsistency: the twin-minting site was phi_removal's copy
+coalescing, which renamed the source's defining op by NAME only, keeping
+the source's type — an i16 union-slot shard coalesced into an i8 Bool
+ctor param left one variable spelled at two precisions. Beyond
+uninit_check (name-keyed since), the twins broke async_lower's
+(type,name)-keyed liveness kill and inflated frame layouts — the last
+223 lines of whole-compiler Python-vs-port parity. Fixed in both
+compilers: the coalescer substitutes the copy target's own StackVar
+spelling (name AND type) via replace_params. The ops.yafl let-bind
+workaround (opWsvMove/JumpIf/Call) can likely be retired now; the
+underlying slot-read/boxing precision design note stands.
 
 OPEN 2026-07-17 — union-member field read miscompiled on REPEATED access.
 Reading a narrowed union member's field more than once (e.g. fl.flParamSpecs
