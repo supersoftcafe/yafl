@@ -461,35 +461,18 @@ fun rpOptTargetReadNames(r: RParam|None): List<String>
 fun opWithSavedVars(op: Op, sv: List<RParam>): Op
   ret match(op)
     (x: OpLabel)        => OpLabel(x.labelName, sv)
-    (x: OpMove)         => opWsvMove(x, sv)
+    (x: OpMove)         => OpMove(x.moveTarget, x.moveSource, x.moveKeep, sv)
     (x: OpJump)         => OpJump(x.jumpName, sv)
-    (x: OpJumpIf)       => opWsvJumpIf(x, sv)
+    (x: OpJumpIf)       => OpJumpIf(x.jumpIfLabel, x.jumpIfCondition, x.jumpIfInvert, sv)
     (x: OpIfTask)       => OpIfTask(x.taskCondition, x.taskSource, x.taskLhs, x.callIdLhs, x.callId, x.taskTarget, sv)
     (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
     (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, sv)
-    (x: OpCall)         => opWsvCall(x, sv)
+    (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
     (x: OpReturnVoid)   => OpReturnVoid(sv)
     (x: OpAbort)        => OpAbort(x.abortReason, sv)
     (x: OpReturn)       => OpReturn(x.returnValue, sv)
     (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
     (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
-
-# The Bool fields are LET-BOUND with explicit types before the rebuild: a
-# union-slot Bool read feeding an inlined constructor mints precision-
-# inconsistent StackVars (i16 slot view vs i8 param) that Python's
-# uninit_check rejects — TODO.md OPEN 2026-07-17 (bool slot precision).
-fun opWsvMove(x: OpMove, sv: List<RParam>): Op
-  let keep: Bool = x.moveKeep
-  ret OpMove(x.moveTarget, x.moveSource, keep, sv)
-
-fun opWsvJumpIf(x: OpJumpIf, sv: List<RParam>): Op
-  let invert: Bool = x.jumpIfInvert
-  ret OpJumpIf(x.jumpIfLabel, x.jumpIfCondition, invert, sv)
-
-fun opWsvCall(x: OpCall, sv: List<RParam>): Op
-  let musttail: Bool = x.callMusttail
-  let impure: Bool = x.callImpure
-  ret OpCall(x.callFunction, x.callParameters, x.callRegister, musttail, impure, x.callResultType, sv)
 
 # Reads as StackVar RPARAMS (types intact — the liveness sets feed state-field
 # layout); the names-only twin is opReadVarNames above.
