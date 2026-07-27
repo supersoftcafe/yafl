@@ -100,7 +100,7 @@ fun _noRanges(): Chain<RRange>
 # Complement a range set over the byte space 0..255, by walking the bytes
 # and collecting the uncovered runs. Quadratic in the (tiny) range count.
 fun _rxComplement(ranges: Chain<RRange>): Chain<RRange>
-  fun covered(c: Int32, rs: Chain<RRange>): Bool
+  fun [tail] covered(c: Int32, rs: Chain<RRange>): Bool
     ret match(rs)
       (nil: ChainEnd) => false
       (l: ChainLink)  => (c >= l.value.lo && c <= l.value.hi) || covered(c, l.next)
@@ -167,7 +167,7 @@ fun _rxAtom(p: String, i: Int, n: Int, ng: Int32): (node: RNode, at: Int, ng2: I
       (nil: ChainEnd) => b
       (l: ChainLink)  => ChainLink<RRange>(l.value, rangeCat(l.next, b))
   # The `[...]` body, from just after `[` (and after any `^`), up to `]`.
-  fun classBody(j: Int, acc: Chain<RRange>): (rs: Chain<RRange>, at: Int)
+  fun [tail] classBody(j: Int, acc: Chain<RRange>): (rs: Chain<RRange>, at: Int)
     ret j >= n || byteAt(p, j) == ']'
       ? (acc, j + 1)
       : classItem(j)
@@ -192,7 +192,7 @@ fun _rxAtom(p: String, i: Int, n: Int, ng: Int32): (node: RNode, at: Int, ng2: I
       : (RChar(c, c), i + 1, ng)
 
 # A sequence: atoms (with quantifiers) until `|`, `)` or the end.
-fun _rxSeqParse(p: String, i: Int, n: Int, ng: Int32, acc: RNode): (node: RNode, at: Int, ng2: Int32)
+fun [tail] _rxSeqParse(p: String, i: Int, n: Int, ng: Int32, acc: RNode): (node: RNode, at: Int, ng2: Int32)
   # Postfix quantifier, if present: `*` `+` `?`, each with a lazy variant.
   # The group counter passes straight through, keeping the pipeline flat.
   fun rep(j: Int, node: RNode, g: Int32): (node2: RNode, at: Int, g2: Int32)
@@ -320,7 +320,7 @@ class [final] RThread(pc: Int32, caps: Array<Int>)
 # all lower-priority work at this position.
 fun _vmAdd(r: Regex, s: String, pos: Int, pc: Int32, caps: Array<Int>,
            acc: Chain<RThread>): (acc2: Chain<RThread>, won: Array<Int>|None)
-  fun seen(threads: Chain<RThread>, q: Int32): Bool
+  fun [tail] seen(threads: Chain<RThread>, q: Int32): Bool
     ret match(threads)
       (nil: ChainEnd) => false
       (l: ChainLink)  => l.value.pc == q || seen(l.next, q)
@@ -344,7 +344,7 @@ fun _vmAdd(r: Regex, s: String, pos: Int, pc: Int32, caps: Array<Int>,
 
 # Advance every surviving thread over byte `b` (highest priority first),
 # building the next position's closure.
-fun _vmStep(r: Regex, s: String, pos: Int, b: Int32, threads: Chain<RThread>,
+fun [tail] _vmStep(r: Regex, s: String, pos: Int, b: Int32, threads: Chain<RThread>,
             acc: Chain<RThread>, best: Array<Int>|None): (next: Chain<RThread>, best2: Array<Int>|None)
   # A match reached while advancing cuts the remaining (lower-priority)
   # threads of this position; otherwise the sweep continues.
@@ -365,7 +365,7 @@ fun _vmStep(r: Regex, s: String, pos: Int, b: Int32, threads: Chain<RThread>,
 
 fun [tail] _vmRun(r: Regex, s: String, pos: Int, len: Int,
                   threads: Chain<RThread>, best: Array<Int>|None): Array<Int>|None
-  fun rev(c: Chain<RThread>, acc: Chain<RThread>): Chain<RThread>
+  fun [tail] rev(c: Chain<RThread>, acc: Chain<RThread>): Chain<RThread>
     ret match(c)
       (nil: ChainEnd) => acc
       (l: ChainLink)  => rev(l.next, ChainLink<RThread>(l.value, acc))

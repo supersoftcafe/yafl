@@ -174,7 +174,7 @@ fun isValidUtf8(s: System::String): System::Bool
 # All codepoints of `s`, front to back. Built purely on the strict decoder;
 # stops at the end of `s` (or, for invalid input, the first malformed byte).
 fun codepoints(s: System::String): List<System::Int32>
-  fun loop(off: System::Int, acc: List<System::Int32>): List<System::Int32>
+  fun [tail] loop(off: System::Int, acc: List<System::Int32>): List<System::Int32>
     ret match(codepointAt(s, off))
       (cp: System::Int32) => loop(off + _utf8Width(cp), append(acc, cp))
       (n: System::None)   => acc
@@ -249,7 +249,7 @@ fun split(s: System::String, sep: System::String): List<System::String>
 # is linear, so it is threaded by explicit recursion rather than `fold` (whose
 # accumulator type is unrestricted).
 fun join(parts: List<System::String>, sep: System::String): System::String
-  fun joinRest(sb: StringBuilder, rest: List<System::String>): StringBuilder
+  fun [tail] joinRest(sb: StringBuilder, rest: List<System::String>): StringBuilder
     ret match(head<System::String>(rest))
       (x: System::String) => joinRest(append(append(sb, sep), x), tail<System::String>(rest))
       (e: System::None)   => sb

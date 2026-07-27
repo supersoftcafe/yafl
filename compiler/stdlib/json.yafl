@@ -317,7 +317,7 @@ fun _itemLead(sb: StringBuilder, lay: Layout, depth: Int, hasPrev: Int): StringB
     : _appendBreak(sb, lay, depth)
 
 fun _writeArray(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout): StringBuilder
-  fun _body(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
+  fun [tail] _body(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
     ret match(head<JsonValue>(l))
       (n: None)         => hasPrev > 0
         ? System::append(_appendBreak(sb, lay, depth), "]")
@@ -328,7 +328,7 @@ fun _writeArray(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout):
   ret _body(System::append(sb, "["), l, depth, lay, 0)
 
 fun _writeObject(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout): StringBuilder
-  fun _body(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
+  fun [tail] _body(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
     ret match(head<JsonPair>(l))
       (n: None)     => hasPrev > 0
         ? System::append(_appendBreak(sb, lay, depth), "}")

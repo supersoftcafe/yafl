@@ -33,7 +33,7 @@ class ProcessResult(exitCode: Int, out: String, err: String)
 # (mirrors System::join's shape — the builder is threaded by explicit
 # recursion because fold's accumulator type is unrestricted).
 fun _packArgs(program: String, args: List<String>): String
-  fun packRest(sb: System::StringBuilder, rest: List<String>): System::StringBuilder
+  fun [tail] packRest(sb: System::StringBuilder, rest: List<String>): System::StringBuilder
     ret match(head<String>(rest))
       (a: String)       => packRest(System::append(System::append(sb, "\u{0}"), a), tail<String>(rest))
       (n: System::None) => sb

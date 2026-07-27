@@ -85,7 +85,7 @@ fun openDir(path: String): Dir|IOError
 # accumulated entries are discarded and the error is returned (the handle
 # is still closed).
 fun listDir(path: String): List<String>|IOError
-  fun loop(d: Dir, acc: List<String>): (dir: Dir, entries: List<String>|IOError)
+  fun [tail] loop(d: Dir, acc: List<String>): (dir: Dir, entries: List<String>|IOError)
     let r = d.next()
     ret match(r.entry)
       (s: String)  => loop(r.dir, append<String>(acc, s))

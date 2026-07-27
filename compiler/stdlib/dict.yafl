@@ -31,7 +31,7 @@ fun _dict_node<K,V>(h: Int, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Di
 
 # ─── Bucket operations ───────────────────────────────────────────────────────
 
-fun _bucket_get<K,V>(b: _DictBucket<K,V>, k: K): V|None where BasicEquality<K>
+fun [tail] _bucket_get<K,V>(b: _DictBucket<K,V>, k: K): V|None where BasicEquality<K>
   ret match(b)
     (n: _BucketNil)  => None
     (c: _BucketCons) => c.key == k ? c.value : _bucket_get<K,V>(c.tail, k)
@@ -51,7 +51,7 @@ fun _bucket_remove<K,V>(b: _DictBucket<K,V>, k: K): _DictBucket<K,V> where Basic
     (c: _BucketCons) => c.key == k ? c.tail : _BucketCons<K,V>(c.key, c.value, _bucket_remove<K,V>(c.tail, k))
 
 
-fun _bucket_has<K,V>(b: _DictBucket<K,V>, k: K): Bool where BasicEquality<K>
+fun [tail] _bucket_has<K,V>(b: _DictBucket<K,V>, k: K): Bool where BasicEquality<K>
   ret match(b)
     (n: _BucketNil)  => 0 == 1
     (c: _BucketCons) => c.key == k ? 0 == 0 : _bucket_has<K,V>(c.tail, k)
@@ -128,7 +128,7 @@ fun Dict<K,V>(): Dict<K,V>
   ret DictEmpty<K,V>()
 
 
-fun get<K,V>(d: Dict<K,V>, k: K): V|None where BasicEquality<K>
+fun [tail] get<K,V>(d: Dict<K,V>, k: K): V|None where BasicEquality<K>
   let h = hashOf(k)
   ret match(d)
     (e: DictEmpty) => None
@@ -165,7 +165,7 @@ fun remove<K,V>(d: Dict<K,V>, k: K): Dict<K,V> where BasicEquality<K>
         : remove_here(n.hash, _bucket_remove<K,V>(n.bucket, k), n.left, n.right)
 
 
-fun contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
+fun [tail] contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
   let h = hashOf(k)
   ret match(d)
     (e: DictEmpty) => 0 == 1
@@ -176,8 +176,8 @@ fun contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
         : _bucket_has<K,V>(n.bucket, k)
 
 
-fun size<K,V>(d: Dict<K,V>): Int
-  fun bucket_size(b: _DictBucket<K,V>): Int
+fun [tail] size<K,V>(d: Dict<K,V>): Int
+  fun [tail] bucket_size(b: _DictBucket<K,V>): Int
     ret match(b)
       (n: _BucketNil)  => 0
       (c: _BucketCons) => 1 + bucket_size(c.tail)
@@ -193,18 +193,18 @@ fun size<K,V>(d: Dict<K,V>): Int
 # each key with its value.
 
 fun keys<K,V>(d: Dict<K,V>): List<K>
-  fun bucket_keys(b: _DictBucket<K,V>, acc: List<K>): List<K>
+  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: List<K>): List<K>
     ret match(b)
       (n: _BucketNil)  => acc
       (c: _BucketCons) => bucket_keys(c.tail, append<K>(acc, c.key))
-  fun walk(d2: Dict<K,V>, acc: List<K>): List<K>
+  fun [tail] walk(d2: Dict<K,V>, acc: List<K>): List<K>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_keys(n.bucket, walk(n.left, acc)))
   ret walk(d, List<K>())
 
 fun values<K,V>(d: Dict<K,V>): List<V>
-  fun bucket_values(b: _DictBucket<K,V>, acc: List<V>): List<V>
+  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: List<V>): List<V>
     ret match(b)
       (n: _BucketNil)  => acc
       (c: _BucketCons) => bucket_values(c.tail, append<V>(acc, c.value))

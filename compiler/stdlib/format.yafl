@@ -49,7 +49,7 @@ fun _digitsEndInBounds(f: String, at: Int): Int
 
 # Parse decimal digits in `f[at..end)` left-to-right; `acc` is the
 # accumulator (always 0 at the call site).
-fun _parseDigits(f: String, at: Int, end: Int, acc: Int): Int
+fun [tail] _parseDigits(f: String, at: Int, end: Int, acc: Int): Int
   ret at < end ? _parseDigits(f, at + 1, end, acc * 10 + Int(byteAt(f, at) - '0')) : acc
 
 
