@@ -526,12 +526,17 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 // machinery shades its own publication); they are for the runtime's mutable
 // roots — scheduler queues, IO continuation slots — and any C host code that
 // registers mutable roots.
+EXTERN void _gc_root_overwrite2(object_t** slot);
+EXTERN void _gc_root_publish2(object_t* value);
 INLINE void gc_root_overwrite(object_t** slot) {
-    GC_MARK_SEEN(*slot);
+    // Field-based: a root slot can hold a pointer to a RELOCATED object (a
+    // forwarder compaction left); the shade must follow the chain — and may
+    // snap the slot — exactly as the root scan itself does.
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_root_overwrite2(slot);
 }
 // Returns its argument so compiler-emitted code can use it in value position.
 INLINE object_t* gc_root_publish(object_t* value) {
-    GC_MARK_SEEN(value);
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_root_publish2(value);
     return value;
 }
 

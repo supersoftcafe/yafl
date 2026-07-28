@@ -177,6 +177,26 @@ def ir_mangle_to_type(suffix: str) -> Type:
 _DISCARD = StackVar(DataPointer(), "$sv_lazy_discard")
 
 
+def _publish_root_shades(value: RParam, value_type: Type) -> tuple[Op, ...]:
+    """Insertion shades for a value stored into a declared-root slot (the
+    lazy stub's `value` field is a declared root): with roots scanned ONCE
+    at cycle open, a value published into a root mid-cycle — and possibly
+    dropped from the publishing thread's stack before its take — is
+    otherwise invisible to the marker. One gc_root_publish per pointer leaf
+    (DataPointer is the only lazy value shape in practice; FuncPointer's .o
+    and struct pointer leaves are covered for completeness)."""
+    def leaves(v: RParam, t: Type):
+        if isinstance(t, DataPointer):
+            yield v
+        elif isinstance(t, FuncPointer):
+            yield StructField(v, "o")
+        elif isinstance(t, Struct):
+            for fname, ft in t.fields:
+                yield from leaves(StructField(v, fname), ft)
+    return tuple(_runtime_call("gc_root_publish", value=leaf)
+                 for leaf in leaves(value, value_type))
+
+
 def _runtime_call(name: str, **args: RParam) -> Op:
     return Move(_DISCARD,
                 RuntimeInvoke(name, NewStruct(tuple(args.items())), DataPointer()),
@@ -357,6 +377,7 @@ def make_fetch_function(value_type: Type) -> Function:
         # Sync init: unwrap, store, clear closure, drain.
         Move(value, closure_value),
         Move(value_f, value),
+        *_publish_root_shades(value, value_type),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
         Return(_sync_wrap(value, wrapped)),
@@ -456,6 +477,7 @@ def make_finisher_function(value_type: Type) -> Function:
     ops: tuple[Op, ...] = (
         Move(value, completed_result),
         Move(value_f, value),
+        *_publish_root_shades(value, value_type),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
         Return(NullPointer()),

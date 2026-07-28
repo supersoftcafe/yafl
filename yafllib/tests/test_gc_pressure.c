@@ -93,13 +93,17 @@ static void run_loop(object_t* unused, fun_t continuation) {
             g->payload[0] = (char)j;
             mid = g;
         }
+        gc_root_overwrite((object_t**)&ring[i % RING_SLOTS]);   // retiring chain: shade the outgoing occupant
         ring[i % RING_SLOTS] = mid;
+        gc_root_publish((object_t*)mid);
 
         /* Ratchet the live set: prepend one node that survives forever. */
         struct node* keep = (struct node*)object_create(&node_vt);
         keep->next = live_head;
         keep->payload[0] = (char)i;
+        gc_root_overwrite((object_t**)&live_head);   // old head stays reachable via keep->next; shade is still the contract
         live_head = keep;
+        gc_root_publish((object_t*)keep);
     }
 
     /* Verify the live list is intact end to end. */

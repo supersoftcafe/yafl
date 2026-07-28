@@ -1177,26 +1177,16 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     reprocess_page_head = reprocess_page_tail = 0;
     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
 
-    // EARLY declared-roots pass — with the deletion barrier already ON. The
-    // late pass alone (end of SCAN_ROOTS) is unsound: a mutator keeps
-    // running between ITS page take and that pass, and a ratcheting root
-    // (live_head-style prepend) moves onto a birth-protected page in that
-    // window. The late pass then marks a head nobody scans this cycle, its
-    // outgoing edges are never traced, and the chain's tail on TAKEN pages
-    // is pruned live (test_gc_pressure DANGLE). This early read sees the
-    // pre-window value: an old head on a pool page, traced by the normal
-    // batched scan. Every old object continuously reachable from a root at
-    // this point is covered by this pass plus SATB (field overwrites record
-    // the old value; register-only references are caught by each thread's
-    // take-time stack scan); everything born after it is birth-protected.
-    declare_roots_yafl(atomic_gc_object_seen_by_field);
-    declare_roots_thread(atomic_gc_object_seen_by_field);
-
-    // The declared global roots are ALSO scanned at the END of SCAN_ROOTS,
-    // after every stack has been scanned and every thread's new pages have
-    // been promoted into the scan set: an object stored into a declared
-    // root after the start, landing on a page promoted this cycle, is
-    // marked there rather than pruned.
+    // The declared-roots pass — ONCE, here, with the deletion barrier
+    // already ON: the SATB root snapshot (this is the original design; a
+    // late-only pass at the end of SCAN_ROOTS was unsound — a ratcheting
+    // root moves onto a birth-protected page between a thread's take and
+    // any later read, hiding the chain's tail on taken pages: the
+    // test_gc_pressure DANGLE). From this point on, root MUTATIONS carry
+    // the obligation, exactly as heap fields do: gc_root_overwrite shades
+    // a slot's outgoing occupant, gc_root_publish shades a value published
+    // into a root that its thread may drop before its take-time stack
+    // scan. See yafl.h, "The mutable-root contract".
     for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
         atomic_fetch_or(&thread->alloc->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
         thread->roots_scanned = false;
@@ -1310,10 +1300,17 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         if (!thread->roots_scanned)
             return GC_STAGE_SCAN_ROOTS;
 
-    // Every stack has now been scanned and every thread's new pages promoted into
-    // the scan set. Scan the declared global roots NOW, at this single consistent
-    // point — so an object published into a declared root during SCAN_ROOTS, on a
-    // page that was promoted this cycle, is marked rather than pruned.
+    // LATE declared-roots pass: every stack has been scanned and every
+    // thread's new pages promoted into the scan set — an object published
+    // into a declared root during SCAN_ROOTS, on a page promoted this
+    // cycle, is marked here rather than pruned. RETIREMENT (user-ruled
+    // direction: root mutations barriered via gc_root_overwrite /
+    // gc_root_publish, roots scanned only at cycle open) was attempted
+    // 2026-07-28 and reverted: with only the early pass, test_gc_pressure
+    // still reclaims a root-reachable occupant (assert: objects-bit gone
+    // under the shade), and test_gc_gen / test_gc_fwd_chain fail their
+    // staged choreography — the late pass is load-bearing beyond the
+    // published contract. Retire only with that coverage gap root-caused.
     declare_roots_yafl(atomic_gc_object_seen_by_field);
     declare_roots_thread(atomic_gc_object_seen_by_field);
 
@@ -2341,6 +2338,22 @@ EXPORT void _gc_safe_point2() {
     }
 }
 
+
+// The mutable-root contract's slow halves (see yafl.h). Field-based so a
+// stale pointer to a relocated object follows (and snaps) the forwarding
+// chain, exactly like the root scan's own marking.
+EXPORT void _gc_root_overwrite2(object_t** slot) {
+    atomic_gc_object_seen_by_field(slot);
+}
+
+EXPORT void _gc_root_publish2(object_t* value) {
+    // Value position — follow forwarding without a slot to snap.
+    while (gc_object_is_on_heap_fast(value)) {
+        atomic_gc_object_mark_as_seen(value);
+        if (LIKELY(!vtable_is_forward(value->vtable))) break;
+        value = (object_t*)value->vtable;
+    }
+}
 
 EXPORT void _gc_mark_as_seen2(object_t *object) {
     if (gc_object_is_on_heap_fast(object)) {
