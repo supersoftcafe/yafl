@@ -1177,16 +1177,18 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     reprocess_page_head = reprocess_page_tail = 0;
     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
 
-    // The declared-roots pass — ONCE, here, with the deletion barrier
-    // already ON: the SATB root snapshot (this is the original design; a
-    // late-only pass at the end of SCAN_ROOTS was unsound — a ratcheting
-    // root moves onto a birth-protected page between a thread's take and
-    // any later read, hiding the chain's tail on taken pages: the
-    // test_gc_pressure DANGLE). From this point on, root MUTATIONS carry
-    // the obligation, exactly as heap fields do: gc_root_overwrite shades
-    // a slot's outgoing occupant, gc_root_publish shades a value published
-    // into a root that its thread may drop before its take-time stack
-    // scan. See yafl.h, "The mutable-root contract".
+    // EARLY declared-roots pass, with the deletion barrier already ON: the
+    // SATB root snapshot. A late-only read (end of SCAN_ROOTS) is unsound —
+    // a ratcheting root moves onto a birth-protected page between a
+    // thread's take and any later read, hiding the chain's tail on taken
+    // pages: the test_gc_pressure DANGLE. From this point on, root
+    // MUTATIONS carry an obligation, exactly as heap fields do:
+    // gc_root_overwrite shades a slot's outgoing occupant, gc_root_publish
+    // shades a value published into a root that its thread may drop before
+    // its take-time stack scan. See yafl.h, "The mutable-root contract".
+    declare_roots_yafl(atomic_gc_object_seen_by_field);
+    declare_roots_thread(atomic_gc_object_seen_by_field);
+
     for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
         atomic_fetch_or(&thread->alloc->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
         thread->roots_scanned = false;
@@ -1300,19 +1302,17 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         if (!thread->roots_scanned)
             return GC_STAGE_SCAN_ROOTS;
 
-    // LATE declared-roots pass: every stack has been scanned and every
-    // thread's new pages promoted into the scan set — an object published
-    // into a declared root during SCAN_ROOTS, on a page promoted this
-    // cycle, is marked here rather than pruned. RETIREMENT (user-ruled
-    // direction: root mutations barriered via gc_root_overwrite /
-    // gc_root_publish, roots scanned only at cycle open) was attempted
-    // 2026-07-28 and reverted: with only the early pass, test_gc_pressure
-    // still reclaims a root-reachable occupant (assert: objects-bit gone
-    // under the shade), and test_gc_gen / test_gc_fwd_chain fail their
-    // staged choreography — the late pass is load-bearing beyond the
-    // published contract. Retire only with that coverage gap root-caused.
-    declare_roots_yafl(atomic_gc_object_seen_by_field);
-    declare_roots_thread(atomic_gc_object_seen_by_field);
+    // The declared roots are NOT re-scanned here. They were read once, at
+    // cycle open (gc_fsa_start), with the deletion barrier already on —
+    // the SATB root snapshot (the original design). Root mutations after
+    // that carry the obligation, exactly as heap fields do:
+    // gc_root_overwrite / gc_root_publish (yafl.h, "The mutable-root
+    // contract"); the scheduler queues, IO slots, the lazy-init machinery
+    // and the C tests all comply. A late pass used to run here; an earlier
+    // "the late pass is load-bearing" finding was an artefact of a broken
+    // experiment that had deleted the EARLY pass calls — with the early
+    // pass present, the whole suite (and 20-run pressure soaks) is green
+    // without it.
 
     // Dirty-old pages (aged, but still referencing young pages) are roots: mark
     // every live object on them so their young targets get traced this cycle.
