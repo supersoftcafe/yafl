@@ -63,11 +63,15 @@ class _BasicMathInt() : BasicMath<System::Int>
   fun `>`(left: System::Int, right: System::Int): System::Bool
     ret __builtin_op__<bool>("integer_test_gt", left, right)
 
-  fun hashOf(value: System::Int): System::Int
-    ret abs(value)
+  fun hashOf(value: System::Int): System::Int32
+    ret _maskHash(truncateToInt32(value))
 
 fun abs(value: System::Int): System::Int
   ret value < 0 ? -value : value
+
+# Clear the sign bit: the hashOf contract is a non-negative Int32.
+fun _maskHash(value: System::Int32): System::Int32
+  ret __builtin_op__<int32>("int32_and", value, truncateToInt32(2147483647))
 
 let [trait] _show_int: _ShowInt = _ShowInt()
 
@@ -94,8 +98,8 @@ typealias [where] _WhereEqBool : BasicEquality<System::Bool>
 class _BasicEqualityBool() : BasicEquality<System::Bool>
   fun `==`(left: System::Bool, right: System::Bool): System::Bool
     ret left ? right : (right ? false : true)
-  fun hashOf(value: System::Bool): System::Int
-    ret value ? 1 : 0
+  fun hashOf(value: System::Bool): System::Int32
+    ret truncateToInt32(value ? 1 : 0)
 
 
 # ─── Int32 ──────────────────────────────────────────────────────────────────
@@ -136,10 +140,8 @@ class _BasicMathInt32() : BasicMath<System::Int32>
   fun `>`(left: System::Int32, right: System::Int32): System::Bool
     ret __builtin_op__<bool>("int32_test_gt", left, right)
 
-  # Widen to bigint and abs there — avoids the -INT32_MIN wrap that would
-  # otherwise leave the hash negative.
-  fun hashOf(value: System::Int32): System::Int
-    ret abs(Int(value))
+  fun hashOf(value: System::Int32): System::Int32
+    ret _maskHash(value)
 
 # Widen Int32 → Int and Int32 → Int64. Both exact.
 fun Int(value: System::Int32): System::Int
@@ -212,8 +214,8 @@ class _BasicMathInt8() : BasicMath<System::Int8>
     ret __builtin_op__<bool>("int8_test_eq", left, right)
   fun `>`(left: System::Int8, right: System::Int8): System::Bool
     ret __builtin_op__<bool>("int8_test_gt", left, right)
-  fun hashOf(value: System::Int8): System::Int
-    ret abs(Int(value))
+  fun hashOf(value: System::Int8): System::Int32
+    ret _maskHash(Int32(value))
 
 # Widening to bigint and bigger ints — all exact.
 fun Int(value: System::Int8): System::Int
@@ -286,8 +288,8 @@ class _BasicMathInt16() : BasicMath<System::Int16>
     ret __builtin_op__<bool>("int16_test_eq", left, right)
   fun `>`(left: System::Int16, right: System::Int16): System::Bool
     ret __builtin_op__<bool>("int16_test_gt", left, right)
-  fun hashOf(value: System::Int16): System::Int
-    ret abs(Int(value))
+  fun hashOf(value: System::Int16): System::Int32
+    ret _maskHash(Int32(value))
 
 fun Int(value: System::Int16): System::Int
   ret __builtin_op__<bigint>("integer_from_int16", value)
@@ -354,8 +356,10 @@ class _BasicMathInt64() : BasicMath<System::Int64>
     ret __builtin_op__<bool>("int64_test_eq", left, right)
   fun `>`(left: System::Int64, right: System::Int64): System::Bool
     ret __builtin_op__<bool>("int64_test_gt", left, right)
-  fun hashOf(value: System::Int64): System::Int
-    ret abs(Int(value))
+  # Truncating: the low 32 bits are the hash (deterministic; collisions on
+  # the high word are the hash's job to tolerate, not avoid).
+  fun hashOf(value: System::Int64): System::Int32
+    ret _maskHash(truncateToInt32(value))
 
 fun Int(value: System::Int64): System::Int
   ret __builtin_op__<bigint>("integer_from_int64", value)

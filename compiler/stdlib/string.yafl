@@ -22,8 +22,10 @@ class _BasicCompareString() : BasicCompare<String>
   fun `>`(left: System::String, right: System::String): System::Bool
     ret __builtin_op__<bool>("string_gt", left, right)
 
-  fun hashOf(value: System::String): System::Int
-    ret __builtin_op__<bigint>("string_hash", value)
+  # Never 0 — the runtime maps a masked-zero FNV result to 1 so 0 stays a
+  # reserved "no hash" sentinel (it is also the header cache's empty state).
+  fun hashOf(value: System::String): System::Int32
+    ret __builtin_op__<int32>("string_hash", value)
 
 let [trait] _show_string: _ShowString = _ShowString()
 

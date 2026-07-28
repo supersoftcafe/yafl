@@ -44,8 +44,8 @@ typealias [where] _WhereBasicEqualityComplex : BasicEquality<System::Complex64>
 class _ComplexEq() : BasicEquality<Complex64>
   fun `==`(left: Complex64, right: Complex64): System::Bool
     ret left.re == right.re && left.im == right.im
-  fun hashOf(value: Complex64): System::Int
-    ret hashOf(value.re) * 31 + hashOf(value.im)
+  fun hashOf(value: Complex64): System::Int32
+    ret _maskHash(hashOf(value.re) * truncateToInt32(31) + hashOf(value.im))
 
 fun `-`(right: Complex64): Complex64
   ret Complex64(-right.re, -right.im)
@@ -100,8 +100,8 @@ typealias [where] _WhereBasicEqualityComplex32 : BasicEquality<System::Complex32
 class _Complex32Eq() : BasicEquality<Complex32>
   fun `==`(left: Complex32, right: Complex32): System::Bool
     ret left.re == right.re && left.im == right.im
-  fun hashOf(value: Complex32): System::Int
-    ret hashOf(value.re) * 31 + hashOf(value.im)
+  fun hashOf(value: Complex32): System::Int32
+    ret _maskHash(hashOf(value.re) * truncateToInt32(31) + hashOf(value.im))
 
 fun `-`(right: Complex32): Complex32
   ret Complex32(-right.re, -right.im)

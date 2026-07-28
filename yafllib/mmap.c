@@ -591,6 +591,24 @@ EXPORT bool memory_pages_is_alloc_head(void* ptr) {
         && atomic_load_explicit(&pages_info[offset], memory_order_relaxed) == PAGE_MARKER_HEAD;
 }
 
+// Resolve any address INSIDE an allocation — head page or a run's body
+// pages — to the allocation's head page, or NULL when the address is not
+// within a live allocation. Serves the conservative root scan's interior-
+// pointer resolution. Tolerant of concurrent transitions: hitting FREE (a
+// page being drained or re-initialised under us) rejects the candidate,
+// which is always correct — live pages are never freed.
+EXPORT void* memory_pages_alloc_head_of(void* ptr) {
+    ptrdiff_t offset = ((char*)ptr - pages_heap) / GC_PAGE_SIZE;
+    if (offset < 0 || (size_t)offset >= total_page_count)
+        return NULL;
+    for (;;) {
+        uint8_t m = atomic_load_explicit(&pages_info[offset], memory_order_relaxed);
+        if (m == PAGE_MARKER_HEAD) return pages_heap + (size_t)offset * GC_PAGE_SIZE;
+        if (m != PAGE_MARKER_BODY || offset == 0) return NULL;
+        offset--;
+    }
+}
+
 // Hand the claimed run [lo, end) back to the OS and release it. Cold bit and
 // counter go BEFORE the FREE release, page by page: once a page is FREE an
 // allocator may take it at any instant, and claimed_run's exchange-and-

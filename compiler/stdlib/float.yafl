@@ -44,8 +44,8 @@ class _BasicMathFloat() : BasicMath<Float64>
   fun `>`(left: System::Float, right: System::Float): System::Bool
     ret __builtin_op__<bool>("float64_gt", left, right)
 
-  fun hashOf(value: System::Float64): System::Int
-    ret __builtin_op__<bigint>("float64_hash", value)
+  fun hashOf(value: System::Float64): System::Int32
+    ret __builtin_op__<int32>("float64_hash", value)
 
 
 fun isNaN(f: System::Float): System::Bool
@@ -120,8 +120,8 @@ class _BasicMathFloat32() : BasicMath<System::Float32>
   fun `>`(left: System::Float32, right: System::Float32): System::Bool
     ret __builtin_op__<bool>("float32_gt", left, right)
 
-  fun hashOf(value: System::Float32): System::Int
-    ret __builtin_op__<bigint>("float32_hash", value)
+  fun hashOf(value: System::Float32): System::Int32
+    ret __builtin_op__<int32>("float32_hash", value)
 
 fun isNaN(f: System::Float32): System::Bool
   ret __builtin_op__<bool>("float32_is_nan", f)

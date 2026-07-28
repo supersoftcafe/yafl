@@ -512,6 +512,29 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value); } while (false)
 
+// ── The mutable-root contract ────────────────────────────────────────────────
+// Declared roots are scanned ONCE, at cycle open (the SATB snapshot). Any
+// code that MUTATES a declared root after that must tell the marker, exactly
+// as the heap write barrier does for object fields:
+//   gc_root_overwrite(slot) — call BEFORE removing/overwriting a root slot's
+//       occupant: shades the outgoing value (SATB deletion). Without it, an
+//       object whose only path was this root slot is invisible to the cycle.
+//   gc_root_publish(value)  — call when storing into a root slot a value the
+//       thread might drop from its stack before its own root-scan safe
+//       point: shades the incoming value (the ragged-snapshot window).
+// YAFL global lets never need these (written once, NULL→value, and the lazy
+// machinery shades its own publication); they are for the runtime's mutable
+// roots — scheduler queues, IO continuation slots — and any C host code that
+// registers mutable roots.
+INLINE void gc_root_overwrite(object_t** slot) {
+    GC_MARK_SEEN(*slot);
+}
+// Returns its argument so compiler-emitted code can use it in value position.
+INLINE object_t* gc_root_publish(object_t* value) {
+    GC_MARK_SEEN(value);
+    return value;
+}
+
 
 EXTERN size_t object_get_size(object_t* ptr);
 // The hottest accessor in the system — 1.96e9 calls per compiler run when
@@ -623,6 +646,7 @@ INLINE void* array_bounds_check(int32_t index, int32_t length, void* array) {
 EXTERN void* memory_pages_alloc(size_t page_count);
 EXTERN void memory_pages_free(void* ptr, size_t page_count);
 EXTERN bool memory_pages_is_alloc_head(void*ptr);
+EXTERN void* memory_pages_alloc_head_of(void*ptr);
 EXTERN size_t memory_count();
 // GC-clocked scavenger: returns excess free pages to the OS, retaining `retain`
 // warm free pages as allocation slack. fsa_lock holders only — see mmap.c.
@@ -1211,7 +1235,7 @@ EXTERN float    float32_from_integer(object_t* i);
 EXTERN object_t* integer_from_float32(float f);
 EXTERN object_t* string_from_float32(float f);
 EXTERN float    float32_parse_or_nan(object_t* s);
-EXTERN object_t* float32_hash(float f);
+EXTERN int32_t float32_hash(float f);
 
 
 
@@ -1403,8 +1427,8 @@ EXTERN object_t* string_codepoint_count(object_t* self);
 EXTERN bool      string_valid_utf8(object_t* self);
 EXTERN object_t* wchar_to_string(int32_t codepoint);
 EXTERN object_t* print_string(object_t* self, object_t* data);
-EXTERN object_t* string_hash(object_t* s);
-EXTERN object_t* float64_hash(double f);
+EXTERN int32_t string_hash(object_t* s);
+EXTERN int32_t float64_hash(double f);
 
 
 /**********************************************************

@@ -894,6 +894,30 @@ static NOINLINE void gc_update_stack_address_and_registers() {
     thread->stack_upper_ptr = &some_random_var;
 #endif
     setjmp(gc_thread_info.saved_registers);
+    // setjmp pointer-mangles rbp (see gc_internal.h): dump the callee-saved
+    // set raw so an object referenced only from a register still pins.
+#if defined(__x86_64__)
+    void** r = gc_thread_info.saved_callee_regs;
+    __asm__ volatile(
+        "mov %%rbx,  0(%0)\n\t"
+        "mov %%rbp,  8(%0)\n\t"
+        "mov %%r12, 16(%0)\n\t"
+        "mov %%r13, 24(%0)\n\t"
+        "mov %%r14, 32(%0)\n\t"
+        "mov %%r15, 40(%0)\n\t"
+        :: "r"(r) : "memory");
+    r[6] = r[7] = NULL;
+#elif defined(__aarch64__)
+    void** r = gc_thread_info.saved_callee_regs;
+    register void* x19 __asm__("x19"); register void* x20 __asm__("x20");
+    register void* x21 __asm__("x21"); register void* x22 __asm__("x22");
+    register void* x23 __asm__("x23"); register void* x24 __asm__("x24");
+    register void* x25 __asm__("x25"); register void* x26 __asm__("x26");
+    r[0]=x19; r[1]=x20; r[2]=x21; r[3]=x22; r[4]=x23; r[5]=x24; r[6]=x25; r[7]=x26;
+    // x27/x28/x29 arrive via the setjmp buffer (unmangled on aarch64 glibc).
+#else
+    memset(gc_thread_info.saved_callee_regs, 0, sizeof gc_thread_info.saved_callee_regs);
+#endif
 }
 
 // Start of potentially thread pausing IO
@@ -1153,12 +1177,26 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     reprocess_page_head = reprocess_page_tail = 0;
     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
 
-    // NB: the declared global roots are NOT scanned here. They are scanned at the
-    // END of SCAN_ROOTS, after every stack has been scanned and every thread's
-    // new pages have been promoted into the scan set. Scanning them at cycle
-    // start (before promotion) loses an object that is stored into a declared
-    // root after the start but lands on a page promoted this cycle: the root
-    // snapshot predates the store, so nothing marks it, yet its page is prunable.
+    // EARLY declared-roots pass — with the deletion barrier already ON. The
+    // late pass alone (end of SCAN_ROOTS) is unsound: a mutator keeps
+    // running between ITS page take and that pass, and a ratcheting root
+    // (live_head-style prepend) moves onto a birth-protected page in that
+    // window. The late pass then marks a head nobody scans this cycle, its
+    // outgoing edges are never traced, and the chain's tail on TAKEN pages
+    // is pruned live (test_gc_pressure DANGLE). This early read sees the
+    // pre-window value: an old head on a pool page, traced by the normal
+    // batched scan. Every old object continuously reachable from a root at
+    // this point is covered by this pass plus SATB (field overwrites record
+    // the old value; register-only references are caught by each thread's
+    // take-time stack scan); everything born after it is birth-protected.
+    declare_roots_yafl(atomic_gc_object_seen_by_field);
+    declare_roots_thread(atomic_gc_object_seen_by_field);
+
+    // The declared global roots are ALSO scanned at the END of SCAN_ROOTS,
+    // after every stack has been scanned and every thread's new pages have
+    // been promoted into the scan set: an object stored into a declared
+    // root after the start, landing on a page promoted this cycle, is
+    // marked there rather than pruned.
     for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
         atomic_fetch_or(&thread->alloc->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
         thread->roots_scanned = false;
@@ -1172,26 +1210,59 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 
 
 
+// Highest set bit ≤ slot in `bm`, or -1. The conservative scan's
+// interior-pointer resolution: the containing object is the nearest object
+// START at or before the addressed slot.
+static inline long bitmap_prev_set(const bitmap_t* bm, long slot) {
+    long wi = slot / GC_MASK_SIZE;
+    long bi = slot % GC_MASK_SIZE;
+    mask_bits_t w = bm->a[wi];
+    if (bi != GC_MASK_SIZE - 1)
+        w &= (((mask_bits_t)1 << (bi + 1)) - 1);
+    for (;;) {
+        if (w) return wi * GC_MASK_SIZE + (GC_MASK_SIZE - 1 - (long)__builtin_clzll(w));
+        if (--wi < 0) return -1;
+        w = bm->a[wi];
+    }
+}
+
 static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, object_t **range_end) {
     for (; range_ptr != range_end; range_ptr++) {
         object_t *object = *range_ptr;
-        if (gc_object_is_on_heap_slow(object)) {
-            // Conservative candidate: a stale stack slot can point into a
-            // freed page that a concurrent gc_page_alloc is re-initialising
-            // under us, so mark it tolerantly — no asserting helpers. A
-            // spurious mark lands either on a dying page (harmless) or on a
-            // real live object (over-retention, also harmless); missing a
-            // REAL object is impossible because live pages are never freed.
-            // The reprocess-queue handling that atomic_gc_object_mark_as_seen
-            // does is not needed here: during SCAN_ROOTS no page has been
-            // mark-swept this epoch yet.
-            gc_page_t* page = (gc_page_t*)((uintptr_t)object &~ (uintptr_t)(GC_PAGE_SIZE-1));
-            ptrdiff_t  slot = (slot_t*)object - page->slots;
-            if (page->head.old) continue;   // old generation: implicitly live, never pruned
-            page->head.scanner.pinned = true;
-            if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot))
-                GC_STAT_BUMP(gc_stat_cons_seeds);   // diagnostic: conservative root seeds
-        }
+        // Conservative candidate — INTERIOR POINTERS INCLUDED. An optimising
+        // C compiler may keep only a derived pointer live (a rolling
+        // &obj->items[i] in a register) while the base pointer is dead; the
+        // object is still reachable, so an exact-base-only scan frees live
+        // objects (test_large_objects: the root array survived only as an
+        // interior pointer at -O2 and was pruned). Resolution: any 8-aligned
+        // address inside a live allocation — head page or a run's body pages
+        // — marks the nearest object START at or before it. A stale integer
+        // that happens to resolve costs over-retention, never a miss; a
+        // candidate racing a page drain hits FREE markers or a dead tag and
+        // is rejected, which is always correct because live pages are never
+        // freed. The reprocess-queue handling that atomic_gc_object_mark_as_
+        // seen does is not needed here: during SCAN_ROOTS no page has been
+        // mark-swept this epoch yet.
+        if (object == NULL
+            || ((uintptr_t)object & (sizeof(void*) - 1)) != 0
+            || (size_t)((char*)object - _memory_heap_base) >= _memory_heap_bytes)
+            continue;
+        gc_page_t* page = (gc_page_t*)memory_pages_alloc_head_of(object);
+        if (page == NULL || page->head.tag != PAGE_MAGIC_NUMBER)
+            continue;
+        ptrdiff_t byte_off = (char*)object - (char*)page->slots;
+        if (byte_off < 0)
+            continue;   // points into the head page's header
+        long slot = byte_off / GC_SLOT_SIZE;
+        if (slot >= (long)SLOTS_PER_PAGE)
+            slot = SLOTS_PER_PAGE - 1;   // run body page: the run head's last object covers it
+        long containing = bitmap_prev_set(&page->head.objects, slot);
+        if (containing < 0)
+            continue;   // before the first object on the page
+        if (page->head.old) continue;   // old generation: implicitly live, never pruned
+        page->head.scanner.pinned = true;
+        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, containing))
+            GC_STAT_BUMP(gc_stat_cons_seeds);   // diagnostic: conservative root seeds
     }
 }
 
@@ -1225,6 +1296,8 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         // Scan stack and registers
         gc_fsa_scan_roots$scan_range(thread->stack_lower_ptr, thread->stack_upper_ptr);
         gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);
+        gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_callee_regs[0],
+                                     (object_t**)&thread->saved_callee_regs[8]);
         // Thread library has some stuff
         thread->thread_roots_declaration_func(thread->thread_roots_context, atomic_gc_object_seen_by_field);
         // Release the thread state

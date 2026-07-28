@@ -11,7 +11,7 @@ enum _DictBucket<K,V>
 # AVL BST ordered by hashOf(key). height is stored for O(1) balance queries.
 enum Dict<K,V>
   enum DictEmpty()
-  enum DictNode(hash: Int, bucket: _DictBucket<K,V>, height: Int, left: Dict<K,V>, right: Dict<K,V>)
+  enum DictNode(hash: Int32, bucket: _DictBucket<K,V>, height: Int, left: Dict<K,V>, right: Dict<K,V>)
 
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ fun _dict_height<K,V>(d: Dict<K,V>): Int
 
 
 # Construct a balanced DictNode with height recomputed from children.
-fun _dict_node<K,V>(h: Int, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
+fun _dict_node<K,V>(h: Int32, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
   let lh = _dict_height<K,V>(l)
   let rh = _dict_height<K,V>(r)
   ret DictNode<K,V>(h, b, (lh > rh ? lh : rh) + 1, l, r)
@@ -60,13 +60,13 @@ fun [tail] _bucket_has<K,V>(b: _DictBucket<K,V>, k: K): Bool where BasicEquality
 # ─── AVL rotations and rebalancing ───────────────────────────────────────────
 
 # Rebalance after a structural change; maintains AVL invariant.
-fun _dict_balance<K,V>(h: Int, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
-  fun balance_left(h2: Int, b2: _DictBucket<K,V>, l2: Dict<K,V>, r2: Dict<K,V>): Dict<K,V>
-    fun rotate_ll(h3: Int, b3: _DictBucket<K,V>, ln: Dict<K,V>, r3: Dict<K,V>): Dict<K,V>
+fun _dict_balance<K,V>(h: Int32, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
+  fun balance_left(h2: Int32, b2: _DictBucket<K,V>, l2: Dict<K,V>, r2: Dict<K,V>): Dict<K,V>
+    fun rotate_ll(h3: Int32, b3: _DictBucket<K,V>, ln: Dict<K,V>, r3: Dict<K,V>): Dict<K,V>
       ret match(ln)
         (n: DictNode)  => _dict_node<K,V>(n.hash, n.bucket, n.left, _dict_node<K,V>(h3, b3, n.right, r3))
         (e: DictEmpty) => _dict_node<K,V>(h3, b3, ln, r3)
-    fun rotate_lr(h3: Int, b3: _DictBucket<K,V>, ln: Dict<K,V>, r3: Dict<K,V>): Dict<K,V>
+    fun rotate_lr(h3: Int32, b3: _DictBucket<K,V>, ln: Dict<K,V>, r3: Dict<K,V>): Dict<K,V>
       ret match(ln)
         (lnn: DictNode) => match(lnn.right)
           (lrn: DictNode) => _dict_node<K,V>(lrn.hash, lrn.bucket, _dict_node<K,V>(lnn.hash, lnn.bucket, lnn.left, lrn.left), _dict_node<K,V>(h3, b3, lrn.right, r3))
@@ -77,12 +77,12 @@ fun _dict_balance<K,V>(h: Int, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>):
         ? rotate_lr(h2, b2, l2, r2)
         : rotate_ll(h2, b2, l2, r2)
       (e: DictEmpty) => _dict_node<K,V>(h2, b2, l2, r2)
-  fun balance_right(h2: Int, b2: _DictBucket<K,V>, l2: Dict<K,V>, r2: Dict<K,V>): Dict<K,V>
-    fun rotate_rr(h3: Int, b3: _DictBucket<K,V>, l3: Dict<K,V>, rn: Dict<K,V>): Dict<K,V>
+  fun balance_right(h2: Int32, b2: _DictBucket<K,V>, l2: Dict<K,V>, r2: Dict<K,V>): Dict<K,V>
+    fun rotate_rr(h3: Int32, b3: _DictBucket<K,V>, l3: Dict<K,V>, rn: Dict<K,V>): Dict<K,V>
       ret match(rn)
         (n: DictNode)  => _dict_node<K,V>(n.hash, n.bucket, _dict_node<K,V>(h3, b3, l3, n.left), n.right)
         (e: DictEmpty) => _dict_node<K,V>(h3, b3, l3, rn)
-    fun rotate_rl(h3: Int, b3: _DictBucket<K,V>, l3: Dict<K,V>, rn: Dict<K,V>): Dict<K,V>
+    fun rotate_rl(h3: Int32, b3: _DictBucket<K,V>, l3: Dict<K,V>, rn: Dict<K,V>): Dict<K,V>
       ret match(rn)
         (rnn: DictNode) => match(rnn.left)
           (rln: DictNode) => _dict_node<K,V>(rln.hash, rln.bucket, _dict_node<K,V>(h3, b3, l3, rln.left), _dict_node<K,V>(rnn.hash, rnn.bucket, rln.right, rnn.right))
@@ -103,19 +103,19 @@ fun _dict_balance<K,V>(h: Int, b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>):
 
 
 # Pop the minimum (leftmost) node from a non-empty tree, rebalancing on the way up.
-fun _dict_pop_min<K,V>(d: Dict<K,V>): (hash: Int, bucket: _DictBucket<K,V>, rest: Dict<K,V>)
-  fun carry(h: Int, b: _DictBucket<K,V>, r: Dict<K,V>, sub: (hash: Int, bucket: _DictBucket<K,V>, rest: Dict<K,V>)): (hash: Int, bucket: _DictBucket<K,V>, rest: Dict<K,V>)
+fun _dict_pop_min<K,V>(d: Dict<K,V>): (hash: Int32, bucket: _DictBucket<K,V>, rest: Dict<K,V>)
+  fun carry(h: Int32, b: _DictBucket<K,V>, r: Dict<K,V>, sub: (hash: Int32, bucket: _DictBucket<K,V>, rest: Dict<K,V>)): (hash: Int32, bucket: _DictBucket<K,V>, rest: Dict<K,V>)
     ret (sub.hash, sub.bucket, _dict_balance<K,V>(h, b, sub.rest, r))
   ret match(d)
     (n: DictNode)  => match(n.left)
       (e: DictEmpty) => (n.hash, n.bucket, n.right)
       (l: DictNode)  => carry(n.hash, n.bucket, n.right, _dict_pop_min<K,V>(n.left))
-    (e: DictEmpty) => (0, _BucketNil<K,V>(), DictEmpty<K,V>())
+    (e: DictEmpty) => (truncateToInt32(0), _BucketNil<K,V>(), DictEmpty<K,V>())
 
 
 # Merge two subtrees after a node's bucket empties; uses pop_min on the right.
 fun _dict_merge<K,V>(l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
-  fun merge_with_min(l2: Dict<K,V>, m: (hash: Int, bucket: _DictBucket<K,V>, rest: Dict<K,V>)): Dict<K,V>
+  fun merge_with_min(l2: Dict<K,V>, m: (hash: Int32, bucket: _DictBucket<K,V>, rest: Dict<K,V>)): Dict<K,V>
     ret _dict_balance<K,V>(m.hash, m.bucket, l2, m.rest)
   ret match(r)
     (e: DictEmpty) => l
@@ -151,7 +151,7 @@ fun put<K,V>(d: Dict<K,V>, k: K, v: V): Dict<K,V> where BasicEquality<K>
 
 
 fun remove<K,V>(d: Dict<K,V>, k: K): Dict<K,V> where BasicEquality<K>
-  fun remove_here(nh: Int, new_b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
+  fun remove_here(nh: Int32, new_b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
     ret match(new_b)
       (n: _BucketNil)  => _dict_merge<K,V>(l, r)
       (c: _BucketCons) => _dict_balance<K,V>(nh, new_b, l, r)

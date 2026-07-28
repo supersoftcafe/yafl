@@ -53,6 +53,15 @@ struct gc_thread_info {
     object_t **stack_lower_ptr; // Numerically lower pointer to the stack
     object_t **stack_upper_ptr; // Numerically higher pointer to the stack
     jmp_buf    saved_registers; // Expensive way to save the registers for GC
+    // setjmp is NOT a sufficient register capture for a conservative scan:
+    // glibc PTR_MANGLEs rsp, rip AND RBP in the jmp_buf (XOR with the
+    // pointer guard). At -O2, with frame pointers omitted, rbp is a general
+    // callee-saved register — an object referenced ONLY from rbp at a safe
+    // point scans as garbage and gets swept live (test_large_objects SEGV,
+    // test_gc_pressure DANGLE). The callee-saved set is dumped RAW here as
+    // well; caller-saved registers are already spilled to the scanned stack
+    // by the C ABI before any call into the runtime.
+    void      *saved_callee_regs[8];
 };
 
 extern thread_local struct gc_thread_info gc_thread_info;

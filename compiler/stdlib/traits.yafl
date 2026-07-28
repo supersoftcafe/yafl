@@ -5,7 +5,11 @@ interface BasicPlus<TVal>
 
 interface BasicEquality<TVal>
   fun `==`(left: TVal, right: TVal): System::Bool
-  fun hashOf(value: TVal): System::Int  # Must return >= 0
+  # Must return >= 0. A hash is a fixed-width bit pattern, not a quantity:
+  # Int32 gives callers an exact contract to mask against, and the sign bit
+  # is always clear. The String implementation additionally never returns 0
+  # (its lazy header cache reserves 0 for "not yet computed").
+  fun hashOf(value: TVal): System::Int32
 
 interface BasicCompare<TVal> : BasicEquality<TVal>
   fun `<`(left: TVal, right: TVal): System::Bool
