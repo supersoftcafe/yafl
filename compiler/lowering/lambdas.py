@@ -178,7 +178,8 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
         return e.NamedExpression(lr, fnc.name)
 
 
-def __scan_function_and_export_lambdas(statement: s.Statement, all_statements_resolver: g.Resolver) -> tuple[s.Statement, list[s.Statement]]:
+def __scan_function_and_export_lambdas(statement: s.Statement, all_statements_resolver: g.Resolver,
+                                        taken_names: set[str]) -> tuple[s.Statement, list[s.Statement]]:
     exported_statements = []
     # Build the path map BEFORE search_and_replace.  search_and_replace
     # clones nodes via `dataclasses.replace`, but `line_ref` is preserved
@@ -191,6 +192,19 @@ def __scan_function_and_export_lambdas(statement: s.Statement, all_statements_re
             return rw.UNCHANGED
 
         nme = __create_unique_name(lmd, lambda_paths.get(lmd.line_ref, ()))
+        # ast_inline can DUPLICATE a lambda within one host; each copy's
+        # bindings carry a distinct $inlN rename, so the copies capture
+        # differently-named variables and need distinct closure classes —
+        # but they share a line_ref, so the first-wins path map mints ONE
+        # name: two classes register under it and the New site's find_type
+        # sees 2 (codegen abort). Suffix later occurrences deterministically
+        # in traversal order; the first occurrence keeps its historic name.
+        if nme in taken_names:
+            k = 2
+            while f"{nme}$dup{k}" in taken_names:
+                k += 1
+            nme = f"{nme}$dup{k}"
+        taken_names.add(nme)
         cpt = __discover_captures(resolver, lmd)
 
         # Remove self-referential captures: a capture whose declared type is
@@ -223,15 +237,20 @@ def __scan_function_and_export_lambdas(statement: s.Statement, all_statements_re
     return statement, exported_statements
 
 
-def __convert_lambdas_to_functions(statements: list[s.Statement]) -> list[s.Statement]:
+def __convert_lambdas_to_functions(statements: list[s.Statement],
+                                   taken_names: set[str] | None = None) -> list[s.Statement]:
     # Index the collection once; every statement's scan reuses it.
+    # `taken_names` spans the nested-lambda recursion so a later round can
+    # never re-mint an earlier round's class name.
+    if taken_names is None:
+        taken_names = set()
     all_statements_resolver = g.ResolverRoot(g.as_statements(statements))
-    tmp_result = [__scan_function_and_export_lambdas(stm, all_statements_resolver) for stm in statements]
+    tmp_result = [__scan_function_and_export_lambdas(stm, all_statements_resolver, taken_names) for stm in statements]
     statements, new_statements = zip(*tmp_result) if tmp_result else ([], [])
     statements = [x for x in statements if x is not None]
     new_statements = [x for lst in new_statements for x in lst]
     if new_statements:
-        statements = statements + __convert_lambdas_to_functions(new_statements)
+        statements = statements + __convert_lambdas_to_functions(new_statements, taken_names)
     return statements
 
 

@@ -1,0 +1,22 @@
+# Pin: an [inline] function whose body contains a LAMBDA, inlined twice
+# into one host — each copy captures differently-renamed ($inlN) variables
+# and must get its OWN closure class; the shared line_ref used to collapse
+# both onto one name (two classes registered, find_type saw 2, codegen
+# abort). Later copies now suffix $dupN. Inliner bug B.
+namespace Test
+
+import System
+
+fun [inline] withLam(l: List<Int>, s: Int): List<Int>
+  if s > 3
+    ret l
+  ret map(l, (v: Int) => v + s)
+
+fun outer(flag: Bool, l: List<Int>): List<Int>
+  let v = withLam(flag ? withLam(l, 1) : l, 2)
+  ret v
+
+fun main(): Int
+  ret match(head(outer(true, append(List<Int>(), 7))))
+    (v: Int) => v - 7
+    ()        => 1

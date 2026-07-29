@@ -591,9 +591,32 @@ fun clLambdaExpr(lm: PeLambda, r: Resolver, paths: ClPaths,
     (lm2: PeLambda) => clExportLambda(lm2, r, paths, b.clExExports)
     (o: PExpr)      => ClEx(rebuilt, b.clExExports)
 
+# ast_inline can DUPLICATE a lambda within one host: the copies share a
+# line_ref (the path map's clone-stable key, first-occurrence-wins), so
+# both would mint ONE name — two classes register under it and codegen's
+# find_type sees 2. Suffix later occurrences $dup2, $dup3… in traversal
+# order, mirroring Python's taken_names set; a collision can only occur
+# within one host statement (paths differ across hosts), so the threaded
+# exports list IS the taken set.
+fun clDedupName(base: String, exports: List<PStmt>): String
+  ret clNameTaken(base, exports) ? clDedupLoop(base, exports, 2) : base
+
+fun [tail] clDedupLoop(base: String, exports: List<PStmt>, k: Int): String
+  let cand = base + "$dup" + String(k)
+  ret clNameTaken(cand, exports) ? clDedupLoop(base, exports, k + 1) : cand
+
+fun clNameTaken(n: String, exports: List<PStmt>): Bool
+  ret any(exports, (st: PStmt) => clExportName(st) == n)
+
+fun clExportName(st: PStmt): String
+  ret match(st)
+    (f2: PsFun)   => f2.fName
+    (c2: PsClass) => c2.cName
+    (o: PStmt)    => ""
+
 fun clExportLambda(lm: PeLambda, r: Resolver, paths: ClPaths,
                    exports: List<PStmt>): ClEx
-  let nme = uniqueLambdaName(lm, cpPathFor(paths, lm.pelLine))
+  let nme = clDedupName(uniqueLambdaName(lm, cpPathFor(paths, lm.pelLine)), exports)
   let cpt0 = discoverCaptures(r, lm)
   let selfNames = clSelfRefNames(cpt0, lm.lamRet)
   let cpt = clRemoveNames(cpt0, selfNames)
