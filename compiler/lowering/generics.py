@@ -548,6 +548,19 @@ def __spec_from_mangled(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t
         if spec.type_params:
             return dataclasses.replace(
                 spec, type_params=tuple(__spec_from_mangled(a, mono_map) for a in spec.type_params))
+    # A mangled ENUM inner type (`Sized<List$generic$bigint>` demanded against
+    # the pattern `Sized<List<T>>`): restore root_name + type_params, the two
+    # fields unify_generic's enum branch walks. Leaf names stay mangled — the
+    # unifier never reads them, and the inflated copy exists only to bind.
+    if isinstance(spec, t.EnumSpec):
+        if not spec.type_params and spec.root_name in mono_map:
+            base_name, base_args = mono_map[spec.root_name]
+            return dataclasses.replace(
+                spec, root_name=base_name,
+                type_params=tuple(__spec_from_mangled(a, mono_map) for a in base_args))
+        if spec.type_params:
+            return dataclasses.replace(
+                spec, type_params=tuple(__spec_from_mangled(a, mono_map) for a in spec.type_params))
     return spec
 
 
@@ -843,8 +856,14 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         cls = classes[0].statement
         if cls._all_parents is None:
             return False
+        # A monomorphised witness declares its parents with MANGLED inner
+        # names (Sized<List$generic$Int>) while the demanded scope is
+        # structural (Sized<List<Int>>): compare against both spellings.
+        mangled_args = tuple(__mangled_from_spec(a) for a in trait_spec.type_params)
         return any(isinstance(p, t.ClassSpec) and p.name == trait_spec.name
-                   and (not trait_spec.type_params or p.type_params == trait_spec.type_params)
+                   and (not trait_spec.type_params
+                        or p.type_params == trait_spec.type_params
+                        or p.type_params == mangled_args)
                    for p in cls._all_parents)
 
     def redirect(r: g.Resolver, thing):

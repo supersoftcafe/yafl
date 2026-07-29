@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import unittest
 
 import compiler as c
 from tests.testutil import TimedTestCase as TestCase
@@ -210,13 +209,12 @@ class TestInstanceStatement(TestCase):
         errs = _errors(_AMBIENT_NOT_FOR_GENERIC)
         self.assertIn("sizeOf", errs)
 
-    # PRE-EXISTING gap, not an instance-statement defect (the old
-    # witness-class + [trait]-let spelling crashes identically): a compound
-    # `where Sized<List<T>>` on a user fn dies at codegen after mono — the
-    # discharge machinery serves the stream-combinator shape (dedicated
-    # wrapper head) but not a stdlib-container head. Tracked for the
-    # inference tier.
-    @unittest.expectedFailure
+    # Regression pin: a compound `where Sized<List<T>>` on a user fn used to
+    # die at codegen after mono — the demanded constraint arrives with its
+    # ENUM inner type mangled (`Sized<List$generic$bigint>`), and
+    # __spec_from_mangled only re-inflated ClassSpecs, so unification never
+    # bound the instance's T (stream combinators dodged it: their wrapper
+    # heads are classes).
     def test_generic_body_uses_its_own_where(self):
         code, _out = compile_and_run_stdlib_capture(_GENERIC_VIA_WHERE)
         self.assertEqual(code, 0)
