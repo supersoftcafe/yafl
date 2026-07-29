@@ -96,13 +96,13 @@ fun substGeneric(sp: Spec, mapping: List<Binding>, name: String): Spec
     ()        => sp
 
 fun substList(ts: List<Spec>, mapping: List<Binding>): List<Spec>
-  ret substLoop(chain(ts), mapping, List<Spec>())
+  ret substLoop(chain(ts), mapping, builder<Spec>())
 
 fun [tail] substLoop(ts: Chain<Spec>, mapping: List<Binding>,
-                     acc: List<Spec>): List<Spec>
+                     acc: ListBuilder<Spec>): List<Spec>
   ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => substLoop(l.next, mapping, append(acc, substitute(l.value, mapping)))
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => substLoop(l.next, mapping, push(acc, substitute(l.value, mapping)))
 
 fun substOpt(sp: Spec|None, mapping: List<Binding>): Spec|None
   ret match(sp)

@@ -365,37 +365,37 @@ fun exprLine(x: PExpr): PLine
 
 fun fixupProgram(stmts: List<PStmt>): List<PStmt>
   ret fixupLoop(chain(stmts), "Main::",
-                importGroupOf(chain(stmts), List<PStmt>()), List<PStmt>())
+                importGroupOf(chain(stmts), builder<PStmt>()), builder<PStmt>())
 
 # The file-wide ImportGroup: every import, AND every namespace declaration (a
 # namespace IS an import of itself — that is how a bare `print` finds
 # `System::print` inside the stdlib), in file order.
-fun [tail] importGroupOf(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun [tail] importGroupOf(ss: Chain<PStmt>, acc: ListBuilder<PStmt>): List<PStmt>
   ret match(ss)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(l.value)
-      (im: PsImport)    => importGroupOf(l.next, append(acc, l.value))
+      (im: PsImport)    => importGroupOf(l.next, push(acc, l.value))
       (n2: PsNamespace) => importGroupOf(l.next,
-                                         append(acc, PsImport(n2.nsPath,
-                                                              n2.psnLine)))
+                                         push(acc, PsImport(n2.nsPath,
+                                                            n2.psnLine)))
       (o: PStmt)        => importGroupOf(l.next, acc)
 
 fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grp: List<PStmt>,
-                     acc: List<PStmt>): List<PStmt>
+                     acc: ListBuilder<PStmt>): List<PStmt>
   ret match(ss)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(l.value)
       (im: PsImport)    => fixupLoop(l.next, ns, grp, acc)
       (n2: PsNamespace) => fixupLoop(l.next, n2.nsPath + "::", grp, acc)
       (e: PsEnum)       => fixupLoop(l.next, ns, grp,
-                             concat(append(acc,
-                                           withImports(addNamespace(e, ns), grp)),
-                                    enumLeafConstructors(namespacedEnum(e, ns),
-                                                         grp)))
+                             pushAll(push(acc,
+                                          withImports(addNamespace(e, ns), grp)),
+                                     enumLeafConstructors(namespacedEnum(e, ns),
+                                                          grp)))
       (c: PsClass)      => fixupLoop(l.next, ns, grp, classWithCtor(c, ns, grp, acc))
       (other)           => fixupLoop(l.next, ns, grp,
                                      withImports(addNamespace(l.value, ns), grp)
-                                       |> (st) => append(acc, st))
+                                       |> (st) => push(acc, st))
 
 # Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
 fun withImports(st: PStmt, grp: List<PStmt>): PStmt
@@ -418,12 +418,12 @@ fun withImports(st: PStmt, grp: List<PStmt>): PStmt
 
 # A class emits itself then its constructor (interfaces get neither).
 fun classWithCtor(c: PsClass, ns: String, grp: List<PStmt>,
-                  acc: List<PStmt>): List<PStmt>
+                  acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   let named = importedClass(namespacedClass(c, ns), grp)
   ret c.cIsInterface
-    ? append(acc, named)
+    ? push(acc, named)
     : withArrayAccessor(named)
-      |> (full) => append(append(acc, full), classConstructorOf(full))
+      |> (full) => push(push(acc, full), classConstructorOf(full))
 
 fun importedClass(c: PsClass, grp: List<PStmt>): PsClass
   ret match(withImports(c, grp))

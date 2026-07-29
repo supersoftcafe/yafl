@@ -196,8 +196,11 @@ fun [tail] traitLoop(ws: Chain<Spec>, query: String, r: Resolver,
   ret match(ws)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
+      # `seen` is a membership SET (order-invisible): PREPEND keeps it
+      # front-normal, so containsSpec's chain() is free instead of paying a
+      # rear reversal per query.
       (c: SClass) => isConcrete(c) && !containsSpec(seen, c)
-        ? traitLoop(l.next, query, r, append<Spec>(seen, c),
+        ? traitLoop(l.next, query, r, prepend<Spec>(c, seen),
                     addBags(acc, membersOf(c, query, r)))
         : traitLoop(l.next, query, r, seen, acc)
       (o: Spec)   => traitLoop(l.next, query, r, seen, acc)

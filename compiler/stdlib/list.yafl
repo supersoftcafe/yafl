@@ -474,3 +474,33 @@ fun build<T>([terminal] b: ListBuilder<T>): List<T>
       ? ListFull<T>(b._head, ChainEnd<T>())
       : ListEmpty<T>()   # unreachable: seal always succeeds; keeps the call live
     (nil: ChainEnd)  => ListEmpty<T>()
+
+# Push every element of `l`, in order.
+fun pushAll<T>([terminal] b: ListBuilder<T>, l: List<T>): ListBuilder<T>
+  ret _pushChain<T>(b, chain(l))
+
+fun [tail] _pushChain<T>([terminal] b: ListBuilder<T>, c: Chain<T>): ListBuilder<T>
+  ret match(c)
+    (nil: ChainEnd) => b
+    (l: ChainLink)  => _pushChain<T>(push(b, l.value), l.next)
+
+# Explicitly consume a builder without keeping its list — the failure-path
+# counterpart of build (StringBuilder's discard precedent). A ternary whose
+# branches mix implicit drop with consumption is rejected by the linearity
+# checker; route the failure branch through a helper that takes the builder
+# and lets the drop happen at statement level, or call discard directly.
+fun discard<T>([terminal] b: ListBuilder<T>): None
+  ret _discardBuilt(build(b))
+
+# Drop: an ABANDONED builder — a failed parse alternative, an early exit —
+# must still release its pinned tail cell (a leaked pin is a permanently
+# unmovable object). Dropping is building and discarding the result: build's
+# seal unpins, and the discarded cells are ordinary garbage.
+class _DropListBuilder<T>() : Drop<ListBuilder<T>>
+  fun drop(self: ListBuilder<T>): None
+    ret _discardBuilt(build(self))
+
+fun _discardBuilt<T>(l: List<T>): None
+  ret None
+
+let [trait] _dropListBuilder<T>: _DropListBuilder<T> = _DropListBuilder<T>()

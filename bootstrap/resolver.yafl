@@ -291,7 +291,7 @@ fun [tail] whereWalk(r: Resolver, scopes: List<String>): List<Spec>
     (root: RRoot) => isEmpty(scopes)
       ? List<Spec>()
       : whereSpecs(chain(root.rrStmts.stWhereAliases),
-                   chain(root.rrStmts.stWhereNs), scopes, List<Spec>())
+                   chain(root.rrStmts.stWhereNs), scopes, builder<Spec>())
     (sc: RScopes) => whereWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
     (d: RData)    => whereWalk(d.rdParent, scopes)
     (t2: RTypes)  => whereWalk(t2.rtParent, scopes)
@@ -308,14 +308,14 @@ fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
                                   l.next)
 
 fun [tail] whereSpecs(ws: Chain<PStmt>, ns: Chain<String>,
-                      scopes: List<String>, acc: List<Spec>): List<Spec>
+                      scopes: List<String>, acc: ListBuilder<Spec>): List<Spec>
   ret match(ws)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(ns)
-      (nil2: ChainEnd) => acc
+      (nil2: ChainEnd) => build(acc)
       (n: ChainLink)   => match(l.value)
         (ta: PsTypealias) => contains2(scopes, n.value)
-          ? whereSpecs(l.next, n.next, scopes, append(acc, ta.taType))
+          ? whereSpecs(l.next, n.next, scopes, push(acc, ta.taType))
           : whereSpecs(l.next, n.next, scopes, acc)
         (o: PStmt)        => whereSpecs(l.next, n.next, scopes, acc)
 

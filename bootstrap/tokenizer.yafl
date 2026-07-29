@@ -215,7 +215,7 @@ fun nextToken(ln: System::String, pos: System::Int): (kind: TokKind, stop: Syste
   ret (KCrap(), pos + 1)
 
 fun [tail] scanLine(ln: System::String, lineNo: System::Int, indent: System::Int,
-                    pos: System::Int, acc: List<Token>): List<Token>
+                    pos: System::Int, acc: ListBuilder<Token>): ListBuilder<Token>
   let at = wsEnd(ln, pos)
   if at >= System::length(ln) || System::byteAt(ln, at) == '#'
     ret acc
@@ -225,10 +225,10 @@ fun [tail] scanLine(ln: System::String, lineNo: System::Int, indent: System::Int
     (i: KIdent) => isKeyword(text) ? KSymbol() : t.kind
     (other)     => t.kind
   ret scanLine(ln, lineNo, indent, t.stop,
-               append(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
+               push(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
 
 fun [tail] scanLines(lines: Chain<System::String>, lineNo: System::Int,
-                     acc: List<Token>): List<Token>
+                     acc: ListBuilder<Token>): ListBuilder<Token>
   ret match(lines)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => scanLines(l.next, lineNo + 1,
@@ -241,5 +241,5 @@ fun eofToken(toks: List<Token>): Token
     ()         => Token(KEof(), "", 0, 1, 1)
 
 fun tokenize(src: System::String): List<Token>
-  let toks = scanLines(chain(splitLines(src)), 1, List<Token>())
+  let toks = build(scanLines(chain(splitLines(src)), 1, builder<Token>()))
   ret append(toks, eofToken(toks))
