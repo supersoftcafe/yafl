@@ -62,7 +62,8 @@ class NamedStatement(Statement):
         # a NamedStatement); this method only runs long after both initialise.
         from pyast.statement.classdef import ClassStatement
 
-        def find_in_class(tp: t.ClassSpec | t.NamedSpec) -> "g.Bag[g.Resolved[DataStatement]]":
+        def find_in_class(tp: t.ClassSpec | t.NamedSpec,
+                          instance_params: tuple[str, ...] = ()) -> "g.Bag[g.Resolved[DataStatement]]":
             found = [rs.statement for rs in resolver.find_type(tp.name)]
             match found:
                 case [ClassStatement() as cls]:
@@ -71,7 +72,8 @@ class NamedStatement(Statement):
                     # Direct members first (the by-name index is a dict hit).
                     direct = cls.member_index()[query]
                     if direct:
-                        return g.Bag(tuple(g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls) for x in direct))
+                        return g.Bag(tuple(g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls,
+                                                      instance_params) for x in direct))
                     # Recurse into each parent interface with type params
                     # substituted (Math<TVal> : Plus<TVal>, tp Math<Int> ⇒
                     # Plus<Int>). `implements` is already a flat list of
@@ -87,27 +89,52 @@ class NamedStatement(Statement):
                         if isinstance(parent, t.NamedSpec) or any(isinstance(a, t.NamedSpec) for a in parent.type_params):
                             result = result + g.INCOMPLETE
                         else:
-                            result = result + find_in_class(parent)
+                            result = result + find_in_class(parent, instance_params)
                     return result
                 case []:
                     return g.INCOMPLETE  # interface name not resolved yet — blocked, not absent
                 case _:
                     raise LookupError(f"Failed to find class {tp.name!r}: got {[type(f).__name__ for f in found]}")
-        specs: set[t.ClassSpec] = set()
-        ordered_specs: list[t.ClassSpec] = []
+        specs: set[tuple[t.ClassSpec, tuple[str, ...]]] = set()
+        ordered_specs: list[tuple[t.ClassSpec, tuple[str, ...]]] = []
         blocked = False
+        def add(tp: t.ClassSpec, own: tuple[str, ...]) -> None:
+            if (tp, own) not in specs:
+                specs.add((tp, own))
+                ordered_specs.append((tp, own))
         for tp in (*self.trait_params, *resolver.get_implicit_where_specs()):
             if isinstance(tp, t.ClassSpec) and tp.is_concrete():
-                if tp not in specs:
-                    specs.add(tp)
-                    ordered_specs.append(tp)
+                add(tp, ())
             elif isinstance(tp, t.NamedSpec):
                 # An in-scope [where] alias / constraint whose type is still a
                 # NamedSpec: unresolved, so the trait set is not yet complete.
                 blocked = True
+        # `instance [ambient]` records join the SAME search — availability,
+        # not constraint. A concrete instance's interface spec enters exactly
+        # like a where-clause spec; a GENERIC one enters as the interface
+        # PATTERN (witness parents, instance args substituted), whose own
+        # placeholders the use site may bind.
+        for inst in resolver.get_ambient_traits():
+            dt = inst.declared_type
+            if not isinstance(dt, t.ClassSpec):
+                blocked = True      # witness type not resolved yet
+                continue
+            wfound = [rs.statement for rs in resolver.find_type(dt.name)]
+            if len(wfound) != 1 or not isinstance(wfound[0], ClassStatement):
+                blocked = True
+                continue
+            wcls = wfound[0]
+            own = tuple(p.name for p in (getattr(inst, 'type_params', ()) or ()))
+            wmapping = {p.name: c for p, c in zip(wcls.type_params, dt.type_params)}
+            for parent_type in wcls.implements:
+                parent = t.substitute_placeholders(parent_type, wmapping, resolver)
+                if isinstance(parent, t.NamedSpec) or any(isinstance(a, t.NamedSpec) for a in parent.type_params):
+                    blocked = True
+                elif isinstance(parent, t.ClassSpec):
+                    add(parent, own)
         result = g.INCOMPLETE if blocked else g.EMPTY
-        for tp in ordered_specs:
-            result = result + find_in_class(tp)
+        for tp, own in ordered_specs:
+            result = result + find_in_class(tp, own)
         return result
 
     def _find_generic_types(self, query: str) -> list[g.Resolved[TypeStatement]]:

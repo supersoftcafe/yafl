@@ -118,6 +118,13 @@ def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, c
             wildcards = {p.name: t.NamedSpec(x.statement.line_ref, "$overload$wildcard")
                          for p in own}
             other_type = t.substitute_placeholders(other_type, wildcards, resolver)
+        # A GENERIC ambient instance's placeholders are equally the
+        # candidate's own: the instance is a family, and instantiating this
+        # member can bind them to whatever the use site holds.
+        if x.instance_params:
+            wildcards = {n: t.NamedSpec(x.statement.line_ref, "$overload$wildcard")
+                         for n in x.instance_params}
+            other_type = t.substitute_placeholders(other_type, wildcards, resolver)
         return other_type
 
     def partition(expected: t.TypeSpec | None) -> list[g.Resolved[s.DataStatement]]:
@@ -322,6 +329,44 @@ def _distinct_resolutions(datas: list) -> list:
     return out
 
 
+def _scope_filtered(datas, resolved_trait_scope: t.ClassSpec | None):
+    """Disambiguate multi-candidate trait members against the scope compile
+    committed. Exact match first (where-clause / concrete-instance
+    candidates); a generic ambient instance's candidate carries the PATTERN
+    scope, so it matches when the pattern unifies with the committed
+    (solved) scope through the instance's own placeholders."""
+    if len(datas) <= 1 or resolved_trait_scope is None:
+        return datas
+    filtered = [d for d in datas if d.trait_scope == resolved_trait_scope]
+    if len(filtered) != 1:
+        filtered = [d for d in datas
+                    if d.instance_params and d.trait_scope is not None
+                    and t.unify_generic(d.trait_scope, resolved_trait_scope,
+                                        set(d.instance_params)) is not None]
+    return filtered if len(filtered) == 1 else datas
+
+
+def _solve_instance_scope(resolver: g.Resolver, data,
+                          expected_type: t.TypeSpec | None) -> t.ClassSpec | None:
+    """Bind a generic ambient instance's own placeholders from the use site —
+    the latch a generic FUNCTION candidate gets, applied to the instance.
+    Returns the solved interface scope (Sized<List<T>> ⇒ Sized<List<Int>>),
+    or None while the use site can't bind every placeholder yet."""
+    if expected_type is None or data.owner_class is None or data.trait_scope is None:
+        return None
+    effective = data.statement.get_type()
+    if effective is None:
+        return None
+    mapping = {p.name: c for p, c in zip(data.owner_class.type_params,
+                                         data.trait_scope.type_params)}
+    effective = t.substitute_placeholders(effective, mapping, resolver)
+    binding = t.unify_generic(effective, expected_type, set(data.instance_params))
+    if binding is None or set(binding) != set(data.instance_params):
+        return None
+    solved = t.substitute_placeholders(data.trait_scope, binding, resolver)
+    return solved if isinstance(solved, t.ClassSpec) else None
+
+
 @dataclass
 class NamedExpression(Expression):
     name: str
@@ -341,10 +386,7 @@ class NamedExpression(Expression):
         if not datas.complete:
             return None
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
-        if len(datas) > 1 and self.resolved_trait_scope is not None:
-            filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
-            if len(filtered) == 1:
-                datas = filtered
+        datas = _scope_filtered(datas, self.resolved_trait_scope)
         if len(datas) != 1:
             return None
         resolved = datas[0]
@@ -365,8 +407,14 @@ class NamedExpression(Expression):
         if (resolved.scope == g.ResolvedScope.TRAIT
                 and resolved.trait_scope is not None
                 and resolved.owner_class is not None):
+            # A generic ambient instance's candidate carries the pattern
+            # scope; the SOLVED scope compile committed (instance
+            # placeholders bound from the use site) takes precedence.
+            scope = (self.resolved_trait_scope
+                     if resolved.instance_params and self.resolved_trait_scope is not None
+                     else resolved.trait_scope)
             for placeholder, concrete in zip(resolved.owner_class.type_params,
-                                             resolved.trait_scope.type_params):
+                                             scope.type_params):
                 mapping[placeholder.name] = concrete
 
         return t.substitute_placeholders(raw_type, mapping, resolver)
@@ -404,6 +452,13 @@ class NamedExpression(Expression):
                            if data.scope == g.ResolvedScope.TRAIT
                            and isinstance(data.trait_scope, t.ClassSpec)
                            else None)
+            # A generic ambient instance's member commits only once the use
+            # site binds every instance placeholder; until then leave the
+            # use unresolved and let a later pass retry (fixpoint style).
+            if data.instance_params:
+                trait_scope = _solve_instance_scope(resolver, data, expected_type)
+                if trait_scope is None:
+                    return self, []
         else:
             if len(datas) != 1:
                 return self, []
@@ -435,14 +490,21 @@ class NamedExpression(Expression):
         # depends on, so they must keep seeing it.
         datas = _distinct_resolutions(resolver.find_data(self.name))
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
-        if len(datas) > 1 and self.resolved_trait_scope is not None:
-            filtered = [d for d in datas if d.trait_scope == self.resolved_trait_scope]
-            if len(filtered) == 1:
-                datas = filtered
+        datas = _scope_filtered(datas, self.resolved_trait_scope)
         match datas:
             case []:
                 return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors
             case [resolved]:
+                # A generic AMBIENT instance member that never committed a
+                # solved scope: the use site could not bind the instance's
+                # placeholders — ambience applies to concrete types only, so
+                # a name-match alone is NOT a resolution (without this the
+                # template dies later, deep in codegen).
+                if resolved.instance_params and self.resolved_trait_scope is None:
+                    return [Error(self.line_ref,
+                        f"Failed to resolve {g.bare_name(self.name)}: the ambient instance "
+                        f"applies to concrete types only — generic code needs its own "
+                        f"`where` clause")] + tp_errors
                 return resolved.statement.check_caller_type_params(resolver, self.type_params, self.line_ref) + tp_errors
             case _:
                 # `name` resolves more than one way — commonly a top-level

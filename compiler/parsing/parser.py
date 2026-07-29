@@ -730,6 +730,65 @@ def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, lis
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
+@dataclasses.dataclass
+class _InstanceDeclaration(s.Statement):
+    """Parse-time marker for an `instance` statement:
+
+        instance [ambient]<T> Interface<Pattern> where Constraint<T>
+          fun member(...): ...
+
+    Anonymous, first-class trait instance. Expanded by parse() — before
+    anything downstream sees it — into a synthesized witness class holding
+    the members, plus the `[trait]` instance record (`[trait,ambient]` when
+    opted in). The instance's `where` is availability-filtering, not a
+    caller constraint: it lands on the record (discharged at instantiation)
+    and on each member (visible to the member bodies)."""
+    attributes: dict[str, e.Expression | None]
+    type_params: tuple[s.TypeAliasStatement, ...]
+    pattern: t.TypeSpec
+    trait_params: tuple[t.TypeSpec, ...]
+    members: list[s.Statement]
+
+
+def __to_instance(result: p.Result, tokens: list[p.Token]) -> p.Result[s.Statement]:
+    attributes, generics, pattern, where_traits, members = result.value
+    statement = _InstanceDeclaration(
+        result.line_ref, attributes or {}, tuple(generics), pattern,
+        tuple(where_traits), members)
+    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+
+
+def _expand_instance(decl: _InstanceDeclaration) -> list[s.Statement]:
+    """The witness class + instance record an `instance` statement stands
+    for. Names are line-derived (path-based naming): nothing user-spellable,
+    stable across runs."""
+    lr = decl.line_ref
+    tag = lr.hash6()
+    wbare = f"_Instance${tag}"
+    def with_wheres(m: s.Statement) -> s.Statement:
+        if not isinstance(m, s.FunctionStatement) or not decl.trait_params:
+            return m
+        extra = tuple(w for w in decl.trait_params if w not in m.trait_params)
+        return dataclasses.replace(m, trait_params=(*m.trait_params, *extra)) if extra else m
+    witness = s.ClassStatement(
+        lr, f"{wbare}@{tag}", None, {}, decl.type_params,
+        s.DestructureStatement(lr, '_', None, {}, (), None, None, []),
+        [with_wheres(m) for m in decl.members],
+        __flatten_inheritance([decl.pattern]), False)
+    own_args = tuple(t.NamedSpec(lr, g.name.split('@')[0]) for g in decl.type_params)
+    value = e.CallExpression(
+        lr, e.NamedExpression(lr, wbare, type_params=own_args),
+        e.TupleExpression(lr, []))
+    attributes: dict[str, e.Expression | None] = {'trait': None}
+    if 'ambient' in decl.attributes:
+        attributes['ambient'] = None
+    record = s.LetStatement(
+        lr, f"_instance${tag}@{tag}", None, attributes, decl.type_params,
+        value, t.NamedSpec(lr, wbare, own_args),
+        trait_params=decl.trait_params)
+    return [witness, record]
+
+
 def __to_type_alias(result: p.Result[tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec, list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
     # Generic params and a `where` clause are optional: a plain alias has empty
     # lists for both. A generic `where`-alias (`typealias [where] _W<S,T> :
@@ -966,6 +1025,14 @@ __parse_let = p.block(p.requires(
     __parse_let_generic | __parse_target_type_expr,
     "invalid let statement"))
 
+# Anonymous: attributes, optional generics, ONE interface pattern (a type),
+# optional `where`, then the member functions. See _InstanceDeclaration.
+__parse_instance = p.block(p.requires(
+    p.discard_sym("instance"),
+    (__parse_attributes & __parse_maybe_generic_statement & __parse_type
+     & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_instance,
+    "invalid instance statement"))
+
 __parse_type_alias = p.block(p.requires(
     p.discard_sym("typealias"),
     (__parse_attributes & p.ident() & __parse_maybe_generic_statement & p.discard_sym(":")
@@ -1072,7 +1139,7 @@ def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.Enum
 
 
 __parse_statement_any = p.block(
-    __parse_class | __parse_interface | __parse_fun | __parse_let
+    __parse_class | __parse_interface | __parse_instance | __parse_fun | __parse_let
     | __parse_type_alias | __parse_import | __parse_namespace | __parse_ret
     | __parse_action | __parse_enum
     | __parse_if | __parse_else_if | __parse_else)
@@ -1100,7 +1167,17 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
     new_statements = []
     current_namespace = "Main::"
 
+    # `instance` statements expand FIRST, so the synthesized witness class
+    # and instance record ride the ordinary per-kind handling below
+    # (namespacing, import attachment, constructor creation).
+    expanded_statements = []
     for statement in result.value:
+        if isinstance(statement, _InstanceDeclaration):
+            expanded_statements.extend(_expand_instance(statement))
+        else:
+            expanded_statements.append(statement)
+
+    for statement in expanded_statements:
         match statement:
             case s.ImportStatement(): # Discard as it was processed earlier
                 pass

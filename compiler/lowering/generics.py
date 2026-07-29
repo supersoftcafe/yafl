@@ -519,6 +519,13 @@ def __collect_concrete_constraints(statements: list[s.Statement]) -> set[t.Class
             for tp in thing.trait_params:
                 if isinstance(tp, t.ClassSpec) and tp.is_concrete():
                     found.add(tp)
+        # An AMBIENT instance member call records its demand on the use, not
+        # in any `where` clause: the solved scope (Sized<List<Int>>) committed
+        # by NamedExpression.compile is a concrete constraint to discharge.
+        if (isinstance(thing, e.NamedExpression)
+                and isinstance(thing.resolved_trait_scope, t.ClassSpec)
+                and thing.resolved_trait_scope.is_concrete()):
+            found.add(thing.resolved_trait_scope)
         return rw.UNCHANGED
     for st in statements:
         st.search_and_replace(resolver, collect)

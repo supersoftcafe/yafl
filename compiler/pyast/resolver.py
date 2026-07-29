@@ -150,6 +150,13 @@ class Resolved[T]:
     scope: ResolvedScope
     trait_scope: t.TypeSpec|None = None     # We need this for mapping local types to target class types
     owner_class: s.ClassStatement|None = None    # We need this for the generic type declarations
+    # Placeholder names owned by the GENERIC `[ambient]` instance whose
+    # interface pattern produced this candidate (the instance's T in
+    # Sized<List<T>>). The use site may bind them, from the argument or the
+    # expected type — the same rule as a generic function candidate's own
+    # type params. Empty for every other provenance; caller placeholders
+    # reaching a candidate through trait_scope stay strict.
+    instance_params: tuple[str, ...] = ()
 
 
 class Resolver:
@@ -172,6 +179,13 @@ class Resolver:
         return None
 
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
+        return []
+
+    # Every in-scope `instance [ambient]` record (the desugared
+    # `[trait,ambient]` let): its members join name resolution as pure
+    # AVAILABILITY — no constraint on anything of the caller's. Same
+    # import-scope filtering as get_implicit_where_specs.
+    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
         return []
 
     def get_discriminators(self) -> dict[str, int]:
@@ -219,6 +233,9 @@ class DelegatingResolver(Resolver):
 
     def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
         return self._parent.get_implicit_where_specs(scopes)
+
+    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
+        return self._parent.get_ambient_traits(scopes)
 
     def get_discriminators(self) -> dict[str, int]:
         return self._parent.get_discriminators()
@@ -369,6 +386,13 @@ class ResolverRoot(Resolver):
         return [st.type for st in self.__statements.where_aliases
                 if st.name.rpartition('::')[0] in scopes]
 
+    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
+        if not scopes:
+            return []
+        return [st for st in self.__statements.traits
+                if 'ambient' in st.attributes
+                and st.name.rpartition('::')[0] in scopes]
+
 
 class AddScopeResolution(DelegatingResolver):
     __scopes: tuple[str, ...]
@@ -414,6 +438,11 @@ class AddScopeResolution(DelegatingResolver):
         own = set(self.__scopes)
         merged = own if scopes is None else (own | scopes)
         return self._parent.get_implicit_where_specs(merged)
+
+    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
+        own = set(self.__scopes)
+        merged = own if scopes is None else (own | scopes)
+        return self._parent.get_ambient_traits(merged)
 
 
 class ResolverType(DelegatingResolver):
