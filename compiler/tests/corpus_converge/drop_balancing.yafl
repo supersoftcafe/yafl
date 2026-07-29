@@ -1,0 +1,72 @@
+# Path-level drop balancing (lowering/drops.py, mirrored by
+# bootstrap/drops.yafl): a droppable linear binding consumed on SOME control
+# paths gets a dropIndirect(x) inserted on each abandoning path — the
+# non-consuming ternary/match branch, and the value of an early `ret` whose
+# path skips the consumption. Wholly-unused bindings keep the scope-exit
+# batch. Diffed post-drops via the postmono contract; the shapes mirror
+# tests/test_drop_gaps.py. Lives in `namespace System` because droppability
+# keys on the `System::Drop` interface by name.
+namespace System
+
+typealias Int  : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+typealias None : ()
+
+let [const] None: None = ()
+let [const] true:  Bool = __builtin_op__<bool>("integer_test_eq", 0, 0)
+let [const] false: Bool = __builtin_op__<bool>("integer_test_gt", 0, 0)
+
+fun `+`(left: Int, right: Int): Int
+  ret __builtin_op__<bigint>("integer_add", left, right)
+
+interface Drop<[linear] T>
+  fun drop(self: T): None
+
+# The drops pass routes implicit drops through this trampoline (a bare call
+# to a generic instance's member can't infer the instance's type params).
+fun dropIndirect<[linear] T>([terminal] x: T): None where Drop<T>
+  ret drop(x)
+
+class [linear,final] Res(tag: Int)
+
+class _DropRes() : Drop<Res>
+  fun drop(self: Res): None
+    ret None
+
+let [trait] _dropRes: _DropRes = _DropRes()
+
+fun consume([terminal] r: Res): Int
+  ret r.tag
+
+enum Choice
+  enum Take()
+  enum Skip()
+
+# Early `ret` abandons r; the fall-through consumes it.
+fun earlyRet(flag: Bool): Int
+  let r = Res(7)
+  if flag
+    ret 1
+  ret consume(r)
+
+# The true branch abandons r; the false branch consumes it.
+fun ternaryMix(flag: Bool): Int
+  let r = Res(9)
+  ret flag ? 1 : consume(r)
+
+# The Skip arm abandons r; the Take arm consumes it.
+fun matchMix(c: Choice): Int
+  let r = Res(3)
+  ret match(c)
+    (t: Take) => consume(r)
+    (s: Skip) => 0
+
+# Wholly unused: the scope-exit batch drop, unchanged behaviour.
+fun untouched(flag: Bool): Int
+  let r = Res(1)
+  ret flag ? 1 : 0
+
+# earlyRet(true)=1, ternaryMix(false)=9, matchMix(Take())=3, untouched=1:
+# main sums to 14; the value only matters as a use of all four shapes.
+fun main(): Int
+  ret earlyRet(true) + ternaryMix(false) + matchMix(Take()) + untouched(true)

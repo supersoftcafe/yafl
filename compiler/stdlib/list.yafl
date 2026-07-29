@@ -500,7 +500,7 @@ class _DropListBuilder<T>() : Drop<ListBuilder<T>>
   fun drop(self: ListBuilder<T>): None
     ret _discardBuilt(build(self))
 
-fun _discardBuilt<T>(l: List<T>): None
+fun _discardBuilt<T>(_l: List<T>): None
   ret None
 
 let [trait] _dropListBuilder<T>: _DropListBuilder<T> = _DropListBuilder<T>()

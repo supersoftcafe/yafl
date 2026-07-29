@@ -79,3 +79,11 @@ interface Show<TVal>
 # concrete code never mentions it.
 interface Drop<[linear] T>
   fun drop(self: T): None
+
+# The drops pass routes implicit scope-exit drops through this trampoline.
+# A bare call to a GENERIC instance's member (e.g. Drop<ListBuilder<T>>'s
+# drop) cannot infer the instance's type params; a generic FUNCTION latches
+# T from its argument, and its where-clause discharges against generic and
+# concrete instances alike at monomorphisation.
+fun dropIndirect<[linear] T>([terminal] x: T): None where Drop<T>
+  ret drop(x)

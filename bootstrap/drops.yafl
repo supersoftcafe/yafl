@@ -1,10 +1,16 @@
 # bootstrap/drops.yafl — affine drop insertion, ported from lowering/drops.py.
 # An unused `[linear]` binding whose type has a Drop instance in scope is
 # consumed BY POLICY at scope exit: the scope's value binds to a temporary,
-# a drop(x) call is appended per binding, the temporary is the result. The
-# rewritten calls then resolve through an ordinary RE-CONVERGENCE, and the
-# linearity checker sees plain consumption. Deliberately narrow (phase 1):
-# WHOLE bindings referenced NOWHERE in their scope.
+# a dropIndirect(x) call is appended per binding, the temporary is the result.
+# The rewritten calls then resolve through an ordinary RE-CONVERGENCE, and the
+# linearity checker sees plain consumption. Two granularities, WHOLE bindings
+# only: (1) scope level — referenced NOWHERE, batched drop at scope exit;
+# (2) path level — consumed on some control paths, drop inserted on each
+# abandoning path (the non-consuming ternary/match branch, the value of an
+# early `ret` that skips the consumption), mirroring the linearity checker's
+# per-path exactly-once merge. Shapes outside that rule (double use, a
+# reference under a lambda, nested fn or match guard) bail out unchanged and
+# keep the checker's error.
 namespace Bootstrap
 
 import System
@@ -63,16 +69,18 @@ fun drFn(f: PsFun, r: Resolver, ids: List<String>): DrS
 
 fun drFnBody(f: PsFun, b: PExpr, r: Resolver, ids: List<String>): DrS
   let rewritten = drExpr(b, f.fWheres, r, ids)
-  let drops = unusedDroppable(flattenParams(f.fParams),
-                              referencedNames(rewritten.deExpr,
-                                              List<String>()),
-                              f.fWheres, r, ids)
+  let params = flattenParams(f.fParams)
+  let referenced = referencedNames(rewritten.deExpr, List<String>())
+  let drops = unusedDroppable(params, referenced, f.fWheres, r, ids)
   let body2 = isEmpty(drops)
     ? rewritten.deExpr
     : withDrops(rewritten.deExpr, drops)
-  let changed = rewritten.deChanged || !isEmpty(drops)
+  let bal = drBalLoop(chain(partiallyUsedDroppable(params, referenced,
+                                                   f.fWheres, r, ids)),
+                      body2, false)
+  let changed = rewritten.deChanged || !isEmpty(drops) || bal.deChanged
   ret changed
-    ? DrS(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, body2, f.fRet,
+    ? DrS(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, bal.deExpr, f.fRet,
                 f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports),
           true)
     : DrS(f, false)
@@ -328,10 +336,14 @@ fun drBlock(bk: PeBlock, wheres: List<Spec>, r: Resolver,
     : bk
   # The block's OWN unused droppable lets drop at its exit.
   let lets = bindingLets(chain(blockStmtsOf(rebuilt)), List<PStmt>())
-  let drops = unusedDroppable(lets, blockReferenced(rebuilt), wheres, r, ids)
-  if isEmpty(drops)
-    ret DrE(rebuilt, ss.dmChanged || ov.deChanged)
-  ret DrE(withDrops(rebuilt, drops), true)
+  let referenced = blockReferenced(rebuilt)
+  let drops = unusedDroppable(lets, referenced, wheres, r, ids)
+  let dropped = isEmpty(drops) ? rebuilt : withDrops(rebuilt, drops)
+  let bal = drBalLoop(chain(partiallyUsedDroppable(lets, referenced,
+                                                   wheres, r, ids)),
+                      dropped, false)
+  ret DrE(bal.deExpr,
+          ss.dmChanged || ov.deChanged || !isEmpty(drops) || bal.deChanged)
 
 fun blockStmtsOf(x: PExpr): List<PStmt>
   ret match(x)
@@ -395,13 +407,16 @@ fun drIf(i: PsIf, wheres: List<Spec>, r: Resolver, ids: List<String>): DrS
 fun drLambda(lm: PeLambda, wheres: List<Spec>, r: Resolver,
              ids: List<String>): DrE
   let ob = drExpr(lm.lamBody, wheres, r, ids)
-  let drops = unusedDroppable(flattenParams(lm.lamParams),
-                              referencedNames(ob.deExpr, List<String>()),
-                              wheres, r, ids)
+  let params = flattenParams(lm.lamParams)
+  let referenced = referencedNames(ob.deExpr, List<String>())
+  let drops = unusedDroppable(params, referenced, wheres, r, ids)
   let body2 = isEmpty(drops) ? ob.deExpr : withDrops(ob.deExpr, drops)
-  let changed = ob.deChanged || !isEmpty(drops)
+  let bal = drBalLoop(chain(partiallyUsedDroppable(params, referenced,
+                                                   wheres, r, ids)),
+                      body2, false)
+  let changed = ob.deChanged || !isEmpty(drops) || bal.deChanged
   ret DrE(changed
-            ? PeLambda(lm.lamParams, body2, lm.pelLine, lm.lamRet)
+            ? PeLambda(lm.lamParams, bal.deExpr, lm.pelLine, lm.lamRet)
             : lm,
           changed)
 
@@ -427,12 +442,33 @@ fun isUnusedDroppable(let2: PsLet, referenced: List<String>,
                       wheres: List<Spec>, r: Resolver,
                       ids: List<String>): Bool
   ret !contains2(referenced, let2.lName)
-      && !startsWith(bareOfUnique(let2.lName), "_")
+      && eligibleDroppable(let2, wheres, r, ids)
+
+fun eligibleDroppable(let2: PsLet, wheres: List<Spec>, r: Resolver,
+                      ids: List<String>): Bool
+  ret !startsWith(bareOfUnique(let2.lName), "_")
       && bareOfUnique(let2.lName) != "this"
       && !hasAttr(let2.lAttrs, "terminal")
       && !hasAttr(let2.lAttrs, "lazy")
       && !hasAttr(let2.lAttrs, "future")
       && droppable(let2.lType, wheres, r, ids)
+
+fun partiallyUsedDroppable(lets: List<PStmt>, referenced: List<String>,
+                           wheres: List<Spec>, r: Resolver,
+                           ids: List<String>): List<PStmt>
+  ret puLoop(chain(lets), referenced, wheres, r, ids, List<PStmt>())
+
+fun [tail] puLoop(ls: Chain<PStmt>, referenced: List<String>,
+                  wheres: List<Spec>, r: Resolver, ids: List<String>,
+                  acc: List<PStmt>): List<PStmt>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => contains2(referenced, let2.lName)
+                       && eligibleDroppable(let2, wheres, r, ids)
+        ? puLoop(l.next, referenced, wheres, r, ids, append(acc, l.value))
+        : puLoop(l.next, referenced, wheres, r, ids, acc)
+      (o: PStmt)    => puLoop(l.next, referenced, wheres, r, ids, acc)
 
 # `body` extended so each drop releases at scope exit: value computed FIRST
 # (a derived view of a dropped handle drains before the close), then the
@@ -465,8 +501,442 @@ fun [tail] dropCalls(ds: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
       (let2: PsLet) => dropCalls(l.next, append(acc, dropCall(let2)))
       (o: PStmt)    => dropCalls(l.next, acc)
 
+# ── path-level balancing ────────────────────────────────────────────────────
+# A droppable binding referenced on SOME paths gets a drop on each abandoning
+# path, so every path consumes it exactly once (the linearity checker's merge
+# rule). Anything outside that shape — double use, a reference under a lambda,
+# nested fn or match guard — bails out (ok=false), keeping the checker's error.
+
+class [final] DrBx(bxExpr: PExpr, bxDid: Bool, bxOk: Bool)
+class [final] DrBi(biStmt: PStmt, biDid: Bool, biOk: Bool)
+class [final] DrBs(bsStmts: List<PStmt>, bsValue: PExpr|None, bsDid: Bool,
+                   bsOk: Bool)
+
+fun [tail] drBalLoop(ls: Chain<PStmt>, body: PExpr, changed: Bool): DrE
+  ret match(ls)
+    (nil: ChainEnd) => DrE(body, changed)
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => drBalance(body, let2)
+        |> (o) => drBalLoop(l.next, o.deExpr, changed || o.deChanged)
+      (o: PStmt)    => drBalLoop(l.next, body, changed)
+
+fun drBalance(body: PExpr, let2: PsLet): DrE
+  let out = drEnsureStmts(chain(blockStmtsOf2(body)), blockValueOf(body),
+                          false, false, let2, List<PStmt>(), false)
+  if !out.bsOk || !out.bsDid
+    ret DrE(body, false)
+  ret match(out.bsValue)
+    (v: PExpr) => DrE(PeBlock(out.bsStmts, v, "", exprLine(body)), true)
+    ()         => DrE(body, false)
+
+fun drBail(): DrBs
+  ret DrBs(List<PStmt>(), None, false, false)
+
+fun drRefs(x: PExpr, name: String): Bool
+  ret contains2(referencedNames(x, List<String>()), name)
+
+fun drRefsOpt(x: PExpr|None, name: String): Bool
+  ret match(x)
+    (e2: PExpr) => drRefs(e2, name)
+    ()          => false
+
+fun drRefsStmt(st: PStmt, name: String): Bool
+  ret contains2(refStmt(st, List<String>()), name)
+
+fun [tail] drRefsAny(ss: Chain<PStmt>, name: String): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => drRefsStmt(l.value, name)
+      ? true
+      : drRefsAny(l.next, name)
+
+fun oneDrop(let2: PsLet): List<PStmt>
+  ret append<PStmt>(List<PStmt>(), let2)
+
+# Path accounting through a statement list. `tail2` says the caller's
+# continuation consumes on fall-through; every path must total exactly one.
+fun drEnsureStmts(ss: Chain<PStmt>, value: PExpr|None, tail2: Bool,
+                  consumed: Bool, let2: PsLet, acc: List<PStmt>,
+                  did: Bool): DrBs
+  ret match(ss)
+    (nil: ChainEnd) => drEnsureEnd(value, tail2, consumed, let2, acc, did)
+    (l: ChainLink)  => match(l.value)
+      (rt: PsRet) => drEnsureRet(rt, l.next, value, consumed, let2, acc, did)
+      (i2: PsIf)  => drEnsureIfStep(i2, l.next, value, tail2, consumed, let2,
+                                    acc, did)
+      (o: PStmt)  => drEnsurePlain(l.value, l.next, value, tail2, consumed,
+                                   let2, acc, did)
+
+fun drEnsurePlain(st: PStmt, rest: Chain<PStmt>, value: PExpr|None,
+                  tail2: Bool, consumed: Bool, let2: PsLet, acc: List<PStmt>,
+                  did: Bool): DrBs
+  if !drRefsStmt(st, let2.lName)
+    ret drEnsureStmts(rest, value, tail2, consumed, let2, append(acc, st), did)
+  if consumed
+    ret drBail()
+  let fs = drFixStmt(st, let2)
+  if !fs.biOk
+    ret drBail()
+  ret drEnsureStmts(rest, value, tail2, true, let2, append(acc, fs.biStmt),
+                    did || fs.biDid)
+
+# This path exits the function here; the tail never runs. Anything after the
+# `ret` is unreachable and kept as-is.
+fun drEnsureRet(rt: PsRet, rest: Chain<PStmt>, value: PExpr|None,
+                consumed: Bool, let2: PsLet, acc: List<PStmt>,
+                did: Bool): DrBs
+  let r2 = drRefs(rt.retValue, let2.lName)
+  let need = 1 - (consumed ? 1 : 0) - (r2 ? 1 : 0)
+  if need < 0
+    ret drBail()
+  let fx = r2 ? drFixExpr(rt.retValue, let2) : DrBx(rt.retValue, false, true)
+  if !fx.bxOk
+    ret drBail()
+  let nv = need == 1 ? withDrops(fx.bxExpr, oneDrop(let2)) : fx.bxExpr
+  ret DrBs(drCopyRest(rest, append(acc, PsRet(nv, rt.psrLine))), value,
+           did || fx.bxDid || need == 1, true)
+
+fun [tail] drCopyRest(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => drCopyRest(l.next, append(acc, l.value))
+
+fun drEnsureIfStep(i2: PsIf, rest: Chain<PStmt>, value: PExpr|None,
+                   tail2: Bool, consumed: Bool, let2: PsLet,
+                   acc: List<PStmt>, did: Bool): DrBs
+  let later = drRefsAny(rest, let2.lName) || drRefsOpt(value, let2.lName)
+              || tail2
+  let fi = drEnsureIf(i2, consumed, later, let2)
+  if !fi.biOk
+    ret drBail()
+  # Falling branches were made to consume exactly when nothing before or
+  # after this `if` does; a both-terminating `if` never falls through.
+  let bothTerm = blockTerminates(i2.ifTrue) && blockTerminates(i2.ifFalse)
+  let consumed2 = bothTerm ? consumed : (consumed || !later)
+  ret drEnsureStmts(rest, value, tail2, consumed2, let2,
+                    append(acc, fi.biStmt), did || fi.biDid)
+
+fun drEnsureIf(i2: PsIf, consumed: Bool, later: Bool, let2: PsLet): DrBi
+  let name = let2.lName
+  if drRefs(i2.ifCond, name)
+    ret drEnsureIfCond(i2, consumed, later, let2)
+  let tb = drEnsureBranch(i2.ifTrue, consumed, later, let2)
+  if !tb.bsOk
+    ret DrBi(i2, false, false)
+  let fb = drEnsureBranch(i2.ifFalse, consumed, later, let2)
+  if !fb.bsOk
+    ret DrBi(i2, false, false)
+  ret DrBi(PsIf(i2.ifCond, tb.bsStmts, fb.bsStmts, i2.psifLine),
+           tb.bsDid || fb.bsDid, true)
+
+# The condition consumed it; any branch re-use is the checker's error.
+fun drEnsureIfCond(i2: PsIf, consumed: Bool, later: Bool, let2: PsLet): DrBi
+  let name = let2.lName
+  if consumed || later || drRefsAny(chain(i2.ifTrue), name)
+     || drRefsAny(chain(i2.ifFalse), name)
+    ret DrBi(i2, false, false)
+  let fx = drFixExpr(i2.ifCond, let2)
+  if !fx.bxOk
+    ret DrBi(i2, false, false)
+  ret DrBi(PsIf(fx.bxExpr, i2.ifTrue, i2.ifFalse, i2.psifLine), fx.bxDid,
+           true)
+
+fun drEnsureBranch(blk: List<PStmt>, consumed: Bool, later: Bool,
+                   let2: PsLet): DrBs
+  let term = blockTerminates(blk)
+  # A terminating branch never reaches the tail; a falling one does.
+  let need = 1 - (consumed ? 1 : 0) - (term || !later ? 0 : 1)
+  if need < 0
+    ret drBail()
+  if need == 0
+    ret drRefsAny(chain(blk), let2.lName)
+      ? drBail()
+      : DrBs(blk, None, false, true)
+  ret drEnsureStmts(chain(blk), None, false, false, let2, List<PStmt>(),
+                    false)
+
+fun drEnsureEnd(value: PExpr|None, tail2: Bool, consumed: Bool, let2: PsLet,
+                acc: List<PStmt>, did: Bool): DrBs
+  let vr = drRefsOpt(value, let2.lName)
+  let need = 1 - (consumed ? 1 : 0) - (vr ? 1 : 0) - (tail2 ? 1 : 0)
+  if need < 0
+    ret drBail()
+  ret match(value)
+    (v: PExpr) => drEnsureEndValue(v, vr, need, let2, acc, did)
+    ()         => need == 1
+      ? DrBs(append(acc, dropCall(let2)), None, true, true)
+      : DrBs(acc, None, did, true)
+
+fun drEnsureEndValue(v: PExpr, vr: Bool, need: Int, let2: PsLet,
+                     acc: List<PStmt>, did: Bool): DrBs
+  let fx = vr ? drFixExpr(v, let2) : DrBx(v, false, true)
+  if !fx.bxOk
+    ret drBail()
+  # Scope-exit timing: the value is computed FIRST, then the drop.
+  let nv = need == 1 ? withDrops(fx.bxExpr, oneDrop(let2)) : fx.bxExpr
+  ret DrBs(acc, nv, did || fx.bxDid || need == 1, true)
+
+# ── divergence inside an expression ─────────────────────────────────────────
+# Bottom-up: a fixed inner branch counts as consumption for its parent.
+# Nodes not referencing the binding pass through untouched.
+
+fun drFixExpr(x: PExpr, let2: PsLet): DrBx
+  if !drRefs(x, let2.lName)
+    ret DrBx(x, false, true)
+  ret match(x)
+    (te: PeTernary) => drFixTernary(te, let2)
+    (mt: PeMatch)   => drFixMatch(mt, let2)
+    # A reference under a lambda is a capture; keep the checker's error.
+    (lm: PeLambda)  => DrBx(x, false, false)
+    (d: PeDot)      => drFixExpr(d.base, let2)
+      |> (o) => DrBx(PeDot(o.bxExpr, d.member, d.pedLine), o.bxDid, o.bxOk)
+    (c: PeCall)     => drFixPair(c.function, c.parameter, let2)
+      |> (p) => DrBx(PeCall(pairA(p.bxExpr), pairB(p.bxExpr), c.pecLine),
+                     p.bxDid, p.bxOk)
+    (tp: PeTuple)   => drFixEntries(tp, let2)
+    (bk: PeBlock)   => drFixBlock(bk, let2)
+    (op: PeBuiltinOp) => drFixExpr(op.opParams, let2)
+      |> (o) => DrBx(PeBuiltinOp(op.opType, op.opName, o.bxExpr, op.peboLine),
+                     o.bxDid, o.bxOk)
+    (nw: PeNew)     => drFixExpr(nw.newParam, let2)
+      |> (o) => DrBx(PeNew(nw.newType, o.bxExpr, nw.penwLine), o.bxDid,
+                     o.bxOk)
+    (ar: PeArrayRead) => drFixPair(ar.arrObj, ar.arrIndex, let2)
+      |> (p) => DrBx(PeArrayRead(pairA(p.bxExpr), pairB(p.bxExpr),
+                                 ar.pearLine),
+                     p.bxDid, p.bxOk)
+    (cv: PeConvert) => drFixExpr(cv.convInner, let2)
+      |> (o) => DrBx(PeConvert(o.bxExpr, cv.convTarget, cv.pecvLine),
+                     o.bxDid, o.bxOk)
+    (pl: PeParallel) => drFixExpr(pl.parParams, let2)
+      |> (o) => DrBx(PeParallel(o.bxExpr, pl.pepLine), o.bxDid, o.bxOk)
+    (ne: PeNewEnum) => drFixFieldArgs(ne, let2)
+    (o: PExpr)      => DrBx(x, false, true)
+
+fun drFixPair(a: PExpr, b: PExpr, let2: PsLet): DrBx
+  let oa = drFixExpr(a, let2)
+  if !oa.bxOk
+    ret DrBx(a, false, false)
+  let ob = drFixExpr(b, let2)
+  if !ob.bxOk
+    ret DrBx(a, false, false)
+  ret DrBx(PeTuple(append(append(List<PTupEnt>(),
+                                 PTupEnt("", false, oa.bxExpr)),
+                          PTupEnt("", false, ob.bxExpr)),
+                   exprLine(a)),
+           oa.bxDid || ob.bxDid, true)
+
+fun drFixEntries(tp: PeTuple, let2: PsLet): DrBx
+  let out = drFixEntryLoop(chain(tp.exprs), let2, List<PTupEnt>(), false)
+  if !out.bxOk
+    ret DrBx(tp, false, false)
+  ret DrBx(PeTuple(entriesOf3(out.bxExpr, tp.exprs), tp.petLine), out.bxDid,
+           true)
+
+fun [tail] drFixEntryLoop(es: Chain<PTupEnt>, let2: PsLet, acc: List<PTupEnt>,
+                          did: Bool): DrBx
+  ret match(es)
+    (nil: ChainEnd) => DrBx(PeTuple(acc, PLine("", 0, 0)), did, true)
+    (l: ChainLink)  => drFixExpr(l.value.tupValue, let2)
+      |> (o) => o.bxOk
+        ? drFixEntryLoop(l.next, let2,
+                         append(acc, PTupEnt(l.value.tupName,
+                                             l.value.tupSpread, o.bxExpr)),
+                         did || o.bxDid)
+        : DrBx(PeTuple(acc, PLine("", 0, 0)), false, false)
+
+fun drFixFieldArgs(ne: PeNewEnum, let2: PsLet): DrBx
+  let out = drFixFaLoop(chain(ne.fieldArgs), let2, List<PFieldArg>(), false)
+  if !out.faOk
+    ret DrBx(ne, false, false)
+  ret DrBx(PeNewEnum(ne.rootName, ne.leafName, out.faArgs, ne.neTypeParams,
+                     ne.penewLine),
+           out.faDid, true)
+
+class [final] DrFaB(faArgs: List<PFieldArg>, faDid: Bool, faOk: Bool)
+
+fun [tail] drFixFaLoop(fas: Chain<PFieldArg>, let2: PsLet,
+                       acc: List<PFieldArg>, did: Bool): DrFaB
+  ret match(fas)
+    (nil: ChainEnd) => DrFaB(acc, did, true)
+    (l: ChainLink)  => drFixExpr(l.value.faValue, let2)
+      |> (o) => o.bxOk
+        ? drFixFaLoop(l.next, let2,
+                      append(acc, PFieldArg(l.value.faName, o.bxExpr)),
+                      did || o.bxDid)
+        : DrFaB(acc, false, false)
+
+fun drFixTernary(te: PeTernary, let2: PsLet): DrBx
+  let name = let2.lName
+  if drRefs(te.condition, name)
+    ret drFixTernaryCond(te, let2)
+  let ft = drFixExpr(te.trueResult, let2)
+  if !ft.bxOk
+    ret DrBx(te, false, false)
+  let ff = drFixExpr(te.falseResult, let2)
+  if !ff.bxOk
+    ret DrBx(te, false, false)
+  let tr = drRefs(ft.bxExpr, name)
+  let fr = drRefs(ff.bxExpr, name)
+  if tr == fr
+    ret DrBx(PeTernary(te.condition, ft.bxExpr, ff.bxExpr, te.pety),
+             ft.bxDid || ff.bxDid, true)
+  let nt = tr ? ft.bxExpr : withDrops(ft.bxExpr, oneDrop(let2))
+  let nf = tr ? withDrops(ff.bxExpr, oneDrop(let2)) : ff.bxExpr
+  ret DrBx(PeTernary(te.condition, nt, nf, te.pety), true, true)
+
+# The condition consumed it; branch re-use is the checker's error.
+fun drFixTernaryCond(te: PeTernary, let2: PsLet): DrBx
+  let name = let2.lName
+  if drRefs(te.trueResult, name) || drRefs(te.falseResult, name)
+    ret DrBx(te, false, false)
+  let fc = drFixExpr(te.condition, let2)
+  if !fc.bxOk
+    ret DrBx(te, false, false)
+  ret DrBx(PeTernary(fc.bxExpr, te.trueResult, te.falseResult, te.pety),
+           fc.bxDid, true)
+
+fun drFixMatch(mt: PeMatch, let2: PsLet): DrBx
+  let name = let2.lName
+  # A guard runs on fall-through paths too; keep the checker's error.
+  if drGuardRefs(chain(mt.arms), name)
+    ret DrBx(mt, false, false)
+  if drRefs(mt.subject, name)
+    ret drFixMatchSubject(mt, let2)
+  let fixed = drFixArmLoop(chain(mt.arms), let2, List<PArm>(), false)
+  if !fixed.abOk
+    ret DrBx(mt, false, false)
+  let anyR = drArmRefsAny(chain(fixed.abArms), name)
+  let allR = drArmRefsAll(chain(fixed.abArms), name)
+  if allR || !anyR
+    ret DrBx(PeMatch(mt.subject, fixed.abArms, mt.pemLine), fixed.abDid,
+             true)
+  ret DrBx(PeMatch(mt.subject, drWrapArms(chain(fixed.abArms), name, let2,
+                                          List<PArm>()),
+                   mt.pemLine),
+           true, true)
+
+fun drFixMatchSubject(mt: PeMatch, let2: PsLet): DrBx
+  let name = let2.lName
+  if drArmRefsAny(chain(mt.arms), name)
+    ret DrBx(mt, false, false)
+  let fs = drFixExpr(mt.subject, let2)
+  if !fs.bxOk
+    ret DrBx(mt, false, false)
+  ret DrBx(PeMatch(fs.bxExpr, mt.arms, mt.pemLine), fs.bxDid, true)
+
+fun [tail] drGuardRefs(as2: Chain<PArm>, name: String): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => drRefsOpt(l.value.armGuard, name)
+      ? true
+      : drGuardRefs(l.next, name)
+
+fun [tail] drArmRefsAny(as2: Chain<PArm>, name: String): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => drRefs(l.value.armBody, name)
+      ? true
+      : drArmRefsAny(l.next, name)
+
+fun [tail] drArmRefsAll(as2: Chain<PArm>, name: String): Bool
+  ret match(as2)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => drRefs(l.value.armBody, name)
+      ? drArmRefsAll(l.next, name)
+      : false
+
+class [final] DrArmB(abArms: List<PArm>, abDid: Bool, abOk: Bool)
+
+fun [tail] drFixArmLoop(as2: Chain<PArm>, let2: PsLet, acc: List<PArm>,
+                        did: Bool): DrArmB
+  ret match(as2)
+    (nil: ChainEnd) => DrArmB(acc, did, true)
+    (l: ChainLink)  => drFixExpr(l.value.armBody, let2)
+      |> (o) => o.bxOk
+        ? drFixArmLoop(l.next, let2,
+                       append(acc, PArm(l.value.armName, l.value.armType,
+                                        o.bxExpr, l.value.armLiterals,
+                                        l.value.armGuard, l.value.parmLine)),
+                       did || o.bxDid)
+        : DrArmB(acc, false, false)
+
+fun [tail] drWrapArms(as2: Chain<PArm>, name: String, let2: PsLet,
+                      acc: List<PArm>): List<PArm>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => drRefs(l.value.armBody, name)
+      ? drWrapArms(l.next, name, let2, append(acc, l.value))
+      : drWrapArms(l.next, name, let2,
+                   append(acc, PArm(l.value.armName, l.value.armType,
+                                    withDrops(l.value.armBody,
+                                              oneDrop(let2)),
+                                    l.value.armLiterals, l.value.armGuard,
+                                    l.value.parmLine)))
+
+fun drFixBlock(bk: PeBlock, let2: PsLet): DrBx
+  let ss = drFixStmtLoop(chain(bk.blockStmts), let2, List<PStmt>(), false)
+  if !ss.bsOk
+    ret DrBx(bk, false, false)
+  let ov = drFixExpr(bk.blockValue, let2)
+  if !ov.bxOk
+    ret DrBx(bk, false, false)
+  ret DrBx(PeBlock(ss.bsStmts, ov.bxExpr, bk.blockTag, bk.pebkLine),
+           ss.bsDid || ov.bxDid, true)
+
+fun [tail] drFixStmtLoop(ss: Chain<PStmt>, let2: PsLet, acc: List<PStmt>,
+                         did: Bool): DrBs
+  ret match(ss)
+    (nil: ChainEnd) => DrBs(acc, None, did, true)
+    (l: ChainLink)  => drFixStmt(l.value, let2)
+      |> (o) => o.biOk
+        ? drFixStmtLoop(l.next, let2, append(acc, o.biStmt), did || o.biDid)
+        : DrBs(acc, None, false, false)
+
+fun drFixStmt(st: PStmt, let2: PsLet): DrBi
+  if !drRefsStmt(st, let2.lName)
+    ret DrBi(st, false, true)
+  ret match(st)
+    (l: PsLet) => match(l.lDefault)
+      (d: PExpr) => drFixExpr(d, let2)
+        |> (o) => DrBi(PsLet(l.lName, l.lAttrs, l.lGens, l.lType, o.bxExpr,
+                             l.lArrayLen, l.lWheres, l.pslLine,
+                             l.lTypeInferred, l.lImports),
+                       o.bxDid, o.bxOk)
+      ()         => DrBi(st, false, true)
+    (d: PsDestructure) => match(d.dDefault)
+      (x: PExpr) => drFixExpr(x, let2)
+        |> (o) => DrBi(PsDestructure(d.dName, d.dAttrs, d.dType, d.dTargets,
+                                     o.bxExpr, d.psdLine, d.dTypeInferred),
+                       o.bxDid, o.bxOk)
+      ()         => DrBi(st, false, true)
+    (rt: PsRet)  => drFixExpr(rt.retValue, let2)
+      |> (o) => DrBi(PsRet(o.bxExpr, rt.psrLine), o.bxDid, o.bxOk)
+    (a: PsAction) => drFixExpr(a.action, let2)
+      |> (o) => DrBi(PsAction(o.bxExpr, a.psaLine), o.bxDid, o.bxOk)
+    (i: PsIf)    => drFixIf(i, let2)
+    # A reference under a nested fn is a capture; keep the checker's error.
+    (f: PsFun)   => DrBi(st, false, false)
+    (o: PStmt)   => DrBi(st, false, true)
+
+fun drFixIf(i: PsIf, let2: PsLet): DrBi
+  let oc = drFixExpr(i.ifCond, let2)
+  if !oc.bxOk
+    ret DrBi(i, false, false)
+  let ot = drFixStmtLoop(chain(i.ifTrue), let2, List<PStmt>(), false)
+  if !ot.bsOk
+    ret DrBi(i, false, false)
+  let of2 = drFixStmtLoop(chain(i.ifFalse), let2, List<PStmt>(), false)
+  if !of2.bsOk
+    ret DrBi(i, false, false)
+  ret DrBi(PsIf(oc.bxExpr, ot.bsStmts, of2.bsStmts, i.psifLine),
+           oc.bxDid || ot.bsDid || of2.bsDid, true)
+
+# dropIndirect, not drop: a bare call to a GENERIC instance's member can't
+# infer the instance's type params; the trampoline latches T from its
+# argument and discharges `where Drop<T>` at monomorphisation.
 fun dropCall(let2: PsLet): PStmt
-  ret PsAction(PeCall(PeName("drop", List<Spec>(), let2.pslLine),
+  ret PsAction(PeCall(PeName("dropIndirect", List<Spec>(), let2.pslLine),
                       PeTuple(append(List<PTupEnt>(),
                                      PTupEnt("", false,
                                              PeName(let2.lName, List<Spec>(),
