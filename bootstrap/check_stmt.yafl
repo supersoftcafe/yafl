@@ -21,8 +21,31 @@ fun checkStmtKind(st: PStmt, r: Resolver, retTy: Spec|None): List<PErr>
                                  "`else` without a matching preceding `if`")
     (im: PsImport)     => noErrs()
     (ns: PsNamespace)  => noErrs()
-    # Never survives parse() — expanded by the fixup; arm for exhaustiveness.
-    (inst: PsInstance) => noErrs()
+    (inst: PsTraitInstance) => checkTraitInstance(inst, r)
+
+# ── TraitInstanceStatement ──────────────────────────────────────────────────
+# Pattern + wheres under the generic scope; members under the transient
+# owner-wheres copy; the pattern must name an INTERFACE.
+
+fun checkTraitInstance(inst: PsTraitInstance, r0: Resolver): List<PErr>
+  let r = genScope(inst.tiGens, r0)
+  let e1 = checkSpecOpt(inst.tiPattern, r)
+  let e2 = checkSpecs(chain(inst.tiWheres), r, noErrs())
+  let e3 = branchChecks(chain(withOwnerWheres(inst.tiMembers, inst.tiWheres)),
+                        r, None, noErrs())
+  ret concat(e1, concat(e2, concat(e3, instancePatternErrs(inst, r))))
+
+fun instancePatternErrs(inst: PsTraitInstance, r: Resolver): List<PErr>
+  ret match(inst.tiPattern)
+    (c: SClass) => match(soleItem(findType(r, c.scName)))
+      (f: Found) => match(f.fStmt)
+        (cls: PsClass) => cls.cIsInterface
+          ? noErrs()
+          : oneErr(inst.pstiLine,
+                   "an instance implements an interface, not a class")
+        (o: PStmt)     => noErrs()
+      ()         => noErrs()
+    (o: Spec)   => noErrs()
 
 # ── FunctionStatement ───────────────────────────────────────────────────────
 

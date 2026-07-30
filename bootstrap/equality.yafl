@@ -311,11 +311,15 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
     (x: PsNamespace) => match(b)
       (y: PsNamespace) => x.nsPath == y.nsPath && eqLine(x.psnLine, y.psnLine)
       (o: PStmt)       => false
-    # Never survives parse() — expanded by the fixup; same-line identity
-    # keeps the fixpoint settled if one ever appears.
-    (x: PsInstance) => match(b)
-      (y: PsInstance) => eqLine(x.psinLine, y.psinLine)
-      (o: PStmt)      => false
+    (x: PsTraitInstance) => match(b)
+      (y: PsTraitInstance) => x.tiName == y.tiName
+                              && eqBool(x.tiAmbient, y.tiAmbient)
+                              && eqGens(x.tiGens, y.tiGens)
+                              && eqSpec(x.tiPattern, y.tiPattern)
+                              && eqSpecs(x.tiWheres, y.tiWheres)
+                              && eqStmts(x.tiMembers, y.tiMembers)
+                              && eqLine(x.pstiLine, y.pstiLine)
+      (o: PStmt)           => false
     (x: PsRet) => match(b)
       (y: PsRet) => x.retIndex == y.retIndex
                       && eqExpr(x.retValue, y.retValue) && eqLine(x.psrLine, y.psrLine)

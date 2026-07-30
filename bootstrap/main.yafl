@@ -339,7 +339,13 @@ fun genericsOutput(stmts0: List<PStmt>): (out: String, code: Int)
     (ok: CvOk)       => genericsDump(ok.cvStatements)
     (dv: CvDiverged) => ("diverged\n", 2)
 
-fun genericsDump(stmts: List<PStmt>): (out: String, code: Int)
+fun genericsDump(stmts0: List<PStmt>): (out: String, code: Int)
+  let li = lowerTraitInstances(stmts0)
+  ret match(li.liChanged ? converge(li.liStmts) : CvOk(li.liStmts, 0))
+    (ok: CvOk)       => genericsDump2(ok.cvStatements)
+    (dv: CvDiverged) => ("diverged\n", 2)
+
+fun genericsDump2(stmts: List<PStmt>): (out: String, code: Int)
   let it = convertGenericToConcrete(stmts)
   if !isEmpty(it.giErrs)
     ret (printedDiagnostics(it.giErrs), 0)
@@ -373,7 +379,13 @@ fun postmonoRes2(stmts0: List<PStmt>): PmRes
     (ok: CvOk)       => postmonoRes3(ok.cvStatements)
     (dv: CvDiverged) => PmText("diverged\n", 2)
 
-fun postmonoRes3(stmts: List<PStmt>): PmRes
+fun postmonoRes3(stmts0: List<PStmt>): PmRes
+  let li = lowerTraitInstances(stmts0)
+  ret match(li.liChanged ? converge(li.liStmts) : CvOk(li.liStmts, 0))
+    (ok: CvOk)       => postmonoRes4(ok.cvStatements)
+    (dv: CvDiverged) => PmText("diverged\n", 2)
+
+fun postmonoRes4(stmts: List<PStmt>): PmRes
   let it = convertGenericToConcrete(stmts)
   if !isEmpty(it.giErrs)
     ret PmText(printedDiagnostics(it.giErrs), 0)

@@ -138,12 +138,16 @@ enum PStmt
                    taImports: List<PStmt>|None = None)
   enum PsImport(importPath: String, psiLine: PLine)
   enum PsNamespace(nsPath: String, psnLine: PLine)
-  # Parse-time marker for an `instance` statement (anonymous first-class
-  # trait instance); expanded by the fixup into a synthesized witness class
-  # + `[trait(,ambient)]` record before anything downstream sees it.
-  enum PsInstance(inAttrs: List<PAttr>, inGens: List<PGen>, inPattern: Spec,
-                  inWheres: List<Spec>, inMembers: List<PStmt>,
-                  psinLine: PLine)
+  # The `instance` statement as a FIRST-CLASS node (TraitInstanceStatement):
+  # survives convergence, checking, drops and linearity carrying its
+  # identity — the interface PATTERN, own type params, wheres, ambient flag
+  # and members. lower_instances.yafl lowers it to witness class + [trait]
+  # record only after checking. tiName is synthesized (`instance$tag`) for
+  # statement indexing only — diagnostics speak of the pattern.
+  enum PsTraitInstance(tiName: String, tiAmbient: Bool, tiGens: List<PGen>,
+                       tiPattern: Spec, tiWheres: List<Spec>,
+                       tiMembers: List<PStmt>, pstiLine: PLine,
+                       tiImports: List<PStmt>|None = None)
   # retIndex = block_exits' per-return ordinal (0 until that stage runs).
   enum PsRet(retValue: PExpr, psrLine: PLine, retIndex: Int = 0)
   enum PsIf(ifCond: PExpr, ifTrue: List<PStmt>, ifFalse: List<PStmt>, psifLine: PLine)

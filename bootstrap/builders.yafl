@@ -194,7 +194,7 @@ fun stmtLine(st: PStmt): PLine
     (ei: PsElseIf) => ei.pseiLine
     (el: PsElse) => el.pselLine
     (ac: PsAction) => ac.psaLine
-    (inst: PsInstance) => inst.psinLine
+    (inst: PsTraitInstance) => inst.pstiLine
 
 # ── array accessor (pyast/utils.create_array_accessor) ─────────────────────
 # A class with a trailing array field gains an accessor member `field@hash6r`
@@ -394,11 +394,9 @@ fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grp: List<PStmt>,
                                      enumLeafConstructors(namespacedEnum(e, ns),
                                                           grp)))
       (c: PsClass)      => fixupLoop(l.next, ns, grp, classWithCtor(c, ns, grp, acc))
-      # `instance` expands FIRST, so the synthesized witness class and
-      # instance record ride the ordinary per-kind handling (namespacing,
-      # import attachment, constructor creation) — parser.py _expand_instance.
-      (inst: PsInstance) => fixupLoop(l.next, ns, grp,
-                                      instanceInto(inst, ns, grp, acc))
+      # A first-class TraitInstanceStatement rides the ordinary named
+      # handling (namespacing, import attachment); lower_instances.yafl
+      # lowers it AFTER checking.
       (other)           => fixupLoop(l.next, ns, grp,
                                      withImports(addNamespace(l.value, ns), grp)
                                        |> (st) => push(acc, st))
@@ -418,60 +416,13 @@ fun withImports(st: PStmt, grp: List<PStmt>): PStmt
                             c.cAllSlots, grp)
     (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
                                      ta.taType, ta.taWheres, ta.pstLine, grp)
+    (ti: PsTraitInstance) => PsTraitInstance(ti.tiName, ti.tiAmbient,
+                                             ti.tiGens, ti.tiPattern,
+                                             ti.tiWheres, ti.tiMembers,
+                                             ti.pstiLine, grp)
     (e: PsEnum) => PsEnum(e.eName, e.eGens, e.eParams, e.eVariants,
                           e.eHasParams, e.pseLine, e.eRootName, e.eSpec, grp)
     (other)     => st
-
-# ── instance expansion ──────────────────────────────────────────────────────
-# The witness class + instance record an `instance` statement stands for.
-# Names are line-derived (path-based naming): nothing user-spellable, stable
-# across runs. Mirrors parser.py _expand_instance exactly.
-
-fun instanceInto(inst: PsInstance, ns: String, grp: List<PStmt>,
-                 acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  # The leaf constructor's static type is the enum root; narrow for
-  # classWithCtor (which wants the PsClass leaf).
-  ret match(instanceWitness(inst))
-    (w: PsClass) => classWithCtor(w, ns, grp, acc)
-      |> (acc2) => push(acc2, withImports(addNamespace(instanceRecord(inst),
-                                                       ns),
-                                          grp))
-    (o: PStmt)   => acc
-
-fun instanceTag(inst: PsInstance): String
-  ret hash6(inst.psinLine.plFile, inst.psinLine.plLine, inst.psinLine.plCol)
-
-# The instance's `where` lands on the WITNESS CLASS (never on members — a
-# member is a vtable slot with a fixed signature); member bodies resolve
-# through the owner's clause (compile_stmt withOwnerWheres).
-fun instanceWitness(inst: PsInstance): PStmt
-  let tag = instanceTag(inst)
-  ret PsClass("_Instance$" + tag + "@" + tag, List<PAttr>(), inst.inGens,
-              funParamsStmt(List<PStmt>(), inst.psinLine),
-              whereList(inst.inPattern), inst.inWheres, inst.inMembers, false,
-              inst.psinLine)
-
-fun instanceRecord(inst: PsInstance): PStmt
-  let tag = instanceTag(inst)
-  let lr = inst.psinLine
-  let wbare = "_Instance$" + tag
-  let ownArgs = instOwnArgs(chain(inst.inGens), lr, builder<Spec>())
-  let value = PeCall(PeName(wbare, ownArgs, lr),
-                     PeTuple(List<PTupEnt>(), lr), lr)
-  let attrs = hasAttr(inst.inAttrs, "ambient")
-    ? append(append(List<PAttr>(), PAttr("trait", None)),
-             PAttr("ambient", None))
-    : append(List<PAttr>(), PAttr("trait", None))
-  ret PsLet("_instance$" + tag + "@" + tag, attrs, inst.inGens,
-            SNamed(wbare, ownArgs, lr), value, "", inst.inWheres, lr)
-
-fun [tail] instOwnArgs(gs: Chain<PGen>, lr: PLine,
-                       acc: ListBuilder<Spec>): List<Spec>
-  ret match(gs)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => instOwnArgs(l.next, lr,
-                                   push(acc, SNamed(bareOfUnique(l.value.genName),
-                                                    List<Spec>(), lr)))
 
 # A class emits itself then its constructor (interfaces get neither).
 fun classWithCtor(c: PsClass, ns: String, grp: List<PStmt>,
@@ -508,6 +459,10 @@ fun addNamespace(st: PStmt, ns: String): PStmt
                             c.cIsInterface, c.pscLine)
     (ta: PsTypealias) => PsTypealias(ns + ta.taName, ta.taAttrs, ta.taGens,
                                      ta.taType, ta.taWheres, ta.pstLine)
+    (ti: PsTraitInstance) => PsTraitInstance(ns + ti.tiName, ti.tiAmbient,
+                                             ti.tiGens, ti.tiPattern,
+                                             ti.tiWheres, ti.tiMembers,
+                                             ti.pstiLine, ti.tiImports)
     (e: PsEnum) => PsEnum(ns + e.eName, e.eGens, e.eParams,
                           map(e.eVariants, (v: PStmt) => addNamespace(v, ns)),
                           e.eHasParams, e.pseLine)

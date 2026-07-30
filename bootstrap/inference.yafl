@@ -196,7 +196,23 @@ fun stmtWheres(stmt: PStmt): List<Spec>
 # witness class has not resolved its parents yet is skipped this pass.
 
 fun traitInstances(r: Resolver): List<TraitInst>
-  ret sortByParamCount(instLoop(chain(traitLets(r)), r, List<TraitInst>()))
+  ret sortByParamCount(
+        tiStmtLoop(chain(traitInstanceStmts(r)),
+                   instLoop(chain(traitLets(r)), r, List<TraitInst>())))
+
+# PRE-LOWERING first-class instances: the pattern IS the interface — no
+# witness lookup, no parent substitution (_trait_instances).
+fun [tail] tiStmtLoop(ts: Chain<PStmt>, acc: List<TraitInst>): List<TraitInst>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (ti: PsTraitInstance) => match(ti.tiPattern)
+        (c: SClass) => tiStmtLoop(l.next,
+                                  append(acc, TraitInst(genNames(chain(ti.tiGens),
+                                                                 builder<String>()),
+                                                        c)))
+        (o: Spec)   => tiStmtLoop(l.next, acc)
+      (o2: PStmt)           => tiStmtLoop(l.next, acc)
 
 fun [tail] instLoop(ts: Chain<PStmt>, r: Resolver,
                     acc: List<TraitInst>): List<TraitInst>

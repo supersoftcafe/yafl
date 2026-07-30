@@ -178,6 +178,12 @@ class Resolver:
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return None
 
+    # PRE-LOWERING trait instances (first-class TraitInstanceStatements) —
+    # constraint discharge and droppability read these before
+    # lowering/instances.py turns them into `[trait]` record lets.
+    def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
+        return []
+
     # The in-scope `instance [ambient]` PATTERNS: (interface spec,
     # instance-owned placeholder names) pairs plus a blocked flag, pure
     # AVAILABILITY, import-scope filtered. Precomputed once per pass on the
@@ -229,6 +235,9 @@ class DelegatingResolver(Resolver):
 
     def get_param_suggestion(self, name: str) -> "t.TypeSpec | None":
         return self._parent.get_param_suggestion(name)
+
+    def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
+        return self._parent.get_trait_instances()
 
     def get_ambient_patterns(self, scopes: set[str] | None = None
                              ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":
@@ -290,12 +299,13 @@ class Statements:
     A changed statement set is a *new* `Statements` built from the new
     contents, so there is never a stale index to reason about across passes.
     """
-    __slots__ = ("_ordered", "_index", "traits")
+    __slots__ = ("_ordered", "_index", "traits", "instances")
 
     def __init__(self, statements: "Iterable[s.Statement]") -> None:
         ordered = tuple(statements)
         index: dict[str, list[s.Statement]] = {}
         traits: list[s.LetStatement] = []
+        instances: list[s.TraitInstanceStatement] = []
         for st in ordered:
             # Only named statements are indexed; structural statements (imports,
             # namespace markers) carry no name — matching the old ResolverRoot,
@@ -308,9 +318,12 @@ class Statements:
                 Statements.__index_variants(st.variants, index)
             elif isinstance(st, s.LetStatement) and 'trait' in st.attributes:
                 traits.append(st)
+            elif isinstance(st, s.TraitInstanceStatement):
+                instances.append(st)
         self._ordered: tuple[s.Statement, ...] = ordered
         self._index: dict[str, tuple[s.Statement, ...]] = {k: tuple(v) for k, v in index.items()}
         self.traits: tuple[s.LetStatement, ...] = tuple(traits)
+        self.instances: tuple[s.TraitInstanceStatement, ...] = tuple(instances)
 
     @staticmethod
     def __index_variants(variants: "list[s.EnumStatement]", index: dict) -> None:
@@ -368,6 +381,9 @@ class ResolverRoot(Resolver):
     def get_traits(self) -> list[s.LetStatement]:
         return list(self.__statements.traits)
 
+    def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
+        return list(self.__statements.instances)
+
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return self.__param_suggestions.get(name)
 
@@ -382,34 +398,24 @@ class ResolverRoot(Resolver):
 
     def __build_ambient_patterns(self):
         """(namespace, interface pattern, instance-owned names) per ambient
-        record, plus whether any witness is still unresolved (blocked ⇒ the
-        member search stays INCOMPLETE this pass). Root-level is faithful:
-        witness names are @-unique (scope-independent) once resolved, and an
-        unresolved one blocks every query identically."""
+        instance, plus whether any pattern is still unresolved (blocked ⇒
+        the member search stays INCOMPLETE this pass). First-class
+        TraitInstanceStatements carry the pattern DIRECTLY — no witness
+        lookup, no parent substitution."""
         entries: list[tuple[str, t.ClassSpec, tuple[str, ...]]] = []
         blocked = False
-        for inst in self.__statements.traits:
-            if 'ambient' not in inst.attributes:
+        for inst in self.__statements.instances:
+            if not inst.ambient:
                 continue
             ns = inst.name.rpartition('::')[0]
-            dt = inst.declared_type
-            if not isinstance(dt, t.ClassSpec):
+            pat = inst.pattern
+            if isinstance(pat, t.NamedSpec) or (
+                    isinstance(pat, t.ClassSpec) and any(
+                        isinstance(a, t.NamedSpec) for a in pat.type_params)):
                 blocked = True
-                continue
-            wfound = [rs.statement for rs in self.find_type(dt.name)]
-            if len(wfound) != 1 or not isinstance(wfound[0], s.ClassStatement):
-                blocked = True
-                continue
-            wcls = wfound[0]
-            own = tuple(p.name for p in (getattr(inst, 'type_params', ()) or ()))
-            mapping = {p.name: c for p, c in zip(wcls.type_params, dt.type_params)}
-            for parent_type in wcls.implements:
-                parent = t.substitute_placeholders(parent_type, mapping, self)
-                if isinstance(parent, t.NamedSpec) or any(
-                        isinstance(a, t.NamedSpec) for a in parent.type_params):
-                    blocked = True
-                elif isinstance(parent, t.ClassSpec):
-                    entries.append((ns, parent, own))
+            elif isinstance(pat, t.ClassSpec):
+                own = tuple(p.name for p in inst.type_params)
+                entries.append((ns, pat, own))
         return entries, blocked
 
 

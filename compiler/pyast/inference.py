@@ -50,6 +50,12 @@ def _trait_instances(resolver: g.Resolver) -> list[t.TraitInstance]:
             iface = t.substitute_placeholders(parent, remap, resolver) if remap else parent
             if isinstance(iface, t.ClassSpec):
                 out.append(t.TraitInstance(param_names, iface))
+    # PRE-LOWERING first-class instances: the pattern IS the interface —
+    # no witness lookup, no parent substitution.
+    for inst in resolver.get_trait_instances():
+        if isinstance(inst.pattern, t.ClassSpec):
+            out.append(t.TraitInstance(
+                frozenset(p.name for p in inst.type_params), inst.pattern))
     out.sort(key=lambda inst: len(inst.param_names))   # concrete instances (no params) first
     return out
 

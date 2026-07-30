@@ -17,6 +17,7 @@ import lowering.hoist_nested
 import lowering.block_exits
 import lowering.bounds_elim
 import lowering.constants
+import lowering.instances
 import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
@@ -573,6 +574,14 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     linearity_errors = lowering.linearity.check_linearity(new_statements, resolver)
     if linearity_errors:
         return linearity_errors
+
+    # Lower first-class trait instances to witness class + [trait] record —
+    # AFTER every user-facing phase (diagnostics/linearity spoke of the
+    # instance), BEFORE monomorphisation (which discharges against the
+    # record lets). Re-converge so the new statements resolve.
+    new_statements, lowered = lowering.instances.lower_trait_instances(new_statements)
+    if lowered:
+        new_statements, resolver, _passes = __converge(new_statements)
 
     # All ok so let's create some C code
     new_statements, poly_errors = lowering.generics.convert_generic_to_concrete(new_statements)

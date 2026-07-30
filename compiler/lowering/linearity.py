@@ -159,6 +159,11 @@ class _Checker:
             self._check_function(stmt, this_type=None)
         elif isinstance(stmt, s.ClassStatement):
             self._check_class(stmt)
+        elif isinstance(stmt, s.TraitInstanceStatement):
+            # A first-class instance's members are ordinary functions.
+            for m in stmt.statements:
+                if isinstance(m, s.FunctionStatement):
+                    self._check_function(m, this_type=None)
         elif isinstance(stmt, s.EnumStatement):
             self._check_enum(stmt)
         elif isinstance(stmt, s.LetStatement):

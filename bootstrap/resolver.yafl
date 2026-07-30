@@ -115,19 +115,21 @@ class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
 class [final] Statements(stOrdered: List<PStmt>,
                          stIndex: Dict<String, List<PStmt> >,
                          stTraits: List<PStmt>,
+                         stInstances: List<PStmt>,
                          stAmbient: List<AmbEntry>,
                          stAmbientBlocked: Bool)
 
 fun buildStatements(stmts: List<PStmt>): Statements
   ret withAmbient(indexLoop(chain(stmts),
                             Statements(stmts, Dict<String, List<PStmt> >(),
-                                       List<PStmt>(), List<AmbEntry>(),
-                                       false)))
+                                       List<PStmt>(), List<PStmt>(),
+                                       List<AmbEntry>(), false)))
 
 fun withAmbient(base: Statements): Statements
-  let amb = buildAmbient(chain(base.stTraits), RRoot(base),
+  let amb = buildAmbient(chain(base.stInstances),
                          builder<AmbEntry>(), false)
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
+                 base.stInstances,
                  dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
                  amb.abBlocked)
 
@@ -156,64 +158,32 @@ fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry, out: List<AmbEntry>,
 
 class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
 
-fun buildAmbient(ts: Chain<PStmt>, r: Resolver,
-                        acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
+fun buildAmbient(ts: Chain<PStmt>,
+                 acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
   ret match(ts)
     (nil: ChainEnd) => AmbBuilt(build(acc), blocked)
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => hasAttr(let2.lAttrs, "ambient")
-        ? buildAmbientOne(let2, l.next, r, acc, blocked)
-        : buildAmbient(l.next, r, acc, blocked)
-      (o: PStmt)    => buildAmbient(l.next, r, acc, blocked)
+      (ti: PsTraitInstance) => ti.tiAmbient
+        ? buildAmbientOne(ti, l.next, acc, blocked)
+        : buildAmbient(l.next, acc, blocked)
+      (o: PStmt)    => buildAmbient(l.next, acc, blocked)
 
-fun buildAmbientOne(let2: PsLet, rest: Chain<PStmt>, r: Resolver,
+# First-class instances carry the pattern DIRECTLY — no witness lookup,
+# no parent substitution (TraitInstanceStatement, __build_ambient_patterns).
+fun buildAmbientOne(ti: PsTraitInstance, rest: Chain<PStmt>,
                     acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
-  ret match(let2.lType)
-    (dt: Spec) => match(dt)
-      (dc: SClass) => buildAmbientWitness(let2, dc, rest, r, acc, blocked)
-      (o2: Spec)   => buildAmbient(rest, r, acc, true)
-    ()         => buildAmbient(rest, r, acc, true)
-
-fun buildAmbientWitness(let2: PsLet, dc: SClass, rest: Chain<PStmt>,
-                        r: Resolver, acc: ListBuilder<AmbEntry>,
-                        blocked: Bool): AmbBuilt
-  ret match(soleItem(findType(r, dc.scName)))
-    (f: Found) => match(f.fStmt)
-      (wcls: PsClass) => buildAmbientParents(
-          chain(wcls.cImplements), paramMapping(wcls.cGens, dc.scParams),
-          namespacePart(let2.lName),
-          genNames(chain(let2.lGens), builder<String>()),
-          rest, r, acc, blocked)
-      (o: PStmt)      => buildAmbient(rest, r, acc, true)
-    ()         => buildAmbient(rest, r, acc, true)
-
-fun buildAmbientParents(ps: Chain<Spec>, mapping: List<Binding>,
-                               ns: String, own: List<String>,
-                               rest: Chain<PStmt>, r: Resolver,
-                               acc: ListBuilder<AmbEntry>,
-                               blocked: Bool): AmbBuilt
-  ret match(ps)
-    (nil: ChainEnd) => buildAmbient(rest, r, acc, blocked)
-    (l: ChainLink)  => buildAmbientParent(substitute(l.value, mapping), ps,
-                                          mapping, ns, own, rest, r, acc,
-                                          blocked)
-
-fun buildAmbientParent(p: Spec, ps: Chain<Spec>, mapping: List<Binding>,
-                       ns: String, own: List<String>, rest: Chain<PStmt>,
-                       r: Resolver, acc: ListBuilder<AmbEntry>,
-                       blocked: Bool): AmbBuilt
-  let next = chainNext(ps).rest
-  ret match(p)
-    (n: SNamed) => buildAmbientParents(next, mapping, ns, own, rest, r, acc,
-                                       true)
+  ret match(ti.tiPattern)
+    (n: SNamed) => buildAmbient(rest, acc, true)
     (c: SClass) => anyNamed(chain(c.scParams))
-      ? buildAmbientParents(next, mapping, ns, own, rest, r, acc, true)
-      : buildAmbientParents(next, mapping, ns, own, rest, r,
-                            push(acc, AmbEntry(append(List<String>(), ns),
-                                               p, own)),
-                            blocked)
-    (o: Spec)   => buildAmbientParents(next, mapping, ns, own, rest, r, acc,
-                                       blocked)
+      ? buildAmbient(rest, acc, true)
+      : buildAmbient(rest,
+                     push(acc, AmbEntry(append(List<String>(),
+                                               namespacePart(ti.tiName)),
+                                        ti.tiPattern,
+                                        genNames(chain(ti.tiGens),
+                                                 builder<String>()))),
+                     blocked)
+    (o: Spec)   => buildAmbient(rest, acc, blocked)
 
 fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
   ret match(ss)
@@ -230,7 +200,8 @@ fun indexOne(acc: Statements, st: PStmt): Statements
 fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
-                 acc.stTraits, acc.stAmbient, acc.stAmbientBlocked)
+                 acc.stTraits, acc.stInstances, acc.stAmbient,
+                 acc.stAmbientBlocked)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
                    st: PStmt): Dict<String, List<PStmt> >
@@ -251,8 +222,12 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
     (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
       ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st),
-                   acc.stAmbient, acc.stAmbientBlocked)
+                   acc.stInstances, acc.stAmbient, acc.stAmbientBlocked)
       : acc
+    (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
+                                        acc.stTraits,
+                                        append(acc.stInstances, st),
+                                        acc.stAmbient, acc.stAmbientBlocked)
     (o: PStmt)  => acc
 
 fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
@@ -358,6 +333,18 @@ fun findType(r: Resolver, query: String): Bag
 
 # get_ambient_patterns: the PRECOMPUTED ambient entries (stAmbient), scope-
 # filtered per query site — the walk only collects the in-scope namespaces.
+# get_trait_instances: pre-lowering first-class instances (constraint
+# discharge and droppability read these before lower_instances runs).
+fun [tail] traitInstanceStmts(r: Resolver): List<PStmt>
+  ret match(r)
+    (root: RRoot)    => root.rrStmts.stInstances
+    (sc: RScopes)    => traitInstanceStmts(sc.rsParent)
+    (d: RData)       => traitInstanceStmts(d.rdParent)
+    (t2: RTypes)     => traitInstanceStmts(t2.rtParent)
+    (tr: RTraits)    => traitInstanceStmts(tr.rtrParent)
+    (cb: RClassBody) => traitInstanceStmts(cb.rcbParent)
+    (rg: RGen)       => traitInstanceStmts(rg.rgParent)
+
 fun ambientEntries(r: Resolver): AmbEntries
   ret ambEntryWalk(r, List<String>())
 
@@ -503,5 +490,6 @@ fun stmtName(st: PStmt): String
     (c: PsClass)      => c.cName
     (e: PsEnum)       => e.eName
     (ta: PsTypealias) => ta.taName
+    (ti: PsTraitInstance) => ti.tiName
     (d: PsDestructure) => d.dName
     (o: PStmt)        => ""

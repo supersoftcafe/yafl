@@ -70,6 +70,14 @@ class _Inserter:
         if self._drop_name is None:
             return frozenset()
         out: set[str] = set()
+        # PRE-LOWERING first-class instances: the pattern is the interface.
+        for inst in self.resolver.get_trait_instances():
+            p2 = inst.pattern
+            if (isinstance(p2, t.ClassSpec) and p2.name == self._drop_name
+                    and len(p2.type_params) == 1):
+                uid = p2.type_params[0].as_unique_id_str()
+                if uid is not None:
+                    out.add(uid)
         for st in self.resolver.get_traits():
             dt = st.declared_type
             if not isinstance(dt, t.ClassSpec):
@@ -110,7 +118,7 @@ class _Inserter:
     # ── rewriting ─────────────────────────────────────────────────────────
 
     def rewrite_toplevel(self, stmt: s.Statement) -> s.Statement:
-        if isinstance(stmt, s.ClassStatement):
+        if isinstance(stmt, (s.ClassStatement, s.TraitInstanceStatement)):
             return dataclasses.replace(stmt, statements=[
                 self.__rewrite_fn(m) if isinstance(m, s.FunctionStatement) else m
                 for m in stmt.statements])

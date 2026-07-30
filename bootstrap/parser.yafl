@@ -1347,7 +1347,11 @@ fun parseInstanceBody(attrs: List<PAttr>, gen: List<PGen>, pattern: Spec,
   let b = parseStmts(ps, builder<PStmt>())
   ret match(b.v)
     (f: PFail)          => (f, b.rest)
-    (body: List<PStmt>) => (PsInstance(attrs, gen, pattern, wl, body, lr),
+    (body: List<PStmt>) => (PsTraitInstance("instance$"
+                                              + hash6(lr.plFile, lr.plLine,
+                                                      lr.plCol),
+                                            hasAttr(attrs, "ambient"), gen,
+                                            pattern, wl, body, lr),
                             b.rest)
 
 fun parseClass(lr: PLine, ps: Ps, isInterface: Bool): (v: PStmt|PFail, rest: Ps)
@@ -1475,7 +1479,7 @@ fun [tail] memberSignatureViolation(ss: Chain<PStmt>): PFail|None
 fun memberViolationOf(st: PStmt): PFail|None
   ret match(st)
     (c: PsClass)       => membersViolation(chain(c.cMembers))
-    (inst: PsInstance) => membersViolation(chain(inst.inMembers))
+    (inst: PsTraitInstance) => membersViolation(chain(inst.tiMembers))
     (o: PStmt)         => None
 
 fun [tail] membersViolation(ms: Chain<PStmt>): PFail|None

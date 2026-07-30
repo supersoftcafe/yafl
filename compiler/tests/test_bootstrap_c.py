@@ -21,6 +21,7 @@ import compiler as c
 import lowering.complex_enums
 import lowering.constants
 import lowering.drops
+import lowering.instances
 import lowering.generics
 import lowering.ast_inline
 import lowering.integers
@@ -161,6 +162,9 @@ def _python_c_text(target_name: str, optimization_level: int = 0) -> str:
     statements, dropped = lowering.drops.insert_drops(statements)
     if dropped:
         statements, _resolver, _p2 = _CONVERGE(statements)
+    statements, lowered = lowering.instances.lower_trait_instances(statements)
+    if lowered:
+        statements, _resolver, _p2b = _CONVERGE(statements)
     statements, poly_errors = lowering.generics.convert_generic_to_concrete(statements)
     if poly_errors:
         return "".join(f"{e}\n" for e in sorted(set(poly_errors)))

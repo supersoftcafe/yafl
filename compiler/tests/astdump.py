@@ -202,6 +202,13 @@ def dump(statements) -> str:
             walk_stmt(st.parameters, depth + 1)
             for member in st.statements:
                 walk_stmt(member, depth + 1)
+        elif isinstance(st, s.TraitInstanceStatement):
+            gens = ",".join(g.name for g in st.type_params)
+            wheres = ",".join(_ty(w) for w in st.trait_params)
+            line(depth, "TraitInstance", st,
+                 f"{st.name}|{st.ambient}|{gens}|{_ty(st.pattern)}|{wheres}")
+            for member in st.statements:
+                walk_stmt(member, depth + 1)
         elif isinstance(st, s.EnumStatement):
             gens = ",".join(g.name for g in st.type_params)
             line(depth, "Enum", st, f"{st.name}|{gens}|{st.has_param_list}")

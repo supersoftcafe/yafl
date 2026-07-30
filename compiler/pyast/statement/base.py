@@ -164,12 +164,23 @@ class NamedStatement(Statement):
         #   temporary compile, to resolve real type parameters
         #   find one trait that is assignment compatible
         trait_providers = resolver.get_traits()
+        instance_providers = resolver.get_trait_instances()
         for trait_param in self.trait_params:
             compiled, extra = trait_param.compile(resolver)
             if extra: # Skip if compilation is still producing new statements
                 return [Error(line_ref, f"Compile steps incomplete for '{trait_param.name}'. Seeing this message indicates a compiler error.")]
             tp_found = [tp for tp in trait_providers if t.trivially_assignable_equals(resolver, compiled, tp.declared_type)]
-            if len(tp_found) == 0:
+            # PRE-LOWERING first-class instances: the pattern IS the
+            # interface; a generic instance matches when the constraint
+            # unifies through its own params.
+            inst_found = [inst for inst in instance_providers
+                          if isinstance(inst.pattern, t.ClassSpec)
+                          and isinstance(compiled, t.ClassSpec)
+                          and inst.pattern.name == compiled.name
+                          and (t.trivially_assignable_equals(resolver, compiled, inst.pattern)
+                               or t.unify_generic(inst.pattern, compiled,
+                                                  {p.name for p in inst.type_params}) is not None)]
+            if len(tp_found) == 0 and len(inst_found) == 0:
                 return [Error(line_ref, f"Trait parameter '{trait_param.name}' does not match any trait")]
 
         return []

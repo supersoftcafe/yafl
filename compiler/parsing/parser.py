@@ -730,61 +730,19 @@ def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, lis
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 
-@dataclasses.dataclass
-class _InstanceDeclaration(s.Statement):
-    """Parse-time marker for an `instance` statement:
-
-        instance [ambient]<T> Interface<Pattern> where Constraint<T>
-          fun member(...): ...
-
-    Anonymous, first-class trait instance. Expanded by parse() — before
-    anything downstream sees it — into a synthesized witness class holding
-    the members, plus the `[trait]` instance record (`[trait,ambient]` when
-    opted in). The instance's `where` is availability-filtering, not a
-    caller constraint: it lands on the record (discharged at instantiation)
-    and on each member (visible to the member bodies)."""
-    attributes: dict[str, e.Expression | None]
-    type_params: tuple[s.TypeAliasStatement, ...]
-    pattern: t.TypeSpec
-    trait_params: tuple[t.TypeSpec, ...]
-    members: list[s.Statement]
-
-
 def __to_instance(result: p.Result, tokens: list[p.Token]) -> p.Result[s.Statement]:
+    # A first-class TraitInstanceStatement: anonymous at the surface — the
+    # synthesized `instance$<tag>` name exists only for statement indexing
+    # and never appears in diagnostics. Lowered to witness class + record
+    # let AFTER checking, by lowering/instances.py.
     attributes, generics, pattern, where_traits, members = result.value
-    statement = _InstanceDeclaration(
-        result.line_ref, attributes or {}, tuple(generics), pattern,
-        tuple(where_traits), members)
+    statement = s.TraitInstanceStatement(
+        result.line_ref, f"instance${result.line_ref.hash6()}", None,
+        attributes or {}, tuple(generics),
+        trait_params=tuple(where_traits),
+        pattern=pattern, ambient='ambient' in (attributes or {}),
+        statements=members)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
-
-
-def _expand_instance(decl: _InstanceDeclaration) -> list[s.Statement]:
-    """The witness class + instance record an `instance` statement stands
-    for. Names are line-derived (path-based naming): nothing user-spellable,
-    stable across runs. The instance's `where` lands on the WITNESS CLASS
-    (never on members — a member is a vtable slot with a fixed signature);
-    member bodies resolve through the owner's clause."""
-    lr = decl.line_ref
-    tag = lr.hash6()
-    wbare = f"_Instance${tag}"
-    witness = s.ClassStatement(
-        lr, f"{wbare}@{tag}", None, {}, decl.type_params,
-        s.DestructureStatement(lr, '_', None, {}, (), None, None, []),
-        list(decl.members),
-        __flatten_inheritance([decl.pattern]), False,
-        trait_params=decl.trait_params)
-    own_args = tuple(t.NamedSpec(lr, g.name.split('@')[0]) for g in decl.type_params)
-    value = e.CallExpression(
-        lr, e.NamedExpression(lr, wbare, type_params=own_args),
-        e.TupleExpression(lr, []))
-    attributes: dict[str, e.Expression | None] = {'trait': None}
-    if 'ambient' in decl.attributes:
-        attributes['ambient'] = None
-    record = s.LetStatement(
-        lr, f"_instance${tag}@{tag}", None, attributes, decl.type_params,
-        value, t.NamedSpec(lr, wbare, own_args),
-        trait_params=decl.trait_params)
-    return [witness, record]
 
 
 def __to_type_alias(result: p.Result[tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
@@ -1023,7 +981,7 @@ __parse_let = p.block(p.requires(
     "invalid let statement"))
 
 # Anonymous: attributes, optional generics, ONE interface pattern (a type),
-# optional `where`, then the member functions. See _InstanceDeclaration.
+# optional `where`, then the member functions — a TraitInstanceStatement.
 __parse_instance = p.block(p.requires(
     p.discard_sym("instance"),
     (__parse_attributes & __parse_maybe_generic_statement & __parse_type
@@ -1164,28 +1122,18 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
     new_statements = []
     current_namespace = "Main::"
 
-    # `instance` statements expand FIRST, so the synthesized witness class
-    # and instance record ride the ordinary per-kind handling below
-    # (namespacing, import attachment, constructor creation).
-    expanded_statements = []
     for statement in result.value:
-        if isinstance(statement, _InstanceDeclaration):
-            expanded_statements.extend(_expand_instance(statement))
-        else:
-            expanded_statements.append(statement)
-
-    for statement in expanded_statements:
         match statement:
             case s.ImportStatement(): # Discard as it was processed earlier
                 pass
             case s.NamespaceStatement(line_ref, path): # Note value and discard
                 current_namespace = f"{path}::"
-            case s.FunctionStatement() | s.LetStatement() | s.TypeAliasStatement() | s.ClassStatement(): # Rename and add to list
+            case s.FunctionStatement() | s.LetStatement() | s.TypeAliasStatement() | s.ClassStatement() | s.TraitInstanceStatement(): # Rename and add to list
                 # A member is a vtable slot: its signature is the interface
                 # declaration with the OWNER's type args substituted, so a
                 # member function declares neither type params nor a `where`
                 # clause (generics/constraints belong on the class/instance).
-                if isinstance(statement, s.ClassStatement):
+                if isinstance(statement, (s.ClassStatement, s.TraitInstanceStatement)):
                     for m in statement.statements:
                         if isinstance(m, s.FunctionStatement) and (m.type_params or m.trait_params):
                             errors = errors + [p.Error(m.line_ref,

@@ -103,10 +103,20 @@ fun [tail] linToplevels(ss: Chain<PStmt>, r: Resolver,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => linToplevels(l.next, r, linToplevel(l.value, r, acc))
 
+fun [tail] linInstMembers(ms: Chain<PStmt>, r: Resolver,
+                          acc: List<PErr>): List<PErr>
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => linInstMembers(l.next, r, linFunction(f, None, r, acc))
+      (o: PStmt) => linInstMembers(l.next, r, acc)
+
 fun linToplevel(st: PStmt, r: Resolver, acc: List<PErr>): List<PErr>
   ret match(st)
     (f: PsFun)   => linFunction(f, None, r, acc)
     (c: PsClass) => linClass(c, r, acc)
+    # A first-class instance's members are ordinary functions.
+    (ti: PsTraitInstance) => linInstMembers(chain(ti.tiMembers), r, acc)
     (e2: PsEnum) => linEnum(e2, r, acc)
     (l: PsLet)   => carriesLinearity(l.lType, r)
       ? append(acc, PErr(l.pslLine, "linear value not allowed in a global let"))

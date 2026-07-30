@@ -43,8 +43,7 @@ fun compileStmt(st: PStmt, r: Resolver, retType: Spec|None): StmtOut
     (el: PsElse)       => StmtOut(st, List<PStmt>())
     (im: PsImport)     => StmtOut(st, List<PStmt>())
     (ns: PsNamespace)  => StmtOut(st, List<PStmt>())
-    # Never survives parse() — expanded by the fixup; arm for exhaustiveness.
-    (inst: PsInstance) => StmtOut(st, List<PStmt>())
+    (inst: PsTraitInstance) => compileTraitInstance(inst, r)
 
 # ── the inference core ──────────────────────────────────────────────────────
 
@@ -243,6 +242,29 @@ fun compileClass(c: PsClass, r0: Resolver): StmtOut
                       c.cImports),
               concat(params.soExtra,
                      concat(wheres.psGlobals, members.slGlobals)))
+
+# TraitInstanceStatement.compile: pattern + wheres under the instance's
+# generic scope; member bodies under a transient copy of the owner's clause
+# (stored statements keep none — a member is a vtable slot).
+fun compileTraitInstance(inst: PsTraitInstance, r0: Resolver): StmtOut
+  let r = genScope(inst.tiGens, r0)
+  let pat = compileSpecOpt(inst.tiPattern, r)
+  let wheres = compileParams(inst.tiWheres, r)
+  let members = compileStmts(chain(withOwnerWheres(inst.tiMembers,
+                                                   inst.tiWheres)),
+                             r, None, List<PStmt>(), List<PStmt>())
+  ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAmbient, inst.tiGens,
+                              specOr(pat, inst.tiPattern), wheres.psSpecs,
+                              stripOwnerWheres(members.slStmts,
+                                               inst.tiWheres),
+                              inst.pstiLine, inst.tiImports),
+              concat(globalsOfSpec(pat),
+                     concat(wheres.psGlobals, members.slGlobals)))
+
+fun specOr(out: SpecOut|None, orig: Spec): Spec
+  ret match(specOf(out))
+    (s2: Spec) => s2
+    ()         => orig
 
 fun withOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
   ret isEmpty(wheres) ? ms : map(ms, (m: PStmt) => ownerWhereFn(m, wheres))

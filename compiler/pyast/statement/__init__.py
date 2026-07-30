@@ -15,6 +15,7 @@ from pyast.statement.lets import LetStatement, DestructureStatement
 from pyast.statement.function import FunctionStatement
 from pyast.statement.types import TypeAliasStatement, EnumStatement
 from pyast.statement.classdef import ClassFunctionSlot, ClassStatement
+from pyast.statement.instances import TraitInstanceStatement
 from pyast.statement.control import (
     ReturnStatement, ActionStatement, IfStatement, ElseIfStatement,
     ElseStatement, collapse_else_if)

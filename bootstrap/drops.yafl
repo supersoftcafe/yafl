@@ -35,7 +35,18 @@ fun drToplevel(st: PStmt, r: Resolver, ids: List<String>): DrS
   ret match(st)
     (f: PsFun)   => drFn(f, r, ids)
     (c: PsClass) => drClassMembers(c, r, ids)
+    (ti: PsTraitInstance) => drInstanceMembers(ti, r, ids)
     (o: PStmt)   => DrS(st, false)
+
+fun drInstanceMembers(ti: PsTraitInstance, r: Resolver,
+                      ids: List<String>): DrS
+  let out = drMembers(chain(ti.tiMembers), r, ids, List<PStmt>(), false)
+  ret out.dmChanged
+    ? DrS(PsTraitInstance(ti.tiName, ti.tiAmbient, ti.tiGens, ti.tiPattern,
+                          ti.tiWheres, out.dmStmts, ti.pstiLine,
+                          ti.tiImports),
+          true)
+    : DrS(ti, false)
 
 # Only member FUNCTIONS are rewritten (Python: __rewrite_fn on
 # FunctionStatements, everything else passes through).
@@ -96,8 +107,23 @@ fun dropInterfaceName(r: Resolver): String|None
 
 fun droppableIds(r: Resolver): List<String>
   ret match(dropInterfaceName(r))
-    (dn: String) => dIdsLoop(chain(traitLets(r)), dn, r, List<String>())
+    (dn: String) => tiIdsLoop(chain(traitInstanceStmts(r)), dn,
+                              dIdsLoop(chain(traitLets(r)), dn, r,
+                                       List<String>()))
     ()           => List<String>()
+
+# PRE-LOWERING first-class instances: the pattern is the interface.
+fun [tail] tiIdsLoop(ts: Chain<PStmt>, dn: String,
+                     acc: List<String>): List<String>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (ti: PsTraitInstance) => match(ti.tiPattern)
+        (c: SClass) => c.scName == dn && listLen(c.scParams) == 1
+          ? tiIdsLoop(l.next, dn, dropArgId(chain(c.scParams), acc))
+          : tiIdsLoop(l.next, dn, acc)
+        (o: Spec)   => tiIdsLoop(l.next, dn, acc)
+      (o2: PStmt)           => tiIdsLoop(l.next, dn, acc)
 
 fun [tail] dIdsLoop(ts: Chain<PStmt>, dn: String, r: Resolver,
                     acc: List<String>): List<String>
