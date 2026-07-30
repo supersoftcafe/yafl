@@ -495,12 +495,12 @@ fun discard<T>([terminal] b: ListBuilder<T>): None
 # Drop: an ABANDONED builder — a failed parse alternative, an early exit —
 # must still release its pinned tail cell (a leaked pin is a permanently
 # unmovable object). Dropping is building and discarding the result: build's
-# seal unpins, and the discarded cells are ordinary garbage.
-class _DropListBuilder<T>() : Drop<ListBuilder<T>>
+# seal unpins, and the discarded cells are ordinary garbage. [ambient]: the
+# drops pass inserts plain `drop(x)` calls that must resolve in concrete
+# user code without a spelled `where`.
+instance [ambient]<T> Drop<ListBuilder<T>>
   fun drop(self: ListBuilder<T>): None
     ret _discardBuilt(build(self))
 
 fun _discardBuilt<T>(_l: List<T>): None
   ret None
-
-let [trait] _dropListBuilder<T>: _DropListBuilder<T> = _DropListBuilder<T>()

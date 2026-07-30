@@ -422,11 +422,9 @@ fun _validNumber(text: System::String): System::Bool
 # `atEnd` means the inner source is exhausted, so no refill can extend a token.
 class [final] Lexer<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool) where System::Stream<S, System::String, E>
 
-class _StreamLexer<S, E>() : System::Stream<Lexer<S, E>, JsonToken, E | JsonParseError>
+instance<S, E> System::Stream<Lexer<S, E>, JsonToken, E | JsonParseError> where System::Stream<S, System::String, E>
   fun next(self: Lexer<S, E>): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
     ret _lexStep<S, E>(self.inner, self.pending, self.pos, self.atEnd)
-
-let [trait] _stream_lexer<S, E>: _StreamLexer<S, E> = _StreamLexer<S, E>() where System::Stream<S, System::String, E>
 
 fun tokenize<S, E>(source: S): Lexer<S, E> where System::Stream<S, System::String, E>
   ret Lexer<S, E>(source, "", 0, false)
@@ -563,7 +561,7 @@ fun _prettyOut(tok: JsonToken, depth: System::Int, pending: System::Bool): (out:
 
 class [final] Pretty<S, E>(inner: S, depth: System::Int, pending: System::Bool) where System::Stream<S, JsonToken, E>
 
-class _StreamPretty<S, E>() : System::Stream<Pretty<S, E>, System::String, E | JsonParseError>
+instance<S, E> System::Stream<Pretty<S, E>, System::String, E | JsonParseError> where System::Stream<S, JsonToken, E>
   fun next(self: Pretty<S, E>): (stream: Pretty<S, E>, value: Result<System::String | System::None, E | JsonParseError>) where System::Stream<S, JsonToken, E>
     let r = System::streamNext<S, JsonToken, E>(self.inner)
     ret match(r.value)
@@ -571,8 +569,6 @@ class _StreamPretty<S, E>() : System::Stream<Pretty<S, E>, System::String, E | J
         (tok: JsonToken)  => _prettyNext<S, E>(r.stream, self.depth, self.pending, tok)
         (x: System::None) => _prettyEnd<S, E>(r.stream, self.depth, self.pending)
       (er: Error<JsonToken | System::None, E>) => (Pretty<S, E>(r.stream, self.depth, self.pending), Error<System::String | System::None, E | JsonParseError>(er.error))
-
-let [trait] _stream_pretty<S, E>: _StreamPretty<S, E> = _StreamPretty<S, E>() where System::Stream<S, JsonToken, E>
 
 # End of the token stream: only a complete document may end here.  Nesting
 # depth is already tracked for indentation, so EOF inside an open container
@@ -628,7 +624,7 @@ fun _tokenText(tok: JsonToken): System::String
 
 class [final] Verbatim<S, E>(inner: S) where System::Stream<S, JsonToken, E>
 
-class _StreamVerbatim<S, E>() : System::Stream<Verbatim<S, E>, System::String, E>
+instance<S, E> System::Stream<Verbatim<S, E>, System::String, E> where System::Stream<S, JsonToken, E>
   fun next(self: Verbatim<S, E>): (stream: Verbatim<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
     let r = System::streamNext<S, JsonToken, E>(self.inner)
     ret match(r.value)
@@ -636,8 +632,6 @@ class _StreamVerbatim<S, E>() : System::Stream<Verbatim<S, E>, System::String, E
         (tok: JsonToken)  => (Verbatim<S, E>(r.stream), Ok<System::String | System::None, E>(_tokenText(tok)))
         (x: System::None) => (Verbatim<S, E>(r.stream), Ok<System::String | System::None, E>(None))
       (er: Error<JsonToken | System::None, E>) => (Verbatim<S, E>(r.stream), Error<System::String | System::None, E>(er.error))
-
-let [trait] _stream_verbatim<S, E>: _StreamVerbatim<S, E> = _StreamVerbatim<S, E>() where System::Stream<S, JsonToken, E>
 
 fun verbatimEmit<S, E>(source: S): Verbatim<S, E> where System::Stream<S, JsonToken, E>
   ret Verbatim<S, E>(source)

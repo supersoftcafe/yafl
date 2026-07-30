@@ -1,7 +1,7 @@
 # bootstrap/drops.yafl — affine drop insertion, ported from lowering/drops.py.
 # An unused `[linear]` binding whose type has a Drop instance in scope is
 # consumed BY POLICY at scope exit: the scope's value binds to a temporary,
-# a dropIndirect(x) call is appended per binding, the temporary is the result.
+# a drop(x) call is appended per binding, the temporary is the result.
 # The rewritten calls then resolve through an ordinary RE-CONVERGENCE, and the
 # linearity checker sees plain consumption. Two granularities, WHOLE bindings
 # only: (1) scope level — referenced NOWHERE, batched drop at scope exit;
@@ -932,11 +932,11 @@ fun drFixIf(i: PsIf, let2: PsLet): DrBi
   ret DrBi(PsIf(oc.bxExpr, ot.bsStmts, of2.bsStmts, i.psifLine),
            oc.bxDid || ot.bsDid || of2.bsDid, true)
 
-# dropIndirect, not drop: a bare call to a GENERIC instance's member can't
-# infer the instance's type params; the trampoline latches T from its
-# argument and discharges `where Drop<T>` at monomorphisation.
+# A plain `drop(x)`: a concrete binding resolves through the type's
+# `instance [ambient]`; a `[linear] T` binding through the enclosing fn's
+# `where Drop<T>`.
 fun dropCall(let2: PsLet): PStmt
-  ret PsAction(PeCall(PeName("dropIndirect", List<Spec>(), let2.pslLine),
+  ret PsAction(PeCall(PeName("drop", List<Spec>(), let2.pslLine),
                       PeTuple(append(List<PTupEnt>(),
                                      PTupEnt("", false,
                                              PeName(let2.lName, List<Spec>(),

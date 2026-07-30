@@ -12,11 +12,7 @@ let [const] SQRT_2: Float = 1.4142135623730951
 let [const] LN_2:   Float = 0.6931471805599453
 let [const] LN_10:  Float = 2.302585092994046
 
-let [trait] _float_trait: _BasicMathFloat = _BasicMathFloat()
-
-typealias [where] _WhereBasicMathFloat : BasicMath<System::Float64>
-
-class _BasicMathFloat() : BasicMath<Float64>
+instance [ambient] BasicMath<Float64>
   fun `+`(left: System::Float, right: System::Float): System::Float
     ret __builtin_op__<float64>("float64_add", left, right)
 
@@ -72,11 +68,7 @@ fun parseFloat(s: System::String): System::Float|System::None
   let v: System::Float = __builtin_op__<float64>("float64_parse_or_nan", s)
   ret isNaN(v) ? None : v
 
-let [trait] _show_float: _ShowFloat = _ShowFloat()
-
-typealias [where] _WhereShowFloat : Show<System::Float>
-
-class _ShowFloat() : Show<System::Float>
+instance [ambient] Show<System::Float>
   fun show(value: System::Float): System::String
     ret String(value)
 
@@ -88,11 +80,7 @@ class _ShowFloat() : Show<System::Float>
 # `Float32(Float)` and `Float(Float32)` make the widening/narrowing explicit
 # in source.
 
-let [trait] _float32_trait: _BasicMathFloat32 = _BasicMathFloat32()
-
-typealias [where] _WhereBasicMathFloat32 : BasicMath<System::Float32>
-
-class _BasicMathFloat32() : BasicMath<System::Float32>
+instance [ambient] BasicMath<System::Float32>
   fun `+`(left: System::Float32, right: System::Float32): System::Float32
     ret __builtin_op__<float32>("float32_add", left, right)
 
@@ -155,10 +143,6 @@ fun parseFloat32(s: System::String): System::Float32|System::None
   let v: System::Float32 = __builtin_op__<float32>("float32_parse_or_nan", s)
   ret isNaN(v) ? None : v
 
-let [trait] _show_float32: _ShowFloat32 = _ShowFloat32()
-
-typealias [where] _WhereShowFloat32 : Show<System::Float32>
-
-class _ShowFloat32() : Show<System::Float32>
+instance [ambient] Show<System::Float32>
   fun show(value: System::Float32): System::String
     ret String(value)

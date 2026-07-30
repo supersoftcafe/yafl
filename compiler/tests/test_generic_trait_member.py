@@ -1,20 +1,19 @@
-"""Call-site inference for members of GENERIC `[trait]` instances.
+"""Call-site binding for members of GENERIC ambient instances.
 
-A concrete call to a member of a generic trait instance (e.g. `drop(b)` where
-the witness is `_DropListBuilder<T> : Drop<ListBuilder<T>>`) must bind the
-INSTANCE's type parameters from the argument shape. Resolution substitutes the
-owner interface's placeholders through the instance's declared type, but that
-still contains the instance's own free placeholder — nothing unifies it
-against the argument, so the call dies with "Parameters are not assignment
-compatible". Found via the drops pass (which routes around it with the
-dropIndirect trampoline — deleted once this passes).
+A concrete call to a member of a generic `instance [ambient]` (e.g.
+`drop(b)` where the instance is `instance [ambient]<T> Drop<ListBuilder<T>>`)
+binds the INSTANCE's type parameters from the argument shape — the
+generic-function-candidate rule applied to instances. This was the original
+gap the drops pass routed around with a `dropIndirect` trampoline, both
+deleted once the instance statement and ambient resolution landed.
 """
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
-# The stdlib shape that motivated the gap: an explicit drop of a builder.
+# The stdlib shape that motivated the gap: an explicit drop of a builder,
+# resolving through list.yafl's `instance [ambient]<T> Drop<ListBuilder<T>>`.
 _EXPLICIT_DROP = """namespace Test
 import System
 
@@ -24,19 +23,17 @@ fun main(): Int
   ret 0
 """
 
-# The gap is general, not Drop-specific: any generic instance member called
-# with concrete arguments must latch the instance's T the same way.
+# The rule is general, not Drop-specific: any generic ambient instance member
+# called with concrete arguments latches the instance's T the same way.
 _OWN_TRAIT = """namespace Test
 import System
 
 interface Sized<T>
   fun sizeOf(v: T): Int
 
-class _SizedList<T>() : Sized<List<T>>
+instance [ambient]<T> Sized<List<T>>
   fun sizeOf(v: List<T>): Int
     ret chainLength(chain(v))
-
-let [trait,where] _sizedList<T>: _SizedList<T> = _SizedList<T>()
 
 fun main(): Int
   let l = append(append(List<Int>(), 4), 5)

@@ -1,9 +1,10 @@
 # Path-level drop balancing (lowering/drops.py, mirrored by
 # bootstrap/drops.yafl): a droppable linear binding consumed on SOME control
-# paths gets a dropIndirect(x) inserted on each abandoning path — the
+# paths gets a plain drop(x) inserted on each abandoning path — the
 # non-consuming ternary/match branch, and the value of an early `ret` whose
-# path skips the consumption. Wholly-unused bindings keep the scope-exit
-# batch. Diffed post-drops via the postmono contract; the shapes mirror
+# path skips the consumption — resolving through the type's `instance
+# [ambient]`. Wholly-unused bindings keep the scope-exit batch. Diffed
+# post-drops via the postmono contract; the shapes mirror
 # tests/test_drop_gaps.py. Lives in `namespace System` because droppability
 # keys on the `System::Drop` interface by name.
 namespace System
@@ -22,18 +23,15 @@ fun `+`(left: Int, right: Int): Int
 interface Drop<[linear] T>
   fun drop(self: T): None
 
-# The drops pass routes implicit drops through this trampoline (a bare call
-# to a generic instance's member can't infer the instance's type params).
-fun dropIndirect<[linear] T>([terminal] x: T): None where Drop<T>
-  ret drop(x)
-
 class [linear,final] Res(tag: Int)
 
-class _DropRes() : Drop<Res>
-  fun drop(self: Res): None
+# [ambient]: the pass's inserted plain `drop(x)` must resolve in concrete
+# code without a spelled `where`. `[terminal] self`: a DISCARDING drop
+# consumes on arrival — without it the pass would insert `drop(self)` inside
+# drop itself (infinite recursion; the resolver flags it as ambiguity).
+instance [ambient] Drop<Res>
+  fun drop([terminal] self: Res): None
     ret None
-
-let [trait] _dropRes: _DropRes = _DropRes()
 
 fun consume([terminal] r: Res): Int
   ret r.tag

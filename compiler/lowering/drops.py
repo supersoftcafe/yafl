@@ -192,13 +192,16 @@ class _Inserter:
                 if let.name in referenced and self.__eligible(let, fn_trait_params)]
 
     def __drop_call(self, let: s.LetStatement) -> s.Statement:
-        # dropIndirect, not drop: a bare call to a GENERIC instance's
-        # member can't infer the instance's type params; the trampoline
-        # latches T from its argument and discharges `where Drop<T>` at
-        # monomorphisation (generic instances included).
+        # A plain `drop(x)`: a concrete binding resolves through the type's
+        # `instance [ambient]` (the use site binds a generic instance's own
+        # params); a `[linear] T` binding resolves through the enclosing
+        # fn's `where Drop<T>`. (Historical note: this briefly emitted a
+        # `dropIndirect` trampoline while generic-instance member calls
+        # couldn't bind the instance's params — the instance statement and
+        # ambient resolution made that machinery redundant.)
         return s.ActionStatement(let.line_ref, e.CallExpression(
             let.line_ref,
-            e.NamedExpression(let.line_ref, "dropIndirect"),
+            e.NamedExpression(let.line_ref, "drop"),
             e.TupleExpression(let.line_ref, [
                 e.TupleEntryExpression(None, e.NamedExpression(let.line_ref, let.name))])))
 

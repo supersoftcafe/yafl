@@ -203,11 +203,9 @@ fun [inline(always)] _streamStep(s: StreamIO): (stream: StreamIO, value: Result<
   let step = s._thunk()
   ret (step.next, step.value)
 
-class _StreamIOStream() : Stream<StreamIO, String, IOError>
+instance Stream<StreamIO, String, IOError>
   fun [inline(always)] next(self: StreamIO): (stream: StreamIO, value: Result<String|None, IOError>)
     ret _streamStep(self)
-let [trait] _stream_io_stream: _StreamIOStream = _StreamIOStream()
-
 # Wrap one pending read as a memoised node. `_streamPull` is deferred behind the
 # `[lazy]` let and captured (unforced) by the thunk, so building a node performs
 # no IO and the successor chain stays lazy.
@@ -424,10 +422,8 @@ fun _release2<T>(r: (src: IO, dst: IO, v: T|IOError)): T|IOError
 # the final flush — consume the handle explicitly with close() instead of
 # letting it drop. The `typealias [where]` makes the constraint ambient: no
 # signature ever spells `where Drop<IO>`.
-class _DropIO() : System::Drop<IO>
+instance [ambient] System::Drop<IO>
   fun drop(self: IO): System::None
     ret match(self.close())
       (e: IOError)      => None
       (n: System::None) => None
-typealias [where] _ioDroppable : System::Drop<IO>
-let [trait] _dropIO: _DropIO = _DropIO()

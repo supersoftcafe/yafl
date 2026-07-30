@@ -29,19 +29,11 @@ let I: Complex = Complex(I_RE, I_IM)
 
 # ── Complex64 ───────────────────────────────────────────────────────────────
 
-let [trait] _complex_plus: _ComplexPlus = _ComplexPlus()
-
-typealias [where] _WhereBasicPlusComplex : BasicPlus<System::Complex64>
-
-class _ComplexPlus() : BasicPlus<Complex64>
+instance [ambient] BasicPlus<Complex64>
   fun `+`(left: Complex64, right: Complex64): Complex64
     ret Complex64(left.re + right.re, left.im + right.im)
 
-let [trait] _complex_eq: _ComplexEq = _ComplexEq()
-
-typealias [where] _WhereBasicEqualityComplex : BasicEquality<System::Complex64>
-
-class _ComplexEq() : BasicEquality<Complex64>
+instance [ambient] BasicEquality<Complex64>
   fun `==`(left: Complex64, right: Complex64): System::Bool
     ret left.re == right.re && left.im == right.im
   fun hashOf(value: Complex64): System::Int32
@@ -74,30 +66,18 @@ fun abs(z: Complex64): Float
 fun isNaN(z: Complex64): System::Bool
   ret isNaN(z.re) || isNaN(z.im)
 
-let [trait] _show_complex: _ShowComplex = _ShowComplex()
-
-typealias [where] _WhereShowComplex : Show<System::Complex64>
-
-class _ShowComplex() : Show<Complex64>
+instance [ambient] Show<Complex64>
   fun show(value: Complex64): System::String
     ret show(value.re) + (value.im < 0.0 ? "" : "+") + show(value.im) + "i"
 
 
 # ── Complex32 ───────────────────────────────────────────────────────────────
 
-let [trait] _complex32_plus: _Complex32Plus = _Complex32Plus()
-
-typealias [where] _WhereBasicPlusComplex32 : BasicPlus<System::Complex32>
-
-class _Complex32Plus() : BasicPlus<Complex32>
+instance [ambient] BasicPlus<Complex32>
   fun `+`(left: Complex32, right: Complex32): Complex32
     ret Complex32(left.re + right.re, left.im + right.im)
 
-let [trait] _complex32_eq: _Complex32Eq = _Complex32Eq()
-
-typealias [where] _WhereBasicEqualityComplex32 : BasicEquality<System::Complex32>
-
-class _Complex32Eq() : BasicEquality<Complex32>
+instance [ambient] BasicEquality<Complex32>
   fun `==`(left: Complex32, right: Complex32): System::Bool
     ret left.re == right.re && left.im == right.im
   fun hashOf(value: Complex32): System::Int32
@@ -127,10 +107,6 @@ fun abs(z: Complex32): Float32
 fun isNaN(z: Complex32): System::Bool
   ret isNaN(z.re) || isNaN(z.im)
 
-let [trait] _show_complex32: _ShowComplex32 = _ShowComplex32()
-
-typealias [where] _WhereShowComplex32 : Show<System::Complex32>
-
-class _ShowComplex32() : Show<Complex32>
+instance [ambient] Show<Complex32>
   fun show(value: Complex32): System::String
     ret show(value.re) + (value.im < 0.0f32 ? "" : "+") + show(value.im) + "i"

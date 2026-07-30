@@ -31,11 +31,7 @@ let [const] INT32_MIN: Int32 = -2147483648i32
 let [const] INT64_MAX: Int64 = 9223372036854775807i64
 let [const] INT64_MIN: Int64 = -9223372036854775808i64
 
-let [trait] int_trait: _BasicMathInt = _BasicMathInt()
-
-typealias [where] _WhereBasicMathInt : BasicMath<System::Int>
-
-class _BasicMathInt() : BasicMath<System::Int>
+instance [ambient] BasicMath<System::Int>
   fun `+`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_add", left, right)
 
@@ -73,29 +69,17 @@ fun abs(value: System::Int): System::Int
 fun _maskHash(value: System::Int32): System::Int32
   ret __builtin_op__<int32>("int32_and", value, truncateToInt32(2147483647))
 
-let [trait] _show_int: _ShowInt = _ShowInt()
-
-typealias [where] _WhereShowInt : Show<System::Int>
-
-class _ShowInt() : Show<System::Int>
+instance [ambient] Show<System::Int>
   fun show(value: System::Int): System::String
     ret String(value)
 
-let [trait] _show_bool: _ShowBool = _ShowBool()
-
-typealias [where] _WhereShowBool : Show<System::Bool>
-
-class _ShowBool() : Show<System::Bool>
+instance [ambient] Show<System::Bool>
   fun show(value: System::Bool): System::String
     ret value ? "true" : "false"
 
 # Bool equality: `==`/`!=` on Bool (and Bool as a Dict/Set key). hashOf
 # follows the numeric instances' convention of small non-negative ints.
-let [trait] _bool_eq: _BasicEqualityBool = _BasicEqualityBool()
-
-typealias [where] _WhereEqBool : BasicEquality<System::Bool>
-
-class _BasicEqualityBool() : BasicEquality<System::Bool>
+instance [ambient] BasicEquality<System::Bool>
   fun `==`(left: System::Bool, right: System::Bool): System::Bool
     ret left ? right : (right ? false : true)
   fun hashOf(value: System::Bool): System::Int32
@@ -108,11 +92,7 @@ class _BasicEqualityBool() : BasicEquality<System::Bool>
 # (matches C/Java/Kotlin); no auto-promotion to Int — use the explicit
 # Int(_) / Int32(_) conversions to cross the boundary.
 
-let [trait] _int32_trait: _BasicMathInt32 = _BasicMathInt32()
-
-typealias [where] _WhereBasicMathInt32 : BasicMath<System::Int32>
-
-class _BasicMathInt32() : BasicMath<System::Int32>
+instance [ambient] BasicMath<System::Int32>
   fun `+`(left: System::Int32, right: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_add", left, right)
 
@@ -179,11 +159,7 @@ fun parseInt32(s: System::String): System::Int32|System::None
     (i: System::Int)  => _checkFitsInt32(i)
     (n: System::None) => None
 
-let [trait] _show_int32: _ShowInt32 = _ShowInt32()
-
-typealias [where] _WhereShowInt32 : Show<System::Int32>
-
-class _ShowInt32() : Show<System::Int32>
+instance [ambient] Show<System::Int32>
   fun show(value: System::Int32): System::String
     ret String(value)
 
@@ -192,10 +168,7 @@ class _ShowInt32() : Show<System::Int32>
 #
 # Same shape as Int32: wrap-on-overflow, no auto-promotion.
 
-let [trait] _int8_trait: _BasicMathInt8 = _BasicMathInt8()
-typealias [where] _WhereBasicMathInt8 : BasicMath<System::Int8>
-
-class _BasicMathInt8() : BasicMath<System::Int8>
+instance [ambient] BasicMath<System::Int8>
   fun `+`(left: System::Int8, right: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_add", left, right)
   fun `-`(right: System::Int8): System::Int8
@@ -257,19 +230,14 @@ fun parseInt8(s: System::String): System::Int8|System::None
     (i: System::Int)  => _checkFitsInt8(i)
     (n: System::None) => None
 
-let [trait] _show_int8: _ShowInt8 = _ShowInt8()
-typealias [where] _WhereShowInt8 : Show<System::Int8>
-class _ShowInt8() : Show<System::Int8>
+instance [ambient] Show<System::Int8>
   fun show(value: System::Int8): System::String
     ret String(value)
 
 
 # ─── Int16 ──────────────────────────────────────────────────────────────────
 
-let [trait] _int16_trait: _BasicMathInt16 = _BasicMathInt16()
-typealias [where] _WhereBasicMathInt16 : BasicMath<System::Int16>
-
-class _BasicMathInt16() : BasicMath<System::Int16>
+instance [ambient] BasicMath<System::Int16>
   fun `+`(left: System::Int16, right: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_add", left, right)
   fun `-`(right: System::Int16): System::Int16
@@ -325,19 +293,14 @@ fun parseInt16(s: System::String): System::Int16|System::None
     (i: System::Int)  => _checkFitsInt16(i)
     (n: System::None) => None
 
-let [trait] _show_int16: _ShowInt16 = _ShowInt16()
-typealias [where] _WhereShowInt16 : Show<System::Int16>
-class _ShowInt16() : Show<System::Int16>
+instance [ambient] Show<System::Int16>
   fun show(value: System::Int16): System::String
     ret String(value)
 
 
 # ─── Int64 ──────────────────────────────────────────────────────────────────
 
-let [trait] _int64_trait: _BasicMathInt64 = _BasicMathInt64()
-typealias [where] _WhereBasicMathInt64 : BasicMath<System::Int64>
-
-class _BasicMathInt64() : BasicMath<System::Int64>
+instance [ambient] BasicMath<System::Int64>
   fun `+`(left: System::Int64, right: System::Int64): System::Int64
     ret __builtin_op__<int64>("int64_add", left, right)
   fun `-`(right: System::Int64): System::Int64
@@ -387,9 +350,7 @@ fun parseInt64(s: System::String): System::Int64|System::None
     (i: System::Int)  => _checkFitsInt64(i)
     (n: System::None) => None
 
-let [trait] _show_int64: _ShowInt64 = _ShowInt64()
-typealias [where] _WhereShowInt64 : Show<System::Int64>
-class _ShowInt64() : Show<System::Int64>
+instance [ambient] Show<System::Int64>
   fun show(value: System::Int64): System::String
     ret String(value)
 
@@ -397,9 +358,7 @@ class _ShowInt64() : Show<System::Int64>
 # Bitwise instances — one per integer type. `&`/`|`/`^` are operators;
 # `andNot(a, b)` is `a & ~b`. Float and String implement no Bitwise instance.
 
-let [trait] _bits_int: _BitwiseInt = _BitwiseInt()
-typealias [where] _WhereBitwiseInt : Bitwise<System::Int>
-class _BitwiseInt() : Bitwise<System::Int>
+instance [ambient] Bitwise<System::Int>
   fun `~`(value: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_inv", value)
   fun `&`(left: System::Int, right: System::Int): System::Int
@@ -411,9 +370,7 @@ class _BitwiseInt() : Bitwise<System::Int>
   fun andNot(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_andnot", left, right)
 
-let [trait] _bits_int8: _BitwiseInt8 = _BitwiseInt8()
-typealias [where] _WhereBitwiseInt8 : Bitwise<System::Int8>
-class _BitwiseInt8() : Bitwise<System::Int8>
+instance [ambient] Bitwise<System::Int8>
   fun `~`(value: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_inv", value)
   fun `&`(left: System::Int8, right: System::Int8): System::Int8
@@ -425,9 +382,7 @@ class _BitwiseInt8() : Bitwise<System::Int8>
   fun andNot(left: System::Int8, right: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_andnot", left, right)
 
-let [trait] _bits_int16: _BitwiseInt16 = _BitwiseInt16()
-typealias [where] _WhereBitwiseInt16 : Bitwise<System::Int16>
-class _BitwiseInt16() : Bitwise<System::Int16>
+instance [ambient] Bitwise<System::Int16>
   fun `~`(value: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_inv", value)
   fun `&`(left: System::Int16, right: System::Int16): System::Int16
@@ -439,9 +394,7 @@ class _BitwiseInt16() : Bitwise<System::Int16>
   fun andNot(left: System::Int16, right: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_andnot", left, right)
 
-let [trait] _bits_int32: _BitwiseInt32 = _BitwiseInt32()
-typealias [where] _WhereBitwiseInt32 : Bitwise<System::Int32>
-class _BitwiseInt32() : Bitwise<System::Int32>
+instance [ambient] Bitwise<System::Int32>
   fun `~`(value: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_inv", value)
   fun `&`(left: System::Int32, right: System::Int32): System::Int32
@@ -453,9 +406,7 @@ class _BitwiseInt32() : Bitwise<System::Int32>
   fun andNot(left: System::Int32, right: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_andnot", left, right)
 
-let [trait] _bits_int64: _BitwiseInt64 = _BitwiseInt64()
-typealias [where] _WhereBitwiseInt64 : Bitwise<System::Int64>
-class _BitwiseInt64() : Bitwise<System::Int64>
+instance [ambient] Bitwise<System::Int64>
   fun `~`(value: System::Int64): System::Int64
     ret __builtin_op__<int64>("int64_inv", value)
   fun `&`(left: System::Int64, right: System::Int64): System::Int64
@@ -471,41 +422,31 @@ class _BitwiseInt64() : Bitwise<System::Int64>
 # Shift instances — one per integer type. `<<` multiplies by 2^n; `>>` is an
 # arithmetic (floor) shift. Float and String implement no Shift instance.
 
-let [trait] _shift_int: _ShiftInt = _ShiftInt()
-typealias [where] _WhereShiftInt : Shift<System::Int>
-class _ShiftInt() : Shift<System::Int>
+instance [ambient] Shift<System::Int>
   fun `<<`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_shl", left, right)
   fun `>>`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_shr", left, right)
 
-let [trait] _shift_int8: _ShiftInt8 = _ShiftInt8()
-typealias [where] _WhereShiftInt8 : Shift<System::Int8>
-class _ShiftInt8() : Shift<System::Int8>
+instance [ambient] Shift<System::Int8>
   fun `<<`(left: System::Int8, right: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_shl", left, right)
   fun `>>`(left: System::Int8, right: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_shr", left, right)
 
-let [trait] _shift_int16: _ShiftInt16 = _ShiftInt16()
-typealias [where] _WhereShiftInt16 : Shift<System::Int16>
-class _ShiftInt16() : Shift<System::Int16>
+instance [ambient] Shift<System::Int16>
   fun `<<`(left: System::Int16, right: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_shl", left, right)
   fun `>>`(left: System::Int16, right: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_shr", left, right)
 
-let [trait] _shift_int32: _ShiftInt32 = _ShiftInt32()
-typealias [where] _WhereShiftInt32 : Shift<System::Int32>
-class _ShiftInt32() : Shift<System::Int32>
+instance [ambient] Shift<System::Int32>
   fun `<<`(left: System::Int32, right: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_shl", left, right)
   fun `>>`(left: System::Int32, right: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_shr", left, right)
 
-let [trait] _shift_int64: _ShiftInt64 = _ShiftInt64()
-typealias [where] _WhereShiftInt64 : Shift<System::Int64>
-class _ShiftInt64() : Shift<System::Int64>
+instance [ambient] Shift<System::Int64>
   fun `<<`(left: System::Int64, right: System::Int64): System::Int64
     ret __builtin_op__<int64>("int64_shl", left, right)
   fun `>>`(left: System::Int64, right: System::Int64): System::Int64

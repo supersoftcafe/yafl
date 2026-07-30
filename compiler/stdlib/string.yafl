@@ -2,17 +2,11 @@ namespace System
 
 typealias String : __builtin_type__<str>
 
-let [trait] _string_trait: _BasicPlusString = _BasicPlusString()
-let [trait] _string_cmp_trait: _BasicCompareString = _BasicCompareString()
-
-typealias [where] _WhereBasicPlusString : BasicPlus<System::String>
-typealias [where] _WhereBasicCompareString : BasicCompare<System::String>
-
-class _BasicPlusString() : BasicPlus<String>
+instance [ambient] BasicPlus<String>
   fun `+`(left: System::String, right: System::String): System::String
     ret __builtin_op__<str>("string_append", left, right)
 
-class _BasicCompareString() : BasicCompare<String>
+instance [ambient] BasicCompare<String>
   fun `<`(left: System::String, right: System::String): System::Bool
     ret __builtin_op__<bool>("string_lt", left, right)
 
@@ -27,15 +21,11 @@ class _BasicCompareString() : BasicCompare<String>
   fun hashOf(value: System::String): System::Int32
     ret __builtin_op__<int32>("string_hash", value)
 
-let [trait] _show_string: _ShowString = _ShowString()
-
-typealias [where] _WhereShowString : Show<System::String>
-
 # Show<String> is identity — callers (notably `format`) want the natural
 # representation, not a debug-quoted form. If a quoted/escaped variant is
 # ever needed for diagnostics, add a separate `Debug<T>` trait rather than
 # overloading Show.
-class _ShowString() : Show<System::String>
+instance [ambient] Show<System::String>
   fun show(value: System::String): System::String
     ret value
 
