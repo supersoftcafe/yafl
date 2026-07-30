@@ -172,7 +172,22 @@ fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
 # statement with no `where` of its own sees the in-scope IMPLICIT `[where]`
 # aliases, gathered from the resolver chain at query time.
 fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
-  ret RTraits(wheres, r)
+  let amb = ambientEntries(r)
+  let plain = plainEntries(chain(wheres), builder<TraitEntry>())
+  # The ambient list is deduplicated once per pass at build time; here only
+  # the (tiny) where-clause list screens against it — Python's `add` order:
+  # where entries first, ambient after, (spec, own) dedupe.
+  let all = concat(plain, ambNotIn(chain(amb.aeEntries), plain,
+                                   builder<TraitEntry>()))
+  ret RTraits(wheres, all, anyNamed(chain(wheres)) || amb.aeBlocked, r)
+
+fun [tail] ambNotIn(es: Chain<TraitEntry>, plain: List<TraitEntry>,
+                    acc: ListBuilder<TraitEntry>): List<TraitEntry>
+  ret match(es)
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => entrySeen(chain(plain), l.value)
+      ? ambNotIn(l.next, plain, acc)
+      : ambNotIn(l.next, plain, push(acc, l.value))
 
 # _find_trait_data: the statement's own `where` specs PLUS the in-scope
 # `instance [ambient]` records. The entry filter is Python's exactly: a
@@ -184,19 +199,12 @@ fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
 class [final] TraitEntry(teSpec: Spec, teOwn: List<String>)
 class [final] AmbEntries(aeEntries: List<TraitEntry>, aeBlocked: Bool)
 
-fun traitBag(wheres: List<Spec>, query: String, r: Resolver): Bag
-  let entries = wheres
-  # `instance [ambient]` records join the SAME search — availability, not
-  # constraint: concrete ones exactly like a where-clause spec, generic ones
-  # as the interface PATTERN whose own placeholders the use site may bind.
-  let amb = ambientPatterns(chain(ambientTraits(r)), r, List<TraitEntry>(),
-                            false)
-  let seed = anyNamed(chain(entries)) || amb.aeBlocked
-    ? incompleteBag()
-    : emptyBag()
-  let all = concat(plainEntries(chain(entries), builder<TraitEntry>()),
-                   amb.aeEntries)
-  ret traitLoop(chain(all), query, r, List<TraitEntry>(), seed)
+# `instance [ambient]` records join the SAME search — availability, not
+# constraint. Entries and dedupe are PREBUILT on the layer (traitScope);
+# per query only the member search runs.
+fun traitBag(tr: RTraits, query: String, r: Resolver): Bag
+  ret traitLoop(chain(tr.rtEntries), query, r,
+                tr.rtBlocked ? incompleteBag() : emptyBag())
 
 fun [tail] plainEntries(ws: Chain<Spec>,
                         acc: ListBuilder<TraitEntry>): List<TraitEntry>
@@ -208,57 +216,10 @@ fun [tail] plainEntries(ws: Chain<Spec>,
         : plainEntries(l.next, acc)
       (o: Spec)   => plainEntries(l.next, acc)
 
-fun ambientPatterns(ts: Chain<PStmt>, r: Resolver,
-                           acc: List<TraitEntry>, blocked: Bool): AmbEntries
-  ret match(ts)
-    (nil: ChainEnd) => AmbEntries(acc, blocked)
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => ambientOne(let2, r)
-        |> (o) => ambientPatterns(l.next, r, concat(acc, o.aeEntries),
-                                  blocked || o.aeBlocked)
-      (o2: PStmt)   => ambientPatterns(l.next, r, acc, blocked)
-
-fun ambientOne(let2: PsLet, r: Resolver): AmbEntries
-  ret match(let2.lType)
-    (dt: Spec) => match(dt)
-      (dc: SClass) => ambientWitness(dc, let2, r)
-      (o2: Spec)   => AmbEntries(List<TraitEntry>(), true)
-    ()         => AmbEntries(List<TraitEntry>(), true)
-
-fun ambientWitness(dc: SClass, let2: PsLet, r: Resolver): AmbEntries
-  ret match(soleItem(findType(r, dc.scName)))
-    (f: Found) => match(f.fStmt)
-      (wcls: PsClass) => ambientParents(chain(wcls.cImplements),
-                                        paramMapping(wcls.cGens, dc.scParams),
-                                        genNames(chain(let2.lGens),
-                                                 builder<String>()),
-                                        List<TraitEntry>(), false)
-      (o: PStmt)      => AmbEntries(List<TraitEntry>(), true)
-    ()         => AmbEntries(List<TraitEntry>(), true)
-
 fun [tail] genNames(gs: Chain<PGen>, acc: ListBuilder<String>): List<String>
   ret match(gs)
     (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => genNames(l.next, push(acc, l.value.genName))
-
-fun ambientParents(ps: Chain<Spec>, mapping: List<Binding>,
-                          own: List<String>, acc: List<TraitEntry>,
-                          blocked: Bool): AmbEntries
-  ret match(ps)
-    (nil: ChainEnd) => AmbEntries(acc, blocked)
-    (l: ChainLink)  => ambientParentStep(substitute(l.value, mapping), l.next,
-                                         mapping, own, acc, blocked)
-
-fun ambientParentStep(p: Spec, rest: Chain<Spec>, mapping: List<Binding>,
-                      own: List<String>, acc: List<TraitEntry>,
-                      blocked: Bool): AmbEntries
-  ret match(p)
-    (n: SNamed) => ambientParents(rest, mapping, own, acc, true)
-    (c: SClass) => anyNamed(chain(c.scParams))
-      ? ambientParents(rest, mapping, own, acc, true)
-      : ambientParents(rest, mapping, own, append(acc, TraitEntry(p, own)),
-                       blocked)
-    (o: Spec)   => ambientParents(rest, mapping, own, acc, blocked)
 
 fun [tail] anyNamed(ws: Chain<Spec>): Bool
   ret match(ws)
@@ -267,17 +228,12 @@ fun [tail] anyNamed(ws: Chain<Spec>): Bool
       (n: SNamed) => true
       (o: Spec)   => anyNamed(l.next)
 
-# `seen` is a membership SET (order-invisible): PREPEND keeps it
-# front-normal, so entrySeen's chain() is free instead of paying a rear
-# reversal per query. Deduplication is on (spec, own) — Python's `add`.
 fun [tail] traitLoop(es: Chain<TraitEntry>, query: String, r: Resolver,
-                     seen: List<TraitEntry>, acc: Bag): Bag
+                     acc: Bag): Bag
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => entrySeen(chain(seen), l.value)
-      ? traitLoop(l.next, query, r, seen, acc)
-      : traitLoop(l.next, query, r, prepend<TraitEntry>(l.value, seen),
-                  addBags(acc, entryMembers(l.value, query, r)))
+    (l: ChainLink)  => traitLoop(l.next, query, r,
+                                 addBags(acc, entryMembers(l.value, query, r)))
 
 fun entryMembers(e2: TraitEntry, query: String, r: Resolver): Bag
   ret match(e2.teSpec)

@@ -466,7 +466,7 @@ fun clStmt(st: PStmt, r: Resolver, paths: ClPaths, exports: List<PStmt>): ClSt
     (o: PStmt)         => ClSt(st, exports)
 
 fun clFunBodyResolver(f: PsFun, r: Resolver): Resolver
-  ret localScope(flattenParams(f.fParams), f.fNested ? r : RTraits(f.fWheres, r))
+  ret localScope(flattenParams(f.fParams), f.fNested ? r : traitScope(f.fWheres, r))
 
 fun clFunStmt(f: PsFun, r: Resolver, paths: ClPaths, exports: List<PStmt>): ClSt
   let p = clStmt(f.fParams, r, paths, exports)

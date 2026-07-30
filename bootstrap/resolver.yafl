@@ -105,13 +105,115 @@ fun soleItem(b: Bag): Found|None
 # collection-wide scans the resolver needs. A changed statement set is a NEW
 # index, so there is never a stale one to reason about across passes.
 
+# stAmbient/stAmbientBlocked: the `instance [ambient]` PATTERNS — (own
+# namespace, interface spec, instance-owned placeholder names) — plus whether
+# any witness is still unresolved, PRECOMPUTED once per pass here. Rebuilding
+# witness lookups per QUERY made resolution cost scale with the instance
+# count (self-compile 18→47 min before this memo).
+class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
+
 class [final] Statements(stOrdered: List<PStmt>,
                          stIndex: Dict<String, List<PStmt> >,
-                         stTraits: List<PStmt>)
+                         stTraits: List<PStmt>,
+                         stAmbient: List<AmbEntry>,
+                         stAmbientBlocked: Bool)
 
 fun buildStatements(stmts: List<PStmt>): Statements
-  ret indexLoop(chain(stmts), Statements(stmts, Dict<String, List<PStmt> >(),
-                                         List<PStmt>()))
+  ret withAmbient(indexLoop(chain(stmts),
+                            Statements(stmts, Dict<String, List<PStmt> >(),
+                                       List<PStmt>(), List<AmbEntry>(),
+                                       false)))
+
+fun withAmbient(base: Statements): Statements
+  let amb = buildAmbient(chain(base.stTraits), RRoot(base),
+                         builder<AmbEntry>(), false)
+  ret Statements(base.stOrdered, base.stIndex, base.stTraits,
+                 dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
+                 amb.abBlocked)
+
+# (spec, own) dedupe, once per pass — two identical instances collapse to
+# ONE search entry (Python's per-query `add` set), whichever namespaces they
+# came from: the entry keeps the UNION of namespaces and is in scope when
+# any of them is imported.
+fun [tail] dedupeAmb(es: Chain<AmbEntry>, acc: List<AmbEntry>): List<AmbEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => dedupeAmb(l.next, mergeAmb(chain(acc), l.value,
+                                                 List<AmbEntry>(), false))
+
+fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry, out: List<AmbEntry>,
+                    merged: Bool): List<AmbEntry>
+  ret match(es)
+    (nil: ChainEnd) => merged ? out : append(out, x)
+    (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
+                       && eqNameList(chain(l.value.amOwn), chain(x.amOwn))
+      ? mergeAmb(l.next, x,
+                 append(out, AmbEntry(mergeNames(l.value.amNs,
+                                                 chain(x.amNs)),
+                                      l.value.amSpec, l.value.amOwn)),
+                 true)
+      : mergeAmb(l.next, x, append(out, l.value), merged)
+
+class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
+
+fun buildAmbient(ts: Chain<PStmt>, r: Resolver,
+                        acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
+  ret match(ts)
+    (nil: ChainEnd) => AmbBuilt(build(acc), blocked)
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => hasAttr(let2.lAttrs, "ambient")
+        ? buildAmbientOne(let2, l.next, r, acc, blocked)
+        : buildAmbient(l.next, r, acc, blocked)
+      (o: PStmt)    => buildAmbient(l.next, r, acc, blocked)
+
+fun buildAmbientOne(let2: PsLet, rest: Chain<PStmt>, r: Resolver,
+                    acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
+  ret match(let2.lType)
+    (dt: Spec) => match(dt)
+      (dc: SClass) => buildAmbientWitness(let2, dc, rest, r, acc, blocked)
+      (o2: Spec)   => buildAmbient(rest, r, acc, true)
+    ()         => buildAmbient(rest, r, acc, true)
+
+fun buildAmbientWitness(let2: PsLet, dc: SClass, rest: Chain<PStmt>,
+                        r: Resolver, acc: ListBuilder<AmbEntry>,
+                        blocked: Bool): AmbBuilt
+  ret match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (wcls: PsClass) => buildAmbientParents(
+          chain(wcls.cImplements), paramMapping(wcls.cGens, dc.scParams),
+          namespacePart(let2.lName),
+          genNames(chain(let2.lGens), builder<String>()),
+          rest, r, acc, blocked)
+      (o: PStmt)      => buildAmbient(rest, r, acc, true)
+    ()         => buildAmbient(rest, r, acc, true)
+
+fun buildAmbientParents(ps: Chain<Spec>, mapping: List<Binding>,
+                               ns: String, own: List<String>,
+                               rest: Chain<PStmt>, r: Resolver,
+                               acc: ListBuilder<AmbEntry>,
+                               blocked: Bool): AmbBuilt
+  ret match(ps)
+    (nil: ChainEnd) => buildAmbient(rest, r, acc, blocked)
+    (l: ChainLink)  => buildAmbientParent(substitute(l.value, mapping), ps,
+                                          mapping, ns, own, rest, r, acc,
+                                          blocked)
+
+fun buildAmbientParent(p: Spec, ps: Chain<Spec>, mapping: List<Binding>,
+                       ns: String, own: List<String>, rest: Chain<PStmt>,
+                       r: Resolver, acc: ListBuilder<AmbEntry>,
+                       blocked: Bool): AmbBuilt
+  let next = chainNext(ps).rest
+  ret match(p)
+    (n: SNamed) => buildAmbientParents(next, mapping, ns, own, rest, r, acc,
+                                       true)
+    (c: SClass) => anyNamed(chain(c.scParams))
+      ? buildAmbientParents(next, mapping, ns, own, rest, r, acc, true)
+      : buildAmbientParents(next, mapping, ns, own, rest, r,
+                            push(acc, AmbEntry(append(List<String>(), ns),
+                                               p, own)),
+                            blocked)
+    (o: Spec)   => buildAmbientParents(next, mapping, ns, own, rest, r, acc,
+                                       blocked)
 
 fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
   ret match(ss)
@@ -128,7 +230,7 @@ fun indexOne(acc: Statements, st: PStmt): Statements
 fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
-                 acc.stTraits)
+                 acc.stTraits, acc.stAmbient, acc.stAmbientBlocked)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
                    st: PStmt): Dict<String, List<PStmt> >
@@ -148,7 +250,8 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
   ret match(st)
     (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
-      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st))
+      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st),
+                   acc.stAmbient, acc.stAmbientBlocked)
       : acc
     (o: PStmt)  => acc
 
@@ -199,7 +302,11 @@ enum Resolver
   # The `where`-supplied trait/interface operators. They JOIN the scope (only a
   # local shadows them), and — the part that matters — they report INCOMPLETE
   # while a trait param has not grounded.
-  enum RTraits(rtWheres: List<Spec>, rtrParent: Resolver)
+  # rtEntries/rtBlocked: the DEDUPLICATED trait-search entries (where-clause
+  # specs + ambient patterns), built ONCE at traitScope construction — per
+  # QUERY construction paid an O(entries²) structural dedupe on every name.
+  enum RTraits(rtWheres: List<Spec>, rtEntries: List<TraitEntry>,
+               rtBlocked: Bool, rtrParent: Resolver)
   # A class BODY's scope (ClassStatement.__find_locals): the class's own
   # members — fields and methods, MEMBER-scoped — plus `this`, SHADOWING the
   # enclosing scope like any local layer. No trait data here: each method
@@ -226,7 +333,7 @@ fun findData(r: Resolver, query: String): Bag
                                  d.rdParent, query)
     (t2: RTypes)  => findData(t2.rtParent, query)
     (sc: RScopes) => scopedBag(sc, query, false)
-    (tr: RTraits) => addBags(traitBag(tr.rtWheres, query, tr.rtrParent),
+    (tr: RTraits) => addBags(traitBag(tr, query, tr.rtrParent),
                              findData(tr.rtrParent, query))
     (cb: RClassBody) => classBodyBag(cb, query)
 
@@ -249,34 +356,40 @@ fun findType(r: Resolver, query: String): Bag
 # register its trait set as not-yet-complete, rather than treat it as absent
 # and commit a name against a search that was actually blocked.
 
-# get_ambient_traits: every in-scope `instance [ambient]` record (the
-# desugared `[trait,ambient]` let) — pure availability, import-scope
-# filtered like every other ambient lookup.
-fun ambientTraits(r: Resolver): List<PStmt>
-  ret ambientWalk(r, List<String>())
+# get_ambient_patterns: the PRECOMPUTED ambient entries (stAmbient), scope-
+# filtered per query site — the walk only collects the in-scope namespaces.
+fun ambientEntries(r: Resolver): AmbEntries
+  ret ambEntryWalk(r, List<String>())
 
-fun [tail] ambientWalk(r: Resolver, scopes: List<String>): List<PStmt>
+fun [tail] ambEntryWalk(r: Resolver, scopes: List<String>): AmbEntries
   ret match(r)
     (root: RRoot) => isEmpty(scopes)
-      ? List<PStmt>()
-      : ambientOf(chain(root.rrStmts.stTraits), scopes, builder<PStmt>())
-    (sc: RScopes)    => ambientWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
-    (d: RData)       => ambientWalk(d.rdParent, scopes)
-    (t2: RTypes)     => ambientWalk(t2.rtParent, scopes)
-    (tr: RTraits)    => ambientWalk(tr.rtrParent, scopes)
-    (cb: RClassBody) => ambientWalk(cb.rcbParent, scopes)
-    (rg: RGen)       => ambientWalk(rg.rgParent, scopes)
+      ? AmbEntries(List<TraitEntry>(), false)
+      : AmbEntries(ambFilter(chain(root.rrStmts.stAmbient), scopes,
+                             builder<TraitEntry>()),
+                   root.rrStmts.stAmbientBlocked)
+    (sc: RScopes)    => ambEntryWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
+    (d: RData)       => ambEntryWalk(d.rdParent, scopes)
+    (t2: RTypes)     => ambEntryWalk(t2.rtParent, scopes)
+    (tr: RTraits)    => ambEntryWalk(tr.rtrParent, scopes)
+    (cb: RClassBody) => ambEntryWalk(cb.rcbParent, scopes)
+    (rg: RGen)       => ambEntryWalk(rg.rgParent, scopes)
 
-fun [tail] ambientOf(ts: Chain<PStmt>, scopes: List<String>,
-                     acc: ListBuilder<PStmt>): List<PStmt>
-  ret match(ts)
+fun [tail] ambFilter(es: Chain<AmbEntry>, scopes: List<String>,
+                     acc: ListBuilder<TraitEntry>): List<TraitEntry>
+  ret match(es)
     (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => hasAttr(let2.lAttrs, "ambient")
-                       && contains2(scopes, namespacePart(let2.lName))
-        ? ambientOf(l.next, scopes, push(acc, l.value))
-        : ambientOf(l.next, scopes, acc)
-      (o: PStmt)    => ambientOf(l.next, scopes, acc)
+    (l: ChainLink)  => anyInScopes(chain(l.value.amNs), scopes)
+      ? ambFilter(l.next, scopes,
+                  push(acc, TraitEntry(l.value.amSpec, l.value.amOwn)))
+      : ambFilter(l.next, scopes, acc)
+
+fun [tail] anyInScopes(ns: Chain<String>, scopes: List<String>): Bool
+  ret match(ns)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => contains2(scopes, l.value)
+      ? true
+      : anyInScopes(l.next, scopes)
 
 # Everything before the LAST '::' (Python name.rpartition('::')[0]).
 fun namespacePart(name: String): String

@@ -178,12 +178,14 @@ class Resolver:
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return None
 
-    # Every in-scope `instance [ambient]` record (the desugared
-    # `[trait,ambient]` let): its members join name resolution as pure
-    # AVAILABILITY — no constraint on anything of the caller's,
-    # import-scope filtered.
-    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
-        return []
+    # The in-scope `instance [ambient]` PATTERNS: (interface spec,
+    # instance-owned placeholder names) pairs plus a blocked flag, pure
+    # AVAILABILITY, import-scope filtered. Precomputed once per pass on the
+    # root — rebuilding witness lookups per QUERY made resolution cost scale
+    # with the instance count (self-compile 18→47 min before the memo).
+    def get_ambient_patterns(self, scopes: set[str] | None = None
+                             ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":
+        return ([], False)
 
     def get_discriminators(self) -> dict[str, int]:
         return {}
@@ -228,8 +230,9 @@ class DelegatingResolver(Resolver):
     def get_param_suggestion(self, name: str) -> "t.TypeSpec | None":
         return self._parent.get_param_suggestion(name)
 
-    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
-        return self._parent.get_ambient_traits(scopes)
+    def get_ambient_patterns(self, scopes: set[str] | None = None
+                             ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":
+        return self._parent.get_ambient_patterns(scopes)
 
     def get_discriminators(self) -> dict[str, int]:
         return self._parent.get_discriminators()
@@ -351,6 +354,8 @@ class ResolverRoot(Resolver):
         # {function unique-name: suggested param TupleSpec}, computed once per
         # compile pass from the previous pass's call sites (path 3).
         self.__param_suggestions = param_suggestions or {}
+        # Lazy per-pass memo for get_ambient_patterns (roots are per-pass).
+        self.__ambient = None
 
     def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
         return Bag(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
@@ -366,12 +371,46 @@ class ResolverRoot(Resolver):
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return self.__param_suggestions.get(name)
 
-    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
+    def get_ambient_patterns(self, scopes: set[str] | None = None
+                             ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":
         if not scopes:
-            return []
-        return [st for st in self.__statements.traits
-                if 'ambient' in st.attributes
-                and st.name.rpartition('::')[0] in scopes]
+            return ([], False)
+        if self.__ambient is None:
+            self.__ambient = self.__build_ambient_patterns()
+        entries, blocked = self.__ambient
+        return ([(p, own) for ns, p, own in entries if ns in scopes], blocked)
+
+    def __build_ambient_patterns(self):
+        """(namespace, interface pattern, instance-owned names) per ambient
+        record, plus whether any witness is still unresolved (blocked ⇒ the
+        member search stays INCOMPLETE this pass). Root-level is faithful:
+        witness names are @-unique (scope-independent) once resolved, and an
+        unresolved one blocks every query identically."""
+        entries: list[tuple[str, t.ClassSpec, tuple[str, ...]]] = []
+        blocked = False
+        for inst in self.__statements.traits:
+            if 'ambient' not in inst.attributes:
+                continue
+            ns = inst.name.rpartition('::')[0]
+            dt = inst.declared_type
+            if not isinstance(dt, t.ClassSpec):
+                blocked = True
+                continue
+            wfound = [rs.statement for rs in self.find_type(dt.name)]
+            if len(wfound) != 1 or not isinstance(wfound[0], s.ClassStatement):
+                blocked = True
+                continue
+            wcls = wfound[0]
+            own = tuple(p.name for p in (getattr(inst, 'type_params', ()) or ()))
+            mapping = {p.name: c for p, c in zip(wcls.type_params, dt.type_params)}
+            for parent_type in wcls.implements:
+                parent = t.substitute_placeholders(parent_type, mapping, self)
+                if isinstance(parent, t.NamedSpec) or any(
+                        isinstance(a, t.NamedSpec) for a in parent.type_params):
+                    blocked = True
+                elif isinstance(parent, t.ClassSpec):
+                    entries.append((ns, parent, own))
+        return entries, blocked
 
 
 class AddScopeResolution(DelegatingResolver):
@@ -414,10 +453,11 @@ class AddScopeResolution(DelegatingResolver):
         self.__data_cache[name] = result
         return result
 
-    def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
+    def get_ambient_patterns(self, scopes: set[str] | None = None
+                             ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":
         own = set(self.__scopes)
         merged = own if scopes is None else (own | scopes)
-        return self._parent.get_ambient_traits(merged)
+        return self._parent.get_ambient_patterns(merged)
 
 
 class ResolverType(DelegatingResolver):

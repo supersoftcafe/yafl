@@ -112,26 +112,12 @@ class NamedStatement(Statement):
         # `instance [ambient]` records join the SAME search — availability,
         # not constraint. A concrete instance's interface spec enters exactly
         # like a where-clause spec; a GENERIC one enters as the interface
-        # PATTERN (witness parents, instance args substituted), whose own
-        # placeholders the use site may bind.
-        for inst in resolver.get_ambient_traits():
-            dt = inst.declared_type
-            if not isinstance(dt, t.ClassSpec):
-                blocked = True      # witness type not resolved yet
-                continue
-            wfound = [rs.statement for rs in resolver.find_type(dt.name)]
-            if len(wfound) != 1 or not isinstance(wfound[0], ClassStatement):
-                blocked = True
-                continue
-            wcls = wfound[0]
-            own = tuple(p.name for p in (getattr(inst, 'type_params', ()) or ()))
-            wmapping = {p.name: c for p, c in zip(wcls.type_params, dt.type_params)}
-            for parent_type in wcls.implements:
-                parent = t.substitute_placeholders(parent_type, wmapping, resolver)
-                if isinstance(parent, t.NamedSpec) or any(isinstance(a, t.NamedSpec) for a in parent.type_params):
-                    blocked = True
-                elif isinstance(parent, t.ClassSpec):
-                    add(parent, own)
+        # PATTERN whose own placeholders the use site may bind. The patterns
+        # are precomputed per pass on the root (get_ambient_patterns).
+        amb_entries, amb_blocked = resolver.get_ambient_patterns()
+        blocked = blocked or amb_blocked
+        for parent, own in amb_entries:
+            add(parent, own)
         result = g.INCOMPLETE if blocked else g.EMPTY
         for tp, own in ordered_specs:
             result = result + find_in_class(tp, own)
