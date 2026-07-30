@@ -102,12 +102,12 @@ class NamedStatement(Statement):
             if (tp, own) not in specs:
                 specs.add((tp, own))
                 ordered_specs.append((tp, own))
-        for tp in (*self.trait_params, *resolver.get_implicit_where_specs()):
+        for tp in self.trait_params:
             if isinstance(tp, t.ClassSpec) and tp.is_concrete():
                 add(tp, ())
             elif isinstance(tp, t.NamedSpec):
-                # An in-scope [where] alias / constraint whose type is still a
-                # NamedSpec: unresolved, so the trait set is not yet complete.
+                # A where constraint whose type is still a NamedSpec:
+                # unresolved, so the trait set is not yet complete.
                 blocked = True
         # `instance [ambient]` records join the SAME search — availability,
         # not constraint. A concrete instance's interface spec enters exactly

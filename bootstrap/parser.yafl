@@ -1161,6 +1161,9 @@ fun parseTypealiasNamed(attrs: List<PAttr>, lr: PLine,
     (f: PFail)       => (f, gen.rest)
     (gl: List<PGen>) => parseTypealiasTy(attrs, t.text, gl, lr, gen.rest)
 
+# A typealias is purely a name for a type: no `where` clause (the old
+# `typealias [where]` conditional-instance channel was replaced by
+# `instance [ambient]`).
 fun parseTypealiasTy(attrs: List<PAttr>, name: String, gen: List<PGen>,
                      lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   if !atSym(ps, ":")
@@ -1168,14 +1171,9 @@ fun parseTypealiasTy(attrs: List<PAttr>, name: String, gen: List<PGen>,
   let ty = parseType(bump(ps))
   ret match(ty.v)
     (f: PFail) => (harden(f, "invalid typealias statement"), ty.rest)
-    (t2: Spec)  => parseTypealiasWhere(attrs, name, gen, t2, lr, ty.rest)
-
-fun parseTypealiasWhere(attrs: List<PAttr>, name: String, gen: List<PGen>,
-                        ty: Spec, lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
-  let w = parseMaybeWhere(ps)
-  ret match(w.v)
-    (f: PFail)      => (f, w.rest)
-    (wl: List<Spec>) => (PsTypealias(hashName(name, lr), attrs, gen, ty, wl, lr), w.rest)
+    (t2: Spec)  => (PsTypealias(hashName(name, lr), attrs, gen, t2,
+                                List<Spec>(), lr),
+                    ty.rest)
 
 fun parseLet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   let attrs = parseMaybeAttributes(ps)

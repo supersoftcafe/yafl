@@ -298,17 +298,13 @@ typealias Int : __builtin_type__<bigint>
 interface Addy<T>
     fun `+`(l: T, r: T): T
 
-class AddyInt() : Addy<Int>
+instance [ambient] Addy<Int>
     fun `+`(l: Int, r: Int): Int
         ret __builtin_op__<bigint>("integer_add", l, r)
-
-let [trait] _addy: AddyInt = AddyInt()
-
-typealias [where] _WhereAddyInt : Addy<Int>
 """
 
-    def test_implicit_where_typealias_visible_with_import(self):
-        """A [where] typealias is in scope when the caller imports its namespace."""
+    def test_ambient_instance_visible_with_import(self):
+        """An [ambient] instance is in scope when the caller imports its namespace."""
         caller = """namespace Caller
 
 import Callee
@@ -325,8 +321,8 @@ fun main(): Callee::Int
         self.assertTrue(isinstance(result, str) and result,
                         f"Expected successful compile, got: {result!r}")
 
-    def test_implicit_where_typealias_hidden_without_import(self):
-        """A [where] typealias is NOT in scope when the caller does not import its namespace."""
+    def test_ambient_instance_hidden_without_import(self):
+        """An [ambient] instance is NOT in scope when the caller does not import its namespace."""
         caller = """namespace Caller
 
 fun f(x: Callee::Int): Callee::Int

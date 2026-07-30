@@ -18,7 +18,7 @@ class Bag[T]:
     everything it needed to. Every `find` over a resolver returns one of these,
     and a name is only ever committed to a candidate from a *complete* bag: an
     incomplete one may still be missing the candidate that should win, once the
-    thing that blocked the search (an unresolved `[where]` alias, or a NamedSpec
+    thing that blocked the search (a NamedSpec
     encountered anywhere along the way) resolves on a later compile pass.
 
     Combining bags with `+` unions the items and ANDs completeness — a result is
@@ -178,13 +178,10 @@ class Resolver:
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return None
 
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return []
-
     # Every in-scope `instance [ambient]` record (the desugared
     # `[trait,ambient]` let): its members join name resolution as pure
-    # AVAILABILITY — no constraint on anything of the caller's. Same
-    # import-scope filtering as get_implicit_where_specs.
+    # AVAILABILITY — no constraint on anything of the caller's,
+    # import-scope filtered.
     def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
         return []
 
@@ -230,9 +227,6 @@ class DelegatingResolver(Resolver):
 
     def get_param_suggestion(self, name: str) -> "t.TypeSpec | None":
         return self._parent.get_param_suggestion(name)
-
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        return self._parent.get_implicit_where_specs(scopes)
 
     def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
         return self._parent.get_ambient_traits(scopes)
@@ -287,19 +281,18 @@ class Statements:
     prefix-match lookup is a plain dict hit — the index that `ResolverRoot`
     used to rebuild on every construction lives here and is built once per
     collection. Nested enum variants are indexed too (so a variant name
-    resolves) but are not part of iteration. `traits` and `where_aliases` —
-    the two other collection-wide scans the resolver needs — are precomputed.
+    resolves) but are not part of iteration. `traits` — the other
+    collection-wide scan the resolver needs — is precomputed.
 
     A changed statement set is a *new* `Statements` built from the new
     contents, so there is never a stale index to reason about across passes.
     """
-    __slots__ = ("_ordered", "_index", "traits", "where_aliases")
+    __slots__ = ("_ordered", "_index", "traits")
 
     def __init__(self, statements: "Iterable[s.Statement]") -> None:
         ordered = tuple(statements)
         index: dict[str, list[s.Statement]] = {}
         traits: list[s.LetStatement] = []
-        where_aliases: list[s.TypeAliasStatement] = []
         for st in ordered:
             # Only named statements are indexed; structural statements (imports,
             # namespace markers) carry no name — matching the old ResolverRoot,
@@ -312,12 +305,9 @@ class Statements:
                 Statements.__index_variants(st.variants, index)
             elif isinstance(st, s.LetStatement) and 'trait' in st.attributes:
                 traits.append(st)
-            elif isinstance(st, s.TypeAliasStatement) and 'where' in st.attributes:
-                where_aliases.append(st)
         self._ordered: tuple[s.Statement, ...] = ordered
         self._index: dict[str, tuple[s.Statement, ...]] = {k: tuple(v) for k, v in index.items()}
         self.traits: tuple[s.LetStatement, ...] = tuple(traits)
-        self.where_aliases: tuple[s.TypeAliasStatement, ...] = tuple(where_aliases)
 
     @staticmethod
     def __index_variants(variants: "list[s.EnumStatement]", index: dict) -> None:
@@ -376,16 +366,6 @@ class ResolverRoot(Resolver):
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return self.__param_suggestions.get(name)
 
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        if not scopes:
-            return []
-        # Every in-scope [where] alias type, resolved or not: the trait finder
-        # must see an unresolved one (still a NamedSpec) to register its trait
-        # set as not-yet-complete, rather than treat it as absent and commit a
-        # name against a search that was actually blocked.
-        return [st.type for st in self.__statements.where_aliases
-                if st.name.rpartition('::')[0] in scopes]
-
     def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
         if not scopes:
             return []
@@ -433,11 +413,6 @@ class AddScopeResolution(DelegatingResolver):
                 result = result + self._parent.find_data(f"{scope}::{name}")
         self.__data_cache[name] = result
         return result
-
-    def get_implicit_where_specs(self, scopes: set[str] | None = None) -> list[t.TypeSpec]:
-        own = set(self.__scopes)
-        merged = own if scopes is None else (own | scopes)
-        return self._parent.get_implicit_where_specs(merged)
 
     def get_ambient_traits(self, scopes: set[str] | None = None) -> "list[s.LetStatement]":
         own = set(self.__scopes)

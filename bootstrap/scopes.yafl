@@ -175,17 +175,17 @@ fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
   ret RTraits(wheres, r)
 
 # _find_trait_data: the statement's own `where` specs PLUS the in-scope
-# implicit `[where]` aliases. The entry filter is Python's exactly: a CONCRETE
-# class spec joins the search (deduplicated); a still-unresolved SNamed BLOCKS
-# (the trait set is not yet complete, so the whole answer is INCOMPLETE); any
-# other shape is skipped without blocking.
+# `instance [ambient]` records. The entry filter is Python's exactly: a
+# CONCRETE class spec joins the search (deduplicated); a still-unresolved
+# SNamed BLOCKS (the trait set is not yet complete, so the whole answer is
+# INCOMPLETE); any other shape is skipped without blocking.
 # One search entry: an interface spec plus the placeholder names a GENERIC
 # ambient instance owns in it (empty for where-clause / concrete entries).
 class [final] TraitEntry(teSpec: Spec, teOwn: List<String>)
 class [final] AmbEntries(aeEntries: List<TraitEntry>, aeBlocked: Bool)
 
 fun traitBag(wheres: List<Spec>, query: String, r: Resolver): Bag
-  let entries = concat(wheres, implicitWheres(r))
+  let entries = wheres
   # `instance [ambient]` records join the SAME search — availability, not
   # constraint: concrete ones exactly like a where-clause spec, generic ones
   # as the interface PATTERN whose own placeholders the use site may bind.

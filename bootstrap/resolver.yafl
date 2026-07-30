@@ -5,7 +5,7 @@
 #  * A BAG is a found set PLUS whether the search was COMPLETE. A name is only
 #    ever committed against a complete bag: an incomplete one may still be
 #    missing the candidate that should win, once whatever blocked the search
-#    (an unresolved `[where]` alias, a NamedSpec along the way) resolves on a
+#    (a NamedSpec along the way) resolves on a
 #    later pass. Combining bags unions the items and ANDs completeness.
 #  * A resolver is a CHAIN of scopes over one immutable statement index; each
 #    layer answers what it knows and delegates the rest outward.
@@ -105,19 +105,13 @@ fun soleItem(b: Bag): Found|None
 # collection-wide scans the resolver needs. A changed statement set is a NEW
 # index, so there is never a stale one to reason about across passes.
 
-# stWhereNs runs parallel to stWhereAliases: each alias's OWN NAMESPACE,
-# precomputed once here — whereSpecs consults it per query, and recomputing
-# the '::'-scan per alias per lookup dominated self-host profiles.
 class [final] Statements(stOrdered: List<PStmt>,
                          stIndex: Dict<String, List<PStmt> >,
-                         stTraits: List<PStmt>,
-                         stWhereAliases: List<PStmt>,
-                         stWhereNs: List<String>)
+                         stTraits: List<PStmt>)
 
 fun buildStatements(stmts: List<PStmt>): Statements
   ret indexLoop(chain(stmts), Statements(stmts, Dict<String, List<PStmt> >(),
-                                         List<PStmt>(), List<PStmt>(),
-                                         List<String>()))
+                                         List<PStmt>()))
 
 fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
   ret match(ss)
@@ -134,7 +128,7 @@ fun indexOne(acc: Statements, st: PStmt): Statements
 fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
-                 acc.stTraits, acc.stWhereAliases, acc.stWhereNs)
+                 acc.stTraits)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
                    st: PStmt): Dict<String, List<PStmt> >
@@ -149,18 +143,12 @@ fun putUnder(d: Dict<String, List<PStmt> >, key: String,
     ()                  => put(d, key, append(List<PStmt>(), st))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
-# iteration; `[trait]` lets and `[where]` aliases are precomputed.
+# iteration; `[trait]` lets are precomputed.
 fun classify(acc: Statements, st: PStmt, name: String): Statements
   ret match(st)
     (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
-      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st),
-                   acc.stWhereAliases, acc.stWhereNs)
-      : acc
-    (ta: PsTypealias) => hasAttr(ta.taAttrs, "where")
-      ? Statements(acc.stOrdered, acc.stIndex, acc.stTraits,
-                   append(acc.stWhereAliases, st),
-                   append(acc.stWhereNs, ownNamespace(ta.taName)))
+      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st))
       : acc
     (o: PStmt)  => acc
 
@@ -261,12 +249,9 @@ fun findType(r: Resolver, query: String): Bag
 # register its trait set as not-yet-complete, rather than treat it as absent
 # and commit a name against a search that was actually blocked.
 
-fun implicitWheres(r: Resolver): List<Spec>
-  ret whereWalk(r, List<String>())
-
 # get_ambient_traits: every in-scope `instance [ambient]` record (the
-# desugared `[trait,ambient]` let) — pure availability, same import-scope
-# filtering as implicitWheres.
+# desugared `[trait,ambient]` let) — pure availability, import-scope
+# filtered like every other ambient lookup.
 fun ambientTraits(r: Resolver): List<PStmt>
   ret ambientWalk(r, List<String>())
 
@@ -325,19 +310,6 @@ fun [tail] traitLets(r: Resolver): List<PStmt>
     (cb: RClassBody) => traitLets(cb.rcbParent)
     (rg: RGen)       => traitLets(rg.rgParent)
 
-fun [tail] whereWalk(r: Resolver, scopes: List<String>): List<Spec>
-  ret match(r)
-    (root: RRoot) => isEmpty(scopes)
-      ? List<Spec>()
-      : whereSpecs(chain(root.rrStmts.stWhereAliases),
-                   chain(root.rrStmts.stWhereNs), scopes, builder<Spec>())
-    (sc: RScopes) => whereWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
-    (d: RData)    => whereWalk(d.rdParent, scopes)
-    (t2: RTypes)  => whereWalk(t2.rtParent, scopes)
-    (tr: RTraits) => whereWalk(tr.rtrParent, scopes)
-    (cb: RClassBody) => whereWalk(cb.rcbParent, scopes)
-    (rg: RGen)    => whereWalk(rg.rgParent, scopes)
-
 fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
   ret match(ns)
     (nil: ChainEnd) => acc
@@ -345,18 +317,6 @@ fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
                                     ? acc
                                     : append(acc, l.value),
                                   l.next)
-
-fun [tail] whereSpecs(ws: Chain<PStmt>, ns: Chain<String>,
-                      scopes: List<String>, acc: ListBuilder<Spec>): List<Spec>
-  ret match(ws)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => match(ns)
-      (nil2: ChainEnd) => build(acc)
-      (n: ChainLink)   => match(l.value)
-        (ta: PsTypealias) => contains2(scopes, n.value)
-          ? whereSpecs(l.next, n.next, scopes, push(acc, ta.taType))
-          : whereSpecs(l.next, n.next, scopes, acc)
-        (o: PStmt)        => whereSpecs(l.next, n.next, scopes, acc)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
 # for a name that is still unqualified (no `::`) and unhashed (no `@`).

@@ -23,12 +23,10 @@ class [linear,final] Res(x: System::Int)
   fun [terminal] fin(): System::None
     ret None
 
-class _DropRes() : System::Drop<Res>
+instance [ambient] System::Drop<Res>
   fun drop(self: Res): System::None
     System::print("dropped")
     ret self.fin()
-typealias [where] _resDroppable : System::Drop<Res>
-let [trait] _dropRes: _DropRes = _DropRes()
 
 fun sink(r: Res): System::Int
   let _ = r.fin()

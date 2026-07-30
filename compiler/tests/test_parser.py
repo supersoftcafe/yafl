@@ -306,31 +306,16 @@ class Test(TestCase):
         self.assertEqual(1, len(trait_params))
         self.assertEqual("Box", trait_params[0].name)
 
-    def test_generic_where_alias(self):
-        # The conditional instance advertisement: `Wrap<S,T>` is a `Box` only
-        # when `S` is. Needs generic params on the alias name AND a `where`.
+    def test_typealias_where_clause_rejected(self):
+        # A typealias is purely a name for a type: the old `typealias [where]`
+        # conditional-instance channel was replaced by `instance [ambient]`,
+        # and a `where` clause on an alias is now a parse error.
         tokens = tokenize(
-            "typealias [where] _WhereBoxWrap<S, T> : Box<Wrap<S, T>, T> where Box<S, T>\n"
+            "typealias _W<S, T> : Box<Wrap<S, T>, T> where Box<S, T>\n"
             , "file")
 
         result = p.parse(tokens)
-        aliases = [x for x in result.value if isinstance(x, s.TypeAliasStatement)]
-        self.assertEqual(0, len(result.errors))
-        self.assertEqual(1, len(aliases))
-        statement = aliases[0]
-
-        self.assertIn("where", statement.attributes)
-
-        type_params = statement.type_params
-        self.assertEqual(2, len(type_params))
-        self.assertIn("S@", type_params[0].name)
-        self.assertIn("T@", type_params[1].name)
-
-        self.assertEqual("Box", statement.type.name)
-
-        trait_params = statement.trait_params
-        self.assertEqual(1, len(trait_params))
-        self.assertEqual("Box", trait_params[0].name)
+        self.assertNotEqual(0, len(result.errors))
 
     def test_nested_generic_closes_double_angle(self):
         # `A<B<C>>` — the inner and outer `>` tokenise as one `>>` token. The

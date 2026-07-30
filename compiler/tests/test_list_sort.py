@@ -35,7 +35,7 @@ fun recGt(a: Rec, b: Rec): Bool
 fun recEq(a: Rec, b: Rec): Bool
   ret a.key == b.key
 
-class RecCompare() : BasicCompare<Rec>
+instance [ambient] BasicCompare<Rec>
   fun `<`(left: Rec, right: Rec): Bool
     ret recLt(left, right)
   fun `>`(left: Rec, right: Rec): Bool
@@ -45,8 +45,6 @@ class RecCompare() : BasicCompare<Rec>
   fun hashOf(value: Rec): Int
     ret value.key
 
-let [trait] _rec_cmp: RecCompare = RecCompare()
-typealias [where] _WhereBasicCompareRec : BasicCompare<Rec>
 
 fun joinRecs(l: List<Rec>): String
   ret fold<Rec, String>(l, "", (acc: String, r: Rec) => acc + String(r.key) + r.tag + ".")

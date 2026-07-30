@@ -789,14 +789,13 @@ def _expand_instance(decl: _InstanceDeclaration) -> list[s.Statement]:
     return [witness, record]
 
 
-def __to_type_alias(result: p.Result[tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec, list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
-    # Generic params and a `where` clause are optional: a plain alias has empty
-    # lists for both. A generic `where`-alias (`typealias [where] _W<S,T> :
-    # Box<Wrap<S,T>,T> where Box<S,T>`) advertises a CONDITIONAL trait instance.
-    attributes, name, generics, typespec, where_traits = result.value
+def __to_type_alias(result: p.Result[tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
+    # A typealias is purely a name for a type: no `where` clause (the old
+    # `typealias [where]` conditional-instance channel was replaced by
+    # `instance [ambient]`).
+    attributes, name, generics, typespec = result.value
     statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None,
-                                     attributes or {}, tuple(generics), typespec,
-                                     trait_params=tuple(where_traits))
+                                     attributes or {}, tuple(generics), typespec)
     return p.Result(statement, result.tokens, result.line_ref, result.errors)
 
 def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression|None]]:
@@ -1036,7 +1035,7 @@ __parse_instance = p.block(p.requires(
 __parse_type_alias = p.block(p.requires(
     p.discard_sym("typealias"),
     (__parse_attributes & p.ident() & __parse_maybe_generic_statement & p.discard_sym(":")
-     & __parse_type & __parse_maybe_where_constraints) >> __to_type_alias,
+     & __parse_type) >> __to_type_alias,
     "invalid typealias statement"))
 
 __parse_import = p.block(p.requires(
