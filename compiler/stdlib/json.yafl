@@ -423,7 +423,7 @@ fun _validNumber(text: System::String): System::Bool
 class [final] Lexer<S, E>(inner: S, pending: System::String, pos: System::Int, atEnd: System::Bool) where System::Stream<S, System::String, E>
 
 instance<S, E> System::Stream<Lexer<S, E>, JsonToken, E | JsonParseError> where System::Stream<S, System::String, E>
-  fun next(self: Lexer<S, E>): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>) where System::Stream<S, System::String, E>
+  fun next(self: Lexer<S, E>): (stream: Lexer<S, E>, value: Result<JsonToken | System::None, E | JsonParseError>)
     ret _lexStep<S, E>(self.inner, self.pending, self.pos, self.atEnd)
 
 fun tokenize<S, E>(source: S): Lexer<S, E> where System::Stream<S, System::String, E>
@@ -562,7 +562,7 @@ fun _prettyOut(tok: JsonToken, depth: System::Int, pending: System::Bool): (out:
 class [final] Pretty<S, E>(inner: S, depth: System::Int, pending: System::Bool) where System::Stream<S, JsonToken, E>
 
 instance<S, E> System::Stream<Pretty<S, E>, System::String, E | JsonParseError> where System::Stream<S, JsonToken, E>
-  fun next(self: Pretty<S, E>): (stream: Pretty<S, E>, value: Result<System::String | System::None, E | JsonParseError>) where System::Stream<S, JsonToken, E>
+  fun next(self: Pretty<S, E>): (stream: Pretty<S, E>, value: Result<System::String | System::None, E | JsonParseError>)
     let r = System::streamNext<S, JsonToken, E>(self.inner)
     ret match(r.value)
       (ok: Ok<JsonToken | System::None, E>) => match(ok.value)
@@ -625,7 +625,7 @@ fun _tokenText(tok: JsonToken): System::String
 class [final] Verbatim<S, E>(inner: S) where System::Stream<S, JsonToken, E>
 
 instance<S, E> System::Stream<Verbatim<S, E>, System::String, E> where System::Stream<S, JsonToken, E>
-  fun next(self: Verbatim<S, E>): (stream: Verbatim<S, E>, value: Result<System::String | System::None, E>) where System::Stream<S, JsonToken, E>
+  fun next(self: Verbatim<S, E>): (stream: Verbatim<S, E>, value: Result<System::String | System::None, E>)
     let r = System::streamNext<S, JsonToken, E>(self.inner)
     ret match(r.value)
       (ok: Ok<JsonToken | System::None, E>) => match(ok.value)

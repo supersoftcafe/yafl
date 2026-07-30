@@ -184,7 +184,13 @@ class ClassStatement(TypeStatement):
         # class's GenericPlaceholderSpec rather than failing the lookup.
         new_parameters, prm_glb = self.parameters.compile(type_resolver, None)
         statement_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
-        new_statements, stm_glb = u.flatten_lists(x.compile(statement_resolver, None) for x in self.statements)
+        # Member bodies resolve through the CLASS's `where` clause: a member
+        # declares no generics/wheres of its own (a vtable slot has a fixed
+        # signature), so each member function COMPILES under a transient copy
+        # carrying the owner's clause — and the stored statement keeps none.
+        new_statements, stm_glb = u.flatten_lists(
+            self.__strip_owner_wheres(x, self.__with_owner_wheres(x).compile(statement_resolver, None))
+            for x in self.statements)
 
         # A class `where` clause references the class's own type params (e.g.
         # `Wrap<S,E> … where Stream<S,Int,E>`), so it must compile under the
@@ -201,6 +207,18 @@ class ClassStatement(TypeStatement):
 
         return result, prm_glb + trts_glb + stm_glb
 
+
+    def __with_owner_wheres(self, x: Statement) -> Statement:
+        if isinstance(x, FunctionStatement) and self.trait_params:
+            return dataclasses.replace(x, trait_params=self.trait_params)
+        return x
+
+    def __strip_owner_wheres(self, original: Statement, compiled):
+        new_x, extra = compiled
+        if isinstance(original, FunctionStatement) and self.trait_params \
+                and isinstance(new_x, FunctionStatement):
+            new_x = dataclasses.replace(new_x, trait_params=())
+        return new_x, extra
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         if self._all_parents is None:
@@ -246,7 +264,8 @@ class ClassStatement(TypeStatement):
         type_resolver = g.ResolverType(resolver, self._find_generic_types)
         prm_err = self.parameters.check(type_resolver, None)
         resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
-        stm_err = [x for stm in self.statements for x in stm.check(resolver, None)]
+        stm_err = [x for stm in self.statements
+                   for x in self.__with_owner_wheres(stm).check(resolver, None)]
 
         if "foreign" in self.attributes:
             foreign_attr = self.attributes.get("foreign")

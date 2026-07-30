@@ -59,7 +59,7 @@ fun [inline(always)] streamNext<S, T, E>(s: S): (stream: S, value: Result<T | Sy
 class [final] Map<S, A, B, E>(inner: S, f: (A): B) where Stream<S, A, E>
 
 instance<S, A, B, E> Stream<Map<S, A, B, E>, B, E> where Stream<S, A, E>
-  fun [inline(always)] next(self: Map<S, A, B, E>): (stream: Map<S, A, B, E>, value: Result<B | System::None, E>) where Stream<S, A, E>
+  fun [inline(always)] next(self: Map<S, A, B, E>): (stream: Map<S, A, B, E>, value: Result<B | System::None, E>)
     let r = streamNext<S, A, E>(self.inner)
     ret match(r.value)
       (ok: Ok<A | System::None, E>) => match(ok.value)
@@ -78,7 +78,7 @@ instance<S, A, B, E> Stream<Map<S, A, B, E>, B, E> where Stream<S, A, E>
 class [final] Filter<S, T, E>(inner: S, keep: (T): System::Bool) where Stream<S, T, E>
 
 instance<S, T, E> Stream<Filter<S, T, E>, T, E> where Stream<S, T, E>
-  fun [inline(always)] next(self: Filter<S, T, E>): (stream: Filter<S, T, E>, value: Result<T | System::None, E>) where Stream<S, T, E>
+  fun [inline(always)] next(self: Filter<S, T, E>): (stream: Filter<S, T, E>, value: Result<T | System::None, E>)
     ret _filterAdvance<S, T, E>(self.inner, self.keep)
 
 # The skip-loop is a free [tail] helper: it recurses past rejected values, and
@@ -112,7 +112,7 @@ fun [tail,inline(always)] _filterAdvance<S, T, E>(inner: S, keep: (T): System::B
 class [final] Lines<S, E>(inner: S, pending: System::String, pos: System::Int) where Stream<S, System::String, E>
 
 instance<S, E> Stream<Lines<S, E>, System::String, E> where Stream<S, System::String, E>
-  fun [inline(always)] next(self: Lines<S, E>): (stream: Lines<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  fun [inline(always)] next(self: Lines<S, E>): (stream: Lines<S, E>, value: Result<System::String|System::None, E>)
     ret _linesStep<S, E>(self.inner, self.pending, self.pos)
 
 # Emit a buffered line if one is complete, otherwise pull a chunk and retry. A
@@ -154,7 +154,7 @@ fun toLines<S, E>(source: S): Lines<S, E> where Stream<S, System::String, E>
 class [final] Numbered<S, E>(inner: S, n: System::Int) where Stream<S, System::String, E>
 
 instance<S, E> Stream<Numbered<S, E>, System::String, E> where Stream<S, System::String, E>
-  fun [inline(always)] next(self: Numbered<S, E>): (stream: Numbered<S, E>, value: Result<System::String|System::None, E>) where Stream<S, System::String, E>
+  fun [inline(always)] next(self: Numbered<S, E>): (stream: Numbered<S, E>, value: Result<System::String|System::None, E>)
     let r = streamNext<S, System::String, E>(self.inner)
     ret match(r.value)
       (ok: Ok<System::String|System::None, E>) => match(ok.value)

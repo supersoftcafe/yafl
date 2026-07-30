@@ -761,20 +761,18 @@ def __to_instance(result: p.Result, tokens: list[p.Token]) -> p.Result[s.Stateme
 def _expand_instance(decl: _InstanceDeclaration) -> list[s.Statement]:
     """The witness class + instance record an `instance` statement stands
     for. Names are line-derived (path-based naming): nothing user-spellable,
-    stable across runs."""
+    stable across runs. The instance's `where` lands on the WITNESS CLASS
+    (never on members — a member is a vtable slot with a fixed signature);
+    member bodies resolve through the owner's clause."""
     lr = decl.line_ref
     tag = lr.hash6()
     wbare = f"_Instance${tag}"
-    def with_wheres(m: s.Statement) -> s.Statement:
-        if not isinstance(m, s.FunctionStatement) or not decl.trait_params:
-            return m
-        extra = tuple(w for w in decl.trait_params if w not in m.trait_params)
-        return dataclasses.replace(m, trait_params=(*m.trait_params, *extra)) if extra else m
     witness = s.ClassStatement(
         lr, f"{wbare}@{tag}", None, {}, decl.type_params,
         s.DestructureStatement(lr, '_', None, {}, (), None, None, []),
-        [with_wheres(m) for m in decl.members],
-        __flatten_inheritance([decl.pattern]), False)
+        list(decl.members),
+        __flatten_inheritance([decl.pattern]), False,
+        trait_params=decl.trait_params)
     own_args = tuple(t.NamedSpec(lr, g.name.split('@')[0]) for g in decl.type_params)
     value = e.CallExpression(
         lr, e.NamedExpression(lr, wbare, type_params=own_args),
@@ -1183,6 +1181,17 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
             case s.NamespaceStatement(line_ref, path): # Note value and discard
                 current_namespace = f"{path}::"
             case s.FunctionStatement() | s.LetStatement() | s.TypeAliasStatement() | s.ClassStatement(): # Rename and add to list
+                # A member is a vtable slot: its signature is the interface
+                # declaration with the OWNER's type args substituted, so a
+                # member function declares neither type params nor a `where`
+                # clause (generics/constraints belong on the class/instance).
+                if isinstance(statement, s.ClassStatement):
+                    for m in statement.statements:
+                        if isinstance(m, s.FunctionStatement) and (m.type_params or m.trait_params):
+                            errors = errors + [p.Error(m.line_ref,
+                                "a member function declares neither type parameters nor a "
+                                "`where` clause — generics and constraints belong on the "
+                                "class or instance")]
                 statement = statement.add_namespace(current_namespace)
                 statement = dataclasses.replace(statement, imports=import_group)
                 if isinstance(statement, s.ClassStatement) and not statement.is_interface:

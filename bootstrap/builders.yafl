@@ -441,46 +441,15 @@ fun instanceInto(inst: PsInstance, ns: String, grp: List<PStmt>,
 fun instanceTag(inst: PsInstance): String
   ret hash6(inst.psinLine.plFile, inst.psinLine.plLine, inst.psinLine.plCol)
 
+# The instance's `where` lands on the WITNESS CLASS (never on members — a
+# member is a vtable slot with a fixed signature); member bodies resolve
+# through the owner's clause (compile_stmt withOwnerWheres).
 fun instanceWitness(inst: PsInstance): PStmt
   let tag = instanceTag(inst)
-  let members = instMembersLoop(chain(inst.inMembers), inst.inWheres,
-                                builder<PStmt>())
   ret PsClass("_Instance$" + tag + "@" + tag, List<PAttr>(), inst.inGens,
               funParamsStmt(List<PStmt>(), inst.psinLine),
-              whereList(inst.inPattern), List<Spec>(), members, false,
+              whereList(inst.inPattern), inst.inWheres, inst.inMembers, false,
               inst.psinLine)
-
-# The instance's wheres land on each member fn (visible to the bodies),
-# skipping any spelling the member already carries.
-fun [tail] instMembersLoop(ms: Chain<PStmt>, wheres: List<Spec>,
-                           acc: ListBuilder<PStmt>): List<PStmt>
-  ret match(ms)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => match(l.value)
-      (f: PsFun) => instMemberWheres(f, wheres)
-        |> (m) => instMembersLoop(l.next, wheres, push(acc, m))
-      (o: PStmt) => instMembersLoop(l.next, wheres, push(acc, l.value))
-
-fun instMemberWheres(f: PsFun, wheres: List<Spec>): PStmt
-  let extra = instMissingWheres(chain(wheres), f.fWheres, builder<Spec>())
-  ret isEmpty(extra)
-    ? f
-    : PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody, f.fRet,
-            concat(f.fWheres, extra), f.psfLine, f.fRetInferred, f.fNested,
-            f.fImports)
-
-fun [tail] instMissingWheres(ws: Chain<Spec>, have: List<Spec>,
-                             acc: ListBuilder<Spec>): List<Spec>
-  ret match(ws)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => specListHas(chain(have), l.value)
-      ? instMissingWheres(l.next, have, acc)
-      : instMissingWheres(l.next, have, push(acc, l.value))
-
-fun [tail] specListHas(ss: Chain<Spec>, x: Spec): Bool
-  ret match(ss)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => eqSpec(l.value, x) ? true : specListHas(l.next, x)
 
 fun instanceRecord(inst: PsInstance): PStmt
   let tag = instanceTag(inst)

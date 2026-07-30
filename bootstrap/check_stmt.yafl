@@ -327,7 +327,9 @@ fun classChecks(c: PsClass, r0: Resolver): List<PErr>
   let finalErr = finalParentErrs(c, chain(inh), noErrs())
   let fragile = fragileWarns(c, inh, r0)
   let prmErr = checkStmt2(c.cParams, genScope(c.cGens, r0), None)
-  let stmErr = branchChecks(chain(c.cMembers),
+  # Member fns CHECK under the same transient owner-wheres copy they
+  # compiled under (compile_stmt withOwnerWheres).
+  let stmErr = branchChecks(chain(withOwnerWheres(c.cMembers, c.cWheres)),
                             genScope(c.cGens, RClassBody(c, r0)), None,
                             noErrs())
   ret concat(implErr,

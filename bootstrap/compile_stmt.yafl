@@ -229,17 +229,40 @@ fun compileClass(c: PsClass, r0: Resolver): StmtOut
   let params = compileStmt(c.cParams, r, None)
   let wheres = compileParams(c.cWheres, r)
   # Members compile in the class-BODY scope: the class's fields and methods
-  # (MEMBER-scoped) plus `this`, under the generic type params.
-  let members = compileStmts(chain(c.cMembers),
+  # (MEMBER-scoped) plus `this`, under the generic type params. Each member
+  # fn compiles under a TRANSIENT copy carrying the owner's `where` clause
+  # (a member declares no generics/wheres of its own — vtable slots have
+  # fixed signatures); the stored statement keeps none.
+  let members = compileStmts(chain(withOwnerWheres(c.cMembers, c.cWheres)),
                              genScope(c.cGens, RClassBody(c, r0)), None,
                              List<PStmt>(), List<PStmt>())
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
                       resolvedImplements(chain(inh), List<Spec>()),
-                      wheres.psSpecs, members.slStmts,
+                      wheres.psSpecs, stripOwnerWheres(members.slStmts, c.cWheres),
                       c.cIsInterface, c.pscLine, allParents, allSlots,
                       c.cImports),
               concat(params.soExtra,
                      concat(wheres.psGlobals, members.slGlobals)))
+
+fun withOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
+  ret isEmpty(wheres) ? ms : map(ms, (m: PStmt) => ownerWhereFn(m, wheres))
+
+fun ownerWhereFn(m: PStmt, wheres: List<Spec>): PStmt
+  ret match(m)
+    (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
+                        f.fRet, wheres, f.psfLine, f.fRetInferred, f.fNested,
+                        f.fImports)
+    (o: PStmt) => m
+
+fun stripOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
+  ret isEmpty(wheres) ? ms : map(ms, (m: PStmt) => strippedWhereFn(m))
+
+fun strippedWhereFn(m: PStmt): PStmt
+  ret match(m)
+    (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
+                        f.fRet, List<Spec>(), f.psfLine, f.fRetInferred,
+                        f.fNested, f.fImports)
+    (o: PStmt) => m
 
 fun [tail] resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>): List<Spec>
   ret match(fs)
