@@ -126,8 +126,27 @@ fun unhashedName(nm: PeName, bag: Bag, r: Resolver,
   ret match(soleOf(resolveOverloads(r, expected, bag.bItems)))
     (f: Found) => match(f.fScope)
       (m: ScMember) => memberRewrite(nm, f)
-      (o: RScope)   => finishName(nm, f.fStmt, f.fName, wonTraitScope(f), r,
-                                  expected)
+      (o: RScope)   => traitCommit(nm, f, r, expected)
+    ()         => noGlobals(nm)
+
+# A generic ambient instance's member commits only once the use site binds
+# every instance placeholder (the SOLVED scope is what the node records);
+# until then leave the use unresolved and let a later pass retry.
+fun traitCommit(nm: PeName, f: Found, r: Resolver,
+                expected: Spec|None): ExprOut
+  ret match(f.fInstanceParams)
+    (own: List<String>) => isEmpty(own)
+      ? finishName(nm, f.fStmt, f.fName, wonTraitScope(f), r, expected)
+      : traitCommitSolved(nm, f, solveInstanceScope(f, own, expected, r), r,
+                          expected)
+    ()                  => finishName(nm, f.fStmt, f.fName, wonTraitScope(f),
+                                      r, expected)
+
+fun traitCommitSolved(nm: PeName, f: Found, solved: Spec|None, r: Resolver,
+                      expected: Spec|None): ExprOut
+  ret match(solved)
+    (sc: Spec) => finishName(nm, f.fStmt, f.fName, classTraitScope(solved),
+                             r, expected)
     ()         => noGlobals(nm)
 
 # A MEMBER hit becomes `this.field`, returned BARE — the dot compiles in full

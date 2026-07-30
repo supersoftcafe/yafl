@@ -138,6 +138,12 @@ enum PStmt
                    taImports: List<PStmt>|None = None)
   enum PsImport(importPath: String, psiLine: PLine)
   enum PsNamespace(nsPath: String, psnLine: PLine)
+  # Parse-time marker for an `instance` statement (anonymous first-class
+  # trait instance); expanded by the fixup into a synthesized witness class
+  # + `[trait(,ambient)]` record before anything downstream sees it.
+  enum PsInstance(inAttrs: List<PAttr>, inGens: List<PGen>, inPattern: Spec,
+                  inWheres: List<Spec>, inMembers: List<PStmt>,
+                  psinLine: PLine)
   # retIndex = block_exits' per-return ordinal (0 until that stage runs).
   enum PsRet(retValue: PExpr, psrLine: PLine, retIndex: Int = 0)
   enum PsIf(ifCond: PExpr, ifTrue: List<PStmt>, ifFalse: List<PStmt>, psifLine: PLine)

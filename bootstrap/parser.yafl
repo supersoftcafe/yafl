@@ -1067,6 +1067,8 @@ fun parseStmt(ps: Ps): (v: PStmt|PFail, rest: Ps)
     ret parseLet(post, bump(ps))
   if kw == "typealias"
     ret parseTypealias(post, bump(ps))
+  if kw == "instance"
+    ret parseInstance(post, bump(ps))
   if kw == "import"
     ret parsePath(lr, bump(ps), false)
   if kw == "namespace"
@@ -1311,6 +1313,44 @@ fun funBlock(body: List<PStmt>, lr: PLine): PExpr|None
 
 fun listLen<T>(l: List<T>): Int
   ret chainLength(chain(l))
+
+# `instance [ambient]<T> Iface<Pattern> where C` + member funs — anonymous;
+# builds the PsInstance marker the fixup expands (parser.py __parse_instance).
+fun parseInstance(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
+  let attrs = parseMaybeAttributes(ps)
+  ret match(attrs.v)
+    (f: PFail)        => (f, attrs.rest)
+    (al: List<PAttr>) => parseInstanceGens(al, lr, attrs.rest)
+
+fun parseInstanceGens(attrs: List<PAttr>, lr: PLine,
+                      ps: Ps): (v: PStmt|PFail, rest: Ps)
+  let gen = parseMaybeGenerics(ps)
+  ret match(gen.v)
+    (f: PFail)       => (f, gen.rest)
+    (gl: List<PGen>) => parseInstancePattern(attrs, gl, lr, gen.rest)
+
+fun parseInstancePattern(attrs: List<PAttr>, gen: List<PGen>, lr: PLine,
+                         ps: Ps): (v: PStmt|PFail, rest: Ps)
+  let ty = parseType(ps)
+  ret match(ty.v)
+    (f: PFail)  => (hardFail("invalid instance statement", ps), ps)
+    (t2: Spec)  => parseInstanceWhere(attrs, gen, t2, lr, ty.rest)
+
+fun parseInstanceWhere(attrs: List<PAttr>, gen: List<PGen>, pattern: Spec,
+                       lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
+  let w = parseMaybeWhere(ps)
+  ret match(w.v)
+    (f: PFail)       => (f, w.rest)
+    (wl: List<Spec>) => parseInstanceBody(attrs, gen, pattern, wl, lr, w.rest)
+
+fun parseInstanceBody(attrs: List<PAttr>, gen: List<PGen>, pattern: Spec,
+                      wl: List<Spec>, lr: PLine,
+                      ps: Ps): (v: PStmt|PFail, rest: Ps)
+  let b = parseStmts(ps, builder<PStmt>())
+  ret match(b.v)
+    (f: PFail)          => (f, b.rest)
+    (body: List<PStmt>) => (PsInstance(attrs, gen, pattern, wl, body, lr),
+                            b.rest)
 
 fun parseClass(lr: PLine, ps: Ps, isInterface: Bool): (v: PStmt|PFail, rest: Ps)
   let attrs = parseMaybeAttributes(ps)

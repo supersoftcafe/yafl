@@ -74,8 +74,13 @@ enum RScope
 # the member came through (Plus<Int>) and the interface's own declaration —
 # overload resolution substitutes the instantiation's type args through the
 # member's type (Resolved.trait_scope / owner_class).
+# fInstanceParams: placeholder names owned by the GENERIC `[ambient]`
+# instance whose interface pattern produced this candidate — the use site may
+# bind them (the generic-function-candidate rule); empty for every other
+# provenance (Resolved.instance_params in Python).
 class [final] Found(fName: String, fStmt: PStmt, fScope: RScope,
-                    fTraitScope: Spec|None = None, fOwner: PStmt|None = None)
+                    fTraitScope: Spec|None = None, fOwner: PStmt|None = None,
+                    fInstanceParams: List<String>|None = None)
 
 class [final] Bag(bItems: List<Found>, bComplete: Bool)
 
@@ -258,6 +263,40 @@ fun findType(r: Resolver, query: String): Bag
 
 fun implicitWheres(r: Resolver): List<Spec>
   ret whereWalk(r, List<String>())
+
+# get_ambient_traits: every in-scope `instance [ambient]` record (the
+# desugared `[trait,ambient]` let) — pure availability, same import-scope
+# filtering as implicitWheres.
+fun ambientTraits(r: Resolver): List<PStmt>
+  ret ambientWalk(r, List<String>())
+
+fun [tail] ambientWalk(r: Resolver, scopes: List<String>): List<PStmt>
+  ret match(r)
+    (root: RRoot) => isEmpty(scopes)
+      ? List<PStmt>()
+      : ambientOf(chain(root.rrStmts.stTraits), scopes, builder<PStmt>())
+    (sc: RScopes)    => ambientWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
+    (d: RData)       => ambientWalk(d.rdParent, scopes)
+    (t2: RTypes)     => ambientWalk(t2.rtParent, scopes)
+    (tr: RTraits)    => ambientWalk(tr.rtrParent, scopes)
+    (cb: RClassBody) => ambientWalk(cb.rcbParent, scopes)
+    (rg: RGen)       => ambientWalk(rg.rgParent, scopes)
+
+fun [tail] ambientOf(ts: Chain<PStmt>, scopes: List<String>,
+                     acc: ListBuilder<PStmt>): List<PStmt>
+  ret match(ts)
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => hasAttr(let2.lAttrs, "ambient")
+                       && contains2(scopes, namespacePart(let2.lName))
+        ? ambientOf(l.next, scopes, push(acc, l.value))
+        : ambientOf(l.next, scopes, acc)
+      (o: PStmt)    => ambientOf(l.next, scopes, acc)
+
+# Everything before the LAST '::' (Python name.rpartition('::')[0]).
+fun namespacePart(name: String): String
+  let ix = lastSep(name, 0, -1)
+  ret ix < 0 ? "" : slice(name, 0, ix)
 
 # get_param_suggestion: the call-site-implied parameter shape for `name`, or
 # None when nothing was suggested. Read-only — a declared parameter type

@@ -43,6 +43,8 @@ fun compileStmt(st: PStmt, r: Resolver, retType: Spec|None): StmtOut
     (el: PsElse)       => StmtOut(st, List<PStmt>())
     (im: PsImport)     => StmtOut(st, List<PStmt>())
     (ns: PsNamespace)  => StmtOut(st, List<PStmt>())
+    # Never survives parse() — expanded by the fixup; arm for exhaustiveness.
+    (inst: PsInstance) => StmtOut(st, List<PStmt>())
 
 # ── the inference core ──────────────────────────────────────────────────────
 

@@ -194,6 +194,7 @@ fun stmtLine(st: PStmt): PLine
     (ei: PsElseIf) => ei.pseiLine
     (el: PsElse) => el.pselLine
     (ac: PsAction) => ac.psaLine
+    (inst: PsInstance) => inst.psinLine
 
 # ── array accessor (pyast/utils.create_array_accessor) ─────────────────────
 # A class with a trailing array field gains an accessor member `field@hash6r`
@@ -393,6 +394,11 @@ fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grp: List<PStmt>,
                                      enumLeafConstructors(namespacedEnum(e, ns),
                                                           grp)))
       (c: PsClass)      => fixupLoop(l.next, ns, grp, classWithCtor(c, ns, grp, acc))
+      # `instance` expands FIRST, so the synthesized witness class and
+      # instance record ride the ordinary per-kind handling (namespacing,
+      # import attachment, constructor creation) — parser.py _expand_instance.
+      (inst: PsInstance) => fixupLoop(l.next, ns, grp,
+                                      instanceInto(inst, ns, grp, acc))
       (other)           => fixupLoop(l.next, ns, grp,
                                      withImports(addNamespace(l.value, ns), grp)
                                        |> (st) => push(acc, st))
@@ -415,6 +421,88 @@ fun withImports(st: PStmt, grp: List<PStmt>): PStmt
     (e: PsEnum) => PsEnum(e.eName, e.eGens, e.eParams, e.eVariants,
                           e.eHasParams, e.pseLine, e.eRootName, e.eSpec, grp)
     (other)     => st
+
+# ── instance expansion ──────────────────────────────────────────────────────
+# The witness class + instance record an `instance` statement stands for.
+# Names are line-derived (path-based naming): nothing user-spellable, stable
+# across runs. Mirrors parser.py _expand_instance exactly.
+
+fun instanceInto(inst: PsInstance, ns: String, grp: List<PStmt>,
+                 acc: ListBuilder<PStmt>): ListBuilder<PStmt>
+  # The leaf constructor's static type is the enum root; narrow for
+  # classWithCtor (which wants the PsClass leaf).
+  ret match(instanceWitness(inst))
+    (w: PsClass) => classWithCtor(w, ns, grp, acc)
+      |> (acc2) => push(acc2, withImports(addNamespace(instanceRecord(inst),
+                                                       ns),
+                                          grp))
+    (o: PStmt)   => acc
+
+fun instanceTag(inst: PsInstance): String
+  ret hash6(inst.psinLine.plFile, inst.psinLine.plLine, inst.psinLine.plCol)
+
+fun instanceWitness(inst: PsInstance): PStmt
+  let tag = instanceTag(inst)
+  let members = instMembersLoop(chain(inst.inMembers), inst.inWheres,
+                                builder<PStmt>())
+  ret PsClass("_Instance$" + tag + "@" + tag, List<PAttr>(), inst.inGens,
+              funParamsStmt(List<PStmt>(), inst.psinLine),
+              whereList(inst.inPattern), List<Spec>(), members, false,
+              inst.psinLine)
+
+# The instance's wheres land on each member fn (visible to the bodies),
+# skipping any spelling the member already carries.
+fun [tail] instMembersLoop(ms: Chain<PStmt>, wheres: List<Spec>,
+                           acc: ListBuilder<PStmt>): List<PStmt>
+  ret match(ms)
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => instMemberWheres(f, wheres)
+        |> (m) => instMembersLoop(l.next, wheres, push(acc, m))
+      (o: PStmt) => instMembersLoop(l.next, wheres, push(acc, l.value))
+
+fun instMemberWheres(f: PsFun, wheres: List<Spec>): PStmt
+  let extra = instMissingWheres(chain(wheres), f.fWheres, builder<Spec>())
+  ret isEmpty(extra)
+    ? f
+    : PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody, f.fRet,
+            concat(f.fWheres, extra), f.psfLine, f.fRetInferred, f.fNested,
+            f.fImports)
+
+fun [tail] instMissingWheres(ws: Chain<Spec>, have: List<Spec>,
+                             acc: ListBuilder<Spec>): List<Spec>
+  ret match(ws)
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => specListHas(chain(have), l.value)
+      ? instMissingWheres(l.next, have, acc)
+      : instMissingWheres(l.next, have, push(acc, l.value))
+
+fun [tail] specListHas(ss: Chain<Spec>, x: Spec): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => eqSpec(l.value, x) ? true : specListHas(l.next, x)
+
+fun instanceRecord(inst: PsInstance): PStmt
+  let tag = instanceTag(inst)
+  let lr = inst.psinLine
+  let wbare = "_Instance$" + tag
+  let ownArgs = instOwnArgs(chain(inst.inGens), lr, builder<Spec>())
+  let value = PeCall(PeName(wbare, ownArgs, lr),
+                     PeTuple(List<PTupEnt>(), lr), lr)
+  let attrs = hasAttr(inst.inAttrs, "ambient")
+    ? append(append(List<PAttr>(), PAttr("trait", None)),
+             PAttr("ambient", None))
+    : append(List<PAttr>(), PAttr("trait", None))
+  ret PsLet("_instance$" + tag + "@" + tag, attrs, inst.inGens,
+            SNamed(wbare, ownArgs, lr), value, "", inst.inWheres, lr)
+
+fun [tail] instOwnArgs(gs: Chain<PGen>, lr: PLine,
+                       acc: ListBuilder<Spec>): List<Spec>
+  ret match(gs)
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => instOwnArgs(l.next, lr,
+                                   push(acc, SNamed(bareOfUnique(l.value.genName),
+                                                    List<Spec>(), lr)))
 
 # A class emits itself then its constructor (interfaces get neither).
 fun classWithCtor(c: PsClass, ns: String, grp: List<PStmt>,

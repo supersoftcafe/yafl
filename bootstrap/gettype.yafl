@@ -122,13 +122,39 @@ fun nameType(nm: PeName, r: Resolver): Spec|None
     ()         => None
 
 # compile() already disambiguated via the trait-scope cache: filter to it when
-# the raw bag is still plural.
+# the raw bag is still plural. Exact match first (where-clause / concrete
+# candidates); a generic ambient instance's candidate carries the PATTERN
+# scope, so it matches when the pattern unifies with the committed (solved)
+# scope through the instance's own placeholders (_scope_filtered).
 fun traitFiltered(datas: List<Found>, cache: Spec|None): List<Found>
   ret match(cache)
     (c: Spec) => listLen(datas) <= 1
       ? datas
-      : preferScoped(filterByScope(chain(datas), c, List<Found>()), datas)
+      : preferScoped(scopeMatches(datas, c), datas)
     ()        => datas
+
+fun scopeMatches(datas: List<Found>, c: Spec): List<Found>
+  let exact = filterByScope(chain(datas), c, List<Found>())
+  ret listLen(exact) == 1
+    ? exact
+    : filterByPattern(chain(datas), c, List<Found>())
+
+fun [tail] filterByPattern(ds: Chain<Found>, cache: Spec,
+                           acc: List<Found>): List<Found>
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => patternMatches(l.value, cache)
+      ? filterByPattern(l.next, cache, append(acc, l.value))
+      : filterByPattern(l.next, cache, acc)
+
+fun patternMatches(f: Found, cache: Spec): Bool
+  ret match(f.fInstanceParams)
+    (own: List<String>) => !isEmpty(own) && match(f.fTraitScope)
+      (ts: Spec) => match(unifyGeneric(ts, cache, own, List<Binding>()))
+        (m: UMap)   => true
+        (f2: UFail) => false
+      ()         => false
+    ()                  => false
 
 fun preferScoped(scoped: List<Found>, datas: List<Found>): List<Found>
   ret listLen(scoped) == 1 ? scoped : datas
@@ -155,7 +181,29 @@ fun nameTypeOf(nm: PeName, f: Found, r: Resolver): Spec|None
     ()          => None
 
 fun nameMappings(nm: PeName, f: Found): List<Binding>
-  ret concat(explicitMapping(nm, f), traitCaseMapping(f))
+  ret concat(explicitMapping(nm, f), traitCaseMapping2(nm, f))
+
+# A generic ambient instance's candidate carries the pattern scope; the
+# SOLVED scope compile committed (instance placeholders bound from the use
+# site) takes precedence when present.
+fun traitCaseMapping2(nm: PeName, f: Found): List<Binding>
+  ret match(f.fInstanceParams)
+    (own: List<String>) => isEmpty(own)
+      ? traitCaseMapping(f)
+      : solvedCaseMapping(nm, f)
+    ()                  => traitCaseMapping(f)
+
+fun solvedCaseMapping(nm: PeName, f: Found): List<Binding>
+  ret match(nm.penTrait)
+    (c: Spec) => match(c)
+      (sc2: SClass) => solvedOwnerMapping(f, sc2)
+      (o: Spec)     => traitCaseMapping(f)
+    ()        => traitCaseMapping(f)
+
+fun solvedOwnerMapping(f: Found, solved: SClass): List<Binding>
+  ret match(ownerMapping(f.fOwner, solved))
+    (m: List<Binding>) => m
+    ()                 => List<Binding>()
 
 fun explicitMapping(nm: PeName, f: Found): List<Binding>
   ret isEmpty(nm.refTypeParams)

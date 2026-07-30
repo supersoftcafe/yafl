@@ -53,9 +53,19 @@ fun checkName(nm: PeName, r: Resolver): List<PErr>
   if isEmpty(datas)
     ret concat(oneErr(nm.penLine, "Failed to resolve " + nm.refName), tpErrs)
   ret match(soleOf(datas))
-    (f: Found) => concat(callerTypeParamErrs(f.fStmt, nm.refTypeParams,
-                                             nm.penLine, r),
-                         tpErrs)
+    # A generic AMBIENT instance member that never committed a solved scope:
+    # the use site could not bind the instance's placeholders — ambience
+    # applies to concrete types only, so a name-match alone is NOT a
+    # resolution (without this the template dies later, deep in codegen).
+    (f: Found) => unresolvedAmbient(nm, f)
+      ? concat(oneErr(nm.penLine,
+                      "Failed to resolve " + bareOfUnique(nm.refName)
+                      + ": the ambient instance applies to concrete types"
+                      + " only — generic code needs its own `where` clause"),
+               tpErrs)
+      : concat(callerTypeParamErrs(f.fStmt, nm.refTypeParams,
+                                   nm.penLine, r),
+               tpErrs)
     ()         => concat(oneErr(nm.penLine,
                     "Ambiguous reference '" + nm.refName
                     + "' — qualify it. Candidates: "
@@ -63,6 +73,13 @@ fun checkName(nm: PeName, r: Resolver): List<PErr>
                                                       List<String>()))),
                            ", ")),
              tpErrs)
+
+fun unresolvedAmbient(nm: PeName, f: Found): Bool
+  ret match(f.fInstanceParams)
+    (own: List<String>) => !isEmpty(own) && match(nm.penTrait)
+      (c: Spec) => false
+      ()        => true
+    ()                  => false
 
 fun [tail] foundNames(ds: Chain<Found>, acc: List<String>): List<String>
   ret match(ds)

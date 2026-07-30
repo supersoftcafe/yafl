@@ -45,7 +45,7 @@ fun kindName(k: TokKind): System::String
 fun isKeyword(s: System::String): System::Bool
   ret match(s)
     ("ret", "let", "fun", "typealias", "where", "class", "interface",
-     "import", "namespace", "__builtin_type__", "__builtin_op__",
+     "instance", "import", "namespace", "__builtin_type__", "__builtin_op__",
      "__parallel__", "match", "enum", "if", "else") => true
     ()                                              => false
 

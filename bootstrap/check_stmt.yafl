@@ -21,6 +21,8 @@ fun checkStmtKind(st: PStmt, r: Resolver, retTy: Spec|None): List<PErr>
                                  "`else` without a matching preceding `if`")
     (im: PsImport)     => noErrs()
     (ns: PsNamespace)  => noErrs()
+    # Never survives parse() — expanded by the fixup; arm for exhaustiveness.
+    (inst: PsInstance) => noErrs()
 
 # ── FunctionStatement ───────────────────────────────────────────────────────
 

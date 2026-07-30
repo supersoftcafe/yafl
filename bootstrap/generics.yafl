@@ -162,8 +162,13 @@ fun fciStmt(st: PStmt, acc: GRefs): GRefs
 
 fun fciExpr(x: PExpr, acc: GRefs): GRefs
   ret match(x)
+    # penTrait is a SPEC field Python's search_and_replace walks: an AMBIENT
+    # member's SOLVED scope (Sized<Wrap<Box>>) mints its type refs here —
+    # round-0 parity depends on it (a where-clause scope's specs also appear
+    # in trait_params, so only ambient scopes need this).
     (nm: PeName)   => fciSpecs(chain(nm.refTypeParams),
-                               nameRef(nm.refName, nm.refTypeParams, acc))
+                               nameRef(nm.refName, nm.refTypeParams,
+                                       fciSpecOpt(nm.penTrait, acc)))
     (ne: PeNewEnum) => fciSpecs(chain(ne.neTypeParams),
                                 nameRef(ne.rootName, ne.neTypeParams,
                                         fold(ne.fieldArgs, acc, (a2: GRefs, fa: PFieldArg) =>
@@ -1192,6 +1197,10 @@ fun cccStmt(st: PStmt, acc: List<Spec>): List<Spec>
 
 fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec>
   ret match(x)
+    # An AMBIENT instance member call records its demand on the use, not in
+    # any `where` clause: the solved scope committed by compileName is a
+    # concrete constraint to discharge.
+    (nm: PeName)   => cccTraitScope(nm.penTrait, acc)
     (d: PeDot)     => cccExpr(d.base, acc)
     (c: PeCall)    => cccExpr(c.parameter, cccExpr(c.function, acc))
     (tp: PeTuple)  => cccTupEnts(chain(tp.exprs), acc)
@@ -1213,6 +1222,13 @@ fun cccExprOpt(x: PExpr|None, acc: List<Spec>): List<Spec>
   ret match(x)
     (e2: PExpr) => cccExpr(e2, acc)
     ()          => acc
+
+fun cccTraitScope(ts: Spec|None, acc: List<Spec>): List<Spec>
+  ret match(ts)
+    (t2: Spec) => match(t2)
+      (c: SClass) => isConcrete(c) ? addSpecOnce(acc, t2) : acc
+      (o: Spec)   => acc
+    ()         => acc
 
 fun [tail] cccTupEnts(es: Chain<PTupEnt>, acc: List<Spec>): List<Spec>
   ret match(es)
@@ -1252,7 +1268,23 @@ fun specFromMangled(sp: Spec, mono: List<GRef>): Spec
       ? sfmBare(c, mono)
       : SClass(c.scName, sfmList(chain(c.scParams), mono, List<Spec>()),
                c.scLine)
+    # A mangled ENUM inner type (Sized<List$generic$bigint> demanded against
+    # the pattern Sized<List<T>>): restore root + type params, the two
+    # fields the enum unify branch walks. Leaf names stay mangled — the
+    # unifier never reads them; the inflated copy exists only to bind.
+    (e2: SEnum) => isEmpty(e2.seParams)
+      ? sfmEnumBare(e2, mono)
+      : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
+              sfmList(chain(e2.seParams), mono, List<Spec>()), e2.seLine,
+              e2.seAllFields, e2.seComplex)
     (o: Spec)   => sp
+
+fun sfmEnumBare(e2: SEnum, mono: List<GRef>): Spec
+  ret match(monoLookup(chain(mono), e2.seRoot))
+    (g2: GRef) => SEnum(g2.grName, e2.seValidLeaves, e2.seAllLeaves,
+                        sfmList(chain(g2.grArgs), mono, List<Spec>()),
+                        e2.seLine, e2.seAllFields, e2.seComplex)
+    ()         => e2
 
 fun sfmBare(c: SClass, mono: List<GRef>): Spec
   ret match(monoLookup(chain(mono), c.scName))
@@ -1779,23 +1811,36 @@ fun implementsTrait(tr: PsLet, ts: SClass, r: Resolver): Bool
       (dc: SClass) => match(soleItem(findType(r, dc.scName)))
         (f: Found) => match(f.fStmt)
           (cls: PsClass) => match(cls.cAllParents)
-            (ps: List<Spec>) => anyParentMatches(chain(ps), ts)
+            (ps: List<Spec>) => anyParentMatches(chain(ps), ts,
+                                                 mangledSpecList(chain(ts.scParams),
+                                                                 List<Spec>()))
             ()               => false
           (o: PStmt)     => false
         ()         => false
       (o2: Spec)   => false
     ()         => false
 
-fun [tail] anyParentMatches(ps: Chain<Spec>, ts: SClass): Bool
+# A monomorphised witness declares its parents with MANGLED inner names
+# (Sized<List$generic$Int>) while the demanded scope is structural
+# (Sized<List<Int>>): compare against both spellings.
+fun [tail] mangledSpecList(ss: Chain<Spec>, acc: List<Spec>): List<Spec>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => mangledSpecList(l.next,
+                                       append(acc, mangledFromSpec(l.value)))
+
+fun [tail] anyParentMatches(ps: Chain<Spec>, ts: SClass,
+                            mangled: List<Spec>): Bool
   ret match(ps)
     (nil: ChainEnd) => false
     (l: ChainLink)  => match(l.value)
       (pc: SClass) => pc.scName == ts.scName
                       && (isEmpty(ts.scParams)
-                          || eqSpecs(pc.scParams, ts.scParams))
+                          || eqSpecs(pc.scParams, ts.scParams)
+                          || eqSpecs(pc.scParams, mangled))
         ? true
-        : anyParentMatches(l.next, ts)
-      (o: Spec)    => anyParentMatches(l.next, ts)
+        : anyParentMatches(l.next, ts, mangled)
+      (o: Spec)    => anyParentMatches(l.next, ts, mangled)
 
 fun soleLetOf(ls: List<PsLet>): PsLet|None
   ret match(chain(ls))

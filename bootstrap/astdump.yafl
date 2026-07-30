@@ -281,6 +281,8 @@ fun dumpStmt(st: PStmt, depth: Int, sb: StringBuilder): StringBuilder
       |> (s1) => dumpExpr(ac.action, depth + 1, s1)
     (im: PsImport)   => dLine(sb, depth, "ImportStatement", im.psiLine, "")
     (ns: PsNamespace) => dLine(sb, depth, "NamespaceStatement", ns.psnLine, "")
+    # Never survives parse() — expanded by the fixup; arm for exhaustiveness.
+    (inst: PsInstance) => dLine(sb, depth, "InstanceStatement", inst.psinLine, "")
 
 # Python's dump is `"\n".join(out) + "\n"` — an EMPTY statement list (a file
 # monomorphisation pruned to nothing) still prints one newline.

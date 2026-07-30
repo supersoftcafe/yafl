@@ -66,8 +66,62 @@ fun [tail] verdictLoop(cs: Chain<Found>, expected: Spec|None, r: Resolver,
 # candidate does NOT own stays put and keeps rejecting concrete instances.
 fun candidateType(x: Found, r: Resolver): Spec|None
   ret match(stmtType(x.fStmt))
-    (ty: Spec) => wildcarded(traitSubstituted(ty, x), x)
+    (ty: Spec) => instanceWildcarded(wildcarded(traitSubstituted(ty, x), x), x)
     ()         => None
+
+# A GENERIC ambient instance's placeholders are equally the candidate's own:
+# the instance is a family, and instantiating this member can bind them to
+# whatever the use site holds.
+fun instanceWildcarded(ty: Spec, x: Found): Spec
+  ret match(x.fInstanceParams)
+    (ns: List<String>) => isEmpty(ns)
+      ? ty
+      : substitute(ty, nameWildcards(chain(ns), stmtLine(x.fStmt),
+                                     List<Binding>()))
+    ()                 => ty
+
+fun [tail] nameWildcards(ns: Chain<String>, lr: PLine,
+                         acc: List<Binding>): List<Binding>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameWildcards(l.next, lr,
+                        append(acc, Binding(l.value,
+                                            SNamed("$overload$wildcard",
+                                                   List<Spec>(), lr))))
+
+# _solve_instance_scope: bind a generic ambient instance's own placeholders
+# from the use site — the latch a generic FUNCTION candidate gets, applied to
+# the instance. The SOLVED interface scope (Sized<List<T>> ⇒
+# Sized<List<Int>>), or None while the use site can't bind every placeholder.
+fun solveInstanceScope(f: Found, own: List<String>, expected: Spec|None,
+                       r: Resolver): Spec|None
+  ret match(expected)
+    (exp: Spec) => match(f.fTraitScope)
+      (ts: Spec) => match(stmtType(f.fStmt))
+        (eff: Spec) => solveAgainst(traitSubstituted(eff, f), exp, ts, own)
+        ()          => None
+      ()         => None
+    ()          => None
+
+fun solveAgainst(effective: Spec, expected: Spec, ts: Spec,
+                 own: List<String>): Spec|None
+  ret match(unifyGeneric(effective, expected, own, List<Binding>()))
+    (m: UMap)  => bindsAll(chain(own), m.uBindings)
+      ? substitute(ts, m.uBindings)
+      : None
+    (f2: UFail) => None
+
+fun [tail] bindsAll(ns: Chain<String>, bs: List<Binding>): Bool
+  ret match(ns)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => hasBinding(chain(bs), l.value)
+      ? bindsAll(l.next, bs)
+      : false
+
+fun [tail] hasBinding(bs: Chain<Binding>, name: String): Bool
+  ret match(bs)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value.bName == name ? true : hasBinding(l.next, name)
 
 fun traitSubstituted(ty: Spec, x: Found): Spec
   ret match(traitMapping(x))

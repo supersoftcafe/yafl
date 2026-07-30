@@ -1,0 +1,59 @@
+# The `instance` statement (parser.py __parse_instance/_expand_instance,
+# mirrored by bootstrap parser.yafl/builders.yafl): first-class ANONYMOUS
+# trait instances. `[ambient]` grants availability at concrete use sites; a
+# generic ambient instance binds its own placeholders from the use site (the
+# generic-function-candidate rule); a plain instance discharges where-clause
+# constraints only. Diffed through the converge/postmono/C contracts on both
+# compilers. Lives in `namespace System` for the builtin typealiases only —
+# the instance machinery itself is namespace-agnostic.
+namespace System
+
+typealias Int  : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+
+let [const] true:  Bool = __builtin_op__<bool>("integer_test_eq", 0, 0)
+let [const] false: Bool = __builtin_op__<bool>("integer_test_gt", 0, 0)
+
+fun `+`(left: Int, right: Int): Int
+  ret __builtin_op__<bigint>("integer_add", left, right)
+
+interface Sized<T>
+  fun sizeOf(v: T): Int
+
+class Box(v: Int)
+class Pair(a: Int, b: Int)
+
+# Two concrete ambient instances of ONE interface: distinct uses dispatch by
+# argument shape (no coherence rule; ambiguity would only error at a use
+# neither can serve alone).
+instance [ambient] Sized<Box>
+  fun sizeOf(_v: Box): Int
+    ret 1
+
+instance [ambient] Sized<Pair>
+  fun sizeOf(_v: Pair): Int
+    ret 2
+
+enum Wrap<T>
+  enum WNone()
+  enum WSome(w: T)
+
+# Generic ambient instance over an ENUM head, with a constraint: the use site
+# binds T, the `where` discharges for the bound T at monomorphisation.
+instance [ambient]<T> Sized<Wrap<T>> where Sized<T>
+  fun sizeOf(v: Wrap<T>): Int
+    ret match(v)
+      (s: WSome) => sizeOf(s.w) + 1
+      (n: WNone) => 0
+
+# Generic code reaches members solely via its own where clause (ambience is
+# concrete-use-site only); discharge at mono against the instances above.
+fun viaWhere<T>(x: T): Int where Sized<T>
+  ret sizeOf(x)
+
+fun main(): Int
+  let a = sizeOf(Box(1))
+  let b = sizeOf(Pair(1, 2))
+  let c = sizeOf(WSome<Box>(Box(3)))
+  let d = viaWhere(Pair(4, 5))
+  ret a + b + c + d
