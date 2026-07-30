@@ -73,8 +73,9 @@ fun paddedLen(msgLen: Int): Int
   let zeros = rem <= 56 ? 56 - rem : 120 - rem
   ret msgLen + 1 + zeros + 8
 
-fun messageByte(msg: String, idx: Int): Int
-  let len = length(msg)
+# `len` is length(msg) computed ONCE per digest — length() walks UTF-8, so
+# calling it per byte made padding O(n^2).
+fun messageByte(msg: String, len: Int, idx: Int): Int
   if idx < len
     ret Int(byteAt(msg, idx))
   if idx == len
@@ -85,19 +86,19 @@ fun messageByte(msg: String, idx: Int): Int
   ret (len * 8 >> ((idx - (total - 8)) * 8)) & 255
 
 # Little-endian 32-bit word j (0..15) of the 64-byte chunk at `base`.
-fun wordOf(msg: String, base: Int, j: Int): Int
+fun wordOf(msg: String, len: Int, base: Int, j: Int): Int
   let at = base + j * 4
-  ret messageByte(msg, at)
-    | (messageByte(msg, at + 1) << 8)
-    | (messageByte(msg, at + 2) << 16)
-    | (messageByte(msg, at + 3) << 24)
+  ret messageByte(msg, len, at)
+    | (messageByte(msg, len, at + 1) << 8)
+    | (messageByte(msg, len, at + 2) << 16)
+    | (messageByte(msg, len, at + 3) << 24)
 
 # ── the 64-round core ────────────────────────────────────────────────────────
 
 class [final] Md5State(sa: Int, sb: Int,
                        sc: Int, sd: Int)
 
-fun [tail] rounds(msg: String, base: Int, i: Int,
+fun [tail] rounds(msg: String, len: Int, base: Int, i: Int,
                   a: Int, b: Int, c: Int,
                   d: Int): Md5State
   if i == 64
@@ -110,15 +111,15 @@ fun [tail] rounds(msg: String, base: Int, i: Int,
     : i < 32 ? (5 * i + 1) % 16
     : i < 48 ? (3 * i + 5) % 16
     : (7 * i) % 16
-  let f1 = add32(add32(add32(f0, a), kOf(i)), wordOf(msg, base, g))
-  ret rounds(msg, base, i + 1, d, add32(b, rotl32(f1, sOf(i))), b, c)
+  let f1 = add32(add32(add32(f0, a), kOf(i)), wordOf(msg, len, base, g))
+  ret rounds(msg, len, base, i + 1, d, add32(b, rotl32(f1, sOf(i))), b, c)
 
-fun [tail] chunks(msg: String, base: Int, total: Int,
+fun [tail] chunks(msg: String, len: Int, base: Int, total: Int,
                   st: Md5State): Md5State
   if base >= total
     ret st
-  let r = rounds(msg, base, 0, st.sa, st.sb, st.sc, st.sd)
-  ret chunks(msg, base + 64, total,
+  let r = rounds(msg, len, base, 0, st.sa, st.sb, st.sc, st.sd)
+  ret chunks(msg, len, base + 64, total,
              Md5State(add32(st.sa, r.sa), add32(st.sb, r.sb),
                       add32(st.sc, r.sc), add32(st.sd, r.sd)))
 
@@ -128,7 +129,8 @@ fun md5DigestByte(st: Md5State, i: Int): Int
   ret (word >> ((i % 4) * 8)) & 255
 
 fun md5(msg: String): Md5State
-  ret chunks(msg, 0, paddedLen(length(msg)),
+  let len = length(msg)
+  ret chunks(msg, len, 0, paddedLen(len),
              Md5State(1732584193, 4023233417, 2562383102, 271733878))
 
 # ── base64 of the 16-byte digest (24 chars, standard alphabet + padding) ─────
@@ -177,8 +179,7 @@ fun hash6(filename: String, line: Int, col: Int): String
 # words, BIG-endian bit length, 5-word state and an 80-entry schedule. ────────
 
 # Same padding layout as MD5; only the trailing 8 length bytes flip to BE.
-fun sha1MessageByte(msg: String, idx: Int): Int
-  let len = length(msg)
+fun sha1MessageByte(msg: String, len: Int, idx: Int): Int
   if idx < len
     ret Int(byteAt(msg, idx))
   if idx == len
@@ -189,48 +190,68 @@ fun sha1MessageByte(msg: String, idx: Int): Int
   ret (len * 8 >> ((total - 1 - idx) * 8)) & 255
 
 # Big-endian 32-bit word j (0..15) of the 64-byte chunk at `base`.
-fun sha1WordOf(msg: String, base: Int, j: Int): Int
+fun sha1WordOf(msg: String, len: Int, base: Int, j: Int): Int
   let at = base + j * 4
-  ret (sha1MessageByte(msg, at) << 24)
-    | (sha1MessageByte(msg, at + 1) << 16)
-    | (sha1MessageByte(msg, at + 2) << 8)
-    | sha1MessageByte(msg, at + 3)
+  ret (sha1MessageByte(msg, len, at) << 24)
+    | (sha1MessageByte(msg, len, at + 1) << 16)
+    | (sha1MessageByte(msg, len, at + 2) << 8)
+    | sha1MessageByte(msg, len, at + 3)
 
 # W[0..79]: first 16 off the message, the rest rotl1 of the xor of four
-# earlier entries — built once per chunk as a list.
-fun [tail] sha1Schedule(msg: String, base: Int, t: Int, acc: List<Int>): List<Int>
+# earlier entries. Every tap is within the last 16 words, so `recent` (a
+# raw prepend chain, newest first) serves each in a BOUNDED <=15-step walk —
+# forceNth into the growing list re-materialised the chain per read (O(n^2),
+# 19% of a self-compile). The full schedule accumulates in a builder for
+# the sequential rounds walk.
+fun [tail] sha1Schedule(msg: String, len: Int, base: Int, t: Int,
+                        recent: Chain<Int>, acc: ListBuilder<Int>): List<Int>
   if t == 80
-    ret acc
+    ret build(acc)
   let w = t < 16
-    ? sha1WordOf(msg, base, t)
-    : rotl32(forceNth(acc, t - 3) ^ forceNth(acc, t - 8)
-             ^ forceNth(acc, t - 14) ^ forceNth(acc, t - 16), 1)
-  ret sha1Schedule(msg, base, t + 1, append(acc, w))
+    ? sha1WordOf(msg, len, base, t)
+    : rotl32(tapAt(recent, 2) ^ tapAt(recent, 7)
+             ^ tapAt(recent, 13) ^ tapAt(recent, 15), 1)
+  ret sha1Schedule(msg, len, base, t + 1, ChainLink<Int>(w, recent),
+                   push(acc, w))
+
+fun [tail] tapAt(c: Chain<Int>, k: Int): Int
+  ret match(c)
+    (l: ChainLink)  => k == 0 ? l.value : tapAt(l.next, k - 1)
+    (nil: ChainEnd) => 0
 
 class [final] Sha1State(h0: Int, h1: Int, h2: Int, h3: Int, h4: Int)
 
-fun [tail] sha1Rounds(ws: List<Int>, i: Int, a: Int, b: Int, c: Int, d: Int, e: Int): Sha1State
+# The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
+fun [tail] sha1Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int, e: Int): Sha1State
   if i == 80
     ret Sha1State(a, b, c, d, e)
+  let wv = match(ws)
+    (l: ChainLink)  => l.value
+    (nil: ChainEnd) => 0
+  let rest = match(ws)
+    (l: ChainLink)  => l.next
+    (nil: ChainEnd) => ws
   let f0 = i < 20 ? (b & c) | (not32(b) & d)
     : i < 40 ? b ^ c ^ d
     : i < 60 ? (b & c) | (b & d) | (c & d)
     : b ^ c ^ d
   let k = i < 20 ? 1518500249 : i < 40 ? 1859775393 : i < 60 ? 2400959708 : 3395469782
-  let temp = add32(add32(add32(add32(rotl32(a, 5), f0), e), k), forceNth(ws, i))
-  ret sha1Rounds(ws, i + 1, temp, a, rotl32(b, 30), c, d)
+  let temp = add32(add32(add32(add32(rotl32(a, 5), f0), e), k), wv)
+  ret sha1Rounds(rest, i + 1, temp, a, rotl32(b, 30), c, d)
 
-fun [tail] sha1Chunks(msg: String, base: Int, total: Int, st: Sha1State): Sha1State
+fun [tail] sha1Chunks(msg: String, len: Int, base: Int, total: Int, st: Sha1State): Sha1State
   if base >= total
     ret st
-  let r = sha1Rounds(sha1Schedule(msg, base, 0, List<Int>()), 0,
-                     st.h0, st.h1, st.h2, st.h3, st.h4)
-  ret sha1Chunks(msg, base + 64, total,
+  let r = sha1Rounds(chain(sha1Schedule(msg, len, base, 0, ChainEnd<Int>(),
+                                        builder<Int>())),
+                     0, st.h0, st.h1, st.h2, st.h3, st.h4)
+  ret sha1Chunks(msg, len, base + 64, total,
                  Sha1State(add32(st.h0, r.h0), add32(st.h1, r.h1), add32(st.h2, r.h2),
                            add32(st.h3, r.h3), add32(st.h4, r.h4)))
 
 fun sha1(msg: String): Sha1State
-  ret sha1Chunks(msg, 0, paddedLen(length(msg)),
+  let len = length(msg)
+  ret sha1Chunks(msg, len, 0, paddedLen(len),
                  Sha1State(1732584193, 4023233417, 2562383102, 271733878, 3285377520))
 
 # hexdigest: 5 words big-endian, two lowercase hex chars per byte (40 chars).
