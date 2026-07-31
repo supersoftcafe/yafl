@@ -10,11 +10,20 @@ namespace Bootstrap
 
 import System
 
-fun inferSync(a: CgApp): CgApp
+# The sync fixpoint without the materialisation: names provably unable to
+# suspend. Shared by inferSync and the -O3 single-caller inline gate —
+# inlining a suspending callee into its caller merges the two live sets, so
+# every suspension in the merged body saves the combined frame; the gate
+# keeps suspending helpers outboard where their own small frame is all they
+# save.
+fun computeSyncNames(a: CgApp): List<String>
   let virtualImpls = gfSlotFuncs(a)   # slot → implementing functions (all objects, foreign incl.)
   let seed = fold(a.appFunctions, List<String>(),
                   (acc: List<String>, f: CgFunction) => siSeedable(f) ? strListAdd(acc, f.fnName) : acc)
-  let syncSet = siFixpoint(a, virtualImpls, seed)
+  ret siFixpoint(a, virtualImpls, seed)
+
+fun inferSync(a: CgApp): CgApp
+  let syncSet = computeSyncNames(a)
   ret appWithFunctions(a, map(a.appFunctions,
         (f: CgFunction) => siMaterialise(f, syncSet)))
 

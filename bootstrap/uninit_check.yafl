@@ -46,15 +46,22 @@ fun ucEntryAt(entry: Dict<Int, InitSet>, i: Int): InitSet
     (s2: InitSet) => s2
     ()            => IsUnreached()
 
-fun ucCheckFunction(f: CgFunction): List<String>
-  if isEmpty(f.fnOps)
-    ret List<String>()
+# entry[i] = names DEFINITELY initialised on entry to ops[i] (must-dataflow;
+# absent key = unreachable). Shared by the checker below and by async_lower's
+# zero-init repair, so both see identical semantics.
+fun ucComputeEntrySets(f: CgFunction): Dict<Int, InitSet>
   let labels = ucLabelIndex(f.fnOps)
   let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
   let ix = ucIndexOps(f.fnOps)
   let entry0 = put(Dict<Int, InitSet>(), 0,
                    IsSet(sortNamesAsc(chain(params), List<String>())))
-  let entry = ucFixpoint(ix, labels, entry0, list1(0))
+  ret ucFixpoint(ix, labels, entry0, list1(0))
+
+fun ucCheckFunction(f: CgFunction): List<String>
+  if isEmpty(f.fnOps)
+    ret List<String>()
+  let labels = ucLabelIndex(f.fnOps)
+  let entry = ucComputeEntrySets(f)
   ret concat(ucVerify(f, entry), ucCheckPhiSources(f, labels, entry))
 
 class [final] LabelIdx(liName: String, liIndex: Int)

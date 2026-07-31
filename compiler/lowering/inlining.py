@@ -118,18 +118,27 @@ def inline_small_functions(app: Application, inline_always: bool = True) -> Appl
     return dataclasses.replace(app, functions=functions)
 
 
-def inline_single_caller_functions(app: Application) -> Application:
-    """Inline every function referenced exactly once into that sole call site,
-    regardless of its size — folding it away costs no code growth (the original
-    becomes unreferenced and is removed by the next trim). Runs after the small/
-    always passes (-O3) so it collapses the residual one-shot helpers a pipeline
-    leaves behind. The `== 1` count already guarantees the single reference IS
-    the call being inlined; address-taken or vtable-bound functions have a count
-    above one (or no call site at all) and are left alone by the engine."""
+def inline_single_caller_functions(app: Application, sync_names: set[str]) -> Application:
+    """Inline every SYNC function referenced exactly once into that sole call
+    site, regardless of its size — folding it away costs no code growth (the
+    original becomes unreferenced and is removed by the next trim). Runs after
+    the small/always passes (-O3) so it collapses the residual one-shot helpers
+    a pipeline leaves behind. The `== 1` count already guarantees the single
+    reference IS the call being inlined; address-taken or vtable-bound functions
+    have a count above one (or no call site at all) and are left alone by the
+    engine.
+
+    `sync_names` restricts the fold to callees that provably never suspend:
+    folding a suspending callee merges its live set with the caller's, so every
+    suspension in the merged body must save the COMBINED frame into the task
+    state object. Unrestricted, that turned a 7-field state frame into a
+    137-field one and doubled whole-program wall time in allocator and GC
+    pressure. A suspending helper keeps its call: its own small frame is all a
+    suspension inside it ever saves."""
     refcounts = trim.function_reference_counts(app)
 
     def policy(target: Function) -> bool:
-        return refcounts[target.name] == 1
+        return refcounts[target.name] == 1 and target.name in sync_names
 
     functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy) for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)

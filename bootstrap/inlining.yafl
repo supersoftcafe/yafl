@@ -23,11 +23,18 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool): CgApp
           listLen(target.fnOps) < inlCutoffComplexity()
           || (inlineAlways && target.fnAlwaysInline))))
 
-fun inlineSingleCallerFunctions(a: CgApp): CgApp
+# `syncNames` restricts the fold to callees that provably never suspend:
+# folding a suspending callee merges its live set with the caller's, so every
+# suspension in the merged body must save the COMBINED frame into the task
+# state object (unrestricted, a 7-field frame became 137 fields and doubled
+# wall time). A suspending helper keeps its call: its own small frame is all
+# a suspension inside it ever saves.
+fun inlineSingleCallerFunctions(a: CgApp, syncNames: List<String>): CgApp
   let refcounts = functionReferenceCounts(a)
   ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
         doInlining(f, a, (target: CgFunction) =>
-          sdCountOf(refcounts, target.fnName) == 1)))
+          sdCountOf(refcounts, target.fnName) == 1
+          && strListMember(syncNames, target.fnName))))
 
 # ── the engine ───────────────────────────────────────────────────────────────
 

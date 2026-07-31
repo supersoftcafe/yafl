@@ -194,7 +194,9 @@ fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
   if round2 >= 16
     ret a0
   let a1 = discoverGlobalFunctionCalls(trimUnusedVtableSlots(a0))
-  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1))
+  # Recomputed each round: folding a callee away can newly prove its caller
+  # sync, unlocking the next fold in the chain.
+  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncNames(a1)))
   let shape = concat(ccShape(a2),
                      sort(map(a2.appObjects, (o: CgObject) =>
                        o.objName + ":" + String(listLen(o.objFunctions)))))

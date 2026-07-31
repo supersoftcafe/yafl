@@ -230,8 +230,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
             for _ in range(16):  # bounded; recount each round as chains collapse
                 a = lowering.vtable_trim.trim_unused_vtable_slots(a)
                 a = lowering.globalfuncs.discover_global_function_calls(a)
+                # Recomputed each round: folding a callee away can newly prove
+                # its caller sync, unlocking the next fold in the chain.
+                sync_names = lowering.sync_inference.compute_sync_names(a)
                 a = lowering.trim.removed_unused_stuff(
-                    lowering.inlining.inline_single_caller_functions(a))
+                    lowering.inlining.inline_single_caller_functions(a, sync_names))
                 shape = (tuple((n, len(f.ops)) for n, f in a.functions.items()),
                          tuple(sorted((n, len(o.functions)) for n, o in a.objects.items())))
                 if shape == prev_shape:

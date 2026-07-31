@@ -55,7 +55,13 @@ def _returns_tagged_task(fn: Function) -> bool:
                for op in fn.ops)
 
 
-def infer_sync(a: Application) -> Application:
+def compute_sync_names(a: Application) -> set[str]:
+    """The sync fixpoint (steps 1-4 of the module docstring) without the
+    materialisation: the set of function names provably unable to suspend.
+    Shared by infer_sync and the -O3 single-caller inline gate — inlining a
+    suspending callee into its caller merges the two live sets, so every
+    suspension in the merged body saves the combined frame; the gate keeps
+    suspending helpers outboard where their own small frame is all they save."""
     # ------------------------------------------------------------------
     # 1. Build virtual implementation map from ALL objects (incl. foreign)
     # ------------------------------------------------------------------
@@ -116,6 +122,12 @@ def infer_sync(a: Application) -> Application:
             if not has_parallel and all(_call_is_sync(op) for op in non_tail_calls):
                 sync_set.add(name)
                 changed = True
+
+    return sync_set
+
+
+def infer_sync(a: Application) -> Application:
+    sync_set = compute_sync_names(a)
 
     # ------------------------------------------------------------------
     # 5. Materialise: update fn.sync only. Call ops are uniformly emitted

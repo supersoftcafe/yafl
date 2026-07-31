@@ -1820,6 +1820,35 @@ def __outline_parallel_sites(fn: Function) -> tuple[Function, dict[str, Function
     return dataclasses.replace(fn, ops=tuple(new_ops)), helpers
 
 
+def __zero_init_unwritten_saves(fn: Function) -> Function:
+    """Aggressive IR inlining (-O3) can place a suspension inside a loop
+    whose body defines a live range crossing the back-edge: the state-save
+    at the suspension then reads the variable BEFORE any write on the
+    first-iteration path (it holds a real value only from iteration two).
+    The value saved on that first pass is never consumed — but saving
+    indeterminate memory is still wrong, and uninit_check rightly rejects
+    it. Zero-init exactly those variables at entry so every save stores a
+    DEFINED value. Only STATE-SAVE Moves are repaired — a general repair
+    would mask the real read-before-write bugs the checker exists for."""
+    from lowering.uninit_check import compute_entry_sets
+    entry = compute_entry_sets(fn)
+    offenders: dict[str, Type] = {}
+    for i, op in enumerate(fn.ops):
+        e = entry[i]
+        if e is None or not isinstance(op, Move):
+            continue
+        tgt, src = op.target, op.source
+        if (isinstance(tgt, ObjectField) and isinstance(tgt.pointer, StackVar)
+                and tgt.pointer.name == "$state" and isinstance(src, StackVar)
+                and src.name not in e):
+            offenders[src.name] = src.get_type()
+    if not offenders:
+        return fn
+    inits = tuple(Move(StackVar(t, name), __zero_val(t))
+                  for name, t in sorted(offenders.items()))
+    return dataclasses.replace(fn, ops=inits + tuple(fn.ops))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1840,6 +1869,8 @@ def lower_async(app: Application) -> Application:
                for fn in outlined.values()]
 
     new_functions = reduce(lambda acc, v: acc | v[0], results, {})
+    new_functions = {n: __zero_init_unwritten_saves(f)
+                     for n, f in new_functions.items()}
     new_objects   = reduce(lambda acc, v: acc | v[1], results, {}) | app.objects
 
     # Add task-subtype objects (after conversion so return types are finalised).

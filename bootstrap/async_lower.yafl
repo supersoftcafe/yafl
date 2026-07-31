@@ -1801,6 +1801,58 @@ fun [tail] alSiteArgs(calls: List<RParam>, k: Int, acc: List<RpNamedValue>): Lis
     ret acc
   ret alSiteArgs(calls, k + 1, append(acc, RpNamedValue("$c" + String(k), alClosureOf(forceNth(calls, k)))))
 
+# ── zero-init repair for state-saves ─────────────────────────────────────────
+
+# Aggressive IR inlining (-O3) can place a suspension inside a loop whose body
+# defines a live range crossing the back-edge: the state-save at the suspension
+# then reads the variable BEFORE any write on the first-iteration path (it
+# holds a real value only from iteration two). The value saved on that first
+# pass is never consumed — but saving indeterminate memory is still wrong, and
+# uninit_check rightly rejects it. Zero-init exactly those variables at entry
+# so every save stores a DEFINED value. Only STATE-SAVE Moves are repaired —
+# a general repair would mask the real read-before-write bugs the checker
+# exists for.
+fun alZeroInitUnwrittenSaves(f: CgFunction): CgFunction
+  let entry = ucComputeEntrySets(f)
+  let offenders = alZiusLoop(chain(f.fnOps), 0, entry, List<RParam>())
+  if isEmpty(offenders)
+    ret f
+  let inits = map(svSortedByName(offenders), (v: RParam) =>
+        OpMove(v, alZeroVal(rpGetType(v)), false, List<RParam>()))
+  ret cgFunctionWith(f, concat(inits, f.fnOps), f.fnStackVars)
+
+fun [tail] alZiusLoop(ops: Chain<Op>, i: Int, entry: Dict<Int, InitSet>,
+                      acc: List<RParam>): List<RParam>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alZiusLoop(l.next, i + 1, entry,
+                                  alZiusStep(l.value, ucEntryAt(entry, i), acc))
+
+fun alZiusStep(op: Op, e: InitSet, acc: List<RParam>): List<RParam>
+  ret match(e)
+    (u: IsUnreached) => acc
+    (s2: IsSet)      => match(op)
+      (m: OpMove) => alZiusMove(m, s2.isNames, acc)
+      (o: Op)     => acc
+
+# The Python guard chain: Move target is ObjectField on the `$state` StackVar,
+# source is a StackVar missing from the entry set.
+fun alZiusMove(m: OpMove, names: List<String>, acc: List<RParam>): List<RParam>
+  ret match(m.moveTarget)
+    (tf: RpObjectField) => alZiusStateField(tf) ? alZiusSource(m.moveSource, names, acc) : acc
+    (o: RParam)          => acc
+
+fun alZiusStateField(tf: RpObjectField): Bool
+  ret match(tf.pointer)
+    (p: RpStackVar) => p.name == "$state"
+    (o: RParam)     => false
+
+# Entry sets key by name|type (ucKey) — membership must use the same key.
+fun alZiusSource(src: RParam, names: List<String>, acc: List<RParam>): List<RParam>
+  ret match(src)
+    (v: RpStackVar) => strListMember(names, ucKey(src)) ? acc : svSetAdd(acc, src)
+    (o: RParam)     => acc
+
 # ── the driver ───────────────────────────────────────────────────────────────
 
 fun lowerAsync(a: CgApp): CgApp
@@ -1811,8 +1863,9 @@ fun lowerAsync(a: CgApp): CgApp
   let all = concat(outlined.fns, outlined.helpers)
   let converted = fold(all, AlOut(List<CgFunction>(), List<CgObject>()),
                        (acc: AlOut, f: CgFunction) => alMergeOut(acc, alConvertFunction(f)))
+  let repaired = map(converted.aloFunctions, alZeroInitUnwrittenSaves)
   let withObjs = fold(converted.aloObjects,
-                      appOf(converted.aloFunctions, a.appObjects, a.appGlobals),
+                      appOf(repaired, a.appObjects, a.appGlobals),
                       appPutObject)
   # Subtypes union: APP WINS on collisions (lazy_thunks pre-registrations).
   ret fold(collectTaskSubtypes(withObjs), withObjs, alPutIfAbsent)

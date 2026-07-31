@@ -104,24 +104,14 @@ def _iftask_taken_writes(op: IfTask) -> frozenset[str]:
     return frozenset(s)
 
 
-def check_function(fn: Function) -> None:
-    """Raise UninitialisedReadError if any StackVar read could happen on a
-    path where the variable has not been written.
-
-    Parameters are treated as initialised on entry.  Unreachable ops are
-    skipped.
-
-    Phi ops are special: each source is consumed only on the edge from its
-    labelled predecessor, not at the Phi's location.  The standard data-
-    flow models the Phi as zero unconditional reads + a single write of
-    the target; a separate per-edge pass below checks each source against
-    its predecessor's exit set so a genuine "source uninitialised on its
-    edge" bug is still caught.
-    """
+def compute_entry_sets(fn: Function) -> "list[frozenset[str] | None]":
+    """entry[i] = names DEFINITELY initialised on entry to ops[i] (must-
+    dataflow; None = unreachable). Shared by the checker below and by
+    async_lower's zero-init repair, so both see identical semantics."""
     ops = fn.ops
     n = len(ops)
     if n == 0:
-        return
+        return []
 
     labels = _build_label_index(ops)
     params: frozenset[str] = frozenset(name for name, typ in fn.params.fields)
@@ -173,6 +163,28 @@ def check_function(fn: Function) -> None:
             if new != old:
                 entry[succ] = new
                 worklist.append(succ)
+    return entry
+
+
+def check_function(fn: Function) -> None:
+    """Raise UninitialisedReadError if any StackVar read could happen on a
+    path where the variable has not been written.
+
+    Parameters are treated as initialised on entry.  Unreachable ops are
+    skipped.
+
+    Phi ops are special: each source is consumed only on the edge from its
+    labelled predecessor, not at the Phi's location.  The standard data-
+    flow models the Phi as zero unconditional reads + a single write of
+    the target; a separate per-edge pass below checks each source against
+    its predecessor's exit set so a genuine "source uninitialised on its
+    edge" bug is still caught.
+    """
+    ops = fn.ops
+    if len(ops) == 0:
+        return
+    labels = _build_label_index(ops)
+    entry = compute_entry_sets(fn)
 
     # Verification pass — independent of fixpoint iteration so errors are
     # reported once the analysis has stabilised.
