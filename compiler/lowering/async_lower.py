@@ -344,10 +344,13 @@ def __calculate_saved_vars(fn: Function) -> Function:
             return frozenset(), w
         return op.get_live_vars()
 
+    # reads/writes depend only on op STRUCTURE, which never changes across
+    # passes (only saved_vars does) — computed once, not per generation.
+    rw_cache = [reads_writes(op) for op in ops0]
+
     def do_a_pass(ops: tuple[Op, ...]) -> tuple[Op, ...]:
         def saved_set_at(index: int) -> frozenset[StackVar]:
-            reads, _ = reads_writes(ops[index])
-            return reads | ops[index].saved_vars
+            return rw_cache[index][0] | ops[index].saved_vars
 
         def phi_sources_into(target_index: int, pred: str | None) -> frozenset[StackVar]:
             srcs: frozenset[StackVar] = frozenset()
@@ -372,15 +375,22 @@ def __calculate_saved_vars(fn: Function) -> Function:
                 ss1 = edge_in(index, index + 1)
             ss2 = (edge_in(index, labels[op.label])
                    if isinstance(op, JumpIf) and op.label in labels else frozenset())
-            _, this_writes = reads_writes(op)
-            saved_vars = (ss1 | ss2) - this_writes
+            saved_vars = (ss1 | ss2) - rw_cache[index][1]
             return dataclasses.replace(op, saved_vars=saved_vars)
 
         return tuple(calc(index) for index in range(len(ops)))
 
     def iterate(ops: tuple[Op, ...]) -> tuple[Op, ...]:
-        new_ops = do_a_pass(ops)
-        return new_ops if ops == new_ops else iterate(new_ops)
+        # A LOOP, not recursion: the recursive form pinned every generation
+        # of the full op tuple (fresh Op + frozenset per instruction, per
+        # pass) on the Python stack until convergence — O(ops x passes) live
+        # memory, an 11GB+ MemoryError on -O3's inlined functions. The loop
+        # frees each generation as the next lands; results are identical.
+        while True:
+            new_ops = do_a_pass(ops)
+            if ops == new_ops:
+                return ops
+            ops = new_ops
 
     return dataclasses.replace(fn, ops=iterate(fn.ops))
 
