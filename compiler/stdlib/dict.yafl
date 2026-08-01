@@ -200,7 +200,10 @@ fun keys<K,V>(d: Dict<K,V>): List<K>
     ret match(b)
       (n: _BucketNil)  => acc
       (c: _BucketCons) => bucket_keys(c.tail, append<K>(acc, c.key))
-  fun [tail] walk(d2: Dict<K,V>, acc: List<K>): List<K>
+  # NOT [tail]: the inner walk(n.left, acc) is an ARGUMENT, so this is tree
+  # recursion (depth = tree height). `values` below has the same shape and is
+  # correctly unmarked.
+  fun walk(d2: Dict<K,V>, acc: List<K>): List<K>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_keys(n.bucket, walk(n.left, acc)))

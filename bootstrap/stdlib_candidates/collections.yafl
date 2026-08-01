@@ -1,0 +1,57 @@
+# bootstrap/stdlib_candidates/collections.yafl — FOR REVIEW.
+#
+# General-purpose helpers that the compiler grew for itself but which are not
+# about compilation at all. Collected here so they can be judged on their
+# merits as stdlib API rather than discovered one at a time.
+#
+# NOT proposed for stdlib, deliberately, and left where they are:
+#   listLen / forceNth / listAt  — list.yafl OMITS `length` on purpose ("a list
+#   is a sequence, not an indexable buffer, and asking for its size invites the
+#   O(n) index-by-count patterns"). Measured 2026-08-01: an indexed loop costs
+#   743x a single walk at n=400 and is quadratic in TIME even with allocation
+#   removed. Promoting them would bless the anti-pattern.
+namespace Bootstrap::StdlibCandidates
+
+import System
+
+import Bootstrap::Lower::Ast
+
+
+fun list1<T>(a: T): List<T>
+  ret append(List<T>(), a)
+
+fun list2<T>(a: T, b: T): List<T>
+  ret append(append(List<T>(), a), b)
+
+fun list3<T>(a: T, b: T, c: T): List<T>
+  ret append(append(append(List<T>(), a), b), c)
+
+
+fun strListMember(l: List<String>, x: String): Bool
+  ret any<String>(l, (y: String) => y == x)
+
+fun strListAdd(l: List<String>, x: String): List<String>
+  ret strListMember(l, x) ? l : append<String>(l, x)
+
+
+fun dedent4(s: String): String
+  ret length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
+
+fun [tail] memberInt(l: List<Int>, x: Int): Bool
+  ret match(head<Int>(l))
+    (h: Int) => h == x ? true : memberInt(tail<Int>(l), x)
+    ()       => false
+
+fun disjointInt(a: List<Int>, b: List<Int>): Bool
+  ret !any<Int>(a, (x: Int) => memberInt(b, x))
+
+fun unionInt(a: List<Int>, b: List<Int>): List<Int>
+  ret fold(b, a, (acc: List<Int>, x: Int) => memberInt(acc, x) ? acc : append(acc, x))
+
+
+fun [tail] sortNamesAsc(ns: Chain<String>, acc: List<String>): List<String>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => sortNamesAsc(l.next,
+                                    insertNameAsc(chain(acc), l.value,
+                                                  List<String>()))

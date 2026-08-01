@@ -43,7 +43,7 @@ _BOOTSTRAP = _REPO / "bootstrap"
 # the pass is a no-op where it must be one.
 _CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
     + sorted((_REPO / "examples").glob("*.yafl")) \
-    + sorted((_REPO / "bootstrap").glob("*.yafl")) \
+    + sorted((_REPO / "bootstrap").rglob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
 
 _CONVERGE = c.__dict__["__converge"]

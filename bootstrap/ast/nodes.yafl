@@ -1,0 +1,162 @@
+# bootstrap/nodes.yafl — the pyast node classes, ported. Field-for-field
+# mirrors of compiler/pyast/{statement,expression,match,typespec} as they
+# stand AT PARSE TIME (compile-phase caches like _enum_spec are added when
+# the fixpoint is ported). Optional strings use "" as the absent marker
+# (Python uses None; the dump prints them identically). The tree must
+# reproduce tests/astdump.py byte for byte (PORT 2 contract).
+namespace Bootstrap::Ast
+
+import System
+
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Parse
+
+
+
+# ── LineRef ──────────────────────────────────────────────────────────────────
+
+class [final] PLine(plFile: String, plLine: Int, plCol: Int)
+
+# One enum-constructor argument: the DECLARED field name and the argument
+# EXPRESSION (Python: NewEnumExpression.field_args dict entry). Never a bare
+# name pun — inlining's alpha-renames rewrite the expression like any other.
+class [final] PFieldArg(faName: String, faValue: PExpr)
+
+# Types in the AST are `Spec` (specs.yafl) — the SAME tree the type system
+# refines. The parser only ever builds the unresolved subset (SNamed, SBuiltin,
+# STuple, SCombination, SCallable, SGeneric, SClass, SArrayField); compile()
+# then refines those in place (an SNamed becomes an SClass or SEnum once its
+# name resolves). One type tree, one refinement — never a parse copy to sync.
+
+# ── expressions ──────────────────────────────────────────────────────────────
+
+enum PExpr
+  enum PeInt(value: Int, precision: Int, peiLine: PLine)
+  enum PeFloat(floatText: String, fPrecision: Int, pefLine: PLine)
+  enum PeBool(boolValue: Bool, pebLine: PLine)
+  enum PeStr(strValue: String, pesLine: PLine)
+  enum PeRegex(pattern: String, perLine: PLine)
+  enum PeName(refName: String, refTypeParams: List<Spec>, penLine: PLine,
+             penTrait: Spec|None = None)
+  enum PeDot(base: PExpr, member: String, pedLine: PLine)
+  enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine)
+  enum PeTuple(exprs: List<PTupEnt>, petLine: PLine)
+  enum PeTernary(condition: PExpr, trueResult: PExpr, falseResult: PExpr, pety: PLine)
+  # lamRet: the lambda's own CallableSpec, computed by its compile each pass
+  # (parameters as actually compiled; result preferring the call site's
+  # expected). Program identity in Python (no compare=False).
+  enum PeLambda(lamParams: PStmt, lamBody: PExpr, pelLine: PLine,
+                lamRet: Spec|None = None)
+  enum PeBlock(blockStmts: List<PStmt>, blockValue: PExpr, blockTag: String,
+               pebkLine: PLine)
+  enum PeMatch(subject: PExpr, arms: List<PArm>, pemLine: PLine)
+  enum PeBuiltinOp(opType: Spec, opName: PExpr, opParams: PExpr, peboLine: PLine)
+  enum PeParallel(parParams: PExpr, pepLine: PLine)
+  enum PeNothing(pengLine: PLine)
+  enum PeNewEnum(rootName: String, leafName: String, fieldArgs: List<PFieldArg>,
+                 neTypeParams: List<Spec>, penewLine: PLine)
+  enum PeNew(newType: Spec, newParam: PExpr, penwLine: PLine)
+  enum PeArrayRead(arrObj: PExpr, arrIndex: PExpr, pearLine: PLine)
+  # Represent `convInner`'s value as `convTarget`. The PRESENCE of this node in
+  # the tree IS the decision to convert — codegen never converts, so compile
+  # inserts one exactly where needsConversion says a representation changes.
+  # The parser never builds one.
+  enum PeConvert(convInner: PExpr, convTarget: Spec, pecvLine: PLine)
+  # tail_loop lowering only. A [tail] body wrapped as an SSA loop: the
+  # loop-carried params are NamedExpression REFERENCES (PeName), so ordinary
+  # renaming passes rewrite them with the body's uses.
+  enum PeLoop(loopBody: PExpr, loopParams: List<PExpr>, pelpLine: PLine)
+  # The back-edge: re-bind the loop vars to recArgs and jump to the head.
+  # Bottom-typed. recIndex = per-function ordinal assigned at lowering.
+  enum PeRecur(recArgs: List<PExpr>, recIndex: Int, percLine: PLine)
+  # lower_lazy_lets only: auto-forced reference to a [lazy] let's stub.
+  # capturedClass = the closure class holding the stub when the reference is
+  # inside a lifted lambda body; stubOnly = the raw stub pointer (a lambda's
+  # capture site), not the forced value.
+  enum PeLazy(stubName: String, lzTarget: Spec, lzCaptured: String|None,
+              lzStubOnly: Bool, pelzLine: PLine)
+
+class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr)
+
+enum PLit
+  enum PlExpr(litExpr: PExpr)
+  enum PlRange(rangeLo: PExpr, rangeHi: PExpr, plrLine: PLine)
+
+class [final] PArm(armName: String, armType: Spec|None,
+                   armBody: PExpr, armLiterals: List<PLit>,
+                   armGuard: PExpr|None, parmLine: PLine)
+
+# ── statements ───────────────────────────────────────────────────────────────
+
+class [final] PAttr(attrName: String, attrValue: PExpr|None)
+class [final] PGen(genName: String, genAttrs: List<PAttr>, pgLine: PLine)
+
+# One vtable slot (ClassFunctionSlot): a callable member, and the SET of slot
+# names it PROVIDES an implementation for — its own name when it can dispatch
+# (a fun with a body, a fun-typed field), plus every inherited slot it
+# overrides. slotProvides has SET semantics: deduplicated, compared order-free.
+class [final] Slot(slotName: String, slotType: Spec|None,
+                   slotProvides: List<String>)
+
+enum PStmt
+  # fNested: a function declared inside a block is an INNER function — marked by
+  # the block's own compile (never by the parser), it establishes no trait
+  # scope of its own and inherits its owner's lexically. Part of program
+  # identity (Python's is_nested has no compare=False), so equality sees it.
+  # fImports / lImports / cImports / eImports / taImports: the file's
+  # ImportGroup — every import AND namespace declaration, as PsImport nodes —
+  # attached by parse()'s fixup to each TOP-LEVEL named statement (synthesised
+  # constructors copy their class's / enum's). Program identity in Python (no
+  # compare=False), so equality sees it; None on nested statements.
+  enum PsFun(fName: String, fAttrs: List<PAttr>, fGens: List<PGen>,
+             fParams: PStmt, fBody: PExpr|None, fRet: Spec|None,
+             fWheres: List<Spec>, psfLine: PLine, fRetInferred: Bool = false,
+             fNested: Bool = false, fImports: List<PStmt>|None = None)
+  enum PsDestructure(dName: String, dAttrs: List<PAttr>,
+                     dType: Spec|None, dTargets: List<PStmt>,
+                     dDefault: PExpr|None, psdLine: PLine,
+                     dTypeInferred: Bool = false)
+  enum PsLet(lName: String, lAttrs: List<PAttr>, lGens: List<PGen>,
+             lType: Spec|None, lDefault: PExpr|None,
+             lArrayLen: String, lWheres: List<Spec>, pslLine: PLine,
+             lTypeInferred: Bool = false, lImports: List<PStmt>|None = None)
+  # cAllParents: the transitive interface closure, computed by the class's own
+  # compile. ABSENT (None) means "not worked out yet" — assignability must
+  # answer "undecided", never "no".
+  # cAllSlots: the vtable slot table (own callable members overriding matching
+  # parent slots), also computed by compile — one inheritance level per PASS,
+  # since a parent's own table grounded on an earlier pass. Both are program
+  # identity in Python (no compare=False), so equality sees them and the
+  # fixpoint is not settled until they are.
+  enum PsClass(cName: String, cAttrs: List<PAttr>, cGens: List<PGen>,
+               cParams: PStmt, cImplements: List<Spec>, cWheres: List<Spec>,
+               cMembers: List<PStmt>, cIsInterface: Bool, pscLine: PLine,
+               cAllParents: List<Spec>|None = None,
+               cAllSlots: List<Slot>|None = None,
+               cImports: List<PStmt>|None = None)
+  enum PsEnum(eName: String, eGens: List<PGen>, eParams: PStmt,
+              eVariants: List<PStmt>, eHasParams: Bool, pseLine: PLine,
+              eRootName: String|None = None, eSpec: Spec|None = None,
+              eImports: List<PStmt>|None = None)
+  enum PsTypealias(taName: String, taAttrs: List<PAttr>, taGens: List<PGen>,
+                   taType: Spec, taWheres: List<Spec>, pstLine: PLine,
+                   taImports: List<PStmt>|None = None)
+  enum PsImport(importPath: String, psiLine: PLine)
+  enum PsNamespace(nsPath: String, psnLine: PLine)
+  # The `instance` statement as a FIRST-CLASS node (TraitInstanceStatement):
+  # survives convergence, checking, drops and linearity carrying its
+  # identity — the interface PATTERN, own type params, wheres, ambient flag
+  # and members. lower_instances.yafl lowers it to witness class + [trait]
+  # record only after checking. tiName is synthesized (`instance$tag`) for
+  # statement indexing only — diagnostics speak of the pattern.
+  enum PsTraitInstance(tiName: String, tiAmbient: Bool, tiGens: List<PGen>,
+                       tiPattern: Spec, tiWheres: List<Spec>,
+                       tiMembers: List<PStmt>, pstiLine: PLine,
+                       tiImports: List<PStmt>|None = None)
+  # retIndex = block_exits' per-return ordinal (0 until that stage runs).
+  enum PsRet(retValue: PExpr, psrLine: PLine, retIndex: Int = 0)
+  enum PsIf(ifCond: PExpr, ifTrue: List<PStmt>, ifFalse: List<PStmt>, psifLine: PLine)
+  enum PsElseIf(eiCond: PExpr, eiStmts: List<PStmt>, pseiLine: PLine)
+  enum PsElse(elStmts: List<PStmt>, pselLine: PLine)
+  enum PsAction(action: PExpr, psaLine: PLine)

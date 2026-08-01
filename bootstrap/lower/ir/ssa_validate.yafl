@@ -1,0 +1,219 @@
+# bootstrap/ssa_validate.yafl — SSA / control-flow / Phi validation, ported
+# from lowering/ssa_validate.py. Three invariants from AST lowering to C
+# emission: (1) single definition per StackVar (params count once; $sv_* and
+# friends are deliberate multi-write scratch; a Move from a type-appropriate
+# zero is a declaration, not a redefinition); (2) every path ends in a
+# terminator; (3) each Phi sits in the Phi region of a Label whose CFG
+# predecessors exactly match its sources. __entrypoint__ is hand-built and
+# skipped. Python RAISES SSAValidationError; the port returns the violation
+# strings — the driver decides how to die.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun ssaValidate(fns: List<CgFunction>, ssa: Bool): List<String>
+  ret fold(fns, List<String>(), (acc: List<String>, f: CgFunction) => concat(acc, ssavFn(f, ssa)))
+
+fun ssavFn(f: CgFunction, ssa: Bool): List<String>
+  if f.fnName == "__entrypoint__"
+    ret List<String>()
+  # After phi_removal the IR is deliberately not single-assignment; the final
+  # validation checks control flow and termination only.
+  ret ssa
+    ? concat(ssavSingleDefinition(f), concat(ssavPhiWellFormed(f), ssavAllPathsReturn(f)))
+    : ssavAllPathsReturn(f)
+
+# ── single definition ────────────────────────────────────────────────────────
+
+# Async-lowering reuses fixed scratch slots across call sites — deliberate
+# multi-write.
+fun ssavIsScratchSlot(name: String): Bool
+  ret startsWith(name, "$sv_") || startsWith(name, "$wrap$")
+      || startsWith(name, "$sm_wrap$") || startsWith(name, "$musttail$ret$")
+      || name == "$state" || name == "$completed_task"
+
+# A Move from a type-appropriate zero is a GC-safety / state-machine
+# pre-initialisation — logically a declaration, not a redefinition.
+fun ssavIsZeroInit(op: Op): Bool
+  ret match(op)
+    (m: OpMove) => ssavIsZeroSource(m.moveSource)
+    (o: Op)     => false
+
+fun ssavIsZeroSource(src: RParam): Bool
+  ret match(src)
+    (np: RpNullPointer) => true
+    (z: RpZeroOf)       => true
+    (i: RpInteger)      => i.value == 0
+    (f: RpFloat)        => f.value == 0.0
+    (o: RParam)         => false
+
+fun ssavCollectWriteCounts(f: CgFunction): List<StrCount>
+  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), List<StrCount>(),
+                        (acc: List<StrCount>, fld: CgField) => strCountIncr(acc, fld.fieldName))
+  ret fold(f.fnOps, fromParams, ssavCountOp)
+
+fun ssavCountOp(acc: List<StrCount>, op: Op): List<StrCount>
+  ret ssavIsZeroInit(op)
+    ? acc
+    : fold(ssavOpWrites(op), acc, ssavCountTarget)
+
+fun ssavCountTarget(acc: List<StrCount>, target: RParam): List<StrCount>
+  ret match(target)
+    (sv: RpStackVar) => strCountIncr(acc, sv.name)
+    (o: RParam)       => acc
+
+# The write set per op kind — Python's op.get_live_vars() writes half.
+fun ssavOpWrites(op: Op): List<RParam>
+  ret match(op)
+    (m: OpMove)         => list1(m.moveTarget)
+    (c: OpCall)         => ssavOptWrite(c.callRegister)
+    (n: OpNewObject)    => list1(n.newObjRegister)
+    (p: OpParallelCall) => concat(p.parResults, ssavOptWrite(p.parRegister))
+    (ph: OpPhi)         => list1(ph.phiTarget)
+    (t2: OpIfTask)      => list2(t2.taskLhs, t2.callIdLhs)
+    (o: Op)             => List<RParam>()
+
+fun ssavOptWrite(r: RParam|None): List<RParam>
+  ret match(r)
+    (x: RParam) => list1(x)
+    ()           => List<RParam>()
+
+fun ssavSingleDefinition(f: CgFunction): List<String>
+  let violations = filter(ssavCollectWriteCounts(f),
+                          (e2: StrCount) => e2.scCount > 1 && !ssavIsScratchSlot(e2.scName))
+  ret isEmpty(violations)
+    ? List<String>()
+    : list1(f.fnName + ": SSA single-definition invariant violated: "
+            + join(map(violations, (e2: StrCount) => e2.scName + " defined " + String(e2.scCount) + " times"), "; "))
+
+# ── all paths return ─────────────────────────────────────────────────────────
+
+# A function with no ops is an extern declaration. Only the fall-off-the-end
+# failure is checked: the last op must be a terminator (Return/ReturnVoid/
+# Abort/Jump, a musttail Call, or a conditional whose fall-through is the
+# not-taken path).
+fun ssavAllPathsReturn(f: CgFunction): List<String>
+  ret match(lastOp(chain(f.fnOps)))
+    (op: Op) => ssavIsTerminator(op)
+      ? List<String>()
+      : list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
+    ()        => List<String>()
+
+fun [tail] lastOp(ops: Chain<Op>): Op|None
+  ret match(ops)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => match(l.next)
+      (nil2: ChainEnd) => l.value
+      (l2: ChainLink)  => lastOp(l.next)
+
+fun ssavIsTerminator(op: Op): Bool
+  ret match(op)
+    (r: OpReturn)      => true
+    (rv: OpReturnVoid) => true
+    (a: OpAbort)       => true
+    (j: OpJump)        => true
+    (c: OpCall)        => c.callMusttail
+    (t2: OpIfTask)     => true
+    (sw: OpSwitchJump) => true
+    (o: Op)            => false
+
+# ── Phi well-formedness ──────────────────────────────────────────────────────
+
+# For each labelled block: the set of predecessor labels ("" = the implicit
+# entry block) reachable via Jump/JumpIf/IfTask/SwitchJump/fall-through.
+class [final] PredEntry(peLabel: String, pePreds: List<String>)
+
+fun ssavPredecessors(f: CgFunction): List<PredEntry>
+  ret ssavPredLoop(chain(f.fnOps), None, "", List<PredEntry>())
+
+fun [tail] ssavPredLoop(ops: Chain<Op>, prev: Op|None, current: String,
+                        acc: List<PredEntry>): List<PredEntry>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ssavPredLoop(l.next, l.value, ssavNextCurrent(l.value, current),
+                                    ssavPredStep(l.value, prev, current, acc))
+
+fun ssavNextCurrent(op: Op, current: String): String
+  ret match(op)
+    (lb: OpLabel) => lb.labelName
+    (o: Op)       => current
+
+fun ssavPredStep(op: Op, prev: Op|None, current: String,
+                 acc: List<PredEntry>): List<PredEntry>
+  ret match(op)
+    (lb: OpLabel)      => ssavFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
+    (j: OpJump)        => predAdd(acc, j.jumpName, current)
+    (ji: OpJumpIf)     => predAdd(acc, ji.jumpIfLabel, current)
+    (t2: OpIfTask)     => predAdd(acc, t2.taskTarget, current)
+    (sw: OpSwitchJump) => fold(sw.switchCases, acc,
+                               (a: List<PredEntry>, c: OpCase) => predAdd(a, c.caseLabel, current))
+    (o: Op)            => acc
+
+# Fall-through edge from the previous block unless the previous op was an
+# unconditional terminator (Abort included — abort() does not return).
+fun ssavFallThroughEdge(lb: OpLabel, prev: Op|None, current: String,
+                        acc: List<PredEntry>): List<PredEntry>
+  ret match(prev)
+    (p: Op) => ssavPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
+    ()       => acc
+
+fun ssavPrevFallsThrough(p: Op): Bool
+  ret match(p)
+    (j: OpJump)        => false
+    (r: OpReturn)      => false
+    (rv: OpReturnVoid) => false
+    (a: OpAbort)       => false
+    (o: Op)            => true
+
+fun predEnsure(acc: List<PredEntry>, label: String): List<PredEntry>
+  ret any(acc, (e2: PredEntry) => e2.peLabel == label)
+    ? acc
+    : append(acc, PredEntry(label, List<String>()))
+
+fun predAdd(acc: List<PredEntry>, label: String, src: String): List<PredEntry>
+  ret any(acc, (e2: PredEntry) => e2.peLabel == label)
+    ? map(acc, (e2: PredEntry) => e2.peLabel == label
+                 ? PredEntry(label, strListAdd(e2.pePreds, src))
+                 : e2)
+    : append(acc, PredEntry(label, list1(src)))
+
+fun predsOf(acc: List<PredEntry>, label: String): List<String>
+  ret match(head(filter(acc, (e2: PredEntry) => e2.peLabel == label)))
+    (e2: PredEntry) => e2.pePreds
+    ()               => List<String>()
+
+# Walk ops tracking the current label and whether we are still in its Phi
+# region (Labels open one; any non-Phi op closes it).
+fun ssavPhiWellFormed(f: CgFunction): List<String>
+  let preds = ssavPredecessors(f)
+  ret ssavPhiLoop(chain(f.fnOps), preds, f.fnName, "", false, List<String>())
+
+fun [tail] ssavPhiLoop(ops: Chain<Op>, preds: List<PredEntry>, fname: String,
+                       current: String, inRegion: Bool, acc: List<String>): List<String>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (lb: OpLabel) => ssavPhiLoop(l.next, preds, fname, lb.labelName, true, acc)
+      (ph: OpPhi)   => ssavPhiLoop(l.next, preds, fname, current, inRegion,
+                                   concat(acc, ssavPhiCheck(ph, preds, fname, current, inRegion)))
+      (o: Op)       => ssavPhiLoop(l.next, preds, fname, current, false, acc)
+
+fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname: String,
+                 current: String, inRegion: Bool): List<String>
+  if !inRegion || length(current) == 0
+    ret list1(fname + ": Phi appears outside the Phi region of any block")
+  let expected = filter(predsOf(preds, current), (s2: String) => length(s2) > 0)
+  let sources = map(ph.phiSources, (s2: OpPhiSource) => s2.sourceLabel)
+  let missing = filter(expected, (s2: String) => !strListMember(sources, s2))
+  let extra = filter(sources, (s2: String) => !strListMember(expected, s2))
+  ret isEmpty(missing) && isEmpty(extra)
+    ? List<String>()
+    : list1(fname + ": Phi @ " + current + " has mismatched sources; missing: ["
+            + join(sortNamesAsc(chain(missing), List<String>()), ", ") + "]; extra: ["
+            + join(sortNamesAsc(chain(extra), List<String>()), ", ") + "]")

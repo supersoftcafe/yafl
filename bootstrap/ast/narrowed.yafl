@@ -1,0 +1,17 @@
+# bootstrap/ast/narrowed.yafl — the flow-narrowing result.
+#
+# Lives with the core data model rather than with compile_expr because its
+# variant field is a `Spec|None`: a union spelling naming a type from another
+# namespace does not resolve in enum-variant position (the union's members are
+# resolved without the declaring file's imports — see the NamedSpec scoping
+# rule). Anything carrying a Spec in a union field therefore belongs beside
+# Spec itself.
+namespace Bootstrap::Ast
+
+import System
+
+
+enum Narrowed
+  enum NfHit(nfName: String, nfType: Spec|None)
+  enum NfMiss()
+  enum NfAmbiguous()

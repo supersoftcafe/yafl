@@ -1,0 +1,20 @@
+# bootstrap/ir/gen_frame.yafl — the generate-time frame descriptor.
+#
+# Python's _LoopFrame / _BlockFrame, unified into one 2-way sum so Resolver
+# needs only one new case: a loop frame leaves get_block_frame to fall through
+# to the parent, and vice versa (mirrors DelegatingResolver's default
+# pass-through).
+#
+# It lives with the Resolver because it IS part of the Resolver's data model —
+# RGen carries one opaquely (see resolver.yafl) and only Codegen interprets it.
+# Declaring it in Codegen made Resolve depend on Codegen, which is backwards.
+namespace Bootstrap::Ast
+
+import System
+
+import Bootstrap::Ir
+
+
+enum GenFrame
+  enum FrLoop(flTag: String, flParamCTypes: List<CgType>, flParamSpecs: List<Spec>)
+  enum FrBlock(fbTag: String, fbResultType: Spec|None)

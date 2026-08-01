@@ -1,0 +1,280 @@
+# bootstrap/inlining.yafl — ported from lowering/inlining.py: the IR inliner.
+# Structural guards are fixed (direct call to an internal global function with
+# NewStruct args, not a self-call, not musttail, target non-empty and
+# ParallelCall-free); the POLICY decides which eligible targets to pull in —
+# size cutoff / [inline(always)] for the general pass, single-caller for the
+# -O3 fold. A fn is never an inlining SINK if it is __entrypoint__ or
+# bypass_async (async_lower passes those through untouched, so a suspending
+# body inlined into them would never get its state machine). Also here:
+# functionReferenceCounts (trim.py:176 — same __scan model as the dead-code
+# pass, so the two can never disagree about what references what).
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Codegen
+import Bootstrap::Ir
+import Bootstrap::Parse
+import Bootstrap::StdlibCandidates
+
+
+
+fun inlCutoffComplexity(): Int
+  ret 10
+
+# ── the two passes ───────────────────────────────────────────────────────────
+
+fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool): CgApp
+  ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
+        doInlining(f, a, (target: CgFunction) =>
+          listLen(target.fnOps) < inlCutoffComplexity()
+          || (inlineAlways && target.fnAlwaysInline))))
+
+# `syncNames` restricts the fold to callees that provably never suspend:
+# folding a suspending callee merges its live set with the caller's, so every
+# suspension in the merged body must save the COMBINED frame into the task
+# state object (unrestricted, a 7-field frame became 137 fields and doubled
+# wall time). A suspending helper keeps its call: its own small frame is all
+# a suspension inside it ever saves.
+fun inlineSingleCallerFunctions(a: CgApp, syncNames: List<String>): CgApp
+  let refcounts = functionReferenceCounts(a)
+  ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
+        doInlining(f, a, (target: CgFunction) =>
+          sdCountOf(refcounts, target.fnName) == 1
+          && strListMember(syncNames, target.fnName))))
+
+# ── the engine ───────────────────────────────────────────────────────────────
+
+class [final] InlAcc(inlOps: List<Op>, inlVars: List<CgField>)
+
+fun doInlining(f: CgFunction, a: CgApp,
+               shouldInline: (:CgFunction): Bool): CgFunction
+  if f.fnName == "__entrypoint__" || f.fnBypassAsync
+    ret f
+  let n = listLen(f.fnOps)
+  let out = inlLoop(chain(f.fnOps), 0, n, f, a, shouldInline,
+                    InlAcc(List<Op>(), List<CgField>()))
+  ret cgFunctionWith(f, out.inlOps,
+        CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
+
+fun [tail] inlLoop(ops: Chain<Op>, index: Int, n: Int, f: CgFunction,
+                   a: CgApp, shouldInline: (:CgFunction): Bool,
+                   acc: InlAcc): InlAcc
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => inlLoop(l.next, index + 1, n, f, a, shouldInline,
+                               inlStep(l.value, String(n) + "$" + String(index),
+                                       f, a, shouldInline, acc))
+
+# One op: splice the callee in when every guard passes, else keep the op.
+fun inlStep(op: Op, uniqueId: String, f: CgFunction, a: CgApp,
+            shouldInline: (:CgFunction): Bool, acc: InlAcc): InlAcc
+  ret match(inlCandidate(op, f, a, shouldInline))
+    (t2: InlTarget) => inlSplice(t2, uniqueId, acc)
+    ()               => InlAcc(append(acc.inlOps, op), acc.inlVars)
+
+class [final] InlTarget(itCall: OpCall, itGf: RpGlobalFunction,
+                        itArgs: RpNewStruct, itTarget: CgFunction)
+
+fun inlCandidate(op: Op, f: CgFunction, a: CgApp,
+                 shouldInline: (:CgFunction): Bool): InlTarget|None
+  ret match(op)
+    (c: OpCall) => match(c.callFunction)
+      (gf: RpGlobalFunction) => match(c.callParameters)
+        (ns: RpNewStruct) => inlCandidateChecked(c, gf, ns, f, a, shouldInline)
+        (o3: RParam)      => None
+      (o: RParam)   => None
+    (o4: Op)    => None
+
+fun inlCandidateChecked(c: OpCall, gf: RpGlobalFunction, ns: RpNewStruct,
+                        f: CgFunction, a: CgApp,
+                        shouldInline: (:CgFunction): Bool): InlTarget|None
+  if f.fnName == gf.name || c.callMusttail
+    ret None
+  ret match(appFunction(a, gf.name))
+    (target: CgFunction) => !isEmpty(target.fnOps)
+                            && shouldInline(target)
+                            && !inlAnyParallel(chain(target.fnOps))
+      ? InlTarget(c, gf, ns, target)
+      : None
+    ()                    => None
+
+fun [tail] inlAnyParallel(ops: Chain<Op>): Bool
+  ret match(ops)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (p: OpParallelCall) => true
+      (o: Op)             => inlAnyParallel(l.next)
+
+# ── the splice ───────────────────────────────────────────────────────────────
+# Fresh inl<id>$-prefixed stack vars for the callee's params + locals, label
+# renames, `this` capture, param Moves, the body with every Return replaced by
+# Move(register)+Jump(end) and musttail flags cleared, then the end-label
+# bookkeeping: append the Label only when some end-jump is not simply the last
+# op emitted; pop a sole trailing end-jump (Python's `end_jump in new_ops` /
+# first-index semantics — the label is unique per splice, so the global test
+# reduces to this segment).
+
+fun inlSplice(t2: InlTarget, uniqueId: String, acc: InlAcc): InlAcc
+  let target = t2.itTarget
+  let pFields = cgFieldsOfOrEmpty(target.fnParams)
+  let allFields = concat(pFields, cgFieldsOfOrEmpty(target.fnStackVars))
+  let renames = concat(
+        map(allFields, (f2: CgField) =>
+          RpRename(f2.fieldName, "inl" + uniqueId + "$" + f2.fieldName)),
+        inlLabelRenames(chain(target.fnOps), uniqueId, List<RpRename>()))
+  let newVars = map(allFields, (f2: CgField) =>
+        CgField("inl" + uniqueId + "$" + f2.fieldName, f2.fieldType))
+  let endLabel = "inl" + uniqueId + "end"
+  let ops1 = inlThisCapture(t2, uniqueId, allFields, acc.inlOps)
+  let ops2 = inlParamMoves(chain(t2.itArgs.values), chain(tail(pFields)),
+                           uniqueId, allFields, ops1)
+  let ops3 = inlBody(chain(target.fnOps), t2.itCall, renames, endLabel, ops2)
+  ret InlAcc(inlEndBookkeeping(ops3, endLabel),
+             concat(acc.inlVars, newVars))
+
+fun [tail] inlLabelRenames(ops: Chain<Op>, uniqueId: String,
+                           acc: List<RpRename>): List<RpRename>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (lb: OpLabel) => inlLabelRenames(l.next, uniqueId,
+          append(acc, RpRename(lb.labelName,
+                               "inl" + uniqueId + "$" + lb.labelName)))
+      (o: Op)       => inlLabelRenames(l.next, uniqueId, acc)
+
+# The renamed StackVar for a callee param/local (its declared type + the
+# fresh inl<id>$ name) — the Move targets Python builds via variable_mapping.
+fun inlMappedVar(fields: List<CgField>, name: String,
+                 uniqueId: String): RParam
+  ret match(head(filter(fields, (f2: CgField) => f2.fieldName == name)))
+    (f2: CgField) => RpStackVar(f2.fieldType, "inl" + uniqueId + "$" + name)
+    ()             => RpStackVar(CgVoid(), "inl" + uniqueId + "$" + name)
+                      # unreachable: every param name is a field
+
+fun inlThisCapture(t2: InlTarget, uniqueId: String, allFields: List<CgField>,
+                   ops: List<Op>): List<Op>
+  ret match(t2.itGf.object)
+    (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
+      (f2: CgField) => append(ops,
+          OpMove(inlMappedVar(allFields, f2.fieldName, uniqueId), obj,
+                 false, List<RParam>()))
+      ()             => ops   # unreachable: object implies a this param
+    ()             => ops
+
+fun [tail] inlParamMoves(args: Chain<RpNamedValue>, params: Chain<CgField>,
+                         uniqueId: String, allFields: List<CgField>,
+                         ops: List<Op>): List<Op>
+  ret match(args)
+    (nil: ChainEnd) => ops
+    (av: ChainLink) => match(params)
+      (nil2: ChainEnd) => ops
+      (pf: ChainLink)  => inlParamMoves(av.next, pf.next, uniqueId, allFields,
+          append(ops, OpMove(inlMappedVar(allFields, pf.value.fieldName,
+                                          uniqueId),
+                             av.value.value, false, List<RParam>())))
+
+fun [tail] inlBody(ops: Chain<Op>, c: OpCall, renames: List<RpRename>,
+                   endLabel: String, acc: List<Op>): List<Op>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => inlBody(l.next, c, renames, endLabel,
+                               inlBodyOp(l.value, c, renames, endLabel, acc))
+
+fun inlBodyOp(op: Op, c: OpCall, renames: List<RpRename>, endLabel: String,
+              acc: List<Op>): List<Op>
+  ret match(op)
+    (r: OpReturn)  => append(inlReturnMove(r, c, renames, acc),
+                             OpJump(endLabel, List<RParam>()))
+    (cl: OpCall)   => cl.callMusttail
+      ? append(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
+                                        cl.callRegister, false, cl.callImpure,
+                                        cl.callResultType, cl.callSavedVars),
+                                 renames))
+      : append(acc, opRenameVars(op, renames))
+    (o: Op)        => append(acc, opRenameVars(op, renames))
+
+fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
+                  acc: List<Op>): List<Op>
+  ret match(c.callRegister)
+    (reg: RParam) => append(acc, OpMove(reg,
+                                        rpRenameVars(r.returnValue, renames),
+                                        false, List<RParam>()))
+    ()             => acc
+
+# Python: `if end_jump in new_ops` (any Return was seen), then FIRST index —
+# if it is not the very last op, some jump needs a target: append the Label;
+# otherwise the sole jump sits just before where the label would go: pop it.
+fun inlEndBookkeeping(ops: List<Op>, endLabel: String): List<Op>
+  let n = listLen(ops)
+  let first = inlFirstEndJump(chain(ops), endLabel, 0)
+  if first < 0
+    ret ops
+  ret first < n - 1
+    ? append(ops, OpLabel(endLabel, List<RParam>()))
+    : inlDropLast(chain(ops), List<Op>())
+
+fun [tail] inlFirstEndJump(ops: Chain<Op>, endLabel: String, i: Int): Int
+  ret match(ops)
+    (nil: ChainEnd) => 0 - 1
+    (l: ChainLink)  => match(l.value)
+      (j: OpJump) => j.jumpName == endLabel
+        ? i
+        : inlFirstEndJump(l.next, endLabel, i + 1)
+      (o: Op)     => inlFirstEndJump(l.next, endLabel, i + 1)
+
+fun [tail] inlDropLast(ops: Chain<Op>, acc: List<Op>): List<Op>
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.next)
+      (nil2: ChainEnd) => acc
+      (o: ChainLink)   => inlDropLast(l.next, append(acc, l.value))
+
+# ── functionReferenceCounts (trim.py:176) ────────────────────────────────────
+# Multiplicity, on the same scan model as the dead-code pass: direct call
+# sites count the call itself plus set-deduplicated scans of the arguments,
+# receiver and register; every other op counts its scan set; vtable slots and
+# global lazy-init hooks count one each; global initialisers count their scan
+# set. Set-dedup per node is sound for the == 1 test: a second reference
+# always lives in a separate op or table entry.
+
+fun functionReferenceCounts(a: CgApp): Dict<String, Int>
+  let c1 = fold(a.appFunctions, Dict<String, Int>(), frcFunction)
+  let c2 = fold(a.appObjects, c1, (acc: Dict<String, Int>, o: CgObject) =>
+        fold(o.objFunctions, acc, (a2: Dict<String, Int>, s2: CgFuncSlot) =>
+          sdBump(a2, s2.slotGlobalName)))
+  ret fold(a.appGlobals, c2, frcGlobal)
+
+fun frcFunction(acc: Dict<String, Int>, f: CgFunction): Dict<String, Int>
+  ret fold(f.fnOps, acc, frcOp)
+
+fun frcOp(acc: Dict<String, Int>, op: Op): Dict<String, Int>
+  ret match(op)
+    (c: OpCall) => match(c.callFunction)
+      (gf: RpGlobalFunction) => gf.external
+        ? frcBumpSet(acc, scanOp(op).ssFunctions)
+        : frcCallSite(acc, c, gf)
+      (o: RParam)             => frcBumpSet(acc, scanOp(op).ssFunctions)
+    (o2: Op)    => frcBumpSet(acc, scanOp(op).ssFunctions)
+
+fun frcCallSite(acc: Dict<String, Int>, c: OpCall,
+                gf: RpGlobalFunction): Dict<String, Int>
+  let c1 = frcBumpSet(sdBump(acc, gf.name),
+                      scanRParam(c.callParameters).ssFunctions)
+  let c2 = match(c.callRegister)
+    (reg: RParam) => frcBumpSet(c1, scanRParam(reg).ssFunctions)
+    ()             => c1
+  ret match(gf.object)
+    (obj: RParam) => frcBumpSet(c2, scanRParam(obj).ssFunctions)
+    ()             => c2
+
+fun frcGlobal(acc: Dict<String, Int>, g2: CgGlobal): Dict<String, Int>
+  let c1 = match(g2.globalLazyInitFunction)
+    (name: String) => sdBump(acc, name)
+    ()              => acc
+  ret match(g2.globalInit)
+    (init: RParam) => frcBumpSet(c1, scanRParam(init).ssFunctions)
+    ()              => c1
+
+fun frcBumpSet(acc: Dict<String, Int>, names: StrSet): Dict<String, Int>
+  ret fold(names.setNames, acc, sdBump)

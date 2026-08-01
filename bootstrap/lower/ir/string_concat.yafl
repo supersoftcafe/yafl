@@ -1,0 +1,210 @@
+# bootstrap/string_concat.yafl — ported from lowering/string_concat.py:
+# flatten String `+` chains into one exact-size n-ary concatenation.
+# `a + b + c + d` reaches this IR (after the tiny `+` impl inlines) as a
+# chain of `RuntimeInvoke("string_append")` steps, each materialising an
+# intermediate String the next step immediately consumes. Any chain of three
+# or more operands rewrites into a single `RuntimeInvoke("string_concat_n")`
+# (yafllib/string.c): sum the lengths, allocate once, copy each piece.
+# The chain is discovered through the SSA def-chains (ssa_defs): an operand
+# that is a directly-nested append, or a StackVar read exactly once whose
+# sole def is an append, is absorbed into the flat operand list (its Move is
+# then dropped). Chains longer than the runtime's 16-operand cap are grouped
+# recursively. Runs in the pre-async fixpoint at -O1+.
+#
+# The absorbed-name set is collected in a SEPARATE pure walk over the
+# original ops (Python mutates a set inside the replacer): the replacer is
+# deterministic and rpReplaceParams rewrites bottom-up exactly like Python's
+# replace_params, so an append root's spine yields the same operands and
+# taking-names in both walks.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+import Bootstrap::Parse
+import Bootstrap::StdlibCandidates
+
+
+
+fun scAppendName(): String   ret "string_append"
+fun scConcatName(): String   ret "string_concat_n"
+fun scRuntimeCap(): Int      ret 16   # string_concat_n's fixed operand arrays
+
+fun flattenStringAppends(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions, scFunction))
+
+fun scFunction(f: CgFunction): CgFunction
+  let defs = singleDefs(f)
+  let reads = sdReadCounts(f)
+  let anchored = fold(f.fnOps, List<String>(), scAnchoredNames)
+  let absorbed = fold(f.fnOps, List<String>(),
+                      (acc: List<String>, op: Op) =>
+                        scCollectAbsorbed(acc, op, defs, reads, anchored))
+  let newOps = map(f.fnOps,
+                   (op: Op) => opReplaceParams(op,
+                     (p: RParam) => scReplace(p, defs, reads, anchored)))
+  ret isEmpty(absorbed)
+    ? cgFunctionWith(f, newOps, f.fnStackVars)
+    : cgFunctionWith(f, filter(newOps,
+                               (op: Op) => !scIsAbsorbedMove(op, absorbed)),
+                     f.fnStackVars)
+
+# keep=True Moves anchor side effects — never absorb them (absorbing would
+# duplicate the computation at the read site while the anchor keeps the
+# original alive).
+fun scAnchoredNames(acc: List<String>, op: Op): List<String>
+  ret match(op)
+    (m: OpMove) => m.moveKeep ? scAnchTarget(acc, m.moveTarget) : acc
+    (o: Op)     => acc
+
+fun scAnchTarget(acc: List<String>, target: RParam): List<String>
+  ret match(target)
+    (sv: RpStackVar) => append(acc, sv.name)
+    (o: RParam)      => acc
+
+# The (left, right) operands of a string_append invoke, when visible.
+fun scAppendArgs(inv: RpRuntimeInvoke): (l: RParam, r: RParam)|None
+  if inv.function != scAppendName()
+    ret None
+  ret match(inv.parameters)
+    (ns: RpNewStruct) => listLen(ns.values) == 2
+      ? scArgPair(ns.values)
+      : None
+    (o: RParam)       => None
+
+fun scArgPair(vs: List<RpNamedValue>): (l: RParam, r: RParam)|None
+  ret match(head(vs))
+    (a: RpNamedValue) => match(head(tail(vs)))
+      (b: RpNamedValue) => (a.value, b.value)
+      ()                => None
+    ()                => None
+
+# The flattened operand list of the append tree rooted at `param`, plus the
+# names of single-read locals the chase passed through. The caller commits
+# the taking-names ONLY if it actually rewrites (>= 3 operands) — exploring
+# a chain that stays under the fold threshold must drop nothing.
+fun scSpine(param: RParam, defs: SsaDefs, reads: Dict<String, Int>,
+            anchored: List<String>): (ops: List<RParam>, taking: List<String>)
+  ret match(param)
+    (inv: RpRuntimeInvoke) => match(scAppendArgs(inv))
+      (args: (l: RParam, r: RParam)) => scSpinePair(args.l, args.r, defs,
+                                                    reads, anchored)
+      ()                             => inv.function == scConcatName()
+        ? scConcatOperands(inv)
+        : scSpineVar(param, defs, reads, anchored)
+    (o: RParam)            => scSpineVar(param, defs, reads, anchored)
+
+fun scSpinePair(l: RParam, r: RParam, defs: SsaDefs,
+                reads: Dict<String, Int>,
+                anchored: List<String>): (ops: List<RParam>, taking: List<String>)
+  let a = scSpine(l, defs, reads, anchored)
+  let b = scSpine(r, defs, reads, anchored)
+  ret (concat(a.ops, b.ops), concat(a.taking, b.taking))
+
+# An already-flattened concat_n invoke (rpReplaceParams rewrites bottom-up,
+# so an inner chain may have been folded before its consumer is visited).
+fun scConcatOperands(inv: RpRuntimeInvoke): (ops: List<RParam>, taking: List<String>)
+  ret match(inv.parameters)
+    (ns: RpNewStruct) => (map(filter(ns.values,
+                                     (v: RpNamedValue) => v.name != "count"),
+                              (v: RpNamedValue) => v.value),
+                          List<String>())
+    (o: RParam)       => (append<RParam>(List<RParam>(), inv), List<String>())
+
+# Chase through single-read locals: an append chain in a fused body is
+# threaded through plain copies (`sv2 = sv1`) that copy-propagation's
+# adjacent-op rule never folds. A copy, an append, or an already-folded
+# concat all absorb; any other def (call result, Phi, impure invoke) stays a
+# leaf operand.
+fun scSpineVar(param: RParam, defs: SsaDefs, reads: Dict<String, Int>,
+               anchored: List<String>): (ops: List<RParam>, taking: List<String>)
+  ret match(param)
+    (sv: RpStackVar) => scReadOnce(reads, sv.name)
+                        && !strListMember(anchored, sv.name)
+      ? scSpineChase(sv, defs, reads, anchored)
+      : (append<RParam>(List<RParam>(), param), List<String>())
+    (o: RParam)      => (append<RParam>(List<RParam>(), param), List<String>())
+
+fun scSpineChase(sv: RpStackVar, defs: SsaDefs, reads: Dict<String, Int>,
+                 anchored: List<String>): (ops: List<RParam>, taking: List<String>)
+  ret match(sdGet(defs, sv.name))
+    (src: RParam) => scAbsorbableDef(src)
+      ? scSpine(src, defs, reads, anchored)
+        |> (inner) => (inner.ops, prepend(sv.name, inner.taking))
+      : (append<RParam>(List<RParam>(), sv), List<String>())
+    ()            => (append<RParam>(List<RParam>(), sv), List<String>())
+
+fun scIsAppend(inv: RpRuntimeInvoke): Bool
+  ret match(scAppendArgs(inv))
+    (args: (l: RParam, r: RParam)) => true
+    ()                             => false
+
+fun scAbsorbableDef(src: RParam): Bool
+  ret match(src)
+    (sv2: RpStackVar)      => true
+    (inv: RpRuntimeInvoke) => scIsAppend(inv)
+                              || inv.function == scConcatName()
+    (o: RParam)            => false
+
+fun scReadOnce(cs: Dict<String, Int>, name: String): Bool
+  ret sdCountOf(cs, name) == 1
+
+# A string_concat_n invoke over `operands`, grouped in runtime-cap-sized
+# chunks when the chain is longer than the C side's fixed arrays.
+fun scConcatOf(operands: List<RParam>): RParam
+  ret match(head(operands))
+    (only: RParam) => isEmpty(tail(operands))
+      ? only
+      : listLen(operands) > scRuntimeCap()
+        ? scConcatOf(prepend(scConcatOf(take(operands, scRuntimeCap())),
+                             drop(operands, scRuntimeCap())))
+        : scConcatBuild(operands)
+    ()             => RpNullPointer()   # unreachable: spine yields >= 1
+
+fun scConcatBuild(operands: List<RParam>): RParam
+  let fields = prepend(RpNamedValue("count",
+                                    RpInteger(listLen(operands), 32)),
+                       scNumbered(chain(operands), 0, List<RpNamedValue>()))
+  ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgDataPointer())
+
+fun [tail] scNumbered(os: Chain<RParam>, i: Int,
+                      acc: List<RpNamedValue>): List<RpNamedValue>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => scNumbered(l.next, i + 1,
+                                  append(acc, RpNamedValue("s" + String(i),
+                                                           l.value)))
+
+fun scReplace(p: RParam, defs: SsaDefs, reads: Dict<String, Int>,
+              anchored: List<String>): RParam
+  ret match(p)
+    (inv: RpRuntimeInvoke) => scIsAppend(inv)
+      ? scSpine(p, defs, reads, anchored)
+        |> (sp) => listLen(sp.ops) >= 3 ? scConcatOf(sp.ops) : p
+      : p
+    (o: RParam)            => p
+
+fun scCollectAbsorbed(acc: List<String>, op: Op, defs: SsaDefs,
+                      reads: Dict<String, Int>,
+                      anchored: List<String>): List<String>
+  ret fold(opAllParams(op), acc,
+           (a2: List<String>, p: RParam) =>
+             scCollectRoot(a2, p, defs, reads, anchored))
+
+fun scCollectRoot(acc: List<String>, p: RParam, defs: SsaDefs,
+                  reads: Dict<String, Int>, anchored: List<String>): List<String>
+  ret match(p)
+    (inv: RpRuntimeInvoke) => scIsAppend(inv)
+      ? scSpine(p, defs, reads, anchored)
+        |> (sp) => listLen(sp.ops) >= 3
+          ? fold(sp.taking, acc, strListAdd)
+          : acc
+      : acc
+    (o: RParam)            => acc
+
+fun scIsAbsorbedMove(op: Op, absorbed: List<String>): Bool
+  ret match(op)
+    (m: OpMove) => match(m.moveTarget)
+      (sv: RpStackVar) => strListMember(absorbed, sv.name)
+      (o: RParam)      => false
+    (o: Op)     => false

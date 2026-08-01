@@ -52,7 +52,7 @@ def _stream() -> str:
     parts = [f"#FILE# {p.name}\n{terminated(p)}"
              for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))]
     parts += [f"#FILE# {p.name}\n{terminated(p)}"
-              for p in sorted((_REPO / "bootstrap").glob("*.yafl"))]
+              for p in sorted((_REPO / "bootstrap").rglob("*.yafl"))]
     return "".join(parts)
 
 

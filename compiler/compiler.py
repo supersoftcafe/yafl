@@ -654,8 +654,14 @@ def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[E
     errors = []
     statements = []
 
-    # Tokenize and parse input files
-    for input in source:
+    # CANONICAL ORDER: parse by file NAME, never in the order the caller
+    # happened to enumerate. Statement order is emission order, so the same
+    # files fed in a different order emit different (equally valid) C — which
+    # would make the port/Python byte contract depend on each caller matching
+    # by hand. The port sorts identically (main.yafl parseMulti); the file name
+    # is the only key both sides have, since the port sees `#FILE# <name>` and
+    # never a path.
+    for input in sorted(source, key=lambda i: i.filename):
         tokens = tokenize(input.content, input.filename)
         result = parse(tokens)
 

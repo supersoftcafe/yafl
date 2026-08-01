@@ -28,7 +28,7 @@ _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 _CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
         + sorted((_REPO / "examples").glob("*.yafl")) \
-        + sorted(_BOOTSTRAP.glob("*.yafl"))
+        + sorted(_BOOTSTRAP.rglob("*.yafl"))
 
 
 class TestBootstrapAst(TestCase):

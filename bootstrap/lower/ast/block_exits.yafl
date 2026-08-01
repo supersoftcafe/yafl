@@ -1,0 +1,28 @@
+# bootstrap/block_exits.yafl — lowering/block_exits.py: stamp every block with
+# a unique '@'-bearing tag and every return with a per-walk ordinal, late —
+# after every pass that creates or copies blocks — so each block instance
+# (inlined copies included) owns its exit labels. Lowering-time ordinals,
+# PYTHONHASHSEED-independent. Two counters over one deterministic walk ==
+# two independent single-counter walks in the same traversal order.
+namespace Bootstrap::Lower::Ast
+
+import System
+
+import Bootstrap::Ast
+
+
+
+fun assignBlockExits(statements: List<PStmt>): List<PStmt>
+  let blocks = rwnStmts(statements, RwN(beBlockCb, rwnNoStmt), 0)
+  ret rwnStmts(blocks.rnssStmts, RwN(rwnNoExpr, beRetCb), 0).rnssStmts
+
+fun beBlockCb(n: Int, x: PExpr): (n2: Int, r: PExpr|None)
+  ret match(x)
+    (bk: PeBlock) => (n + 1, PeBlock(bk.blockStmts, bk.blockValue,
+                                     "blk@" + String(n), bk.pebkLine))
+    (o: PExpr)    => (n, None)
+
+fun beRetCb(n: Int, st: PStmt): (n2: Int, r: PStmt|None)
+  ret match(st)
+    (rt: PsRet) => (n + 1, PsRet(rt.retValue, rt.psrLine, n))
+    (o: PStmt)  => (n, None)

@@ -1,0 +1,670 @@
+# bootstrap/complex_enums.yafl — lowering/complex_enums.py: detect complex
+# (recursive) enums and mark them.
+#
+# An enum is "complex" when its all_fields graph contains a cycle through its
+# root_name — directly or via mutual recursion. Recursive enums must lower to
+# heap-allocated objects so the compiled struct has finite size. Exactly one
+# enum per cycle is marked; the breaker is chosen by: System:: enums first,
+# then self-loops, then fewest all_fields entries, then root_name. Class
+# boundaries break cycles (a class field is already a heap pointer), so the
+# reachability walk stops at SClass.
+namespace Bootstrap::Lower::Ast
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Frontend
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# ── canonical roots + name map ───────────────────────────────────────────────
+# Parallel lists everywhere (Dict has no key iteration); insertion order is
+# load-bearing — the NamedSpec suffix fallback takes the FIRST map hit.
+
+# Lists carry ITERATION ORDER (edge walk, table build, the suffix
+# fallback); the Dict carries LOOKUP (user ruling 2026-07-22).
+class [final] ERoots(erNames: List<String>, erSpecs: List<SEnum>,
+                     erIndex: Dict<String, SEnum>)
+class [final] NameMap(nmNames: List<String>, nmRoots: List<String>,
+                      nmIndex: Dict<String, String>)
+
+fun ceCollectRoots(statements: List<PStmt>): ERoots
+  ret ceRootsLoop(chain(statements),
+                  ERoots(List<String>(), List<SEnum>(),
+                         Dict<String, SEnum>()))
+
+fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc: ERoots): ERoots
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e2: PsEnum) => ceRootsLoop(l.next, ceRootAdd(acc, e2))
+      (o: PStmt)   => ceRootsLoop(l.next, acc)
+
+fun ceRootAdd(acc: ERoots, e2: PsEnum): ERoots
+  ret match(e2.eSpec)
+    (sp: Spec) => match(sp)
+      (es: SEnum) => contains2(acc.erNames, es.seRoot)
+        ? acc
+        : ERoots(append(acc.erNames, es.seRoot), append(acc.erSpecs, es),
+                 put(acc.erIndex, es.seRoot, es))
+      (o: Spec)   => acc
+    ()         => acc
+
+fun ceRootSpecOf(roots: ERoots, root: String): SEnum|None
+  ret get(roots.erIndex, root)
+
+# Every name form of an enum root maps to its canonical root_name: the
+# no-hash namespaced form and the bare name (Name@hash itself is NOT a key —
+# NamedSpec.name typically lacks the hash). First form wins (setdefault).
+fun ceNameMap(roots: ERoots): NameMap
+  ret ceMapLoop(chain(roots.erNames),
+                NameMap(List<String>(), List<String>(),
+                        Dict<String, String>()))
+
+fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceMapLoop(l.next,
+                                 ceMapAdd(ceMapAdd(acc, simpleName(l.value),
+                                                   l.value),
+                                          bareOfUnique(l.value), l.value))
+
+fun ceMapAdd(acc: NameMap, key: String, root: String): NameMap
+  ret get(acc.nmIndex, key) is None
+    ? NameMap(append(acc.nmNames, key), append(acc.nmRoots, root),
+              put(acc.nmIndex, key, root))
+    : acc
+
+# Direct hit first (dict get), then the suffix fallback: "Foo::Bar" matches
+# "AnyNs::Foo::Bar" in either direction — FIRST map entry (insertion order)
+# wins, exactly like Python's two-step lookup.
+fun ceLookup2(map: NameMap, name: String): String|None
+  ret match(get(map.nmIndex, name))
+    (hit: String) => hit
+    ()            => ceSuffixLoop(chain(map.nmNames), chain(map.nmRoots),
+                                  name)
+
+fun [tail] ceSuffixLoop(ks: Chain<String>, rs: Chain<String>,
+                        name: String): String|None
+  ret match(ks)
+    (nil: ChainEnd) => None
+    (k: ChainLink)  => match(rs)
+      (nil2: ChainEnd) => None
+      (r: ChainLink)   => endsWith(k.value, "::" + name)
+                          || endsWith(name, "::" + k.value)
+        ? r.value
+        : ceSuffixLoop(k.next, r.next, name)
+
+# ── reachability ─────────────────────────────────────────────────────────────
+# Collect every enum root directly referenced in a spec, stopping at SEnum
+# (no all_fields descent — the SCC pass computes the transitive closure) and
+# at SClass (the class boundary IS the indirection). No SArrayField descent —
+# Python has no case for it.
+
+fun ceReachOpt(sp: Spec|None, out: List<String>,
+               map: NameMap): List<String>
+  ret match(sp)
+    (s2: Spec) => ceReach(s2, out, map)
+    ()         => out
+
+fun ceReach(sp: Spec, out: List<String>, map: NameMap): List<String>
+  ret match(sp)
+    (e2: SEnum)        => contains2(out, e2.seRoot)
+      ? out
+      : append(out, e2.seRoot)
+    (t2: STuple)       => ceReachEntries(chain(t2.stEntries), out, map)
+    (cm: SCombination) => ceReachList(chain(cm.scTypes), out, map)
+    (cl: SCallable)    => ceReachOpt(cl.scResult,
+                                     ceReach(cl.scParams2, out, map), map)
+    (n: SNamed)        => match(ceLookup2(map, n.snName))
+      (root: String) => contains2(out, root) ? out : append(out, root)
+      ()             => out
+    (o: Spec)          => out
+
+fun [tail] ceReachEntries(es: Chain<SEntry>, out: List<String>,
+                          map: NameMap): List<String>
+  ret match(es)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => ceReachEntries(l.next,
+                                      ceReachOpt(l.value.seType, out, map),
+                                      map)
+
+fun [tail] ceReachList(ss: Chain<Spec>, out: List<String>,
+                       map: NameMap): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => ceReachList(l.next, ceReach(l.value, out, map), map)
+
+# The directed graph between root names.
+class [final] EEdges(eeNames: List<String>, eeChildren: List<List<String>>)
+
+fun ceEdges(roots: ERoots, map: NameMap): EEdges
+  ret ceEdgeLoop(chain(roots.erNames), chain(roots.erSpecs), map,
+                 EEdges(List<String>(), List<List<String>>()))
+
+fun [tail] ceEdgeLoop(ns: Chain<String>, sps: Chain<SEnum>, map: NameMap,
+                      acc: EEdges): EEdges
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (n: ChainLink)  => match(sps)
+      (nil2: ChainEnd) => acc
+      (s2: ChainLink)  => ceEdgeLoop(n.next, s2.next, map,
+          EEdges(append(acc.eeNames, n.value),
+                 append(acc.eeChildren,
+                        ceFieldsReach(chain(s2.value.seAllFields),
+                                      List<String>(), map))))
+
+fun [tail] ceFieldsReach(fs: Chain<SField>, out: List<String>,
+                         map: NameMap): List<String>
+  ret match(fs)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => ceFieldsReach(l.next,
+                                     ceReach(l.value.sfType, out, map), map)
+
+fun ceChildrenOf(work: EEdges, v: String): List<String>
+  ret ceChildLoop(chain(work.eeNames), chain(work.eeChildren), v)
+
+fun [tail] ceChildLoop(ns: Chain<String>, cs: Chain<List<String>>,
+                       v: String): List<String>
+  ret match(ns)
+    (nil: ChainEnd) => List<String>()
+    (n: ChainLink)  => match(cs)
+      (nil2: ChainEnd) => List<String>()
+      (c: ChainLink)   => n.value == v ? c.value
+                                       : ceChildLoop(n.next, c.next, v)
+
+# ── Tarjan's SCC algorithm ───────────────────────────────────────────────────
+# Deterministic: roots and neighbours visited in sorted order, like Python.
+
+class [final] Tj(tjIndex: Dict<String, Int>, tjLow: Dict<String, Int>,
+                 tjStack: List<String>, tjOn: List<String>,
+                 tjSccs: List<List<String>>, tjN: Int)
+
+fun ceSccs(work: EEdges): List<List<String>>
+  let order = sortNamesAsc(chain(work.eeNames), List<String>())
+  ret tjRoots(chain(order), work,
+              Tj(Dict<String, Int>(), Dict<String, Int>(), List<String>(),
+                 List<String>(), List<List<String>>(), 0)).tjSccs
+
+fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj): Tj
+  ret match(ns)
+    (nil: ChainEnd) => st
+    (l: ChainLink)  => match(get(st.tjIndex, l.value))
+      (i: Int) => tjRoots(l.next, work, st)
+      ()       => tjRoots(l.next, work, tjVisit(l.value, work, st))
+
+fun tjVisit(v: String, work: EEdges, st0: Tj): Tj
+  let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
+               append(st0.tjStack, v), append(st0.tjOn, v),
+               st0.tjSccs, st0.tjN + 1)
+  let st2 = tjNeighbours(chain(sortNamesAsc(chain(ceChildrenOf(work, v)),
+                                            List<String>())),
+                         v, work, st1)
+  ret tjIndexOf(st2, v) == tjLowOf(st2, v) ? tjPop(st2, v) : st2
+
+fun [tail] tjNeighbours(ws: Chain<String>, v: String, work: EEdges,
+                        st: Tj): Tj
+  ret match(ws)
+    (nil: ChainEnd) => st
+    (l: ChainLink)  => match(get(st.tjIndex, l.value))
+      (i: Int) => contains2(st.tjOn, l.value)
+        ? tjNeighbours(l.next, v, work,
+                       tjSetLow(st, v, minInt(tjLowOf(st, v), i)))
+        : tjNeighbours(l.next, v, work, st)
+      ()       => tjVisit(l.value, work, st)
+        |> (st2) => tjNeighbours(l.next, v, work,
+                                 tjSetLow(st2, v,
+                                          minInt(tjLowOf(st2, v),
+                                                 tjLowOf(st2, l.value))))
+
+fun tjIndexOf(st: Tj, v: String): Int
+  ret match(get(st.tjIndex, v))
+    (i: Int) => i
+    ()       => -1
+
+fun tjLowOf(st: Tj, v: String): Int
+  ret match(get(st.tjLow, v))
+    (i: Int) => i
+    ()       => -1
+
+fun tjSetLow(st: Tj, v: String, x: Int): Tj
+  ret Tj(st.tjIndex, put(st.tjLow, v, x), st.tjStack, st.tjOn, st.tjSccs,
+         st.tjN)
+
+fun minInt(a: Int, b: Int): Int
+  ret a < b ? a : b
+
+# Pop the stack down to v inclusive — that suffix is one SCC. Python pops
+# ONE AT A TIME, appending: the member list is [latest-discovered … v], the
+# REVERSE of the stack suffix. The order is observable (hoisted-statement
+# order in ast_inline's SCC hoisting), so it must match exactly.
+fun tjPop(st: Tj, v: String): Tj
+  let at = tjLastIndex(chain(st.tjStack), v, 0, -1)
+  let scc = reverse<String>(drop(st.tjStack, at))
+  ret Tj(st.tjIndex, st.tjLow, take(st.tjStack, at),
+         tjRemoveAll(chain(st.tjOn), scc, List<String>()),
+         append(st.tjSccs, scc), st.tjN)
+
+fun [tail] tjLastIndex(ss: Chain<String>, v: String, at: Int, best: Int): Int
+  ret match(ss)
+    (nil: ChainEnd) => best
+    (l: ChainLink)  => tjLastIndex(l.next, v, at + 1,
+                                   l.value == v ? at : best)
+
+fun [tail] tjRemoveAll(ss: Chain<String>, gone: List<String>,
+                       acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => contains2(gone, l.value)
+      ? tjRemoveAll(l.next, gone, acc)
+      : tjRemoveAll(l.next, gone, append(acc, l.value))
+
+# ── cycle breakers ───────────────────────────────────────────────────────────
+# Iterate until no cycles remain; per round, every cyclic SCC contributes its
+# minimum by (not System::, not self-loop, fewest all_fields, name) — the
+# self-loop test reads the CURRENT work graph, updated as breakers are
+# removed within the round, exactly like Python.
+
+fun cePickBreakers(edges: EEdges, roots: ERoots): List<String>
+  ret cePickLoop(edges, roots, List<String>())
+
+fun [tail] cePickLoop(work: EEdges, roots: ERoots,
+                      acc: List<String>): List<String>
+  let cyclic = ceCyclicSccs(chain(ceSccs(work)), work, List<List<String>>())
+  if isEmpty(cyclic)
+    ret acc
+  ret ceBreakSccs(chain(cyclic), work, roots, acc)
+    |> (out) => cePickLoop(out.pbWork, roots, out.pbChosen)
+
+fun [tail] ceCyclicSccs(ss: Chain<List<String>>, work: EEdges,
+                        acc: List<List<String>>): List<List<String>>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceIsCyclic(l.value, work)
+      ? ceCyclicSccs(l.next, work, append(acc, l.value))
+      : ceCyclicSccs(l.next, work, acc)
+
+fun ceIsCyclic(scc: List<String>, work: EEdges): Bool
+  if !isEmpty(drop(scc, 1))
+    ret true
+  ret ceAnySelfLoop(chain(scc), work)
+
+fun [tail] ceAnySelfLoop(ss: Chain<String>, work: EEdges): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => contains2(ceChildrenOf(work, l.value), l.value)
+      ? true
+      : ceAnySelfLoop(l.next, work)
+
+class [final] PickOut(pbWork: EEdges, pbChosen: List<String>)
+
+fun [tail] ceBreakSccs(ss: Chain<List<String>>, work: EEdges, roots: ERoots,
+                       acc: List<String>): PickOut
+  ret match(ss)
+    (nil: ChainEnd) => PickOut(work, acc)
+    (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, "")
+      |> (chosen) => ceBreakSccs(l.next, ceRemoveNode(work, chosen), roots,
+                                 append(acc, chosen))
+
+fun [tail] ceMinBy(ss: Chain<String>, work: EEdges, roots: ERoots,
+                   best: String): String
+  ret match(ss)
+    (nil: ChainEnd) => best
+    (l: ChainLink)  => best == "" || ceKeyLess(l.value, best, work, roots)
+      ? ceMinBy(l.next, work, roots, l.value)
+      : ceMinBy(l.next, work, roots, best)
+
+# The sort key tuple (not System::, not self-loop, len(all_fields), name),
+# compared lexicographically.
+fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots): Bool
+  let aSys = ceIsSystem(a)
+  let bSys = ceIsSystem(b)
+  if aSys != bSys
+    ret aSys                              # System:: sorts FIRST (False < True)
+  let aSelf = contains2(ceChildrenOf(work, a), a)
+  let bSelf = contains2(ceChildrenOf(work, b), b)
+  if aSelf != bSelf
+    ret aSelf
+  let aLen = ceFieldCount(roots, a)
+  let bLen = ceFieldCount(roots, b)
+  if aLen != bLen
+    ret aLen < bLen
+  ret a < b
+
+fun ceIsSystem(name: String): Bool
+  ret startsWith(simpleName(name), "System::")
+
+fun ceFieldCount(roots: ERoots, name: String): Int
+  ret match(ceRootSpecOf(roots, name))
+    (es: SEnum) => chainLength(chain(es.seAllFields))
+    ()          => 0
+
+fun ceRemoveNode(work: EEdges, v: String): EEdges
+  ret ceRemoveLoop(chain(work.eeNames), chain(work.eeChildren), v,
+                   EEdges(List<String>(), List<List<String>>()))
+
+fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
+                        v: String, acc: EEdges): EEdges
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (n: ChainLink)  => match(cs)
+      (nil2: ChainEnd) => acc
+      (c: ChainLink)   => n.value == v
+        ? ceRemoveLoop(n.next, c.next, v, acc)
+        : ceRemoveLoop(n.next, c.next, v,
+                       EEdges(append(acc.eeNames, n.value),
+                              append(acc.eeChildren,
+                                     tjRemoveAll(chain(c.value),
+                                                 append(List<String>(), v),
+                                                 List<String>()))))
+
+# ── the rewrite ──────────────────────────────────────────────────────────────
+# Every EnumSpec anywhere: is_complex set by membership, and NamedSpec
+# children of all_fields resolved to their target EnumSpec (with the flag).
+# Pruned generic EnumSpecs (not in roots) are marked complex so generate()
+# never expands their placeholder fields.
+
+# ceDoneRoots/ceDoneSpecs: the per-pass resolved-by-root table — each
+# canonical root's full resolution with EMPTY visited, precomputed once with
+# a single shared memo (Python's per-pass amortisation). Tree sites hit it
+# in O(1) when their spec matches canonical content.
+class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>,
+                    ceDoneRoots: List<String>, ceDoneSpecs: List<Spec>)
+
+fun markComplexEnums(statements: List<PStmt>): List<PStmt>
+  let roots = ceCollectRoots(statements)
+  if isEmpty(roots.erNames)
+    ret statements
+  let map = ceNameMap(roots)
+  let complexSet = cePickBreakers(ceEdges(roots, map), roots)
+  if isEmpty(complexSet)
+    ret statements
+  let c0 = CeCtx(roots, map, complexSet, List<String>(), List<Spec>())
+  let table = ceBuildTable(chain(roots.erNames), chain(roots.erSpecs), c0,
+                           List<String>(), List<Spec>(),
+                           Dict<String, Spec>())
+  ret ceStmts(chain(statements),
+              CeCtx(roots, map, complexSet, table.roots2, table.specs2),
+              List<PStmt>())
+
+# `visited` breaks CYCLES, but on its own it does not stop the walk
+# re-deriving a SHARED subgraph once per path that reaches it — and the
+# number of paths through a densely mutually-recursive enum graph is
+# exponential in its size. Python's cure is a per-pass memo keyed on OBJECT
+# IDENTITY + visited — a free O(1) key the pure port doesn't have (a full
+# structural key re-created the collapse but paid O(subtree) per call, which
+# timed the giant node/param graphs out). The port keys on ROOT NAME plus a
+# depth-0 fingerprint (field names, valid leaves, flag) plus the sorted
+# visited set: within one pass, embedded enum copies are SNAPPED to their
+# canonical all_fields (the generics finalize refresh), so same root + same
+# shallow shape means same content and hence same resolution — verified
+# byte-for-byte by the postmono and C contracts. Threaded, seeded fresh per
+# ceMarkEnumNode entry.
+fun ceMemoKey(e2: SEnum, visited: List<String>): String
+  ret e2.seRoot + "#" + join(e2.seValidLeaves, "|")
+      + "#" + ceFieldNames(chain(e2.seAllFields), StringBuilder())
+      + "#" + (e2.seComplex ? "1" : "0")
+      + "S" + join(sort(visited), ",")
+
+fun [tail] ceFieldNames(fs: Chain<SField>, sb: StringBuilder): String
+  ret match(fs)
+    (nil: ChainEnd) => toString(sb)
+    (l: ChainLink)  => ceFieldNames(l.next, append(sb, l.value.sfName + ","))
+
+fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx,
+                   memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  ret match(ft)
+    (n: SNamed) => (ceResolveNamedLeaf(n, ft, c), memo)
+    (e2: SEnum) => ceResolveEnumMemo(e2, visited, c, memo)
+    (o: Spec)   => (ft, memo)
+
+fun ceResolveNamedLeaf(n: SNamed, ft: Spec, c: CeCtx): Spec
+  ret match(ceLookup2(c.ceMap, n.snName))
+    (canonical: String) => match(ceRootSpecOf(c.ceRoots, canonical))
+      (spec: SEnum) => ceWithFlag(spec, contains2(c.ceSet, canonical))
+      ()            => ft
+    ()                  => ft
+
+# The per-pass table (built once, empty-visited resolutions of the CANONICAL
+# roots) serves every tree site whose spec matches canonical content — O(1),
+# Python's cross-site amortisation. Anything else (stale copies; recursion
+# with a non-empty visited during the table build itself) goes through the
+# threaded memo.
+fun [tail] ceBuildTable(ns: Chain<String>, sps: Chain<SEnum>, c0: CeCtx,
+                        roots2: List<String>, specs2: List<Spec>,
+                        memo: Dict<String, Spec>): (roots2: List<String>, specs2: List<Spec>)
+  ret match(ns)
+    (nil: ChainEnd) => (roots2, specs2)
+    (n: ChainLink)  => match(sps)
+      (nil2: ChainEnd) => (roots2, specs2)
+      (s2: ChainLink)  => ceResolveEnumMemo(s2.value, List<String>(), c0,
+                                            memo)
+        |> (out) => ceBuildTable(n.next, s2.next, c0,
+                                 append(roots2, n.value),
+                                 append(specs2, out.spec), out.memo)
+
+fun [tail] ceTableLookup(ns: Chain<String>, sps: Chain<Spec>,
+                         root: String): Spec|None
+  ret match(ns)
+    (nil: ChainEnd) => None
+    (n: ChainLink)  => match(sps)
+      (nil2: ChainEnd) => None
+      (s2: ChainLink)  => n.value == root
+        ? s2.value
+        : ceTableLookup(n.next, s2.next, root)
+
+fun ceResolveEnumMemo(e2: SEnum, visited: List<String>, c: CeCtx,
+                      memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  ret match(ceTableHit(e2, visited, c))
+    (hit: Spec) => (hit, memo)
+    ()          => ceResolveEnumKeyed(e2, visited, c, memo)
+
+# A tree site (empty visited) whose spec matches the CANONICAL root's
+# depth-0 shape resolves to the precomputed table entry.
+fun ceTableHit(e2: SEnum, visited: List<String>, c: CeCtx): Spec|None
+  if !isEmpty(visited) || isEmpty(c.ceDoneRoots)
+    ret None
+  ret match(ceRootSpecOf(c.ceRoots, e2.seRoot))
+    (canonical: SEnum) => ceMemoKey(e2, visited)
+                          == ceMemoKey(canonical, visited)
+      ? ceTableLookup(chain(c.ceDoneRoots), chain(c.ceDoneSpecs), e2.seRoot)
+      : None
+    ()                 => None
+
+fun ceResolveEnumKeyed(e2: SEnum, visited: List<String>, c: CeCtx,
+                       memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  let key = ceMemoKey(e2, visited)
+  ret match(get(memo, key))
+    (hit: Spec) => (hit, memo)
+    ()          => ceResolveEnum(e2, visited, c, memo)
+      |> (out) => (out.spec, put(out.memo, key, out.spec))
+
+fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx,
+                  memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+  let isComplex = contains2(c.ceSet, e2.seRoot)
+  # A stale reference to a PRUNED generic: mark complex unconditionally.
+  if !isComplex && !contains2(c.ceRoots.erNames, e2.seRoot)
+    ret (ceWithFlag(e2, true), memo)
+  if contains2(visited, e2.seRoot)
+    ret (ceWithFlag(e2, isComplex), memo)
+  let v2 = append(visited, e2.seRoot)
+  let out = ceFields(chain(e2.seAllFields), v2, c, List<SField>(), memo)
+  ret (SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
+             e2.seLine, out.fields, isComplex),
+       out.memo)
+
+fun [tail] ceFields(fs: Chain<SField>, visited: List<String>, c: CeCtx,
+                    acc: List<SField>,
+                    memo: Dict<String, Spec>): (fields: List<SField>, memo: Dict<String, Spec>)
+  ret match(fs)
+    (nil: ChainEnd) => (acc, memo)
+    (l: ChainLink)  => ceResolveNamed(l.value.sfType, visited, c, memo)
+      |> (out) => ceFields(l.next, visited, c,
+                           append(acc, SField(l.value.sfName, out.spec)),
+                           out.memo)
+
+fun ceWithFlag(e2: SEnum, flag: Bool): Spec
+  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
+            e2.seLine, e2.seAllFields, flag)
+
+# ── the traversal (search_and_replace visit sets, as ever) ──────────────────
+
+fun [tail] ceStmts(ss: Chain<PStmt>, c: CeCtx, acc: List<PStmt>): List<PStmt>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceStmts(l.next, c, append(acc, ceStmt(l.value, c)))
+
+fun ceStmt(st: PStmt, c: CeCtx): PStmt
+  ret match(st)
+    (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, ceStmt(f.fParams, c),
+                         ceExprOpt(f.fBody, c), ceSpecOpt(f.fRet, c),
+                         ceSpecList(f.fWheres, c), f.psfLine,
+                         f.fRetInferred, f.fNested, f.fImports)
+    (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, ceSpecOpt(l.lType, c),
+                         ceExprOpt(l.lDefault, c), l.lArrayLen, l.lWheres,
+                         l.pslLine, l.lTypeInferred, l.lImports)
+    (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
+                                        ceSpecOpt(d.dType, c),
+                                        ceStmts(chain(d.dTargets), c,
+                                                List<PStmt>()),
+                                        ceExprOpt(d.dDefault, c),
+                                        d.psdLine, d.dTypeInferred)
+    (cl: PsClass) => PsClass(cl.cName, cl.cAttrs, cl.cGens,
+                             ceStmt(cl.cParams, c),
+                             ceSpecList(cl.cImplements, c),
+                             ceSpecList(cl.cWheres, c),
+                             ceStmts(chain(cl.cMembers), c, List<PStmt>()),
+                             cl.cIsInterface, cl.pscLine,
+                             ceSpecsOpt(cl.cAllParents, c),
+                             cl.cAllSlots, cl.cImports)
+    (e2: PsEnum) => PsEnum(e2.eName, e2.eGens, ceStmt(e2.eParams, c),
+                           ceStmts(chain(e2.eVariants), c, List<PStmt>()),
+                           e2.eHasParams, e2.pseLine, e2.eRootName,
+                           ceSpecOpt(e2.eSpec, c), e2.eImports)
+    (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
+                                     ceSpec(ta.taType, c), ta.taWheres,
+                                     ta.pstLine, ta.taImports)
+    (rt: PsRet)  => PsRet(ceExpr(rt.retValue, c), rt.psrLine)
+    (a: PsAction) => PsAction(ceExpr(a.action, c), a.psaLine)
+    (i: PsIf)    => PsIf(ceExpr(i.ifCond, c),
+                         ceStmts(chain(i.ifTrue), c, List<PStmt>()),
+                         ceStmts(chain(i.ifFalse), c, List<PStmt>()),
+                         i.psifLine)
+    (o: PStmt)   => st
+
+fun ceExprOpt(x: PExpr|None, c: CeCtx): PExpr|None
+  ret match(x)
+    (e2: PExpr) => ceExpr(e2, c)
+    ()          => None
+
+fun ceExpr(x: PExpr, c: CeCtx): PExpr
+  ret match(x)
+    (nm: PeName)   => PeName(nm.refName, ceSpecList(nm.refTypeParams, c),
+                             nm.penLine, ceSpecOpt(nm.penTrait, c))
+    (d: PeDot)     => PeDot(ceExpr(d.base, c), d.member, d.pedLine)
+    (cc: PeCall)   => PeCall(ceExpr(cc.function, c), ceExpr(cc.parameter, c),
+                             cc.pecLine)
+    (tp: PeTuple)  => PeTuple(ceTupEnts(chain(tp.exprs), c, List<PTupEnt>()),
+                              tp.petLine)
+    (te: PeTernary) => PeTernary(ceExpr(te.condition, c),
+                                 ceExpr(te.trueResult, c),
+                                 ceExpr(te.falseResult, c), te.pety)
+    (lm: PeLambda) => PeLambda(ceStmt(lm.lamParams, c),
+                               ceExpr(lm.lamBody, c), lm.pelLine,
+                               ceSpecOpt(lm.lamRet, c))
+    (bk: PeBlock)  => PeBlock(ceStmts(chain(bk.blockStmts), c,
+                                      List<PStmt>()),
+                              ceExpr(bk.blockValue, c), bk.blockTag,
+                              bk.pebkLine)
+    (mt: PeMatch)  => PeMatch(ceExpr(mt.subject, c),
+                              ceArms(chain(mt.arms), c, List<PArm>()),
+                              mt.pemLine)
+    (op: PeBuiltinOp) => PeBuiltinOp(ceSpec(op.opType, c), op.opName,
+                                     ceExpr(op.opParams, c), op.peboLine)
+    (nw: PeNew)    => PeNew(ceSpec(nw.newType, c), ceExpr(nw.newParam, c),
+                            nw.penwLine)
+    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
+                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                   PFieldArg(fa.faName, ceExpr(fa.faValue, c))),
+                                 ceSpecList(ne.neTypeParams, c),
+                                 ne.penewLine)
+    (ar: PeArrayRead) => PeArrayRead(ceExpr(ar.arrObj, c),
+                                     ceExpr(ar.arrIndex, c), ar.pearLine)
+    (cv: PeConvert) => PeConvert(ceExpr(cv.convInner, c),
+                                 ceSpec(cv.convTarget, c), cv.pecvLine)
+    (pl: PeParallel) => PeParallel(ceExpr(pl.parParams, c), pl.pepLine)
+    (o: PExpr)     => x
+
+fun [tail] ceTupEnts(es: Chain<PTupEnt>, c: CeCtx,
+                     acc: List<PTupEnt>): List<PTupEnt>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceTupEnts(l.next, c,
+        append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
+                            ceExpr(l.value.tupValue, c))))
+
+fun [tail] ceArms(as2: Chain<PArm>, c: CeCtx, acc: List<PArm>): List<PArm>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceArms(l.next, c,
+        append(acc, PArm(l.value.armName, ceSpecOpt(l.value.armType, c),
+                         ceExpr(l.value.armBody, c), l.value.armLiterals,
+                         ceExprOpt(l.value.armGuard, c), l.value.parmLine)))
+
+fun ceSpecOpt(sp: Spec|None, c: CeCtx): Spec|None
+  ret match(sp)
+    (s2: Spec) => ceSpec(s2, c)
+    ()         => None
+
+fun ceSpecsOpt(ss: List<Spec>|None, c: CeCtx): List<Spec>|None
+  ret match(ss)
+    (l: List<Spec>) => ceSpecList(l, c)
+    ()              => None
+
+fun ceSpecList(ts: List<Spec>, c: CeCtx): List<Spec>
+  ret ceSpecLoop(chain(ts), c, List<Spec>())
+
+fun [tail] ceSpecLoop(ts: Chain<Spec>, c: CeCtx,
+                      acc: List<Spec>): List<Spec>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceSpecLoop(l.next, c, append(acc, ceSpec(l.value, c)))
+
+fun ceSpec(sp: Spec, c: CeCtx): Spec
+  ret match(sp)
+    (e2: SEnum)        => ceMarkEnumNode(e2, c)
+    (cl: SClass)       => SClass(cl.scName, ceSpecList(cl.scParams, c),
+                                 cl.scLine)
+    (n: SNamed)        => sp   # traversal LEAF
+    (cm: SCombination) => SCombination(ceSpecList(cm.scTypes, c),
+                                       cm.scmLine)
+    (t2: STuple)       => STuple(ceEntries(chain(t2.stEntries), c,
+                                           List<SEntry>()),
+                                 t2.stLine)
+    (cb: SCallable)    => SCallable(ceSpec(cb.scParams2, c),
+                                    ceSpecOpt(cb.scResult, c), cb.sclLine)
+    (af: SArrayField)  => SArrayField(ceSpec(af.safElem, c),
+                                      af.safLenField, af.safLine)
+    (ls: SLazyStub)    => SLazyStub(ceSpecOpt(ls.slsTarget, c), ls.slsLine)
+    (o: Spec)          => sp
+
+# EnumSpec traversal: params visited generally, then the mark callback.
+fun ceMarkEnumNode(e2: SEnum, c: CeCtx): Spec
+  let out = ceFields(chain(e2.seAllFields), List<String>(), c,
+                     List<SField>(), Dict<String, Spec>())
+  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
+            ceSpecList(e2.seParams, c), e2.seLine, out.fields,
+            contains2(c.ceSet, e2.seRoot))
+
+fun [tail] ceEntries(es: Chain<SEntry>, c: CeCtx,
+                     acc: List<SEntry>): List<SEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceEntries(l.next, c,
+        append(acc, SEntry(l.value.seName,
+                           ceSpecOpt(l.value.seType, c),
+                           l.value.seDefault)))

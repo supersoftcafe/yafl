@@ -1,0 +1,245 @@
+# bootstrap/tokenizer.yafl — stage 1 of the self-hosted YAFL compiler.
+#
+# A faithful reimplementation of compiler/parsing/tokenizer.py: the same token
+# kinds, the same rule order, the same lexemes, byte for byte — verified by
+# tests/test_bootstrap_tokenizer.py, which diffs this tokenizer's dump against
+# the Python one across every stdlib and example source file.
+#
+#   yafl-tokenize < source.yafl        one `KIND|indent|line|col|text` per token
+#
+# Rule order at each position (first match wins, exactly as the Python rule
+# list): whitespace, `#` comment, re"regex", "string", 'char', identifier
+# (plain or `backtick`), symbols (two-char before one-char), number, CRAP.
+# Keywords tokenise as SYMBOLS. Offsets are 1-based byte columns; every token
+# on a line carries the line's indent (its leading whitespace length).
+namespace Bootstrap::Parse
+
+import System
+
+# ══ Tokens ═══════════════════════════════════════════════════════════════════
+
+enum TokKind
+  enum KString()
+  enum KIdent()
+  enum KSymbol()
+  enum KNumber()
+  enum KCrap()
+  enum KEof()
+  enum KChar()
+  enum KRegex()
+
+class [final] Token(kind: TokKind, text: System::String,
+                    indent: System::Int, line: System::Int, col: System::Int)
+
+fun kindName(k: TokKind): System::String
+  ret match(k)
+    (a: KString) => "STRING"
+    (b: KIdent)  => "IDENTIFIER"
+    (c: KSymbol) => "SYMBOLS"
+    (d: KNumber) => "NUMBER"
+    (e: KCrap)   => "CRAP"
+    (f: KEof)    => "EOF"
+    (g: KChar)   => "CHAR"
+    (h: KRegex)  => "REGEX"
+
+fun isKeyword(s: System::String): System::Bool
+  ret match(s)
+    ("ret", "let", "fun", "typealias", "where", "class", "interface",
+     "instance", "import", "namespace", "__builtin_type__", "__builtin_op__",
+     "__parallel__", "match", "enum", "if", "else") => true
+    ()                                              => false
+
+# ══ Character classes ════════════════════════════════════════════════════════
+# Bytes >= 128 (UTF-8 continuation/lead bytes) count as identifier characters,
+# mirroring Python's unicode-aware \w on multi-byte letters.
+
+fun isWs(c: System::Int32): System::Bool
+  ret c == ' ' || c == '\t' || c == 11i32     # [\t\v ], the Python __ws class
+
+fun isDigit(c: System::Int32): System::Bool
+  ret match(c)
+    ('0' .. '9') => true
+    ()           => false
+
+fun isAlpha(c: System::Int32): System::Bool
+  ret match(c)
+    ('a' .. 'z', 'A' .. 'Z') => true
+    ()                       => false
+
+fun isIdentStart(c: System::Int32): System::Bool
+  ret isAlpha(c) || c == '_' || c >= 128i32
+
+fun isWordChar(c: System::Int32): System::Bool
+  ret isIdentStart(c) || isDigit(c)
+
+fun isHexDigit(c: System::Int32): System::Bool
+  ret match(c)
+    ('0' .. '9', 'a' .. 'f', 'A' .. 'F', '_') => true
+    ()                                        => false
+
+fun isBinDigit(c: System::Int32): System::Bool
+  ret match(c)
+    ('0', '1', '_') => true
+    ()              => false
+
+fun isOctDigit(c: System::Int32): System::Bool
+  ret match(c)
+    ('0' .. '7', '_') => true
+    ()                => false
+
+# ══ Lexeme scanners ══════════════════════════════════════════════════════════
+# Each returns the END (exclusive byte offset) of the lexeme starting at `pos`,
+# scanning one line `ln` (no newlines inside).
+
+# `"body"` / `'body'` / the quoted tail of re"body": an escape consumes two
+# bytes; the closing quote is included when present; a lone trailing backslash
+# ends the lexeme BEFORE it (the Python `(\\.|[^\\"])*` cannot extend past it).
+fun quotedEnd(ln: System::String, pos: System::Int, quote: System::Int32): System::Int
+  fun [tail] body(i: System::Int): System::Int
+    if i >= System::length(ln)
+      ret i
+    let c = System::byteAt(ln, i)
+    if c == '\\'
+      ret i + 2 <= System::length(ln) ? body(i + 2) : i
+    ret c == quote ? i + 1 : body(i + 1)
+  ret body(pos + 1)
+
+# A `backtick quoted` identifier, or -1 when the closing backtick is missing
+# on this line (the Python rule then fails and the backtick byte falls through
+# to CRAP).
+fun backtickEnd(ln: System::String, pos: System::Int): System::Int
+  let close = System::findByte(ln, '`', pos + 1)
+  ret close < 0 ? -1 : close + 1
+
+fun [tail] wordEnd(ln: System::String, pos: System::Int): System::Int
+  ret pos < System::length(ln) && isWordChar(System::byteAt(ln, pos))
+    ? wordEnd(ln, pos + 1) : pos
+
+# Numeric literal end. Mirrors the Python alternation: hex/bin/oct prefix
+# forms (falling back to plain decimal when the prefix has no digits), or
+# decimal with optional fraction (a dot NOT followed by another dot), optional
+# exponent (which requires a digit), and an optional alpha suffix.
+fun numberEnd(ln: System::String, pos: System::Int): System::Int
+  fun at(i: System::Int): System::Int32
+    ret i < System::length(ln) ? System::byteAt(ln, i) : -1i32
+  fun [tail] spanOf(i: System::Int, ok: (:System::Int32): System::Bool): System::Int
+    ret i < System::length(ln) && ok(System::byteAt(ln, i)) ? spanOf(i + 1, ok) : i
+  fun suffix(i: System::Int): System::Int
+    ret isAlpha(at(i)) ? wordEnd(ln, i + 1) : i
+  fun prefixed(digitsFrom: System::Int, ok: (:System::Int32): System::Bool): System::Int
+    let stop = spanOf(digitsFrom, ok)
+    ret stop == digitsFrom ? -1 : suffix(stop)
+  fun decimal(): System::Int
+    let ints = spanOf(pos, isDigitOrUnderscore)
+    let frac = at(ints) == '.' && at(ints + 1) != '.' ? spanOf(ints + 1, isDigitOrUnderscore) : ints
+    let esign = at(frac) == 'e' || at(frac) == 'E'
+      ? (at(frac + 1) == '+' || at(frac + 1) == '-' ? frac + 2 : frac + 1)
+      : -1
+    let expo = esign >= 0 && isDigit(at(esign)) ? spanOf(esign + 1, isDigitOrUnderscore) : frac
+    ret suffix(expo)
+  if at(pos) == '0'
+    let p = at(pos + 1)
+    if p == 'x' || p == 'X'
+      let h = prefixed(pos + 2, isHexDigit)
+      if h >= 0
+        ret h
+    if p == 'b' || p == 'B'
+      let b = prefixed(pos + 2, isBinDigit)
+      if b >= 0
+        ret b
+    if p == 'o' || p == 'O'
+      let o = prefixed(pos + 2, isOctDigit)
+      if o >= 0
+        ret o
+  ret decimal()
+
+fun isDigitOrUnderscore(c: System::Int32): System::Bool
+  ret isDigit(c) || c == '_'
+
+# Two-byte operator at `pos`, else one byte when it is a symbol byte, else 0.
+fun symbolLen(ln: System::String, pos: System::Int): System::Int
+  let two = pos + 2 <= System::length(ln) ? System::slice(ln, pos, pos + 2) : ""
+  ret match(two)
+    ("&&", "||", "==", "|>", "?>", "<<", ">>",
+     "!=", "<=", ">=", "=>", "::", "..") => 2
+    () => System::containsByte("=%*+?-/&|^!~()[]<>.;:,", System::byteAt(ln, pos)) ? 1 : 0
+
+# Python's LineRef offsets are CHARACTER columns, and hash6 hashes them — so
+# the port counts codepoints, not bytes. A continuation byte (10xxxxxx)
+# continues the current character; every other byte starts a new one.
+fun charCol(ln: System::String, byteOff: System::Int): System::Int
+  ret 1 + countChars(ln, 0, byteOff, 0)
+
+fun [tail] countChars(ln: System::String, at: System::Int, stop: System::Int,
+                      acc: System::Int): System::Int
+  if at >= stop
+    ret acc
+  let c = System::byteAt(ln, at)
+  ret countChars(ln, at + 1, stop, acc + (isContinuation(c) ? 0 : 1))
+
+fun isContinuation(c: System::Int32): System::Bool
+  ret (c & 192i32) == 128i32
+
+# ══ Line scanning ════════════════════════════════════════════════════════════
+
+fun [tail] wsEnd(ln: System::String, pos: System::Int): System::Int
+  ret pos < System::length(ln) && isWs(System::byteAt(ln, pos))
+    ? wsEnd(ln, pos + 1) : pos
+
+# One token starting at `pos` (not whitespace, not a comment):
+# (kind, end offset).
+fun nextToken(ln: System::String, pos: System::Int): (kind: TokKind, stop: System::Int)
+  let c = System::byteAt(ln, pos)
+  if c == '"'
+    ret (KString(), quotedEnd(ln, pos, '"'))
+  if c == '\''
+    ret (KChar(), quotedEnd(ln, pos, '\''))
+  if isIdentStart(c)
+    let stop = wordEnd(ln, pos + 1)
+    # re"..." — only when the identifier scan stopped exactly at `re` and a
+    # quote follows (the REGEX rule precedes IDENTIFIER in the Python order).
+    if stop == pos + 2 && System::slice(ln, pos, stop) == "re"
+       && stop < System::length(ln) && System::byteAt(ln, stop) == '"'
+      ret (KRegex(), quotedEnd(ln, stop, '"'))
+    ret (KIdent(), stop)
+  if c == '`'
+    let bt = backtickEnd(ln, pos)
+    if bt >= 0
+      ret (KIdent(), bt)
+    ret (KCrap(), pos + 1)
+  let sym = symbolLen(ln, pos)
+  if sym > 0
+    ret (KSymbol(), pos + sym)
+  if isDigit(c)
+    ret (KNumber(), numberEnd(ln, pos))
+  ret (KCrap(), pos + 1)
+
+fun [tail] scanLine(ln: System::String, lineNo: System::Int, indent: System::Int,
+                    pos: System::Int, acc: ListBuilder<Token>): ListBuilder<Token>
+  let at = wsEnd(ln, pos)
+  if at >= System::length(ln) || System::byteAt(ln, at) == '#'
+    ret acc
+  let t = nextToken(ln, at)
+  let text = System::slice(ln, at, t.stop)
+  let kind = match(t.kind)
+    (i: KIdent) => isKeyword(text) ? KSymbol() : t.kind
+    (other)     => t.kind
+  ret scanLine(ln, lineNo, indent, t.stop,
+               push(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
+
+fun [tail] scanLines(lines: Chain<System::String>, lineNo: System::Int,
+                     acc: ListBuilder<Token>): ListBuilder<Token>
+  ret match(lines)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => scanLines(l.next, lineNo + 1,
+                                 scanLine(l.value, lineNo, wsEnd(l.value, 0), 0, acc))
+
+fun eofToken(toks: List<Token>): Token
+  ret match(last(toks))
+    (t: Token) => Token(KEof(), "", 0, t.line,
+                        t.col + countChars(t.text, 0, System::length(t.text), 0))
+    ()         => Token(KEof(), "", 0, 1, 1)
+
+fun tokenize(src: System::String): List<Token>
+  let toks = build(scanLines(chain(splitLines(src)), 1, builder<Token>()))
+  ret append(toks, eofToken(toks))

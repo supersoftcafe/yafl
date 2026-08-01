@@ -45,7 +45,7 @@ _BOOTSTRAP = _REPO / "bootstrap"
 # exactly as Python does).
 _CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
     + sorted((_REPO / "examples").glob("*.yafl")) \
-    + sorted((_REPO / "bootstrap").glob("*.yafl")) \
+    + sorted((_REPO / "bootstrap").rglob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
 # corpus_converge/: one small self-contained file per feature the port has
 # historically missed (the audit's regression pressure) — each was added RED

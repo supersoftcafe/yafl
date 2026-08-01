@@ -1,0 +1,217 @@
+# bootstrap/trim.yafl — dead-code elimination over the IR, ported from
+# lowering/trim.py: drop functions/objects/globals not reachable from
+# __entrypoint__, via the _scan_sets reference model (worklist to a fixpoint;
+# the survivors rebuild in SORTED name order, exactly like Python's
+# `sorted(to_app.*)` — C emission order depends on it).
+# function_reference_counts (the -O3 single-caller fold's multiplicity twin)
+# ports with the O-blocks, not here.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
+
+
+
+# Name SETS with dict membership (user ruling 2026-07-22) — the ordered
+# lists feed trim's sorted rebuild; the dicts make union/difference linear
+# (the old list-membership algebra was quadratic in the reachable set).
+class [final] StrSet(setNames: List<String>, setIx: Dict<String, Bool>)
+
+fun setEmpty(): StrSet
+  ret StrSet(List<String>(), Dict<String, Bool>())
+
+fun set1(name: String): StrSet
+  ret StrSet(list1(name), put(Dict<String, Bool>(), name, true))
+
+fun setHas(s2: StrSet, name: String): Bool
+  ret !(get(s2.setIx, name) is None)
+
+fun setAdd(s2: StrSet, name: String): StrSet
+  ret setHas(s2, name)
+    ? s2
+    : StrSet(append(s2.setNames, name), put(s2.setIx, name, true))
+
+fun setOfList(names: List<String>): StrSet
+  ret fold(names, setEmpty(), setAdd)
+
+fun setUnion(a: StrSet, b: StrSet): StrSet
+  ret fold(b.setNames, a, setAdd)
+
+fun setSub(a: StrSet, b: StrSet): StrSet
+  ret setOfList(filter(a.setNames, (x: String) => !setHas(b, x)))
+
+fun setIsEmpty(s2: StrSet): Bool
+  ret isEmpty(s2.setNames)
+
+class [final] ScanSets(ssGlobals: StrSet, ssObjects: StrSet,
+                       ssFunctions: StrSet)
+
+fun ssEmpty(): ScanSets
+  ret ScanSets(setEmpty(), setEmpty(), setEmpty())
+
+fun ssIsEmpty(s2: ScanSets): Bool
+  ret setIsEmpty(s2.ssGlobals) && setIsEmpty(s2.ssObjects)
+      && setIsEmpty(s2.ssFunctions)
+
+fun ssGlobal1(name: String): ScanSets
+  ret ScanSets(set1(name), setEmpty(), setEmpty())
+
+fun ssObject1(name: String): ScanSets
+  ret ScanSets(setEmpty(), set1(name), setEmpty())
+
+fun ssFunction1(name: String): ScanSets
+  ret ScanSets(setEmpty(), setEmpty(), set1(name))
+
+# Set-semantic union / difference over the name lists.
+fun ssUnion(a: ScanSets, b: ScanSets): ScanSets
+  ret ScanSets(setUnion(a.ssGlobals, b.ssGlobals),
+               setUnion(a.ssObjects, b.ssObjects),
+               setUnion(a.ssFunctions, b.ssFunctions))
+
+fun ssSub(a: ScanSets, b: ScanSets): ScanSets
+  ret ScanSets(setSub(a.ssGlobals, b.ssGlobals),
+               setSub(a.ssObjects, b.ssObjects),
+               setSub(a.ssFunctions, b.ssFunctions))
+
+# ── the reference scan (trim.py __scan_rparam / __scan_op) ───────────────────
+
+fun scanRParam(p: RParam): ScanSets
+  ret match(p)
+    (ia: RpInitArray)      => fold(ia.values, ssEmpty(), (a: ScanSets, x: RParam) => ssUnion(a, scanRParam(x)))
+    (ns: RpNewStruct)      => fold(ns.values, ssEmpty(), (a: ScanSets, x: RpNamedValue) => ssUnion(a, scanRParam(x.value)))
+    (ri: RpRuntimeInvoke)  => scanRParam(ri.parameters)
+    (pt: RpPointerTo)      => scanRParam(pt.value)
+    (sf: RpStructField)    => scanRParam(sf.structVal)
+    (vf: RpVirtualFunction) => scanRParam(vf.object)
+    (of: RpObjectField)    => ssUnion(ssUnion(scanRParam(of.pointer), ssObject1(of.objectName)),
+                                      scanOptRParam(of.index))
+    (ae: RpArrayElement)   => ssUnion(ssUnion(scanRParam(ae.pointer), scanRParam(ae.index)),
+                                      ssObject1(ae.objectName))
+    (gf: RpGlobalFunction) => gf.external
+      ? ssEmpty()
+      : ssUnion(ssFunction1(gf.name), scanOptRParam(gf.object))
+    (gv: RpGlobalVar)      => ssGlobal1(gv.name)
+    # Keeps the referenced static instance alive.
+    (so: RpStaticObjectRef) => ssGlobal1(so.name)
+    (ie: RpIntEqConst)     => scanRParam(ie.value)
+    (vd: RpVtableDiscriminator) => scanRParam(vd.value)
+    # Keep the referenced class's vtable alive when dispatching on it.
+    (ov: RpObjVtableEq)    => ssUnion(scanRParam(ov.value), scanOptObject(ov.className))
+    (nt: RpNewStructTyped) => fold(nt.values, ssEmpty(), (a: ScanSets, x: RpNamedValue) => ssUnion(a, scanRParam(x.value)))
+    (tt: RpTagTask)        => scanRParam(tt.task)
+    (sw: RpSyncWrap)       => scanRParam(sw.value)
+    (o: RParam)            => ssEmpty()   # String/Integer/Float/StackVar/NullPointer/ZeroOf/…
+
+fun scanOptRParam(p: RParam|None): ScanSets
+  ret match(p)
+    (x: RParam) => scanRParam(x)
+    ()           => ssEmpty()
+
+fun scanOptObject(name: String|None): ScanSets
+  ret match(name)
+    (n: String) => ssObject1(n)
+    ()           => ssEmpty()
+
+fun scanOp(op: Op): ScanSets
+  ret match(op)
+    (m: OpMove)         => ssUnion(scanRParam(m.moveTarget), scanRParam(m.moveSource))
+    (ji: OpJumpIf)      => scanRParam(ji.jumpIfCondition)
+    (c: OpCall)         => ssUnion(ssUnion(scanRParam(c.callFunction), scanRParam(c.callParameters)),
+                                   scanOptRParam(c.callRegister))
+    (r: OpReturn)       => scanRParam(r.returnValue)
+    (n: OpNewObject)    => ssUnion(ssUnion(ssObject1(n.newObjName), scanRParam(n.newObjRegister)),
+                                   scanOptRParam(n.newObjSize))
+    (t2: OpIfTask)      => ssUnion(scanRParam(t2.taskCondition), scanRParam(t2.taskSource))
+    (sw: OpSwitchJump)  => scanRParam(sw.switchCondition)
+    (pc: OpParallelCall) => fold(pc.parCalls, ssEmpty(), (a: ScanSets, x: RParam) => ssUnion(a, scanRParam(x)))
+    (ph: OpPhi)         => fold(ph.phiSources, scanRParam(ph.phiTarget),
+                                (a: ScanSets, s2: OpPhiSource) => ssUnion(a, scanRParam(s2.sourceValue)))
+    (o: Op)             => ssEmpty()   # Label/Jump/ReturnVoid/Abort
+
+fun scanGlobal(g2: CgGlobal): ScanSets
+  ret ssUnion(ssUnion(scanOptRParam(g2.globalInit), scanOptFunction(g2.globalLazyInitFunction)),
+              ssUnion(scanOptGlobal(g2.globalLazyInitFlag), scanOptObject(g2.globalObjectName)))
+
+fun scanOptFunction(name: String|None): ScanSets
+  ret match(name)
+    (n: String) => ssFunction1(n)
+    ()           => ssEmpty()
+
+fun scanOptGlobal(name: String|None): ScanSets
+  ret match(name)
+    (n: String) => ssGlobal1(n)
+    ()           => ssEmpty()
+
+fun scanObject(o: CgObject): ScanSets
+  ret ScanSets(setEmpty(), setOfList(o.objExtends),
+               setOfList(map(o.objFunctions,
+                             (s2: CgFuncSlot) => s2.slotGlobalName)))
+
+fun scanFunction(f: CgFunction): ScanSets
+  ret fold(f.fnOps, ssEmpty(), (a: ScanSets, op: Op) => ssUnion(a, scanOp(op)))
+
+# ── the worklist fixpoint ────────────────────────────────────────────────────
+
+fun removedUnusedStuff(a: CgApp): CgApp
+  ret trimLoop(a, ssFunction1("__entrypoint__"), ssEmpty())
+
+fun [tail] trimLoop(a: CgApp, scanSets: ScanSets, toApp: ScanSets): CgApp
+  let fromGlobals = fold(scanSets.ssGlobals.setNames, ssEmpty(),
+                         (acc: ScanSets, n: String) => ssUnion(acc, scanAppGlobal(a, n)))
+  let fromObjects = fold(scanSets.ssObjects.setNames, fromGlobals,
+                         (acc: ScanSets, n: String) => ssUnion(acc, scanAppObject(a, n)))
+  let seenSets = ssUnion(scanSets, fold(scanSets.ssFunctions.setNames, fromObjects,
+                         (acc: ScanSets, n: String) => ssUnion(acc, scanAppFunction(a, n))))
+  let newScanSets = ssSub(seenSets, toApp)
+  ret ssIsEmpty(newScanSets)
+    ? trimRebuild(a, toApp)
+    : trimLoop(a, newScanSets, ssUnion(seenSets, toApp))
+
+fun scanAppGlobal(a: CgApp, name: String): ScanSets
+  ret match(appGlobal(a, name))
+    (g2: CgGlobal) => scanGlobal(g2)
+    ()              => ssEmpty()
+
+fun scanAppObject(a: CgApp, name: String): ScanSets
+  ret match(appObject(a, name))
+    (o: CgObject) => scanObject(o)
+    ()             => ssEmpty()
+
+fun scanAppFunction(a: CgApp, name: String): ScanSets
+  ret match(appFunction(a, name))
+    (f: CgFunction) => scanFunction(f)
+    ()               => ssEmpty()
+
+# Survivors rebuild in SORTED name order (Python `sorted(...)`) — the
+# deterministic emission order the C contract pins.
+fun trimRebuild(a: CgApp, toApp: ScanSets): CgApp
+  ret appOf(
+    trimPick(sortNamesAsc(chain(toApp.ssFunctions.setNames), List<String>()), (n: String) => appFunction(a, n)),
+    trimPickObjects(sortNamesAsc(chain(toApp.ssObjects.setNames), List<String>()), a),
+    trimPickGlobals(sortNamesAsc(chain(toApp.ssGlobals.setNames), List<String>()), a))
+
+fun trimPick(names: List<String>, get: (:String): CgFunction|None): List<CgFunction>
+  ret fold(names, List<CgFunction>(), (acc: List<CgFunction>, n: String) => trimPickOne(acc, get(n)))
+
+fun trimPickOne(acc: List<CgFunction>, f: CgFunction|None): List<CgFunction>
+  ret match(f)
+    (f2: CgFunction) => append(acc, f2)
+    ()                => acc
+
+fun trimPickObjects(names: List<String>, a: CgApp): List<CgObject>
+  ret fold(names, List<CgObject>(), (acc: List<CgObject>, n: String) => trimPickObj(acc, appObject(a, n)))
+
+fun trimPickObj(acc: List<CgObject>, o: CgObject|None): List<CgObject>
+  ret match(o)
+    (o2: CgObject) => append(acc, o2)
+    ()              => acc
+
+fun trimPickGlobals(names: List<String>, a: CgApp): List<CgGlobal>
+  ret fold(names, List<CgGlobal>(), (acc: List<CgGlobal>, n: String) => trimPickGlb(acc, appGlobal(a, n)))
+
+fun trimPickGlb(acc: List<CgGlobal>, g2: CgGlobal|None): List<CgGlobal>
+  ret match(g2)
+    (g3: CgGlobal) => append(acc, g3)
+    ()              => acc

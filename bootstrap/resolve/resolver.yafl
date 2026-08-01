@@ -1,0 +1,501 @@
+# bootstrap/resolver.yafl — name resolution, ported from
+# compiler/pyast/resolver.py.
+#
+# The two ideas that matter:
+#  * A BAG is a found set PLUS whether the search was COMPLETE. A name is only
+#    ever committed against a complete bag: an incomplete one may still be
+#    missing the candidate that should win, once whatever blocked the search
+#    (a NamedSpec along the way) resolves on a
+#    later pass. Combining bags unions the items and ANDs completeness.
+#  * A resolver is a CHAIN of scopes over one immutable statement index; each
+#    layer answers what it knows and delegates the rest outward.
+namespace Bootstrap::Resolve
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Types
+
+
+
+# ── names ───────────────────────────────────────────────────────────────────
+# A unique name is `path::name@hash`; queries are written without the hash.
+
+fun simpleName(name: String): String
+  let at = lastIndexOf(name, '@')
+  ret at < 0 ? name : slice(name, 0, at)
+
+# The unqualified simple name: hash suffix AND namespace path both stripped.
+fun bareOfUnique(name: String): String
+  let s = simpleName(name)
+  let ix = lastSep(s, 0, -1)
+  ret ix < 0 ? s : slice(s, ix + 2, length(s))
+
+fun [tail] lastSep(s: String, at: Int, best: Int): Int
+  if at + 1 >= length(s)
+    ret best
+  ret lastSep(s, at + 1,
+              byteAt(s, at) == ':' && byteAt(s, at + 1) == ':' ? at : best)
+
+fun matchName(left: String, right: String): Bool
+  ret simpleName(left) == simpleName(right)
+
+# A candidate matches a query when identical, or when it is the query's
+# fully-qualified form (`query@hash`).
+fun nameMatches(candidate: String, query: String): Bool
+  ret candidate == query || startsWith(candidate, query + "@")
+
+fun lastIndexOf(s: String, c: Int32): Int
+  ret lastIndexLoop(s, 0, -1, c)
+
+fun [tail] lastIndexLoop(s: String, at: Int, best: Int, c: Int32): Int
+  ret at >= length(s)
+    ? best
+    : lastIndexLoop(s, at + 1, byteAt(s, at) == c ? at : best, c)
+
+# Every prefix of a name at its `@` boundaries — the index keys, so a
+# prefix-match lookup is a plain hit rather than a scan.
+fun namePrefixes(name: String): List<String>
+  ret prefixLoop(chain(split(name, "@")), "", List<String>())
+
+fun [tail] prefixLoop(ps: Chain<String>, acc: String,
+                      out: List<String>): List<String>
+  ret match(ps)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => acc == ""
+      ? prefixLoop(l.next, l.value, append(out, l.value))
+      : prefixLoop(l.next, acc + "@" + l.value,
+                   append(out, acc + "@" + l.value))
+
+# ── bags ────────────────────────────────────────────────────────────────────
+
+enum RScope
+  enum ScGlobal()
+  enum ScLocal()
+  enum ScMember()
+  enum ScTrait()
+
+# fTraitScope / fOwner: for a TRAIT-scoped find, the interface INSTANTIATION
+# the member came through (Plus<Int>) and the interface's own declaration —
+# overload resolution substitutes the instantiation's type args through the
+# member's type (Resolved.trait_scope / owner_class).
+# fInstanceParams: placeholder names owned by the GENERIC `[ambient]`
+# instance whose interface pattern produced this candidate — the use site may
+# bind them (the generic-function-candidate rule); empty for every other
+# provenance (Resolved.instance_params in Python).
+class [final] Found(fName: String, fStmt: PStmt, fScope: RScope,
+                    fTraitScope: Spec|None = None, fOwner: PStmt|None = None,
+                    fInstanceParams: List<String>|None = None)
+
+class [final] Bag(bItems: List<Found>, bComplete: Bool)
+
+fun emptyBag(): Bag
+  ret Bag(List<Found>(), true)
+
+# Nothing found YET: the search was blocked, so absence proves nothing.
+fun incompleteBag(): Bag
+  ret Bag(List<Found>(), false)
+
+fun addBags(a: Bag, b: Bag): Bag
+  ret Bag(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
+
+fun bagSize(b: Bag): Int
+  ret listLen(b.bItems)
+
+fun soleItem(b: Bag): Found|None
+  ret bagSize(b) == 1 ? head(b.bItems) : None
+
+# ── the statement index ─────────────────────────────────────────────────────
+# Built ONCE per statement set: name-prefix → statements, plus the two
+# collection-wide scans the resolver needs. A changed statement set is a NEW
+# index, so there is never a stale one to reason about across passes.
+
+# stAmbient/stAmbientBlocked: the `instance [ambient]` PATTERNS — (own
+# namespace, interface spec, instance-owned placeholder names) — plus whether
+# any witness is still unresolved, PRECOMPUTED once per pass here. Rebuilding
+# witness lookups per QUERY made resolution cost scale with the instance
+# count (self-compile 18→47 min before this memo).
+class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
+
+class [final] Statements(stOrdered: List<PStmt>,
+                         stIndex: Dict<String, List<PStmt> >,
+                         stTraits: List<PStmt>,
+                         stInstances: List<PStmt>,
+                         stAmbient: List<AmbEntry>,
+                         stAmbientBlocked: Bool)
+
+fun buildStatements(stmts: List<PStmt>): Statements
+  ret withAmbient(indexLoop(chain(stmts),
+                            Statements(stmts, Dict<String, List<PStmt> >(),
+                                       List<PStmt>(), List<PStmt>(),
+                                       List<AmbEntry>(), false)))
+
+fun withAmbient(base: Statements): Statements
+  let amb = buildAmbient(chain(base.stInstances),
+                         builder<AmbEntry>(), false)
+  ret Statements(base.stOrdered, base.stIndex, base.stTraits,
+                 base.stInstances,
+                 dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
+                 amb.abBlocked)
+
+# (spec, own) dedupe, once per pass — two identical instances collapse to
+# ONE search entry (Python's per-query `add` set), whichever namespaces they
+# came from: the entry keeps the UNION of namespaces and is in scope when
+# any of them is imported.
+fun [tail] dedupeAmb(es: Chain<AmbEntry>, acc: List<AmbEntry>): List<AmbEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => dedupeAmb(l.next, mergeAmb(chain(acc), l.value,
+                                                 List<AmbEntry>(), false))
+
+fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry, out: List<AmbEntry>,
+                    merged: Bool): List<AmbEntry>
+  ret match(es)
+    (nil: ChainEnd) => merged ? out : append(out, x)
+    (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
+                       && eqNameList(chain(l.value.amOwn), chain(x.amOwn))
+      ? mergeAmb(l.next, x,
+                 append(out, AmbEntry(mergeNames(l.value.amNs,
+                                                 chain(x.amNs)),
+                                      l.value.amSpec, l.value.amOwn)),
+                 true)
+      : mergeAmb(l.next, x, append(out, l.value), merged)
+
+class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
+
+fun buildAmbient(ts: Chain<PStmt>,
+                 acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
+  ret match(ts)
+    (nil: ChainEnd) => AmbBuilt(build(acc), blocked)
+    (l: ChainLink)  => match(l.value)
+      (ti: PsTraitInstance) => ti.tiAmbient
+        ? buildAmbientOne(ti, l.next, acc, blocked)
+        : buildAmbient(l.next, acc, blocked)
+      (o: PStmt)    => buildAmbient(l.next, acc, blocked)
+
+# First-class instances carry the pattern DIRECTLY — no witness lookup,
+# no parent substitution (TraitInstanceStatement, __build_ambient_patterns).
+fun buildAmbientOne(ti: PsTraitInstance, rest: Chain<PStmt>,
+                    acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
+  ret match(ti.tiPattern)
+    (n: SNamed) => buildAmbient(rest, acc, true)
+    (c: SClass) => anyNamed(chain(c.scParams))
+      ? buildAmbient(rest, acc, true)
+      : buildAmbient(rest,
+                     push(acc, AmbEntry(append(List<String>(),
+                                               namespacePart(ti.tiName)),
+                                        ti.tiPattern,
+                                        genNames(chain(ti.tiGens),
+                                                 builder<String>()))),
+                     blocked)
+    (o: Spec)   => buildAmbient(rest, acc, blocked)
+
+fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => indexLoop(l.next, indexOne(acc, l.value))
+
+fun indexOne(acc: Statements, st: PStmt): Statements
+  let name = stmtName(st)
+  if name == ""
+    ret acc                              # imports/namespaces carry no name
+  let withName = addPrefixes(acc, name, st)
+  ret classify(withName, st, name)
+
+fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
+  ret Statements(acc.stOrdered,
+                 addKeys(acc.stIndex, chain(namePrefixes(name)), st),
+                 acc.stTraits, acc.stInstances, acc.stAmbient,
+                 acc.stAmbientBlocked)
+
+fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
+                   st: PStmt): Dict<String, List<PStmt> >
+  ret match(ks)
+    (nil: ChainEnd) => d
+    (l: ChainLink)  => addKeys(putUnder(d, l.value, st), l.next, st)
+
+fun putUnder(d: Dict<String, List<PStmt> >, key: String,
+             st: PStmt): Dict<String, List<PStmt> >
+  ret match(get(d, key))
+    (prev: List<PStmt>) => put(d, key, append(prev, st))
+    ()                  => put(d, key, append(List<PStmt>(), st))
+
+# Enum VARIANTS are indexed too (a variant name resolves) but are not part of
+# iteration; `[trait]` lets are precomputed.
+fun classify(acc: Statements, st: PStmt, name: String): Statements
+  ret match(st)
+    (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
+    (l: PsLet)  => hasAttr(l.lAttrs, "trait")
+      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st),
+                   acc.stInstances, acc.stAmbient, acc.stAmbientBlocked)
+      : acc
+    (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
+                                        acc.stTraits,
+                                        append(acc.stInstances, st),
+                                        acc.stAmbient, acc.stAmbientBlocked)
+    (o: PStmt)  => acc
+
+fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => indexVariants(indexVariant(acc, l.value), l.next)
+
+fun indexVariant(acc: Statements, v: PStmt): Statements
+  ret match(v)
+    (e: PsEnum) => indexVariants(addPrefixes(acc, e.eName, v), chain(e.eVariants))
+    (o: PStmt)  => acc
+
+fun hasAttr(attrs: List<PAttr>, name: String): Bool
+  ret attrLoop(chain(attrs), name)
+
+fun [tail] attrLoop(as2: Chain<PAttr>, name: String): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value.attrName == name ? true : attrLoop(l.next, name)
+
+fun lookup(idx: Statements, query: String): List<PStmt>
+  ret match(get(idx.stIndex, query))
+    (found: List<PStmt>) => found
+    ()                   => List<PStmt>()
+
+# ── the resolver chain ──────────────────────────────────────────────────────
+# Each layer answers what it knows and delegates outward. The root holds the
+# statement index; scopes stack over it.
+
+enum Resolver
+  # rrSuggest: {function unique-name → suggested param TupleSpec}, computed
+  # once per compile pass from the previous pass's call sites (path 3).
+  # rrDiscriminators / rrOptLevel: GENERATE-only config (ResolverDiscriminators
+  # in Python), read by union_repr/generate through getDiscriminators/getOptLevel
+  # in generate_expr.yafl. Carried on the root (rather than as a wrapping layer,
+  # as Python does) because generate always starts from a fresh root built for
+  # that one codegen run — there is no nested rebinding to support.
+  enum RRoot(rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
+             rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0)
+  enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
+  enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
+  # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
+  # name is ALSO looked up under each of them, which is how `print` finds
+  # `System::print@hash`. Only a name that is neither qualified nor already
+  # hashed is retried this way.
+  enum RScopes(rsNames: List<String>, rsParent: Resolver)
+  # The `where`-supplied trait/interface operators. They JOIN the scope (only a
+  # local shadows them), and — the part that matters — they report INCOMPLETE
+  # while a trait param has not grounded.
+  # rtEntries/rtBlocked: the DEDUPLICATED trait-search entries (where-clause
+  # specs + ambient patterns), built ONCE at traitScope construction — per
+  # QUERY construction paid an O(entries²) structural dedupe on every name.
+  enum RTraits(rtWheres: List<Spec>, rtEntries: List<TraitEntry>,
+               rtBlocked: Bool, rtrParent: Resolver)
+  # A class BODY's scope (ClassStatement.__find_locals): the class's own
+  # members — fields and methods, MEMBER-scoped — plus `this`, SHADOWING the
+  # enclosing scope like any local layer. No trait data here: each method
+  # establishes its own in its body resolver.
+  enum RClassBody(rcbClass: PsClass, rcbParent: Resolver)
+  # GENERATE-only: carries the innermost in-progress [tail] loop's or
+  # BlockExpression's (immutable) frame — ResolverLoop/ResolverBlock in Python.
+  # `rgFrame` is a GenFrame (defined in generate_expr.yafl); read via
+  # getLoopFrame/getBlockFrame there, never interpreted here. One variant
+  # serves both roles (mirrors DelegatingResolver's default pass-through: a
+  # loop frame leaves get_block_frame to fall through to the parent, and vice
+  # versa) so this file need not carry two near-identical cases.
+  enum RGen(rgFrame: GenFrame, rgParent: Resolver)
+
+fun findData(r: Resolver, query: String): Bag
+  ret match(r)
+    (root: RRoot) => globalBag(root.rrStmts, query, false)
+    (rg: RGen)    => findData(rg.rgParent, query)
+    # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
+    # same name in every enclosing scope — the parent is consulted only on a
+    # miss. Merging instead would poison a complete local hit with an
+    # enclosing trait layer's INCOMPLETE, or read as ambiguity.
+    (d: RData)    => localsFirst(matchingFound(d.rdNames, query),
+                                 d.rdParent, query)
+    (t2: RTypes)  => findData(t2.rtParent, query)
+    (sc: RScopes) => scopedBag(sc, query, false)
+    (tr: RTraits) => addBags(traitBag(tr, query, tr.rtrParent),
+                             findData(tr.rtrParent, query))
+    (cb: RClassBody) => classBodyBag(cb, query)
+
+fun findType(r: Resolver, query: String): Bag
+  ret match(r)
+    (root: RRoot) => globalBag(root.rrStmts, query, true)
+    (rg: RGen)    => findType(rg.rgParent, query)
+    (d: RData)    => findType(d.rdParent, query)
+    (t2: RTypes)  => addBags(matchingFound(t2.rtNames, query),
+                             findType(t2.rtParent, query))
+    (sc: RScopes) => scopedBag(sc, query, true)
+    (tr: RTraits) => findType(tr.rtrParent, query)
+    (cb: RClassBody) => findType(cb.rcbParent, query)
+
+# ── implicit [where] specs ──────────────────────────────────────────────────
+# get_implicit_where_specs: each namespace-scope layer MERGES its names on the
+# way down; the root filters the `[where]` aliases to those declared in one of
+# the merged namespaces and returns their CURRENT types — resolved or NOT,
+# because the trait finder must SEE an unresolved one (still an SNamed) to
+# register its trait set as not-yet-complete, rather than treat it as absent
+# and commit a name against a search that was actually blocked.
+
+# get_ambient_patterns: the PRECOMPUTED ambient entries (stAmbient), scope-
+# filtered per query site — the walk only collects the in-scope namespaces.
+# get_trait_instances: pre-lowering first-class instances (constraint
+# discharge and droppability read these before lower_instances runs).
+fun [tail] traitInstanceStmts(r: Resolver): List<PStmt>
+  ret match(r)
+    (root: RRoot)    => root.rrStmts.stInstances
+    (sc: RScopes)    => traitInstanceStmts(sc.rsParent)
+    (d: RData)       => traitInstanceStmts(d.rdParent)
+    (t2: RTypes)     => traitInstanceStmts(t2.rtParent)
+    (tr: RTraits)    => traitInstanceStmts(tr.rtrParent)
+    (cb: RClassBody) => traitInstanceStmts(cb.rcbParent)
+    (rg: RGen)       => traitInstanceStmts(rg.rgParent)
+
+fun ambientEntries(r: Resolver): AmbEntries
+  ret ambEntryWalk(r, List<String>())
+
+fun [tail] ambEntryWalk(r: Resolver, scopes: List<String>): AmbEntries
+  ret match(r)
+    (root: RRoot) => isEmpty(scopes)
+      ? AmbEntries(List<TraitEntry>(), false)
+      : AmbEntries(ambFilter(chain(root.rrStmts.stAmbient), scopes,
+                             builder<TraitEntry>()),
+                   root.rrStmts.stAmbientBlocked)
+    (sc: RScopes)    => ambEntryWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
+    (d: RData)       => ambEntryWalk(d.rdParent, scopes)
+    (t2: RTypes)     => ambEntryWalk(t2.rtParent, scopes)
+    (tr: RTraits)    => ambEntryWalk(tr.rtrParent, scopes)
+    (cb: RClassBody) => ambEntryWalk(cb.rcbParent, scopes)
+    (rg: RGen)       => ambEntryWalk(rg.rgParent, scopes)
+
+fun [tail] ambFilter(es: Chain<AmbEntry>, scopes: List<String>,
+                     acc: ListBuilder<TraitEntry>): List<TraitEntry>
+  ret match(es)
+    (nil: ChainEnd) => build(acc)
+    (l: ChainLink)  => anyInScopes(chain(l.value.amNs), scopes)
+      ? ambFilter(l.next, scopes,
+                  push(acc, TraitEntry(l.value.amSpec, l.value.amOwn)))
+      : ambFilter(l.next, scopes, acc)
+
+fun [tail] anyInScopes(ns: Chain<String>, scopes: List<String>): Bool
+  ret match(ns)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => contains2(scopes, l.value)
+      ? true
+      : anyInScopes(l.next, scopes)
+
+# Everything before the LAST '::' (Python name.rpartition('::')[0]).
+fun namespacePart(name: String): String
+  let ix = lastSep(name, 0, -1)
+  ret ix < 0 ? "" : slice(name, 0, ix)
+
+# get_param_suggestion: the call-site-implied parameter shape for `name`, or
+# None when nothing was suggested. Read-only — a declared parameter type
+# always overrides; this only fills holes.
+fun [tail] paramSuggestion(r: Resolver, name: String): Spec|None
+  ret match(r)
+    (root: RRoot)    => match(root.rrSuggest)
+      (d: Dict<String, Spec>) => get(d, name)
+      ()                      => None
+    (sc: RScopes)    => paramSuggestion(sc.rsParent, name)
+    (d2: RData)      => paramSuggestion(d2.rdParent, name)
+    (t2: RTypes)     => paramSuggestion(t2.rtParent, name)
+    (tr: RTraits)    => paramSuggestion(tr.rtrParent, name)
+    (cb: RClassBody) => paramSuggestion(cb.rcbParent, name)
+    (rg: RGen)       => paramSuggestion(rg.rgParent, name)
+
+# get_traits: every `[trait]` let in the statement set (precomputed by the
+# index) — no scope filter, exactly like Python's root.
+fun [tail] traitLets(r: Resolver): List<PStmt>
+  ret match(r)
+    (root: RRoot)    => root.rrStmts.stTraits
+    (sc: RScopes)    => traitLets(sc.rsParent)
+    (d: RData)       => traitLets(d.rdParent)
+    (t2: RTypes)     => traitLets(t2.rtParent)
+    (tr: RTraits)    => traitLets(tr.rtrParent)
+    (cb: RClassBody) => traitLets(cb.rcbParent)
+    (rg: RGen)       => traitLets(rg.rgParent)
+
+fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => mergeNames(contains2(acc, l.value)
+                                    ? acc
+                                    : append(acc, l.value),
+                                  l.next)
+
+# The parent's answer, PLUS the answer under each in-scope namespace — but only
+# for a name that is still unqualified (no `::`) and unhashed (no `@`).
+fun scopedBag(sc: RScopes, query: String, wantType: Bool): Bag
+  let direct = wantType ? findType(sc.rsParent, query)
+                        : findData(sc.rsParent, query)
+  ret contains(query, "::") || contains(query, "@")
+    ? direct
+    : scopeLoop(chain(sc.rsNames), sc.rsParent, query, wantType, direct)
+
+fun [tail] scopeLoop(ns: Chain<String>, parent: Resolver, query: String,
+                     wantType: Bool, acc: Bag): Bag
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => scopeLoop(l.next, parent, query, wantType,
+                                 addBags(acc, qualifiedIn(parent, l.value,
+                                                          query, wantType)))
+
+fun qualifiedIn(parent: Resolver, ns: String, query: String,
+                wantType: Bool): Bag
+  ret wantType ? findType(parent, ns + "::" + query)
+               : findData(parent, ns + "::" + query)
+
+# The root's answer: every indexed statement under the query, split by whether
+# it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let).
+fun globalBag(idx: Statements, query: String, wantType: Bool): Bag
+  ret Bag(globalLoop(chain(lookup(idx, query)), wantType, List<Found>()), true)
+
+fun [tail] globalLoop(ss: Chain<PStmt>, wantType: Bool,
+                      acc: List<Found>): List<Found>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => wantsThis(isTypeStmt(l.value), wantType)
+      ? globalLoop(l.next, wantType,
+                   append(acc, Found(stmtName(l.value), l.value, ScGlobal())))
+      : globalLoop(l.next, wantType, acc)
+
+fun wantsThis(isType: Bool, wantType: Bool): Bool
+  ret isType ? wantType : !wantType
+
+fun isTypeStmt(st: PStmt): Bool
+  ret match(st)
+    (c: PsClass)      => true
+    (e: PsEnum)       => true
+    (ta: PsTypealias) => true
+    (o: PStmt)        => false
+
+fun localsFirst(own: Bag, parent: Resolver, query: String): Bag
+  ret isEmpty(own.bItems) ? findData(parent, query) : own
+
+fun classBodyBag(cb: RClassBody, query: String): Bag
+  let own = concat(classFindData(cb.rcbClass, cb.rcbParent, query),
+                   thisFound(cb.rcbClass, query))
+  ret isEmpty(own) ? findData(cb.rcbParent, query) : Bag(own, true)
+
+fun matchingFound(names: List<Found>, query: String): Bag
+  ret Bag(matchLoop(chain(names), query, List<Found>()), true)
+
+fun [tail] matchLoop(fs: Chain<Found>, query: String,
+                     acc: List<Found>): List<Found>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameMatches(l.value.fName, query)
+      ? matchLoop(l.next, query, append(acc, l.value))
+      : matchLoop(l.next, query, acc)
+
+fun stmtName(st: PStmt): String
+  ret match(st)
+    (f: PsFun)        => f.fName
+    (l: PsLet)        => l.lName
+    (c: PsClass)      => c.cName
+    (e: PsEnum)       => e.eName
+    (ta: PsTypealias) => ta.taName
+    (ti: PsTraitInstance) => ti.tiName
+    (d: PsDestructure) => d.dName
+    (o: PStmt)        => ""

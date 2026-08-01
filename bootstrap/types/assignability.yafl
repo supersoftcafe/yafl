@@ -1,0 +1,365 @@
+# bootstrap/assignability.yafl — trivially_assignable_from / _equals, ported
+# from compiler/pyast/typespec/specs.py.
+#
+# "Can a `right`-typed value be used where `left` is expected?" — answered in
+# THREE values, and the third one is the whole point:
+#
+#   true  — yes, structurally.
+#   false — no, definitively. A caller may discard the candidate.
+#   None  — NOT YET DECIDABLE. Some type on the path is still an SNamed, or a
+#           generic placeholder that may fit once bound. The fixpoint asks
+#           again next pass.
+#
+# Collapsing None into false is the tempting bug: it would let overload
+# resolution discard the candidate that was going to win, one pass before its
+# types resolved. Every rule below returns None the moment it meets something
+# unresolved, and the combinators propagate it.
+namespace Bootstrap::Types
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+
+
+
+# `Bool|None` IS the three-valued answer — None means undecided.
+typealias Tri : Bool|None
+
+fun triTrue(x: Tri): Bool
+  ret match(x)
+    (b: Bool) => b
+    ()        => false
+
+fun triFalse(x: Tri): Bool
+  ret match(x)
+    (b: Bool) => !b
+    ()        => false
+
+# ── the entry point ─────────────────────────────────────────────────────────
+# trivially_assignable_equals: the 1-tuple unwrap and the union-on-the-right
+# decomposition happen HERE, before the left type's own rule sees anything.
+
+fun assignableEq(r: Resolver, left: Spec|None, right: Spec|None): Tri
+  ret match(left)
+    (l: Spec) => match(right)
+      (rt: Spec) => assignableEqBoth(r, l, rt)
+      ()         => None
+    () => None
+
+fun assignableEqBoth(r: Resolver, left: Spec, right: Spec): Tri
+  # The empty type (a leafless enum — Never) is the BOTTOM type: it has no
+  # values, so a Never-typed expression fits anywhere.
+  if isNever(right)
+    ret true
+  # Tuple-against-tuple goes straight to the tuple rule: arity may legally
+  # differ when the uncovered fields carry defaults, so unwrapping a 1-tuple
+  # first would turn `(x = 5)` against `(x: Int, y: Int = 10)` into a spurious
+  # element-vs-tuple mismatch.
+  if isTuple(left) && isTuple(right)
+    ret assignableFrom(r, left, right)
+  # A 1-tuple IS its element (recursively). The unwrap must be SYMMETRIC: if
+  # either side is a 1-tuple whose entry type is unknown, the comparison is
+  # undecided — unwrapping only the known side yields a spurious mismatch.
+  let lu = unwrapOne(left)
+  let ru = unwrapOne(right)
+  ret match(lu)
+    (l: Spec) => match(ru)
+      (rt: Spec) => assignableUnwrapped(r, l, rt)
+      ()         => None
+    () => None
+
+fun assignableUnwrapped(r: Resolver, left: Spec, right: Spec): Tri
+  # Set semantics of a union VALUE: it is ONE of its members, so a union on the
+  # right is assignable iff EVERY member is. (A union on the LEFT keeps its own
+  # memberwise rule, below.)
+  ret isUnion(right) && !isUnion(left)
+    ? allMembersAssignable(r, left, unionMembers(right))
+    : assignableFrom(r, left, right)
+
+fun allMembersAssignable(r: Resolver, left: Spec, members: List<Spec>): Tri
+  ret memberLoop(chain(members), r, left, false)
+
+fun [tail] memberLoop(ms: Chain<Spec>, r: Resolver, left: Spec,
+                      sawUnknown: Bool): Tri
+  ret match(ms)
+    (nil: ChainEnd) => sawUnknown ? None : true
+    (l: ChainLink)  => assignableEq(r, left, l.value)
+      |> (res) => triFalse(res)
+        ? false
+        : memberLoop(l.next, r, left, sawUnknown || !triTrue(res))
+
+# ── the per-type rules ──────────────────────────────────────────────────────
+
+fun assignableFrom(r: Resolver, left: Spec, right: Spec): Tri
+  # An unresolved RIGHT tells us nothing yet, whatever the left is.
+  if isNamed(right)
+    ret None
+  ret match(left)
+    (b: SBuiltin)      => builtinFrom(b, right)
+    (c: SClass)        => classFrom(r, c, right)
+    (e: SEnum)         => enumFrom(e, right)
+    (t2: STuple)       => tupleFrom(r, t2, right)
+    (cm: SCombination) => unionFrom(r, cm, right)
+    (af: SArrayField)  => arrayFrom(r, af, right)
+    (cl: SCallable)    => callableFrom(r, cl, right)
+    (ls: SLazyStub)    => isLazy(right)
+    # A candidate-side placeholder has not been bound yet: it MIGHT accept this
+    # right after substitution. Undecided, never a blanket false — a false here
+    # would prematurely filter a valid generic candidate out of overload
+    # resolution.
+    (g: SGeneric)      => genericFrom(g, right)
+    (n: SNamed)        => None                    # left not resolved yet
+
+fun builtinFrom(b: SBuiltin, right: Spec): Tri
+  ret match(right)
+    (rb: SBuiltin) => b.sbName == rb.sbName
+    (o: Spec)      => false
+
+fun genericFrom(g: SGeneric, right: Spec): Tri
+  ret match(right)
+    (rg: SGeneric) => g.sgName == rg.sgName ? true : None
+    (o: Spec)      => None
+
+# A class accepts itself and its descendants. `_all_parents` is computed by the
+# class's own compile; while it is absent the hierarchy is not known yet.
+fun classFrom(r: Resolver, c: SClass, right: Spec): Tri
+  if !contains(c.scName, "@")
+    ret None                                      # left not resolved yet
+  ret match(right)
+    (rc: SClass) => c.scName == rc.scName ? true : inheritsFrom(r, c, rc)
+    (o: Spec)    => false
+
+fun inheritsFrom(r: Resolver, c: SClass, rc: SClass): Tri
+  ret match(soleItem(findType(r, rc.scName)))
+    (f: Found) => parentsOf(f.fStmt)
+      |> (ps) => match(ps)
+        (list: List<Spec>) => anyNamed(chain(list), c.scName)
+        ()                 => None                # parents not resolved yet
+    ()         => None
+
+fun parentsOf(st: PStmt): List<Spec>|None
+  ret match(st)
+    (cs: PsClass) => cs.cAllParents
+    (o: PStmt)    => None
+
+fun [tail] anyNamed(ps: Chain<Spec>, name: String): Bool
+  ret match(ps)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => specName(l.value) == name ? true : anyNamed(l.next, name)
+
+fun specName(sp: Spec): String
+  ret match(sp)
+    (c: SClass) => c.scName
+    (n: SNamed) => n.snName
+    (o: Spec)   => ""
+
+# An enum accepts a NARROWING of itself: same root, and the right's valid
+# leaves a subset of ours.
+fun enumFrom(e: SEnum, right: Spec): Tri
+  ret match(right)
+    (re: SEnum) => !contains(e.seRoot, "@") || !contains(re.seRoot, "@")
+      ? None
+      : (re.seRoot != e.seRoot
+          ? false
+          : allIn(chain(re.seValidLeaves), e.seValidLeaves))
+    (o: Spec)   => false
+
+fun arrayFrom(r: Resolver, af: SArrayField, right: Spec): Tri
+  ret match(right)
+    (ra: SArrayField) => af.safLenField != ra.safLenField
+      ? false
+      : assignableFrom(r, af.safElem, ra.safElem)
+    (o: Spec)         => false
+
+# Callables do not auto-widen their result: the return types must be
+# equivalent in BOTH directions, and an undecided direction defers the verdict.
+# Return types must be EQUIVALENT (bidirectionally assignable) — callables do
+# not auto-widen results (no implicit thunk). EITHER direction undecided
+# defers the whole result verdict (a definite asymmetry is False). Parameters
+# swap direction (contravariance) and are compared DIRECTLY by the tuple rule
+# — never via the 1-tuple unwrap: a parameter list's ARITY is significant, so
+# an N-vs-1 mismatch rejects on the arguments alone even while the lone
+# parameter's type is unresolved.
+fun callableFrom(r: Resolver, cl: SCallable, right: Spec): Tri
+  ret match(right)
+    (rn: SNamed)    => None                       # not resolved yet
+    (rc: SCallable) => callableVerdict(resultEquiv(r, cl.scResult, rc.scResult),
+                                       assignableFrom(r, rc.scParams2,
+                                                      cl.scParams2))
+    (o: Spec)       => false
+
+fun resultEquiv(r: Resolver, a: Spec|None, b: Spec|None): Tri
+  let fwd = assignableEq(r, a, b)
+  let rev = assignableEq(r, b, a)
+  ret fwd is None || rev is None
+    ? None
+    : (triTrue(fwd) && triTrue(rev) ? true : false)
+
+fun callableVerdict(res: Tri, params: Tri): Tri
+  ret triFalse(res) || triFalse(params)
+    ? false
+    : (triTrue(res) && triTrue(params) ? true : None)
+
+# ── the tuple rule ──────────────────────────────────────────────────────────
+# Fields correspond via the SHARED binding (positional, then by name, unbound
+# fields covered by their defaults). Only the BOUND pairs are type-compared —
+# a default's type was already checked at its declaration.
+
+fun tupleFrom(r: Resolver, left: STuple, right: Spec): Tri
+  ret match(right)
+    (rt: STuple) => tupleFromTuple(r, left, rt)
+    (o: Spec)    => false
+
+fun tupleFromTuple(r: Resolver, left: STuple, right: STuple): Tri
+  ret match(bindTupleEntries(left.stEntries, entryNames(right.stEntries)))
+    (b: List<Int>) => comparePairs(r, left, right, b)
+    ()             => false                       # does not bind at all
+
+fun entryNames(es: List<SEntry>): List<String>
+  ret nameLoop(chain(es), List<String>())
+
+fun [tail] nameLoop(es: Chain<SEntry>, acc: List<String>): List<String>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => nameLoop(l.next, append(acc, l.value.seName))
+
+# The subtlety, transcribed rather than paraphrased: a false from a
+# PLACEHOLDER left is not structural — it may fit once bound — so it is
+# promoted to undecided. But if EVERY pair failed, nothing offered structural
+# grounding and the answer is false.
+class [final] PairTally(ptStructFalse: Bool, ptAnyFalse: Bool,
+                        ptAllFalse: Bool, ptUnknown: Bool, ptCount: Int)
+
+fun comparePairs(r: Resolver, left: STuple, right: STuple,
+                 binding: List<Int>): Tri
+  let t2 = pairLoop(chain(zipBinding(left.stEntries, binding)), r,
+                    right.stEntries,
+                    PairTally(false, false, true, false, 0))
+  ret t2.ptStructFalse ? false
+    : (t2.ptCount > 0 && t2.ptAllFalse ? false
+      : (t2.ptUnknown ? None : true))
+
+class [final] Pair(prLeft: SEntry, prSlot: Int)
+
+fun zipBinding(es: List<SEntry>, binding: List<Int>): List<Pair>
+  ret zipLoop(chain(es), chain(binding), List<Pair>())
+
+fun [tail] zipLoop(es: Chain<SEntry>, bs: Chain<Int>, acc: List<Pair>): List<Pair>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(bs)
+      (nil2: ChainEnd) => acc
+      (b: ChainLink)   => zipLoop(l.next, b.next,
+                                  b.value < 0 ? acc          # filled by default
+                                              : append(acc, Pair(l.value, b.value)))
+
+fun [tail] pairLoop(ps: Chain<Pair>, r: Resolver, rights: List<SEntry>,
+                    acc: PairTally): PairTally
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => pairLoop(l.next, r, rights,
+                                tally(acc, r, l.value, rights))
+
+fun tally(acc: PairTally, r: Resolver, p: Pair, rights: List<SEntry>): PairTally
+  let res = assignableEq(r, p.prLeft.seType, entryAt(rights, p.prSlot))
+  let isFalse = triFalse(res)
+  let placeholder = isGenericSpec(p.prLeft.seType)
+  ret PairTally(acc.ptStructFalse || (isFalse && !placeholder),
+                acc.ptAnyFalse || isFalse,
+                acc.ptAllFalse && isFalse,
+                # a placeholder-false is promoted to UNDECIDED, not false
+                acc.ptUnknown || (!triTrue(res) && !(isFalse && !placeholder)),
+                acc.ptCount + 1)
+
+fun entryAt(es: List<SEntry>, i: Int): Spec|None
+  ret entryAtLoop(chain(es), i)
+
+fun [tail] entryAtLoop(es: Chain<SEntry>, i: Int): Spec|None
+  ret match(es)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => i <= 0 ? l.value.seType : entryAtLoop(l.next, i - 1)
+
+fun isGenericSpec(sp: Spec|None): Bool
+  ret match(sp)
+    (g: Spec) => match(g)
+      (x: SGeneric) => true
+      (o: Spec)     => false
+    () => false
+
+# ── the union rule (union on the LEFT) ──────────────────────────────────────
+# Every member of the right must be assignable to SOME member of the left.
+
+fun unionFrom(r: Resolver, cm: SCombination, right: Spec): Tri
+  ret outerLoop(chain(unionMembers(right)), r, cm.scTypes, true)
+
+fun [tail] outerLoop(rs: Chain<Spec>, r: Resolver, lefts: List<Spec>,
+                     allTrue: Bool): Tri
+  ret match(rs)
+    (nil: ChainEnd) => allTrue ? true : None
+    (l: ChainLink)  => fitsAny(r, lefts, l.value)
+      |> (res) => triFalse(res)
+        ? false
+        : outerLoop(l.next, r, lefts, allTrue && triTrue(res))
+
+# Fits SOME left member: one true wins; all false loses; otherwise undecided.
+fun fitsAny(r: Resolver, lefts: List<Spec>, right: Spec): Tri
+  ret innerLoop(chain(lefts), r, right, true)
+
+fun [tail] innerLoop(ls: Chain<Spec>, r: Resolver, right: Spec,
+                     allFalse: Bool): Tri
+  ret match(ls)
+    (nil: ChainEnd) => allFalse ? false : None
+    (l: ChainLink)  => assignableEq(r, l.value, right)
+      |> (res) => triTrue(res)
+        ? true
+        : innerLoop(l.next, r, right, allFalse && triFalse(res))
+
+# ── shape helpers ───────────────────────────────────────────────────────────
+
+fun isNever(sp: Spec): Bool
+  ret match(sp)
+    (e: SEnum) => isEmpty(e.seValidLeaves)
+    (o: Spec)  => false
+
+fun isTuple(sp: Spec): Bool
+  ret match(sp)
+    (t2: STuple) => true
+    (o: Spec)    => false
+
+fun isUnion(sp: Spec): Bool
+  ret match(sp)
+    (cm: SCombination) => true
+    (o: Spec)          => false
+
+fun isNamed(sp: Spec): Bool
+  ret match(sp)
+    (n: SNamed) => true
+    (o: Spec)   => false
+
+fun isLazy(sp: Spec): Bool
+  ret match(sp)
+    (ls: SLazyStub) => true
+    (o: Spec)       => false
+
+fun unionMembers(sp: Spec): List<Spec>
+  ret match(sp)
+    (cm: SCombination) => cm.scTypes
+    (o: Spec)          => append(List<Spec>(), sp)
+
+# Unwrap a 1-tuple to its element, repeatedly. None = an entry type is unknown,
+# so the caller must treat the comparison as undecided.
+fun unwrapOne(sp: Spec): Spec|None
+  ret match(sp)
+    (t2: STuple) => listLen(t2.stEntries) == 1
+      ? unwrapEntry(head(t2.stEntries))
+      : sp
+    (o: Spec)    => sp
+
+fun unwrapEntry(en: SEntry|None): Spec|None
+  ret match(en)
+    (e: SEntry) => match(e.seType)
+      (t2: Spec) => unwrapOne(t2)
+      ()         => None
+    ()          => None

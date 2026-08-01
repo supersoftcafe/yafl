@@ -1,0 +1,308 @@
+# bootstrap/create_c_code.yafl — the C-emission driver, ported from
+# compiler.py __create_c_code + __create_entry_point + __ensure_lazy_machinery
+# and lowering/unions.py collect_discriminator_ids. The -O0 pass chain runs in
+# the pinned order; the O1+ blocks port later. Python raises on validation
+# failures; the port returns them.
+namespace Bootstrap::Codegen
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Lower::Ir
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+
+
+
+# ── discriminator ids (lowering/unions.py) ───────────────────────────────────
+
+# Globally unique ids for every union variant (keyed by uid, encounter order
+# over the bottom-up tree walk) and complex-enum leaves FIRST (keyed
+# enumleaf(<leaf object name>), root statements in statement order). Ids start
+# at 1: 0 is the vtable default, "never dispatched on".
+class [final] DiscAcc(daIds: Dict<String, Int>, daN: Int)
+
+fun collectDiscriminatorIds(statements: List<PStmt>): Dict<String, Int>
+  let leaves = fold(statements, DiscAcc(Dict<String, Int>(), 0), discEnumLeaves)
+  ret foldAllSpecs<DiscAcc>(statements, discSpec, leaves).daIds
+
+fun discAssign(acc: DiscAcc, uid2: String): DiscAcc
+  if length(uid2) == 0
+    ret acc
+  ret match(get(acc.daIds, uid2))
+    (i: Int) => acc
+    ()        => DiscAcc(put(acc.daIds, uid2, acc.daN + 1), acc.daN + 1)
+
+fun discEnumLeaves(acc: DiscAcc, st: PStmt): DiscAcc
+  ret match(st)
+    (e2: PsEnum) => discEnumRoot(acc, e2)
+    (o: PStmt)   => acc
+
+fun discEnumRoot(acc: DiscAcc, e2: PsEnum): DiscAcc
+  if !enumIsRootStmt(e2)
+    ret acc
+  ret match(asEnumVariant(e2.eSpec))
+    (sp: SEnum) => sp.seComplex
+      ? fold(sp.seAllLeaves, acc, (a: DiscAcc, leaf: String) =>
+          discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
+      : acc
+    ()           => acc
+
+fun discSpec(acc: DiscAcc, sp: Spec): DiscAcc
+  ret match(sp)
+    (cm: SCombination) => fold(cm.scTypes, acc, (a: DiscAcc, v: Spec) => discAssign(a, uid(v)))
+    (o: Spec)          => acc
+
+# ── the entry point (__create_entry_point) ───────────────────────────────────
+
+fun createEntryPoint(mainName: String): CgFunction
+  let svResult = RpStackVar(CgDataPointer(), "result")
+  let svDiscard = RpStackVar(CgDataPointer(), "$sv_discard")
+  let continuation = RpStackVar(CgFuncPointer(), "$continuation")
+  let isTask = RpRuntimeInvoke("PTR_IS_TASK",
+                               RpNewStruct(list1(RpNamedValue("p", svResult))), CgInt(32))
+  let unlikelyChk = RpRuntimeInvoke("UNLIKELY",
+                                    RpNewStruct(list1(RpNamedValue("x", isTask))), CgInt(32))
+  let untag = RpRuntimeInvoke("TASK_UNTAG",
+                              RpNewStruct(list1(RpNamedValue("p", svResult))), CgDataPointer())
+  let onComplete = RpRuntimeInvoke("task_on_complete",
+                                   RpNewStruct(list2(RpNamedValue("task", untag),
+                                                     RpNamedValue("cb", continuation))),
+                                   CgDataPointer())
+  let ops = concat(list5(
+      OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
+             RpNewStruct(List<RpNamedValue>()), svResult, false, false, None, List<RParam>()),
+      OpJumpIf("$async_entry", unlikelyChk, false, List<RParam>()),
+      # Sync path: invoke the completion callback with main's result.
+      OpCall(continuation, RpNewStruct(list1(RpNamedValue("result", svResult))),
+             None, false, false, None, List<RParam>()),
+      OpReturnVoid(List<RParam>()),
+      # Async path: register the continuation as task callback.
+      OpLabel("$async_entry", List<RParam>())),
+    list2(OpMove(svDiscard, onComplete, true, List<RParam>()),
+          OpReturnVoid(List<RParam>())))
+  ret CgFunction("__entrypoint__",
+                 CgStruct(list2(CgField("this", CgDataPointer()),
+                                CgField("$continuation", CgFuncPointer()))),
+                 CgVoid(),
+                 CgStruct(list2(CgField("result", CgDataPointer()),
+                                CgField("$sv_discard", CgDataPointer()))),
+                 ops, "", None, false, false, true, false)
+
+# ── lazy machinery (ensure) ──────────────────────────────────────────────────
+
+# Python reverses Lazy$<mangle> names via a mutable registry; the port derives
+# the (type) set directly from the deferred-init lets (top-level and in
+# bodies), where the type is known — same machinery, pure plumbing.
+fun collectLazyTypes(statements: List<PStmt>, r: Resolver): List<CgType>
+  ret foldStmts<List<CgType>>(statements, (acc: List<CgType>, st: PStmt) => lazyTypeOf(acc, st, r),
+                              foldNoExprT, List<CgType>())
+
+fun foldNoExprT(acc: List<CgType>, x: PExpr): List<CgType>
+  ret acc
+
+fun lazyTypeOf(acc: List<CgType>, st: PStmt, r: Resolver): List<CgType>
+  ret match(st)
+    (l: PsLet) => isDeferredInit(l) && !isNoneSpec2(l.lType)
+      ? lazyTypeAdd(acc, specGenerateOpt(l.lType, r))
+      : acc
+    (o: PStmt) => acc
+
+fun isNoneSpec2(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => false
+    ()          => true
+
+fun lazyTypeAdd(acc: List<CgType>, t2: CgType): List<CgType>
+  ret any(acc, (x: CgType) => irMangle(x) == irMangle(t2)) ? acc : append(acc, t2)
+
+fun ensureLazyMachinery(a: CgApp, types2: List<CgType>): CgApp
+  if isEmpty(types2)
+    ret a
+  let withTask = appHasObject(a, "task") ? a : appPutObject(a, makeTaskForeignObject())
+  ret fold(types2, withTask, ensureLazyOne)
+
+fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
+  if appHasObject(a, stubClassName(t2))
+    ret a
+  let m = lazyMachinery(t2)
+  let withObjs = fold(m.lmObjects, a, alPutIfAbsent)
+  ret fold(m.lmFunctions, withObjs, (a2: CgApp, f: CgFunction) =>
+        appHasFunction(a2, f.fnName) ? a2 : appPutFunction(a2, f))
+
+# ── the driver ───────────────────────────────────────────────────────────────
+
+class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
+
+fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
+                headers: List<String>): CreateCOut
+  let discs = collectDiscriminatorIds(statements)
+  let r = RRoot(buildStatements(statements), None, discs, optLevel)
+  let a0 = fold(statements, emptyApp(), (a: CgApp, st: PStmt) => ccStmt(a, st, r))
+  let a1 = appPutFunction(a0, createEntryPoint(mainName))
+  let a2 = ensureLazyMachinery(a1, collectLazyTypes(statements, r))
+  # SSA + control-flow + Phi validation right after AST lowering.
+  let v1 = ssaValidate(a2.appFunctions, true)
+  if !isEmpty(v1)
+    ret CreateCOut(List<String>(), v1)
+  let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
+  # -O2: bounded small-function/[inline(always)] inline fixpoint;
+  # -O3 adds the single-caller fold with vtable-slot trimming (compiler.py
+  # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
+  # tuples exactly).
+  let a3a = optLevel >= 2
+    ? ccO2Fixpoint(a3, 0, List<String>(), optLevel >= 3)
+    : a3
+  let a3s = optLevel >= 3 ? ccO3Fixpoint(a3a, 0, List<String>()) : a3a
+  let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
+  let a4 = resolveFlatStructGlobalInits(a3b)
+  let a5 = inferSync(a4)
+  let a6 = optLevel >= 1
+    ? ccFoldFixpoint(a5, 0, List<String>())
+    : propagateCopies(threadBranches(a5))
+  # Space correctness, every -O level (see sroa.yafl).
+  let a7 = splitProjectedAggregates(a6)
+  let a8 = removePhis(a7)
+  let a8b = optLevel >= 1 ? promoteToStack(a8) : a8
+  let a9 = removedUnusedStuff(lowerAsync(a8b))
+  let v2 = checkApplication(a9)
+  if !isEmpty(v2)
+    ret CreateCOut(List<String>(), v2)
+  let v3 = ssaValidate(a9.appFunctions, false)
+  if !isEmpty(v3)
+    ret CreateCOut(List<String>(), v3)
+  let v4 = ccValidateEntrypoint(a9)
+  if !isEmpty(v4)
+    ret CreateCOut(List<String>(), v4)
+  let parts = genApplication(a9, headers)
+  ret CreateCOut(parts, List<String>())
+
+# ── the -O2/-O3 inline fixpoints ─────────────────────────────────────────────
+# Python compiler.py: `if optimization_level >= 2` — resolve indirect fun_t
+# calls to known targets first (a direct call is what makes the closure
+# inlinable), inline + trim, stop on shape stability; 16-round bound.
+fun [tail] ccO2Fixpoint(a0: CgApp, round2: Int, prevShape: List<String>,
+                        inlineAlways: Bool): CgApp
+  if round2 >= 16
+    ret a0
+  let a1 = discoverGlobalFunctionCalls(a0)
+  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways))
+  let shape = ccShape(a2)
+  ret ccShapeEq(shape, prevShape)
+    ? a2
+    : ccO2Fixpoint(a2, round2 + 1, shape, inlineAlways)
+
+# The -O3 single-caller fold: drop undispatched vtable entries, re-derive
+# direct calls, inline every function referenced exactly once, trim; the
+# shape adds the SORTED per-object slot counts so a cascade that only sheds
+# vtable entries still iterates.
+fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
+                        prevShape: List<String>): CgApp
+  if round2 >= 16
+    ret a0
+  let a1 = discoverGlobalFunctionCalls(trimUnusedVtableSlots(a0))
+  # Recomputed each round: folding a callee away can newly prove its caller
+  # sync, unlocking the next fold in the chain.
+  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncNames(a1)))
+  let shape = concat(ccShape(a2),
+                     sort(map(a2.appObjects, (o: CgObject) =>
+                       o.objName + ":" + String(listLen(o.objFunctions)))))
+  ret ccShapeEq(shape, prevShape)
+    ? a2
+    : ccO3Fixpoint(a2, round2 + 1, shape)
+
+# ── the -O1+ pass blocks ─────────────────────────────────────────────────────
+# Python compiler.py: inside `if optimization_level > 0` — bounds-check
+# elimination, dead-store elimination, four rounds of static-object
+# promotion, dead stores again. (The >=2 inlining and >=3 single-caller
+# blocks are NOT PORTED YET; at -O1 Python skips them too.)
+fun ccO1Block(a0: CgApp): CgApp
+  let a1 = eliminateProvableBoundsChecks(a0)
+  let a2 = removedUnusedStuff(eliminateDeadStores(a1))
+  let a3 = ccStaticRounds(a2, 0, 0)
+  ret removedUnusedStuff(eliminateDeadStores(a3))
+
+# Static init promotion runs FOUR rounds; the $si$N counter threads across
+# rounds AND functions (Python's module-level itertools.count).
+fun [tail] ccStaticRounds(a: CgApp, round2: Int, counter: Int): CgApp
+  if round2 >= 4
+    ret a
+  let out = convertStaticObjectsPass(a, counter)
+  ret ccStaticRounds(out.app, round2 + 1, out.counter)
+
+# The pre-async collapse fixpoint (Python compiler.py `optimization_level >=
+# 1`): branch threading + copy propagation + the known-value folds, to a
+# 16-round bound or SHAPE stability — shape = every function's (name, op
+# count), exactly Python's `tuple((n, len(f.ops)) ...)`.
+fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
+                          prevShape: List<String>): CgApp
+  if round2 >= 16
+    ret a0
+  let a1 = threadBranches(a0)
+  let a2 = propagateCopies(a1)
+  let a3 = foldStructReads(a2)
+  let a4 = resolveKnownDiscriminators(a3)
+  let a5 = resolveKnownTags(a4)
+  let a6 = flattenStringAppends(a5)
+  let a7 = deforestStringAccumulation(a6)
+  let a8 = eliminateDeadStores(a7)
+  let shape = ccShape(a8)
+  ret ccShapeEq(shape, prevShape) ? a8 : ccFoldFixpoint(a8, round2 + 1, shape)
+
+fun ccShape(a: CgApp): List<String>
+  ret map(a.appFunctions,
+          (f: CgFunction) => f.fnName + ":" + String(listLen(f.fnOps)))
+
+fun ccShapeEq(a: List<String>, b: List<String>): Bool
+  ret listLen(a) == listLen(b) && ccShapeLoop(chain(a), chain(b))
+
+fun [tail] ccShapeLoop(a: Chain<String>, b: Chain<String>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(b)
+      (lb: ChainLink) => l.value == lb.value
+        ? ccShapeLoop(l.next, lb.next)
+        : false
+      ()              => false
+
+fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
+  let r2 = scopeResolver(st, r)
+  ret match(st)
+    (f: PsFun)   => appPutFunction(a, funGlobalCodegen(f, r2))
+    (l: PsLet)   => ccLet(a, l, r2)
+    (c: PsClass) => ccClass(a, c, r2)
+    (e2: PsEnum) => fold(enumGlobalCodegen(e2, r2), a, appPutObject)
+    (ta: PsTypealias) => a
+    (im: PsImport)    => a
+    (ns: PsNamespace) => a
+    (o: PStmt)   => a   # unreachable: top level holds declarations only
+
+fun ccLet(a: CgApp, l: PsLet, r: Resolver): CgApp
+  let out = letGlobalCodegen(l, r)
+  let withGlobals = fold(out.lcGlobals, a, appPutGlobal)
+  ret fold(out.lcFunctions, withGlobals, appPutFunction)
+
+fun ccClass(a: CgApp, c: PsClass, r: Resolver): CgApp
+  let out = classGlobalCodegen(c, r)
+  ret fold(out.ccFunctions, appPutObject2(a, out.ccObject), appPutFunction)
+
+fun appPutObject2(a: CgApp, o: CgObject): CgApp
+  ret appPutObject(a, o)
+
+# Python raises ValueError on a malformed __entrypoint__.
+fun ccValidateEntrypoint(a: CgApp): List<String>
+  ret match(appFunction(a, "__entrypoint__"))
+    (f: CgFunction) => ccEntryShape(f)
+    ()               => list1("A function called '__entrypoint__' is required")
+
+fun ccEntryShape(f: CgFunction): List<String>
+  let paramsOk = eqCgType(f.fnParams,
+                          CgStruct(list2(CgField("this", CgDataPointer()),
+                                         CgField("$continuation", CgFuncPointer()))))
+  let resultOk = alIsVoid(f.fnResult)
+  ret paramsOk && resultOk
+    ? List<String>()
+    : list1("__entrypoint__ has the wrong shape")

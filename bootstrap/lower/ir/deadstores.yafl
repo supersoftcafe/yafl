@@ -1,0 +1,107 @@
+# bootstrap/deadstores.yafl — ported from lowering/deadstores.py: remove
+# StackVar assignments whose value is never read. A Move to an unread
+# StackVar drops entirely (unless keep — the side-effect flag); a Call whose
+# unread register would otherwise force a store keeps the call but clears the
+# register (recording the result type for emission); a ParallelCall whose
+# EVERY output is unread drops whole. Per-function fixpoint (dropping one
+# store can orphan another), then stack_var declarations no longer mentioned
+# in any op are pruned (cpPruneStackVars — Python's two passes share the same
+# reads-or-writes rule). Reads INCLUDE saved_vars — a var alive across a
+# suspension is read by the state machine even when no op reads it directly.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+
+
+
+fun eliminateDeadStores(a: CgApp): CgApp
+  ret appWithFunctions(a, map(a.appFunctions, dsFunction))
+
+fun [tail] dsFunction(f: CgFunction): CgFunction
+  let out = dsOnce(f)
+  ret out.changed ? dsFunction(out.fn) : f
+
+# All StackVar names ever READ across all ops — the get_live_vars reads half,
+# plus every op's saved_vars. Dict-backed SET (Python's is a set; user ruling
+# 2026-07-22: lookups are dict-backed).
+fun dsCollectReads(ops: List<Op>): Dict<String, Bool>
+  ret fold(ops, Dict<String, Bool>(), dsOpReads)
+
+fun dsOpReads(acc: Dict<String, Bool>, op: Op): Dict<String, Bool>
+  ret fold(opSavedVars(op),
+           fold(opGetLiveVars(op).reads, acc, dsAddStackVarName),
+           dsAddStackVarName)
+
+fun dsAddStackVarName(acc: Dict<String, Bool>, rp: RParam): Dict<String, Bool>
+  ret match(rp)
+    (sv: RpStackVar) => put(acc, sv.name, true)
+    (o: RParam)      => acc
+
+fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
+  ret !(get(reads, name) is None)
+
+fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
+  let reads = dsCollectReads(f.fnOps)
+  let walked = dsWalk(chain(f.fnOps), reads, List<Op>(), false)
+  ret walked.changed
+    ? (cpPruneStackVars(f, walked.ops), true)
+    : (f, false)
+
+fun [tail] dsWalk(ops: Chain<Op>, reads: Dict<String, Bool>,
+                  acc: List<Op>, changed: Bool): (ops: List<Op>, changed: Bool)
+  ret match(ops)
+    (nil: ChainEnd) => (acc, changed)
+    (l: ChainLink)  => dsStep(l.value, reads)
+      |> (step) => match(step.op)
+        (kept: Op) => dsWalk(l.next, reads, append(acc, kept),
+                             changed || step.changed)
+        ()         => dsWalk(l.next, reads, acc, true)
+
+# The per-op decision: the op to keep (possibly rewritten) or None to drop,
+# plus whether anything changed.
+fun dsStep(op: Op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
+  ret match(op)
+    (m: OpMove)         => dsStepMove(m, reads)
+    (c: OpCall)         => dsStepCall(c, reads)
+    (p: OpParallelCall) => dsStepParallel(p, reads)
+    (o: Op)             => (op, false)
+
+fun dsStepMove(m: OpMove, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
+  ret match(m.moveTarget)
+    (sv: RpStackVar) => !dsIsRead(reads, sv.name) && !m.moveKeep
+      ? (None, true)
+      : (m, false)
+    (o: RParam)      => (m, false)
+
+fun dsStepCall(c: OpCall, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
+  ret match(c.callRegister)
+    (r0: RParam) => match(r0)
+      (sv: RpStackVar) => !dsIsRead(reads, sv.name)
+        ? (OpCall(c.callFunction, c.callParameters, None, c.callMusttail,
+                  c.callImpure, rpGetType(r0), c.callSavedVars), true)
+        : (c, false)
+      (o: RParam)      => (c, false)
+    ()           => (c, false)
+
+fun dsStepParallel(p: OpParallelCall,
+                   reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
+  let outputs = concat(dsOptList(p.parRegister), p.parResults)
+  ret !isEmpty(outputs) && dsAllUnread(chain(outputs), reads)
+    ? (None, true)
+    : (p, false)
+
+fun dsOptList(r: RParam|None): List<RParam>
+  ret match(r)
+    (x: RParam) => append<RParam>(List<RParam>(), x)
+    ()          => List<RParam>()
+
+fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>): Bool
+  ret match(os)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(l.value)
+      (sv: RpStackVar) => dsIsRead(reads, sv.name)
+        ? false
+        : dsAllUnread(l.next, reads)
+      (o: RParam)      => dsAllUnread(l.next, reads)

@@ -1,0 +1,563 @@
+# bootstrap/equality.yafl — structural equality over the AST.
+#
+# The compile fixpoint terminates when a whole pass rewrites nothing:
+# `newStatements == statements`. Python gets that test free from dataclass
+# `__eq__`; YAFL derives nothing, so it is written out here — and it must
+# honour Python's equality EXCLUSIONS exactly, or the loop either spins
+# forever (comparing metadata that never settles) or stops early (missing a
+# change that matters):
+#
+#   * every Spec ignores its line_ref — two spellings of the same type ARE
+#     the same type, wherever they were written;
+#   * an SEnum further ignores seParams (best-effort metadata) and would
+#     ignore all_fields/is_complex if we carried them;
+#   * expressions and statements DO compare their line refs (a node that
+#     moved is a different node), but ignore the derived caches: a name's
+#     resolved trait scope, and the `inferred` flags on fun/let/destructure.
+namespace Bootstrap::Ast
+
+import System
+
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Parse
+import Bootstrap::Resolve
+
+
+
+# ── types ───────────────────────────────────────────────────────────────────
+
+fun eqSpecOpt(a: Spec|None, b: Spec|None): Bool
+  ret match(a)
+    (x: Spec) => match(b)
+      (y: Spec) => eqSpec(x, y)
+      ()        => false
+    () => match(b)
+      (y: Spec) => false
+      ()        => true
+
+fun eqSpec(a: Spec, b: Spec): Bool
+  ret match(a)
+    (x: SBuiltin) => match(b)
+      (y: SBuiltin) => x.sbName == y.sbName
+      (o: Spec)     => false
+    (x: SNamed) => match(b)
+      (y: SNamed) => x.snName == y.snName && eqSpecs(x.snParams, y.snParams)
+      (o: Spec)   => false
+    (x: SClass) => match(b)
+      (y: SClass) => x.scName == y.scName && eqSpecs(x.scParams, y.scParams)
+      (o: Spec)   => false
+    # seParams is excluded: it is best-effort metadata, not identity.
+    (x: SEnum) => match(b)
+      (y: SEnum) => x.seRoot == y.seRoot
+                    && eqStrs(x.seValidLeaves, y.seValidLeaves)
+                    && eqStrs(x.seAllLeaves, y.seAllLeaves)
+      (o: Spec)  => false
+    (x: SGeneric) => match(b)
+      (y: SGeneric) => x.sgName == y.sgName && eqBool(x.sgLinear, y.sgLinear)
+      (o: Spec)     => false
+    (x: SCallable) => match(b)
+      (y: SCallable) => eqSpec(x.scParams2, y.scParams2)
+                        && eqSpecOpt(x.scResult, y.scResult)
+      (o: Spec)      => false
+    (x: SCombination) => match(b)
+      (y: SCombination) => eqSpecs(x.scTypes, y.scTypes)
+      (o: Spec)         => false
+    (x: STuple) => match(b)
+      (y: STuple) => eqEntries(x.stEntries, y.stEntries)
+      (o: Spec)   => false
+    (x: SArrayField) => match(b)
+      (y: SArrayField) => x.safLenField == y.safLenField
+                          && eqSpec(x.safElem, y.safElem)
+      (o: Spec)        => false
+    (x: SLazyStub) => match(b)
+      (y: SLazyStub) => eqSpecOpt(x.slsTarget, y.slsTarget)
+      (o: Spec)      => false
+
+fun eqEntry(a: SEntry, b: SEntry): Bool
+  ret a.seName == b.seName
+      && eqSpecOpt(a.seType, b.seType)
+      && eqExprOpt(a.seDefault, b.seDefault)
+
+# ── expressions ─────────────────────────────────────────────────────────────
+
+fun eqExprOpt(a: PExpr|None, b: PExpr|None): Bool
+  ret match(a)
+    (x: PExpr) => match(b)
+      (y: PExpr) => eqExpr(x, y)
+      ()         => false
+    () => match(b)
+      (y: PExpr) => false
+      ()         => true
+
+fun eqExpr(a: PExpr, b: PExpr): Bool
+  ret match(a)
+    (x: PeInt) => match(b)
+      (y: PeInt) => x.value == y.value && x.precision == y.precision
+                    && eqLine(x.peiLine, y.peiLine)
+      (o: PExpr) => false
+    (x: PeFloat) => match(b)
+      (y: PeFloat) => x.floatText == y.floatText && x.fPrecision == y.fPrecision
+                      && eqLine(x.pefLine, y.pefLine)
+      (o: PExpr)   => false
+    (x: PeBool) => match(b)
+      (y: PeBool) => eqBool(x.boolValue, y.boolValue) && eqLine(x.pebLine, y.pebLine)
+      (o: PExpr)  => false
+    (x: PeStr) => match(b)
+      (y: PeStr) => x.strValue == y.strValue && eqLine(x.pesLine, y.pesLine)
+      (o: PExpr) => false
+    (x: PeRegex) => match(b)
+      (y: PeRegex) => x.pattern == y.pattern && eqLine(x.perLine, y.perLine)
+      (o: PExpr)   => false
+    # resolvedTraitScope is a derived cache — excluded, as in Python.
+    (x: PeName) => match(b)
+      (y: PeName) => x.refName == y.refName
+                     && eqSpecs(x.refTypeParams, y.refTypeParams)
+                     && eqLine(x.penLine, y.penLine)
+      (o: PExpr)  => false
+    (x: PeDot) => match(b)
+      (y: PeDot) => x.member == y.member && eqExpr(x.base, y.base)
+                    && eqLine(x.pedLine, y.pedLine)
+      (o: PExpr) => false
+    (x: PeCall) => match(b)
+      (y: PeCall) => eqExpr(x.function, y.function)
+                     && eqExpr(x.parameter, y.parameter)
+                     && eqLine(x.pecLine, y.pecLine)
+      (o: PExpr)  => false
+    (x: PeTuple) => match(b)
+      (y: PeTuple) => eqTupEnts(x.exprs, y.exprs) && eqLine(x.petLine, y.petLine)
+      (o: PExpr)   => false
+    (x: PeTernary) => match(b)
+      (y: PeTernary) => eqExpr(x.condition, y.condition)
+                        && eqExpr(x.trueResult, y.trueResult)
+                        && eqExpr(x.falseResult, y.falseResult)
+                        && eqLine(x.pety, y.pety)
+      (o: PExpr)     => false
+    (x: PeLambda) => match(b)
+      (y: PeLambda) => eqStmt(x.lamParams, y.lamParams)
+                       && eqExpr(x.lamBody, y.lamBody)
+                       && eqLine(x.pelLine, y.pelLine)
+                       && eqSpecOpt(x.lamRet, y.lamRet)
+      (o: PExpr)    => false
+    (x: PeBlock) => match(b)
+      (y: PeBlock) => x.blockTag == y.blockTag
+                      && eqStmts(x.blockStmts, y.blockStmts)
+                      && eqExpr(x.blockValue, y.blockValue)
+                      && eqLine(x.pebkLine, y.pebkLine)
+      (o: PExpr)   => false
+    (x: PeMatch) => match(b)
+      (y: PeMatch) => eqExpr(x.subject, y.subject) && eqArms(x.arms, y.arms)
+                      && eqLine(x.pemLine, y.pemLine)
+      (o: PExpr)   => false
+    (x: PeBuiltinOp) => match(b)
+      (y: PeBuiltinOp) => eqSpec(x.opType, y.opType)
+                          && eqExpr(x.opName, y.opName)
+                          && eqExpr(x.opParams, y.opParams)
+                          && eqLine(x.peboLine, y.peboLine)
+      (o: PExpr)       => false
+    (x: PeParallel) => match(b)
+      (y: PeParallel) => eqExpr(x.parParams, y.parParams)
+                         && eqLine(x.pepLine, y.pepLine)
+      (o: PExpr)      => false
+    (x: PeNothing) => match(b)
+      (y: PeNothing) => eqLine(x.pengLine, y.pengLine)
+      (o: PExpr)     => false
+    (x: PeNewEnum) => match(b)
+      (y: PeNewEnum) => x.rootName == y.rootName && x.leafName == y.leafName
+                        && eqFieldArgs(x.fieldArgs, y.fieldArgs)
+                        && eqSpecs(x.neTypeParams, y.neTypeParams)
+                        && eqLine(x.penewLine, y.penewLine)
+      (o: PExpr)     => false
+    (x: PeNew) => match(b)
+      (y: PeNew) => eqSpec(x.newType, y.newType)
+                    && eqExpr(x.newParam, y.newParam)
+                    && eqLine(x.penwLine, y.penwLine)
+      (o: PExpr) => false
+    (x: PeArrayRead) => match(b)
+      (y: PeArrayRead) => eqExpr(x.arrObj, y.arrObj)
+                          && eqExpr(x.arrIndex, y.arrIndex)
+                          && eqLine(x.pearLine, y.pearLine)
+      (o: PExpr)       => false
+    (x: PeConvert) => match(b)
+      (y: PeConvert) => eqSpec(x.convTarget, y.convTarget)
+                        && eqExpr(x.convInner, y.convInner)
+                        && eqLine(x.pecvLine, y.pecvLine)
+      (o: PExpr)     => false
+    (x: PeLoop) => match(b)
+      (y: PeLoop) => eqExpr(x.loopBody, y.loopBody)
+                     && eqExprs(x.loopParams, y.loopParams)
+                     && eqLine(x.pelpLine, y.pelpLine)
+      (o: PExpr)  => false
+    (x: PeRecur) => match(b)
+      (y: PeRecur) => x.recIndex == y.recIndex
+                      && eqExprs(x.recArgs, y.recArgs)
+                      && eqLine(x.percLine, y.percLine)
+      (o: PExpr)   => false
+    (x: PeLazy) => match(b)
+      (y: PeLazy) => x.stubName == y.stubName
+                     && eqSpec(x.lzTarget, y.lzTarget)
+                     && eqStrOpt(x.lzCaptured, y.lzCaptured)
+                     && eqBool(x.lzStubOnly, y.lzStubOnly)
+                     && eqLine(x.pelzLine, y.pelzLine)
+      (o: PExpr)  => false
+
+fun eqTupEnt(a: PTupEnt, b: PTupEnt): Bool
+  ret a.tupName == b.tupName && eqBool(a.tupSpread, b.tupSpread)
+      && eqExpr(a.tupValue, b.tupValue)
+
+fun eqArm(a: PArm, b: PArm): Bool
+  ret a.armName == b.armName
+      && eqSpecOpt(a.armType, b.armType)
+      && eqLits(a.armLiterals, b.armLiterals)
+      && eqExprOpt(a.armGuard, b.armGuard)
+      && eqExpr(a.armBody, b.armBody)
+      && eqLine(a.parmLine, b.parmLine)
+
+fun eqLit(a: PLit, b: PLit): Bool
+  ret match(a)
+    (x: PlExpr) => match(b)
+      (y: PlExpr) => eqExpr(x.litExpr, y.litExpr)
+      (o: PLit)   => false
+    (x: PlRange) => match(b)
+      (y: PlRange) => eqExpr(x.rangeLo, y.rangeLo)
+                      && eqExpr(x.rangeHi, y.rangeHi)
+                      && eqLine(x.plrLine, y.plrLine)
+      (o: PLit)    => false
+
+fun eqAttr(a: PAttr, b: PAttr): Bool
+  ret a.attrName == b.attrName && eqExprOpt(a.attrValue, b.attrValue)
+
+fun eqGen(a: PGen, b: PGen): Bool
+  ret a.genName == b.genName && eqAttrs(a.genAttrs, b.genAttrs)
+      && eqLine(a.pgLine, b.pgLine)
+
+# `==` has no Bool instance in the stdlib, and YAFL derives nothing.
+fun eqBool(a: Bool, b: Bool): Bool
+  ret a ? b : !b
+
+fun eqLine(a: PLine, b: PLine): Bool
+  ret a.plLine == b.plLine && a.plCol == b.plCol && a.plFile == b.plFile
+
+# ── statements ──────────────────────────────────────────────────────────────
+# The `inferred` flags and the enum's cached root/spec are derived caches —
+# excluded here exactly as Python excludes them.
+
+fun eqStmt(a: PStmt, b: PStmt): Bool
+  ret match(a)
+    (x: PsFun) => match(b)
+      (y: PsFun) => x.fName == y.fName
+                    && eqAttrs(x.fAttrs, y.fAttrs)
+                    && eqGens(x.fGens, y.fGens)
+                    && eqStmt(x.fParams, y.fParams)
+                    && eqSpecOpt(x.fRet, y.fRet)
+                    && eqSpecs(x.fWheres, y.fWheres)
+                    && eqExprOpt(x.fBody, y.fBody)
+                    && eqLine(x.psfLine, y.psfLine)
+                    # is_nested is NOT excluded in Python — the mark must
+                    # settle for the fixpoint to see it settle.
+                    && eqBool(x.fNested, y.fNested)
+                    && eqStmtsOpt(x.fImports, y.fImports)
+      (o: PStmt) => false
+    (x: PsLet) => match(b)
+      (y: PsLet) => x.lName == y.lName && x.lArrayLen == y.lArrayLen
+                    && eqAttrs(x.lAttrs, y.lAttrs)
+                    && eqGens(x.lGens, y.lGens)
+                    && eqSpecOpt(x.lType, y.lType)
+                    && eqExprOpt(x.lDefault, y.lDefault)
+                    && eqSpecs(x.lWheres, y.lWheres)
+                    && eqLine(x.pslLine, y.pslLine)
+                    && eqStmtsOpt(x.lImports, y.lImports)
+      (o: PStmt) => false
+    (x: PsDestructure) => match(b)
+      (y: PsDestructure) => x.dName == y.dName
+                            && eqAttrs(x.dAttrs, y.dAttrs)
+                            && eqStmts(x.dTargets, y.dTargets)
+                            && eqSpecOpt(x.dType, y.dType)
+                            && eqExprOpt(x.dDefault, y.dDefault)
+                            && eqLine(x.psdLine, y.psdLine)
+      (o: PStmt)         => false
+    (x: PsClass) => match(b)
+      (y: PsClass) => x.cName == y.cName && eqBool(x.cIsInterface, y.cIsInterface)
+                      && eqAttrs(x.cAttrs, y.cAttrs)
+                      && eqGens(x.cGens, y.cGens)
+                      && eqStmt(x.cParams, y.cParams)
+                      && eqSpecs(x.cImplements, y.cImplements)
+                      && eqSpecs(x.cWheres, y.cWheres)
+                      && eqStmts(x.cMembers, y.cMembers)
+                      && eqLine(x.pscLine, y.pscLine)
+                      # _all_parents / _all_slots are NOT excluded in Python
+                      # (no compare=False): the fixpoint runs until the
+                      # tables settle. Parents and provides are SETS —
+                      # compared order-free.
+                      && eqSpecSetOpt(x.cAllParents, y.cAllParents)
+                      && eqSlotsOpt(x.cAllSlots, y.cAllSlots)
+                      && eqStmtsOpt(x.cImports, y.cImports)
+      (o: PStmt)   => false
+    (x: PsEnum) => match(b)
+      (y: PsEnum) => x.eName == y.eName
+                     && eqGens(x.eGens, y.eGens)
+                     && eqStmt(x.eParams, y.eParams)
+                     && eqStmts(x.eVariants, y.eVariants)
+                     && eqBool(x.eHasParams, y.eHasParams)
+                     && eqLine(x.pseLine, y.pseLine)
+                     && eqStmtsOpt(x.eImports, y.eImports)
+      (o: PStmt)  => false
+    (x: PsTypealias) => match(b)
+      (y: PsTypealias) => x.taName == y.taName
+                          && eqAttrs(x.taAttrs, y.taAttrs)
+                          && eqGens(x.taGens, y.taGens)
+                          && eqSpec(x.taType, y.taType)
+                          && eqSpecs(x.taWheres, y.taWheres)
+                          && eqLine(x.pstLine, y.pstLine)
+                          && eqStmtsOpt(x.taImports, y.taImports)
+      (o: PStmt)       => false
+    (x: PsImport) => match(b)
+      (y: PsImport) => x.importPath == y.importPath
+                       && eqLine(x.psiLine, y.psiLine)
+      (o: PStmt)    => false
+    (x: PsNamespace) => match(b)
+      (y: PsNamespace) => x.nsPath == y.nsPath && eqLine(x.psnLine, y.psnLine)
+      (o: PStmt)       => false
+    (x: PsTraitInstance) => match(b)
+      (y: PsTraitInstance) => x.tiName == y.tiName
+                              && eqBool(x.tiAmbient, y.tiAmbient)
+                              && eqGens(x.tiGens, y.tiGens)
+                              && eqSpec(x.tiPattern, y.tiPattern)
+                              && eqSpecs(x.tiWheres, y.tiWheres)
+                              && eqStmts(x.tiMembers, y.tiMembers)
+                              && eqLine(x.pstiLine, y.pstiLine)
+      (o: PStmt)           => false
+    (x: PsRet) => match(b)
+      (y: PsRet) => x.retIndex == y.retIndex
+                      && eqExpr(x.retValue, y.retValue) && eqLine(x.psrLine, y.psrLine)
+      (o: PStmt) => false
+    (x: PsIf) => match(b)
+      (y: PsIf) => eqExpr(x.ifCond, y.ifCond)
+                   && eqStmts(x.ifTrue, y.ifTrue)
+                   && eqStmts(x.ifFalse, y.ifFalse)
+                   && eqLine(x.psifLine, y.psifLine)
+      (o: PStmt) => false
+    (x: PsElseIf) => match(b)
+      (y: PsElseIf) => eqExpr(x.eiCond, y.eiCond)
+                       && eqStmts(x.eiStmts, y.eiStmts)
+                       && eqLine(x.pseiLine, y.pseiLine)
+      (o: PStmt)    => false
+    (x: PsElse) => match(b)
+      (y: PsElse) => eqStmts(x.elStmts, y.elStmts)
+                     && eqLine(x.pselLine, y.pselLine)
+      (o: PStmt)  => false
+    (x: PsAction) => match(b)
+      (y: PsAction) => eqExpr(x.action, y.action) && eqLine(x.psaLine, y.psaLine)
+      (o: PStmt)    => false
+
+# ── lists ───────────────────────────────────────────────────────────────────
+# One walk per element type: a generic `eqList` would need a function
+# parameter, and the element types are few enough that spelling them out is
+# both clearer and safe from the generic-lambda instantiation gap.
+
+fun eqStrOpt(a: String|None, b: String|None): Bool
+  ret match(a)
+    (x: String) => match(b)
+      (y: String) => x == y
+      ()          => false
+    ()          => match(b)
+      (y2: String) => false
+      ()           => true
+
+# Python's field_args dict equality: same keys in order AND equal value exprs.
+fun eqFieldArgs(a: List<PFieldArg>, b: List<PFieldArg>): Bool
+  ret listLen(a) != listLen(b) ? false : eqFaLoop(chain(a), chain(b))
+
+fun [tail] eqFaLoop(a: Chain<PFieldArg>, b: Chain<PFieldArg>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => x.value.faName == y.value.faName
+                          && eqExpr(x.value.faValue, y.value.faValue)
+        ? eqFaLoop(x.next, y.next)
+        : false
+
+fun eqStrs(a: List<String>, b: List<String>): Bool
+  ret listLen(a) != listLen(b) ? false : eqStrLoop(chain(a), chain(b))
+
+fun [tail] eqStrLoop(a: Chain<String>, b: Chain<String>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => x.value != y.value ? false : eqStrLoop(x.next, y.next)
+
+fun eqSpecs(a: List<Spec>, b: List<Spec>): Bool
+  ret listLen(a) != listLen(b) ? false : eqSpecLoop(chain(a), chain(b))
+
+fun [tail] eqSpecLoop(a: Chain<Spec>, b: Chain<Spec>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqSpec(x.value, y.value)
+        ? false
+        : eqSpecLoop(x.next, y.next)
+
+fun eqEntries(a: List<SEntry>, b: List<SEntry>): Bool
+  ret listLen(a) != listLen(b) ? false : eqEntryLoop(chain(a), chain(b))
+
+fun [tail] eqEntryLoop(a: Chain<SEntry>, b: Chain<SEntry>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqEntry(x.value, y.value)
+        ? false
+        : eqEntryLoop(x.next, y.next)
+
+fun eqExprs(a: List<PExpr>, b: List<PExpr>): Bool
+  ret listLen(a) != listLen(b) ? false : eqExprLoop(chain(a), chain(b))
+
+fun [tail] eqExprLoop(a: Chain<PExpr>, b: Chain<PExpr>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqExpr(x.value, y.value)
+        ? false
+        : eqExprLoop(x.next, y.next)
+
+fun eqStmts(a: List<PStmt>, b: List<PStmt>): Bool
+  ret listLen(a) != listLen(b) ? false : eqStmtLoop(chain(a), chain(b))
+
+fun [tail] eqStmtLoop(a: Chain<PStmt>, b: Chain<PStmt>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqStmt(x.value, y.value)
+        ? false
+        : eqStmtLoop(x.next, y.next)
+
+fun eqTupEnts(a: List<PTupEnt>, b: List<PTupEnt>): Bool
+  ret listLen(a) != listLen(b) ? false : eqTupEntLoop(chain(a), chain(b))
+
+fun [tail] eqTupEntLoop(a: Chain<PTupEnt>, b: Chain<PTupEnt>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqTupEnt(x.value, y.value)
+        ? false
+        : eqTupEntLoop(x.next, y.next)
+
+fun eqArms(a: List<PArm>, b: List<PArm>): Bool
+  ret listLen(a) != listLen(b) ? false : eqArmLoop(chain(a), chain(b))
+
+fun [tail] eqArmLoop(a: Chain<PArm>, b: Chain<PArm>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqArm(x.value, y.value) ? false : eqArmLoop(x.next, y.next)
+
+fun eqLits(a: List<PLit>, b: List<PLit>): Bool
+  ret listLen(a) != listLen(b) ? false : eqLitLoop(chain(a), chain(b))
+
+fun [tail] eqLitLoop(a: Chain<PLit>, b: Chain<PLit>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqLit(x.value, y.value) ? false : eqLitLoop(x.next, y.next)
+
+fun eqAttrs(a: List<PAttr>, b: List<PAttr>): Bool
+  ret listLen(a) != listLen(b) ? false : eqAttrLoop(chain(a), chain(b))
+
+fun [tail] eqAttrLoop(a: Chain<PAttr>, b: Chain<PAttr>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqAttr(x.value, y.value)
+        ? false
+        : eqAttrLoop(x.next, y.next)
+
+fun eqGens(a: List<PGen>, b: List<PGen>): Bool
+  ret listLen(a) != listLen(b) ? false : eqGenLoop(chain(a), chain(b))
+
+fun [tail] eqGenLoop(a: Chain<PGen>, b: Chain<PGen>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqGen(x.value, y.value) ? false : eqGenLoop(x.next, y.next)
+
+# ── set-wise comparisons ─────────────────────────────────────────────────────
+# Python holds _all_parents and a slot's provides as SETS: equality is mutual
+# membership, order-free. The port's lists are deduplicated on construction,
+# so equal length + one-way containment would do — mutual containment is the
+# direct spelling of the same rule.
+
+fun eqSpecSetOpt(a: List<Spec>|None, b: List<Spec>|None): Bool
+  ret match(a)
+    (x: List<Spec>) => match(b)
+      (y: List<Spec>) => eqSpecSet(x, y)
+      ()              => false
+    () => match(b)
+      (y: List<Spec>) => false
+      ()              => true
+
+fun eqSpecSet(a: List<Spec>, b: List<Spec>): Bool
+  ret listLen(a) == listLen(b) && specsSubset(chain(a), b)
+      && specsSubset(chain(b), a)
+
+fun [tail] specsSubset(xs: Chain<Spec>, ys: List<Spec>): Bool
+  ret match(xs)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => containsSpec(ys, l.value)
+      ? specsSubset(l.next, ys)
+      : false
+
+fun eqStrSet(a: List<String>, b: List<String>): Bool
+  ret listLen(a) == listLen(b) && strsSubset(chain(a), b)
+      && strsSubset(chain(b), a)
+
+fun [tail] strsSubset(xs: Chain<String>, ys: List<String>): Bool
+  ret match(xs)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => contains2(ys, l.value) ? strsSubset(l.next, ys) : false
+
+fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None): Bool
+  ret match(a)
+    (x: List<Slot>) => match(b)
+      (y: List<Slot>) => eqSlots(x, y)
+      ()              => false
+    () => match(b)
+      (y: List<Slot>) => false
+      ()              => true
+
+# The slot LIST is ordered (own slots first, surviving parent slots after);
+# each slot's provides is a set.
+fun eqSlots(a: List<Slot>, b: List<Slot>): Bool
+  ret listLen(a) != listLen(b) ? false : eqSlotLoop(chain(a), chain(b))
+
+fun [tail] eqSlotLoop(a: Chain<Slot>, b: Chain<Slot>): Bool
+  ret match(a)
+    (nil: ChainEnd) => true
+    (x: ChainLink)  => match(b)
+      (nil2: ChainEnd) => false
+      (y: ChainLink)   => !eqSlot(x.value, y.value)
+        ? false
+        : eqSlotLoop(x.next, y.next)
+
+fun eqSlot(a: Slot, b: Slot): Bool
+  ret a.slotName == b.slotName
+      && eqSpecOpt(a.slotType, b.slotType)
+      && eqStrSet(a.slotProvides, b.slotProvides)
+
+fun eqStmtsOpt(a: List<PStmt>|None, b: List<PStmt>|None): Bool
+  ret match(a)
+    (x: List<PStmt>) => match(b)
+      (y: List<PStmt>) => eqStmts(x, y)
+      ()               => false
+    () => match(b)
+      (y: List<PStmt>) => false
+      ()               => true

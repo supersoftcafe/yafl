@@ -256,7 +256,7 @@ def _bootstrap_tree_hash() -> str:
     change must invalidate the cache — a stale binary silently runs the old
     allocator/GC)."""
     h = hashlib.sha256()
-    roots = [sorted(_BOOT_DIR.glob("*.yafl")),
+    roots = [sorted(_BOOT_DIR.rglob("*.yafl")),
              sorted(_STDLIB_DIR.glob("*.yafl")),
              sorted(_COMPILER_DIR.rglob("*.py")),
              sorted(_YAFLLIB_DIR.glob("*.c")) + sorted(_YAFLLIB_DIR.glob("*.h"))]
@@ -286,7 +286,7 @@ def shared_bootstrap_binary() -> str:
                 return str(binary)
             import compiler as _c
             inputs = [_c.Input(p.read_text(), p.name)
-                      for p in sorted(_BOOT_DIR.glob("*.yafl"))]
+                      for p in sorted(_BOOT_DIR.rglob("*.yafl"))]
             c_code = _c.compile(inputs, use_stdlib=True, just_testing=False,
                                 optimization_level=1)
             assert c_code, "bootstrap compilation failed"

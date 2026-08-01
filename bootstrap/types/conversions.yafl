@@ -1,0 +1,193 @@
+# bootstrap/conversions.yafl — needs_conversion + matching_tuple_variant,
+# ported from compiler/pyast/expression/conversion.py.
+#
+# ONE question: would representing a `source`-typed value as `target` require a
+# REPRESENTATION change? This is the single home for that decision — the
+# compile pass wraps a node in a conversion exactly when this says yes, and
+# codegen NEVER converts (a conversion still needed at generate time is an
+# upstream bug). So a wrong answer here is either a silent miscompile or a
+# crash in the backend, never a type error.
+#
+# Undecidable is FALSE, deliberately: while either side is not ground the
+# fixpoint simply asks again next pass, and a conversion inserted on a guess
+# would never be taken back.
+namespace Bootstrap::Types
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+
+
+
+fun needsConversion(r: Resolver, source: Spec|None, target: Spec|None): Bool
+  ret match(source)
+    (s2: Spec) => match(target)
+      (t2: Spec) => needsConv(r, s2, t2)
+      ()         => false
+    () => false
+
+fun needsConv(r: Resolver, source: Spec, target: Spec): Bool
+  # An uninhabited source (Never) is dead code, but its SHAPE must still change
+  # unless the target is identical.
+  if isNever(source)
+    ret uid(source) != uid(target)
+  let su = uid(source)
+  let tu = uid(target)
+  if su == "" || tu == ""
+    ret false                                   # not ground yet — ask again
+  # Tuple-into-tuple is decided by the field BINDING, BEFORE the id shortcut: a
+  # pure name-directed reorder has identical ids on both sides (an id is
+  # positional types only) yet must rebuild the value.
+  if isTuple(source) && isTuple(target)
+    ret tupleIntoTuple(r, source, target, su, tu)
+  if su == tu
+    ret false
+  # A 1-tuple and its element are one TYPE with two REPRESENTATIONS (the tuple
+  # is a one-field struct), so a non-tuple source must WRAP. A wider tuple with
+  # a non-tuple source is not assignable at all — the receiver reports that.
+  if isTuple(target)
+    ret tupleArity(target) == 1
+  if isUnion(target)
+    ret intoUnion(r, source, target, su, tu)
+  # A genuine 1-tuple WRAPPER of the target: unwrap.
+  ret isWrapperOf(source, tu)
+
+# ── tuple into tuple ────────────────────────────────────────────────────────
+
+fun tupleIntoTuple(r: Resolver, source: Spec, target: Spec,
+                   su: String, tu: String): Bool
+  # 1-tuple WRAP first: when the target is a one-entry tuple whose entry the
+  # SOURCE-AS-A-WHOLE fits (it IS the entry type, or it is a member tuple of the
+  # entry's union — e.g. a simple class's structural tuple), the conversion is a
+  # wrap(+box), not an entry-wise rebind.
+  if wrapsWhole(r, source, target, su)
+    ret true
+  let sEntries = tupleEntries(source)
+  let tEntries = tupleEntries(target)
+  ret match(bindTupleEntries(tEntries, entryNames(sEntries)))
+    (b: List<Int>) => !isIdentityBinding(b)
+      ? true                                    # reorder and/or default fill
+      : (su != tu && anyEntryConverts(r, sEntries, tEntries))
+    ()             => false                     # not assignable — not our call
+
+fun wrapsWhole(r: Resolver, source: Spec, target: Spec, su: String): Bool
+  if tupleArity(target) != 1
+    ret false
+  ret match(entryTypeAt(target, 0))
+    (ety: Spec) => uid(ety) == ""
+      ? false
+      : (uid(ety) == su
+          ? true
+          : isUnion(ety) && hasMatchingVariant(r, source, ety))
+    ()          => false
+
+fun isIdentityBinding(b: List<Int>): Bool
+  ret identityLoop(chain(b), 0)
+
+fun [tail] identityLoop(bs: Chain<Int>, i: Int): Bool
+  ret match(bs)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => l.value != i ? false : identityLoop(l.next, i + 1)
+
+fun anyEntryConverts(r: Resolver, ss: List<SEntry>, ts: List<SEntry>): Bool
+  ret entryConvLoop(chain(ss), chain(ts), r)
+
+fun [tail] entryConvLoop(ss: Chain<SEntry>, ts: Chain<SEntry>, r: Resolver): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (a: ChainLink)  => match(ts)
+      (nil2: ChainEnd) => false
+      (b: ChainLink)   => needsConversion(r, a.value.seType, b.value.seType)
+        ? true
+        : entryConvLoop(a.next, b.next, r)
+
+# ── into a union ────────────────────────────────────────────────────────────
+
+fun intoUnion(r: Resolver, source: Spec, target: Spec,
+              su: String, tu: String): Bool
+  if isTuple(source)
+    # A tuple that fits one of the union's tuple variants BOXES into it.
+    ret hasMatchingVariant(r, source, target)
+      ? true
+      # A 1-tuple that genuinely WRAPS a union value unwraps to its element.
+      : isWrapperOf(source, tu)
+  # Two distinct union ids ⇒ widening / re-slotting.
+  if isUnion(source)
+    ret true
+  # An ordinary value boxes in when it IS one of the members.
+  ret anyMemberIs(chain(reprMembersOf(unionMembers(target))), su)
+
+fun [tail] anyMemberIs(ms: Chain<Spec>, su: String): Bool
+  ret match(ms)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => uid(l.value) == su ? true : anyMemberIs(l.next, su)
+
+# ── the union's matching tuple variant ──────────────────────────────────────
+# THE single home for this match: the decision (here), the emission (coerce)
+# and the insertion (boxing) all read it. More than one match would mean two
+# nominally distinct variants collapsed to one structural spec — which the
+# union-collision pruning must prevent — so it is not silently tolerated.
+
+fun matchingTupleVariant(r: Resolver, source: Spec, target: Spec): Spec|None
+  ret variantLoop(chain(reprMembersOf(unionMembers(target))), r, source, None)
+
+fun [tail] variantLoop(vs: Chain<Spec>, r: Resolver, source: Spec,
+                       found: Spec|None): Spec|None
+  ret match(vs)
+    (nil: ChainEnd) => found
+    (l: ChainLink)  => variantFits(r, l.value, source)
+      ? variantLoop(l.next, r, source, l.value)
+      : variantLoop(l.next, r, source, found)
+
+fun variantFits(r: Resolver, v: Spec, source: Spec): Bool
+  # A tuple variant matches structurally...
+  if isTuple(v)
+    ret triTrue(assignableFrom(r, v, source))
+  # ...and a [final]-class member is REPRESENTED structurally in a union, so a
+  # tuple value (the class's own inlined construction, whose type has become
+  # the field tuple) must box AS that class member.
+  ret match(classStructuralTuple(r, v))
+    (st: Spec) => triTrue(assignableFrom(r, st, source))
+    ()         => false
+
+fun classStructuralTuple(r: Resolver, v: Spec): Spec|None
+  ret match(v)
+    (c: SClass) => finalClassTuple(r, c)
+    (o: Spec)   => None
+
+fun finalClassTuple(r: Resolver, c: SClass): Spec|None
+  ret match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => hasAttr(cs.cAttrs, "final")
+        ? paramsTuple(cs.cParams)
+        : None
+      (o: PStmt)    => None
+    ()         => None
+
+fun hasMatchingVariant(r: Resolver, source: Spec, target: Spec): Bool
+  ret match(matchingTupleVariant(r, source, target))
+    (v: Spec) => true
+    ()        => false
+
+# ── shape helpers ───────────────────────────────────────────────────────────
+
+fun tupleEntries(sp: Spec): List<SEntry>
+  ret match(sp)
+    (t2: STuple) => t2.stEntries
+    (o: Spec)    => List<SEntry>()
+
+fun tupleArity(sp: Spec): Int
+  ret listLen(tupleEntries(sp))
+
+fun entryTypeAt(sp: Spec, i: Int): Spec|None
+  ret entryAt(tupleEntries(sp), i)
+
+# A genuine 1-tuple wrapper of the type with id `tu`.
+fun isWrapperOf(source: Spec, tu: String): Bool
+  if !isTuple(source) || tupleArity(source) != 1
+    ret false
+  ret match(entryTypeAt(source, 0))
+    (ety: Spec) => uid(ety) == tu
+    ()          => false
