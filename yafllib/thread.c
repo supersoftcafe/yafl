@@ -1,5 +1,6 @@
 
 #include "yafl.h"
+#include "log.h"
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
@@ -157,6 +158,7 @@ static struct timespec t_start;
 static struct timespec t_end;
 HIDDEN noreturn void __exit__(object_t* self, object_t* arg) {
     (void)self;   // ABI receiver, unused here
+    yafl_log_shutdown();   // flush aggregated counters
     if (_print_duration) {
         clock_gettime(CLOCK_MONOTONIC, &t_end);
         double seconds = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
@@ -322,6 +324,7 @@ EXPORT object_t* thread_dispatch(fun_t action) {
 }
 
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {
+    yafl_log_init(_yafl_argv ? _yafl_argv[0] : NULL);
     const char* dur = getenv("YAFL_DURATION");
     _print_duration = (dur != NULL && *dur != '\0');
     if (_print_duration) clock_gettime(CLOCK_MONOTONIC, &t_start);

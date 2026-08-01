@@ -1,0 +1,145 @@
+namespace System::Log
+
+import System
+
+
+# Structured logging and runtime metrics. See docs/logging-design.md.
+#
+# The contract: YAFL supplies a level, a context, a format and up to three
+# values; the RUNTIME supplies the clock, the formatting and the destination.
+# YAFL never sees a date, a time, or a duration — so nothing a program does can
+# depend on wall-clock time, and compilation stays deterministic.
+#
+# THE LEVEL TEST IS INSIDE THE CALL. There is deliberately no `enabled(...)`
+# for user code to branch on: the arguments are values the caller already has,
+# so a suppressed call costs one foreign call and an integer compare, with
+# nothing allocated. Building a message with `+` before calling would allocate
+# whether or not the level passes — and at self-host scale allocation is the
+# dominant cost, so a log line would perturb the very thing it measures.
+#
+#   log(logDebug, "generics", "monomorphised {1} functions in {2}", n, pass)
+#
+# Slots are {1} {2} {3}, exactly as System::format.
+#
+# Destination: a file, derived as ${YAFL_LOG_DIR}/yafl-<prog>-<stamp>-<pid>.log
+# unless YAFL_LOG_FILE names one. Level defaults to off; YAFL_LOG sets the
+# global threshold and YAFL_LOG_<CONTEXT> overrides one context.
+
+
+# ─── Levels ──────────────────────────────────────────────────────────────────
+# Plain Int32. The runtime maps these five to display names and prints any
+# other value as its number, so intermediate levels work without a runtime
+# change. Named `logX` rather than a bare `debug` because this namespace is
+# imported widely and a bare name would collide — ambiguity is an error here.
+
+let logTrace: System::Int32 = 10i32
+let logDebug: System::Int32 = 20i32
+let logInfo:  System::Int32 = 30i32
+let logWarn:  System::Int32 = 40i32
+let logError: System::Int32 = 50i32
+
+
+# ─── Foreign entry points ────────────────────────────────────────────────────
+# One C symbol per arity/type combination, because C has no overloading; the
+# suffix spells the signature. `sync` is load-bearing — logging must never
+# suspend, so it stays callable from inside the async machinery it measures.
+
+fun [foreign("yafl_log"),     impure, sync] _log(l: System::Int32, c: System::String, f: System::String): System::Int
+fun [foreign("yafl_log_i"),   impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int): System::Int
+fun [foreign("yafl_log_s"),   impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String): System::Int
+fun [foreign("yafl_log_ii"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int): System::Int
+fun [foreign("yafl_log_is"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String): System::Int
+fun [foreign("yafl_log_si"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int): System::Int
+fun [foreign("yafl_log_ss"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String): System::Int
+fun [foreign("yafl_log_iii"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int,    d: System::Int): System::Int
+fun [foreign("yafl_log_iis"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int,    d: System::String): System::Int
+fun [foreign("yafl_log_isi"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String, d: System::Int): System::Int
+fun [foreign("yafl_log_iss"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String, d: System::String): System::Int
+fun [foreign("yafl_log_sii"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int,    d: System::Int): System::Int
+fun [foreign("yafl_log_sis"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int,    d: System::String): System::Int
+fun [foreign("yafl_log_ssi"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::Int): System::Int
+fun [foreign("yafl_log_sss"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::String): System::Int
+
+
+# ─── Public API ──────────────────────────────────────────────────────────────
+# Wrappers so a call is a statement rather than a value to bind away, mirroring
+# how `print` wraps `__print_string`.
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String): System::None
+  let _ = _log(l, c, f)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int): System::None
+  let _ = _log(l, c, f, a)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String): System::None
+  let _ = _log(l, c, f, a)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::Int): System::None
+  let _ = _log(l, c, f, a, b)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::String): System::None
+  let _ = _log(l, c, f, a, b)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int): System::None
+  let _ = _log(l, c, f, a, b)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String): System::None
+  let _ = _log(l, c, f, a, b)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::Int, d: System::Int): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::Int, d: System::String): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::String, d: System::Int): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::String, d: System::String): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int, d: System::Int): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int, d: System::String): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::Int): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::String): System::None
+  let _ = _log(l, c, f, a, b, d)
+  ret None
+
+
+# ─── Metrics ─────────────────────────────────────────────────────────────────
+# A span's start is kept by the runtime against the returned token; `spanEnd`
+# prints the elapsed. The token is opaque — it is NOT a time.
+
+fun [foreign("yafl_log_span_begin"), impure, sync] spanBegin(c: System::String, name: System::String): System::Int
+fun [foreign("yafl_log_span_end"),   impure, sync] _spanEnd(span: System::Int): System::Int
+fun [foreign("yafl_log_count"),      impure, sync] _count(c: System::String, name: System::String, n: System::Int): System::Int
+
+fun [impure] spanEnd(span: System::Int): System::None
+  let _ = _spanEnd(span)
+  ret None
+
+# Counters aggregate in C and dump once at exit, so they are cheap enough for a
+# hot loop — the right tool where even a suppressed log call is too much.
+fun [impure] count(c: System::String, name: System::String, n: System::Int): System::None
+  let _ = _count(c, name, n)
+  ret None

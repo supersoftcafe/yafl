@@ -9,6 +9,7 @@ set(CMAKE_C_EXTENSIONS OFF)   # strict ISO C (-std=c11), not gnu11; POSIX via fe
 set(SRC_FILES
     hash.c
     integer.c
+    log.c
     float.c
     io.c
     io_thread.c
@@ -58,6 +59,7 @@ enable_testing()
 set(TEST_SRC_FILES
     hash.c
     integer.c
+    log.c
     float.c
     io.c
     io_thread.c
