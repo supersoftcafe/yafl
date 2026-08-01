@@ -229,6 +229,7 @@ void gc_dbg_dangle_check(object_t* object) {
     vtable_t* vt = object->vtable;
     while (UNLIKELY(vtable_is_forward(vt)))
         vt = ((object_t*)vt)->vtable;
+    vt = vtable_untag(vt);   // pinned objects carry the pin bit here
     GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
         while (m) {
             unsigned i = (unsigned)__builtin_ctzll(m); m &= m-1;

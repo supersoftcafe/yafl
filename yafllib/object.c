@@ -1513,6 +1513,14 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
             hop = next;
         }
     }
+    // A PINNED object (a ListBuilder tail mid-construction) carries the pin
+    // bit in its vtable word; every field read off a tagged vtable is
+    // misaligned garbage — the scan would walk a nonsense pointer mask and
+    // silently mark NONE of the object's real children (observed: a pinned
+    // ChainLink's payload freed while the link lived). Strip it before use.
+    // Pinned objects are never forwarders (compaction skips them), so this
+    // cannot mask a forward word.
+    vt = vtable_untag(vt);
 
     // A mutable container's pointer slots may be written by the mutator in
     // parallel with this scan, so the GC must not snap them to forwarding
@@ -1520,7 +1528,11 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
     // don't rewrite. `vt` is the resolved (forwarding-followed) vtable and
     // carries the same mutability bit object_create used to place the object on
     // a mutable page, so it is authoritative without a separate page lookup.
-    bool fixup = !vt->is_mutable;
+    // A PINNED object is mutable in the same sense — a ListBuilder tail whose
+    // `next` the mutator may write in parallel — so its fields must not be
+    // snapped either (pinned objects are never forwarded themselves, so the
+    // raw vtable word test is safe here).
+    bool fixup = !vt->is_mutable && !vtable_is_pinned(object->vtable);
 
     // Scan references. Windowed map: scan_elements takes a base + one mask
     // word, so each 64-slot window is one call (window 0 stays the inline
@@ -1798,6 +1810,17 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
             unsigned slot = __builtin_ctzll(bits) + offset;
             bits &= bits-1;
             object_t *object = (object_t*)&page->slots[slot];
+            // A PINNED object is mid-mutation (a ListBuilder tail whose
+            // `next` is still to be written): its fields can acquire YOUNG
+            // references after this walk, with no barrier and no dirty_old
+            // transition — promoting the page would hide those young targets
+            // from every minor cycle and prune would free them while the
+            // chain is live (the -O3 self-compile ChainLink dangle). The pin
+            // is exactly coextensive with mutability — once unpinned the
+            // cell is frozen forever — so block promotion while any pin is
+            // present; a later prune re-walks and promotes normally.
+            if (vtable_is_pinned(object->vtable))
+                return false;
             // Non-compacted page: the vtable word is a real vtable (mask the
             // pin bit before dereferencing fields).
             vtable_t *vt = vtable_untag(object->vtable);
@@ -1899,7 +1922,9 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
         // free an object the drain proved live. Everything else is excluded:
         // mutator marks in the pre-processed window are absorbed by the
         // end-of-page re-merge, later mutator marks ring-enqueue the page for
-        // a genuine re-scan, and the write barrier is off during PRUNE.
+        // a genuine re-scan, and a barrier straddling the mark stage's retire
+        // is drained by the three-state handshake (see gc_barrier_enter) —
+        // after a successful retire no mutator mark can land at all.
         bitmap_or_test_source_reset_all(&page->head.scanner.seen,
                                         &page->head.scanner.atomic_seen);
 
