@@ -349,14 +349,24 @@ def __calculate_saved_vars(fn: Function) -> Function:
     rw_cache = [reads_writes(op) for op in ops0]
 
     def do_a_pass(ops: tuple[Op, ...]) -> tuple[Op, ...]:
+        # Liveness is a BACKWARD analysis, so the sweep runs backward and reads
+        # successors out of the generation being built (`cur`). A forward sweep
+        # read them from the PREVIOUS generation, which moves information
+        # backward exactly one op per pass — P grew linearly with function
+        # length and the fixpoint cost O(ops^2) op-visits (measured: an 82-op
+        # function took 46 passes). Reading the freshest available value is
+        # ordinary chaotic iteration: same monotone transfer functions, so the
+        # same least fixed point, reached in a couple of passes.
+        cur = list(ops)
+
         def saved_set_at(index: int) -> frozenset[StackVar]:
-            return rw_cache[index][0] | ops[index].saved_vars
+            return rw_cache[index][0] | cur[index].saved_vars
 
         def phi_sources_into(target_index: int, pred: str | None) -> frozenset[StackVar]:
             srcs: frozenset[StackVar] = frozenset()
             j = target_index + 1
-            while j < n and isinstance(ops[j], Phi):
-                for lbl, v in ops[j].sources:
+            while j < n and isinstance(cur[j], Phi):
+                for lbl, v in cur[j].sources:
                     if lbl == pred:
                         srcs = srcs | v.get_live_vars()
                 j += 1
@@ -366,7 +376,7 @@ def __calculate_saved_vars(fn: Function) -> Function:
             return saved_set_at(target_index) | phi_sources_into(target_index, block_label[from_index])
 
         def calc(index: int) -> Op:
-            op = ops[index]
+            op = cur[index]
             if index >= n - 1:
                 ss1 = frozenset()
             elif isinstance(op, Jump):
@@ -378,7 +388,9 @@ def __calculate_saved_vars(fn: Function) -> Function:
             saved_vars = (ss1 | ss2) - rw_cache[index][1]
             return dataclasses.replace(op, saved_vars=saved_vars)
 
-        return tuple(calc(index) for index in range(len(ops)))
+        for index in range(len(ops) - 1, -1, -1):
+            cur[index] = calc(index)
+        return tuple(cur)
 
     def iterate(ops: tuple[Op, ...]) -> tuple[Op, ...]:
         # A LOOP, not recursion: the recursive form pinned every generation

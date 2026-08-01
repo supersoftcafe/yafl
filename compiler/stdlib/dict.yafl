@@ -176,14 +176,17 @@ fun [tail] contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
         : _bucket_has<K,V>(n.bucket, k)
 
 
-fun [tail] size<K,V>(d: Dict<K,V>): Int
-  fun [tail] bucket_size(b: _DictBucket<K,V>): Int
+# Tree recursion, so NOT [tail] — the recursion depth is the tree's height
+# (O(log n)), which the C stack carries comfortably. The bucket walk IS an
+# accumulator loop and keeps its marker.
+fun size<K,V>(d: Dict<K,V>): Int
+  fun [tail] bucket_size(b: _DictBucket<K,V>, acc: Int): Int
     ret match(b)
-      (n: _BucketNil)  => 0
-      (c: _BucketCons) => 1 + bucket_size(c.tail)
+      (n: _BucketNil)  => acc
+      (c: _BucketCons) => bucket_size(c.tail, acc + 1)
   ret match(d)
     (e: DictEmpty) => 0
-    (n: DictNode)  => bucket_size(n.bucket) + size<K,V>(n.left) + size<K,V>(n.right)
+    (n: DictNode)  => bucket_size(n.bucket, 0) + size<K,V>(n.left) + size<K,V>(n.right)
 
 
 # ─── iteration ───────────────────────────────────────────────────────────────

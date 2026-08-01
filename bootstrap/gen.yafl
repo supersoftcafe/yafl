@@ -112,7 +112,7 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: List<MethodId>,
   let rows1 = fold(o.objFunctions, rows0, (rs: List<VtRow>, s2: CgFuncSlot) =>
                 vtPlace(rs, s2, methodIds, vtableSize))
   # Ensure the last entry is an empty catch-all.
-  let rows = vtIsDefault(forceNth(rows1, listLen(rows1) - 1)) ? rows1 : append(rows1, vtDefaultRow())
+  let rows = vtLastIsDefault(rows1) ? rows1 : append(rows1, vtDefaultRow())
   let mangled = mangleName(o.objName)
   let implementsArr = map(o.objExtends, (e2: String) => "obj_" + mangleName(e2))
   let vtableStr = join(map(rows, (r: VtRow) =>
@@ -146,9 +146,18 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: List<MethodId>,
              variables1, acc.gaFunctions, acc.gaGcRoots)
 
 fun [tail] vtRows(n: Int, acc: List<VtRow>): List<VtRow>
-  if listLen(acc) >= n
+  if n <= 0
     ret acc
-  ret vtRows(n, append(acc, vtDefaultRow()))
+  ret vtRows(n - 1, append(acc, vtDefaultRow()))
+
+# Is the LAST row the catch-all? (An empty table has nothing to guard.)
+fun vtLastIsDefault(rows: List<VtRow>): Bool
+  ret vtLastLoop(chain(rows), true)
+
+fun [tail] vtLastLoop(rs: Chain<VtRow>, sofar: Bool): Bool
+  ret match(rs)
+    (nil: ChainEnd) => sofar
+    (l: ChainLink)  => vtLastLoop(l.next, vtIsDefault(l.value))
 
 # id & (size-1), linear probe past occupied rows, growing as needed.
 fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: List<MethodId>, size: Int): List<VtRow>
@@ -157,20 +166,22 @@ fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: List<MethodId>, size: 
               VtRow("__FUNCTION_ID__" + mangleName(s2.slotVirtualName),
                     "(void*)&" + mangleName(s2.slotGlobalName)))
 
-fun [tail] vtProbe(rows: List<VtRow>, index: Int, row: VtRow): List<VtRow>
-  if index >= listLen(rows)
-    ret append(rows, row)
-  ret vtIsDefault(forceNth(rows, index))
-    ? vtSetAt(rows, index, row)
-    : vtProbe(rows, index + 1, row)
+# ONE walk places the row: skip to `index`, then probe forward to the first
+# default slot, splicing the new row in where it lands (or appending when the
+# probe runs off the end). The old form re-indexed and rebuilt the whole table
+# per probe step.
+fun vtProbe(rows: List<VtRow>, index: Int, row: VtRow): List<VtRow>
+  ret vtProbeLoop(chain(rows), index, row, List<VtRow>())
 
-fun vtSetAt(rows: List<VtRow>, i: Int, row: VtRow): List<VtRow>
-  ret vtSetAtLoop(rows, i, row, 0, List<VtRow>())
-
-fun [tail] vtSetAtLoop(rows: List<VtRow>, i: Int, row: VtRow, j: Int, acc: List<VtRow>): List<VtRow>
-  if j >= listLen(rows)
-    ret acc
-  ret vtSetAtLoop(rows, i, row, j + 1, append<VtRow>(acc, j == i ? row : forceNth<VtRow>(rows, j)))
+fun [tail] vtProbeLoop(rest: Chain<VtRow>, index: Int, row: VtRow,
+                       seen: List<VtRow>): List<VtRow>
+  ret match(rest)
+    (nil: ChainEnd) => append(seen, row)
+    (l: ChainLink)  => index > 0
+      ? vtProbeLoop(l.next, index - 1, row, append(seen, l.value))
+      : vtIsDefault(l.value)
+        ? concat(append(seen, row), List<VtRow>(l.next))
+        : vtProbeLoop(l.next, index, row, append(seen, l.value))
 
 fun genArrayLenOffset(o: CgObject): String
   ret match(o.objLengthField)

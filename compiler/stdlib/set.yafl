@@ -12,7 +12,7 @@ class Set<T>(_d: Dict<T,()>)
 
 
 # Public factory — an empty set.
-fun [tail] Set<T>(): Set<T>
+fun Set<T>(): Set<T>
   ret Set<T>(Dict<T,()>())
 
 
@@ -23,18 +23,18 @@ fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
 
 
 # True iff `value` is a member of `s`. Cost is one Dict.contains.
-fun [tail] contains<T>(s: Set<T>, value: T): Bool where BasicEquality<T>
+fun contains<T>(s: Set<T>, value: T): Bool where BasicEquality<T>
   ret contains<T,()>(s._d, value)
 
 
 # Drop `value` if present; if absent the result is observationally
 # identical to the input. Cost is one Dict.remove.
-fun [tail] remove<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
+fun remove<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
   ret Set<T>(remove<T,()>(s._d, value))
 
 
 # Number of members. Cost is whatever Dict.size costs (linear in the
 # Dict structure — fine for symbol tables and seen-sets, not for hot
 # loops).
-fun [tail] size<T>(s: Set<T>): Int
+fun size<T>(s: Set<T>): Int
   ret size<T,()>(s._d)

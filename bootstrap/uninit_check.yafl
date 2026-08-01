@@ -64,26 +64,30 @@ fun ucCheckFunction(f: CgFunction): List<String>
   let entry = ucComputeEntrySets(f)
   ret concat(ucVerify(f, entry), ucCheckPhiSources(f, labels, entry))
 
-class [final] LabelIdx(liName: String, liIndex: Int)
+# Label name → op index. A Dict, not a scan list: ucLabelAt is consulted once
+# per CFG edge inside BOTH fixpoints (here and async_lower's liveness), so a
+# linear filter made every successor lookup O(labels). Python indexes the same
+# mapping as a dict (async_lower.py `labels`), and — like a dict — a repeated
+# label name keeps the LAST index.
+fun ucLabelIndex(ops: List<Op>): Dict<String, Int>
+  ret ucLabelLoop(chain(ops), 0, Dict<String, Int>())
 
-fun ucLabelIndex(ops: List<Op>): List<LabelIdx>
-  ret ucLabelLoop(ops, 0, List<LabelIdx>())
+fun [tail] ucLabelLoop(os: Chain<Op>, i: Int, acc: Dict<String, Int>): Dict<String, Int>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ucLabelLoop(l.next, i + 1, ucLabelPut(acc, l.value, i))
 
-fun [tail] ucLabelLoop(ops: List<Op>, i: Int, acc: List<LabelIdx>): List<LabelIdx>
-  if i >= listLen(ops)
-    ret acc
-  ret match(forceNth(ops, i))
-    (lb: OpLabel) => ucLabelLoop(ops, i + 1, append(acc, LabelIdx(lb.labelName, i)))
-    (o: Op)       => ucLabelLoop(ops, i + 1, acc)
+fun ucLabelPut(acc: Dict<String, Int>, op: Op, i: Int): Dict<String, Int>
+  ret match(op)
+    (lb: OpLabel) => put(acc, lb.labelName, i)
+    (o: Op)       => acc
 
-fun ucLabelAt(labels: List<LabelIdx>, name: String): Int|None
-  ret match(head(filter(labels, (e2: LabelIdx) => e2.liName == name)))
-    (e2: LabelIdx) => e2.liIndex
-    ()              => None
+fun ucLabelAt(labels: Dict<String, Int>, name: String): Int|None
+  ret get(labels, name)
 
 # ── CFG successors ───────────────────────────────────────────────────────────
 
-fun ucSuccessors(ix: UcIx, labels: List<LabelIdx>, i: Int): List<Int>
+fun ucSuccessors(ix: UcIx, labels: Dict<String, Int>, i: Int): List<Int>
   let n = ix.uiN
   ret match(ucIxOp(ix, i))
     (r: OpReturn)      => List<Int>()
@@ -101,7 +105,7 @@ fun ucSuccessors(ix: UcIx, labels: List<LabelIdx>, i: Int): List<Int>
 fun ucFall(i: Int, n: Int): List<Int>
   ret i + 1 < n ? list1(i + 1) : List<Int>()
 
-fun ucLabelOnly(labels: List<LabelIdx>, name: String): List<Int>
+fun ucLabelOnly(labels: Dict<String, Int>, name: String): List<Int>
   ret match(ucLabelAt(labels, name))
     (x: Int) => list1(x)
     ()        => List<Int>()
@@ -146,7 +150,7 @@ fun ucBranchOnlyWrites(op: Op): List<String>
 # recursion ([tail] refuses those), burning three C frames per worklist item:
 # an -O3 mega-function's worklist overflowed the standard 8MB stack. Fused,
 # the loop is [tail] and runs in constant stack.
-fun [tail] ucFixpoint(ix: UcIx, labels: List<LabelIdx>,
+fun [tail] ucFixpoint(ix: UcIx, labels: Dict<String, Int>,
                       entry: Dict<Int, InitSet>, worklist: List<Int>): Dict<Int, InitSet>
   if isEmpty(worklist)
     ret entry
@@ -179,14 +183,14 @@ fun ucNamesOf(s2: InitSet): List<String>
     (i: IsSet)       => i.isNames
     (u: IsUnreached) => List<String>()   # unreachable: caller tested
 
-fun ucIsBranchTarget(op: Op, labels: List<LabelIdx>, succ: Int): Bool
+fun ucIsBranchTarget(op: Op, labels: Dict<String, Int>, succ: Int): Bool
   ret match(op)
     (ji: OpJumpIf)     => ucLabelIs(labels, ji.jumpIfLabel, succ)
     (t2: OpIfTask)     => ucLabelIs(labels, t2.taskTarget, succ)
     (sw: OpSwitchJump) => any(sw.switchCases, (cs: OpCase) => ucLabelIs(labels, cs.caseLabel, succ))
     (o: Op)            => false
 
-fun ucLabelIs(labels: List<LabelIdx>, name: String, succ: Int): Bool
+fun ucLabelIs(labels: Dict<String, Int>, name: String, succ: Int): Bool
   ret match(ucLabelAt(labels, name))
     (x: Int) => x == succ
     ()        => false
@@ -231,7 +235,7 @@ fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: List<String>): List<String>
 
 class [final] PhiEdge(pheFrom: String, pheTo: String, pheExit: List<String>)
 
-fun ucCheckPhiSources(f: CgFunction, labels: List<LabelIdx>, entry: Dict<Int, InitSet>): List<String>
+fun ucCheckPhiSources(f: CgFunction, labels: Dict<String, Int>, entry: Dict<Int, InitSet>): List<String>
   let phiBlocks = ucPhiBlocks(f.fnOps)
   if isEmpty(phiBlocks)
     ret List<String>()
