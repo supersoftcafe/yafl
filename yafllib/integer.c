@@ -260,6 +260,117 @@ EXPORT object_t* string_from_int64(int64_t v) {
     return string_from_bytes((uint8_t*)buf, n);
 }
 
+
+// ─── Non-allocating decimal render ───────────────────────────────────────────
+//
+// Renders an arbitrary-precision Int into a CALLER-SUPPLIED buffer. Touches
+// neither the YAFL heap nor malloc, so it is safe from the logger, from a GC
+// worker, and from anywhere a heap allocation would be a re-entrancy hazard.
+// (`String(Int)` in the stdlib goes the other way — StringBuilder on the YAFL
+// heap — which is exactly what a logger must not do: the act of logging a
+// number would perturb the allocation behaviour being measured.)
+//
+// Returns the number of bytes written, excluding the NUL. `size` includes the
+// NUL. A `size` of 0 writes nothing and returns 0.
+//
+// WHAT HAPPENS WHEN IT DOES NOT FIT
+//
+// Nothing partial is ever written. A truncated numeral is the worst possible
+// outcome for a log: "12345" cut from "1234567890" is indistinguishable from a
+// genuine smaller value, and a reader has no way to tell. Instead the buffer
+// gets an unmistakable placeholder carrying the magnitude:
+//
+//     <int:~4932 digits>          (or <int:-~4932 digits> when negative)
+//
+// The digit count is ESTIMATED from the bit length (digits ~ bits*log10(2)),
+// accurate to +/-1, and needs no division at all — so a pathological value
+// costs O(1) here rather than O(limbs^2). It is marked `~` because it is an
+// estimate, not because the underlying number is imprecise.
+//
+// The same placeholder covers integers above INTEGER_CSTR_MAX_LIMBS, which
+// bounds the on-stack scratch. 256 limbs is ~16k bits, ~4932 digits: far above
+// anything a compiler metric will ever hold, and if that bound is ever hit the
+// output says so rather than lying.
+#define INTEGER_CSTR_MAX_LIMBS 256
+
+// Largest power of 10 fitting a 64-bit limb, and its digit count.
+#define _DEC_CHUNK      UINT64_C(10000000000000000000)
+#define _DEC_CHUNK_DIGS 19
+
+static int32_t _int_cstr_placeholder(int32_t negative, uint64_t bits,
+                                     char* buf, int32_t size) {
+    // digits ~ bits * log10(2), +1; 30103/100000 is log10(2) to 5 places.
+    uint64_t digits = (bits * UINT64_C(30103)) / UINT64_C(100000) + 1;
+    int n = snprintf(buf, (size_t)size, "<int:%s~%llu digits>",
+                     negative ? "-" : "", (unsigned long long)digits);
+    if (n < 0) return 0;
+    return n >= size ? size - 1 : n;
+}
+
+EXPORT int32_t integer_to_cstr(object_t* self, char* buf, int32_t size) {
+    if (buf == NULL || size <= 0) return 0;
+
+    // Tagged literal: the common case by far, and it always fits.
+    if (_IS_LITERAL(self)) {
+        int n = snprintf(buf, (size_t)size, "%lld",
+                         (long long)_UNTAG_LITERAL(self));
+        if (n < 0) { buf[0] = '\0'; return 0; }
+        if (n >= size) { return _int_cstr_placeholder(_UNTAG_LITERAL(self) < 0, 64, buf, size); }
+        return n;
+    }
+
+    integer_t* v = (integer_t*)self;
+    uint32_t limbs = v->length;
+    int32_t  neg   = v->sign != 0;
+
+    // Bit length, for the placeholder estimate and the single-limb fast path.
+    uint32_t top = limbs;
+    while (top > 1 && v->array[top-1] == 0) top--;
+    uint64_t hi = (uint64_t)v->array[top-1];
+    uint64_t bits = (uint64_t)(top - 1) * 64;
+    { uint64_t h = hi; while (h) { bits++; h >>= 1; } }
+    if (bits == 0) bits = 1;               // the value is zero
+
+    if (top > INTEGER_CSTR_MAX_LIMBS)
+        return _int_cstr_placeholder(neg, bits, buf, size);
+
+    // Copy the magnitude into scratch; the division below consumes it.
+    uint64_t scratch[INTEGER_CSTR_MAX_LIMBS];
+    for (uint32_t i = 0; i < top; i++) scratch[i] = (uint64_t)v->array[i];
+
+    // Repeatedly divide the magnitude by 10^19, collecting decimal chunks
+    // least-significant first. Each pass is O(limbs); passes are digits/19.
+    char digits[INTEGER_CSTR_MAX_LIMBS * 20 + 2];
+    int32_t dlen = 0;
+    uint32_t n_limbs = top;
+    do {
+        unsigned __int128 rem = 0;
+        for (int32_t i = (int32_t)n_limbs - 1; i >= 0; i--) {
+            unsigned __int128 cur = (rem << 64) | scratch[i];
+            scratch[i] = (uint64_t)(cur / _DEC_CHUNK);
+            rem        = cur % _DEC_CHUNK;
+        }
+        while (n_limbs > 1 && scratch[n_limbs-1] == 0) n_limbs--;
+        uint64_t chunk = (uint64_t)rem;
+        int last = (n_limbs == 1 && scratch[0] == 0);
+        for (int k = 0; k < _DEC_CHUNK_DIGS; k++) {
+            digits[dlen++] = (char)('0' + (chunk % 10));
+            chunk /= 10;
+            if (last && chunk == 0) break;      // no leading zeros on the top chunk
+        }
+    } while (!(n_limbs == 1 && scratch[0] == 0));
+
+    int32_t need = dlen + neg + 1;              // digits + sign + NUL
+    if (need > size)
+        return _int_cstr_placeholder(neg, bits, buf, size);
+
+    int32_t at = 0;
+    if (neg) buf[at++] = '-';
+    while (dlen > 0) buf[at++] = digits[--dlen];
+    buf[at] = '\0';
+    return at;
+}
+
 static integer_t* _add_abs(integer_t* a, integer_t* b, int32_t sign_result) {
     uint32_t len_a = a->length, len_b = b->length;
     uint32_t max_len = len_a > len_b ? len_a : len_b;

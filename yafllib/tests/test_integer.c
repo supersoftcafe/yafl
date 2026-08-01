@@ -1,4 +1,5 @@
 
+#include <string.h>
 #include "test_framework.h"
 
 /* ---- helpers ---- */
@@ -539,6 +540,75 @@ TEST_END()
 static roots_declaration_func_t prev_roots;
 static void declare_roots(void(*declare)(object_t**)) { prev_roots(declare); }
 
+/* ---- non-allocating decimal render ---- */
+
+static const char* _R(object_t* v, char* buf, int32_t size) {
+    integer_to_cstr(v, buf, size);
+    return buf;
+}
+
+TEST(itoc_zero)
+    char b[32]; ASSERT(strcmp(_R(integer_from_int64(0), b, sizeof(b)), "0") == 0);
+TEST_END()
+
+TEST(itoc_small_positive)
+    char b[32]; ASSERT(strcmp(_R(integer_from_int64(12345), b, sizeof(b)), "12345") == 0);
+TEST_END()
+
+TEST(itoc_small_negative)
+    char b[32]; ASSERT(strcmp(_R(integer_from_int64(-98765), b, sizeof(b)), "-98765") == 0);
+TEST_END()
+
+TEST(itoc_int64_extremes)
+    char b[32];
+    ASSERT(strcmp(_R(integer_from_int64(INT64_MAX), b, sizeof(b)), "9223372036854775807") == 0);
+    ASSERT(strcmp(_R(integer_from_int64(INT64_MIN), b, sizeof(b)), "-9223372036854775808") == 0);
+TEST_END()
+
+TEST(itoc_multi_limb)
+    /* 2^64 forces a genuine multi-limb division path */
+    object_t* two64 = integer_mul(integer_from_int64(INT64_C(4294967296)),
+                                  integer_from_int64(INT64_C(4294967296)));
+    char b[64]; ASSERT(strcmp(_R(two64, b, sizeof(b)), "18446744073709551616") == 0);
+TEST_END()
+
+TEST(itoc_big_power_of_ten)
+    object_t* e10 = integer_from_int64(INT64_C(10000000000));
+    object_t* e20 = integer_mul(e10, e10);
+    object_t* e40 = integer_mul(e20, e20);
+    char b[64];
+    ASSERT(strcmp(_R(e40, b, sizeof(b)),
+                  "10000000000000000000000000000000000000000") == 0);
+TEST_END()
+
+TEST(itoc_negative_multi_limb)
+    object_t* e10 = integer_from_int64(INT64_C(10000000000));
+    object_t* e20 = integer_mul(e10, e10);
+    object_t* neg = integer_sub(integer_from_int32(0), e20);
+    char b[64];
+    ASSERT(strcmp(_R(neg, b, sizeof(b)), "-100000000000000000000") == 0);
+TEST_END()
+
+TEST(itoc_exact_fit_boundary)
+    char b[7];   /* "-98765" + NUL is exactly 7 */
+    ASSERT(strcmp(_R(integer_from_int64(-98765), b, sizeof(b)), "-98765") == 0);
+TEST_END()
+
+TEST(itoc_too_small_gives_placeholder_not_truncation)
+    /* One byte short. The whole point: never emit a numeral that reads as a
+       genuine smaller value. */
+    char b[6];
+    integer_to_cstr(integer_from_int64(-98765), b, sizeof(b));
+    ASSERT(strncmp(b, "<int:", 5) == 0);
+TEST_END()
+
+TEST(itoc_zero_size_writes_nothing)
+    char b[4] = {'x','x','x','x'};
+    ASSERT(integer_to_cstr(integer_from_int64(7), b, 0) == 0);
+    ASSERT(b[0] == 'x');
+TEST_END()
+
+
 static void run_tests(object_t* _, fun_t continuation) {
     struct test_results r = {0, 0, NULL};
     struct test_results* _r = &r;
@@ -656,6 +726,18 @@ static void run_tests(object_t* _, fun_t continuation) {
 
     /* normalization */
     RUN(add_result_normalizes_to_literal);
+
+    /* non-allocating decimal render */
+    RUN(itoc_zero);
+    RUN(itoc_small_positive);
+    RUN(itoc_small_negative);
+    RUN(itoc_int64_extremes);
+    RUN(itoc_multi_limb);
+    RUN(itoc_big_power_of_ten);
+    RUN(itoc_negative_multi_limb);
+    RUN(itoc_exact_fit_boundary);
+    RUN(itoc_too_small_gives_placeholder_not_truncation);
+    RUN(itoc_zero_size_writes_nothing);
 
     PRINT_RESULTS("integer", _r);
 

@@ -1183,6 +1183,15 @@ EXTERN object_t* string_from_int16(int16_t v);
 EXTERN object_t* string_from_int32(int32_t value);
 EXTERN object_t* string_from_int64(int64_t v);
 
+// Decimal-render an arbitrary-precision Int into a CALLER-SUPPLIED buffer.
+// Allocates nothing — neither YAFL heap nor malloc — so it is usable from the
+// logger, from a GC worker, and anywhere allocation would be a re-entrancy
+// hazard. `size` includes the NUL; returns bytes written excluding it. If the
+// exact value does not fit, NOTHING partial is written: the buffer gets
+// `<int:~N digits>` instead, because a truncated numeral reads as a genuine
+// smaller number. See integer.c for the full contract.
+EXTERN int32_t   integer_to_cstr(object_t* self, char* buf, int32_t size);
+
 
 
 /**********************************************************
