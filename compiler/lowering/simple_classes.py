@@ -46,6 +46,11 @@ def __is_simple_class(
         return False
     if "foreign" in cls.attributes:
         return False
+    # [mutable] classes are published into after construction, which needs a
+    # real object with a stable identity to CAS into. Flattening one to an
+    # unboxed struct would leave nothing to publish to.
+    if "mutable" in cls.attributes:
+        return False
     if cls.implements:
         return False
     if cls.name in base_class_names:

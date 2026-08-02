@@ -361,7 +361,12 @@ class ClassStatement(TypeStatement):
             fields=cg_t.ImmediateStruct((("type", cg_t.DataPointer()),) + scalar_fields),
             length_field=length_field,
             comment=self.name,
-            is_foreign="foreign" in self.attributes
+            is_foreign="foreign" in self.attributes,
+            # [mutable]: fields are written after construction, so the collector
+            # must not relocate it — a write can otherwise land in a copy that is
+            # then abandoned. Required by any late-initialised ("once") field;
+            # see docs/memoize-proposal.md.
+            is_mutable="mutable" in self.attributes
         )
 
         return xobject, gen_functions+thunks

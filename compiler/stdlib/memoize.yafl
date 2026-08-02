@@ -1,0 +1,160 @@
+namespace System
+
+import System
+
+
+# memoize — wrap a function so repeated calls with the same argument reuse the
+# first answer. Same signature in, same signature out.
+#
+#     let expand = memoize((s: String) => expensive(s))
+#
+# THE CONTRACT, both halves:
+#
+#   1. `f` MAY be called more than once for the same argument. There is no
+#      exactly-once guarantee — that needs a lock, or a future to wait on, and
+#      this language does not do synchronous waits.
+#   2. EVERY caller receives the SAME answer for a given argument. The first
+#      value published wins; a caller that loses the race discards what it
+#      computed and returns the winner's.
+#
+# (2) is why this is useful for a function that is not quite pure — a read
+# through a cache, a lookup that should be stable but that no type system can
+# vouch for. Wrapping it does not only make it faster, it makes it CONSISTENT
+# for as long as the cache lives. Whether `f` deserves that is the caller's
+# judgement; it cannot be checked.
+#
+# STRUCTURE: a hash trie consuming 2 bits of the key's hash per level, so four
+# children per node. Slots go None -> node exactly once, by CAS, so a reader
+# sees either "not yet" or a fully built node and no slot is ever rewritten —
+# which is also what lets a plain CAS suffice (no ABA) and avoids the
+# indirection nodes a Ctrie needs for removal.
+#
+# The nodes are [mutable] because the collector must NOT relocate them: a
+# relocation can drop a published entry into a copy that is then abandoned,
+# which would break (2). The cost is that they are never compacted and stay in
+# the scan set, so a memoize cache should be SHORT-LIVED. See
+# docs/memoize-proposal.md.
+
+
+# ─── the trie ────────────────────────────────────────────────────────────────
+# The four child slots are published after construction; every other field is
+# set once at construction. The slots MUST be the last fields declared — the
+# runtime locates them as the top set bits of the vtable's pointer mask.
+
+class [final, mutable] MemoNode<K,V>(mnKey: K, mnValue: V, mnHash: System::Int32,
+                                     mnC0: MemoNode<K,V>|System::None,
+                                     mnC1: MemoNode<K,V>|System::None,
+                                     mnC2: MemoNode<K,V>|System::None,
+                                     mnC3: MemoNode<K,V>|System::None)
+
+# The root holds slots but no entry of its own, so a cache can start empty.
+class [final, mutable] MemoRoot<K,V>(mrC0: MemoNode<K,V>|System::None,
+                                     mrC1: MemoNode<K,V>|System::None,
+                                     mrC2: MemoNode<K,V>|System::None,
+                                     mrC3: MemoNode<K,V>|System::None)
+
+# Same C symbol either way: the ABI is (object, slot, nslots, value) and the
+# emitted call casts the function pointer, as it does for every foreign.
+fun [foreign("yafl_cas_once"), impure, sync] _casNode<K,V>(
+      obj: MemoNode<K,V>, slot: System::Int32, nslots: System::Int32,
+      value: MemoNode<K,V>): System::Int
+
+fun [foreign("yafl_cas_once"), impure, sync] _casRoot<K,V>(
+      obj: MemoRoot<K,V>, slot: System::Int32, nslots: System::Int32,
+      value: MemoNode<K,V>): System::Int
+
+
+fun _nodeChild<K,V>(n: MemoNode<K,V>, slot: System::Int32): MemoNode<K,V>|System::None
+  ret slot == 0i32 ? n.mnC0 : slot == 1i32 ? n.mnC1 : slot == 2i32 ? n.mnC2 : n.mnC3
+
+fun _rootChild<K,V>(r: MemoRoot<K,V>, slot: System::Int32): MemoNode<K,V>|System::None
+  ret slot == 0i32 ? r.mrC0 : slot == 1i32 ? r.mrC1 : slot == 2i32 ? r.mrC2 : r.mrC3
+
+# Two bits of hash per level. The shift is masked to stay under 32: past depth
+# 15 the bits are exhausted and slots repeat, which degrades to a collision
+# chain — correct, and rare enough not to matter.
+fun _slotOf(h: System::Int32, d: System::Int32): System::Int32
+  ret (h >> ((d * 2i32) & 30i32)) & 3i32
+
+
+# ─── the walk ────────────────────────────────────────────────────────────────
+# One routine does lookup and insert. A slot reads as either None or a fully
+# constructed node, so the read path needs no synchronisation.
+#
+# On reaching an empty slot it publishes, then RE-READS and continues from
+# whatever is actually there — its own node if it won, the winner's if it lost.
+# That re-read is what delivers contract half 2: the value returned always came
+# out of the trie, never straight from the local `f(a)` call.
+
+fun [tail] _walkNode<K,V>(n: MemoNode<K,V>, k: K, v: V, h: System::Int32,
+                          d: System::Int32): V where BasicEquality<K>
+  if n.mnHash == h && n.mnKey == k
+    ret n.mnValue
+  ret match(_nodeChild<K,V>(n, _slotOf(h, d)))
+    (c: MemoNode<K,V>) => _walkNode<K,V>(c, k, v, h, d + 1i32)
+    ()                 => _publishNode<K,V>(n, k, v, h, d)
+
+fun _publishNode<K,V>(n: MemoNode<K,V>, k: K, v: V, h: System::Int32,
+                      d: System::Int32): V where BasicEquality<K>
+  let slot = _slotOf(h, d)
+  let _ = _casNode<K,V>(n, slot, 4i32, MemoNode<K,V>(k, v, h, None, None, None, None))
+  ret match(_nodeChild<K,V>(n, slot))
+    (c: MemoNode<K,V>) => _walkNode<K,V>(c, k, v, h, d + 1i32)
+    ()                 => v      # unreachable: the slot is published by now
+
+fun _walkRoot<K,V>(r: MemoRoot<K,V>, k: K, v: V, h: System::Int32): V where BasicEquality<K>
+  let slot = _slotOf(h, 0i32)
+  ret match(_rootChild<K,V>(r, slot))
+    (c: MemoNode<K,V>) => _walkNode<K,V>(c, k, v, h, 1i32)
+    ()                 => _publishRoot<K,V>(r, k, v, h, slot)
+
+fun _publishRoot<K,V>(r: MemoRoot<K,V>, k: K, v: V, h: System::Int32,
+                      slot: System::Int32): V where BasicEquality<K>
+  let _ = _casRoot<K,V>(r, slot, 4i32, MemoNode<K,V>(k, v, h, None, None, None, None))
+  ret match(_rootChild<K,V>(r, slot))
+    (c: MemoNode<K,V>) => _walkNode<K,V>(c, k, v, h, 1i32)
+    ()                 => v      # unreachable: the slot is published by now
+
+# Read-only probe, so a hit never allocates and never calls `f`.
+#
+# Returns the NODE, not the value: `V|None` would be a union over an arbitrary
+# V, and when V is itself a function type that union has no clean
+# representation (a fun_t is two words). A union of a class and None is
+# ordinary. The caller reads .mnValue.
+fun [tail] _probe<K,V>(n: MemoNode<K,V>|System::None, k: K, h: System::Int32,
+                       d: System::Int32): MemoNode<K,V>|System::None where BasicEquality<K>
+  ret match(n)
+    (node: MemoNode<K,V>) => node.mnHash == h && node.mnKey == k
+      ? node
+      : _probe<K,V>(_nodeChild<K,V>(node, _slotOf(h, d)), k, h, d + 1i32)
+    ()                    => None
+
+
+# ─── public API — arities 1, 2 and 3 ─────────────────────────────────────────
+# Multi-argument keys are the tuple of the arguments, so every argument type
+# needs BasicEquality — the same constraint Dict already requires.
+
+fun memoize<A,R>(f: (:A): R): (:A): R where BasicEquality<A>
+  let root = MemoRoot<A,R>(None, None, None, None)
+  ret (a: A) => _memo1<A,R>(root, f, a)
+
+fun _memo1<A,R>(root: MemoRoot<A,R>, f: (:A): R, a: A): R where BasicEquality<A>
+  let h = hashOf(a)
+  ret match(_probe<A,R>(_rootChild<A,R>(root, _slotOf(h, 0i32)), a, h, 1i32))
+    (hit: MemoNode<A,R>) => hit.mnValue
+    ()                   => _walkRoot<A,R>(root, a, f(a), h)
+
+
+# Arities 2 and 3 CURRY rather than building a composite key: memoizing a
+# function that returns a memoized function. That keeps one trie
+# implementation, needs no tuple hashing, and preserves the contract at every
+# level — the outer cache returns one inner closure per `a`, and that closure
+# returns one answer per `b`.
+
+fun memoize<A,B,R>(f: (:A, :B): R): (:A, :B): R where BasicEquality<A>|BasicEquality<B>
+  let outer = memoize<A, (:B): R>((a: A) => memoize<B,R>((b: B) => f(a, b)))
+  ret (a: A, b: B) => outer(a)(b)
+
+fun memoize<A,B,C,R>(f: (:A, :B, :C): R): (:A, :B, :C): R where BasicEquality<A>|BasicEquality<B>|BasicEquality<C>
+  let outer = memoize<A, (:B, :C): R>((a: A) => memoize<B,C,R>((b: B, c: C) => f(a, b, c)))
+  ret (a: A, b: B, c: C) => outer(a)(b, c)

@@ -138,6 +138,11 @@ fun scIsSimple(cls: PsClass, baseNames: List<String>): Bool
     ret false
   if hasAttr(cls.cAttrs, "foreign")
     ret false
+  # [mutable] classes are published into after construction, which needs a real
+  # object with a stable identity to CAS into. Flattening one to an unboxed
+  # struct would leave nothing to publish to.
+  if hasAttr(cls.cAttrs, "mutable")
+    ret false
   if !isEmpty(cls.cImplements)
     ret false
   if contains2(baseNames, cls.cName)

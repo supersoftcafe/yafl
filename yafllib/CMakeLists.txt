@@ -10,6 +10,7 @@ set(SRC_FILES
     hash.c
     integer.c
     log.c
+    once.c
     float.c
     io.c
     io_thread.c
@@ -60,6 +61,7 @@ set(TEST_SRC_FILES
     hash.c
     integer.c
     log.c
+    once.c
     float.c
     io.c
     io_thread.c
@@ -91,6 +93,7 @@ endfunction()
 
 add_yafl_test(test_integer)
 add_yafl_test(test_string)
+add_yafl_test(test_once)
 add_yafl_test(test_gc)
 add_yafl_test(test_io)
 add_yafl_test(test_task)

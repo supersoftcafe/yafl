@@ -104,8 +104,11 @@ fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
   let thunks = classFieldThunks(chain(flattenParams(c.cParams)), c.cName, functionNames, r, List<CgFunction>())
   let fields = classObjectFields(c, r)
   ret ClassCodegenOut(
+        # [mutable]: fields written after construction, so the collector must not
+        # relocate it — a write can otherwise land in a copy that is then
+        # abandoned. See docs/memoize-proposal.md.
         CgObject(c.cName, extends, functions, fields.cofStruct, fields.cofLengthField,
-                 c.cName, hasAttr(c.cAttrs, "foreign"), false, 0),
+                 c.cName, hasAttr(c.cAttrs, "foreign"), hasAttr(c.cAttrs, "mutable"), 0),
         concat(genFunctions, thunks))
 
 fun [tail] classMemberFunctions(ms: Chain<PStmt>, r: Resolver, acc: List<CgFunction>): List<CgFunction>
@@ -250,6 +253,10 @@ fun enumIsRootStmt(st: PsEnum): Bool
 
 fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
   let discs = getDiscriminators(r)
+  # NOTE: [mutable] is CLASS-only for now. PsEnum carries no attribute list
+  # (Python's EnumStatement inherits one from Statement; the port's node has no
+  # eAttrs field), so supporting it on enums needs an AST change across parser,
+  # nodes, equality and rewrite. Leaves are emitted immutable.
   let marker = CgObject(st.eName, List<String>(), List<CgFuncSlot>(),
                         CgImmediateStruct(list1(CgField("type", CgDataPointer()))),
                         None, st.eName + " — enum root marker (never instantiated)",
