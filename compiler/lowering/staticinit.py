@@ -226,17 +226,32 @@ def _global_names_in_op(op: Op) -> set[str]:
     return result
 
 
-def _count_global_refs(app: Application) -> dict[str, int]:
-    """Count how many times each global name is referenced across all ops and global inits."""
+def _count_global_refs(app: Application) -> tuple[dict[str, int], dict[str, str]]:
+    """Reference counts per global name, AND the first function whose ops mention
+    each name — both from ONE sweep.
+
+    The first-referencing map exists so `inline_single_use_globals` does not have
+    to re-scan the whole application per candidate global. That search was
+    `globals x functions x ops`, with a fresh set built per op by
+    `_global_names_in_op`, and it dominated compilation: measured on the
+    self-host, the four `convert_static_objects_pass` rounds were 1777s of a
+    2586s compile (69%). This sweep already visits every op, so recording the
+    first function costs nothing extra and makes the lookup O(1).
+    """
     counts: dict[str, int] = {}
+    first_fn: dict[str, str] = {}
 
     def _add(name: str) -> None:
         counts[name] = counts.get(name, 0) + 1
 
-    for fn in app.functions.values():
+    for fn_name, fn in app.functions.items():
         for op in fn.ops:
             for name in _global_names_in_op(op):
                 _add(name)
+                # FIRST in iteration order — the same function the old
+                # per-candidate scan would have stopped at.
+                if name not in first_fn:
+                    first_fn[name] = fn_name
 
     for g in app.globals.values():
         if g.init:
@@ -245,7 +260,7 @@ def _count_global_refs(app: Application) -> dict[str, int]:
         if g.lazy_init_flag:
             _add(g.lazy_init_flag)
 
-    return counts
+    return counts, first_fn
 
 
 def _trace_to_global(val: RParam, value_map: dict[str, RParam]) -> str | None:
@@ -279,7 +294,7 @@ def _is_trivial_copy_fn(fn: Function, source_name: str, target_name: str) -> boo
 
 def inline_single_use_globals(app: Application) -> Application:
     """Inline static globals that are used only once as the source of a trivial lazy-init copy."""
-    ref_counts = _count_global_refs(app)
+    ref_counts, ref_fn_of = _count_global_refs(app)
 
     # Map lazy-init function name -> (target global name, target Global)
     lazy_init_targets: dict[str, tuple[str, Global]] = {
@@ -302,15 +317,9 @@ def inline_single_use_globals(app: Application) -> Application:
         if ref_counts.get(si_name, 0) != 1:
             continue
 
-        # Find the single function that references this global
-        ref_fn_name: str | None = None
-        for fn_name, fn in app.functions.items():
-            for op in fn.ops:
-                if si_name in _global_names_in_op(op):
-                    ref_fn_name = fn_name
-                    break
-            if ref_fn_name:
-                break
+        # The single function that references this global — from the index
+        # built alongside the counts, not a fresh sweep per candidate.
+        ref_fn_name = ref_fn_of.get(si_name)
 
         if ref_fn_name is None or ref_fn_name not in lazy_init_targets:
             continue

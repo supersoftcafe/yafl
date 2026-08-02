@@ -6,6 +6,7 @@
 namespace Bootstrap::Codegen
 
 import System
+import System::Log
 
 import Bootstrap::Ast
 import Bootstrap::Ir
@@ -141,14 +142,20 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
                 headers: List<String>): CreateCOut
   let discs = collectDiscriminatorIds(statements)
   let r = RRoot(buildStatements(statements), None, discs, optLevel)
+  let spIr = spanBegin("codegen", "ir_build")
   let a0 = fold(statements, emptyApp(), (a: CgApp, st: PStmt) => ccStmt(a, st, r))
   let a1 = appPutFunction(a0, createEntryPoint(mainName))
   let a2 = ensureLazyMachinery(a1, collectLazyTypes(statements, r))
   # SSA + control-flow + Phi validation right after AST lowering.
+  let _ir = spanEnd(spIr)
+  let spV1 = spanBegin("codegen", "ssa_validate.1")
   let v1 = ssaValidate(a2.appFunctions, true)
+  let _v1 = spanEnd(spV1)
   if !isEmpty(v1)
     ret CreateCOut(List<String>(), v1)
+  let spTrim = spanBegin("codegen", "trim+devirt")
   let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
+  let _trim = spanEnd(spTrim)
   # -O2: bounded small-function/[inline(always)] inline fixpoint;
   # -O3 adds the single-caller fold with vtable-slot trimming (compiler.py
   # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
@@ -158,26 +165,44 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
     : a3
   let a3s = optLevel >= 3 ? ccO3Fixpoint(a3a, 0, List<String>()) : a3a
   let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
+  let spStatic = spanBegin("codegen", "staticinit")
   let a4 = resolveFlatStructGlobalInits(a3b)
+  let _static = spanEnd(spStatic)
+  let spSync = spanBegin("codegen", "sync_inference")
   let a5 = inferSync(a4)
+  let _sync = spanEnd(spSync)
+  let spFoldStart = spanBegin("codegen", "fold_fixpoint")
   let a6 = optLevel >= 1
     ? ccFoldFixpoint(a5, 0, List<String>())
     : propagateCopies(threadBranches(a5))
   # Space correctness, every -O level (see sroa.yafl).
+  let spFold = spanEnd(spFoldStart)
+  let spSroa = spanBegin("codegen", "sroa")
   let a7 = splitProjectedAggregates(a6)
+  let _sroa = spanEnd(spSroa)
+  let spPhi = spanBegin("codegen", "phi_removal")
   let a8 = removePhis(a7)
+  let _phi = spanEnd(spPhi)
   let a8b = optLevel >= 1 ? promoteToStack(a8) : a8
+  let spAsync = spanBegin("codegen", "async_lower")
   let a9 = removedUnusedStuff(lowerAsync(a8b))
+  let _async = spanEnd(spAsync)
+  let spCheck = spanBegin("codegen", "uninit_check")
   let v2 = checkApplication(a9)
+  let _chk = spanEnd(spCheck)
   if !isEmpty(v2)
     ret CreateCOut(List<String>(), v2)
+  let spV3 = spanBegin("codegen", "ssa_validate.2")
   let v3 = ssaValidate(a9.appFunctions, false)
+  let _v3 = spanEnd(spV3)
   if !isEmpty(v3)
     ret CreateCOut(List<String>(), v3)
   let v4 = ccValidateEntrypoint(a9)
   if !isEmpty(v4)
     ret CreateCOut(List<String>(), v4)
+  let spGen = spanBegin("codegen", "gen_application")
   let parts = genApplication(a9, headers)
+  let _gen = spanEnd(spGen)
   ret CreateCOut(parts, List<String>())
 
 # ── the -O2/-O3 inline fixpoints ─────────────────────────────────────────────
@@ -220,17 +245,28 @@ fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
 # promotion, dead stores again. (The >=2 inlining and >=3 single-caller
 # blocks are NOT PORTED YET; at -O1 Python skips them too.)
 fun ccO1Block(a0: CgApp): CgApp
+  let spBounds = spanBegin("o1", "bounds_elim")
   let a1 = eliminateProvableBoundsChecks(a0)
+  let _b = spanEnd(spBounds)
+  let spDead1 = spanBegin("o1", "deadstores.1")
   let a2 = removedUnusedStuff(eliminateDeadStores(a1))
+  let _d1 = spanEnd(spDead1)
+  let spStatic = spanBegin("o1", "static_rounds")
   let a3 = ccStaticRounds(a2, 0, 0)
-  ret removedUnusedStuff(eliminateDeadStores(a3))
+  let _s = spanEnd(spStatic)
+  let spDead2 = spanBegin("o1", "deadstores.2")
+  let out = removedUnusedStuff(eliminateDeadStores(a3))
+  let _d2 = spanEnd(spDead2)
+  ret out
 
 # Static init promotion runs FOUR rounds; the $si$N counter threads across
 # rounds AND functions (Python's module-level itertools.count).
 fun [tail] ccStaticRounds(a: CgApp, round2: Int, counter: Int): CgApp
   if round2 >= 4
     ret a
+  let sp = spanBegin("o1", "static_round")
   let out = convertStaticObjectsPass(a, counter)
+  let _r = spanEnd(sp)
   ret ccStaticRounds(out.app, round2 + 1, out.counter)
 
 # The pre-async collapse fixpoint (Python compiler.py `optimization_level >=

@@ -8,6 +8,7 @@
 namespace Bootstrap::Driver
 
 import System
+import System::Log
 
 import Bootstrap::Ast
 import Bootstrap::Codegen
@@ -527,12 +528,26 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # stdin may be a MULTI-FILE stream — each part preceded by a `#FILE# <name>`
 # line — so the contract compiles stdlib + target as a whole program; a
 # stream without markers is a single file named "x" (the stage convention).
+# Per-phase spans. Statement order is evaluation order and the log calls are
+# `impure`, so the timings bracket exactly the phase they name. With YAFL_LOG
+# unset every one of these is a foreign call and an integer compare — see
+# System::Log on why the level test is inside the call rather than at the site.
 fun cMode(text: String, optLevel: Int): (outs: List<String>, code: Int)
-  ret match(parseMulti(text))
-    (stmts: List<PStmt>) => match(convergeToPostmono(stmts))
-      (ok: PmOk)   => cStage(ok.pmStmts, optLevel)
-      (tx: PmText) => (append(List<String>(), tx.pmOut), tx.pmCode)
-    ()                    => (append(List<String>(), "parse error\n"), 1)
+  let spParse = spanBegin("compile", "parse")
+  let parsed = parseMulti(text)
+  let _ = spanEnd(spParse)
+  ret match(parsed)
+    (stmts: List<PStmt>) => cModeConverge(stmts, optLevel)
+    ()                   => (append(List<String>(), "parse error\n"), 1)
+
+fun cModeConverge(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
+  let _c = count("compile", "statements.parsed", listLen(stmts))
+  let sp = spanBegin("compile", "converge+mono")
+  let pm = convergeToPostmono(stmts)
+  let _ = spanEnd(sp)
+  ret match(pm)
+    (ok: PmOk)   => cStage(ok.pmStmts, optLevel)
+    (tx: PmText) => (append(List<String>(), tx.pmOut), tx.pmCode)
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
   ret match(converge(stmts))
@@ -586,17 +601,29 @@ fun partText(parts: Dict<String, String>, name: String): String
     ()           => ""   # unreachable: the name came from keys(parts)
 
 fun cStage(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
+  let spTail = spanBegin("lower", "lift+hoist+tail")
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
+  let _1 = spanEnd(spTail)
   if !isEmpty(tl.tlErrs)
     ret (append(List<String>(), printedDiagnostics(tl.tlErrs)), 1)
+  let spInline = spanBegin("lower", "ast_inline+literals")
   let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
+  let _2 = spanEnd(spInline)
   let fwd = checkLazyForwardRefs(lowered)
   if !isEmpty(fwd)
     ret (append(List<String>(), printedDiagnostics(fwd)), 1)
+  let spLazy = spanBegin("lower", "lazy_lets")
   let low1 = lowerLazyLets(lowered)
+  let _3 = spanEnd(spLazy)
+  let spLam = spanBegin("lower", "lambdas")
   let low2 = convertLambdasToFunctions(low1)
+  let _4 = spanEnd(spLam)
+  let spSimple = spanBegin("lower", "simple_classes")
   let low3 = lowerSimpleClasses(low2)
+  let _5 = spanEnd(spSimple)
+  let spExits = spanBegin("lower", "block_exits")
   let final2 = assignBlockExits(low3)
+  let _6 = spanEnd(spExits)
   ret match(cFindMain(chain(final2)))
     (nm: System::String) => cEmit(final2, nm, optLevel)
     ()                    => (append(List<String>(), "No main function found\n"), 1)
@@ -629,8 +656,10 @@ fun cIsBigintRet(ret2: Spec|None): Bool
 
 fun cEmit(stmts: List<PStmt>, mainName: System::String,
           optLevel: Int): (outs: List<String>, code: Int)
+  let sp = spanBegin("codegen", "create_c_code")
   let out = createCCode(stmts, mainName, optLevel,
                         append(List<System::String>(), "yafl.h"))
+  let _ = spanEnd(sp)
   ret isEmpty(out.ccErrors)
     ? (out.ccParts, 0)
     : (append(List<String>(), join(out.ccErrors, "\n") + "\n"), 1)
