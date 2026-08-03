@@ -22,7 +22,9 @@ fun emit(label: System::String, value: System::Int): System::None
   ret None
 
 fun _h<T>(v: T): System::Int where BasicEquality<T>
-  ret hashOf(v)
+  # hashOf is Int32; the widening to bigint is EXPLICIT — yafl never converts
+  # implicitly, not even for literals.
+  ret System::Int(hashOf(v))
 
 # Check non-negativity by widening to bigint and using bigint compare —
 # 0 - h < 1 iff h >= 0.

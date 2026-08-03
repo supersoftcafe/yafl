@@ -36,8 +36,8 @@ _BOOTSTRAP = _REPO / "bootstrap"
 _CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) + [
     _REPO / "examples" / "ylisp.yafl",
     _REPO / "examples" / "raytracer.yafl",
-    _BOOTSTRAP / "nodes.yafl",
-    _BOOTSTRAP / "parser.yafl",
+    _BOOTSTRAP / "ast" / "nodes.yafl",
+    _BOOTSTRAP / "parse" / "parser.yafl",
 ]
 
 

@@ -455,7 +455,8 @@ fun [tail] globalLoop(ss: Chain<PStmt>, wantType: Bool,
                       acc: List<Found>): List<Found>
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => wantsThis(isTypeStmt(l.value), wantType)
+    (l: ChainLink)  => !isNeitherStmt(l.value)
+                       && wantsThis(isTypeStmt(l.value), wantType)
       ? globalLoop(l.next, wantType,
                    append(acc, Found(stmtName(l.value), l.value, ScGlobal())))
       : globalLoop(l.next, wantType, acc)
@@ -469,6 +470,18 @@ fun isTypeStmt(st: PStmt): Bool
     (e: PsEnum)       => true
     (ta: PsTypealias) => true
     (o: PStmt)        => false
+
+# A trait `instance` is INDEXED (so its name is reachable) but is neither a
+# type nor data, so it belongs to NEITHER bag. Python's
+# TraitInstanceStatement extends NamedStatement — not DataStatement, not
+# TypeStatement — and `find_data`/`find_type` filter on those, so it appears
+# in neither. Without this the port's "everything that isn't a type is data"
+# split leaks it into findData, and a lookup of the synthesised
+# `instance$<hash>` name resolves here while Python finds nothing.
+fun isNeitherStmt(st: PStmt): Bool
+  ret match(st)
+    (ti: PsTraitInstance) => true
+    (o: PStmt)            => false
 
 fun localsFirst(own: Bag, parent: Resolver, query: String): Bag
   ret isEmpty(own.bItems) ? findData(parent, query) : own

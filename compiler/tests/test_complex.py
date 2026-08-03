@@ -30,7 +30,7 @@ fun main(): Int
   let ok6 = ceq(-z, Complex(-3.0, -4.0))
   let ok7 = ceq(Complex(2.0), Complex(2.0, 0.0))
   let ok8 = ceq(I * I, Complex(-1.0))
-  let ok9 = !ceq(z, w) && hashOf(z) >= 0
+  let ok9 = !ceq(z, w) && hashOf(z) >= 0i32
   let ok10 = isNaN(Complex(0.0 / 0.0, 1.0)) && !isNaN(z)
   # Complex is the 64-bit default, exactly as Float is Float64.
   let z64: Complex64 = z
@@ -42,7 +42,7 @@ fun main(): Int
   let ok13 = ceq32(s * conj(s), Complex32(25.0f32))
   let ok14 = abs(s) == 5.0f32
   let ok15 = ceq32(Complex32(2.0f32), Complex32(2.0f32, 0.0f32))
-  let ok16 = ceq32(s / s, Complex32(1.0f32)) && hashOf(s) >= 0
+  let ok16 = ceq32(s / s, Complex32(1.0f32)) && hashOf(s) >= 0i32
   ret ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10
       && ok11 && ok12 && ok13 && ok14 && ok15 && ok16 ? 0 : 1
 """

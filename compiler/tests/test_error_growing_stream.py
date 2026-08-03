@@ -31,23 +31,21 @@ namespace Test
 import System
 
 class [final] One(done: System::Bool)
-class _OneStream() : System::Stream<One, System::Int, System::Never>
+instance [ambient] System::Stream<One, System::Int, System::Never>
   fun next(self: One): (stream: One, value: System::Result<System::Int | System::None, System::Never>)
     ret self.done
       ? (self, System::Ok<System::Int | System::None, System::Never>(None))
       : (One(true), System::Ok<System::Int | System::None, System::Never>(5))
-let [trait] _one: _OneStream = _OneStream()
 
 class [final] Grow<S>(inner: S)
-class _GrowStream<S, E>() : System::Stream<Grow<S>, System::Int, E | System::Bool>
-  fun next(self: Grow<S>): (stream: Grow<S>, value: System::Result<System::Int | System::None, E | System::Bool>) where System::Stream<S, System::Int, E>
+instance [ambient] <S, E> System::Stream<Grow<S>, System::Int, E | System::Bool> where System::Stream<S, System::Int, E>
+  fun next(self: Grow<S>): (stream: Grow<S>, value: System::Result<System::Int | System::None, E | System::Bool>)
     let r = System::streamNext<S, System::Int, E>(self.inner)
     ret match(r.value)
       (ok: System::Ok<System::Int | System::None, E>) => match(ok.value)
         (v: System::Int)  => (Grow<S>(r.stream), System::Ok<System::Int | System::None, E | System::Bool>(v))
         (x: System::None) => (Grow<S>(r.stream), System::Ok<System::Int | System::None, E | System::Bool>(None))
       (er: System::Error<System::Int | System::None, E>) => (Grow<S>(r.stream), System::Error<System::Int | System::None, E | System::Bool>(er.error))
-let [trait] _grow<S, E>: _GrowStream<S, E> = _GrowStream<S, E>() where System::Stream<S, System::Int, E>
 
 fun [tail] drain<S, E>(s: S, acc: System::Int): System::Int | E where System::Stream<S, System::Int, E>
   let r = System::streamNext<S, System::Int, E>(s)

@@ -35,18 +35,18 @@ interface Box<S, T>
   fun unwrap(self: S): T
 
 class [final] Leaf(v: System::Int)
-class _BoxLeaf() : Box<Leaf, System::Int>
+instance [ambient] Box<Leaf, System::Int>
   fun unwrap(self: Leaf): System::Int
     ret self.v
-let [trait] _box_leaf: _BoxLeaf = _BoxLeaf()
 
 class [final] Wrap<S, T>(inner: S)
-class _BoxWrap<S, T>() : Box<Wrap<S, T>, T>
-  fun unwrap(self: Wrap<S, T>): T where Box<S, T>
+# The `where` belongs on the INSTANCE, not on the member — a member declares
+# neither generics nor constraints of its own.
+instance [ambient] <S, T> Box<Wrap<S, T>, T> where Box<S, T>
+  fun unwrap(self: Wrap<S, T>): T
     ret _unwrapInner<S, T>(self.inner)
 fun _unwrapInner<S, T>(b: S): T where Box<S, T>
   ret unwrap(b)
-let [trait] _box_wrap<S, T>: _BoxWrap<S, T> = _BoxWrap<S, T>() where Box<S, T>
 
 fun useBox<S, T>(b: S): T where Box<S, T>
   ret unwrap(b)
@@ -239,18 +239,16 @@ interface Box<S, T>
   fun unwrap(self: S): T
 
 class [final] Leaf(v: System::Int)
-class _BoxLeaf() : Box<Leaf, System::Int>
+instance [ambient] Box<Leaf, System::Int>
   fun unwrap(self: Leaf): System::Int
     ret self.v
-let [trait] _box_leaf: _BoxLeaf = _BoxLeaf()
 
 class [final] Grow<S, T>(inner: S)
-class _BoxGrow<S, T>() : Box<Grow<S, T>, T | ErrX>
-  fun unwrap(self: Grow<S, T>): T | ErrX where Box<S, T>
+instance [ambient] <S, T> Box<Grow<S, T>, T | ErrX> where Box<S, T>
+  fun unwrap(self: Grow<S, T>): T | ErrX
     ret _unwrapInner<S, T>(self.inner)
 fun _unwrapInner<S, T>(b: S): T where Box<S, T>
   ret unwrap(b)
-let [trait] _box_grow<S, T>: _BoxGrow<S, T> = _BoxGrow<S, T>() where Box<S, T>
 
 fun useBox<S, T>(b: S): T where Box<S, T>
   ret unwrap(b)

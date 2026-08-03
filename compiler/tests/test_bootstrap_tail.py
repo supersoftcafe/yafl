@@ -22,6 +22,7 @@ import compiler as c
 import lowering.complex_enums
 import lowering.constants
 import lowering.drops
+import lowering.instances
 import lowering.generics
 import lowering.hoist_nested
 import lowering.lambda_globals
@@ -65,6 +66,13 @@ class TestBootstrapTail(TestCase):
         statements, dropped = lowering.drops.insert_drops(statements)
         if dropped:
             statements, _resolver, _p2 = _CONVERGE(statements)
+        # Lower first-class `instance` statements before monomorphisation, as
+        # compiler.py does — the port's dump modes all run through postmonoRes,
+        # which includes it. Omitting it here made every stdlib file that
+        # declares an `instance` (complex, float, traits, …) diverge.
+        statements, lowered = lowering.instances.lower_trait_instances(statements)
+        if lowered:
+            statements, _resolver, _p3b = _CONVERGE(statements)
         statements, poly_errors = lowering.generics.convert_generic_to_concrete(statements)
         if poly_errors:
             return "".join(f"{e}\n" for e in sorted(set(poly_errors)))

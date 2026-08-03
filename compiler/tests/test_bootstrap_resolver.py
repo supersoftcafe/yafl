@@ -31,7 +31,7 @@ _CORPUS = [
     _REPO / "compiler" / "stdlib" / "list.yafl",
     _REPO / "compiler" / "stdlib" / "string.yafl",
     _REPO / "examples" / "ylisp.yafl",
-    _BOOTSTRAP / "nodes.yafl",
+    _BOOTSTRAP / "ast" / "nodes.yafl",
 ]
 
 

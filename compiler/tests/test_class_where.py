@@ -22,22 +22,20 @@ namespace Test
 import System
 
 class [final] One(done: System::Bool)
-class _OneStream() : System::Stream<One, System::Int, System::Never>
+instance [ambient] System::Stream<One, System::Int, System::Never>
   fun next(self: One): (stream: One, value: System::Result<System::Int | System::None, System::Never>)
     ret self.done
       ? (self, System::Ok<System::Int | System::None, System::Never>(None))
       : (One(true), System::Ok<System::Int | System::None, System::Never>(5))
-let [trait] _one: _OneStream = _OneStream()
 
 # Combinator with a PHANTOM error param `E`, pinned at construction by the class `where`.
 class [final] Wrap<S, E>(inner: S) where System::Stream<S, System::Int, E>
-class _WrapStream<S, E>() : System::Stream<Wrap<S, E>, System::Int, E>
-  fun next(self: Wrap<S, E>): (stream: Wrap<S, E>, value: System::Result<System::Int | System::None, E>) where System::Stream<S, System::Int, E>
+instance [ambient] <S, E> System::Stream<Wrap<S, E>, System::Int, E> where System::Stream<S, System::Int, E>
+  fun next(self: Wrap<S, E>): (stream: Wrap<S, E>, value: System::Result<System::Int | System::None, E>)
     let r = System::streamNext<S, System::Int, E>(self.inner)
     ret match(r.value)
       (ok: System::Ok<System::Int | System::None, E>) => (Wrap<S, E>(r.stream), ok)
       (er: System::Error<System::Int | System::None, E>) => (Wrap<S, E>(r.stream), er)
-let [trait] _wrap<S, E>: _WrapStream<S, E> = _WrapStream<S, E>() where System::Stream<S, System::Int, E>
 
 fun [tail] drain<S, E>(s: S, acc: System::Int): System::Int | E where System::Stream<S, System::Int, E>
   let r = System::streamNext<S, System::Int, E>(s)

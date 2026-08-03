@@ -28,37 +28,34 @@ import System
 class [final] Tok(v: System::Int)
 
 class [final] One(done: System::Bool)
-class _OneStream() : System::Stream<One, System::Int, System::Never>
+instance [ambient] System::Stream<One, System::Int, System::Never>
   fun next(self: One): (stream: One, value: System::Result<System::Int | System::None, System::Never>)
     ret self.done
       ? (self, System::Ok<System::Int | System::None, System::Never>(None))
       : (One(true), System::Ok<System::Int | System::None, System::Never>(5))
-let [trait] _one: _OneStream = _OneStream()
 
 class [final] Lex<S, E>(inner: S) where System::Stream<S, System::Int, E>
-class _LexStream<S, E>() : System::Stream<Lex<S, E>, Tok, E | System::Bool>
-  fun next(self: Lex<S, E>): (stream: Lex<S, E>, value: System::Result<Tok | System::None, E | System::Bool>) where System::Stream<S, System::Int, E>
+instance [ambient] <S, E> System::Stream<Lex<S, E>, Tok, E | System::Bool> where System::Stream<S, System::Int, E>
+  fun next(self: Lex<S, E>): (stream: Lex<S, E>, value: System::Result<Tok | System::None, E | System::Bool>)
     let r = System::streamNext<S, System::Int, E>(self.inner)
     ret match(r.value)
       (ok: System::Ok<System::Int | System::None, E>) => match(ok.value)
         (v: System::Int)  => (Lex<S, E>(r.stream), System::Ok<Tok | System::None, E | System::Bool>(Tok(v)))
         (x: System::None) => (Lex<S, E>(r.stream), System::Ok<Tok | System::None, E | System::Bool>(None))
       (er: System::Error<System::Int | System::None, E>) => (Lex<S, E>(r.stream), System::Error<Tok | System::None, E | System::Bool>(er.error))
-let [trait] _lex<S, E>: _LexStream<S, E> = _LexStream<S, E>() where System::Stream<S, System::Int, E>
 
 fun wrapLex<S, E>(s: S): Lex<S, E> where System::Stream<S, System::Int, E>
   ret Lex<S, E>(s)
 
 class [final] Pty<S, E>(inner: S) where System::Stream<S, Tok, E>
-class _PtyStream<S, E>() : System::Stream<Pty<S, E>, System::Int, E>
-  fun next(self: Pty<S, E>): (stream: Pty<S, E>, value: System::Result<System::Int | System::None, E>) where System::Stream<S, Tok, E>
+instance [ambient] <S, E> System::Stream<Pty<S, E>, System::Int, E> where System::Stream<S, Tok, E>
+  fun next(self: Pty<S, E>): (stream: Pty<S, E>, value: System::Result<System::Int | System::None, E>)
     let r = System::streamNext<S, Tok, E>(self.inner)
     ret match(r.value)
       (ok: System::Ok<Tok | System::None, E>) => match(ok.value)
         (v: Tok)          => (Pty<S, E>(r.stream), System::Ok<System::Int | System::None, E>(v.v))
         (x: System::None) => (Pty<S, E>(r.stream), System::Ok<System::Int | System::None, E>(None))
       (er: System::Error<Tok | System::None, E>) => (Pty<S, E>(r.stream), System::Error<System::Int | System::None, E>(er.error))
-let [trait] _pty<S, E>: _PtyStream<S, E> = _PtyStream<S, E>() where System::Stream<S, Tok, E>
 
 fun wrapPty<S, E>(s: S): Pty<S, E> where System::Stream<S, Tok, E>
   ret Pty<S, E>(s)
