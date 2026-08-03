@@ -596,6 +596,12 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     generic_call_errors = lowering.generics.report_unresolved_generic_calls(new_statements)
     if generic_call_errors:
         return generic_call_errors
+    # Same guard for TRAIT scope: a constraint that found no single provider
+    # is a compile error naming the constraint, never a codegen crash naming
+    # one of its methods.
+    trait_errors = lowering.generics.report_undischarged_traits(new_statements)
+    if trait_errors:
+        return trait_errors
     # Monomorphisation re-enters the compile fixpoint: a conversion inside a
     # generic template is undecidable (needs_conversion is conservative on
     # non-ground types), so each node of a freshly-instantiated body places its

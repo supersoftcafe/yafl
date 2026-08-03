@@ -831,6 +831,103 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> "tuple[list[s
     return statements, []
 
 
+def __implements_trait(resolver: g.Resolver, tr: s.LetStatement,
+                       trait_spec: t.ClassSpec) -> bool:
+    """Does this `[trait]` record let provide `trait_spec`?"""
+    if not isinstance(tr.declared_type, t.ClassSpec):
+        return False
+    classes = resolver.find_type(tr.declared_type.name)
+    if len(classes) != 1 or not isinstance(classes[0].statement, s.ClassStatement):
+        return False
+    cls = classes[0].statement
+    if cls._all_parents is None:
+        return False
+    # A monomorphised witness declares its parents with MANGLED inner
+    # names (Sized<List$generic$Int>) while the demanded scope is
+    # structural (Sized<List<Int>>): compare against both spellings.
+    mangled_args = tuple(__mangled_from_spec(a) for a in trait_spec.type_params)
+    return any(isinstance(p, t.ClassSpec) and p.name == trait_spec.name
+               and (not trait_spec.type_params
+                    or p.type_params == trait_spec.type_params
+                    or p.type_params == mangled_args)
+               for p in cls._all_parents)
+
+
+def __trait_display(spec: t.ClassSpec) -> str:
+    """`BasicEquality<(bigint,bigint)>` rather than the dataclass repr.
+
+    Post-monomorphisation a trait's arguments live in its MANGLED name
+    (`System::BasicEquality@LvjUpB$generic$(bigint,bigint)`), not in
+    type_params — bare_name would throw them away, and they are the whole
+    point of the message."""
+    head, sep, args = spec.name.partition("$generic$")
+    base = g.bare_name(head)
+    if sep:
+        return f"{base}<{args}>"
+    if spec.type_params:
+        inner = ", ".join(g.bare_name(getattr(tp, "name", "")) or str(tp)
+                          for tp in spec.type_params)
+        return f"{base}<{inner}>"
+    return base
+
+
+def report_undischarged_traits(statements: list[s.Statement]) -> "list":
+    """Post-monomorphisation guard, the counterpart of
+    report_unresolved_generic_calls for TRAIT scope.
+
+    A reference that still resolves to TRAIT scope after
+    __resolve_trait_references has run found no single provider for its
+    constraint — nothing implements it, or several things do. Codegen has no
+    representation for that and dies with
+    `Reference to ResolvedScope.TRAIT ... not implemented yet`, pointing at
+    the trait METHOD rather than at the constraint that went unsatisfied.
+
+    Report it at the use site, naming the constraint. Run AFTER the redirect,
+    so anything legitimately rewritten is already gone and what remains is
+    exactly what would have crashed."""
+    from parsing.parselib import Error
+    errors: list[Error] = []
+    resolver = g.ResolverRoot(statements)
+    traits = resolver.get_traits()
+    seen: set[str] = set()
+
+    def scan(r: g.Resolver, thing):
+        if not isinstance(thing, e.NamedExpression):
+            return rw.UNCHANGED
+        trait_spec = thing.resolved_trait_scope
+        if trait_spec is None:
+            datas = r.find_data(thing.name)
+            if len(datas) != 1 or datas[0].scope != g.ResolvedScope.TRAIT:
+                return rw.UNCHANGED
+            trait_spec = datas[0].trait_scope
+        if not isinstance(trait_spec, t.ClassSpec):
+            return rw.UNCHANGED
+        providers = [tr for tr in traits if __implements_trait(resolver, tr, trait_spec)]
+        if len(providers) == 1:
+            return rw.UNCHANGED
+        shown = __trait_display(trait_spec)
+        # One error per unsatisfied CONSTRAINT, not per reference: a single
+        # missing instance otherwise reports once per `==`/`hashOf` call
+        # inside the monomorphised container.
+        if shown in seen:
+            return rw.UNCHANGED
+        seen.add(shown)
+        method = g.simple_name(g.bare_name(thing.name))
+        errors.append(Error(
+            thing.line_ref,
+            (f"no instance of {shown} (needed by `{method}`)" if not providers
+             else f"{len(providers)} instances of {shown} are in scope "
+                  f"(needed by `{method}`) — the choice is ambiguous")))
+        return rw.UNCHANGED
+
+    for stmt in statements:
+        if getattr(stmt, "type_params", None):
+            continue  # a surviving generic template: its TRAIT refs are legitimately
+                      # unbound, exactly as report_unresolved_generic_calls assumes
+        stmt.search_and_replace(resolver, scan)
+    return errors
+
+
 def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statement]:
     """
     After monomorphization, replace TRAIT-scope function references with DotExpressions
@@ -848,23 +945,7 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
     traits = resolver.get_traits()
 
     def implements_trait(tr: s.LetStatement, trait_spec: t.ClassSpec) -> bool:
-        if not isinstance(tr.declared_type, t.ClassSpec):
-            return False
-        classes = resolver.find_type(tr.declared_type.name)
-        if len(classes) != 1 or not isinstance(classes[0].statement, s.ClassStatement):
-            return False
-        cls = classes[0].statement
-        if cls._all_parents is None:
-            return False
-        # A monomorphised witness declares its parents with MANGLED inner
-        # names (Sized<List$generic$Int>) while the demanded scope is
-        # structural (Sized<List<Int>>): compare against both spellings.
-        mangled_args = tuple(__mangled_from_spec(a) for a in trait_spec.type_params)
-        return any(isinstance(p, t.ClassSpec) and p.name == trait_spec.name
-                   and (not trait_spec.type_params
-                        or p.type_params == trait_spec.type_params
-                        or p.type_params == mangled_args)
-                   for p in cls._all_parents)
+        return __implements_trait(resolver, tr, trait_spec)
 
     def redirect(r: g.Resolver, thing):
         if not isinstance(thing, e.NamedExpression):
