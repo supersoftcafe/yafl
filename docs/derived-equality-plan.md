@@ -96,8 +96,15 @@ remove the header, and those values have nowhere to put a cached word.
 So cache the hash **in the cache node**, as an optimisation exclusively for
 memoisation. `MemoNode` already carries `mnHash`, and `_walkNode` already tests
 `n.mnHash == h && n.mnKey == k` — the int32 compare short-circuits, and the
-full structural `==` runs only on a hash match. Nothing needs adding to the
-object model; this phase is mostly confirming the derived `hashOf` feeds it.
+full structural `==` runs only on a hash match.
+
+**SUPERSEDED IN PART, 2026-08-04.** That is all true and still wanted, but it
+is NOT sufficient: it caches the hash of keys already STORED, while the cost is
+hashing the INCOMING query key, computed fresh on every lookup. Measured at
+>13x on a trivial program. See *Why the query key is the cost* below — the
+answer is `[hashed]` on the type (3b), which the object-model objection here
+does not defeat, because a lazily cached SCALAR needs no CAS, no write barrier,
+and survives compaction by being copied with the object.
 
 Cost per lookup becomes one structural hash of the key, O(size), **with no
 allocation** — against the fingerprint's string build plus hash, also O(size)
@@ -142,8 +149,39 @@ constraint (`no instance of BasicEquality<(bigint,bigint)> (needed by
 in `lowering/generics.py`, the recorded open bug. It is also the detection
 point everything else needs.
 
-Enums remain open; they are nominal and per-variant, so the stdlib route does
-not obviously cover them.
+**Enums remain the only thing standing between here and keys-for-everything,
+and they need the SYNTHESIS pass after all.** Each enum is a distinct nominal
+type, so no fixed set of stdlib instances can cover them the way arity-2/3
+covers tuples. What is now known to work, and makes the pass tractable:
+`instance` is a first-class node that lowers cleanly, recursive instances are
+fine, and `report_undischarged_traits` is a ready-made detection point. The
+shape: on a missing `BasicEquality<E>` for an enum, synthesise a
+TraitInstanceStatement over its variants, append, re-converge, re-run. The
+demand is only visible post-monomorphisation, so this iterates — but only when
+something actually needs deriving, which is never for the bootstrap today.
+
+## Phase 4 has a design tension to settle FIRST
+
+The precise key must carry the field TYPES. Comparing those needs `Spec`
+equality — and the ruling above forbids giving `Spec` a `BasicEquality`
+instance, because `eqSpec` already means equality for `Spec` under another
+spelling, and two meanings of `==` for one type is the ambiguity this plan
+refuses.
+
+So the key cannot simply contain `Spec`. The options, none free:
+
+1. **A complete structural rendering** (`uidDeep(spec)`) as part of a String
+   key. Unambiguous — a rendering is not an equality — and precise. But a full
+   structural key is exactly what the in-file note records as already tried and
+   timed out on the giant node/param graphs.
+2. **A purpose-built key type holding the field types**, with equality supplied
+   by a named function rather than `==`. Needs `Dict`/`memoize` to accept a
+   comparator, which they do not today.
+3. **Leave `ceMemoKey` alone** and treat phases 0-2 as the deliverable:
+   compound keys now work for everyone else, which was the broader win.
+
+`uid` is NOT a candidate for (1): for an enum it renders `enum(root)` only —
+nominal, not structural, and so even lossier than the current fingerprint.
 
 ## Phases
 
@@ -157,10 +195,18 @@ not obviously cover them.
    containing a placeholder, not just unions. `stdlib/tuples.yafl` supplies
    arity 2 and 3 as plain `instance … where` declarations — no synthesis pass
    and no syntax change, which is what the earlier experiments predicted.
-2. **A `[lazy]` let may reference itself directly.** Unblocks recursive types.
-   Rejecting *strict* self-reference is a separate, harder check — deferred.
-3. **Hash cached in the memo node** (`MemoNode.mnHash`, already present), with
-   the int32 short-circuit before structural `==`. No object-model change.
+2. **A `[lazy]` let may reference itself directly.** ALREADY WORKS — no
+   implementation was needed. Verified and pinned by
+   `TestRecursionCapabilities`: a self-referential `[lazy]` let compiles and
+   runs, and so does a recursive `instance` on a recursive enum (members
+   calling back into the instance being defined). Rejecting *strict*
+   self-reference remains a separate, deferred check.
+3. **Cheap lookups.** Node-cached hashes alone are NOT enough — see
+   *Why the query key is the cost* below. Three parts, in order:
+   3a. **Enum attribute grammar** (prerequisite, both compilers).
+   3b. **`[hashed]`** — the compiler caches a type's structural hash.
+   3c. Reference-equality shortcut inside `==`, so a deep compare is skipped
+       when both sides are the same object.
 4. **Migrate the fingerprint call sites** — `ceMemoKey` in `complex_enums.yafl`
    and `simple_classes.yafl` — to a purpose-built key type, and re-measure.
    Baseline to beat: self-compile 689.9s wall / 677.2s user.
@@ -168,6 +214,81 @@ not obviously cover them.
 Phases 1–3 are independently useful and independently gateable. Phase 4 is the
 one that changes compiler behaviour, and it is the one that must be proved
 byte-identical.
+
+## Why the query key is the cost (measured 2026-08-04)
+
+I built the dedicated key type in BOTH compilers — deep equality including
+`all_fields` and `is_complex`, no `id()` — and measured it:
+
+**a trivial program (`ret 0`) went from 22.4s to over 300s.** Reverted.
+
+The reason is structural, and it reproduces the note already in
+`complex_enums.yafl`: *"a full structural key re-created the collapse but paid
+O(subtree) per call, which timed the giant node/param graphs out."*
+`mark_complex_enums` is the pass that RESOLVES `NamedSpec` into embedded enum
+copies, so while it runs, `all_fields` **is** the deeply-nested shared graph
+the memo exists to collapse. A deep hash per lookup does exactly the work the
+memo saves.
+
+**`MemoNode.mnHash` does not help**, and neither does `Dict`'s per-entry hash.
+Those cache the hash of keys ALREADY STORED. A lookup must hash the INCOMING
+query key before it can find a bucket at all, and that is computed fresh every
+call, hit or miss. Node-cached hashes make *comparison* cheap; nothing about
+them reaches the query side.
+
+So only two things can work: a cheap (shallow, collision-prone) hash resolved
+by deep equality, or caching the structural hash ON THE SPEC so every key built
+from it hashes in O(1).
+
+## 3b — `[hashed]`, the compiler caches the hash
+
+Generalises what `String` already does: a lazy scalar slot in the header, `0`
+reserved for "not yet computed", and `hashOf` never returns 0.
+
+- **Lazy, computed on first `hashOf`.** Racy computation is harmless: the value
+  is deterministic, so two threads racing write the same word. A scalar needs
+  no CAS, no write barrier, and survives compaction by being copied with the
+  object — none of the hazards that forced `[mutable]` for pointer fields.
+- **Implies "do not flatten"**, exactly as `[mutable]` does: a value with no
+  header has nowhere to put the word. That exclusion already exists in
+  `simple_classes` in both compilers.
+- **Caches, does not derive.** Whatever `hashOf` the type has is what gets
+  cached; an impure one is the programmer's risk, as with `memoize`.
+- **Determinism preserved** — content-only, so emitted C is unaffected.
+
+Why this fixes the measurement: hashing a `Spec` walks its children, but each
+child's hash is itself cached, so a node costs O(fanout) rather than
+O(subtree), and the graph is hashed once across the program instead of once per
+lookup.
+
+## 3a — enum attributes (PREREQUISITE)
+
+The type that needs `[hashed]` most is `Spec`, which is an **enum** — and
+**enums have no attribute syntax in either compiler**. Python's parser has no
+`__parse_attributes` in front of `enum` and constructs `EnumStatement` with a
+hardcoded `{}`; the port's `parseEnum` demands an ident immediately, so both
+REJECT `enum [x] Foo` today (verified by running the same program through
+each).
+
+This is enabling machinery that already exists for classes rather than
+inventing any: parser, node field, equality, rewrite, astdump — both compilers,
+byte-identical C. It also unblocks `[mutable]` on enums, which shipped
+class-only for exactly this reason.
+
+## 3c — reference equality as a shortcut
+
+`a == b` becomes `(a is b) || eq(a, b)`. For immutable values reference
+equality implies value equality, so it can never change an answer and codegen
+determinism is untouched.
+
+Two things it commits to, both needing an explicit ruling:
+- **`==` becomes reflexive by construction**, even where a user's instance is
+  not. The classic counterexample is NaN, where IEEE says `NaN != NaN`.
+- It is only meaningful for BOXED values; a flattened class or unboxed tag has
+  no reference, and simply skips the shortcut.
+
+It short-circuits EQUALITY only, never the hash, which is why it is the partner
+of 3b rather than a substitute for it.
 
 ## Two questions resolved by principle
 

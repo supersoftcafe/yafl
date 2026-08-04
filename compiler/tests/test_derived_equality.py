@@ -148,3 +148,60 @@ fun main(): System::Int
 """
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
         self.assertEqual(5, code, out)
+
+
+class TestRecursionCapabilities(TestCase):
+    """Phase 2 of the plan turned out to need NO implementation — both of these
+    already work. They were untested, so they are pinned here: the derived-
+    equality design leans on both, and a regression would be silent."""
+
+    def test_lazy_let_may_reference_itself(self):
+        """The enabling rule for a recursive instance: a `[lazy]` let may
+        reference itself directly. A lazy expression can cycle; a strict one
+        cannot, and rejecting THAT is a separate check, deliberately deferred."""
+        src = """\
+import System
+
+fun main(): System::Int
+  let [lazy] f: (:System::Int): System::Int =
+    (n: System::Int) => n <= 0 ? 0 : n + f(n - 1)
+  ret f(3)
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(6, code, out)   # 3+2+1+0
+
+    def test_recursive_instance_on_a_recursive_enum(self):
+        """An instance whose members call back into the instance being defined,
+        for a type that contains itself. The cycle is in the INSTANCE — a
+        dictionary of functions — while the values it walks stay acyclic, so
+        neither `==` nor `hashOf` diverges."""
+        src = """\
+import System
+
+enum Chain2
+  enum Nil2()
+  enum Cons2(hd: System::Int, tl: Chain2)
+
+instance [ambient] System::BasicEquality<Chain2>
+  fun `==`(l: Chain2, r: Chain2): System::Bool
+    ret match(l)
+      (a: Cons2) => match(r)
+        (b: Cons2) => a.hd == b.hd && a.tl == b.tl
+        ()         => false
+      ()         => match(r)
+        (b2: Cons2) => false
+        ()          => true
+  fun hashOf(v: Chain2): System::Int32
+    ret match(v)
+      (c: Cons2) => (hashOf(c.hd) * 31i32 + hashOf(c.tl)) & 2147483647i32
+      ()         => 17i32
+
+fun main(): System::Int
+  let d0 = System::Dict<Chain2, System::Int>()
+  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
+  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
+    (v: System::Int) => v
+    ()               => 0
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(5, code, out)
