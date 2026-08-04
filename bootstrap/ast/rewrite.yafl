@@ -91,7 +91,7 @@ fun rwStmtKids(st: PStmt, w: Rw): PStmt
                             c.cIsInterface, c.pscLine,
                             rwSpecsOpt(c.cAllParents, w), c.cAllSlots,
                             c.cImports)
-    (e2: PsEnum) => PsEnum(e2.eName, e2.eGens, rwStmt(e2.eParams, w),
+    (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, rwStmt(e2.eParams, w),
                            rwStmts(e2.eVariants, w), e2.eHasParams,
                            e2.pseLine, e2.eRootName,
                            rwSpecOpt(e2.eSpec, w), e2.eImports)
@@ -445,7 +445,8 @@ fun rwnStmtKids(st: PStmt, w: RwN, n: Int): RwNS
     (e2: PsEnum) => rwnStmt(e2.eParams, w, n)
       |> (p) => (p, rwnStmts(e2.eVariants, w, p.rnsN))
       |> (p, vs) => RwNS(vs.rnssN,
-                         PsEnum(e2.eName, e2.eGens, p.rnsStmt, vs.rnssStmts,
+                         PsEnum(e2.eName, e2.eAttrs, e2.eGens, p.rnsStmt,
+                                vs.rnssStmts,
                                 e2.eHasParams, e2.pseLine, e2.eRootName,
                                 e2.eSpec, e2.eImports))
     (rt: PsRet)  => rwnExpr(rt.retValue, w, n)

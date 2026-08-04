@@ -362,7 +362,7 @@ fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
   let glb = concat(params.soExtra, variants.slGlobals)
   # The constructor returns the ROOT statement type — narrow back to the
   # variant to run the layout over the freshly compiled node.
-  ret match(PsEnum(e.eName, e.eGens, stmtOr(params, e.eParams),
+  ret match(PsEnum(e.eName, e.eAttrs, e.eGens, stmtOr(params, e.eParams),
                    variants.slStmts, e.eHasParams, e.pseLine,
                    None, None, e.eImports))
     (t2: PsEnum) => StmtOut(layoutEnum(t2), glb)
@@ -425,7 +425,7 @@ fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
 # OWN valid-leaf subset, recursively onto every variant.
 fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>,
                 allFields: List<SField>): PStmt
-  ret PsEnum(e.eName, e.eGens, e.eParams,
+  ret PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams,
              assignAllSpecs(chain(e.eVariants), root, allLeaves, allFields,
                             List<PStmt>()),
              e.eHasParams, e.pseLine, root,

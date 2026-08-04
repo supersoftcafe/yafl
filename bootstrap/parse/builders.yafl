@@ -427,7 +427,7 @@ fun withImports(st: PStmt, grp: List<PStmt>): PStmt
                                              ti.tiGens, ti.tiPattern,
                                              ti.tiWheres, ti.tiMembers,
                                              ti.pstiLine, grp)
-    (e: PsEnum) => PsEnum(e.eName, e.eGens, e.eParams, e.eVariants,
+    (e: PsEnum) => PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams, e.eVariants,
                           e.eHasParams, e.pseLine, e.eRootName, e.eSpec, grp)
     (other)     => st
 
@@ -470,7 +470,7 @@ fun addNamespace(st: PStmt, ns: String): PStmt
                                              ti.tiGens, ti.tiPattern,
                                              ti.tiWheres, ti.tiMembers,
                                              ti.pstiLine, ti.tiImports)
-    (e: PsEnum) => PsEnum(ns + e.eName, e.eGens, e.eParams,
+    (e: PsEnum) => PsEnum(ns + e.eName, e.eAttrs, e.eGens, e.eParams,
                           map(e.eVariants, (v: PStmt) => addNamespace(v, ns)),
                           e.eHasParams, e.pseLine)
     (other)     => st

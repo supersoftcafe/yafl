@@ -211,7 +211,7 @@ def dump(statements) -> str:
                 walk_stmt(member, depth + 1)
         elif isinstance(st, s.EnumStatement):
             gens = ",".join(g.name for g in st.type_params)
-            line(depth, "Enum", st, f"{st.name}|{gens}|{st.has_param_list}")
+            line(depth, "Enum", st, f"{st.name}|{_attrs(st.attributes)}|{gens}|{st.has_param_list}")
             walk_stmt(st.parameters, depth + 1)
             for v in st.variants:
                 walk_stmt(v, depth + 1)

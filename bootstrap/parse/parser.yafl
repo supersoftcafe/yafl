@@ -1420,31 +1420,42 @@ fun parseClassBody(attrs: List<PAttr>, name: String, gen: List<PGen>,
                                     funParamsStmt(pars, lr), parents, wl, body,
                                     isInterface, lr), b.rest)
 
+# Attributes come BEFORE the name, exactly as parseClass takes them:
+# `enum [hashed] Foo`. Enums carried none until now, which is why `[mutable]`
+# shipped class-only.
 fun parseEnum(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
+  let attrs = parseMaybeAttributes(ps)
+  ret match(attrs.v)
+    (f: PFail)        => (f, attrs.rest)
+    (al: List<PAttr>) => parseEnumNamed(al, lr, attrs.rest)
+
+fun parseEnumNamed(attrs: List<PAttr>, lr: PLine,
+                   ps: Ps): (v: PStmt|PFail, rest: Ps)
   let t = peek(ps)
   if !isIdentTok(t)
     ret (hardFail("invalid enum statement", ps), ps)
   let gen = parseMaybeGenerics(bump(ps))
   ret match(gen.v)
     (f: PFail)       => (f, gen.rest)
-    (gl: List<PGen>) => parseEnumParams(t.text, gl, lr, gen.rest)
+    (gl: List<PGen>) => parseEnumParams(attrs, t.text, gl, lr, gen.rest)
 
-fun parseEnumParams(name: String, gen: List<PGen>, lr: PLine,
-                    ps: Ps): (v: PStmt|PFail, rest: Ps)
+fun parseEnumParams(attrs: List<PAttr>, name: String, gen: List<PGen>,
+                    lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   if !atSym(ps, "(")
-    ret parseEnumVariants(name, gen, false, List<PStmt>(), lr, ps)
+    ret parseEnumVariants(attrs, name, gen, false, List<PStmt>(), lr, ps)
   let pars = parseParams(ps)
   ret match(pars.v)
     (f: PFail)        => (f, pars.rest)
-    (pl: List<PStmt>) => parseEnumVariants(name, gen, true, pl, lr, pars.rest)
+    (pl: List<PStmt>) => parseEnumVariants(attrs, name, gen, true, pl, lr,
+                                           pars.rest)
 
-fun parseEnumVariants(name: String, gen: List<PGen>, hasParams: Bool,
-                      pars: List<PStmt>, lr: PLine,
+fun parseEnumVariants(attrs: List<PAttr>, name: String, gen: List<PGen>,
+                      hasParams: Bool, pars: List<PStmt>, lr: PLine,
                       ps: Ps): (v: PStmt|PFail, rest: Ps)
   let vs = parseVariantList(ps, builder<PStmt>())
   ret match(vs.v)
     (f: PFail)        => (f, vs.rest)
-    (vl: List<PStmt>) => (PsEnum(hashName(name, lr), gen,
+    (vl: List<PStmt>) => (PsEnum(hashName(name, lr), attrs, gen,
                                  funParamsStmt(pars, lr), vl, hasParams, lr), vs.rest)
 
 fun [tail] parseVariantList(ps: Ps, acc: ListBuilder<PStmt>): (v: List<PStmt>|PFail, rest: Ps)

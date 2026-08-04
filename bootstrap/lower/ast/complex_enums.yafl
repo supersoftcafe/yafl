@@ -541,7 +541,7 @@ fun ceStmt(st: PStmt, c: CeCtx): PStmt
                              cl.cIsInterface, cl.pscLine,
                              ceSpecsOpt(cl.cAllParents, c),
                              cl.cAllSlots, cl.cImports)
-    (e2: PsEnum) => PsEnum(e2.eName, e2.eGens, ceStmt(e2.eParams, c),
+    (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, ceStmt(e2.eParams, c),
                            ceStmts(chain(e2.eVariants), c, List<PStmt>()),
                            e2.eHasParams, e2.pseLine, e2.eRootName,
                            ceSpecOpt(e2.eSpec, c), e2.eImports)

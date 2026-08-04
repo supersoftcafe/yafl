@@ -295,6 +295,7 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
       (o: PStmt)   => false
     (x: PsEnum) => match(b)
       (y: PsEnum) => x.eName == y.eName
+                     && eqAttrs(x.eAttrs, y.eAttrs)
                      && eqGens(x.eGens, y.eGens)
                      && eqStmt(x.eParams, y.eParams)
                      && eqStmts(x.eVariants, y.eVariants)

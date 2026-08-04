@@ -268,7 +268,8 @@ fun dumpStmt(st: PStmt, depth: Int, sb: StringBuilder): StringBuilder
       |> (s1) => dumpStmt(c.cParams, depth + 1, s1)
       |> (s2) => dumpStmts(c.cMembers, depth + 1, s2)
     (e: PsEnum) => dLine(sb, depth, "Enum", e.pseLine,
-                         e.eName + "|" + gensStr(e.eGens) + "|"
+                         e.eName + "|" + attrsStr(e.eAttrs) + "|"
+                         + gensStr(e.eGens) + "|"
                          + (e.eHasParams ? "True" : "False"))
       |> (s1) => dumpStmt(e.eParams, depth + 1, s1)
       |> (s2) => dumpStmts(e.eVariants, depth + 1, s2)

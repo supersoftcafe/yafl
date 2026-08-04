@@ -917,7 +917,8 @@ fun scFixEnumStmt(st: PStmt, cands: ScCands, specs: ScSpecs): PStmt
     (e2: PsEnum) => match(e2.eSpec)
       (sp: Spec) => match(sp)
         (es2: SEnum) => es2.seComplex
-          ? PsEnum(e2.eName, e2.eGens, e2.eParams, e2.eVariants, e2.eHasParams, e2.pseLine,
+          ? PsEnum(e2.eName, e2.eAttrs, e2.eGens, e2.eParams, e2.eVariants,
+                   e2.eHasParams, e2.pseLine,
                    e2.eRootName,
                    scReplaceInAllFields(es2, List<String>(), (s3: Spec) => scFlattenOne(s3, cands, specs)),
                    e2.eImports)
@@ -1027,7 +1028,7 @@ fun scTStmt(st: PStmt, c: ScCtx, r: Resolver): PStmt
                              cl.cIsInterface, cl.pscLine,
                              scTSpecsOpt(cl.cAllParents, c), cl.cAllSlots,
                              cl.cImports)
-    (e2: PsEnum) => PsEnum(e2.eName, e2.eGens, scTStmt(e2.eParams, c, r),
+    (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, scTStmt(e2.eParams, c, r),
                            scTStmts(e2.eVariants, c, r), e2.eHasParams,
                            e2.pseLine, e2.eRootName,
                            scTSpecOpt(e2.eSpec, c), e2.eImports)

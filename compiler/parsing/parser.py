@@ -1040,12 +1040,12 @@ __parse_enum_params = p.maybe(__parse_destructure_parts) >> __to_enum_params
 
 
 def __to_enum(result: p.Result, tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
-    name, generics, params, variants = result.value
+    attributes, name, generics, params, variants = result.value
     type_params = tuple(generics) if generics else ()
     has_param_list = params is not __NO_ENUM_PARAMS
     fields = [] if params is __NO_ENUM_PARAMS else params
     statement = s.EnumStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, {}, type_params,
+        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes, type_params,
         s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, fields),
         variants,
         has_param_list=has_param_list)
@@ -1056,9 +1056,10 @@ def parse_enum(tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
     return __parse_enum_any(tokens)
 __parse_enum = p.Parser(parse_enum)
 
+# Attributes come BEFORE the name (`enum [hashed] Foo`), exactly as for class.
 __parse_enum_any = p.block(p.requires(
     p.discard_sym("enum"),
-    (p.ident() & __parse_maybe_generic_statement & __parse_enum_params & p.many(__parse_enum)) >> __to_enum,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_enum_params & p.many(__parse_enum)) >> __to_enum,
     "invalid enum statement"))
 
 

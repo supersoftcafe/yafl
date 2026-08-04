@@ -135,7 +135,8 @@ enum PStmt
                cAllParents: List<Spec>|None = None,
                cAllSlots: List<Slot>|None = None,
                cImports: List<PStmt>|None = None)
-  enum PsEnum(eName: String, eGens: List<PGen>, eParams: PStmt,
+  enum PsEnum(eName: String, eAttrs: List<PAttr>, eGens: List<PGen>,
+              eParams: PStmt,
               eVariants: List<PStmt>, eHasParams: Bool, pseLine: PLine,
               eRootName: String|None = None, eSpec: Spec|None = None,
               eImports: List<PStmt>|None = None)
