@@ -1,0 +1,52 @@
+namespace System
+
+import System
+
+
+# Equality and hashing for tuples, so a tuple can be a `Dict` key or a
+# `memoize` key without anyone hand-rolling a fingerprint.
+#
+# These are ordinary generic `instance` declarations — no compiler support
+# beyond what `instance … where` already provides. Each is discharged by
+# constraint solving: `BasicEquality<(:Int, :Int)>` unifies against the
+# pattern `BasicEquality<(:A, :B)>`, binding A and B, and the `where` then
+# demands the components' own instances, recursively.
+#
+# One arity per declaration, exactly as `memoize` does for 1/2/3 parameters.
+# Add wider ones the same way when something needs them; there is no way to
+# abstract over arity today.
+#
+# HASH CONTRACT (traits.yafl): hashOf must return >= 0 — the sign bit is
+# always clear. Int32 multiply-add wraps into negatives, so every result is
+# masked. The 31x combine is the conventional one: cheap, and order-sensitive
+# so (1, 2) and (2, 1) do not collide.
+
+
+fun _mixHash(acc: System::Int32, h: System::Int32): System::Int32
+  ret (acc * 31i32 + h) & 2147483647i32
+
+
+# ─── arity 2 ─────────────────────────────────────────────────────────────────
+
+instance [ambient] <A, B> System::BasicEquality<(:A, :B)>
+    where System::BasicEquality<A>|System::BasicEquality<B>
+  fun `==`(left: (:A, :B), right: (:A, :B)): System::Bool
+    let (la, lb) = left
+    let (ra, rb) = right
+    ret la == ra && lb == rb
+  fun hashOf(value: (:A, :B)): System::Int32
+    let (a, b) = value
+    ret _mixHash(_mixHash(17i32, hashOf(a)), hashOf(b))
+
+
+# ─── arity 3 ─────────────────────────────────────────────────────────────────
+
+instance [ambient] <A, B, C> System::BasicEquality<(:A, :B, :C)>
+    where System::BasicEquality<A>|System::BasicEquality<B>|System::BasicEquality<C>
+  fun `==`(left: (:A, :B, :C), right: (:A, :B, :C)): System::Bool
+    let (la, lb, lc) = left
+    let (ra, rb, rc) = right
+    ret la == ra && lb == rb && lc == rc
+  fun hashOf(value: (:A, :B, :C)): System::Int32
+    let (a, b, c) = value
+    ret _mixHash(_mixHash(_mixHash(17i32, hashOf(a)), hashOf(b)), hashOf(c))

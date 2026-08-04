@@ -72,12 +72,10 @@ fun main(): System::Int
 # is that monomorphisation never instantiates a generic instance whose pattern
 # is a tuple). Delete the decorators as each starts passing.
 class TestDerivedForCompoundKeys(TestCase):
-    @unittest.expectedFailure
     def test_tuple_is_usable_as_a_dict_key(self):
         code, out = compile_and_run_stdlib_capture(_TUPLE_KEY, timeout=30)
         self.assertEqual(7, code, out)
 
-    @unittest.expectedFailure
     def test_tuple_keys_distinguish_their_components(self):
         """Guards against a derived hash/eq that ignores a field — the exact
         failure mode of the hand-written fingerprints this replaces."""
@@ -94,10 +92,14 @@ fun main(): System::Int
   let b = match(System::get(d2, (2, 1)))
     (v: System::Int) => v
     ()               => 0
-  ret a + b * 100
+  println(a + b * 100)
+  ret 0
 """
+        # via println, not the exit status: an exit code is 8-bit and 2010
+        # comes back as 218.
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(2010, code, out)   # a=10, b=20
+        self.assertEqual(0, code, out)
+        self.assertEqual("2010", out.strip())   # a=10, b=20
 
     @unittest.expectedFailure
     def test_enum_is_usable_as_a_dict_key(self):

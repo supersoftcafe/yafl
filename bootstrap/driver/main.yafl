@@ -404,6 +404,12 @@ fun postmonoRes4(stmts: List<PStmt>): PmRes
   let unresolved = reportUnresolvedGenericCalls(it.giStmts)
   if !isEmpty(unresolved)
     ret PmText(printedDiagnostics(unresolved), 0)
+  # Same guard for TRAIT scope, at the same point compiler.py has it: a
+  # constraint that found no single provider is a compile error naming the
+  # constraint, never a codegen crash naming one of its methods.
+  let undischarged = reportUndischargedTraits(it.giStmts)
+  if !isEmpty(undischarged)
+    ret PmText(printedDiagnostics(undischarged), 0)
   ret match(converge(it.giStmts))
     (ok: CvOk)       => PmOk(inlineConstants(markComplexEnums(
                                                ok.cvStatements)))

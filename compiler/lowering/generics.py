@@ -71,13 +71,20 @@ def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
     return all(not isinstance(tp, t.GenericPlaceholderSpec)
                and not (isinstance(tp, (t.EnumSpec, t.ClassSpec, t.NamedSpec))
                         and tp.type_params)
-               # A union with a placeholder member (`E | JsonParseError` while E
-               # is still abstract) is NOT concrete — specialising it produces a
-               # `…_unknown` instantiation that crashes codegen. The bare-
-               # placeholder check above misses it (the arg is a CombinationSpec,
-               # not the placeholder itself), and `is_concrete()` is no help
-               # because GenericPlaceholderSpec.is_concrete() returns True.
-               and not (isinstance(tp, t.CombinationSpec) and __contains_placeholder(tp))
+               # ANY COMPOSITE argument holding a placeholder is NOT concrete
+               # — specialising it produces a `…_unknown` instantiation. The
+               # bare-placeholder check above misses it (the arg is the
+               # composite, not the placeholder itself), and `is_concrete()` is
+               # no help because GenericPlaceholderSpec.is_concrete() returns
+               # True.
+               #
+               # This was originally a union-only check (`E | JsonParseError`
+               # while E is abstract). A TUPLE behaves identically: the pattern
+               # of `instance <A,B> BasicEquality<(:A,:B)>` mangled to
+               # `BasicEquality$generic$unknown`, so no concrete demand could
+               # ever unify against it and the instance was silently never
+               # selected — the whole reason a tuple could not be a Dict key.
+               and not __contains_placeholder(tp)
                for tp in type_args)
 
 
@@ -864,10 +871,9 @@ def __trait_display(spec: t.ClassSpec) -> str:
     base = g.bare_name(head)
     if sep:
         return f"{base}<{args}>"
-    if spec.type_params:
-        inner = ", ".join(g.bare_name(getattr(tp, "name", "")) or str(tp)
-                          for tp in spec.type_params)
-        return f"{base}<{inner}>"
+    # No `$generic$` means the trait was never monomorphised (nothing demanded
+    # it concretely). Show the bare name only — rendering placeholder params
+    # adds nothing and would have to be mirrored spec-for-spec in the port.
     return base
 
 

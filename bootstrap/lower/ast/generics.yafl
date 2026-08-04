@@ -72,14 +72,23 @@ fun [tail] allConcreteArgs(as2: Chain<Spec>): Bool
     (nil: ChainEnd) => true
     (l: ChainLink)  => concreteArg(l.value) ? allConcreteArgs(l.next) : false
 
+# ANY COMPOSITE argument holding a placeholder is NOT concrete — specialising
+# it produces a `…_unknown` instantiation. The bare-placeholder case below
+# misses it (the arg is the composite, not the placeholder itself).
+#
+# This was originally a union-only check (`E | JsonParseError` while E is
+# abstract). A TUPLE behaves identically: the pattern of
+# `instance <A,B> BasicEquality<(:A,:B)>` mangled to
+# `BasicEquality$generic$unknown`, so no concrete demand could ever unify
+# against it and the instance was silently never selected — the whole reason a
+# tuple could not be a Dict key.
 fun concreteArg(sp: Spec): Bool
   ret match(sp)
     (g2: SGeneric)     => false
-    (e2: SEnum)        => isEmpty(e2.seParams)
-    (c: SClass)        => isEmpty(c.scParams)
-    (n: SNamed)        => isEmpty(n.snParams)
-    (cm: SCombination) => !containsPlaceholder(sp)
-    (o: Spec)          => true
+    (e2: SEnum)        => isEmpty(e2.seParams) && !containsPlaceholder(sp)
+    (c: SClass)        => isEmpty(c.scParams) && !containsPlaceholder(sp)
+    (n: SNamed)        => isEmpty(n.snParams) && !containsPlaceholder(sp)
+    (o: Spec)          => !containsPlaceholder(o)
 
 fun containsPlaceholder(sp: Spec): Bool
   ret match(sp)
@@ -2217,6 +2226,79 @@ fun rfrEnum(e2: SEnum, c: Canon): Spec
 # Python: report_unresolved_generic_calls. A reference from NON-generic code
 # to a still-generic function means call-site inference could not ground its
 # type arguments — report at the use site instead of crashing in codegen.
+
+# ── undischarged trait constraints ───────────────────────────────────────────
+# Port of generics.py::report_undischarged_traits. The counterpart of
+# reportUnresolvedGenericCalls for TRAIT scope: a reference that still resolves
+# to TRAIT scope after resolveTraitReferences has run found no single provider
+# for its constraint. Codegen has no representation for that and dies naming
+# the trait METHOD rather than the constraint that went unsatisfied.
+#
+# Runs AFTER the redirect, so anything legitimately rewritten is already gone
+# and what remains is exactly what would have crashed. Surviving generic
+# templates are skipped, as reportUnresolvedGenericCalls already does.
+
+class [final] UtAcc(utSeen: List<String>, utErrs: List<PErr>)
+
+fun reportUndischargedTraits(statements: List<PStmt>): List<PErr>
+  let r = RRoot(buildStatements(statements))
+  ret utTop(chain(statements), r, traitLets(r),
+            UtAcc(List<String>(), List<PErr>())).utErrs
+
+fun [tail] utTop(ss: Chain<PStmt>, r: Resolver, traits: List<PStmt>,
+                 acc: UtAcc): UtAcc
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => isEmpty(stmtGens(l.value))
+      ? utTop(l.next, r, traits,
+              foldStmt<UtAcc>(l.value, utStmtCb,
+                              (a: UtAcc, x: PExpr) => utExprCb(a, x, r, traits),
+                              acc))
+      : utTop(l.next, r, traits, acc)   # a surviving generic template: its
+                                        # TRAIT refs are legitimately unbound
+
+fun utStmtCb(a: UtAcc, st: PStmt): UtAcc
+  ret a
+
+fun utExprCb(a: UtAcc, x: PExpr, r: Resolver, traits: List<PStmt>): UtAcc
+  ret match(x)
+    (nm: PeName) => match(traitSpecFor(nm, r))
+      (ts: SClass) => utCheck(a, nm, ts, r, traits)
+      ()           => a
+    (o: PExpr)   => a
+
+# One error per CONSTRAINT, not per reference: a single missing instance
+# otherwise reports once per `==`/`hashOf` call inside the monomorphised
+# container.
+fun utCheck(a: UtAcc, nm: PeName, ts: SClass, r: Resolver,
+            traits: List<PStmt>): UtAcc
+  let n = listLen(traitProviders(chain(traits), ts, r, List<PsLet>()))
+  if n == 1
+    ret a
+  let shown = traitDisplay(ts)
+  if contains2(a.utSeen, shown)
+    ret a
+  ret UtAcc(append(a.utSeen, shown),
+            append(a.utErrs, PErr(nm.penLine, utMessage(shown, nm, n))))
+
+fun utMessage(shown: String, nm: PeName, n: Int): String
+  let method = bareOfUnique(nm.refName)
+  ret n == 0
+    ? "no instance of " + shown + " (needed by `" + method + "`)"
+    : String(n) + " instances of " + shown + " are in scope (needed by `"
+      + method + "`) — the choice is ambiguous"
+
+# `BasicEquality<(bigint,bigint)>` rather than the raw mangled name:
+# post-monomorphisation a trait's arguments live in its MANGLED name, not in
+# its params. No `$generic$` means it was never monomorphised — show the bare
+# name only, exactly as Python does.
+fun traitDisplay(ts: SClass): String
+  let gx = indexOf(ts.scName, "$generic$", 0)
+  ret gx < 0
+    ? bareOfUnique(ts.scName)
+    : bareOfUnique(slice(ts.scName, 0, gx)) + "<"
+      + slice(ts.scName, gx + 9, length(ts.scName)) + ">"
+
 
 fun reportUnresolvedGenericCalls(statements: List<PStmt>): List<PErr>
   let r = RRoot(buildStatements(statements))
