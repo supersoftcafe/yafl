@@ -129,12 +129,12 @@ components all behave.
 style memoize already uses for its 1/2/3 overloads. That removes the
 architectural fork this plan was originally shaped around.
 
-**The one blocker: a generic instance whose pattern is a TUPLE is never
-monomorphised.** The obvious suspects are innocent — `_trait_pattern_compatible`
-returns True for `BasicEquality<(:A,:B)>` against `BasicEquality<(bigint,bigint)>`,
-and `unify_generic` binds `A` and `B` correctly. The gap is in
-monomorphisation's discovery of WHICH generic trait instances to instantiate,
-which keys on named types and has nothing to hang a structural pattern on.
+**The blocker, since RESOLVED in `5ce9ede`.** The suspects I listed were all
+innocent, and so was the one I named: monomorphisation's discovery was fine.
+The instance's PATTERN had already been mangled to `…$generic$unknown` before
+discovery ever ran, because a tuple holding a placeholder passed the
+concreteness gate. Lesson: when a pattern will not match, print the pattern —
+I chased the matcher for hours when the pattern itself was destroyed.
 
 **Done already:** an undischarged constraint is now a diagnostic naming the
 constraint (`no instance of BasicEquality<(bigint,bigint)> (needed by
@@ -147,11 +147,16 @@ not obviously cover them.
 
 ## Phases
 
-0. **Undischarged constraint → diagnostic, not a codegen crash.** DONE.
-1. **Monomorphise generic instances with structural patterns**, then ship
-   stdlib `BasicEquality` instances for tuples of arity 2/3/4. No synthesis
-   pass, no syntax change. Enums still need a route of their own — decide it
-   after this lands, since the tuple work may suggest one.
+0. **Undischarged constraint → diagnostic, not a codegen crash.** DONE
+   (`ce267eb`, ported in `5ce9ede`).
+1. **Tuples as keys.** DONE (`5ce9ede`). The blocker was not "monomorphisation
+   ignores structural patterns" — it was that a tuple holding a placeholder
+   was treated as CONCRETE, so the instance's pattern mangled to
+   `…$generic$unknown` and no demand could unify against it.
+   `__is_concrete_type_args` / `concreteArg` now reject any composite
+   containing a placeholder, not just unions. `stdlib/tuples.yafl` supplies
+   arity 2 and 3 as plain `instance … where` declarations — no synthesis pass
+   and no syntax change, which is what the earlier experiments predicted.
 2. **A `[lazy]` let may reference itself directly.** Unblocks recursive types.
    Rejecting *strict* self-reference is a separate, harder check — deferred.
 3. **Hash cached in the memo node** (`MemoNode.mnHash`, already present), with
