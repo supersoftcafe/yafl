@@ -43,21 +43,13 @@ def lower_hashed(statements: list[s.Statement]) -> tuple[list[s.Statement], list
     resolver = g.ResolverRoot(statements)
     errors: list[Error] = []
 
-    hashed_roots: set[str] = set()
-    for st in statements:
-        if isinstance(st, s.EnumStatement) and "hashed" in st.attributes:
-            hashed_roots.add(st.name)
-        if isinstance(st, s.ClassStatement) and "hashed" in st.attributes:
-            errors.append(Error(st.line_ref,
-                "[hashed] applies to enum types only — a class may be "
-                "flattened to a by-value struct, which has nowhere to keep "
-                "the cached hash"))
-
     def is_hashed_type(spec: t.TypeSpec | None) -> bool:
-        # The parameter may name the root or any variant; both carry the
-        # ROOT's unique name in root_name, and the attribute lives on the
-        # root statement.
-        return isinstance(spec, t.EnumSpec) and spec.root_name in hashed_roots
+        # ANY enum type: every boxed enum now carries the slot by default,
+        # and the three internals are representation-aware at codegen, so a
+        # value-repr enum simply never caches (peek is constant 0) and never
+        # identity-matches (ref_eq is constant false). The parameter may name
+        # the root or any variant.
+        return isinstance(spec, t.EnumSpec)
 
     out: list[s.Statement] = []
     changed = False
@@ -72,9 +64,9 @@ def lower_hashed(statements: list[s.Statement]) -> tuple[list[s.Statement], list
                         and params[0].declared_type.root_name == params[1].declared_type.root_name)
             if not ok_types:
                 errors.append(Error(st.line_ref,
-                    "a [refeq] function must take two parameters of one "
-                    "[hashed] enum type — the shortcut is a pointer compare, "
-                    "which needs boxed values"))
+                    "a [refeq] function must take two parameters of one enum "
+                    "type — the shortcut is an identity compare, meaningful "
+                    "when the representation is boxed"))
                 out.append(st)
                 continue
             rt = st.return_type
@@ -94,8 +86,8 @@ def lower_hashed(statements: list[s.Statement]) -> tuple[list[s.Statement], list
         rt = st.return_type
         if len(params) != 1 or not is_hashed_type(params[0].declared_type):
             errors.append(Error(st.line_ref,
-                "a [hashed] function must take exactly one parameter of a "
-                "[hashed] enum type — the cache lives in that value"))
+                "a [hashed] function must take exactly one parameter of an "
+                "enum type — the cache lives in that value when it is boxed"))
             out.append(st)
             continue
         if not (isinstance(rt, t.BuiltinSpec) and rt.type_name == "int32"):

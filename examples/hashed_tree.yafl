@@ -1,11 +1,12 @@
-# `[hashed]` — the compiler caches a structural hash inside the value.
+# `[hashed]` on a FUNCTION — the compiler caches its result in the value.
 #
-# The enum's every leaf carries a hidden Int32 slot; the [hashed] function is
-# split so a slot hit skips the compute entirely, and a recursive hash reaches
-# child nodes through THEIR caches. See docs/derived-equality-plan.md §3b.
+# Tree is recursive, hence boxed, and every boxed enum carries a hidden Int32
+# slot by default; the [hashed] function is split so a slot hit skips the
+# compute entirely, and a recursive hash reaches child nodes through THEIR
+# caches. See docs/derived-equality-plan.md §3b.
 import System
 
-enum [hashed] Tree
+enum Tree
   enum Leaf2(val: System::Int)
   enum Node2(left: Tree, right: Tree)
 

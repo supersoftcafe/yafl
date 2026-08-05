@@ -29,40 +29,18 @@ import Bootstrap::Types
 
 
 fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: List<PErr>, lhChanged: Bool)
-  let hashedRoots = lhCollectRoots(chain(statements), List<String>())
-  let classErrs = lhClassErrors(chain(statements), List<PErr>())
-  let out = lhStmtsLoop(chain(statements), hashedRoots,
-                        (List<PStmt>(), classErrs, false))
+  let out = lhStmtsLoop(chain(statements), List<String>(),
+                        (List<PStmt>(), List<PErr>(), false))
   ret (out.stmts, out.errs, out.changed)
 
-fun [tail] lhCollectRoots(ss: Chain<PStmt>, acc: List<String>): List<String>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (e2: PsEnum) => hasAttr(e2.eAttrs, "hashed")
-        ? lhCollectRoots(l.next, append(acc, e2.eName))
-        : lhCollectRoots(l.next, acc)
-      (o: PStmt)   => lhCollectRoots(l.next, acc)
-
-fun [tail] lhClassErrors(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (c: PsClass) => hasAttr(c.cAttrs, "hashed")
-        ? lhClassErrors(l.next,
-            append(acc, PErr(c.pscLine,
-              "[hashed] applies to enum types only — a class may be "
-              + "flattened to a by-value struct, which has nowhere to keep "
-              + "the cached hash")))
-        : lhClassErrors(l.next, acc)
-      (o: PStmt)   => lhClassErrors(l.next, acc)
-
-# The parameter may name the root or any variant; both carry the ROOT's
-# unique name in seRoot, and the attribute lives on the root statement.
+# ANY enum type: every boxed enum now carries the slot by default, and the
+# three internals are representation-aware at codegen, so a value-repr enum
+# simply never caches (peek is constant 0) and never identity-matches
+# (ref_eq is constant false). The parameter may name the root or any variant.
 fun lhIsHashedType(sp: Spec|None, roots: List<String>): Bool
   ret match(sp)
     (s2: Spec) => match(s2)
-      (e2: SEnum) => contains2(roots, e2.seRoot)
+      (e2: SEnum) => true
       (o: Spec)   => false
     ()         => false
 
@@ -88,8 +66,8 @@ fun lhFun(f: PsFun, roots: List<String>,
   if listLen(params) != 1 || !lhFirstParamHashed(params, roots)
     ret (append<PStmt>(acc.stmts, f),
          append(acc.errs, PErr(f.psfLine,
-           "a [hashed] function must take exactly one parameter of a "
-           + "[hashed] enum type — the cache lives in that value")),
+           "a [hashed] function must take exactly one parameter of an "
+           + "enum type — the cache lives in that value when it is boxed")),
          acc.changed)
   if !lhReturnsInt32(f.fRet)
     ret (append<PStmt>(acc.stmts, f),
@@ -165,9 +143,9 @@ fun lhRefeqFun(f: PsFun, roots: List<String>,
   if listLen(params) != 2 || !lhRefeqParamsOk(params, roots)
     ret (append<PStmt>(acc.stmts, f),
          append(acc.errs, PErr(f.psfLine,
-           "a [refeq] function must take two parameters of one "
-           + "[hashed] enum type — the shortcut is a pointer compare, "
-           + "which needs boxed values")),
+           "a [refeq] function must take two parameters of one enum "
+           + "type — the shortcut is an identity compare, meaningful "
+           + "when the representation is boxed")),
          acc.changed)
   if !lhReturnsBool(f.fRet)
     ret (append<PStmt>(acc.stmts, f),

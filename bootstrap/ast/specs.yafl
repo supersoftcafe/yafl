@@ -21,10 +21,11 @@ import Bootstrap::Types
 
 # ── the spec tree ────────────────────────────────────────────────────────────
 
-# [hashed]: every Spec node carries the hidden hash slot, so the deep
-# structural hash the memo keys need is O(fanout) per node and computed once
-# per object — see lower/ast/complex_enums.yafl (CeKey) and plan §3b/§4.
-enum [hashed] Spec
+# Spec is recursive, hence boxed — and every boxed enum carries the hidden
+# hash slot by default, so the deep structural hash the memo keys need is
+# O(fanout) per node and computed once per object — see
+# lower/ast/complex_enums.yafl (CeKey) and plan §3b/§4.
+enum Spec
   enum SBuiltin(sbName: String, sbLine: PLine)
   enum SNamed(snName: String, snParams: List<Spec>, snLine: PLine)
   enum SClass(scName: String, scParams: List<Spec>, scLine: PLine)

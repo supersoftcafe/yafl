@@ -784,8 +784,52 @@ fun genLazyForce(irT: CgType, stubRef: RParam): GBundle
 # ══════════════════════════════════════════════════════════════════════════
 
 fun genBuiltinOp(op: PeBuiltinOp, r: Resolver): GBundle
+  ret isReprAwareOp(builtinOpName(op.opName)) && !builtinSubjectBoxed(op, r)
+    ? genBuiltinValueRepr(op, builtinOpName(op.opName), r)
+    : genBuiltinOpGeneric(op, r)
+
+fun genBuiltinOpGeneric(op: PeBuiltinOp, r: Resolver): GBundle
   let paramsBundle = genExpr(op.opParams, r)
   ret bundleJoin(paramsBundle, bundleValue(RpRuntimeInvoke(builtinOpName(op.opName), mustResult(paramsBundle), specGenerate(op.opType, r))))
+
+# The hash/identity internals are REPRESENTATION-AWARE: on a boxed enum they
+# are the real runtime calls; on a value representation there is no object,
+# so peek is the constant 0 (never cached), ref_eq is the constant false (no
+# identity to compare), and store just normalises the computed hash (the
+# 0-is-reserved contract holds either way). This is what lets derived and
+# wrapped code contain the shortcut UNCONDITIONALLY while the boxing decision
+# stays the compiler's.
+fun isReprAwareOp(n: String): Bool
+  ret n == "yafl_hash_peek" || n == "yafl_hash_store" || n == "yafl_ref_eq"
+
+fun builtinSubjectBoxed(op: PeBuiltinOp, r: Resolver): Bool
+  ret match(op.opParams)
+    (tp: PeTuple) => match(head<PTupEnt>(tp.exprs))
+      (e2: PTupEnt) => match(exprType(e2.tupValue, r))
+        (sp: Spec) => match(sp)
+          (se: SEnum) => se.seComplex
+          (o: Spec)   => false
+        ()         => false
+      ()            => false
+    (o: PExpr)    => false
+
+fun genBuiltinValueRepr(op: PeBuiltinOp, name: String, r: Resolver): GBundle
+  if name == "yafl_hash_peek"
+    ret bundleValue(RpInteger(0, 32))
+  if name == "yafl_ref_eq"
+    ret bundleValue(RpInteger(0, 8))
+  # store: the subject has no slot — evaluate ONLY the hash operand and
+  # normalise it. The subject is a plain reference in all emitted code, so
+  # skipping it drops no effects.
+  ret match(op.opParams)
+    (tp: PeTuple) => match(head<PTupEnt>(tail<PTupEnt>(tp.exprs)))
+      (e2: PTupEnt) => genExpr(e2.tupValue, r)
+        |> (h) => bundleJoin(h, bundleValue(
+                    RpRuntimeInvoke("yafl_hash_norm",
+                                    RpNewStruct(list1(RpNamedValue("h", mustResult(h)))),
+                                    CgInt(32))))
+      ()            => emptyBundle()   # unreachable: store always has two args
+    (o: PExpr)    => emptyBundle()     # unreachable
 
 fun builtinOpName(nameExpr: PExpr): String
   ret match(nameExpr)

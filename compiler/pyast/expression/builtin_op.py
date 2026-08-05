@@ -70,7 +70,40 @@ class BuiltinOpExpression(Expression):
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return self.params.check(resolver, None)
 
+    # The hash/identity internals are REPRESENTATION-AWARE: on a boxed enum
+    # they are the real runtime calls; on a value representation there is no
+    # object, so peek is the constant 0 (never cached), ref_eq is the constant
+    # false (no identity to compare), and store just normalises the computed
+    # hash (the 0-is-reserved contract holds either way). This is what lets
+    # derived/wrapped code contain the shortcut UNCONDITIONALLY while the
+    # boxing decision stays the compiler's.
+    _REPR_AWARE = frozenset({"yafl_hash_peek", "yafl_hash_store", "yafl_ref_eq"})
+
+    def __repr_aware(self, resolver: g.Resolver) -> "g.OperationBundle | None":
+        if self.op.value not in BuiltinOpExpression._REPR_AWARE:
+            return None
+        if not isinstance(self.params, TupleExpression) or not self.params.expressions:
+            return None
+        subject_type = self.params.expressions[0].value.get_type(resolver)
+        if isinstance(subject_type, t.EnumSpec) and subject_type.is_complex:
+            return None    # boxed: the generic path emits the runtime call
+        if self.op.value == "yafl_hash_peek":
+            return g.OperationBundle((), (), cg_p.Integer(0, 32))
+        if self.op.value == "yafl_ref_eq":
+            return g.OperationBundle((), (), cg_p.Integer(0, 8))
+        # store: the subject has no slot — evaluate ONLY the hash operand and
+        # normalise it. The subject is a plain reference in all emitted code,
+        # so skipping it drops no effects.
+        h = self.params.expressions[1].value.generate(resolver)
+        inv = cg_p.RuntimeInvoke("yafl_hash_norm",
+                                 cg_p.NewStruct((("h", h.result_var),)),
+                                 cg_t.Int(32))
+        return h + g.OperationBundle((), (), inv)
+
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        special = self.__repr_aware(resolver)
+        if special is not None:
+            return special
         params_bundle = self.params.generate(resolver)
         if params_bundle.result_var is None:
             raise ValueError("BuiltinOpExpression has no parameters")

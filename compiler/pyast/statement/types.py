@@ -170,16 +170,15 @@ class EnumStatement(TypeStatement):
         if self._root_name is not None and self._root_name != self.name:
             return []
         discriminators = resolver.get_discriminators()
-        # [hashed]: a hidden Int32 cache slot DIRECTLY AFTER the vtable
-        # pointer in every leaf (and in the never-instantiated marker, which
-        # documents the shared prefix). The fixed offset — sizeof(vtable_t*)
-        # — is what lets yafl_hash_peek/store exist once, not per type.
-        # A scalar: absent from pointer masks, no barrier, and deliberately
-        # NOT [mutable] — a store lost to a compaction move is a benign
-        # recompute, exactly as string_t's lazy hash behaves.
-        prefix: tuple = (("type", cg_t.DataPointer()),)
-        if "hashed" in self.attributes:
-            prefix = prefix + (("$hash", cg_t.Int(32)),)
+        # EVERY boxed enum carries a hidden Int32 hash-cache slot DIRECTLY
+        # AFTER the vtable pointer, in every leaf (and the never-instantiated
+        # marker, documenting the shared prefix). The fixed offset —
+        # sizeof(vtable_t*) — is what lets yafl_hash_peek/store exist once,
+        # not per type; with GC_ALLOC_GRANULE at 32 the word is usually
+        # absorbed by existing padding. A scalar: absent from pointer masks,
+        # no barrier, and deliberately NOT [mutable] — a store lost to a
+        # compaction move is a benign recompute, as string_t's lazy hash.
+        prefix: tuple = (("type", cg_t.DataPointer()), ("$hash", cg_t.Int(32)))
         marker = cg_ir.Object(
             name=self.name,
             extends=(),

@@ -1444,6 +1444,9 @@ EXTERN object_t* print_string(object_t* self, object_t* data);
 EXTERN int32_t string_hash(object_t* s);
 EXTERN int32_t float64_hash(double f);
 INLINE bool yafl_ref_eq(object_t* a, object_t* b) { return a == b; }
+// The value-representation half of yafl_hash_store: no slot to write, but
+// the 0-is-reserved contract still holds, so a computed 0 becomes 1.
+INLINE int32_t yafl_hash_norm(int32_t h) { return h == 0 ? 1 : h; }
 EXTERN int32_t yafl_hash_peek(object_t* v);
 EXTERN int32_t yafl_hash_store(object_t* v, int32_t h);
 

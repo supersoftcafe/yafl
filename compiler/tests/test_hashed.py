@@ -1,18 +1,12 @@
-"""`[hashed]` — the compiler caches a structural hash in the value.
+"""`[hashed]`/`[refeq]` on FUNCTIONS — representation-aware caching.
 
-Two-part mechanism (docs/derived-equality-plan.md §3b):
-
-  * `[hashed]` on an ENUM: every leaf object gains a hidden `$hash: Int32`
-    slot directly after the vtable pointer — a fixed offset shared by all
-    `[hashed]` types. The enum is forced complex (boxed): a by-value copy has
-    nowhere to keep a cache. Does NOT imply [mutable]: a lost racy store is a
-    benign recompute, and pinning the graph from compaction would be harmful.
-  * `[hashed]` on a FUNCTION `(v: T): Int32`, T the hashed enum or a variant:
-    the body is wrapped — slot hit returns it; miss computes, remaps 0 to 1,
-    stores, returns.
-
-The wrap is the ONLY door to the slot. No peek/store primitives are exposed,
-so user code cannot observe the empty-versus-filled nondeterminism.
+Every BOXED enum carries a hidden `$hash: Int32` slot by default (no
+annotation, no boxing force — the representation stays the compiler's
+decision). A `[hashed]` function `(v: T): Int32` is wrapped: slot hit returns
+it; miss computes, remaps 0 to 1, stores. A `[refeq]` function
+`(l: T, r: T): Bool` gets the identity shortcut. On a VALUE-repr enum the
+internals resolve to constants at codegen — no cache, no identity — and the
+functions still compute correctly.
 """
 from __future__ import annotations
 
@@ -33,7 +27,7 @@ def _diagnostics(content: str) -> str:
 _TREE = """\
 import System
 
-enum [hashed] Tree
+enum Tree
   enum Leaf2(val: System::Int)
   enum Node2(left: Tree, right: Tree)
 
@@ -63,7 +57,7 @@ fun main(): System::Int
         src = """\
 import System
 
-enum [hashed] Tree
+enum Tree
   enum Leaf2(val: System::Int)
   enum Node2(left: Tree, right: Tree)
 
@@ -88,7 +82,7 @@ fun main(): System::Int
         src = """\
 import System
 
-enum [hashed] Box2
+enum Box2
   enum B2(v: System::Int)
 
 fun [hashed, impure] boxHash(b: Box2): System::Int32
@@ -111,7 +105,7 @@ fun main(): System::Int
         src = """\
 import System
 
-enum [hashed] Z
+enum Z
   enum Z0(v: System::Int)
 
 fun [hashed] zHash(z: Z): System::Int32
@@ -126,40 +120,11 @@ fun main(): System::Int
 
 
 class TestHashedValidation(TestCase):
-    def test_hashed_class_is_rejected(self):
-        src = """\
-import System
-
-class [final, hashed] P(a: System::Int)
-
-fun main(): System::Int
-  ret 0
-"""
-        diag = _diagnostics(src)
-        self.assertIn("hashed", diag, diag)
-        self.assertIn("enum", diag, diag)
-
-    def test_hashed_fun_on_unhashed_type_is_rejected(self):
-        src = """\
-import System
-
-enum Plain
-  enum P1(v: System::Int)
-
-fun [hashed] pHash(p: Plain): System::Int32
-  ret 1i32
-
-fun main(): System::Int
-  ret 0
-"""
-        diag = _diagnostics(src)
-        self.assertIn("hashed", diag, diag)
-
     def test_hashed_fun_must_return_int32(self):
         src = """\
 import System
 
-enum [hashed] H
+enum H
   enum H1(v: System::Int)
 
 fun [hashed] hHash(h: H): System::Int
@@ -182,14 +147,17 @@ class TestRefEq(TestCase):
         src = """\
 import System
 
-enum [hashed] Box2
+enum Box2
   enum B2(v: System::Int)
+  enum BLink(inner: Box2)
 
 fun [refeq, impure] boxEq(l: Box2, r: Box2): System::Bool
   print("E")
   ret match(l)
     (x: B2) => match(r)
       (y: B2) => x.v == y.v
+      (o: Box2) => false
+    (bl: BLink) => false
 
 fun main(): System::Int
   let p = B2(7)
@@ -203,27 +171,11 @@ fun main(): System::Int
         self.assertEqual(0, code, out)
         self.assertEqual("EE", out.strip(), out)   # two computes, not three
 
-    def test_refeq_validation(self):
-        src = """\
-import System
-
-enum Plain2
-  enum P2(v: System::Int)
-
-fun [refeq] plainEq(l: Plain2, r: Plain2): System::Bool
-  ret true
-
-fun main(): System::Int
-  ret 0
-"""
-        diag = _diagnostics(src)
-        self.assertIn("refeq", diag, diag)
-
     def test_refeq_must_return_bool(self):
         src = """\
 import System
 
-enum [hashed] H2
+enum H2
   enum H21(v: System::Int)
 
 fun [refeq] hEq(l: H2, r: H2): System::Int

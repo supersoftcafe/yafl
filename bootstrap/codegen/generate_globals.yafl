@@ -256,15 +256,16 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
   # NOTE: [mutable] on enums is still unimplemented (the ATTRIBUTE now parses;
   # honouring it here is separate work). Leaves are emitted immutable.
   #
-  # [hashed]: a hidden Int32 cache slot DIRECTLY AFTER the vtable pointer in
-  # every leaf (and the never-instantiated marker, documenting the shared
-  # prefix). The fixed offset — sizeof(vtable_t*) — is what lets
-  # yafl_hash_peek/store exist once, not per type. A scalar: absent from
-  # pointer masks, no barrier, and deliberately NOT [mutable] — a store lost
-  # to a compaction move is a benign recompute, as string_t's lazy hash.
-  let prefix = hasAttr(st.eAttrs, "hashed")
-    ? append(list1(CgField("type", CgDataPointer())), CgField("$hash", CgInt(32)))
-    : list1(CgField("type", CgDataPointer()))
+  # EVERY boxed enum carries a hidden Int32 hash-cache slot DIRECTLY AFTER
+  # the vtable pointer, in every leaf (and the never-instantiated marker,
+  # documenting the shared prefix). The fixed offset — sizeof(vtable_t*) —
+  # is what lets yafl_hash_peek/store exist once, not per type; with
+  # GC_ALLOC_GRANULE at 32 the word is usually absorbed by padding. A
+  # scalar: absent from pointer masks, no barrier, and deliberately NOT
+  # [mutable] — a store lost to a compaction move is a benign recompute, as
+  # string_t's lazy hash.
+  let prefix = append(list1(CgField("type", CgDataPointer())),
+                      CgField("$hash", CgInt(32)))
   let marker = CgObject(st.eName, List<String>(), List<CgFuncSlot>(),
                         CgImmediateStruct(prefix),
                         None, st.eName + " — enum root marker (never instantiated)",
