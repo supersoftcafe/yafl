@@ -400,7 +400,7 @@ fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let c0 = CeCtx(roots, map, complexSet, List<String>(), List<Spec>())
   let table = ceBuildTable(chain(roots.erNames), chain(roots.erSpecs), c0,
                            List<String>(), List<Spec>(),
-                           Dict<String, Spec>())
+                           Dict<CeKey, Spec>())
   ret ceStmts(chain(statements),
               CeCtx(roots, map, complexSet, table.roots2, table.specs2),
               List<PStmt>())
@@ -416,21 +416,195 @@ fun markComplexEnums(statements: List<PStmt>): List<PStmt>
 # visited set: within one pass, embedded enum copies are SNAPPED to their
 # canonical all_fields (the generics finalize refresh), so same root + same
 # shallow shape means same content and hence same resolution — verified
-# byte-for-byte by the postmono and C contracts. Threaded, seeded fresh per
-# ceMarkEnumNode entry.
-fun ceMemoKey(e2: SEnum, visited: List<String>): String
-  ret e2.seRoot + "#" + join(e2.seValidLeaves, "|")
-      + "#" + ceFieldNames(chain(e2.seAllFields), StringBuilder())
-      + "#" + (e2.seComplex ? "1" : "0")
-      + "S" + join(sort(visited), ",")
+# byte-for-byte by the postmono and C contracts. Since the CeKey migration the
+# key is PRECISE (the spec itself, deep-compared), so that invariant is no
+# longer load-bearing for correctness — only for lookup speed. Threaded,
+# seeded fresh per ceMarkEnumNode entry.
+# ── the memo key ─────────────────────────────────────────────────────────────
+# A DEDICATED key type replacing the string fingerprint (which omitted the
+# field TYPES — the very thing this pass rewrites — and was sound only via the
+# canonical-snapping invariant). CeKey carries the spec itself plus the sorted
+# visited set, so the key IS the input and the invariant leaves the trusted
+# set: if it is ever violated, lookups get slower, never wrong.
+#
+# Affordable because Spec is [hashed] and the walks opt in:
+#   * ckHashSpec is [hashed] — each node's structural hash computes once per
+#     OBJECT and is O(fanout) thereafter;
+#   * ckEqSpec is [refeq] — same object short-circuits, so a deep compare
+#     cuts off at shared substructure (depth 1 under canonical snapping), and
+#     the CACHED-HASH GUARD inside rejects unequal content in O(1).
+#
+# The equality is CeKey's OWN. eqSpec deliberately excludes seAllFields and
+# stays untouched — a second meaning of equality for Spec is the ambiguity
+# this design refuses; ckEqSpec is a different relation reachable only here.
 
-fun [tail] ceFieldNames(fs: Chain<SField>, sb: StringBuilder): String
+class [final] CeKey(ckSpec: Spec, ckVisited: List<String>)
+
+# `visited` is a SET; sort at construction so key identity does not depend on
+# the order roots were pushed.
+fun ceKey(e2: SEnum, visited: List<String>): CeKey
+  ret CeKey(e2, sort(visited))
+
+instance [ambient] System::BasicEquality<CeKey>
+  fun `==`(l: CeKey, r: CeKey): System::Bool
+    ret eqStrs(l.ckVisited, r.ckVisited) && ckEqSpec(l.ckSpec, r.ckSpec)
+  fun hashOf(v: CeKey): System::Int32
+    ret ckHashStrs(chain(v.ckVisited), ckHashSpec(v.ckSpec))
+
+# ── deep hash (keying only) ──────────────────────────────────────────────────
+# Structural, INCLUDING seAllFields and seComplex. Content only, never an
+# address — codegen determinism depends on it. Terminates because spec VALUES
+# are finite trees: the enum graph is cyclic by NAME, and SNamed breaks it.
+
+fun ckMix(acc: System::Int32, h: System::Int32): System::Int32
+  ret (acc * 31i32 + h) & 2147483647i32
+
+fun [tail] ckHashStrs(ss: Chain<String>, acc: System::Int32): System::Int32
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ckHashStrs(l.next, ckMix(acc, hashOf(l.value)))
+
+fun [hashed] ckHashSpec(sp: Spec): System::Int32
+  ret match(sp)
+    (e2: SEnum)        => ckHashFields(chain(e2.seAllFields),
+                            ckMix(ckHashStrs(chain(e2.seAllLeaves),
+                                    ckHashStrs(chain(e2.seValidLeaves),
+                                      ckMix(ckMix(3i32, hashOf(e2.seRoot)),
+                                            e2.seComplex ? 1i32 : 0i32))),
+                                  5i32))
+    (n: SNamed)        => ckHashSpecs(chain(n.snParams),
+                                      ckMix(7i32, hashOf(n.snName)))
+    (c: SClass)        => ckHashSpecs(chain(c.scParams),
+                                      ckMix(11i32, hashOf(c.scName)))
+    (cb: SCallable)    => ckHashSpecOpt(cb.scResult,
+                                        ckHashSpec2(cb.scParams2, 13i32))
+    (cm: SCombination) => ckHashSpecs(chain(cm.scTypes), 17i32)
+    (t2: STuple)       => ckHashEntries(chain(t2.stEntries), 19i32)
+    (af: SArrayField)  => ckHashSpec2(af.safElem,
+                                      ckMix(23i32, hashOf(af.safLenField)))
+    (ls: SLazyStub)    => ckHashSpecOpt(ls.slsTarget, 29i32)
+    (o: Spec)          => ckMix(31i32, hashOf(uid(o)))
+
+# The recursive entry: children go through ckHashSpec so every node's hash is
+# cached in ITS slot.
+fun ckHashSpec2(sp: Spec, acc: System::Int32): System::Int32
+  ret ckMix(acc, ckHashSpec(sp))
+
+fun ckHashSpecOpt(sp: Spec|None, acc: System::Int32): System::Int32
+  ret match(sp)
+    (x: Spec) => ckHashSpec2(x, acc)
+    ()        => ckMix(acc, 37i32)
+
+fun [tail] ckHashSpecs(ss: Chain<Spec>, acc: System::Int32): System::Int32
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ckHashSpecs(l.next, ckHashSpec2(l.value, acc))
+
+fun [tail] ckHashFields(fs: Chain<SField>, acc: System::Int32): System::Int32
   ret match(fs)
-    (nil: ChainEnd) => toString(sb)
-    (l: ChainLink)  => ceFieldNames(l.next, append(sb, l.value.sfName + ","))
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ckHashFields(l.next,
+                                    ckHashSpec2(l.value.sfType,
+                                                ckMix(acc, hashOf(l.value.sfName))))
+
+fun [tail] ckHashEntries(es: Chain<SEntry>, acc: System::Int32): System::Int32
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ckHashEntries(l.next,
+                                     ckHashSpecOpt(l.value.seType,
+                                                   ckMix(acc, hashOf(l.value.seName))))
+
+# ── deep equality (keying only) ──────────────────────────────────────────────
+# [refeq]: identical objects short-circuit at every recursive level. The
+# cached-hash guard then rejects unequal content in O(1); the structural walk
+# below only ever confirms equal-hash pairs (or refutes a genuine collision).
+
+fun [refeq] ckEqSpec(a: Spec, b: Spec): System::Bool
+  if ckHashSpec(a) != ckHashSpec(b)
+    ret false
+  ret match(a)
+    (x: SEnum) => match(b)
+      (y: SEnum) => x.seRoot == y.seRoot
+                    && eqStrs(x.seValidLeaves, y.seValidLeaves)
+                    && eqStrs(x.seAllLeaves, y.seAllLeaves)
+                    && eqBool(x.seComplex, y.seComplex)
+                    && ckEqFields(chain(x.seAllFields), chain(y.seAllFields))
+      (o: Spec)  => false
+    (x: SNamed) => match(b)
+      (y: SNamed) => x.snName == y.snName
+                     && ckEqSpecs(chain(x.snParams), chain(y.snParams))
+      (o: Spec)   => false
+    (x: SClass) => match(b)
+      (y: SClass) => x.scName == y.scName
+                     && ckEqSpecs(chain(x.scParams), chain(y.scParams))
+      (o: Spec)   => false
+    (x: SCallable) => match(b)
+      (y: SCallable) => ckEqSpec(x.scParams2, y.scParams2)
+                        && ckEqSpecOpt(x.scResult, y.scResult)
+      (o: Spec)      => false
+    (x: SCombination) => match(b)
+      (y: SCombination) => ckEqSpecs(chain(x.scTypes), chain(y.scTypes))
+      (o: Spec)         => false
+    (x: STuple) => match(b)
+      (y: STuple) => ckEqEntries(chain(x.stEntries), chain(y.stEntries))
+      (o: Spec)   => false
+    (x: SArrayField) => match(b)
+      (y: SArrayField) => x.safLenField == y.safLenField
+                          && ckEqSpec(x.safElem, y.safElem)
+      (o: Spec)        => false
+    (x: SLazyStub) => match(b)
+      (y: SLazyStub) => ckEqSpecOpt(x.slsTarget, y.slsTarget)
+      (o: Spec)      => false
+    # Builtins and generics carry no nested spec: eqSpec is already exact.
+    (o: Spec) => eqSpec(a, b)
+
+fun ckEqSpecOpt(a: Spec|None, b: Spec|None): System::Bool
+  ret match(a)
+    (x: Spec) => match(b)
+      (y: Spec) => ckEqSpec(x, y)
+      ()        => false
+    ()        => match(b)
+      (y: Spec) => false
+      ()        => true
+
+fun [tail] ckEqSpecs(as2: Chain<Spec>, bs: Chain<Spec>): System::Bool
+  ret match(as2)
+    (nil: ChainEnd) => match(bs)
+      (nil2: ChainEnd) => true
+      (lb: ChainLink)  => false
+    (la: ChainLink) => match(bs)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => !ckEqSpec(la.value, lb.value)
+        ? false
+        : ckEqSpecs(la.next, lb.next)
+
+fun [tail] ckEqFields(as2: Chain<SField>, bs: Chain<SField>): System::Bool
+  ret match(as2)
+    (nil: ChainEnd) => match(bs)
+      (nil2: ChainEnd) => true
+      (lb: ChainLink)  => false
+    (la: ChainLink) => match(bs)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => la.value.sfName != lb.value.sfName
+                          || !ckEqSpec(la.value.sfType, lb.value.sfType)
+        ? false
+        : ckEqFields(la.next, lb.next)
+
+fun [tail] ckEqEntries(as2: Chain<SEntry>, bs: Chain<SEntry>): System::Bool
+  ret match(as2)
+    (nil: ChainEnd) => match(bs)
+      (nil2: ChainEnd) => true
+      (lb: ChainLink)  => false
+    (la: ChainLink) => match(bs)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => la.value.seName != lb.value.seName
+                          || !ckEqSpecOpt(la.value.seType, lb.value.seType)
+        ? false
+        : ckEqEntries(la.next, lb.next)
+
 
 fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx,
-                   memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+                   memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
   ret match(ft)
     (n: SNamed) => (ceResolveNamedLeaf(n, ft, c), memo)
     (e2: SEnum) => ceResolveEnumMemo(e2, visited, c, memo)
@@ -450,7 +624,7 @@ fun ceResolveNamedLeaf(n: SNamed, ft: Spec, c: CeCtx): Spec
 # threaded memo.
 fun [tail] ceBuildTable(ns: Chain<String>, sps: Chain<SEnum>, c0: CeCtx,
                         roots2: List<String>, specs2: List<Spec>,
-                        memo: Dict<String, Spec>): (roots2: List<String>, specs2: List<Spec>)
+                        memo: Dict<CeKey, Spec>): (roots2: List<String>, specs2: List<Spec>)
   ret match(ns)
     (nil: ChainEnd) => (roots2, specs2)
     (n: ChainLink)  => match(sps)
@@ -472,7 +646,7 @@ fun [tail] ceTableLookup(ns: Chain<String>, sps: Chain<Spec>,
         : ceTableLookup(n.next, s2.next, root)
 
 fun ceResolveEnumMemo(e2: SEnum, visited: List<String>, c: CeCtx,
-                      memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+                      memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
   ret match(ceTableHit(e2, visited, c))
     (hit: Spec) => (hit, memo)
     ()          => ceResolveEnumKeyed(e2, visited, c, memo)
@@ -483,22 +657,21 @@ fun ceTableHit(e2: SEnum, visited: List<String>, c: CeCtx): Spec|None
   if !isEmpty(visited) || isEmpty(c.ceDoneRoots)
     ret None
   ret match(ceRootSpecOf(c.ceRoots, e2.seRoot))
-    (canonical: SEnum) => ceMemoKey(e2, visited)
-                          == ceMemoKey(canonical, visited)
+    (canonical: SEnum) => ceKey(e2, visited) == ceKey(canonical, visited)
       ? ceTableLookup(chain(c.ceDoneRoots), chain(c.ceDoneSpecs), e2.seRoot)
       : None
     ()                 => None
 
 fun ceResolveEnumKeyed(e2: SEnum, visited: List<String>, c: CeCtx,
-                       memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
-  let key = ceMemoKey(e2, visited)
+                       memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
+  let key = ceKey(e2, visited)
   ret match(get(memo, key))
     (hit: Spec) => (hit, memo)
     ()          => ceResolveEnum(e2, visited, c, memo)
       |> (out) => (out.spec, put(out.memo, key, out.spec))
 
 fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx,
-                  memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
+                  memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
   let isComplex = contains2(c.ceSet, e2.seRoot)
   # A stale reference to a PRUNED generic: mark complex unconditionally.
   if !isComplex && !contains2(c.ceRoots.erNames, e2.seRoot)
@@ -513,7 +686,7 @@ fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx,
 
 fun [tail] ceFields(fs: Chain<SField>, visited: List<String>, c: CeCtx,
                     acc: List<SField>,
-                    memo: Dict<String, Spec>): (fields: List<SField>, memo: Dict<String, Spec>)
+                    memo: Dict<CeKey, Spec>): (fields: List<SField>, memo: Dict<CeKey, Spec>)
   ret match(fs)
     (nil: ChainEnd) => (acc, memo)
     (l: ChainLink)  => ceResolveNamed(l.value.sfType, visited, c, memo)
@@ -669,7 +842,7 @@ fun ceSpec(sp: Spec, c: CeCtx): Spec
 # EnumSpec traversal: params visited generally, then the mark callback.
 fun ceMarkEnumNode(e2: SEnum, c: CeCtx): Spec
   let out = ceFields(chain(e2.seAllFields), List<String>(), c,
-                     List<SField>(), Dict<String, Spec>())
+                     List<SField>(), Dict<CeKey, Spec>())
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
             ceSpecList(e2.seParams, c), e2.seLine, out.fields,
             contains2(c.ceSet, e2.seRoot))

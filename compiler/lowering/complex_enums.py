@@ -160,6 +160,109 @@ def _pick_cycle_breakers(edges: dict[str, set[str]], roots: dict[str, t.EnumSpec
     return result
 
 
+# ── the memo key ─────────────────────────────────────────────────────────────
+# A DEDICATED key type, the same shape as the port's CeKey
+# (bootstrap/lower/ast/complex_enums.yafl). This used to key on `id(ft)` plus
+# the visited set — precise but sharing-blind, and it needed the memo to keep
+# every key object alive against CPython address reuse. Content keying removes
+# both, and is affordable for the same two reasons as the port:
+#
+#   * the deep hash is cached ON THE SPEC OBJECT (the mirror of the port's
+#     [hashed] slot — a lazily-written attribute on the frozen dataclass), so
+#     each node hashes once and O(fanout) thereafter;
+#   * the deep equality short-circuits on IDENTITY at every recursive level
+#     (the mirror of [refeq]) and rejects unequal content via the cached
+#     hashes in O(1); the structural walk only confirms equal-hash pairs.
+#
+# The relation is CeKey's OWN: EnumSpec equality deliberately excludes
+# all_fields/is_complex (compare=False) and stays untouched — these helpers
+# DO compare them, because the rewrite's result depends on both.
+
+_CK_HASH = "_ck_hash_cache"
+
+
+def _deep_hash(spec: t.TypeSpec) -> int:
+    cached = getattr(spec, _CK_HASH, None)
+    if cached is not None:
+        return cached
+    if isinstance(spec, t.EnumSpec):
+        h = hash((3, spec.root_name, spec.valid_leaf_names, spec.all_leaf_names,
+                  spec.is_complex,
+                  tuple((n, _deep_hash(ft)) for n, ft in spec.all_fields)))
+    elif isinstance(spec, (t.ClassSpec, t.NamedSpec)):
+        h = hash((type(spec).__name__, spec.name,
+                  tuple(_deep_hash(tp) for tp in spec.type_params)))
+    elif isinstance(spec, t.CallableSpec):
+        h = hash((13, _deep_hash(spec.parameters), _deep_hash_opt(spec.result)))
+    elif isinstance(spec, t.CombinationSpec):
+        h = hash((17,) + tuple(_deep_hash(x) for x in spec.types))
+    elif isinstance(spec, t.TupleSpec):
+        h = hash((19,) + tuple((e.name, _deep_hash_opt(e.type)) for e in spec.entries))
+    elif isinstance(spec, t.ArrayFieldSpec):
+        h = hash((23, spec.length_field, _deep_hash(spec.element)))
+    elif isinstance(spec, t.LazyStubSpec):
+        h = hash((29, _deep_hash_opt(spec.target_type)))
+    else:
+        h = hash(spec)      # builtins and placeholders carry no nested spec
+    object.__setattr__(spec, _CK_HASH, h)   # frozen dataclass: the sanctioned door
+    return h
+
+
+def _deep_hash_opt(spec: "t.TypeSpec | None") -> int:
+    return 37 if spec is None else _deep_hash(spec)
+
+
+def _deep_eq(a: t.TypeSpec, b: t.TypeSpec) -> bool:
+    if a is b:
+        return True
+    if type(a) is not type(b) or _deep_hash(a) != _deep_hash(b):
+        return False
+    if isinstance(a, t.EnumSpec):
+        return (a.root_name == b.root_name
+                and a.valid_leaf_names == b.valid_leaf_names
+                and a.all_leaf_names == b.all_leaf_names
+                and a.is_complex == b.is_complex
+                and len(a.all_fields) == len(b.all_fields)
+                and all(an == bn and _deep_eq(at, bt)
+                        for (an, at), (bn, bt) in zip(a.all_fields, b.all_fields)))
+    if isinstance(a, (t.ClassSpec, t.NamedSpec)):
+        return (a.name == b.name and len(a.type_params) == len(b.type_params)
+                and all(_deep_eq(x, y) for x, y in zip(a.type_params, b.type_params)))
+    if isinstance(a, t.CallableSpec):
+        return _deep_eq(a.parameters, b.parameters) and _deep_eq_opt(a.result, b.result)
+    if isinstance(a, t.CombinationSpec):
+        return (len(a.types) == len(b.types)
+                and all(_deep_eq(x, y) for x, y in zip(a.types, b.types)))
+    if isinstance(a, t.TupleSpec):
+        return (len(a.entries) == len(b.entries)
+                and all(x.name == y.name and _deep_eq_opt(x.type, y.type)
+                        for x, y in zip(a.entries, b.entries)))
+    if isinstance(a, t.ArrayFieldSpec):
+        return a.length_field == b.length_field and _deep_eq(a.element, b.element)
+    if isinstance(a, t.LazyStubSpec):
+        return _deep_eq_opt(a.target_type, b.target_type)
+    return a == b
+
+
+def _deep_eq_opt(a: "t.TypeSpec | None", b: "t.TypeSpec | None") -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return _deep_eq(a, b)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class CeKey:
+    spec: t.TypeSpec
+    visited: tuple[str, ...]     # SORTED: `visited` is a set
+
+    def __eq__(self, other: object) -> bool:
+        return (isinstance(other, CeKey) and self.visited == other.visited
+                and _deep_eq(self.spec, other.spec))
+
+    def __hash__(self) -> int:
+        return hash((self.visited, _deep_hash(self.spec)))
+
+
 def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     # 1. Index every top-level EnumStatement by its root_name.
     #    Variants nested inside the root share the same root_name and the
@@ -226,19 +329,15 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     # function of the graph, so deriving it once and reusing it collapses the
     # path-walk back to the graph's actual size. Local to this call: it is a
     # memo of THIS pass's rewrite, never state that outlives it.
-    memo: dict[tuple[int, frozenset[str]], tuple[t.TypeSpec, t.TypeSpec]] = {}
+    memo: dict[CeKey, t.TypeSpec] = {}
 
     def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
-        key = (id(ft), visited)
+        key = CeKey(ft, tuple(sorted(visited)))
         hit = memo.get(key)
         if hit is not None:
-            return hit[1]
+            return hit
         result = _resolve_named_uncached(ft, visited)
-        # The entry KEEPS THE KEY OBJECT ALIVE (`ft`). Keying on id() is only
-        # sound while the object lives: this walk recurses on freshly built
-        # specs, and a collected one would have its address recycled by CPython,
-        # handing a later unrelated spec a wrong cache hit.
-        memo[key] = (ft, result)
+        memo[key] = result
         return result
 
     def _resolve_named_uncached(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:
