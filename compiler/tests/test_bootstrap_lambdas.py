@@ -65,6 +65,11 @@ class TestBootstrapLambdas(TestCase):
         pass  # the shared binary is cache-owned
 
     def _python_lambdas(self, text: str) -> str:
+        from tests.testutil import cached_reference
+        return cached_reference("lambdas", text,
+                                lambda: self._python_lambdas_uncached(text))
+
+    def _python_lambdas_uncached(self, text: str) -> str:
         result = parse(tokenize(text, "x"))
         self.assertFalse(result.errors, "python parse errors")
         statements, _resolver, _passes = _CONVERGE(result.value)

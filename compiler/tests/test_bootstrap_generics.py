@@ -66,6 +66,11 @@ class TestBootstrapGenerics(TestCase):
         pass  # the shared binary is cache-owned
 
     def _python_generics(self, text: str) -> str:
+        from tests.testutil import cached_reference
+        return cached_reference("generics", text,
+                                lambda: self._python_generics_uncached(text))
+
+    def _python_generics_uncached(self, text: str) -> str:
         """Mirror the driver order exactly (compiler.py:543-580), then dump —
         or print sorted(set(errors)) when a generics phase reports any."""
         result = parse(tokenize(text, "x"))

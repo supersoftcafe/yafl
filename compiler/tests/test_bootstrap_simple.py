@@ -66,6 +66,11 @@ class TestBootstrapSimple(TestCase):
         pass  # the shared binary is cache-owned
 
     def _python_simple(self, text: str) -> str:
+        from tests.testutil import cached_reference
+        return cached_reference("simple", text,
+                                lambda: self._python_simple_uncached(text))
+
+    def _python_simple_uncached(self, text: str) -> str:
         result = parse(tokenize(text, "x"))
         self.assertFalse(result.errors, "python parse errors")
         statements, _resolver, _passes = _CONVERGE(result.value)

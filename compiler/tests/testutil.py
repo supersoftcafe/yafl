@@ -270,6 +270,57 @@ def _bootstrap_tree_hash() -> str:
     return h.hexdigest()[:16]
 
 
+_REFERENCE_TREE_HASH: str | None = None
+
+def _reference_tree_hash() -> str:
+    """sha256 over everything a PYTHON-side reference output depends on: the
+    compiler sources (tests included — a harness edit must invalidate) and
+    stdlib. Deliberately NARROWER than _bootstrap_tree_hash: bootstrap and
+    yafllib edits change the PORT, not the Python reference, so cached
+    references survive them. Input text is keyed separately per call."""
+    global _REFERENCE_TREE_HASH
+    if _REFERENCE_TREE_HASH is None:
+        h = hashlib.sha256()
+        for root in (sorted(_STDLIB_DIR.glob("*.yafl")),
+                     sorted(_COMPILER_DIR.rglob("*.py"))):
+            for f in root:
+                h.update(f.name.encode())
+                h.update(f.read_bytes())
+        h.update(os.environ.get("PYTHONHASHSEED", "").encode())
+        _REFERENCE_TREE_HASH = h.hexdigest()
+    return _REFERENCE_TREE_HASH
+
+
+def cached_reference(kind: str, text: str, compute, extra: str = "") -> str:
+    """Disk-cache a deterministic reference string, keyed on the reference
+    tree hash + kind + extra + the input text. Concurrent writers race
+    benignly (same key, same bytes, atomic rename). Entries older than three
+    days are evicted opportunistically on a miss."""
+    key = hashlib.sha256(
+        f"{_reference_tree_hash()}|{kind}|{extra}|"
+        f"{hashlib.sha256(text.encode()).hexdigest()}".encode()).hexdigest()[:24]
+    cache_dir = _Path(_tf.gettempdir()) / f"yafl-bootstrap-cache-{os.getuid()}"
+    cache_dir.mkdir(exist_ok=True)
+    path = cache_dir / f"ref-{kind}-{key}"
+    try:
+        return path.read_text()
+    except FileNotFoundError:
+        pass
+    out = compute()
+    try:
+        import time as _time
+        cutoff = _time.time() - 3 * 86400
+        for stale in cache_dir.glob("ref-*"):
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+        tmp = path.with_suffix(".tmp%d" % os.getpid())
+        tmp.write_text(out)
+        tmp.rename(path)
+    except OSError:
+        pass    # cache is best-effort; never fail the test over it
+    return out
+
+
 def shared_bootstrap_binary() -> str:
     """Path to a bootstrap binary for the CURRENT tree, building it at most
     once across processes."""

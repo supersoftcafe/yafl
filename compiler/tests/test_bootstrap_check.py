@@ -48,6 +48,11 @@ class TestBootstrapCheck(TestCase):
         pass  # the shared binary is cache-owned
 
     def _python_diagnostics(self, text: str) -> str:
+        from tests.testutil import cached_reference
+        return cached_reference("check", text,
+                                lambda: self._python_diagnostics_uncached(text))
+
+    def _python_diagnostics_uncached(self, text: str) -> str:
         result = parse(tokenize(text, "x"))
         self.assertFalse(result.errors, "python parse errors")
         statements, resolver, _passes = _CONVERGE(result.value)

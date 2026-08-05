@@ -173,6 +173,14 @@ def _run_port_c(binary: str, text: str, mode: str = "c") -> str:
 
 
 def _python_c_text(target_name: str, optimization_level: int = 0) -> str:
+    from tests.testutil import cached_reference
+    target = next(p for p in _CORPUS if p.name == target_name)
+    return cached_reference("c", target.read_text(),
+                            lambda: _python_c_text_uncached(target_name, optimization_level),
+                            extra=f"{target_name}|O{optimization_level}")
+
+
+def _python_c_text_uncached(target_name: str, optimization_level: int = 0) -> str:
     target = next(p for p in _CORPUS if p.name == target_name)
     statements = []
     # Same canonical order as compiler.__tokenize_and_parse and the port's
