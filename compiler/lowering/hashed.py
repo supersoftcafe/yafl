@@ -62,6 +62,30 @@ def lower_hashed(statements: list[s.Statement]) -> tuple[list[s.Statement], list
     out: list[s.Statement] = []
     changed = False
     for st in statements:
+        if isinstance(st, s.FunctionStatement) and "refeq" in st.attributes:
+            params = st.parameters.flatten()
+            ok_types = (len(params) == 2
+                        and is_hashed_type(params[0].declared_type)
+                        and is_hashed_type(params[1].declared_type)
+                        and isinstance(params[0].declared_type, t.EnumSpec)
+                        and isinstance(params[1].declared_type, t.EnumSpec)
+                        and params[0].declared_type.root_name == params[1].declared_type.root_name)
+            if not ok_types:
+                errors.append(Error(st.line_ref,
+                    "a [refeq] function must take two parameters of one "
+                    "[hashed] enum type — the shortcut is a pointer compare, "
+                    "which needs boxed values"))
+                out.append(st)
+                continue
+            rt = st.return_type
+            if not (isinstance(rt, t.BuiltinSpec) and rt.type_name == "bool"):
+                errors.append(Error(st.line_ref,
+                    "a [refeq] function must return Bool"))
+                out.append(st)
+                continue
+            out.extend(__split_refeq(st, params[0], params[1]))
+            changed = True
+            continue
         if not (isinstance(st, s.FunctionStatement) and "hashed" in st.attributes):
             out.append(st)
             continue
@@ -118,6 +142,44 @@ def __split(fn: s.FunctionStatement, param: s.LetStatement) -> list[s.Statement]
     body = e.BlockExpression(lr,
         [s.LetStatement(lr, cache_name, None, {}, (), peek, int32())],
         e.TernaryExpression(lr, is_empty, store, ref("$hcache")),
+        tag=None)
+    wrap = dataclasses.replace(fn, attributes=attrs, body=body)
+    return [wrap, raw]
+
+
+def __split_refeq(fn: s.FunctionStatement, lp: s.LetStatement,
+                  rp: s.LetStatement) -> list[s.Statement]:
+    """`[refeq]` — plan §3c, the user's opt-in ruling. Same object means equal
+    WITHOUT running the compare — sound because [hashed] values are boxed and
+    immutable, so reference equality implies value equality. Opt-in is the
+    whole NaN answer: a non-reflexive equality does not opt in.
+
+        fun f(l: T, r: T): Bool                 # the original name: the wrap
+          ret __builtin_op__<bool>("yafl_ref_eq", l, r)
+            ? true
+            : f$reraw(l, r)
+
+    Self-calls in the moved body still name `f`, so a recursive deep compare
+    short-circuits at SHARED SUBSTRUCTURE — with canonical-snapped graphs
+    that is depth 1, which is what makes a precise key affordable."""
+    lr = fn.line_ref
+    tag = lr.hash6()
+    attrs = {k: v for k, v in fn.attributes.items() if k != "refeq"}
+    bare, _at, _hash = fn.name.rpartition("@")
+    raw_name = f"{bare}$reraw@{tag}"
+    raw = dataclasses.replace(fn, name=raw_name, attributes=attrs)
+
+    def ref(name: str) -> e.Expression:
+        return e.NamedExpression(lr, name)
+    args = e.TupleExpression(lr, [e.TupleEntryExpression(None, ref(lp.name)),
+                                  e.TupleEntryExpression(None, ref(rp.name))])
+    same = e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, "bool"),
+                                 e.StringExpression(lr, "yafl_ref_eq"), args)
+    raw_call = e.CallExpression(lr, ref(f"{bare.rpartition('::')[2]}$reraw"),
+        e.TupleExpression(lr, [e.TupleEntryExpression(None, ref(lp.name)),
+                               e.TupleEntryExpression(None, ref(rp.name))]))
+    body = e.BlockExpression(lr, [],
+        e.TernaryExpression(lr, same, e.BoolExpression(lr, True), raw_call),
         tag=None)
     wrap = dataclasses.replace(fn, attributes=attrs, body=body)
     return [wrap, raw]

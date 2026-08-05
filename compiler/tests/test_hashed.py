@@ -170,3 +170,67 @@ fun main(): System::Int
 """
         diag = _diagnostics(src)
         self.assertIn("Int32", diag, diag)
+
+
+class TestRefEq(TestCase):
+    """`[refeq]` — the opt-in reference-equality shortcut (plan §3c). On a
+    function `(l: T, r: T): Bool` over a [hashed] enum, the body is wrapped:
+    same object returns true WITHOUT running the compare. Opt-in is the whole
+    NaN answer: a non-reflexive equality simply does not opt in."""
+
+    def test_same_object_skips_the_compare(self):
+        src = """\
+import System
+
+enum [hashed] Box2
+  enum B2(v: System::Int)
+
+fun [refeq, impure] boxEq(l: Box2, r: Box2): System::Bool
+  print("E")
+  ret match(l)
+    (x: B2) => match(r)
+      (y: B2) => x.v == y.v
+
+fun main(): System::Int
+  let p = B2(7)
+  let q = B2(7)
+  let sameObject   = boxEq(p, p)     # no compute
+  let equalContent = boxEq(p, q)     # computes
+  let different    = boxEq(p, B2(8)) # computes
+  ret sameObject && equalContent && !different ? 0 : 1
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(0, code, out)
+        self.assertEqual("EE", out.strip(), out)   # two computes, not three
+
+    def test_refeq_validation(self):
+        src = """\
+import System
+
+enum Plain2
+  enum P2(v: System::Int)
+
+fun [refeq] plainEq(l: Plain2, r: Plain2): System::Bool
+  ret true
+
+fun main(): System::Int
+  ret 0
+"""
+        diag = _diagnostics(src)
+        self.assertIn("refeq", diag, diag)
+
+    def test_refeq_must_return_bool(self):
+        src = """\
+import System
+
+enum [hashed] H2
+  enum H21(v: System::Int)
+
+fun [refeq] hEq(l: H2, r: H2): System::Int
+  ret 1
+
+fun main(): System::Int
+  ret 0
+"""
+        diag = _diagnostics(src)
+        self.assertIn("Bool", diag, diag)

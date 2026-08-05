@@ -75,9 +75,11 @@ fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
 fun lhOne(st: PStmt, roots: List<String>,
           acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
   ret match(st)
-    (f: PsFun) => hasAttr(f.fAttrs, "hashed")
-      ? lhFun(f, roots, acc)
-      : (append(acc.stmts, st), acc.errs, acc.changed)
+    (f: PsFun) => hasAttr(f.fAttrs, "refeq")
+      ? lhRefeqFun(f, roots, acc)
+      : hasAttr(f.fAttrs, "hashed")
+        ? lhFun(f, roots, acc)
+        : (append(acc.stmts, st), acc.errs, acc.changed)
     (o: PStmt) => (append(acc.stmts, st), acc.errs, acc.changed)
 
 fun lhFun(f: PsFun, roots: List<String>,
@@ -146,6 +148,83 @@ fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
                      PeTernary(isEmptySlot, store,
                                PeName("$hcache", List<Spec>(), lr), lr),
                      "", lr)
+  ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,
+             f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports),
+       raw)
+
+# ── [refeq] — plan §3c, the user's opt-in ruling ─────────────────────────────
+# Same object means equal WITHOUT running the compare — sound because [hashed]
+# values are boxed and immutable, so reference equality implies value
+# equality. Opt-in is the whole NaN answer: a non-reflexive equality does not
+# opt in. Self-calls in the moved body still name the wrap, so a recursive
+# deep compare short-circuits at SHARED SUBSTRUCTURE.
+
+fun lhRefeqFun(f: PsFun, roots: List<String>,
+               acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+  let params = flattenParams(f.fParams)
+  if listLen(params) != 2 || !lhRefeqParamsOk(params, roots)
+    ret (append<PStmt>(acc.stmts, f),
+         append(acc.errs, PErr(f.psfLine,
+           "a [refeq] function must take two parameters of one "
+           + "[hashed] enum type — the shortcut is a pointer compare, "
+           + "which needs boxed values")),
+         acc.changed)
+  if !lhReturnsBool(f.fRet)
+    ret (append<PStmt>(acc.stmts, f),
+         append(acc.errs, PErr(f.psfLine,
+           "a [refeq] function must return Bool")),
+         acc.changed)
+  let split = lhSplitRefeq(f, lhFirstParamName(params),
+                           lhFirstParamName(tail<PStmt>(params)))
+  ret (append(append(acc.stmts, split.wrap), split.raw), acc.errs, true)
+
+fun lhRefeqParamsOk(params: List<PStmt>, roots: List<String>): Bool
+  ret lhFirstParamHashed(params, roots)
+      && lhFirstParamHashed(tail<PStmt>(params), roots)
+      && lhSameRoot(lhFirstParamType(params),
+                    lhFirstParamType(tail<PStmt>(params)))
+
+fun lhFirstParamType(params: List<PStmt>): Spec|None
+  ret match(head<PStmt>(params))
+    (st: PStmt) => match(st)
+      (p: PsLet) => p.lType
+      (o: PStmt) => None
+    ()          => None
+
+fun lhSameRoot(x: Spec|None, y: Spec|None): Bool
+  ret match(x)
+    (xs: Spec) => match(xs)
+      (xe: SEnum) => match(y)
+        (ys: Spec) => match(ys)
+          (ye: SEnum) => xe.seRoot == ye.seRoot
+          (o: Spec)   => false
+        ()         => false
+      (o2: Spec)  => false
+    ()         => false
+
+fun lhReturnsBool(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => match(s2)
+      (b: SBuiltin) => b.sbName == "bool"
+      (o: Spec)     => false
+    ()         => false
+
+fun lhSplitRefeq(f: PsFun, lName: String, rName: String): (wrap: PStmt, raw: PStmt)
+  let lr = f.psfLine
+  let attrs2 = filter(f.fAttrs, (a: PAttr) => a.attrName != "refeq")
+  let rawName = hashName(simpleName(f.fName) + "$reraw", lr)
+  let raw = PsFun(rawName, attrs2, f.fGens, f.fParams, f.fBody, f.fRet,
+                  f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports)
+  let lRef = PeName(lName, List<Spec>(), lr)
+  let rRef = PeName(rName, List<Spec>(), lr)
+  let same = PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_ref_eq", lr),
+                         PeTuple(append(list1(PTupEnt("", false, lRef)),
+                                        PTupEnt("", false, rRef)), lr), lr)
+  let rawCall = PeCall(PeName(bareOfUnique(f.fName) + "$reraw", List<Spec>(), lr),
+                       PeTuple(append(list1(PTupEnt("", false, lRef)),
+                                      PTupEnt("", false, rRef)), lr), lr)
+  let body = PeBlock(List<PStmt>(),
+                     PeTernary(same, PeBool(true, lr), rawCall, lr), "", lr)
   ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,
              f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports),
        raw)
