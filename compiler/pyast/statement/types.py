@@ -170,17 +170,27 @@ class EnumStatement(TypeStatement):
         if self._root_name is not None and self._root_name != self.name:
             return []
         discriminators = resolver.get_discriminators()
+        # [hashed]: a hidden Int32 cache slot DIRECTLY AFTER the vtable
+        # pointer in every leaf (and in the never-instantiated marker, which
+        # documents the shared prefix). The fixed offset — sizeof(vtable_t*)
+        # — is what lets yafl_hash_peek/store exist once, not per type.
+        # A scalar: absent from pointer masks, no barrier, and deliberately
+        # NOT [mutable] — a store lost to a compaction move is a benign
+        # recompute, exactly as string_t's lazy hash behaves.
+        prefix: tuple = (("type", cg_t.DataPointer()),)
+        if "hashed" in self.attributes:
+            prefix = prefix + (("$hash", cg_t.Int(32)),)
         marker = cg_ir.Object(
             name=self.name,
             extends=(),
             functions=(),
-            fields=cg_t.ImmediateStruct((("type", cg_t.DataPointer()),)),
+            fields=cg_t.ImmediateStruct(prefix),
             comment=f"{self.name} — enum root marker (never instantiated)")
         objects = [marker]
         leaf_field_sets = t._collect_leaf_field_sets(self, [])
         for leaf_name, leaf_fields in zip(self._enum_spec.all_leaf_names, leaf_field_sets):
             obj_name = t.enum_leaf_object_name(self.name, leaf_name)
-            fields = (("type", cg_t.DataPointer()),) + tuple(
+            fields = prefix + tuple(
                 (let.name, let.declared_type.generate(resolver)) for let in leaf_fields)
             objects.append(cg_ir.Object(
                 name=obj_name,

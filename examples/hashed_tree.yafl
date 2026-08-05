@@ -1,0 +1,19 @@
+# `[hashed]` — the compiler caches a structural hash inside the value.
+#
+# The enum's every leaf carries a hidden Int32 slot; the [hashed] function is
+# split so a slot hit skips the compute entirely, and a recursive hash reaches
+# child nodes through THEIR caches. See docs/derived-equality-plan.md §3b.
+import System
+
+enum [hashed] Tree
+  enum Leaf2(val: System::Int)
+  enum Node2(left: Tree, right: Tree)
+
+fun [hashed] treeHash(t: Tree): System::Int32
+  ret match(t)
+    (l: Leaf2) => hashOf(l.val)
+    (n: Node2) => (treeHash(n.left) * 31i32 + treeHash(n.right)) & 2147483647i32
+
+fun main(): System::Int
+  let t = Node2(Node2(Leaf2(1), Leaf2(2)), Leaf2(3))
+  ret treeHash(t) == treeHash(t) && treeHash(t) >= 0i32 ? 0 : 1

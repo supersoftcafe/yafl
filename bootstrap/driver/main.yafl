@@ -352,6 +352,16 @@ fun genericsOutput(stmts0: List<PStmt>): (out: String, code: Int)
     (dv: CvDiverged) => ("diverged\n", 2)
 
 fun genericsDump(stmts0: List<PStmt>): (out: String, code: Int)
+  # [hashed] split first, as postmonoRes3 and compiler.py both order it —
+  # this chain is SEPARATE from postmonoRes3 and must mirror it.
+  let lh = lowerHashed(stmts0)
+  if !isEmpty(lh.lhErrs)
+    ret (printedDiagnostics(lh.lhErrs), 0)
+  ret match(lh.lhChanged ? converge(lh.lhStmts) : CvOk(lh.lhStmts, 0))
+    (ok: CvOk)       => genericsDumpB(ok.cvStatements)
+    (dv: CvDiverged) => ("diverged\n", 2)
+
+fun genericsDumpB(stmts0: List<PStmt>): (out: String, code: Int)
   let li = lowerTraitInstances(stmts0)
   ret match(li.liChanged ? converge(li.liStmts) : CvOk(li.liStmts, 0))
     (ok: CvOk)       => genericsDump2(ok.cvStatements)
@@ -392,6 +402,16 @@ fun postmonoRes2(stmts0: List<PStmt>): PmRes
     (dv: CvDiverged) => PmText("diverged\n", 2)
 
 fun postmonoRes3(stmts0: List<PStmt>): PmRes
+  # [hashed] split — needs converged types, and precedes monomorphisation so
+  # generic callers monomorphise against the WRAPPER (compiler.py's order).
+  let lh = lowerHashed(stmts0)
+  if !isEmpty(lh.lhErrs)
+    ret PmText(printedDiagnostics(lh.lhErrs), 0)
+  ret match(lh.lhChanged ? converge(lh.lhStmts) : CvOk(lh.lhStmts, 0))
+    (ok: CvOk)       => postmonoRes3b(ok.cvStatements)
+    (dv: CvDiverged) => PmText("diverged\n", 2)
+
+fun postmonoRes3b(stmts0: List<PStmt>): PmRes
   let li = lowerTraitInstances(stmts0)
   ret match(li.liChanged ? converge(li.liStmts) : CvOk(li.liStmts, 0))
     (ok: CvOk)       => postmonoRes4(ok.cvStatements)

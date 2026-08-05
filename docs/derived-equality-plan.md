@@ -240,26 +240,56 @@ So only two things can work: a cheap (shallow, collision-prone) hash resolved
 by deep equality, or caching the structural hash ON THE SPEC so every key built
 from it hashes in O(1).
 
-## 3b — `[hashed]`, the compiler caches the hash
+## 3b — `[hashed]`, the compiler caches the hash (design settled 2026-08-04)
 
-Generalises what `String` already does: a lazy scalar slot in the header, `0`
-reserved for "not yet computed", and `hashOf` never returns 0.
+USER RULINGS: `[hashed]` must NOT imply `[mutable]` — pinning the spec graph
+from compaction would be actively harmful, and a lost racy scalar store is a
+benign recompute (exactly how `string_t`'s lazy hash already behaves under
+compaction). And 3c becomes OPT-IN per type, which dissolves the NaN
+reflexivity objection.
 
-- **Lazy, computed on first `hashOf`.** Racy computation is harmless: the value
-  is deterministic, so two threads racing write the same word. A scalar needs
-  no CAS, no write barrier, and survives compaction by being copied with the
-  object — none of the hazards that forced `[mutable]` for pointer fields.
-- **Implies "do not flatten"**, exactly as `[mutable]` does: a value with no
-  header has nowhere to put the word. That exclusion already exists in
-  `simple_classes` in both compilers.
-- **Caches, does not derive.** Whatever `hashOf` the type has is what gets
-  cached; an impure one is the programmer's risk, as with `memoize`.
-- **Determinism preserved** — content-only, so emitted C is unaffected.
+**Two-part mechanism, one orthogonal feature:**
+
+1. `[hashed]` on an ENUM (v1 is enum-only — the target is `Spec`; classes can
+   follow): the layout gains a hidden `$hash: Int32` immediately after `$tag`
+   in `all_fields`, so every leaf shares the offset. `$tag` is the precedent
+   for a synthetic field flowing through the whole enum machinery.
+2. `[hashed]` on a FUNCTION of shape `(v: T): Int32`, T the hashed enum or a
+   variant of it: the compiler wraps the body — read the slot; nonzero means
+   return it; else run the original body, remap 0 to 1, store, return.
+
+The function-level half exists because of the no-instance-for-`Spec` ruling:
+`Spec`'s deep hash is a FREE function (`ckHashSpec`), not a trait method, so a
+type-only annotation could never reach it. Wrapping the declared compute
+function serves free functions and instance members identically — an instance
+just writes `fun [hashed] hashOf(...)`. No peek/store primitives are exposed:
+the slot is reachable only through the wrap, so no user code can observe the
+0-versus-hash nondeterminism.
+
+**Verified simplifications (read from the emitted C and the sources):**
+
+- **No vtable change and no new runtime C.** The wrapped function knows its
+  parameter's type statically and all leaves share the `$tag,$hash` prefix, so
+  the wrap emits direct field access. The earlier `hash_offset`-in-vtable
+  sketch is unnecessary.
+- **Static singletons are emitted WITHOUT `const`**
+  (`static <T>_t name_data = {...}`), so caching into a statically-allocated
+  leaf works; no fieldless-variant restriction needed.
+- **Stack promotion must exclude `[hashed]` enums** (a promoted value has no
+  object to hold the slot) — one more entry in the existing exclusion list,
+  alongside mutable/foreign/arrayed.
+
+Reserved value: 0 means "not computed"; a compute that returns 0 is cached and
+returned as 1, deterministically — the same reservation String documents.
 
 Why this fixes the measurement: hashing a `Spec` walks its children, but each
 child's hash is itself cached, so a node costs O(fanout) rather than
-O(subtree), and the graph is hashed once across the program instead of once per
-lookup.
+O(subtree), and the graph is hashed once across the program instead of once
+per lookup.
+
+Main implementation risk: every place that treats `$tag` specially (NewEnum
+construction, covering-fields lookup, match lowering) must treat `$hash` the
+same way, in BOTH compilers, or the gate catches the drift.
 
 ## 3a — enum attributes (PREREQUISITE)
 

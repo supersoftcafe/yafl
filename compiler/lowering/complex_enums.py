@@ -192,6 +192,15 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     # 3. Pick exactly one breaker per cycle.
     complex_set = _pick_cycle_breakers(edges, roots)
 
+    # A [hashed] enum is FORCED complex regardless of recursion: the cache
+    # slot needs a boxed value with a stable address — a by-value copy has
+    # nowhere to keep it. Must precede the early-out or a non-recursive
+    # [hashed] enum would never be marked.
+    for stmt in statements:
+        if (isinstance(stmt, s.EnumStatement) and "hashed" in stmt.attributes
+                and stmt._enum_spec is not None):
+            complex_set = complex_set | {stmt._enum_spec.root_name}
+
     if not complex_set:
         return statements
 

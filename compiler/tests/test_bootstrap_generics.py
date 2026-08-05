@@ -26,6 +26,7 @@ from pathlib import Path
 import compiler as c
 import lowering.drops
 import lowering.instances
+import lowering.hashed
 import lowering.generics
 import lowering.lambda_globals
 from parsing.tokenizer import tokenize
@@ -78,6 +79,12 @@ class TestBootstrapGenerics(TestCase):
         # compiler.py does — the port's dump modes all run through postmonoRes,
         # which includes it. Omitting it here made every stdlib file that
         # declares an `instance` (complex, float, traits, …) diverge.
+        # [hashed] split before instance lowering, as compiler.py does.
+        statements, _herrs, _hchanged = lowering.hashed.lower_hashed(statements)
+        if _herrs:
+            return "".join(f"{e}\n" for e in sorted(set(str(x) for x in _herrs)))
+        if _hchanged:
+            statements, _resolver, _ph = _CONVERGE(statements)
         statements, lowered = lowering.instances.lower_trait_instances(statements)
         if lowered:
             statements, _resolver, _p3b = _CONVERGE(statements)

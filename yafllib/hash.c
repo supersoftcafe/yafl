@@ -51,3 +51,26 @@ EXPORT int32_t float32_hash(float f) {
     memcpy(&bits, &f, sizeof(bits));
     return (int32_t)(bits & 0x7fffffffu);
 }
+
+// ── the [hashed] slot ────────────────────────────────────────────────────────
+// A `[hashed]` enum's every leaf carries a hidden int32 `$hash` slot placed
+// DIRECTLY AFTER the vtable pointer — a fixed offset shared by all [hashed]
+// types, which is what lets these two functions exist once instead of per
+// type. 0 means "not yet computed"; a computed 0 is stored and returned as 1,
+// deterministically (the same reservation string_hash documents).
+//
+// The store is a plain racy write, and that is deliberate: the value is a
+// deterministic function of immutable content, so two threads racing write
+// the same word, and a write lost to a concurrent compaction move just means
+// a later recompute. No CAS, no write barrier (scalar), and NOT [mutable] —
+// pinning every hashed object from compaction would cost far more than the
+// occasional recompute.
+int32_t yafl_hash_peek(object_t* v) {
+    return *(int32_t*)((char*)v + sizeof(vtable_t*));
+}
+
+int32_t yafl_hash_store(object_t* v, int32_t h) {
+    if (h == 0) h = 1;
+    *(int32_t*)((char*)v + sizeof(vtable_t*)) = h;
+    return h;
+}

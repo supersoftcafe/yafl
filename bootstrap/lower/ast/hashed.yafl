@@ -1,0 +1,151 @@
+# bootstrap/lower/ast/hashed.yafl — lowering/hashed.py: the `[hashed]`
+# function split.
+#
+# `[hashed]` on an ENUM gives every leaf a hidden `$hash: Int32` directly
+# after the vtable pointer (layout half in codegen/generate_globals.yafl,
+# boxing force in complex_enums.yafl). `[hashed]` on a FUNCTION
+# `(v: T): Int32` splits it here:
+#
+#     fun f(v: T): Int32                      # the original name: the wrap
+#       let $hcache = __builtin_op__<int32>("yafl_hash_peek", v)
+#       ret $hcache == 0i32
+#         ? __builtin_op__<int32>("yafl_hash_store", v, f$hraw(v))
+#         : $hcache
+#
+# with the original body moved to the hidden sibling `f$hraw`. Self-calls in
+# the body still name `f`, so a recursive hash reaches CHILD nodes through
+# their caches — the point of the feature. The builtins appear only in code
+# this pass emits, so nothing else can observe the empty-versus-filled
+# nondeterminism.
+namespace Bootstrap::Lower::Ast
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: List<PErr>, lhChanged: Bool)
+  let hashedRoots = lhCollectRoots(chain(statements), List<String>())
+  let classErrs = lhClassErrors(chain(statements), List<PErr>())
+  let out = lhStmtsLoop(chain(statements), hashedRoots,
+                        (List<PStmt>(), classErrs, false))
+  ret (out.stmts, out.errs, out.changed)
+
+fun [tail] lhCollectRoots(ss: Chain<PStmt>, acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e2: PsEnum) => hasAttr(e2.eAttrs, "hashed")
+        ? lhCollectRoots(l.next, append(acc, e2.eName))
+        : lhCollectRoots(l.next, acc)
+      (o: PStmt)   => lhCollectRoots(l.next, acc)
+
+fun [tail] lhClassErrors(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (c: PsClass) => hasAttr(c.cAttrs, "hashed")
+        ? lhClassErrors(l.next,
+            append(acc, PErr(c.pscLine,
+              "[hashed] applies to enum types only — a class may be "
+              + "flattened to a by-value struct, which has nowhere to keep "
+              + "the cached hash")))
+        : lhClassErrors(l.next, acc)
+      (o: PStmt)   => lhClassErrors(l.next, acc)
+
+# The parameter may name the root or any variant; both carry the ROOT's
+# unique name in seRoot, and the attribute lives on the root statement.
+fun lhIsHashedType(sp: Spec|None, roots: List<String>): Bool
+  ret match(sp)
+    (s2: Spec) => match(s2)
+      (e2: SEnum) => contains2(roots, e2.seRoot)
+      (o: Spec)   => false
+    ()         => false
+
+fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
+                       acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
+
+fun lhOne(st: PStmt, roots: List<String>,
+          acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+  ret match(st)
+    (f: PsFun) => hasAttr(f.fAttrs, "hashed")
+      ? lhFun(f, roots, acc)
+      : (append(acc.stmts, st), acc.errs, acc.changed)
+    (o: PStmt) => (append(acc.stmts, st), acc.errs, acc.changed)
+
+fun lhFun(f: PsFun, roots: List<String>,
+          acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+  let params = flattenParams(f.fParams)
+  if listLen(params) != 1 || !lhFirstParamHashed(params, roots)
+    ret (append<PStmt>(acc.stmts, f),
+         append(acc.errs, PErr(f.psfLine,
+           "a [hashed] function must take exactly one parameter of a "
+           + "[hashed] enum type — the cache lives in that value")),
+         acc.changed)
+  if !lhReturnsInt32(f.fRet)
+    ret (append<PStmt>(acc.stmts, f),
+         append(acc.errs, PErr(f.psfLine,
+           "a [hashed] function must return Int32 — the cache slot is "
+           + "one machine word")),
+         acc.changed)
+  let split = lhSplit(f, lhFirstParamName(params))
+  ret (append(append(acc.stmts, split.wrap), split.raw), acc.errs, true)
+
+fun lhFirstParamHashed(params: List<PStmt>, roots: List<String>): Bool
+  ret match(head<PStmt>(params))
+    (st: PStmt) => match(st)
+      (p: PsLet)  => lhIsHashedType(p.lType, roots)
+      (o: PStmt)  => false
+    ()          => false
+
+fun lhFirstParamName(params: List<PStmt>): String
+  ret match(head<PStmt>(params))
+    (st: PStmt) => match(st)
+      (p: PsLet) => p.lName
+      (o: PStmt) => ""
+    ()          => ""
+
+fun lhReturnsInt32(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => match(s2)
+      (b: SBuiltin) => b.sbName == "int32"
+      (o: Spec)     => false
+    ()         => false
+
+fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
+  let lr = f.psfLine
+  let attrs2 = filter(f.fAttrs, (a: PAttr) => a.attrName != "hashed")
+  # Path-based, collision-free: reuse the original's namespace path and line
+  # hash with a suffix nothing else generates.
+  let rawName = hashName(simpleName(f.fName) + "$hraw", lr)
+  let raw = PsFun(rawName, attrs2, f.fGens, f.fParams, f.fBody, f.fRet,
+                  f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports)
+  let int32Spec = SBuiltin("int32", lr)
+  let vRef = PeName(paramName, List<Spec>(), lr)
+  let peek = PeBuiltinOp(int32Spec, PeStr("yafl_hash_peek", lr),
+                         PeTuple(list1(PTupEnt("", false, vRef)), lr), lr)
+  let rawCall = PeCall(PeName(bareOfUnique(f.fName) + "$hraw", List<Spec>(), lr),
+                       PeTuple(list1(PTupEnt("", false, vRef)), lr), lr)
+  let store = PeBuiltinOp(int32Spec, PeStr("yafl_hash_store", lr),
+                          PeTuple(append(list1(PTupEnt("", false, vRef)),
+                                         PTupEnt("", false, rawCall)), lr), lr)
+  let isEmptySlot = PeBuiltinOp(SBuiltin("bool", lr), PeStr("int32_test_eq", lr),
+                                PeTuple(append(list1(PTupEnt("", false,
+                                                             PeName("$hcache", List<Spec>(), lr))),
+                                               PTupEnt("", false, PeInt(0, 32, lr))), lr), lr)
+  let cacheLet = PsLet(hashName("$hcache", lr), List<PAttr>(), List<PGen>(),
+                       int32Spec, peek, "", List<Spec>(), lr)
+  let body = PeBlock(list1<PStmt>(cacheLet),
+                     PeTernary(isEmptySlot, store,
+                               PeName("$hcache", List<Spec>(), lr), lr),
+                     "", lr)
+  ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,
+             f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports),
+       raw)

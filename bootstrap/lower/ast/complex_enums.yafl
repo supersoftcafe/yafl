@@ -375,12 +375,26 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>,
                     ceDoneRoots: List<String>, ceDoneSpecs: List<Spec>)
 
+fun [tail] ceAddHashed(ss: Chain<PStmt>, acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e2: PsEnum) => hasAttr(e2.eAttrs, "hashed") && !contains2(acc, e2.eName)
+        ? ceAddHashed(l.next, append(acc, e2.eName))
+        : ceAddHashed(l.next, acc)
+      (o: PStmt)   => ceAddHashed(l.next, acc)
+
 fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let roots = ceCollectRoots(statements)
   if isEmpty(roots.erNames)
     ret statements
   let map = ceNameMap(roots)
-  let complexSet = cePickBreakers(ceEdges(roots, map), roots)
+  # A [hashed] enum is FORCED complex regardless of recursion: the cache slot
+  # needs a boxed value with a stable address — a by-value copy has nowhere
+  # to keep it. Must precede the early-out or a non-recursive [hashed] enum
+  # would never be marked.
+  let complexSet = ceAddHashed(chain(statements),
+                               cePickBreakers(ceEdges(roots, map), roots))
   if isEmpty(complexSet)
     ret statements
   let c0 = CeCtx(roots, map, complexSet, List<String>(), List<Spec>())

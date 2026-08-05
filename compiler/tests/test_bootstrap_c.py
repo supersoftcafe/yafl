@@ -22,6 +22,7 @@ import lowering.complex_enums
 import lowering.constants
 import lowering.drops
 import lowering.instances
+import lowering.hashed
 import lowering.generics
 import lowering.ast_inline
 import lowering.integers
@@ -186,6 +187,12 @@ def _python_c_text(target_name: str, optimization_level: int = 0) -> str:
     statements, dropped = lowering.drops.insert_drops(statements)
     if dropped:
         statements, _resolver, _p2 = _CONVERGE(statements)
+    # [hashed] split before instance lowering, as compiler.py does.
+    statements, _herrs, _hchanged = lowering.hashed.lower_hashed(statements)
+    if _herrs:
+        return "".join(f"{e}\n" for e in sorted(set(str(x) for x in _herrs)))
+    if _hchanged:
+        statements, _resolver, _ph = _CONVERGE(statements)
     statements, lowered = lowering.instances.lower_trait_instances(statements)
     if lowered:
         statements, _resolver, _p2b = _CONVERGE(statements)

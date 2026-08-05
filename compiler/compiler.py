@@ -21,6 +21,7 @@ import lowering.instances
 import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
+import lowering.hashed
 import lowering.complex_enums
 import lowering.lambda_globals
 import lowering.lambda_lift
@@ -577,6 +578,15 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     linearity_errors = lowering.linearity.check_linearity(new_statements, resolver)
     if linearity_errors:
         return linearity_errors
+
+    # [hashed] functions split into wrapper + $hraw sibling — needs converged
+    # types (the parameter's EnumSpec), and must precede monomorphisation so
+    # generic callers monomorphise against the WRAPPER.
+    new_statements, hashed_errors, hashed_changed = lowering.hashed.lower_hashed(new_statements)
+    if hashed_errors:
+        return hashed_errors
+    if hashed_changed:
+        new_statements, resolver, _passes = __converge(new_statements)
 
     # Lower first-class trait instances to witness class + [trait] record —
     # AFTER every user-facing phase (diagnostics/linearity spoke of the
