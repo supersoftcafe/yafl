@@ -1,6 +1,6 @@
 # Derived `BasicEquality` for enums and tuples
 
-Status: **plan, not built.** Supersedes the "no auto-derived traits" position
+Status: **COMPLETE — all phases shipped** (`ce267eb`..`d61ffd5`). Supersedes the "no auto-derived traits" position
 for these two type kinds only — see *Scope* below.
 
 Decision taken (user, 2026-08-03): **go for precise keys.** The imprecision of
@@ -207,9 +207,11 @@ nominal, not structural, and so even lossier than the current fingerprint.
    3b. **`[hashed]`** — the compiler caches a type's structural hash.
    3c. Reference-equality shortcut inside `==`, so a deep compare is skipped
        when both sides are the same object.
-4. **Migrate the fingerprint call sites** — `ceMemoKey` in `complex_enums.yafl`
-   and `simple_classes.yafl` — to a purpose-built key type, and re-measure.
-   Baseline to beat: self-compile 689.9s wall / 677.2s user.
+4. **Migrate the fingerprint call sites.** DONE (`d61ffd5`). CeKey (spec +
+   sorted visited, deep-compared) replaces `ceMemoKey` in both memos, both
+   compilers. VERDICT: byte-identical C — the snapping invariant held, and is
+   no longer load-bearing for correctness. Trivial compile 22.4s→17.2s;
+   bootstrap emit 558.6s vs ~575s baseline.
 
 Phases 1–3 are independently useful and independently gateable. Phase 4 is the
 one that changes compiler behaviour, and it is the one that must be proved
