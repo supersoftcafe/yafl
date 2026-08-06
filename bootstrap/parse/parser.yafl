@@ -591,6 +591,21 @@ fun parseIs(ps: Ps): (v: PExpr|PFail, rest: Ps)
     (f: PFail) => a
     (l: PExpr) => parseIsTail(l, a.rest)
 
+# `with subject(name = value, …)` parses as `with` + an ordinary invoke: the
+# invoke is naturally Call(subject, named-tuple) and gets REINTERPRETED.
+# Anything else (no call, no replacements) still builds the node — the shape
+# rules are CHECK errors per the ruling, not parse errors.
+fun parseWith(lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
+  let s = parsePostfix(ps)
+  ret match(s.v)
+    (f: PFail) => s
+    (a: PExpr) => (withReinterpret(a, lr), s.rest)
+
+fun withReinterpret(a: PExpr, lr: PLine): PExpr
+  ret match(a)
+    (c: PeCall) => PeWith(c.function, c.parameter, lr)
+    (o: PExpr)  => PeWith(a, PeTuple(List<PTupEnt>(), lr), lr)
+
 fun parseIsTail(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
   let neg = atSym(ps, "!")
   let base = neg ? bump(ps) : ps
@@ -651,6 +666,8 @@ fun parseDivMul(ps: Ps): (v: PExpr|PFail, rest: Ps)
 # operator call; `!` and `~` are always operator calls.
 fun parseUnary(ps: Ps): (v: PExpr|PFail, rest: Ps)
   let t = peek(ps)
+  if isSymTok(t, "with")
+    ret parseWith(lineAt(ps), bump(ps))
   let op = match(t.kind)
     (k: KSymbol) => t.text == "-" || t.text == "!" || t.text == "~" ? t.text : ""
     ()           => ""

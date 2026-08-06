@@ -52,6 +52,10 @@ enum PExpr
                pebkLine: PLine)
   enum PeMatch(subject: PExpr, arms: List<PArm>, pemLine: PLine)
   enum PeBuiltinOp(opType: Spec, opName: PExpr, opParams: PExpr, peboLine: PLine)
+  # `with subject(name = value, …)` — copy-with-replacements. TRANSIENT: the
+  # frontend expands it during compile once its subject type resolves
+  # (compile_expr.yafl); post-converge trees never contain one.
+  enum PeWith(withSubject: PExpr, withRepls: PExpr, pewLine: PLine)
   enum PeParallel(parParams: PExpr, pepLine: PLine)
   enum PeNothing(pengLine: PLine)
   enum PeNewEnum(rootName: String, leafName: String, fieldArgs: List<PFieldArg>,

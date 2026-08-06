@@ -42,6 +42,7 @@ fun checkExpr(x: PExpr, r: Resolver, expected: Spec|None): List<PErr>
     (ar: PeArrayRead) => concat(checkExpr(ar.arrObj, r, None),
                                 checkExpr(ar.arrIndex, r, None))
     (pl: PeParallel) => checkExpr(pl.parParams, r, None)
+    (wx: PeWith)   => checkWith(wx, r)
     (cv: PeConvert) => checkExpr(cv.convInner, r, None)
     # tail_loop lowering only — never present at check time; mirrored from
     # loop.py's check methods for completeness.
@@ -592,3 +593,89 @@ fun refStmt(st: PStmt, acc: List<String>): List<String>
                                             referencedNames(ei.eiCond, acc))
     (el: PsElse)       => referencedInStmts(chain(el.elStmts), acc)
     (o: PStmt)         => acc
+
+
+# ── `with` — only reached when the frontend could not expand it ─────────────
+# Mirrors WithExpression.check byte for byte (parity of diagnostics).
+
+fun checkWith(wx: PeWith, r: Resolver): List<PErr>
+  let sub = checkExpr(wx.withSubject, r, None)
+  if !isEmpty(sub)
+    ret sub
+  let reps = checkExpr(wx.withRepls, r, None)
+  if !isEmpty(reps)
+    ret reps
+  let shape = withShapeError(wx)
+  if shape != ""
+    ret append(List<PErr>(), PErr(wx.pewLine, shape))
+  ret match(exprType(wx.withSubject, r))
+    (sp: Spec) => match(sp)
+      (c: SClass) => checkWithFields(wx, r)
+      (e2: SEnum) => checkWithFields(wx, r)
+      (o: Spec)   => append(List<PErr>(), PErr(wx.pewLine,
+        "the subject of `with` must be a class- or enum-typed expression"))
+    ()         => append(List<PErr>(), PErr(wx.pewLine,
+      "the subject type of `with` did not resolve"))
+
+fun withShapeError(wx: PeWith): String
+  ret match(wx.withRepls)
+    (tp: PeTuple) => isEmpty(tp.exprs)
+      ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
+      : withEntriesError(chain(tp.exprs), List<String>())
+    (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
+
+fun [tail] withEntriesError(es: Chain<PTupEnt>, seen: List<String>): String
+  ret match(es)
+    (nil: ChainEnd) => ""
+    (l: ChainLink)  => l.value.tupSpread
+      ? "a `with` replacement cannot be a spread"
+      : l.value.tupName == ""
+        ? "`with` replacements must be named — `with x(field = value)`"
+        : contains2(seen, l.value.tupName)
+          ? "a `with` expression replaces each field at most once"
+          : withEntriesError(l.next, append(seen, l.value.tupName))
+
+fun checkWithFields(wx: PeWith, r: Resolver): List<PErr>
+  let visible = withVisibleFields(wx, r)
+  ret match(wx.withRepls)
+    (tp: PeTuple) => withNamesKnown(chain(tp.exprs), visible, wx.pewLine)
+    (o: PExpr)    => List<PErr>()
+
+fun [tail] withNamesKnown(es: Chain<PTupEnt>, visible: List<String>,
+                          lr: PLine): List<PErr>
+  ret match(es)
+    (nil: ChainEnd) => List<PErr>()
+    (l: ChainLink)  => contains2(visible, l.value.tupName)
+      ? withNamesKnown(l.next, visible, lr)
+      : append(List<PErr>(), PErr(lr,
+          "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
+
+fun withVisibleFields(wx: PeWith, r: Resolver): List<String>
+  ret match(exprType(wx.withSubject, r))
+    (sp: Spec) => match(sp)
+      (c: SClass) => match(soleItem(findType(r, c.scName)))
+        (f: Found) => match(f.fStmt)
+          (cls: PsClass) => withBareNames(chain(flattenParams(cls.cParams)),
+                                          List<String>())
+          (o: PStmt)     => List<String>()
+        ()         => List<String>()
+      (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
+        (f: Found) => match(f.fStmt)
+          (en: PsEnum) => withCoverBares(chain(coveringFields(en, e2.seValidLeaves)),
+                                         List<String>())
+          (o: PStmt)   => List<String>()
+        ()         => List<String>()
+      (o2: Spec)  => List<String>()
+    ()         => List<String>()
+
+fun [tail] withBareNames(fs: Chain<PStmt>, acc: List<String>): List<String>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (p: PsLet) => withBareNames(l.next, append(acc, bareName(p.lName)))
+      (o: PStmt) => withBareNames(l.next, acc)
+
+fun [tail] withCoverBares(fs: Chain<SField>, acc: List<String>): List<String>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => withCoverBares(l.next, append(acc, bareName(l.value.sfName)))

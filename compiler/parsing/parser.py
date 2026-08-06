@@ -898,7 +898,23 @@ __parse_postfix_dot   = (p.discard_sym(".") & __parse_terminal) >> __to_dot_op
 __parse_postfix_call  = __parse_expr_tuple >> __to_call_op
 __parse_postfix_index = p.requires(p.discard_sym("["), __parse_expression & p.discard_sym("]"), "invalid index expression") >> __to_index_op
 __parse_invoke  = (__parse_terminal & p.many(__parse_postfix_dot | __parse_postfix_call | __parse_postfix_index)) >> __to_invokes
-__parse_unary   = ((p.discard_sym("-") & __parse_invoke) >> __to_negate
+def __to_with(result: p.Result, tokens: list[p.Token]) -> p.Result:
+    # `with subject(name = value, …)` parses as `with` + an ordinary invoke:
+    # the invoke is naturally Call(subject, named-tuple), and the builder
+    # REINTERPRETS it. Anything else (no call, no replacements) still builds
+    # the node — the shape rules are CHECK errors per the ruling, not parse
+    # errors.
+    expr = result.value
+    if isinstance(expr, e.CallExpression) and isinstance(expr.parameter, e.TupleExpression):
+        statement = e.WithExpression(result.line_ref, expr.function, expr.parameter)
+    else:
+        statement = e.WithExpression(result.line_ref, expr,
+                                     e.TupleExpression(result.line_ref, []))
+    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+
+
+__parse_unary   = (((p.discard_sym("with") & __parse_invoke) >> __to_with)
+                 | (p.discard_sym("-") & __parse_invoke) >> __to_negate
                  | (p.discard_sym("!") & __parse_invoke) >> __to_not
                  | (p.discard_sym("~") & __parse_invoke) >> __to_invert
                  | __parse_invoke)

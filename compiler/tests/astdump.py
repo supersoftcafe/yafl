@@ -101,6 +101,10 @@ def dump(statements) -> str:
             for en in x.expressions:
                 line(depth + 1, "Entry", x, f"{en.name or ''}|{'*' if en.spread else ''}")
                 walk_expr(en.value, depth + 2)
+        elif isinstance(x, e.WithExpression):
+            line(depth, "With", x, "")
+            walk_expr(x.subject, depth + 1)
+            walk_expr(x.replacements, depth + 1)
         elif isinstance(x, e.TernaryExpression):
             line(depth, "Ternary", x, "")
             walk_expr(x.condition, depth + 1)

@@ -347,6 +347,7 @@ fun exprLine(x: PExpr): PLine
     (s2: PeStr) => s2.pesLine
     (r: PeRegex) => r.perLine
     (n: PeName) => n.penLine
+    (wx: PeWith) => wx.pewLine
     (d: PeDot) => d.pedLine
     (c: PeCall) => c.pecLine
     (tu: PeTuple) => tu.petLine

@@ -106,6 +106,7 @@ fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
     (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
     (pl: PeParallel) => compileParallel(pl, r)
     (lm: PeLambda) => compileLambda(lm, r, expected)
+    (wx: PeWith)   => compileWith(wx, r, expected)
     (cv: PeConvert) => compileConvert(cv, r, expected)
 
 # A name RESOLVES: once its declaration is known the node carries the unique
@@ -835,3 +836,238 @@ fun compileArrayRead(ar: PeArrayRead, r: Resolver, expected: Spec|None): ExprOut
 fun compileParallel(pl: PeParallel, r: Resolver): ExprOut
   let ps = compileExpr(pl.parParams, r, None)
   ret ExprOut(PeParallel(ps.eoExpr, pl.pepLine), ps.eoGlobals)
+
+
+# ── `with subject(name = value, …)` — EXPANDS here once types resolve ───────
+# Mirror of WithExpression.__expand, name for name (tags from the with's own
+# line hash, so both compilers synthesise byte-identical trees):
+#
+#   Block[ let $ws = subject; let $w0 = v0; … ]
+#     Ternary( yafl_same($w0, $ws.f0) && …,
+#              $ws,
+#              match($ws) (x: Leaf) => Leaf(…) … )     [or a direct ctor]
+#
+# Shape/visibility problems leave the node UNEXPANDED; checkWith reports.
+
+fun compileWith(wx: PeWith, r: Resolver, expected: Spec|None): ExprOut
+  let subj = compileExpr(wx.withSubject, r, None)
+  let reps = compileExpr(wx.withRepls, r, None)
+  let node: PExpr = PeWith(subj.eoExpr, reps.eoExpr, wx.pewLine)
+  let glb = concat(subj.eoGlobals, reps.eoGlobals)
+  ret match(node)
+    (nw: PeWith) => withShapeError(nw) != ""
+      ? ExprOut(node, glb)
+      : match(withExpand(nw, r))
+        (x: PExpr) => ExprOut(converted(x, expected, r), glb)
+        ()         => ExprOut(node, glb)
+    (o: PExpr)   => ExprOut(node, glb)   # unreachable: node is built above
+
+fun withExpand(wx: PeWith, r: Resolver): PExpr|None
+  ret match(exprType(wx.withSubject, r))
+    (sp: Spec) => match(sp)
+      (c: SClass) => withExpandClass(wx, c, r)
+      (e2: SEnum) => withExpandEnum(wx, e2, r)
+      (o: Spec)   => None
+    ()         => None
+
+fun withTag(lr: PLine): String
+  ret hash6(lr.plFile, lr.plLine, lr.plCol)
+
+fun withEntryList(wx: PeWith): List<PTupEnt>
+  ret match(wx.withRepls)
+    (tp: PeTuple) => tp.exprs
+    (o: PExpr)    => List<PTupEnt>()
+
+# The subject and each replacement bind ONCE; replacements are referred to by
+# their $w{i} names thereafter.
+fun withLets(wx: PeWith, tag: String): List<PStmt>
+  let lr = wx.pewLine
+  let base = list1<PStmt>(PsLet("$ws@" + tag, List<PAttr>(), List<PGen>(),
+                                None, wx.withSubject, "", List<Spec>(), lr))
+  ret withReplLets(chain(withEntryList(wx)), 0, tag, lr, base)
+
+fun [tail] withReplLets(es: Chain<PTupEnt>, i: Int, tag: String, lr: PLine,
+                        acc: List<PStmt>): List<PStmt>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => withReplLets(l.next, i + 1, tag, lr,
+                        append<PStmt>(acc,
+                          PsLet("$w" + String(i) + "@" + tag, List<PAttr>(),
+                                List<PGen>(), None, l.value.tupValue, "",
+                                List<Spec>(), lr)))
+
+fun withReplRef(name: String, es: List<PTupEnt>, lr: PLine): PExpr|None
+  ret withReplRefLoop(chain(es), name, 0, lr)
+
+fun [tail] withReplRefLoop(es: Chain<PTupEnt>, name: String, i: Int,
+                           lr: PLine): PExpr|None
+  ret match(es)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => l.value.tupName == name
+      ? PeName("$w" + String(i), List<Spec>(), lr)
+      : withReplRefLoop(l.next, name, i + 1, lr)
+
+# SAME guard: every replacement bit-identical to the current field.
+fun withGuard(wx: PeWith, lr: PLine): PExpr
+  ret withGuardLoop(chain(withEntryList(wx)), 0, None, lr)
+
+fun [tail] withGuardLoop(es: Chain<PTupEnt>, i: Int, acc: PExpr|None,
+                         lr: PLine): PExpr
+  ret match(es)
+    (nil: ChainEnd) => match(acc)
+      (a: PExpr) => a
+      ()         => PeBool(true, lr)   # unreachable: shape demands entries
+    (l: ChainLink)  => withGuardLoop(l.next, i + 1,
+        withAnd(acc,
+                PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_same", lr),
+                            PeTuple(append(list1(PTupEnt("", false,
+                                     PeName("$w" + String(i), List<Spec>(), lr))),
+                                    PTupEnt("", false,
+                                     PeDot(PeName("$ws", List<Spec>(), lr),
+                                           l.value.tupName, lr))), lr), lr),
+                lr),
+        lr)
+
+fun withAnd(acc: PExpr|None, one: PExpr, lr: PLine): PExpr
+  ret match(acc)
+    (a: PExpr) => PeTernary(a, one, PeBool(false, lr), lr)
+    ()         => one
+
+# Constructor call mixing carried fields with replacements.
+fun withConstruct(ctorName: String, fields: List<PStmt>, repls: List<PTupEnt>,
+                  carrier: String, lr: PLine): PExpr
+  ret PeCall(PeName(ctorName, List<Spec>(), lr),
+             PeTuple(withCtorArgs(chain(fields), repls, carrier, lr,
+                                  List<PTupEnt>()), lr), lr)
+
+fun [tail] withCtorArgs(fs: Chain<PStmt>, repls: List<PTupEnt>,
+                        carrier: String, lr: PLine,
+                        acc: List<PTupEnt>): List<PTupEnt>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (p: PsLet) => withCtorArgs(l.next, repls, carrier, lr,
+          append(acc, PTupEnt("", false,
+                              withCtorArg(bareName(p.lName), repls, carrier,
+                                          lr))))
+      (o: PStmt) => withCtorArgs(l.next, repls, carrier, lr, acc)
+
+fun withCtorArg(bare: String, repls: List<PTupEnt>, carrier: String,
+                lr: PLine): PExpr
+  ret match(withReplRef(bare, repls, lr))
+    (rr: PExpr) => rr
+    ()          => PeDot(PeName(carrier, List<Spec>(), lr), bare, lr)
+
+fun withExpandClass(wx: PeWith, c: SClass, r: Resolver): PExpr|None
+  ret match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => withNamesOk(wx, withBareNames(chain(flattenParams(cls.cParams)), List<String>()))
+        ? withAssemble(wx,
+            withConstruct(cls.cName, flattenParams(cls.cParams),
+                          withEntryList(wx), "$ws", wx.pewLine))
+        : None
+      (o: PStmt)     => None
+    ()         => None
+
+fun withNamesOk(wx: PeWith, visible: List<String>): Bool
+  ret withNamesOkLoop(chain(withEntryList(wx)), visible)
+
+fun [tail] withNamesOkLoop(es: Chain<PTupEnt>, visible: List<String>): Bool
+  ret match(es)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => contains2(visible, l.value.tupName)
+      ? withNamesOkLoop(l.next, visible)
+      : false
+
+fun withExpandEnum(wx: PeWith, e2: SEnum, r: Resolver): PExpr|None
+  ret match(soleItem(findType(r, e2.seRoot)))
+    (f: Found) => match(f.fStmt)
+      (en: PsEnum) => withNamesOk(wx,
+                        withCoverBares(chain(coveringFields(en, e2.seValidLeaves)),
+                                       List<String>()))
+        ? withEnumCopy(wx, en, e2)
+        : None
+      (o: PStmt)   => None
+    ()         => None
+
+fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum): PExpr|None
+  let lr = wx.pewLine
+  let tag = withTag(lr)
+  let leaves = withLeaves(en, List<PStmt>(),
+                          (List<String>(), List<List<PStmt>>()))
+  let valid = withValidLeaves(chain(leaves.names), e2.seValidLeaves)
+  if isEmpty(valid)
+    ret None
+  if listLen(valid) == 1
+    # A single valid leaf needs no dispatch — carried fields read through the
+    # binder-free subject, exactly as Python's single-arm special case.
+    ret withAssemble(wx,
+          withSingleLeaf(chain(leaves.names), chain(leaves.sets),
+                         wx, e2, lr))
+  ret withAssemble(wx,
+        PeMatch(PeName("$ws", List<Spec>(), lr),
+                withArms(chain(leaves.names), chain(leaves.sets), 0, tag,
+                         wx, e2, List<PArm>()),
+                lr))
+
+fun withValidLeaves(ns: Chain<String>, valid: List<String>): List<String>
+  ret withValidLoop(ns, valid, List<String>())
+
+fun [tail] withValidLoop(ns: Chain<String>, valid: List<String>,
+                         acc: List<String>): List<String>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => contains2(valid, l.value)
+      ? withValidLoop(l.next, valid, append(acc, l.value))
+      : withValidLoop(l.next, valid, acc)
+
+fun [tail] withSingleLeaf(ns: Chain<String>, sets: Chain<List<PStmt>>,
+                          wx: PeWith, e2: SEnum, lr: PLine): PExpr
+  ret match(ns)
+    (nil: ChainEnd) => PeName("$ws", List<Spec>(), lr)  # unreachable
+    (n: ChainLink)  => match(sets)
+      (nil2: ChainEnd) => PeName("$ws", List<Spec>(), lr)  # unreachable
+      (l: ChainLink)   => contains2(e2.seValidLeaves, n.value)
+        ? withConstruct(n.value, l.value, withEntryList(wx), "$ws", lr)
+        : withSingleLeaf(n.next, l.next, wx, e2, lr)
+
+fun [tail] withArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+                    tag: String, wx: PeWith, e2: SEnum,
+                    acc: List<PArm>): List<PArm>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (n: ChainLink)  => match(sets)
+      (nil2: ChainEnd) => acc
+      (l: ChainLink)   => !contains2(e2.seValidLeaves, n.value)
+        ? withArms(n.next, l.next, i + 1, tag, wx, e2, acc)
+        : withArms(n.next, l.next, i + 1, tag, wx, e2,
+            append(acc, PArm("$wx" + String(i) + "@" + tag,
+                             SNamed(n.value, List<Spec>(), wx.pewLine),
+                             withConstruct(n.value, l.value, withEntryList(wx),
+                                           "$wx" + String(i), wx.pewLine),
+                             List<PLit>(), None, wx.pewLine)))
+
+fun withAssemble(wx: PeWith, copy: PExpr): PExpr
+  let lr = wx.pewLine
+  ret PeBlock(withLets(wx, withTag(lr)),
+              PeTernary(withGuard(wx, lr),
+                        PeName("$ws", List<Spec>(), lr), copy, lr),
+              "", lr)
+
+# (leaf unique name, fields root-down), declaration order.
+fun withLeaves(st: PsEnum, inherited: List<PStmt>,
+               acc: (names: List<String>, sets: List<List<PStmt>>)): (names: List<String>, sets: List<List<PStmt>>)
+  let own = concat(inherited, flattenParams(st.eParams))
+  if isEmpty(st.eVariants)
+    ret st.eHasParams
+      ? (append(acc.names, st.eName), append(acc.sets, own))
+      : acc
+  ret withLeavesLoop(chain(st.eVariants), own, acc)
+
+fun [tail] withLeavesLoop(vs: Chain<PStmt>, own: List<PStmt>,
+                          acc: (names: List<String>, sets: List<List<PStmt>>)): (names: List<String>, sets: List<List<PStmt>>)
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (v: PsEnum) => withLeavesLoop(l.next, own, withLeaves(v, own, acc))
+      (o: PStmt)  => withLeavesLoop(l.next, own, acc)

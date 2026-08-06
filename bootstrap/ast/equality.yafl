@@ -178,6 +178,11 @@ fun eqExpr(a: PExpr, b: PExpr): Bool
                           && eqExpr(x.arrIndex, y.arrIndex)
                           && eqLine(x.pearLine, y.pearLine)
       (o: PExpr)       => false
+    (x: PeWith) => match(b)
+      (y: PeWith) => eqExpr(x.withSubject, y.withSubject)
+                     && eqExpr(x.withRepls, y.withRepls)
+                     && eqLine(x.pewLine, y.pewLine)
+      (o: PExpr)  => false
     (x: PeConvert) => match(b)
       (y: PeConvert) => eqSpec(x.convTarget, y.convTarget)
                         && eqExpr(x.convInner, y.convInner)

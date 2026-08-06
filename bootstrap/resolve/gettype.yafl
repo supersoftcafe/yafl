@@ -74,6 +74,7 @@ fun stmtType(st: PStmt): Spec|None
 
 fun exprType(x: PExpr, r: Resolver): Spec|None
   ret match(x)
+    (wx: PeWith)   => exprType(wx.withSubject, r)
     (i: PeInt)       => SBuiltin(intBuiltin(i.precision), i.peiLine)
     (f: PeFloat)     => SBuiltin(floatBuiltin(f.fPrecision), f.pefLine)
     (bo: PeBool)     => SBuiltin("bool", bo.pebLine)

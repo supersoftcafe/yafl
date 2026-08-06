@@ -46,7 +46,7 @@ fun isKeyword(s: System::String): System::Bool
   ret match(s)
     ("ret", "let", "fun", "typealias", "where", "class", "interface",
      "instance", "import", "namespace", "__builtin_type__", "__builtin_op__",
-     "__parallel__", "match", "enum", "if", "else") => true
+     "__parallel__", "match", "enum", "if", "else", "with") => true
     ()                                              => false
 
 # ══ Character classes ════════════════════════════════════════════════════════

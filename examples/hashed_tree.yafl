@@ -15,11 +15,21 @@ fun [hashed] treeHash(t: Tree): System::Int32
     (l: Leaf2) => hashOf(l.val)
     (n: Node2) => (treeHash(n.left) * 31i32 + treeHash(n.right)) & 2147483647i32
 
+# `with subject(name = value, …)` — copy-with-replacements. Unnamed fields
+# carry over; a replacement that is bit-identical to the current field makes
+# the whole expression return the ORIGINAL object (no allocation), which is
+# unobservable except through cost.
+fun grow(t: Tree): Tree
+  ret match(t)
+    (n: Node2) => with n(right = Leaf2(9))
+    (l: Leaf2) => with l(val = l.val)
+
 fun main(): System::Int
   let t = Node2(Node2(Leaf2(1), Leaf2(2)), Leaf2(3))
   let u = Node2(Node2(Leaf2(1), Leaf2(2)), Leaf2(3))
   ret treeHash(t) == treeHash(t) && treeHash(t) >= 0i32
-      && treeEq(t, t) && treeEq(t, u) && !treeEq(t, Leaf2(9)) ? 0 : 1
+      && treeEq(t, t) && treeEq(t, u) && !treeEq(t, Leaf2(9))
+      && !treeEq(t, grow(t)) && treeEq(grow(t), grow(u)) ? 0 : 1
 
 # `[refeq]` — the opt-in reference-equality shortcut: same object is equal
 # without running the compare, and a recursive deep compare short-circuits at

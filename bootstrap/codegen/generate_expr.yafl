@@ -1446,6 +1446,7 @@ fun genExpr(x: PExpr, r: Resolver): GBundle
     (bk: PeBlock)     => genBlockTo(bk, r, None)
     (mt: PeMatch)     => genMatch(mt, r, None)
     (op: PeBuiltinOp) => genBuiltinOp(op, r)
+    (wx: PeWith)      => emptyBundle()   # unreachable: withExpand runs during compile
     (pl: PeParallel)  => genParallel(pl, r)
     (ne: PeNewEnum)   => genNewEnum(ne, r)
     (nw: PeNew)       => genNew(nw, r)

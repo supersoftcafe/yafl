@@ -171,6 +171,9 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
       |> (s1) => dumpExpr(ar.arrObj, depth + 1, s1)
       |> (s2) => dumpExpr(ar.arrIndex, depth + 1, s2)
     # Compile-phase only — the parser never builds one.
+    (wx: PeWith)      => dLine(sb, depth, "With", wx.pewLine, "")
+      |> (s1) => dumpExpr(wx.withSubject, depth + 1, s1)
+      |> (s2) => dumpExpr(wx.withRepls, depth + 1, s2)
     (cv: PeConvert)   => dLine(sb, depth, "Convert", cv.pecvLine,
                                tyOf(cv.convTarget))
       |> (s1) => dumpExpr(cv.convInner, depth + 1, s1)
