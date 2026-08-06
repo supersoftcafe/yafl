@@ -23,6 +23,7 @@ import lowering.constants
 import lowering.drops
 import lowering.instances
 import lowering.hashed
+import lowering.derive_eq
 import lowering.generics
 import lowering.ast_inline
 import lowering.integers
@@ -195,6 +196,10 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0) -> st
     statements, dropped = lowering.drops.insert_drops(statements)
     if dropped:
         statements, _resolver, _p2 = _CONVERGE(statements)
+    # Derived enum equality, then the [hashed] split, as compiler.py does.
+    statements, _derived = lowering.derive_eq.derive_equality(statements)
+    if _derived:
+        statements, _resolver, _pd = _CONVERGE(statements)
     # [hashed] split before instance lowering, as compiler.py does.
     statements, _herrs, _hchanged = lowering.hashed.lower_hashed(statements)
     if _herrs:

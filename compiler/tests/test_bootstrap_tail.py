@@ -24,6 +24,7 @@ import lowering.constants
 import lowering.drops
 import lowering.instances
 import lowering.hashed
+import lowering.derive_eq
 import lowering.generics
 import lowering.hoist_nested
 import lowering.lambda_globals
@@ -76,6 +77,10 @@ class TestBootstrapTail(TestCase):
         # compiler.py does — the port's dump modes all run through postmonoRes,
         # which includes it. Omitting it here made every stdlib file that
         # declares an `instance` (complex, float, traits, …) diverge.
+        # Derived enum equality, then the [hashed] split, as compiler.py does.
+        statements, _derived = lowering.derive_eq.derive_equality(statements)
+        if _derived:
+            statements, _resolver, _pd = _CONVERGE(statements)
         # [hashed] split before instance lowering, as compiler.py does.
         statements, _herrs, _hchanged = lowering.hashed.lower_hashed(statements)
         if _herrs:

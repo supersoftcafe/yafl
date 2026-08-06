@@ -67,10 +67,6 @@ fun main(): System::Int
         self.assertIn("BasicEquality", diagnostics, diagnostics)
 
 
-# NOT YET IMPLEMENTED — see docs/derived-equality-plan.md. These describe the
-# target behaviour and are expected failures until phase 1 lands (the blocker
-# is that monomorphisation never instantiates a generic instance whose pattern
-# is a tuple). Delete the decorators as each starts passing.
 class TestDerivedForCompoundKeys(TestCase):
     def test_tuple_is_usable_as_a_dict_key(self):
         code, out = compile_and_run_stdlib_capture(_TUPLE_KEY, timeout=30)
@@ -101,7 +97,6 @@ fun main(): System::Int
         self.assertEqual(0, code, out)
         self.assertEqual("2010", out.strip())   # a=10, b=20
 
-    @unittest.expectedFailure
     def test_enum_is_usable_as_a_dict_key(self):
         src = """\
 import System
@@ -128,7 +123,6 @@ fun main(): System::Int
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
         self.assertEqual(43, code, out)   # a=3, b=4, Green(8) absent
 
-    @unittest.expectedFailure
     def test_recursive_enum_key(self):
         """Needs the recursive instance (phase 2): the derived `==` for a list
         refers to itself for the tail."""

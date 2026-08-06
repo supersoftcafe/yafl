@@ -22,6 +22,7 @@ import lowering.integers
 import lowering.strings
 import lowering.globalfuncs
 import lowering.hashed
+import lowering.derive_eq
 import lowering.complex_enums
 import lowering.lambda_globals
 import lowering.lambda_lift
@@ -578,6 +579,11 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     linearity_errors = lowering.linearity.check_linearity(new_statements, resolver)
     if linearity_errors:
         return linearity_errors
+
+    # Derived enum equality: qualifying enums gain a BasicEquality instance.
+    new_statements, derived = lowering.derive_eq.derive_equality(new_statements)
+    if derived:
+        new_statements, resolver, _passes = __converge(new_statements)
 
     # [hashed] functions split into wrapper + $hraw sibling — needs converged
     # types (the parameter's EnumSpec), and must precede monomorphisation so
