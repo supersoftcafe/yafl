@@ -101,6 +101,22 @@ class TypeSpec:
         return replace(resolver, self)
 
 
+def _holds_placeholder(spec: "TypeSpec") -> bool:
+    """True when `spec` contains a GenericPlaceholderSpec ANYWHERE. The
+    invariance checks need this because is_concrete() deliberately counts a
+    placeholder as concrete — a template's `ListBuilder<T>` must compare as
+    Unknown against `ListBuilder<Int>`, never as a rejection."""
+    if isinstance(spec, GenericPlaceholderSpec):
+        return True
+    if isinstance(spec, (ClassSpec, EnumSpec, NamedSpec)):
+        return any(_holds_placeholder(tp) for tp in spec.type_params)
+    if isinstance(spec, CombinationSpec):
+        return any(_holds_placeholder(m) for m in spec.types)
+    if isinstance(spec, TupleSpec):
+        return any(en.type is not None and _holds_placeholder(en.type) for en in spec.entries)
+    return False
+
+
 def trivially_assignable_equals(resolver: g.Resolver, left: TypeSpec | None, right: TypeSpec | None) -> bool | None:
     if left is None or right is None:
         return None
@@ -402,7 +418,37 @@ class ClassSpec(TypeSpec):
         if not isinstance(right, ClassSpec):
             return False # Right is resolved to something not a class so definitely False
         if self.name == right.name:
-            return True # Exact match
+            # Same class — but generic type arguments are INVARIANT, so they
+            # must match too. Comparing the NAME alone let List<B> pass where
+            # List<A> was declared (both mangle to the same System::List@…),
+            # and the first symptom was a codegen crash far from the fault.
+            # Three-valued, as the contract requires: a placeholder or an
+            # unresolved argument is Unknown, never a rejection — template
+            # bodies are checked before monomorphisation grounds them.
+            if len(self.type_params) != len(right.type_params):
+                return False
+            result: bool | None = True
+            for lp, rp in zip(self.type_params, right.type_params):
+                if lp == rp:
+                    continue
+                if (isinstance(lp, NamedSpec) or isinstance(rp, NamedSpec)
+                        or _holds_placeholder(lp) or _holds_placeholder(rp)
+                        or not lp.is_concrete() or not rp.is_concrete()):
+                    result = None
+                    continue
+                # Not spec-EQUAL — but invariance means type EQUIVALENCE, which the
+                # existing rules define with their deliberate leniencies (callable
+                # parameter NAMES do not distinguish types). Mutually assignable
+                # arguments are equivalent; anything else rejects.
+                fwd = lp.trivially_assignable_from(resolver, rp)
+                bwd = rp.trivially_assignable_from(resolver, lp)
+                if fwd is True and bwd is True:
+                    continue
+                if fwd is None or bwd is None:
+                    result = None
+                    continue
+                return False
+            return result
         rcls = find_class(right)
         if rcls._all_parents is None:
             return None # Right parents aren't resolved yet so Unknown
@@ -487,7 +533,41 @@ class EnumSpec(TypeSpec):
             return None
         if right.root_name != self.root_name:
             return False
-        return right.valid_leaf_names <= self.valid_leaf_names
+        if right.valid_leaf_names > self.valid_leaf_names or not (right.valid_leaf_names <= self.valid_leaf_names):
+            return False
+        # Same root — but generic type arguments are INVARIANT, and EnumSpec
+        # EQUALITY deliberately excludes type_params (convergence metadata),
+        # so assignability must compare them itself: pre-monomorphisation,
+        # List<A> and List<B> share root and leaves and differ ONLY here.
+        # Comparing the root alone let a List<B> pass where List<A> was
+        # declared, and the first symptom was a codegen crash far from the
+        # fault. Three-valued: placeholders and unresolved arguments are
+        # Unknown, never a rejection — template bodies are checked before
+        # monomorphisation grounds them.
+        if len(self.type_params) != len(right.type_params):
+            return None    # arity mismatch here is convergence noise, not proof
+        result: bool | None = True
+        for lp, rp in zip(self.type_params, right.type_params):
+            if lp == rp:
+                continue
+            if (isinstance(lp, NamedSpec) or isinstance(rp, NamedSpec)
+                    or _holds_placeholder(lp) or _holds_placeholder(rp)
+                    or not lp.is_concrete() or not rp.is_concrete()):
+                result = None
+                continue
+            # Not spec-EQUAL — but invariance means type EQUIVALENCE, which the
+            # existing rules define with their deliberate leniencies (callable
+            # parameter NAMES do not distinguish types). Mutually assignable
+            # arguments are equivalent; anything else rejects.
+            fwd = lp.trivially_assignable_from(resolver, rp)
+            bwd = rp.trivially_assignable_from(resolver, lp)
+            if fwd is True and bwd is True:
+                continue
+            if fwd is None or bwd is None:
+                result = None
+                continue
+            return False
+        return result
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
         # Do NOT recurse into all_fields: a recursive enum's all_fields

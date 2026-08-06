@@ -99,7 +99,7 @@ fun assignableFrom(r: Resolver, left: Spec, right: Spec): Tri
   ret match(left)
     (b: SBuiltin)      => builtinFrom(b, right)
     (c: SClass)        => classFrom(r, c, right)
-    (e: SEnum)         => enumFrom(e, right)
+    (e: SEnum)         => enumFrom(r, e, right)
     (t2: STuple)       => tupleFrom(r, t2, right)
     (cm: SCombination) => unionFrom(r, cm, right)
     (af: SArrayField)  => arrayFrom(r, af, right)
@@ -128,8 +128,82 @@ fun classFrom(r: Resolver, c: SClass, right: Spec): Tri
   if !contains(c.scName, "@")
     ret None                                      # left not resolved yet
   ret match(right)
-    (rc: SClass) => c.scName == rc.scName ? true : inheritsFrom(r, c, rc)
+    (rc: SClass) => c.scName == rc.scName
+      ? argsInvariant(r, chain(c.scParams), chain(rc.scParams))
+      : inheritsFrom(r, c, rc)
     (o: Spec)    => false
+
+# Same class or enum root — but generic type arguments are INVARIANT, and
+# enum EQUALITY deliberately excludes type_params (convergence metadata), so
+# assignability compares them itself: pre-monomorphisation, List<A> and
+# List<B> share root and leaves and differ ONLY here. Three-valued:
+# placeholders and unresolved arguments are Unknown, never a rejection —
+# template bodies are checked before monomorphisation grounds them.
+fun [tail] argsInvariant(r: Resolver, ls: Chain<Spec>, rs: Chain<Spec>): Tri
+  ret match(ls)
+    (nil: ChainEnd) => match(rs)
+      (nil2: ChainEnd) => true
+      (rl: ChainLink)  => None   # arity mismatch here is convergence noise
+    (ll: ChainLink) => match(rs)
+      (nil2: ChainEnd) => None
+      (rl: ChainLink)  => argPairSame(r, ll.value, rl.value) == 1
+        ? argsInvariant(r, ll.next, rl.next)
+        : argPairSame(r, ll.value, rl.value) == 0
+          ? argsRestUnknown(r, ll.next, rl.next)
+          : false
+
+# Once one pair is Unknown the answer can never be `true` again — walk the
+# rest only to find a definite `false`.
+fun [tail] argsRestUnknown(r: Resolver, ls: Chain<Spec>, rs: Chain<Spec>): Tri
+  ret match(ls)
+    (nil: ChainEnd) => None
+    (ll: ChainLink) => match(rs)
+      (nil2: ChainEnd) => None
+      (rl: ChainLink)  => argPairSame(r, ll.value, rl.value) != -1
+        ? argsRestUnknown(r, ll.next, rl.next)
+        : false
+
+# 1 = equivalent, 0 = unknown, -1 = definitely different. Not spec-EQUAL is
+# not the end: invariance means type EQUIVALENCE, which the existing rules
+# define with their deliberate leniencies (callable parameter NAMES do not
+# distinguish types) — mutually assignable arguments are equivalent.
+fun argPairSame(r: Resolver, a: Spec, b: Spec): Int
+  if eqSpec(a, b)
+    ret 1
+  if argOneUnknown(a, b)
+    ret 0
+  ret match(assignableFrom(r, a, b))
+    (fwd: Bool) => !fwd
+      ? -1
+      : match(assignableFrom(r, b, a))
+        (bwd: Bool) => bwd ? 1 : -1
+        ()          => 0
+    ()          => 0
+
+fun argOneUnknown(a: Spec, b: Spec): Bool
+  ret specUnresolved(a) || specUnresolved(b)
+
+fun specUnresolved(sp: Spec): Bool
+  ret match(sp)
+    (g2: SGeneric)     => true
+    (n: SNamed)        => true
+    (c: SClass)        => anyUnresolved(chain(c.scParams))
+    (e2: SEnum)        => anyUnresolved(chain(e2.seParams))
+    (cm: SCombination) => anyUnresolved(chain(cm.scTypes))
+    (t2: STuple)       => anyEntryUnresolved(chain(t2.stEntries))
+    (o: Spec)          => false
+
+fun [tail] anyUnresolved(ss: Chain<Spec>): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => specUnresolved(l.value) ? true : anyUnresolved(l.next)
+
+fun [tail] anyEntryUnresolved(es: Chain<SEntry>): Bool
+  ret match(es)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value.seType)
+      (sp: Spec) => specUnresolved(sp) ? true : anyEntryUnresolved(l.next)
+      ()         => anyEntryUnresolved(l.next)
 
 fun inheritsFrom(r: Resolver, c: SClass, rc: SClass): Tri
   ret match(soleItem(findType(r, rc.scName)))
@@ -157,13 +231,15 @@ fun specName(sp: Spec): String
 
 # An enum accepts a NARROWING of itself: same root, and the right's valid
 # leaves a subset of ours.
-fun enumFrom(e: SEnum, right: Spec): Tri
+fun enumFrom(r: Resolver, e: SEnum, right: Spec): Tri
   ret match(right)
     (re: SEnum) => !contains(e.seRoot, "@") || !contains(re.seRoot, "@")
       ? None
       : (re.seRoot != e.seRoot
           ? false
-          : allIn(chain(re.seValidLeaves), e.seValidLeaves))
+          : !allIn(chain(re.seValidLeaves), e.seValidLeaves)
+            ? false
+            : argsInvariant(r, chain(e.seParams), chain(re.seParams)))
     (o: Spec)   => false
 
 fun arrayFrom(r: Resolver, af: SArrayField, right: Spec): Tri
