@@ -619,7 +619,7 @@ class EnumSpec(TypeSpec):
                               resolver: g.Resolver,
                               replace: Callable[[g.Resolver, Any], Any],
                               visited: frozenset[str] = frozenset(),
-                              memo: dict[tuple[int, frozenset[str]], EnumSpec] | None = None,
+                              memo: dict[str, EnumSpec] | None = None,
                               ) -> EnumSpec:
         """Apply `replace` to every type nested in this enum's all_fields:
         descending through unions and tuples, and into nested enums' all_fields,
@@ -644,10 +644,19 @@ class EnumSpec(TypeSpec):
         (a cache that survives its compilation hands back stale specs)."""
         if memo is None:
             memo = {}
-        key = (id(self), visited)
+        # The SAME fingerprint as the port's ceMemoKey (complex_enums.yafl),
+        # component for component, so both compilers share one equivalence
+        # relation: any imprecision bites both identically (visible to the
+        # gate as output), never as a compiler divergence. Precision rests on
+        # the canonical-snapping invariant, as it did before the id() key;
+        # the complex_enums resolve memo stays on the precise CeKey.
+        key = (f"{self.root_name}#{'|'.join(self.valid_leaf_names)}#"
+               + "".join(n + "," for n, _ in self.all_fields)
+               + ("#1S" if self.is_complex else "#0S")
+               + ",".join(sorted(visited)))
         cached = memo.get(key)
         if cached is not None:
-            return cached[1]
+            return cached
 
         def fix(field_type: TypeSpec, inner_visited: frozenset[str]) -> TypeSpec:
             def descend(res: g.Resolver, thing):
@@ -658,12 +667,7 @@ class EnumSpec(TypeSpec):
             return field_type.search_and_replace(resolver, descend)
 
         result = self.walk_all_fields(fix, visited)
-        # The entry KEEPS THE KEY OBJECT ALIVE. Keying on id() is only sound
-        # while the object lives: the descent recurses on freshly built specs,
-        # and if one were collected CPython would recycle its address — handing
-        # a later, unrelated spec a wrong cache hit. Storing `self` in the value
-        # pins the address for the life of the memo.
-        memo[key] = (self, result)
+        memo[key] = result
         return result
 
 
