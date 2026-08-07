@@ -368,13 +368,18 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 # Pruned generic EnumSpecs (not in roots) are marked complex so generate()
 # never expands their placeholder fields.
 
-# ceDoneRoots/ceDoneSpecs: the per-pass resolved-by-root table — each
-# canonical root's full resolution with EMPTY visited, precomputed once with
-# a single shared memo (Python's per-pass amortisation). Tree sites hit it
-# in O(1) when their spec matches canonical content.
+# The pass context: canonical roots, the name map, the breaker set, and THE
+# memoized resolve (one cache per pass — Python's amortisation exactly).
 class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>,
-                    ceDoneRoots: List<String>, ceDoneSpecs: List<Spec>)
+                    ceResolve: (:CeKey): Spec)
 
+# The pass context carries THE memoized resolve — System::memoize over the
+# PRECISE CeKey, which is what the precise key was FOR (user ruling). The
+# `[lazy]` self-reference ties the knot: the closure captures the ctx that
+# carries it, so recursive resolution hits the cache at every level — a
+# cyclic CACHE, not a cyclic value. One cache per pass = Python's exact
+# amortisation (its per-pass memo dict closure); the resolved-by-root table
+# this replaces was the port's hand-rolled substitute for it.
 fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let roots = ceCollectRoots(statements)
   if isEmpty(roots.erNames)
@@ -383,29 +388,20 @@ fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let complexSet = cePickBreakers(ceEdges(roots, map), roots)
   if isEmpty(complexSet)
     ret statements
-  let c0 = CeCtx(roots, map, complexSet, List<String>(), List<Spec>())
-  let table = ceBuildTable(chain(roots.erNames), chain(roots.erSpecs), c0,
-                           List<String>(), List<Spec>(),
-                           Dict<CeKey, Spec>())
-  ret ceStmts(chain(statements),
-              CeCtx(roots, map, complexSet, table.roots2, table.specs2),
-              List<PStmt>())
+  let [lazy] c: CeCtx = CeCtx(roots, map, complexSet,
+                              memoize<CeKey, Spec>((k: CeKey) =>
+                                ceResolveUncached(k, c)))
+  ret ceStmts(chain(statements), c, List<PStmt>())
 
 # `visited` breaks CYCLES, but on its own it does not stop the walk
 # re-deriving a SHARED subgraph once per path that reaches it — and the
 # number of paths through a densely mutually-recursive enum graph is
-# exponential in its size. Python's cure is a per-pass memo keyed on OBJECT
-# IDENTITY + visited — a free O(1) key the pure port doesn't have (a full
-# structural key re-created the collapse but paid O(subtree) per call, which
-# timed the giant node/param graphs out). The port keys on ROOT NAME plus a
-# depth-0 fingerprint (field names, valid leaves, flag) plus the sorted
-# visited set: within one pass, embedded enum copies are SNAPPED to their
-# canonical all_fields (the generics finalize refresh), so same root + same
-# shallow shape means same content and hence same resolution — verified
-# byte-for-byte by the postmono and C contracts. Since the CeKey migration the
-# key is PRECISE (the spec itself, deep-compared), so that invariant is no
-# longer load-bearing for correctness — only for lookup speed. Threaded,
-# seeded fresh per ceMarkEnumNode entry.
+# exponential in its size. The cure is the pass-level memo: Python's is a
+# closure over a per-pass dict keyed by CeKey; the port's is System::memoize
+# over the SAME precise CeKey, carried in the ctx (ceResolve) — one cache,
+# every tree site and every recursion level, no threading. The key is
+# PRECISE (the spec itself, deep-compared; [hashed]/[refeq] make that
+# affordable), so no canonical-snapping trust is load-bearing here.
 # ── the memo key ─────────────────────────────────────────────────────────────
 # A DEDICATED key type replacing the string fingerprint (which omitted the
 # field TYPES — the very thing this pass rewrites — and was sound only via the
@@ -433,9 +429,8 @@ class [final] CeKey(ckSpec: Spec, ckVisited: List<String>)
 # equality compares as sets — the sorted copy this used to make was the
 # dominant allocation of the whole pass (the 08-06 self-compile storm:
 # +2.5GB transient churn born exactly here). Python's mirror holds the
-# frozenset for the same reason.
-fun ceKey(e2: SEnum, visited: List<String>): CeKey
-  ret CeKey(e2, visited)
+# frozenset for the same reason. Keys are built inline at the ceResolve
+# call sites.
 
 instance [ambient] System::BasicEquality<CeKey>
   fun `==`(l: CeKey, r: CeKey): System::Bool
@@ -631,12 +626,8 @@ fun [tail] ckEqEntries(as2: Chain<SEntry>, bs: Chain<SEntry>): System::Bool
         : ckEqEntries(la.next, lb.next)
 
 
-fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx,
-                   memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
-  ret match(ft)
-    (n: SNamed) => (ceResolveNamedLeaf(n, ft, c), memo)
-    (e2: SEnum) => ceResolveEnumMemo(e2, visited, c, memo)
-    (o: Spec)   => (ft, memo)
+fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx): Spec
+  ret c.ceResolve(CeKey(ft, visited))
 
 fun ceResolveNamedLeaf(n: SNamed, ft: Spec, c: CeCtx): Spec
   ret match(ceLookup2(c.ceMap, n.snName))
@@ -645,82 +636,37 @@ fun ceResolveNamedLeaf(n: SNamed, ft: Spec, c: CeCtx): Spec
       ()            => ft
     ()                  => ft
 
-# The per-pass table (built once, empty-visited resolutions of the CANONICAL
-# roots) serves every tree site whose spec matches canonical content — O(1),
-# Python's cross-site amortisation. Anything else (stale copies; recursion
-# with a non-empty visited during the table build itself) goes through the
-# threaded memo.
-fun [tail] ceBuildTable(ns: Chain<String>, sps: Chain<SEnum>, c0: CeCtx,
-                        roots2: List<String>, specs2: List<Spec>,
-                        memo: Dict<CeKey, Spec>): (roots2: List<String>, specs2: List<Spec>)
-  ret match(ns)
-    (nil: ChainEnd) => (roots2, specs2)
-    (n: ChainLink)  => match(sps)
-      (nil2: ChainEnd) => (roots2, specs2)
-      (s2: ChainLink)  => ceResolveEnumMemo(s2.value, List<String>(), c0,
-                                            memo)
-        |> (out) => ceBuildTable(n.next, s2.next, c0,
-                                 append(roots2, n.value),
-                                 append(specs2, out.spec), out.memo)
+# The memoized body: the full dispatch, exactly Python's
+# _resolve_named_uncached. Pure in the key given the pass context; recursion
+# re-enters through c.ceResolve so every level hits the cache.
+fun ceResolveUncached(k: CeKey, c: CeCtx): Spec
+  ret match(k.ckSpec)
+    (n: SNamed) => ceResolveNamedLeaf(n, k.ckSpec, c)
+    (e2: SEnum) => ceResolveEnum(e2, k.ckVisited, c)
+    (o: Spec)   => k.ckSpec
 
-fun [tail] ceTableLookup(ns: Chain<String>, sps: Chain<Spec>,
-                         root: String): Spec|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(sps)
-      (nil2: ChainEnd) => None
-      (s2: ChainLink)  => n.value == root
-        ? s2.value
-        : ceTableLookup(n.next, s2.next, root)
-
-fun ceResolveEnumMemo(e2: SEnum, visited: List<String>, c: CeCtx,
-                      memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
-  ret match(ceTableHit(e2, visited, c))
-    (hit: Spec) => (hit, memo)
-    ()          => ceResolveEnumKeyed(e2, visited, c, memo)
-
-# A tree site (empty visited) whose spec matches the CANONICAL root's
-# depth-0 shape resolves to the precomputed table entry.
-fun ceTableHit(e2: SEnum, visited: List<String>, c: CeCtx): Spec|None
-  if !isEmpty(visited) || isEmpty(c.ceDoneRoots)
-    ret None
-  ret match(ceRootSpecOf(c.ceRoots, e2.seRoot))
-    (canonical: SEnum) => ceKey(e2, visited) == ceKey(canonical, visited)
-      ? ceTableLookup(chain(c.ceDoneRoots), chain(c.ceDoneSpecs), e2.seRoot)
-      : None
-    ()                 => None
-
-fun ceResolveEnumKeyed(e2: SEnum, visited: List<String>, c: CeCtx,
-                       memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
-  let key = ceKey(e2, visited)
-  ret match(get(memo, key))
-    (hit: Spec) => (hit, memo)
-    ()          => ceResolveEnum(e2, visited, c, memo)
-      |> (out) => (out.spec, put(out.memo, key, out.spec))
-
-fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx,
-                  memo: Dict<CeKey, Spec>): (spec: Spec, memo: Dict<CeKey, Spec>)
+fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx): Spec
   let isComplex = contains2(c.ceSet, e2.seRoot)
   # A stale reference to a PRUNED generic: mark complex unconditionally.
   if !isComplex && !contains2(c.ceRoots.erNames, e2.seRoot)
-    ret (ceWithFlag(e2, true), memo)
+    ret ceWithFlag(e2, true)
   if contains2(visited, e2.seRoot)
-    ret (ceWithFlag(e2, isComplex), memo)
+    ret ceWithFlag(e2, isComplex)
   let v2 = append(visited, e2.seRoot)
-  let out = ceFields(chain(e2.seAllFields), v2, c, List<SField>(), memo)
-  ret (SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
-             e2.seLine, out.fields, isComplex),
-       out.memo)
+  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
+            e2.seLine,
+            ceFields(chain(e2.seAllFields), v2, c, List<SField>()),
+            isComplex)
 
 fun [tail] ceFields(fs: Chain<SField>, visited: List<String>, c: CeCtx,
-                    acc: List<SField>,
-                    memo: Dict<CeKey, Spec>): (fields: List<SField>, memo: Dict<CeKey, Spec>)
+                    acc: List<SField>): List<SField>
   ret match(fs)
-    (nil: ChainEnd) => (acc, memo)
-    (l: ChainLink)  => ceResolveNamed(l.value.sfType, visited, c, memo)
-      |> (out) => ceFields(l.next, visited, c,
-                           append(acc, SField(l.value.sfName, out.spec)),
-                           out.memo)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceFields(l.next, visited, c,
+                                append(acc,
+                                       SField(l.value.sfName,
+                                              ceResolveNamed(l.value.sfType,
+                                                             visited, c))))
 
 fun ceWithFlag(e2: SEnum, flag: Bool): Spec
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
@@ -870,11 +816,16 @@ fun ceSpec(sp: Spec, c: CeCtx): Spec
     (o: Spec)          => sp
 
 # EnumSpec traversal: params visited generally, then the mark callback.
+# Tree site: Python's `mark` exactly — the NODE's flag is plain set
+# membership (the stale-pruned-generic rule applies ONLY inside the memoized
+# field resolution, never to the node itself: a template-named arm spec in a
+# monomorphised function must NOT be forced complex), and the FIELDS resolve
+# through the pass memo with EMPTY visited (`_resolve_named(ft)`).
 fun ceMarkEnumNode(e2: SEnum, c: CeCtx): Spec
-  let out = ceFields(chain(e2.seAllFields), List<String>(), c,
-                     List<SField>(), Dict<CeKey, Spec>())
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-            ceSpecList(e2.seParams, c), e2.seLine, out.fields,
+            ceSpecList(e2.seParams, c), e2.seLine,
+            ceFields(chain(e2.seAllFields), List<String>(), c,
+                     List<SField>()),
             contains2(c.ceSet, e2.seRoot))
 
 fun [tail] ceEntries(es: Chain<SEntry>, c: CeCtx,
