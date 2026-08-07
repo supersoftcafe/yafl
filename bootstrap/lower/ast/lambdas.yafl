@@ -163,6 +163,8 @@ fun cpExpr(x: PExpr, path: List<String>, acc: ClPaths): ClPaths
                                    cpExpr(fa.faValue, path, a2)))
     (ar: PeArrayRead) => cpExpr(ar.arrIndex, path, cpExpr(ar.arrObj, path, acc))
     (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
+    (wx: PeWith)      => cpExpr(wx.withRepls, path,
+                                cpExpr(wx.withSubject, path, acc))
     (pl: PeParallel)  => cpExpr(pl.parParams, path, acc)
     (lp: PeLoop)      => cpExprs(chain(lp.loopParams), path, cpExpr(lp.loopBody, path, acc))
     (rc: PeRecur)     => cpExprs(chain(rc.recArgs), path, acc)
@@ -556,6 +558,10 @@ fun clExpr(x: PExpr, r: Resolver, paths: ClPaths, exports: List<PStmt>): ClEx
     (c: PeCall)       => clExpr(c.function, r, paths, exports)
       |> (f2) => (f2, clExpr(c.parameter, r, paths, f2.clExExports))
       |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine), p.clExExports)
+    (wx: PeWith)      => clExpr(wx.withSubject, r, paths, exports)
+      |> (s2) => (s2, clExpr(wx.withRepls, r, paths, s2.clExExports))
+      |> (s2, p) => ClEx(PeWith(s2.clExExpr, p.clExExpr, wx.pewLine),
+                         p.clExExports)
     (tp: PeTuple)     => clTupEnts(chain(tp.exprs), r, paths, exports, List<PTupEnt>())
       |> (es) => ClEx(PeTuple(es.clEntsEnts, tp.petLine), es.clEntsExports)
     (te: PeTernary)   => clExpr(te.condition, r, paths, exports)

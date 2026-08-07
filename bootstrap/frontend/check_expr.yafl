@@ -551,6 +551,8 @@ fun referencedNames(x: PExpr, acc: List<String>): List<String>
                                          referencedNames(ar.arrObj, acc))
     (cv: PeConvert) => referencedNames(cv.convInner, acc)
     # A NewEnum's references live in its field-arg VALUE expressions.
+    (wx: PeWith)   => referencedNames(wx.withRepls,
+                                      referencedNames(wx.withSubject, acc))
     (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: List<String>, fa: PFieldArg) =>
                             referencedNames(fa.faValue, a2))
     (pl: PeParallel) => referencedNames(pl.parParams, acc)

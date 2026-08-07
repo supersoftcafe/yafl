@@ -222,6 +222,11 @@ fun drExpr(x: PExpr, wheres: List<Spec>, r: Resolver,
                       ? PeCall(pairA(p.deExpr), pairB(p.deExpr), c.pecLine)
                       : x,
                     p.deChanged)
+    (wx: PeWith)   => drPair(wx.withSubject, wx.withRepls, wheres, r, ids)
+      |> (p) => DrE(p.deChanged
+                      ? PeWith(pairA(p.deExpr), pairB(p.deExpr), wx.pewLine)
+                      : x,
+                    p.deChanged)
     (tp: PeTuple)  => drEntries(tp, wheres, r, ids)
     (te: PeTernary) => drTernary(te, wheres, r, ids)
     (bk: PeBlock)  => drBlock(bk, wheres, r, ids)
@@ -727,6 +732,9 @@ fun drFixExpr(x: PExpr, let2: PsLet): DrBx
       |> (o) => DrBx(PeDot(o.bxExpr, d.member, d.pedLine), o.bxDid, o.bxOk)
     (c: PeCall)     => drFixPair(c.function, c.parameter, let2)
       |> (p) => DrBx(PeCall(pairA(p.bxExpr), pairB(p.bxExpr), c.pecLine),
+                     p.bxDid, p.bxOk)
+    (wx: PeWith)    => drFixPair(wx.withSubject, wx.withRepls, let2)
+      |> (p) => DrBx(PeWith(pairA(p.bxExpr), pairB(p.bxExpr), wx.pewLine),
                      p.bxDid, p.bxOk)
     (tp: PeTuple)   => drFixEntries(tp, let2)
     (bk: PeBlock)   => drFixBlock(bk, let2)

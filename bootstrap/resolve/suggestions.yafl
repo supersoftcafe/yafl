@@ -108,6 +108,8 @@ fun hintExpr(x: PExpr, r: Resolver, acc: Hints): Hints
     (nw: PeNew)    => hintExpr(nw.newParam, r, acc)
     (ar: PeArrayRead) => hintExpr(ar.arrIndex, r, hintExpr(ar.arrObj, r, acc))
     (cv: PeConvert) => hintExpr(cv.convInner, r, acc)
+    (wx: PeWith)   => hintExpr(wx.withRepls, r,
+                               hintExpr(wx.withSubject, r, acc))
     (o: PExpr)     => acc
 
 fun hintExprOpt2(x: PExpr, r: Resolver, acc: Hints): Hints

@@ -301,6 +301,9 @@ fun llFold(x: PExpr, name: String, n: Int, calls: Bool): Int
     (c: PeCall)    => llCountOne(c.parameter, name,
                                  llCountOne(c.function, name, n, calls),
                                  calls)
+    (wx: PeWith)   => llCountOne(wx.withRepls, name,
+                                 llCountOne(wx.withSubject, name, n, calls),
+                                 calls)
     (tp: PeTuple)  => llFoldEnts(chain(tp.exprs), name, n, calls)
     (te: PeTernary) => llCountOne(te.falseResult, name,
                          llCountOne(te.trueResult, name,
@@ -512,6 +515,9 @@ fun llExpr(x: PExpr, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
                                      ar.pearLine)
     (cv: PeConvert) => PeConvert(llExpr(cv.convInner, ctx, paramLets),
                                  cv.convTarget, cv.pecvLine)
+    (wx: PeWith)   => PeWith(llExpr(wx.withSubject, ctx, paramLets),
+                             llExpr(wx.withRepls, ctx, paramLets),
+                             wx.pewLine)
     (pl: PeParallel) => PeParallel(llExpr(pl.parParams, ctx, paramLets),
                                    pl.pepLine)
     (lp: PeLoop)   => PeLoop(llExpr(lp.loopBody, ctx, paramLets),

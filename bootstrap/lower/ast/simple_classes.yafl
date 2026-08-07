@@ -498,6 +498,7 @@ fun scCuExpr(x: PExpr, acc: List<Spec>): List<Spec>
                                      scCuExpr(fa.faValue, a2)))
     (ar: PeArrayRead) => scCuExpr(ar.arrIndex, scCuExpr(ar.arrObj, acc))
     (cv: PeConvert)   => scCuSpec(cv.convTarget, scCuExpr(cv.convInner, acc))
+    (wx: PeWith)      => scCuExpr(wx.withRepls, scCuExpr(wx.withSubject, acc))
     (pl: PeParallel)  => scCuExpr(pl.parParams, acc)
     (lp: PeLoop)      => scCuExpr(lp.loopBody, scCuExprs(chain(lp.loopParams), acc))
     (rc: PeRecur)     => scCuExprs(chain(rc.recArgs), acc)
@@ -1088,6 +1089,8 @@ fun scTKids(x: PExpr, c: ScCtx, r: Resolver): PExpr
                                      scTExpr(ar.arrIndex, c, r), ar.pearLine)
     (cv: PeConvert) => PeConvert(scTExpr(cv.convInner, c, r),
                                  scTSpec(cv.convTarget, c), cv.pecvLine)
+    (wx: PeWith)   => PeWith(scTExpr(wx.withSubject, c, r),
+                             scTExpr(wx.withRepls, c, r), wx.pewLine)
     (pl: PeParallel) => PeParallel(scTExpr(pl.parParams, c, r), pl.pepLine)
     (lp: PeLoop)   => PeLoop(scTExpr(lp.loopBody, c, r),
                              scTExprs(chain(lp.loopParams), c, r,

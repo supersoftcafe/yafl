@@ -811,6 +811,8 @@ fun ceExpr(x: PExpr, c: CeCtx): PExpr
                                      ceExpr(ar.arrIndex, c), ar.pearLine)
     (cv: PeConvert) => PeConvert(ceExpr(cv.convInner, c),
                                  ceSpec(cv.convTarget, c), cv.pecvLine)
+    (wx: PeWith)   => PeWith(ceExpr(wx.withSubject, c),
+                             ceExpr(wx.withRepls, c), wx.pewLine)
     (pl: PeParallel) => PeParallel(ceExpr(pl.parParams, c), pl.pepLine)
     (o: PExpr)     => x
 

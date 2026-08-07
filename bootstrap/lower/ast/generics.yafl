@@ -206,6 +206,7 @@ fun fciExpr(x: PExpr, acc: GRefs): GRefs
     (nw: PeNew)    => fciExpr(nw.newParam, fciSpecOpt(nw.newType, acc))
     (ar: PeArrayRead) => fciExpr(ar.arrIndex, fciExpr(ar.arrObj, acc))
     (cv: PeConvert) => fciSpecOpt(cv.convTarget, fciExpr(cv.convInner, acc))
+    (wx: PeWith)   => fciExpr(wx.withRepls, fciExpr(wx.withSubject, acc))
     (pl: PeParallel) => fciExpr(pl.parParams, acc)
     (o: PExpr)     => acc
 
@@ -546,6 +547,9 @@ fun gsubExpr(x: PExpr, sub: GSub, visited: List<String>): PExpr
     (cv: PeConvert) => PeConvert(gsubExpr(cv.convInner, sub, visited),
                                  gsubSpec(cv.convTarget, sub, visited),
                                  cv.pecvLine)
+    (wx: PeWith)   => PeWith(gsubExpr(wx.withSubject, sub, visited),
+                             gsubExpr(wx.withRepls, sub, visited),
+                             wx.pewLine)
     (pl: PeParallel) => PeParallel(gsubExpr(pl.parParams, sub, visited),
                                    pl.pepLine)
     (o: PExpr)     => x
@@ -1072,6 +1076,8 @@ fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
                                      rcrExpr(ar.arrIndex, refs), ar.pearLine)
     (cv: PeConvert) => PeConvert(rcrExpr(cv.convInner, refs),
                                  rcrSpec(cv.convTarget, refs), cv.pecvLine)
+    (wx: PeWith)   => PeWith(rcrExpr(wx.withSubject, refs),
+                             rcrExpr(wx.withRepls, refs), wx.pewLine)
     (pl: PeParallel) => PeParallel(rcrExpr(pl.parParams, refs), pl.pepLine)
     (o: PExpr)     => x
 
@@ -1235,6 +1241,7 @@ fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec>
     (nw: PeNew)    => cccExpr(nw.newParam, acc)
     (ar: PeArrayRead) => cccExpr(ar.arrIndex, cccExpr(ar.arrObj, acc))
     (cv: PeConvert) => cccExpr(cv.convInner, acc)
+    (wx: PeWith)   => cccExpr(wx.withRepls, cccExpr(wx.withSubject, acc))
     (pl: PeParallel) => cccExpr(pl.parParams, acc)
     (o: PExpr)     => acc
 
@@ -1755,6 +1762,8 @@ fun rtrExpr(x: PExpr, r: Resolver, traits: List<PStmt>): PExpr
                                      ar.pearLine)
     (cv: PeConvert) => PeConvert(rtrExpr(cv.convInner, r, traits),
                                  cv.convTarget, cv.pecvLine)
+    (wx: PeWith)   => PeWith(rtrExpr(wx.withSubject, r, traits),
+                             rtrExpr(wx.withRepls, r, traits), wx.pewLine)
     (pl: PeParallel) => PeParallel(rtrExpr(pl.parParams, r, traits),
                                    pl.pepLine)
     (o: PExpr)     => x
@@ -2144,6 +2153,8 @@ fun rfrExpr(x: PExpr, c: Canon): PExpr
                                      rfrExpr(ar.arrIndex, c), ar.pearLine)
     (cv: PeConvert) => PeConvert(rfrExpr(cv.convInner, c),
                                  rfrSpec(cv.convTarget, c), cv.pecvLine)
+    (wx: PeWith)   => PeWith(rfrExpr(wx.withSubject, c),
+                             rfrExpr(wx.withRepls, c), wx.pewLine)
     (pl: PeParallel) => PeParallel(rfrExpr(pl.parParams, c), pl.pepLine)
     (o: PExpr)     => x
 
@@ -2359,6 +2370,8 @@ fun rugExpr(x: PExpr, r: Resolver, acc: List<PErr>): List<PErr>
     (nw: PeNew)    => rugExpr(nw.newParam, r, acc)
     (ar: PeArrayRead) => rugExpr(ar.arrIndex, r, rugExpr(ar.arrObj, r, acc))
     (cv: PeConvert) => rugExpr(cv.convInner, r, acc)
+    (wx: PeWith)   => rugExpr(wx.withRepls, r,
+                              rugExpr(wx.withSubject, r, acc))
     (pl: PeParallel) => rugExpr(pl.parParams, r, acc)
     (o: PExpr)     => acc
 
