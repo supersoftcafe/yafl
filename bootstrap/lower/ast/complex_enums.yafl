@@ -409,9 +409,10 @@ fun markComplexEnums(statements: List<PStmt>): List<PStmt>
 # ── the memo key ─────────────────────────────────────────────────────────────
 # A DEDICATED key type replacing the string fingerprint (which omitted the
 # field TYPES — the very thing this pass rewrites — and was sound only via the
-# canonical-snapping invariant). CeKey carries the spec itself plus the sorted
-# visited set, so the key IS the input and the invariant leaves the trusted
-# set: if it is ever violated, lookups get slower, never wrong.
+# canonical-snapping invariant). CeKey carries the spec itself plus the
+# visited set (order-insensitive digest, set equality), so the key IS the
+# input and the invariant leaves the trusted set: if it is ever violated,
+# lookups get slower, never wrong.
 #
 # Affordable because Spec is [hashed] and the walks opt in:
 #   * ckHashSpec is [hashed] — each node's structural hash computes once per
@@ -426,16 +427,57 @@ fun markComplexEnums(statements: List<PStmt>): List<PStmt>
 
 class [final] CeKey(ckSpec: Spec, ckVisited: List<String>)
 
-# `visited` is a SET; sort at construction so key identity does not depend on
-# the order roots were pushed.
+# `visited` is a SET, held AS IS: keys are built once per memo lookup, so the
+# construction must not allocate beyond the key object itself. Order
+# independence comes from the DIGEST (XOR of member hashes, commutative), and
+# equality compares as sets — the sorted copy this used to make was the
+# dominant allocation of the whole pass (the 08-06 self-compile storm:
+# +2.5GB transient churn born exactly here). Python's mirror holds the
+# frozenset for the same reason.
 fun ceKey(e2: SEnum, visited: List<String>): CeKey
-  ret CeKey(e2, sort(visited))
+  ret CeKey(e2, visited)
 
 instance [ambient] System::BasicEquality<CeKey>
   fun `==`(l: CeKey, r: CeKey): System::Bool
-    ret eqStrs(l.ckVisited, r.ckVisited) && ckEqSpec(l.ckSpec, r.ckSpec)
+    ret ckSetEqStrs(l.ckVisited, r.ckVisited) && ckEqSpec(l.ckSpec, r.ckSpec)
   fun hashOf(v: CeKey): System::Int32
-    ret ckHashStrs(chain(v.ckVisited), ckHashSpec(v.ckSpec))
+    ret ckMix(ckHashSpec(v.ckSpec), ckDigestStrs(chain(v.ckVisited), 0i32))
+
+# Order-insensitive set digest: XOR is commutative, and string hashes are
+# cached in the header, so this is one pointer walk with no allocation.
+fun [tail] ckDigestStrs(ss: Chain<String>, acc: System::Int32): System::Int32
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ckDigestStrs(l.next, acc ^ hashOf(l.value))
+
+# ── the scFix memo key (simple_classes) ──────────────────────────────────────
+# The STRING fingerprint, restored 08-07. Python's replace_in_all_fields memo
+# is keyed (id(spec), frozenset(visited)) — identity, cheap hits, false-miss
+# safe. YAFL has no identity, and the value-precise CeKey pays a FULL deep
+# walk per HIT (equal value, different object — [refeq] cannot fire), which
+# was most of the 08-06 storm. This fingerprint is the port's closest mirror
+# of the identity key: hits are one cached-hash string compare. CeKey stays
+# the key where Python actually uses CeKey: the complex_enums resolve memo.
+fun ceMemoKey(e2: SEnum, visited: List<String>): String
+  ret e2.seRoot + "#" + join(e2.seValidLeaves, "|")
+      + "#" + ceFieldNames(chain(e2.seAllFields), StringBuilder())
+      + "#" + (e2.seComplex ? "1" : "0")
+      + "S" + join(sort(visited), ",")
+
+fun [tail] ceFieldNames(fs: Chain<SField>, sb: StringBuilder): String
+  ret match(fs)
+    (nil: ChainEnd) => toString(sb)
+    (l: ChainLink)  => ceFieldNames(l.next, append(sb, l.value.sfName + ","))
+
+# Set equality without allocation: mutual containment. Quadratic in the
+# visited depth, which is small, and only reached on digest-equal keys.
+fun ckSetEqStrs(a: List<String>, b: List<String>): System::Bool
+  ret ckSubset(chain(a), b) && ckSubset(chain(b), a)
+
+fun [tail] ckSubset(ss: Chain<String>, b: List<String>): System::Bool
+  ret match(ss)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => contains2(b, l.value) ? ckSubset(l.next, b) : false
 
 # ── deep hash (keying only) ──────────────────────────────────────────────────
 # Structural, INCLUDING seAllFields and seComplex. Content only, never an

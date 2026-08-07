@@ -253,7 +253,11 @@ def _deep_eq_opt(a: "t.TypeSpec | None", b: "t.TypeSpec | None") -> bool:
 @dataclasses.dataclass(frozen=True, eq=False)
 class CeKey:
     spec: t.TypeSpec
-    visited: tuple[str, ...]     # SORTED: `visited` is a set
+    visited: frozenset[str]      # held as is — frozenset hashing is already
+                                 # order-insensitive and cached; the sorted
+                                 # tuple this used to build was a per-lookup
+                                 # allocation (the port's 08-06 churn storm,
+                                 # mirrored)
 
     def __eq__(self, other: object) -> bool:
         return (isinstance(other, CeKey) and self.visited == other.visited
@@ -324,7 +328,7 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     memo: dict[CeKey, t.TypeSpec] = {}
 
     def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
-        key = CeKey(ft, tuple(sorted(visited)))
+        key = CeKey(ft, visited)
         hit = memo.get(key)
         if hit is not None:
             return hit

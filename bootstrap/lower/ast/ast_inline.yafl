@@ -1108,16 +1108,23 @@ fun [tail] hoFnNames2(ss: Chain<PStmt>, acc: List<String>): List<String>
 
 # Map of inlinable name → PsFun (statement order); functions on a call-graph
 # cycle (incl. self-recursion) are pruned.
-class [final] Catalog(caNames: List<String>, caFns: List<PsFun>)
+# caMap mirrors Python's `catalog: dict[str, FunctionStatement]` — the LOOKUP
+# side. The lists stay for iteration (edges, prune). The parallel-list scan
+# this replaces re-reversed the whole catalogue per beta candidate per round:
+# ~2/3 of the 08-06 storm's page allocation (storm_samples.txt).
+class [final] Catalog(caNames: List<String>, caFns: List<PsFun>,
+                      caMap: Dict<String, PsFun>)
 
 fun aiBuildCatalog(statements: List<PStmt>): Catalog
   let classMembers = aiClassMemberNames(statements)
   let cands = aiCandidates(chain(statements), classMembers,
-                           Catalog(List<String>(), List<PsFun>()))
+                           Catalog(List<String>(), List<PsFun>(),
+                                   Dict<String, PsFun>()))
   let edges = aiCatEdges(chain(cands.caFns), cands.caNames,
                          EEdges(List<String>(), List<List<String>>()))
   ret aiPruneCycles(chain(cands.caNames), chain(cands.caFns), edges,
-                    Catalog(List<String>(), List<PsFun>()))
+                    Catalog(List<String>(), List<PsFun>(),
+                            Dict<String, PsFun>()))
 
 fun [tail] aiCandidates(ss: Chain<PStmt>, classMembers: List<String>,
                         acc: Catalog): Catalog
@@ -1127,7 +1134,8 @@ fun [tail] aiCandidates(ss: Chain<PStmt>, classMembers: List<String>,
       (f: PsFun) => aiIsInlinable(f, classMembers)
         ? aiCandidates(l.next, classMembers,
                        Catalog(append(acc.caNames, f.fName),
-                               append(acc.caFns, f)))
+                               append(acc.caFns, f),
+                               put<String, PsFun>(acc.caMap, f.fName, f)))
         : aiCandidates(l.next, classMembers, acc)
       (o: PStmt) => aiCandidates(l.next, classMembers, acc)
 
@@ -1158,7 +1166,9 @@ fun [tail] aiPruneCycles(ns: Chain<String>, fs: Chain<PsFun>, edges: EEdges,
         ? aiPruneCycles(n.next, f.next, edges, acc)
         : aiPruneCycles(n.next, f.next, edges,
                         Catalog(append(acc.caNames, n.value),
-                                append(acc.caFns, f.value)))
+                                append(acc.caFns, f.value),
+                                put<String, PsFun>(acc.caMap, n.value,
+                                                   f.value)))
 
 fun aiReachesSelf(start: String, edges: EEdges): Bool
   ret aiDfs(ceChildrenOf(edges, start), start, edges, List<String>())
@@ -1176,16 +1186,7 @@ fun [tail] aiDfs(stack: List<String>, start: String, edges: EEdges,
                 start, edges, append(seen, l.value))
 
 fun aiCatLookup(c: Catalog, name: String): PsFun|None
-  ret aiCatLoop(chain(c.caNames), chain(c.caFns), name)
-
-fun [tail] aiCatLoop(ns: Chain<String>, fs: Chain<PsFun>,
-                     name: String): PsFun|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(fs)
-      (nil2: ChainEnd) => None
-      (f: ChainLink)   => n.value == name ? f.value
-                                          : aiCatLoop(n.next, f.next, name)
+  ret get<String, PsFun>(c.caMap, name)
 
 # ── fresh suffixes ───────────────────────────────────────────────────────────
 # Python's module counter, reset by inline_ast: $inl1, $inl2, ... minted in
@@ -1491,12 +1492,16 @@ fun aiExprInlineFunction(target: PsFun, args: List<PExpr>, r: Resolver|None,
 # The single-use scan sees only THIS sequence; nested blocks re-reduce against
 # their own statements inside the callback (bottom-up, like Python).
 
-class [final] Singles(sgNames: List<String>, sgLams: List<PExpr>)
+# sgMap is the lookup side (the parallel lists scanned per candidate before —
+# the storm's second face); sgNames stays for the dead-lambda contains scan.
+class [final] Singles(sgNames: List<String>, sgLams: List<PExpr>,
+                      sgMap: Dict<String, PExpr>)
 
 fun aiBetaReduceExpressions(stmts: List<PStmt>, catalog: Catalog,
                             r: Resolver|None, n: Int): RwNSs
   let singles = aiSingles(chain(stmts), stmts, 0,
-                          Singles(List<String>(), List<PExpr>()))
+                          Singles(List<String>(), List<PExpr>(),
+                                  Dict<String, PExpr>()))
   let out = rwnStmts(stmts, RwN((n2: Int, x: PExpr) =>
                                   aiBetaCb(n2, x, singles, catalog, r),
                                 rwnNoStmt),
@@ -1518,7 +1523,8 @@ fun aiSingleAdd(st: PStmt, all: List<PStmt>, i: Int, acc: Singles): Singles
         (lam: PeLambda) => aiUsesAfter(chain(drop(all, i + 1)), let2.lName,
                                        0) == 1
           ? Singles(append(acc.sgNames, let2.lName),
-                    append<PExpr>(acc.sgLams, dv))
+                    append<PExpr>(acc.sgLams, dv),
+                    put<String, PExpr>(acc.sgMap, let2.lName, dv))
           : acc
         (o: PExpr)      => acc
       ()          => acc
@@ -1531,7 +1537,7 @@ fun [tail] aiUsesAfter(ss: Chain<PStmt>, name: String, n: Int): Int
                                    n + aiRefCountStmt(l.value, name))
 
 fun aiSingleLam(singles: Singles, name: String): PeLambda|None
-  ret match(aiSubLoop(chain(singles.sgNames), chain(singles.sgLams), name))
+  ret match(get<String, PExpr>(singles.sgMap, name))
     (x: PExpr) => match(x)
       (lam: PeLambda) => lam
       (o: PExpr)      => None
