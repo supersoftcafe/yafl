@@ -28,6 +28,7 @@ from typing import Any
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
+from memoize import memoize
 
 
 
@@ -323,18 +324,13 @@ def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
     # number of paths through a densely mutually-recursive enum graph is
     # exponential in its size. The result for a given (spec, visited) is a pure
     # function of the graph, so deriving it once and reusing it collapses the
-    # path-walk back to the graph's actual size. Local to this call: it is a
-    # memo of THIS pass's rewrite, never state that outlives it.
-    memo: dict[CeKey, t.TypeSpec] = {}
+    # path-walk back to the graph's actual size. memoize's cache is the
+    # closure's: created here, per pass, never state that outlives it — the
+    # exact mirror of the port's ctx-carried System::memoize (ceResolve).
+    _resolve = memoize(lambda k: _resolve_named_uncached(k.spec, k.visited))
 
     def _resolve_named(ft: t.TypeSpec, visited: frozenset[str] = frozenset()) -> t.TypeSpec:
-        key = CeKey(ft, visited)
-        hit = memo.get(key)
-        if hit is not None:
-            return hit
-        result = _resolve_named_uncached(ft, visited)
-        memo[key] = result
-        return result
+        return _resolve(CeKey(ft, visited))
 
     def _resolve_named_uncached(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:
         if isinstance(ft, t.NamedSpec):
