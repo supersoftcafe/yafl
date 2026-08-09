@@ -489,7 +489,7 @@ class EnumSpec(TypeSpec):
     # instantiations of generic enums. Excluded from equality so the
     # compile loop can converge regardless of whether type_params are
     # present (two specs with the same root_name are the same type).
-    type_params: tuple[TypeSpec, ...] = field(default=(), compare=False)
+    type_params: tuple[TypeSpec, ...] = field(default=())   # EXPERIMENT: in equality
 
     def is_concrete(self) -> bool:
         return '@' in self.root_name

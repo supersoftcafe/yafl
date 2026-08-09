@@ -47,11 +47,15 @@ fun eqSpec(a: Spec, b: Spec): Bool
     (x: SClass) => match(b)
       (y: SClass) => x.scName == y.scName && eqSpecs(x.scParams, y.scParams)
       (o: Spec)   => false
-    # seParams is excluded: it is best-effort metadata, not identity.
+    # seParams ARE identity (identity vs state, user ruling): a complete
+    # spec's identity is its name plus ALL its type arguments. The family
+    # question (same root, params aside) is asked by NAME where it is meant
+    # — never through equality.
     (x: SEnum) => match(b)
       (y: SEnum) => x.seRoot == y.seRoot
                     && eqStrs(x.seValidLeaves, y.seValidLeaves)
                     && eqStrs(x.seAllLeaves, y.seAllLeaves)
+                    && eqSpecs(x.seParams, y.seParams)
       (o: Spec)  => false
     (x: SGeneric) => match(b)
       (y: SGeneric) => x.sgName == y.sgName && eqBool(x.sgLinear, y.sgLinear)

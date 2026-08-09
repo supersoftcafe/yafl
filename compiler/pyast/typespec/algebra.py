@@ -125,15 +125,19 @@ def meet(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None | _Conf
     if _is_hole(b):
         return a
     # ClassSpec / generic EnumSpec: a generic instantiation, refined by its type
-    # arguments positionally. EnumSpec needs this explicitly because `type_params`
-    # is excluded from EnumSpec equality (it is metadata for the generics-redirect
-    # pass), so the leaf `a == b` below would judge `Result<Int,_>` and
-    # `Result<Int,Bool>` equal and keep the hole. `a == b` fixes the enum identity
-    # (root_name + active leaves, type_params aside) before refining the arguments.
+    # arguments positionally. The FAMILY question is identity-by-name (identity
+    # vs state, user ruling): root name — plus, for enums, the narrowing
+    # (valid/all leaf names), which is genuine identity. Full equality now
+    # includes type_params, so it can no longer double as the family check —
+    # `Result<Int,_>` and `Result<Int,Bool>` are UNEQUAL (correctly), and this
+    # rule is what refines the hole instead.
     if (isinstance(a, ClassSpec) and isinstance(b, ClassSpec)
             and a.name == b.name and len(a.type_params) == len(b.type_params)):
         return _meet_params(a, a.type_params, b.type_params)
-    if (isinstance(a, EnumSpec) and isinstance(b, EnumSpec) and a == b
+    if (isinstance(a, EnumSpec) and isinstance(b, EnumSpec)
+            and a.root_name == b.root_name
+            and a.valid_leaf_names == b.valid_leaf_names
+            and a.all_leaf_names == b.all_leaf_names
             and len(a.type_params) == len(b.type_params)):
         return _meet_params(a, a.type_params, b.type_params) if a.type_params else a
     if (isinstance(a, TupleSpec) and isinstance(b, TupleSpec)

@@ -237,8 +237,9 @@ fun meetClass(ca: SClass, b: Spec): Meet
     (o)          => MConflict()
 
 # Enum IDENTITY is root + valid leaves (a narrowed enum is a different type),
-# exactly as EnumSpec equality defines it; type_params are metadata and refine
-# separately.
+# by NAME (sameEnum) — the family question is identity-by-name, never
+# equality (which now includes seParams: a complete spec's identity is its
+# name plus ALL its arguments). Params refine positionally.
 fun meetEnum(ea: SEnum, b: Spec): Meet
   ret match(b)
     (eb: SEnum) => !sameEnum(ea, eb)
