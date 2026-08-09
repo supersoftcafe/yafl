@@ -340,6 +340,7 @@ def __build_replace_fn(
         simple_classes: dict[str, s.ClassStatement],
         simple_tuple_specs: dict[str, t.TupleSpec],
         tuple_id_to_class: dict[str, str],
+        fields_of=None,
 ):
     """Return the AST replace function that rewrites all simple-class references."""
     flatten_rule = __flatten_class_rule(simple_classes, simple_tuple_specs)
@@ -400,6 +401,12 @@ def __build_replace_fn(
 
 
 def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
+    # NOTE (all_fields removal, phase B): this pass's walks stay on STORED
+    # fields until the removal commit — its FIXPOINT machinery compares
+    # stored state for convergence, and a mixed stored/derived regime
+    # defeats the identity short-circuits (caught by the dense-enum-graph
+    # scaling canary at 150s CPU). Fixpoint-coupled walkers convert
+    # ATOMICALLY when the stored field dies.
     resolver = g.ResolverRoot(statements)
 
     simple_classes, _ = __find_simple_classes(statements)

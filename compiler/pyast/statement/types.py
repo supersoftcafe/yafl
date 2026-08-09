@@ -112,6 +112,16 @@ class EnumStatement(TypeStatement):
         collect(self)
         return result
 
+    def derive_all_fields(self) -> tuple[tuple[str, t.TypeSpec], ...]:
+        """The enum's all_fields, DERIVED from the statement as it currently
+        stands: the tag plus every variant's data fields, root-down. This is
+        the same computation `compile` performs when assigning specs — exposed
+        so all_fields can be state that is derived, never stored (identity vs
+        state, user ruling 2026-08-08): a reader that derives from the CURRENT
+        statement can never see a stale copy."""
+        tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(self.line_ref, "int32"))
+        return (tag_field,) + tuple(self._collect_data_fields())
+
     def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...], all_fields: tuple[tuple[str, t.TypeSpec], ...]) -> EnumStatement:
         my_leaves = frozenset(self._collect_leaf_names())
         my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, all_fields)

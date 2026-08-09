@@ -592,7 +592,8 @@ class EnumSpec(TypeSpec):
 
     def walk_all_fields(self,
                         fix: Callable[[TypeSpec, frozenset[str]], TypeSpec],
-                        visited: frozenset[str] = frozenset()) -> EnumSpec:
+                        visited: frozenset[str] = frozenset(),
+                        fields_of=None) -> EnumSpec:
         """Apply `fix` to each entry in all_fields with cycle detection.
 
         EnumSpec.search_and_replace deliberately skips all_fields to avoid
@@ -610,8 +611,13 @@ class EnumSpec(TypeSpec):
         if self.root_name in visited:
             return self
         inner_visited = visited | {self.root_name}
-        new_fields = tuple((n, fix(ft, inner_visited)) for n, ft in self.all_fields)
-        if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, self.all_fields)):
+        # Transitional (all_fields removal, phase B): a caller that supplies
+        # `fields_of` walks the DERIVED fields — state read from the current
+        # statement, never a stored copy. The stored-field fallback dies with
+        # the field itself once every caller converts.
+        fields = fields_of(self.root_name) if fields_of is not None else self.all_fields
+        new_fields = tuple((n, fix(ft, inner_visited)) for n, ft in fields)
+        if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, fields)):
             return self
         return dataclasses.replace(self, all_fields=new_fields)
 
@@ -620,6 +626,7 @@ class EnumSpec(TypeSpec):
                               replace: Callable[[g.Resolver, Any], Any],
                               visited: frozenset[str] = frozenset(),
                               memo: dict[str, EnumSpec] | None = None,
+                              fields_of=None,
                               ) -> EnumSpec:
         """Apply `replace` to every type nested in this enum's all_fields:
         descending through unions and tuples, and into nested enums' all_fields,
@@ -662,11 +669,11 @@ class EnumSpec(TypeSpec):
             def descend(res: g.Resolver, thing):
                 thing = replace(res, thing)
                 if isinstance(thing, EnumSpec):
-                    return thing.replace_in_all_fields(res, replace, inner_visited, memo)
+                    return thing.replace_in_all_fields(res, replace, inner_visited, memo, fields_of)
                 return thing
             return field_type.search_and_replace(resolver, descend)
 
-        result = self.walk_all_fields(fix, visited)
+        result = self.walk_all_fields(fix, visited, fields_of)
         memo[key] = result
         return result
 

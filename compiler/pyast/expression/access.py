@@ -46,6 +46,20 @@ def _is_sync(stmt: s.FunctionStatement) -> bool:
     return "sync" in stmt.attributes
 
 
+def _enum_fields(resolver: g.Resolver, espec: "t.EnumSpec"):
+    """The enum's fields for member resolution — DERIVED from the statement
+    when it is reachable (identity vs state: the statement is the current
+    truth), falling back to the stored copy only until the stored field is
+    removed. Fields are template-shaped either way; the caller substitutes
+    type params on read."""
+    found = resolver.find_type(espec.root_name)
+    if len(found) == 1:
+        stmt = found[0].statement
+        if hasattr(stmt, "derive_all_fields"):
+            return stmt.derive_all_fields()
+    return espec.all_fields
+
+
 def _substitute_class_type_params(
         resolver: g.Resolver,
         receiver: t.ClassSpec,
@@ -166,7 +180,7 @@ def _narrowed_enum_field(resolver: g.Resolver, espec: t.EnumSpec,
     several variants declare the same bare name, only a field the narrowed
     value is GUARANTEED to carry (declared at a node covering every possible
     leaf) may win."""
-    cands = [(fn, ft) for fn, ft in espec.all_fields if g.match_name(fn, bare)]
+    cands = [(fn, ft) for fn, ft in _enum_fields(resolver, espec) if g.match_name(fn, bare)]
     if len(cands) == 1:
         return cands[0]
     if not cands:
@@ -207,7 +221,7 @@ class DotExpression(Expression):
                     return _substitute_class_type_params(
                         resolver, cspec, cdecl, datas[0].statement.get_type())
             case t.EnumSpec() as espec:
-                ft = next((ft for fn, ft in espec.all_fields if fn == self.name), None)
+                ft = next((ft for fn, ft in _enum_fields(resolver, espec) if fn == self.name), None)
                 return _substitute_enum_type_params(resolver, espec, ft)
         return None
 
@@ -264,7 +278,7 @@ class DotExpression(Expression):
                 if len(datas) > 1:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
             case t.EnumSpec() as espec:
-                if any(fn == self.name for fn, _ in espec.all_fields):
+                if any(fn == self.name for fn, _ in _enum_fields(resolver, espec)):
                     return []  # already resolved to a unique field name
                 found = _narrowed_enum_field(resolver, espec, self.name)
                 if found is _AMBIGUOUS_ENUM_FIELD:
