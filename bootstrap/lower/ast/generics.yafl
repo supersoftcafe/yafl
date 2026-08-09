@@ -295,11 +295,13 @@ fun fciSpecsOpt(ss: List<Spec>|None, acc: GRefs): GRefs
 # its own params; a NamedSpec-with-params inside all_fields inline-redirects
 # to its mangled name once concrete.
 
-class [final] GSub(gsExact: List<Binding>, gsBare: List<Binding>)
+class [final] GSub(gsExact: List<Binding>, gsBare: List<Binding>,
+                   gsFormals: Dict<String, List<String>>)
 
-fun gsubOf(gens: List<PGen>, args: List<Spec>): GSub
+fun gsubOf(gens: List<PGen>, args: List<Spec>,
+           formals: Dict<String, List<String>>): GSub
   ret gsubLoop(chain(gens), chain(args), GSub(List<Binding>(),
-                                              List<Binding>()))
+                                              List<Binding>(), formals))
 
 fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub
   ret match(gs)
@@ -309,7 +311,8 @@ fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub
       (a: ChainLink)   => gsubLoop(g2.next, a.next,
           GSub(append(acc.gsExact, Binding(g2.value.genName, a.value)),
                append(acc.gsBare, Binding(bareGenName(g2.value.genName),
-                                          a.value))))
+                                          a.value)),
+               acc.gsFormals))
 
 fun bareGenName(name: String): String
   let at = findByte(name, '@', 0)
@@ -352,32 +355,38 @@ fun gsubSpec(sp: Spec, sub: GSub, visited: List<String>): Spec
                                     ls.slsLine)
     (b: SBuiltin)      => sp
 
-# _substitute_enum: substitute the given params via the in-field rules, then
-# walk all_fields with cycle detection (walk_all_fields — fields untouched
-# when this root is already on the path).
+# _substitute_enum: substitute the given params; fields are DERIVED from the
+# instance statement, so there is no stored copy to walk. IDENTITY COMPLETION
+# (identity-vs-state ruling): a bare template-rooted spec inside a
+# specialisation must carry its FULL type arguments — the stored-fields walk
+# used to bake the function's bindings into each copy; with fields derived,
+# the spec itself is the carrier, so substitution-on-read can reconstruct
+# the instance view. Unbound formals attach as their placeholder, exactly
+# Python's _resolve_gp.
 fun gsubEnumNode(e2: SEnum, params0: List<Spec>, sub: GSub,
                  visited: List<String>): Spec
   let params2 = gsubInFieldList(params0, sub, visited)
-  if contains2(visited, e2.seRoot)
-    ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, params2,
-              e2.seLine, e2.seAllFields, e2.seComplex)
-  let v2 = append(visited, e2.seRoot)
-  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, params2, e2.seLine,
-            gsubFields(chain(e2.seAllFields), sub, v2, List<SField>()),
-            e2.seComplex)
+  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
+            gsubCompleted(e2, params2, sub), e2.seLine, e2.seComplex)
 
-fun [tail] gsubFields(fs: Chain<SField>, sub: GSub, visited: List<String>,
-                      acc: List<SField>): List<SField>
-  ret match(fs)
+fun gsubCompleted(e2: SEnum, params2: List<Spec>, sub: GSub): List<Spec>
+  if !isEmpty(params2)
+    ret params2
+  ret match(get(sub.gsFormals, e2.seRoot))
+    (names: List<String>) => gsubFormalArgs(chain(names), e2, sub,
+                                            List<Spec>())
+    ()                    => params2
+
+fun [tail] gsubFormalArgs(ns: Chain<String>, e2: SEnum, sub: GSub,
+                          acc: List<Spec>): List<Spec>
+  ret match(ns)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => gsubFields(l.next, sub, visited,
-        append(acc, SField(l.value.sfName,
-                           gsubInField(l.value.sfType, sub, visited))))
-
-# _substitute_in_field: EXACTLY three rules — a placeholder resolves, a
-# NamedSpec with params substitutes them (inline-redirecting when they became
-# concrete), a nested enum recurses. EVERYTHING else (class specs, unions,
-# tuples...) is left untouched inside all_fields.
+    (l: ChainLink)  => match(resolveGp(l.value, sub))
+      (b: Spec) => gsubFormalArgs(l.next, e2, sub, append(acc, b))
+      ()        => gsubFormalArgs(l.next, e2, sub,
+                                  append<Spec>(acc,
+                                               SGeneric(l.value, false,
+                                                        e2.seLine)))
 fun gsubInField(ft: Spec, sub: GSub, visited: List<String>): Spec
   ret match(ft)
     (g2: SGeneric) => match(resolveGp(g2.sgName, sub))
@@ -592,11 +601,12 @@ fun [tail] gsubLits(ls: Chain<PLit>, sub: GSub, visited: List<String>,
 # instantiations would otherwise emit colliding C symbols; '@' keeps
 # name_matches compatibility for member lookup.
 
-fun createSpecializedVersion(st: PStmt, args: List<Spec>): PStmt
+fun createSpecializedVersion(st: PStmt, args: List<Spec>,
+                             formals: Dict<String, List<String>>): PStmt
   let gens = stmtGens(st)
   if isEmpty(gens) || isEmpty(args)
     ret st
-  let sub = gsubOf(gens, args)
+  let sub = gsubOf(gens, args, formals)
   let newName = mangledName(stmtName(st), args)
   ret renameSpecialized(gsubStmt(st, sub), newName, args)
 
@@ -711,8 +721,25 @@ fun [tail] renameProvides(ps: Chain<String>, rn: List<Binding2>,
 fun createSpecializedStatements(statements: List<PStmt>,
                                 refs: GRefs): List<PStmt>
   let allRefs = sortRefs(concat(refs.gdData, refs.gdTypes))
-  ret cssLoop(chain(statements), allRefs,
-              existingKeys(chain(statements), List<String>()), List<PStmt>())
+  let formals = gsFormalsOf(chain(statements),
+                            Dict<String, List<String>>())
+  ret cssLoop(chain(statements), allRefs, formals,
+              existingKeys(chain(statements), List<String>()),
+              List<PStmt>())
+
+# Template formals for identity completion: root -> the declaration's formal
+# names, in order (mirror of Python's template_formals map).
+fun [tail] gsFormalsOf(ss: Chain<PStmt>,
+                       acc: Dict<String, List<String>>): Dict<String, List<String>>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e: PsEnum) => isEmpty(e.eGens)
+        ? gsFormalsOf(l.next, acc)
+        : gsFormalsOf(l.next, put(acc, e.eName,
+                                  map(e.eGens,
+                                      (g2: PGen) => g2.genName)))
+      (o: PStmt)  => gsFormalsOf(l.next, acc)
 
 fun stmtKind(st: PStmt): String
   ret match(st)
@@ -801,29 +828,33 @@ fun joinDeep(ps: List<Spec>): String
 class [final] CssState(csOut: List<PStmt>, csKeys: List<String>)
 
 fun [tail] cssLoop(ss: Chain<PStmt>, allRefs: List<GRef>,
+                   formals: Dict<String, List<String>>,
                    keys: List<String>, acc: List<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isEmpty(stmtGens(l.value))
-      ? cssLoop(l.next, allRefs, keys, acc)
-      : cssForStmt(chain(allRefs), l.value, keys, acc)
-        |> (st2) => cssLoop(l.next, allRefs, st2.csKeys, st2.csOut)
+      ? cssLoop(l.next, allRefs, formals, keys, acc)
+      : cssForStmt(chain(allRefs), l.value, formals, keys, acc)
+        |> (st2) => cssLoop(l.next, allRefs, formals, st2.csKeys, st2.csOut)
 
-fun [tail] cssForStmt(rs: Chain<GRef>, st: PStmt, keys: List<String>,
+fun [tail] cssForStmt(rs: Chain<GRef>, st: PStmt,
+                      formals: Dict<String, List<String>>,
+                      keys: List<String>,
                       acc: List<PStmt>): CssState
   ret match(rs)
     (nil: ChainEnd) => CssState(acc, keys)
     (l: ChainLink)  => l.value.grName != stmtName(st)
-      ? cssForStmt(l.next, st, keys, acc)
-      : cssOne(l.value, st, keys, acc)
-        |> (st2) => cssForStmt(l.next, st, st2.csKeys, st2.csOut)
+      ? cssForStmt(l.next, st, formals, keys, acc)
+      : cssOne(l.value, st, formals, keys, acc)
+        |> (st2) => cssForStmt(l.next, st, formals, st2.csKeys, st2.csOut)
 
-fun cssOne(ref: GRef, st: PStmt, keys: List<String>,
+fun cssOne(ref: GRef, st: PStmt,
+           formals: Dict<String, List<String>>, keys: List<String>,
            acc: List<PStmt>): CssState
   let key = mangledName(ref.grName, ref.grArgs) + "\t" + stmtKind(st)
   if contains2(keys, key)
     ret CssState(acc, keys)
-  let sp = createSpecializedVersion(st, ref.grArgs)
+  let sp = createSpecializedVersion(st, ref.grArgs, formals)
   let sp2 = match(sp)
     (e2: PsEnum) => layoutEnum(e2)      # rebuild _enum_spec post-substitution
     (o: PStmt)   => sp
@@ -898,9 +929,9 @@ fun rcrEnum(e2: SEnum, refs: GRefsIx): Spec
     ? SEnum(mangledName(e2.seRoot, ps),
             mangleLeaves(e2.seValidLeaves, ps),
             mangleLeaves(e2.seAllLeaves, ps),
-            List<Spec>(), e2.seLine, e2.seAllFields, e2.seComplex)
+            List<Spec>(), e2.seLine, e2.seComplex)
     : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine,
-            e2.seAllFields, e2.seComplex)
+            e2.seComplex)
 
 fun rcrName(nm: PeName, refs: GRefsIx): PExpr
   let tps = rcrSpecs(nm.refTypeParams, refs)
@@ -1303,14 +1334,14 @@ fun specFromMangled(sp: Spec, mono: List<GRef>): Spec
       ? sfmEnumBare(e2, mono)
       : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
               sfmList(chain(e2.seParams), mono, List<Spec>()), e2.seLine,
-              e2.seAllFields, e2.seComplex)
+              e2.seComplex)
     (o: Spec)   => sp
 
 fun sfmEnumBare(e2: SEnum, mono: List<GRef>): Spec
   ret match(monoLookup(chain(mono), e2.seRoot))
     (g2: GRef) => SEnum(g2.grName, e2.seValidLeaves, e2.seAllLeaves,
                         sfmList(chain(g2.grArgs), mono, List<Spec>()),
-                        e2.seLine, e2.seAllFields, e2.seComplex)
+                        e2.seLine, e2.seComplex)
     ()         => e2
 
 fun sfmBare(c: SClass, mono: List<GRef>): Spec
@@ -1961,7 +1992,7 @@ fun refreshEnumSpecAllFields(statements: List<PStmt>): List<PStmt>
                                 Canon(List<String>(), List<SEnum>()))
   if isEmpty(canon0.cnRoots)
     ret statements
-  let canon = canonFix(canon0, 0)
+  let canon = canon0   # fields-sync fixpoint deleted: no stored fields to sync
   ret rfrStmts(chain(statements), canon, List<PStmt>())
 
 # Root enums only (skip nested variant stmts); first spec per root wins.
@@ -1997,53 +2028,8 @@ fun [tail] canonLookLoop(ns: Chain<String>, sps: Chain<SEnum>,
         ? s2.value
         : canonLookLoop(n.next, s2.next, root)
 
-fun [tail] canonFix(c: Canon, iter: Int): Canon
-  if iter >= 16                                  # _MAX_REFRESH_ITERS
-    ret c
-  let p = canonPass(c)
-  if !p.cpChanged
-    ret p.cpCanon
-  ret canonFix(p.cpCanon, iter + 1)
-
-fun canonPass(c: Canon): CanonPass
-  ret canonPassLoop(chain(c.cnRoots), chain(c.cnSpecs), c,
-                    Canon(List<String>(), List<SEnum>()), false)
-
-fun [tail] canonPassLoop(ns: Chain<String>, sps: Chain<SEnum>, orig: Canon,
-                         acc: Canon, changed: Bool): CanonPass
-  ret match(ns)
-    (nil: ChainEnd) => CanonPass(acc, changed)
-    (n: ChainLink)  => match(sps)
-      (nil2: ChainEnd) => CanonPass(acc, changed)
-      (s2: ChainLink)  => fixFieldsLoop(chain(s2.value.seAllFields), orig,
-                                        List<SField>(), false)
-        |> (ff) => canonPassLoop(n.next, s2.next, orig,
-                                 Canon(append(acc.cnRoots, n.value),
-                                       append(acc.cnSpecs,
-                                              ff.ffChanged
-                                                ? canonRebuilt(s2.value,
-                                                               ff.ffFields)
-                                                : s2.value)),
-                                 changed || ff.ffChanged)
-
-fun [tail] fixFieldsLoop(fs: Chain<SField>, orig: Canon, acc: List<SField>,
-                         ch: Bool): FieldsFix
-  ret match(fs)
-    (nil: ChainEnd) => FieldsFix(acc, ch)
-    (l: ChainLink)  => match(l.value.sfType)
-      (fe: SEnum) => match(canonLookup(orig, fe.seRoot))
-        (spec: SEnum) => fieldsStale(fe, spec)
-          ? fixFieldsLoop(l.next, orig,
-                          append(acc, SField(l.value.sfName,
-                                             refreshedEnum(fe, spec))),
-                          true)
-          : fixFieldsLoop(l.next, orig, append(acc, l.value), ch)
-        ()            => fixFieldsLoop(l.next, orig, append(acc, l.value), ch)
-      (o: Spec)   => fixFieldsLoop(l.next, orig, append(acc, l.value), ch)
-
 fun fieldsStale(fe: SEnum, spec: SEnum): Bool
-  ret !sfieldListEq(chain(fe.seAllFields), chain(spec.seAllFields))
-      || !eqStrs(fe.seAllLeaves, spec.seAllLeaves)
+  ret !eqStrs(fe.seAllLeaves, spec.seAllLeaves)
 
 fun [tail] sfieldListEq(a: Chain<SField>, b: Chain<SField>): Bool
   ret match(a)
@@ -2059,14 +2045,7 @@ fun [tail] sfieldListEq(a: Chain<SField>, b: Chain<SField>): Bool
 
 fun refreshedEnum(fe: SEnum, spec: SEnum): Spec
   ret SEnum(fe.seRoot, fe.seValidLeaves, spec.seAllLeaves, fe.seParams,
-            fe.seLine, spec.seAllFields, fe.seComplex)
-
-# The enum constructor returns the ROOT type; narrow back to SEnum.
-fun canonRebuilt(v: SEnum, fields: List<SField>): SEnum
-  ret match(SEnum(v.seRoot, v.seValidLeaves, v.seAllLeaves, v.seParams,
-                  v.seLine, fields, v.seComplex))
-    (e2: SEnum) => e2
-    (o: Spec)   => v
+            fe.seLine, fe.seComplex)
 
 fun [tail] rfrStmts(ss: Chain<PStmt>, c: Canon,
                     acc: List<PStmt>): List<PStmt>
@@ -2225,7 +2204,7 @@ fun [tail] rfrEntries(es: Chain<SEntry>, c: Canon,
 
 fun rfrEnum(e2: SEnum, c: Canon): Spec
   let rebuilt = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                      rfrSpecList(e2.seParams, c), e2.seLine, e2.seAllFields,
+                      rfrSpecList(e2.seParams, c), e2.seLine,
                       e2.seComplex)
   ret match(rebuilt)
     (re: SEnum) => match(canonLookup(c, re.seRoot))

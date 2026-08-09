@@ -475,7 +475,6 @@ class EnumSpec(TypeSpec):
     # compile-loop iterations without changing the type's identity).
     # Including them in equality breaks compile-loop convergence on
     # recursive enums whose all_fields stabilises a tier at a time.
-    all_fields: tuple[tuple[str, TypeSpec], ...] = field(compare=False)
     # Set by lowering/complex_enums.py for enums that should lower to
     # a heap-allocated object instead of a flat by-value struct. An
     # enum is complex when (a) its all_fields graph contains a cycle
@@ -508,12 +507,14 @@ class EnumSpec(TypeSpec):
             target = types[0].statement
             if isinstance(target, s.EnumStatement) and target._enum_spec is not None:
                 canonical = target._enum_spec
-                if canonical.all_fields != self.all_fields:
-                    return dataclasses.replace(self, all_fields=canonical.all_fields), []
         return self, []
 
     def check(self, resolver: g.Resolver) -> list[Error]:
-        return [err for _, ftype in self.all_fields for err in ftype.check(resolver)]
+        # Field types are checked at their DECLARATION (the enum
+        # statement's own check); a reference has nothing to recurse into.
+        # The old stored-field recursion terminated only because frozen
+        # copies bottomed out at snapshot depth — accidental, not designed.
+        return []
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
         from pyast import union_repr  # lazy: union_repr imports this module
@@ -589,94 +590,6 @@ class EnumSpec(TypeSpec):
         # seq() reports change by the UNCHANGED signal, not by shallow ==/is.
         return rw.rewrite(self, replace, resolver,
             type_params=rw.seq(self.type_params, resolver, replace))
-
-    def walk_all_fields(self,
-                        fix: Callable[[TypeSpec, frozenset[str]], TypeSpec],
-                        visited: frozenset[str] = frozenset(),
-                        fields_of=None) -> EnumSpec:
-        """Apply `fix` to each entry in all_fields with cycle detection.
-
-        EnumSpec.search_and_replace deliberately skips all_fields to avoid
-        looping on self-referential enums; lowering passes that need to
-        rewrite types nested in all_fields (e.g. ClassSpec→TupleSpec,
-        GenericPlaceholderSpec→concrete) use this helper instead.
-
-        `fix(field_type, inner_visited)` returns a (possibly substituted)
-        TypeSpec. The visited set tracks the recursion path by root_name;
-        callbacks can pass it back into walk_all_fields when descending into
-        a nested EnumSpec to avoid re-entering the current root.
-
-        Returns the original spec if no field changed (identity-checked).
-        """
-        if self.root_name in visited:
-            return self
-        inner_visited = visited | {self.root_name}
-        # Transitional (all_fields removal, phase B): a caller that supplies
-        # `fields_of` walks the DERIVED fields — state read from the current
-        # statement, never a stored copy. The stored-field fallback dies with
-        # the field itself once every caller converts.
-        fields = fields_of(self.root_name) if fields_of is not None else self.all_fields
-        new_fields = tuple((n, fix(ft, inner_visited)) for n, ft in fields)
-        if all(nv is ov for (_, nv), (_, ov) in zip(new_fields, fields)):
-            return self
-        return dataclasses.replace(self, all_fields=new_fields)
-
-    def replace_in_all_fields(self,
-                              resolver: g.Resolver,
-                              replace: Callable[[g.Resolver, Any], Any],
-                              visited: frozenset[str] = frozenset(),
-                              memo: dict[str, EnumSpec] | None = None,
-                              fields_of=None,
-                              ) -> EnumSpec:
-        """Apply `replace` to every type nested in this enum's all_fields:
-        descending through unions and tuples, and into nested enums' all_fields,
-        stopping if it revisits an enum already on the current path.
-
-        search_and_replace deliberately skips all_fields so it cannot loop on a
-        recursive enum (see walk_all_fields). A pass that must rewrite a type
-        buried in a field — e.g. flatten a simple class that appears only as a
-        union member of an enum field — uses this instead. `replace` is the
-        ordinary search_and_replace callback: it handles just its own leaf rule;
-        the structural descent and the cycle-guarded recursion into nested enums
-        are supplied here, so callers never reimplement them.
-
-        `visited` breaks CYCLES; the `memo` breaks REDUNDANCY. Without it the
-        descent re-derives a SHARED subgraph once for every path that reaches
-        it, and the number of paths through an interconnected enum graph grows
-        exponentially with the number of enums — measured at ~2x per two enums,
-        which is what made a 14-enum program cost 1.2GB. The rewrite is a pure
-        function of (spec, path), so deriving each one once collapses the walk
-        back to the size of the graph. The memo is created by the OUTERMOST call
-        and threaded down: it belongs to this one rewrite and never outlives it
-        (a cache that survives its compilation hands back stale specs)."""
-        if memo is None:
-            memo = {}
-        # The SAME fingerprint as the port's ceMemoKey (complex_enums.yafl),
-        # component for component, so both compilers share one equivalence
-        # relation: any imprecision bites both identically (visible to the
-        # gate as output), never as a compiler divergence. Precision rests on
-        # the canonical-snapping invariant, as it did before the id() key;
-        # the complex_enums resolve memo stays on the precise CeKey.
-        key = (f"{self.root_name}#{'|'.join(self.valid_leaf_names)}#"
-               + "".join(n + "," for n, _ in self.all_fields)
-               + ("#1S" if self.is_complex else "#0S")
-               + ",".join(sorted(visited)))
-        cached = memo.get(key)
-        if cached is not None:
-            return cached
-
-        def fix(field_type: TypeSpec, inner_visited: frozenset[str]) -> TypeSpec:
-            def descend(res: g.Resolver, thing):
-                thing = replace(res, thing)
-                if isinstance(thing, EnumSpec):
-                    return thing.replace_in_all_fields(res, replace, inner_visited, memo, fields_of)
-                return thing
-            return field_type.search_and_replace(resolver, descend)
-
-        result = self.walk_all_fields(fix, visited, fields_of)
-        memo[key] = result
-        return result
-
 
 def enum_leaf_object_name(root_name: str, leaf_name: str) -> str:
     """The per-variant Object/vtable name for a complex-enum leaf.

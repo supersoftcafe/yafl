@@ -335,7 +335,8 @@ fun [tail] fieldNamed(fs: Chain<SField>, name: String): Spec|None
 # The field's declared type, mapped through the receiver's type arguments
 # when the enum is a concrete generic instantiation.
 fun enumFieldType(e: SEnum, name: String, r: Resolver): Spec|None
-  ret substituteEnumTypeParams(r, e, fieldNamed(chain(e.seAllFields), name))
+  ret substituteEnumTypeParams(r, e, fieldNamed(chain(enumFieldsVia(r, e.seRoot)),
+                                                name))
 
 # An array read yields the ELEMENT type of the array field it indexes.
 fun arrayReadType(ar: PeArrayRead, r: Resolver): Spec|None

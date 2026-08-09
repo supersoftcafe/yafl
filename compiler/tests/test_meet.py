@@ -34,7 +34,7 @@ def cls(name, *params):
 
 def enum(root, *params, leaves=("Ok@1", "Err@2")):
     return t.EnumSpec(lr, root, frozenset(leaves), tuple(leaves),
-                      all_fields=(), type_params=tuple(params))
+                      type_params=tuple(params))
 
 
 def union(*members):

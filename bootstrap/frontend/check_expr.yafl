@@ -147,7 +147,7 @@ fun classDotErrs(d: PeDot, datas: List<Found>): List<PErr>
   ret noErrs()
 
 fun checkEnumDot(d: PeDot, e2: SEnum, r: Resolver): List<PErr>
-  if hasFieldNamed(chain(e2.seAllFields), d.member)
+  if hasFieldNamed(chain(enumFieldsVia(r, e2.seRoot)), d.member)
     ret noErrs()                       # already resolved to a unique field name
   ret match(narrowedEnumField(r, e2, d.member))
     (h: NfHit)       => noErrs()

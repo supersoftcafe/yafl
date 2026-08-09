@@ -305,7 +305,8 @@ fun narrowedName(n: Narrowed, fallback: String): String
 
 
 fun narrowedEnumField(r: Resolver, e2: SEnum, bare: String): Narrowed
-  let cands = fieldsMatching(chain(e2.seAllFields), bare, List<SField>())
+  let cands = fieldsMatching(chain(enumFieldsVia(r, e2.seRoot)), bare,
+                             List<SField>())
   if listLen(cands) == 1
     ret hitOf(cands)
   if isEmpty(cands)
@@ -657,7 +658,7 @@ fun withArmSpecParams(a: PArm, t2: Spec, params: List<Spec>): PArm
       : a
     (e2: SEnum) => isEmpty(e2.seParams)
       ? PArm(a.armName, SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                              params, e2.seLine, e2.seAllFields, e2.seComplex),
+                              params, e2.seLine, e2.seComplex),
              a.armBody, a.armLiterals, a.armGuard, a.parmLine)
       : a
     (o: Spec)   => a

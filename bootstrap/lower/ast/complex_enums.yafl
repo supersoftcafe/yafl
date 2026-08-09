@@ -142,20 +142,22 @@ fun [tail] ceReachList(ss: Chain<Spec>, out: List<String>,
 # The directed graph between root names.
 class [final] EEdges(eeNames: List<String>, eeChildren: List<List<String>>)
 
-fun ceEdges(roots: ERoots, map: NameMap): EEdges
-  ret ceEdgeLoop(chain(roots.erNames), chain(roots.erSpecs), map,
+fun ceEdges(roots: ERoots, map: NameMap,
+            fieldsOf: (:String): List<SField>): EEdges
+  ret ceEdgeLoop(chain(roots.erNames), chain(roots.erSpecs), map, fieldsOf,
                  EEdges(List<String>(), List<List<String>>()))
 
 fun [tail] ceEdgeLoop(ns: Chain<String>, sps: Chain<SEnum>, map: NameMap,
+                      fieldsOf: (:String): List<SField>,
                       acc: EEdges): EEdges
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(sps)
       (nil2: ChainEnd) => acc
-      (s2: ChainLink)  => ceEdgeLoop(n.next, s2.next, map,
+      (s2: ChainLink)  => ceEdgeLoop(n.next, s2.next, map, fieldsOf,
           EEdges(append(acc.eeNames, n.value),
                  append(acc.eeChildren,
-                        ceFieldsReach(chain(s2.value.seAllFields),
+                        ceFieldsReach(chain(fieldsOf(n.value)),
                                       List<String>(), map))))
 
 fun [tail] ceFieldsReach(fs: Chain<SField>, out: List<String>,
@@ -269,16 +271,18 @@ fun [tail] tjRemoveAll(ss: Chain<String>, gone: List<String>,
 # self-loop test reads the CURRENT work graph, updated as breakers are
 # removed within the round, exactly like Python.
 
-fun cePickBreakers(edges: EEdges, roots: ERoots): List<String>
-  ret cePickLoop(edges, roots, List<String>())
+fun cePickBreakers(edges: EEdges, roots: ERoots,
+                   fieldsOf: (:String): List<SField>): List<String>
+  ret cePickLoop(edges, roots, fieldsOf, List<String>())
 
 fun [tail] cePickLoop(work: EEdges, roots: ERoots,
+                      fieldsOf: (:String): List<SField>,
                       acc: List<String>): List<String>
   let cyclic = ceCyclicSccs(chain(ceSccs(work)), work, List<List<String>>())
   if isEmpty(cyclic)
     ret acc
-  ret ceBreakSccs(chain(cyclic), work, roots, acc)
-    |> (out) => cePickLoop(out.pbWork, roots, out.pbChosen)
+  ret ceBreakSccs(chain(cyclic), work, roots, fieldsOf, acc)
+    |> (out) => cePickLoop(out.pbWork, roots, fieldsOf, out.pbChosen)
 
 fun [tail] ceCyclicSccs(ss: Chain<List<String>>, work: EEdges,
                         acc: List<List<String>>): List<List<String>>
@@ -303,24 +307,28 @@ fun [tail] ceAnySelfLoop(ss: Chain<String>, work: EEdges): Bool
 class [final] PickOut(pbWork: EEdges, pbChosen: List<String>)
 
 fun [tail] ceBreakSccs(ss: Chain<List<String>>, work: EEdges, roots: ERoots,
+                       fieldsOf: (:String): List<SField>,
                        acc: List<String>): PickOut
   ret match(ss)
     (nil: ChainEnd) => PickOut(work, acc)
-    (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, "")
+    (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, fieldsOf, "")
       |> (chosen) => ceBreakSccs(l.next, ceRemoveNode(work, chosen), roots,
-                                 append(acc, chosen))
+                                 fieldsOf, append(acc, chosen))
 
 fun [tail] ceMinBy(ss: Chain<String>, work: EEdges, roots: ERoots,
+                   fieldsOf: (:String): List<SField>,
                    best: String): String
   ret match(ss)
     (nil: ChainEnd) => best
-    (l: ChainLink)  => best == "" || ceKeyLess(l.value, best, work, roots)
-      ? ceMinBy(l.next, work, roots, l.value)
-      : ceMinBy(l.next, work, roots, best)
+    (l: ChainLink)  => best == "" || ceKeyLess(l.value, best, work, roots,
+                                               fieldsOf)
+      ? ceMinBy(l.next, work, roots, fieldsOf, l.value)
+      : ceMinBy(l.next, work, roots, fieldsOf, best)
 
 # The sort key tuple (not System::, not self-loop, len(all_fields), name),
 # compared lexicographically.
-fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots): Bool
+fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots,
+              fieldsOf: (:String): List<SField>): Bool
   let aSys = ceIsSystem(a)
   let bSys = ceIsSystem(b)
   if aSys != bSys
@@ -329,8 +337,8 @@ fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots): Bool
   let bSelf = contains2(ceChildrenOf(work, b), b)
   if aSelf != bSelf
     ret aSelf
-  let aLen = ceFieldCount(roots, a)
-  let bLen = ceFieldCount(roots, b)
+  let aLen = ceFieldCount(roots, a, fieldsOf)
+  let bLen = ceFieldCount(roots, b, fieldsOf)
   if aLen != bLen
     ret aLen < bLen
   ret a < b
@@ -338,10 +346,9 @@ fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots): Bool
 fun ceIsSystem(name: String): Bool
   ret startsWith(simpleName(name), "System::")
 
-fun ceFieldCount(roots: ERoots, name: String): Int
-  ret match(ceRootSpecOf(roots, name))
-    (es: SEnum) => chainLength(chain(es.seAllFields))
-    ()          => 0
+fun ceFieldCount(roots: ERoots, name: String,
+                 fieldsOf: (:String): List<SField>): Int
+  ret chainLength(chain(fieldsOf(name)))
 
 fun ceRemoveNode(work: EEdges, v: String): EEdges
   ret ceRemoveLoop(chain(work.eeNames), chain(work.eeChildren), v,
@@ -368,309 +375,27 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 # Pruned generic EnumSpecs (not in roots) are marked complex so generate()
 # never expands their placeholder fields.
 
-# The pass context: canonical roots, the name map, the breaker set, and THE
-# memoized resolve (one cache per pass — Python's amortisation exactly).
-class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>,
-                    ceResolve: (:CeKey): Spec)
+# The pass context: canonical roots, the name map, the breaker set.
+class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>)
 
-# The pass context carries THE memoized resolve — System::memoize over the
-# PRECISE CeKey, which is what the precise key was FOR (user ruling). The
-# `[lazy]` self-reference ties the knot: the closure captures the ctx that
-# carries it, so recursive resolution hits the cache at every level — a
-# cyclic CACHE, not a cyclic value. One cache per pass = Python's exact
-# amortisation (its per-pass memo dict closure); the resolved-by-root table
-# this replaces was the port's hand-rolled substitute for it.
+# With all_fields DERIVED (never stored), every nested spec position lives
+# in a statement and is visited DIRECTLY by the walk — the old resolve
+# machinery (recursion, visited sets, the CeKey memo) chased the stored-copy
+# graph and dies with it. Python's collapse is the mirror. The fields
+# provider (enumFieldsProvider — THE System::memoize parity site now) serves
+# the graph builders.
 fun markComplexEnums(statements: List<PStmt>): List<PStmt>
   let roots = ceCollectRoots(statements)
   if isEmpty(roots.erNames)
     ret statements
+  let fieldsOf = enumFieldsProvider(statements)
   let map = ceNameMap(roots)
-  let complexSet = cePickBreakers(ceEdges(roots, map), roots)
+  let complexSet = cePickBreakers(ceEdges(roots, map, fieldsOf), roots,
+                                  fieldsOf)
   if isEmpty(complexSet)
     ret statements
-  let [lazy] c: CeCtx = CeCtx(roots, map, complexSet,
-                              memoize<CeKey, Spec>((k: CeKey) =>
-                                ceResolveUncached(k, c)))
-  ret ceStmts(chain(statements), c, List<PStmt>())
-
-# `visited` breaks CYCLES, but on its own it does not stop the walk
-# re-deriving a SHARED subgraph once per path that reaches it — and the
-# number of paths through a densely mutually-recursive enum graph is
-# exponential in its size. The cure is the pass-level memo: Python's is a
-# closure over a per-pass dict keyed by CeKey; the port's is System::memoize
-# over the SAME precise CeKey, carried in the ctx (ceResolve) — one cache,
-# every tree site and every recursion level, no threading. The key is
-# PRECISE (the spec itself, deep-compared; [hashed]/[refeq] make that
-# affordable), so no canonical-snapping trust is load-bearing here.
-# ── the memo key ─────────────────────────────────────────────────────────────
-# A DEDICATED key type replacing the string fingerprint (which omitted the
-# field TYPES — the very thing this pass rewrites — and was sound only via the
-# canonical-snapping invariant). CeKey carries the spec itself plus the
-# visited set (order-insensitive digest, set equality), so the key IS the
-# input and the invariant leaves the trusted set: if it is ever violated,
-# lookups get slower, never wrong.
-#
-# Affordable because Spec is [hashed] and the walks opt in:
-#   * ckHashSpec is [hashed] — each node's structural hash computes once per
-#     OBJECT and is O(fanout) thereafter;
-#   * ckEqSpec is [refeq] — same object short-circuits, so a deep compare
-#     cuts off at shared substructure (depth 1 under canonical snapping), and
-#     the CACHED-HASH GUARD inside rejects unequal content in O(1).
-#
-# The equality is CeKey's OWN. eqSpec deliberately excludes seAllFields and
-# stays untouched — a second meaning of equality for Spec is the ambiguity
-# this design refuses; ckEqSpec is a different relation reachable only here.
-
-class [final] CeKey(ckSpec: Spec, ckVisited: List<String>)
-
-# `visited` is a SET, held AS IS: keys are built once per memo lookup, so the
-# construction must not allocate beyond the key object itself. Order
-# independence comes from the DIGEST (XOR of member hashes, commutative), and
-# equality compares as sets — the sorted copy this used to make was the
-# dominant allocation of the whole pass (the 08-06 self-compile storm:
-# +2.5GB transient churn born exactly here). Python's mirror holds the
-# frozenset for the same reason. Keys are built inline at the ceResolve
-# call sites.
-
-instance [ambient] System::BasicEquality<CeKey>
-  fun `==`(l: CeKey, r: CeKey): System::Bool
-    ret ckSetEqStrs(l.ckVisited, r.ckVisited) && ckEqSpec(l.ckSpec, r.ckSpec)
-  fun hashOf(v: CeKey): System::Int32
-    ret ckMix(ckHashSpec(v.ckSpec), ckDigestStrs(chain(v.ckVisited), 0i32))
-
-# Order-insensitive set digest: XOR is commutative, and string hashes are
-# cached in the header, so this is one pointer walk with no allocation.
-fun [tail] ckDigestStrs(ss: Chain<String>, acc: System::Int32): System::Int32
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ckDigestStrs(l.next, acc ^ hashOf(l.value))
-
-# ── the scFix memo key (simple_classes) ──────────────────────────────────────
-# The STRING fingerprint, restored 08-07. Python's replace_in_all_fields memo
-# is keyed (id(spec), frozenset(visited)) — identity, cheap hits, false-miss
-# safe. YAFL has no identity, and the value-precise CeKey pays a FULL deep
-# walk per HIT (equal value, different object — [refeq] cannot fire), which
-# was most of the 08-06 storm. This fingerprint is the port's closest mirror
-# of the identity key: hits are one cached-hash string compare. CeKey stays
-# the key where Python actually uses CeKey: the complex_enums resolve memo.
-fun ceMemoKey(e2: SEnum, visited: List<String>): String
-  ret e2.seRoot + "#" + join(e2.seValidLeaves, "|")
-      + "#" + ceFieldNames(chain(e2.seAllFields), StringBuilder())
-      + "#" + (e2.seComplex ? "1" : "0")
-      + "S" + join(sort(visited), ",")
-
-fun [tail] ceFieldNames(fs: Chain<SField>, sb: StringBuilder): String
-  ret match(fs)
-    (nil: ChainEnd) => toString(sb)
-    (l: ChainLink)  => ceFieldNames(l.next, append(sb, l.value.sfName + ","))
-
-# Set equality without allocation: mutual containment. Quadratic in the
-# visited depth, which is small, and only reached on digest-equal keys.
-fun ckSetEqStrs(a: List<String>, b: List<String>): System::Bool
-  ret ckSubset(chain(a), b) && ckSubset(chain(b), a)
-
-fun [tail] ckSubset(ss: Chain<String>, b: List<String>): System::Bool
-  ret match(ss)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => contains2(b, l.value) ? ckSubset(l.next, b) : false
-
-# ── deep hash (keying only) ──────────────────────────────────────────────────
-# Structural, INCLUDING seAllFields and seComplex. Content only, never an
-# address — codegen determinism depends on it. Terminates because spec VALUES
-# are finite trees: the enum graph is cyclic by NAME, and SNamed breaks it.
-
-fun ckMix(acc: System::Int32, h: System::Int32): System::Int32
-  ret (acc * 31i32 + h) & 2147483647i32
-
-fun [tail] ckHashStrs(ss: Chain<String>, acc: System::Int32): System::Int32
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ckHashStrs(l.next, ckMix(acc, hashOf(l.value)))
-
-fun [hashed] ckHashSpec(sp: Spec): System::Int32
-  ret match(sp)
-    (e2: SEnum)        => ckHashFields(chain(e2.seAllFields),
-                            ckMix(ckHashStrs(chain(e2.seAllLeaves),
-                                    ckHashStrs(chain(e2.seValidLeaves),
-                                      ckMix(ckMix(3i32, hashOf(e2.seRoot)),
-                                            e2.seComplex ? 1i32 : 0i32))),
-                                  5i32))
-    (n: SNamed)        => ckHashSpecs(chain(n.snParams),
-                                      ckMix(7i32, hashOf(n.snName)))
-    (c: SClass)        => ckHashSpecs(chain(c.scParams),
-                                      ckMix(11i32, hashOf(c.scName)))
-    (cb: SCallable)    => ckHashSpecOpt(cb.scResult,
-                                        ckHashSpec2(cb.scParams2, 13i32))
-    (cm: SCombination) => ckHashSpecs(chain(cm.scTypes), 17i32)
-    (t2: STuple)       => ckHashEntries(chain(t2.stEntries), 19i32)
-    (af: SArrayField)  => ckHashSpec2(af.safElem,
-                                      ckMix(23i32, hashOf(af.safLenField)))
-    (ls: SLazyStub)    => ckHashSpecOpt(ls.slsTarget, 29i32)
-    (o: Spec)          => ckMix(31i32, hashOf(uid(o)))
-
-# The recursive entry: children go through ckHashSpec so every node's hash is
-# cached in ITS slot.
-fun ckHashSpec2(sp: Spec, acc: System::Int32): System::Int32
-  ret ckMix(acc, ckHashSpec(sp))
-
-fun ckHashSpecOpt(sp: Spec|None, acc: System::Int32): System::Int32
-  ret match(sp)
-    (x: Spec) => ckHashSpec2(x, acc)
-    ()        => ckMix(acc, 37i32)
-
-fun [tail] ckHashSpecs(ss: Chain<Spec>, acc: System::Int32): System::Int32
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ckHashSpecs(l.next, ckHashSpec2(l.value, acc))
-
-fun [tail] ckHashFields(fs: Chain<SField>, acc: System::Int32): System::Int32
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ckHashFields(l.next,
-                                    ckHashSpec2(l.value.sfType,
-                                                ckMix(acc, hashOf(l.value.sfName))))
-
-fun [tail] ckHashEntries(es: Chain<SEntry>, acc: System::Int32): System::Int32
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ckHashEntries(l.next,
-                                     ckHashSpecOpt(l.value.seType,
-                                                   ckMix(acc, hashOf(l.value.seName))))
-
-# ── deep equality (keying only) ──────────────────────────────────────────────
-# [refeq]: identical objects short-circuit at every recursive level. The
-# cached-hash guard then rejects unequal content in O(1); the structural walk
-# below only ever confirms equal-hash pairs (or refutes a genuine collision).
-
-fun [refeq] ckEqSpec(a: Spec, b: Spec): System::Bool
-  if ckHashSpec(a) != ckHashSpec(b)
-    ret false
-  ret match(a)
-    (x: SEnum) => match(b)
-      (y: SEnum) => x.seRoot == y.seRoot
-                    && eqStrs(x.seValidLeaves, y.seValidLeaves)
-                    && eqStrs(x.seAllLeaves, y.seAllLeaves)
-                    && eqBool(x.seComplex, y.seComplex)
-                    && ckEqFields(chain(x.seAllFields), chain(y.seAllFields))
-      (o: Spec)  => false
-    (x: SNamed) => match(b)
-      (y: SNamed) => x.snName == y.snName
-                     && ckEqSpecs(chain(x.snParams), chain(y.snParams))
-      (o: Spec)   => false
-    (x: SClass) => match(b)
-      (y: SClass) => x.scName == y.scName
-                     && ckEqSpecs(chain(x.scParams), chain(y.scParams))
-      (o: Spec)   => false
-    (x: SCallable) => match(b)
-      (y: SCallable) => ckEqSpec(x.scParams2, y.scParams2)
-                        && ckEqSpecOpt(x.scResult, y.scResult)
-      (o: Spec)      => false
-    (x: SCombination) => match(b)
-      (y: SCombination) => ckEqSpecs(chain(x.scTypes), chain(y.scTypes))
-      (o: Spec)         => false
-    (x: STuple) => match(b)
-      (y: STuple) => ckEqEntries(chain(x.stEntries), chain(y.stEntries))
-      (o: Spec)   => false
-    (x: SArrayField) => match(b)
-      (y: SArrayField) => x.safLenField == y.safLenField
-                          && ckEqSpec(x.safElem, y.safElem)
-      (o: Spec)        => false
-    (x: SLazyStub) => match(b)
-      (y: SLazyStub) => ckEqSpecOpt(x.slsTarget, y.slsTarget)
-      (o: Spec)      => false
-    # Builtins and generics carry no nested spec: eqSpec is already exact.
-    (o: Spec) => eqSpec(a, b)
-
-fun ckEqSpecOpt(a: Spec|None, b: Spec|None): System::Bool
-  ret match(a)
-    (x: Spec) => match(b)
-      (y: Spec) => ckEqSpec(x, y)
-      ()        => false
-    ()        => match(b)
-      (y: Spec) => false
-      ()        => true
-
-fun [tail] ckEqSpecs(as2: Chain<Spec>, bs: Chain<Spec>): System::Bool
-  ret match(as2)
-    (nil: ChainEnd) => match(bs)
-      (nil2: ChainEnd) => true
-      (lb: ChainLink)  => false
-    (la: ChainLink) => match(bs)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => !ckEqSpec(la.value, lb.value)
-        ? false
-        : ckEqSpecs(la.next, lb.next)
-
-fun [tail] ckEqFields(as2: Chain<SField>, bs: Chain<SField>): System::Bool
-  ret match(as2)
-    (nil: ChainEnd) => match(bs)
-      (nil2: ChainEnd) => true
-      (lb: ChainLink)  => false
-    (la: ChainLink) => match(bs)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => la.value.sfName != lb.value.sfName
-                          || !ckEqSpec(la.value.sfType, lb.value.sfType)
-        ? false
-        : ckEqFields(la.next, lb.next)
-
-fun [tail] ckEqEntries(as2: Chain<SEntry>, bs: Chain<SEntry>): System::Bool
-  ret match(as2)
-    (nil: ChainEnd) => match(bs)
-      (nil2: ChainEnd) => true
-      (lb: ChainLink)  => false
-    (la: ChainLink) => match(bs)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => la.value.seName != lb.value.seName
-                          || !ckEqSpecOpt(la.value.seType, lb.value.seType)
-        ? false
-        : ckEqEntries(la.next, lb.next)
-
-
-fun ceResolveNamed(ft: Spec, visited: List<String>, c: CeCtx): Spec
-  ret c.ceResolve(CeKey(ft, visited))
-
-fun ceResolveNamedLeaf(n: SNamed, ft: Spec, c: CeCtx): Spec
-  ret match(ceLookup2(c.ceMap, n.snName))
-    (canonical: String) => match(ceRootSpecOf(c.ceRoots, canonical))
-      (spec: SEnum) => ceWithFlag(spec, contains2(c.ceSet, canonical))
-      ()            => ft
-    ()                  => ft
-
-# The memoized body: the full dispatch, exactly Python's
-# _resolve_named_uncached. Pure in the key given the pass context; recursion
-# re-enters through c.ceResolve so every level hits the cache.
-fun ceResolveUncached(k: CeKey, c: CeCtx): Spec
-  ret match(k.ckSpec)
-    (n: SNamed) => ceResolveNamedLeaf(n, k.ckSpec, c)
-    (e2: SEnum) => ceResolveEnum(e2, k.ckVisited, c)
-    (o: Spec)   => k.ckSpec
-
-fun ceResolveEnum(e2: SEnum, visited: List<String>, c: CeCtx): Spec
-  let isComplex = contains2(c.ceSet, e2.seRoot)
-  # A stale reference to a PRUNED generic: mark complex unconditionally.
-  if !isComplex && !contains2(c.ceRoots.erNames, e2.seRoot)
-    ret ceWithFlag(e2, true)
-  if contains2(visited, e2.seRoot)
-    ret ceWithFlag(e2, isComplex)
-  let v2 = append(visited, e2.seRoot)
-  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
-            e2.seLine,
-            ceFields(chain(e2.seAllFields), v2, c, List<SField>()),
-            isComplex)
-
-fun [tail] ceFields(fs: Chain<SField>, visited: List<String>, c: CeCtx,
-                    acc: List<SField>): List<SField>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceFields(l.next, visited, c,
-                                append(acc,
-                                       SField(l.value.sfName,
-                                              ceResolveNamed(l.value.sfType,
-                                                             visited, c))))
-
-fun ceWithFlag(e2: SEnum, flag: Bool): Spec
-  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
-            e2.seLine, e2.seAllFields, flag)
+  ret ceStmts(chain(statements), CeCtx(roots, map, complexSet),
+              List<PStmt>())
 
 # ── the traversal (search_and_replace visit sets, as ever) ──────────────────
 
@@ -817,15 +542,12 @@ fun ceSpec(sp: Spec, c: CeCtx): Spec
 
 # EnumSpec traversal: params visited generally, then the mark callback.
 # Tree site: Python's `mark` exactly — the NODE's flag is plain set
-# membership (the stale-pruned-generic rule applies ONLY inside the memoized
-# field resolution, never to the node itself: a template-named arm spec in a
-# monomorphised function must NOT be forced complex), and the FIELDS resolve
-# through the pass memo with EMPTY visited (`_resolve_named(ft)`).
+# membership; no stale rule at tree positions (the port-taught placement),
+# no field rebuild (fields are DERIVED; nested spec positions are visited
+# directly by this walk).
 fun ceMarkEnumNode(e2: SEnum, c: CeCtx): Spec
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
             ceSpecList(e2.seParams, c), e2.seLine,
-            ceFields(chain(e2.seAllFields), List<String>(), c,
-                     List<SField>()),
             contains2(c.ceSet, e2.seRoot))
 
 fun [tail] ceEntries(es: Chain<SEntry>, c: CeCtx,

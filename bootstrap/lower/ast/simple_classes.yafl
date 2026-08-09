@@ -704,122 +704,6 @@ fun scNameTupleEntries(param: PExpr, spec: Spec): PExpr
       (o: Spec)    => param
     (o: PExpr)    => param
 
-# ── 12. scReplaceInAllFields — port of EnumSpec.replace_in_all_fields ───────
-# (pyast/typespec/specs.py:538-580). `visited` breaks cycles on the current
-# path; the perf-only memo is skipped (never re-enters a live cycle, so
-# correctness holds without it — see project_enum_graph_exponential.md for
-# why redundancy elsewhere in the compiler was NOT safe to skip).
-
-# The walk is MEMO-THREADED (Python: EnumSpec.walk_all_fields carries the
-# outermost call's memo — `visited` breaks cycles, the memo breaks
-# redundancy; without it the shared-subgraph re-derivation is exponential,
-# exactly the complex_enums disease in a second home). The key reuses
-# ceMemoKey (root + depth-0 fingerprint + sorted visited); the rule is fixed
-# per outermost entry, so it needs no key part. Traversal mirrors rwSpec:
-# kids rebuilt FIRST, then the rule fires on the rebuilt node, then an enum
-# result descends into all_fields.
-fun scFix(ft: Spec, visited: List<String>, rule: (:Spec): Spec|None,
-          memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
-  let kids = scFixKids(ft, visited, rule, memo)
-  let replaced = match(rule(kids.spec))
-    (r2: Spec) => r2
-    ()         => kids.spec
-  ret match(replaced)
-    (e3: SEnum) => scReplaceInAllFieldsM(e3, visited, rule, kids.memo)
-    (o: Spec)   => (replaced, kids.memo)
-
-fun scFixKids(sp: Spec, visited: List<String>, rule: (:Spec): Spec|None,
-              memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
-  ret match(sp)
-    (e2: SEnum)        => scFixList(chain(e2.seParams), visited, rule, memo,
-                                    List<Spec>())
-      |> (out) => (SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                         out.specs, e2.seLine, e2.seAllFields, e2.seComplex),
-                   out.memo)
-    (cl: SClass)       => scFixList(chain(cl.scParams), visited, rule, memo,
-                                    List<Spec>())
-      |> (out) => (SClass(cl.scName, out.specs, cl.scLine), out.memo)
-    (cm: SCombination) => scFixList(chain(cm.scTypes), visited, rule, memo,
-                                    List<Spec>())
-      |> (out) => (SCombination(out.specs, cm.scmLine), out.memo)
-    (t2: STuple)       => scFixEntries(chain(t2.stEntries), visited, rule,
-                                       memo, List<SEntry>())
-      |> (out) => (STuple(out.entries, t2.stLine), out.memo)
-    (cb: SCallable)    => scFixCallable(cb, visited, rule, memo)
-    (af: SArrayField)  => scFix(af.safElem, visited, rule, memo)
-      |> (out) => (SArrayField(out.spec, af.safLenField, af.safLine),
-                   out.memo)
-    (ls: SLazyStub)    => scFixOpt(ls.slsTarget, visited, rule, memo)
-      |> (out) => (SLazyStub(out.spec, ls.slsLine), out.memo)
-    (o: Spec)          => (sp, memo)
-
-fun scFixCallable(cb: SCallable, visited: List<String>,
-                  rule: (:Spec): Spec|None,
-                  memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
-  let pOut = scFix(cb.scParams2, visited, rule, memo)
-  let rOut = scFixOpt(cb.scResult, visited, rule, pOut.memo)
-  ret (SCallable(pOut.spec, rOut.spec, cb.sclLine), rOut.memo)
-
-fun scFixOpt(sp: Spec|None, visited: List<String>, rule: (:Spec): Spec|None,
-             memo: Dict<String, Spec>): (spec: Spec|None, memo: Dict<String, Spec>)
-  ret match(sp)
-    (s2: Spec) => scFix(s2, visited, rule, memo)
-      |> (out) => (out.spec, out.memo)
-    ()         => (None, memo)
-
-fun [tail] scFixList(ts: Chain<Spec>, visited: List<String>,
-                     rule: (:Spec): Spec|None, memo: Dict<String, Spec>,
-                     acc: List<Spec>): (specs: List<Spec>, memo: Dict<String, Spec>)
-  ret match(ts)
-    (nil: ChainEnd) => (acc, memo)
-    (l: ChainLink)  => scFix(l.value, visited, rule, memo)
-      |> (out) => scFixList(l.next, visited, rule, out.memo,
-                            append(acc, out.spec))
-
-fun [tail] scFixEntries(es: Chain<SEntry>, visited: List<String>,
-                        rule: (:Spec): Spec|None, memo: Dict<String, Spec>,
-                        acc: List<SEntry>): (entries: List<SEntry>, memo: Dict<String, Spec>)
-  ret match(es)
-    (nil: ChainEnd) => (acc, memo)
-    (l: ChainLink)  => scFixOpt(l.value.seType, visited, rule, memo)
-      |> (out) => scFixEntries(l.next, visited, rule, out.memo,
-                               append(acc, SEntry(l.value.seName, out.spec,
-                                                  l.value.seDefault)))
-
-fun [tail] scFixFields(fs: Chain<SField>, visited: List<String>,
-                       rule: (:Spec): Spec|None, memo: Dict<String, Spec>,
-                       acc: List<SField>): (fields: List<SField>, memo: Dict<String, Spec>)
-  ret match(fs)
-    (nil: ChainEnd) => (acc, memo)
-    (l: ChainLink)  => scFix(l.value.sfType, visited, rule, memo)
-      |> (out) => scFixFields(l.next, visited, rule, out.memo,
-                              append(acc, SField(l.value.sfName, out.spec)))
-
-fun scReplaceInAllFieldsM(e2: SEnum, visited: List<String>,
-                          rule: (:Spec): Spec|None,
-                          memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
-  if contains2(visited, e2.seRoot)
-    ret (e2, memo)
-  let key = ceMemoKey(e2, visited)
-  ret match(get(memo, key))
-    (hit: Spec) => (hit, memo)
-    ()          => scRiafUncached(e2, visited, rule, memo)
-      |> (out) => (out.spec, put(out.memo, key, out.spec))
-
-fun scRiafUncached(e2: SEnum, visited: List<String>,
-                   rule: (:Spec): Spec|None,
-                   memo: Dict<String, Spec>): (spec: Spec, memo: Dict<String, Spec>)
-  let innerVisited = append(visited, e2.seRoot)
-  let out = scFixFields(chain(e2.seAllFields), innerVisited, rule, memo,
-                        List<SField>())
-  ret (SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, e2.seParams,
-             e2.seLine, out.fields, e2.seComplex),
-       out.memo)
-
-fun scReplaceInAllFields(e2: SEnum, visited: List<String>,
-                         rule: (:Spec): Spec|None): Spec
-  ret scReplaceInAllFieldsM(e2, visited, rule, Dict<String, Spec>()).spec
-
 # ── 11. the main replace callback ────────────────────────────────────────────
 
 fun scFlattenOne(sp: Spec, cands: ScCands, specs: ScSpecs): Spec|None
@@ -830,8 +714,8 @@ fun scFlattenOne(sp: Spec, cands: ScCands, specs: ScSpecs): Spec|None
 fun scMainSpecOne(sp: Spec, cands: ScCands, specs: ScSpecs): Spec|None
   ret match(sp)
     (c: SClass) => contains2(cands.scNames, c.scName) ? scLookupSpec(specs, c.scName) : None
-    (e2: SEnum) => scReplaceInAllFields(e2, List<String>(),
-                                        (s3: Spec) => scFlattenOne(s3, cands, specs))
+    # SEnum: nothing to do — fields are DERIVED from statements, and every
+    # nested spec position in a statement is visited directly by this walk.
     (o: Spec)   => None
 
 fun scReplaceNew(nw: PeNew): PExpr|None
@@ -913,27 +797,6 @@ fun [tail] scRewriteLifted(ls: Chain<PStmt>, w: Rw, acc: List<PStmt>): List<PStm
     (nil: ChainEnd) => acc
     (l: ChainLink)  => scRewriteLifted(l.next, w, append(acc, rwStmt(l.value, w)))
 
-fun scFixEnumStmt(st: PStmt, cands: ScCands, specs: ScSpecs): PStmt
-  ret match(st)
-    (e2: PsEnum) => match(e2.eSpec)
-      (sp: Spec) => match(sp)
-        (es2: SEnum) => es2.seComplex
-          ? PsEnum(e2.eName, e2.eAttrs, e2.eGens, e2.eParams, e2.eVariants,
-                   e2.eHasParams, e2.pseLine,
-                   e2.eRootName,
-                   scReplaceInAllFields(es2, List<String>(), (s3: Spec) => scFlattenOne(s3, cands, specs)),
-                   e2.eImports)
-          : st
-        (o: Spec)    => st
-      ()         => st
-    (o: PStmt) => st
-
-fun [tail] scFixEnumStmts(ss: Chain<PStmt>, cands: ScCands, specs: ScSpecs,
-                          acc: List<PStmt>): List<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => scFixEnumStmts(l.next, cands, specs, append(acc, scFixEnumStmt(l.value, cands, specs)))
-
 fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
   let r = RRoot(buildStatements(statements))
   let cands0 = scFindSimpleClasses(statements)
@@ -958,7 +821,7 @@ fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
   let newStatements0 = scTTop(chain(statements), cands, ctx, rewriteResolver,
                               List<PStmt>())
   let liftedFinal = scTStmts(liftedPre, ctx, rewriteResolver)
-  let newStatements = scFixEnumStmts(chain(newStatements0), cands, specs, List<PStmt>())
+  let newStatements = newStatements0
   ret concat(newStatements, liftedFinal)
 
 # ── resolver-threaded rewrite drive ──────────────────────────────────────────

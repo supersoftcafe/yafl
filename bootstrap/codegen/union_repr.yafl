@@ -22,6 +22,7 @@ namespace Bootstrap::Codegen
 import System
 
 import Bootstrap::Ast
+import Bootstrap::Frontend
 import Bootstrap::Ir
 import Bootstrap::Parse
 import Bootstrap::Resolve
@@ -326,7 +327,9 @@ fun classifyFlatEnumStmt(e2: SEnum, stmt: PsEnum, r: Resolver): GRepr
   ret GTagged(e2, layout.fieldsStruct, layout.variantMap)
 
 fun classifyFlatEnumFallback(e2: SEnum, r: Resolver): GRepr
-  ret GTagged(e2, CgStruct(map(e2.seAllFields, (f: SField) => CgField(f.sfName, specGenerate(f.sfType, r)))), List<List<CgSlotEntry>>())
+  ret GTagged(e2, CgStruct(map(enumFieldsVia(r, e2.seRoot),
+                               (f: SField) => CgField(f.sfName, specGenerate(f.sfType, r)))),
+              List<List<CgSlotEntry>>())
 
 fun classifyCombination(cm: SCombination, r: Resolver): GRepr
   let members = reprMembersOf(cm.scTypes)

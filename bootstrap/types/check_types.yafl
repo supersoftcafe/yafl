@@ -33,7 +33,9 @@ fun checkSpec(sp: Spec, r: Resolver): List<PErr>
       : oneErr(b.sbLine, "Unresolved reference to '" + b.sbName + "'")
     (n: SNamed)        => checkNamed(n, r)
     (c: SClass)        => checkClassSpec(c, r)
-    (e2: SEnum)        => checkFields(chain(e2.seAllFields), r, noErrs())
+    # Field types are checked at their DECLARATION (the enum statement's
+    # own check); a reference has nothing to recurse into.
+    (e2: SEnum)        => noErrs()
     (g2: SGeneric)     => noErrs()
     (cl: SCallable)    => concat(checkSpec(cl.scParams2, r),
                                  checkSpecOpt(cl.scResult, r))

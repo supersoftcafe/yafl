@@ -370,9 +370,56 @@ fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
 
 fun layoutEnum(t2: PsEnum): PStmt
   let allLeaves = collectLeafNames(t2)
-  let allFields = prepend(SField("$tag", SBuiltin("int32", t2.pseLine)),
-                          collectDataFields(t2))
-  ret assignSpecs(t2, t2.eName, allLeaves, allFields)
+  ret assignSpecs(t2, t2.eName, allLeaves)
+
+# The enum's all_fields, DERIVED from the statement as it currently stands —
+# the tag plus every variant's data fields, root-down. State is derived,
+# never stored (identity vs state, user ruling 08-08): a reader that derives
+# from the CURRENT statement can never see a stale copy. Mirror of Python's
+# EnumStatement.derive_all_fields.
+fun deriveAllFields(e: PsEnum): List<SField>
+  ret prepend(SField("$tag", SBuiltin("int32", e.pseLine)),
+              collectDataFields(e))
+
+# The per-pass fields provider: root name -> derived fields, memoized for the
+# pass's lifetime (the cache lives in the returned closure — the same scoping
+# as every per-pass cache, and THE System::memoize parity site: Python's
+# lowering/enum_fields.fields_provider is the mirror). A root with no
+# statement (a stale reference to a pruned generic) derives EMPTY fields:
+# such a spec is only ever a pointer; its layout is never asked for.
+fun enumFieldsProvider(statements: List<PStmt>): (:String): List<SField>
+  let reg = efRegistry(chain(statements), Dict<String, PsEnum>())
+  ret memoize<String, List<SField>>((root: String) => efDerive(reg, root))
+
+fun efDerive(reg: Dict<String, PsEnum>, root: String): List<SField>
+  ret match(get(reg, root))
+    (e: PsEnum) => deriveAllFields(e)
+    ()          => List<SField>()
+
+fun [tail] efRegistry(ss: Chain<PStmt>,
+                      acc: Dict<String, PsEnum>): Dict<String, PsEnum>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e: PsEnum) => efIsRoot(e)
+        ? efRegistry(l.next, put(acc, e.eName, e))
+        : efRegistry(l.next, acc)
+      (o: PStmt)  => efRegistry(l.next, acc)
+
+fun efIsRoot(e: PsEnum): Bool
+  ret match(e.eRootName)
+    (r: String) => r == e.eName
+    ()          => false
+
+# Resolver-based derivation for compile/check-phase readers (mirror of
+# Python access.py's _enum_fields): the statement is the current truth; an
+# unreachable root (pruned) has no fields to resolve against.
+fun enumFieldsVia(r: Resolver, root: String): List<SField>
+  ret match(soleItem(findType(r, root)))
+    (f: Found) => match(f.fStmt)
+      (e: PsEnum) => deriveAllFields(e)
+      (o: PStmt)  => List<SField>()
+    ()         => List<SField>()
 
 # _collect_leaf_names: a node with no variants IS a leaf — unless it also has
 # no parameter list, which is the uninhabited empty type (`enum Never`).
@@ -421,28 +468,28 @@ fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
     (nil: ChainEnd) => false
     (l: ChainLink)  => l.value.sfName == name ? true : hasFieldNamed(l.next, name)
 
-# _assign_specs: root name, the SHARED all-leaves/all-fields, and each node's
-# OWN valid-leaf subset, recursively onto every variant.
-fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>,
-                allFields: List<SField>): PStmt
+# _assign_specs: root name, the SHARED all-leaves, and each node's OWN
+# valid-leaf subset, recursively onto every variant. Fields are DERIVED —
+# never assigned (identity vs state).
+fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>): PStmt
   ret PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams,
-             assignAllSpecs(chain(e.eVariants), root, allLeaves, allFields,
+             assignAllSpecs(chain(e.eVariants), root, allLeaves,
                             List<PStmt>()),
              e.eHasParams, e.pseLine, root,
              SEnum(root, collectLeafNames(e), allLeaves, List<Spec>(),
-                   e.pseLine, allFields, false),
+                   e.pseLine, false),
              e.eImports)
 
 fun [tail] assignAllSpecs(vs: Chain<PStmt>, root: String,
-                          allLeaves: List<String>, allFields: List<SField>,
+                          allLeaves: List<String>,
                           acc: List<PStmt>): List<PStmt>
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (v: PsEnum) => assignAllSpecs(l.next, root, allLeaves, allFields,
-                                    append(acc, assignSpecs(v, root, allLeaves,
-                                                            allFields)))
-      (o: PStmt)  => assignAllSpecs(l.next, root, allLeaves, allFields,
+      (v: PsEnum) => assignAllSpecs(l.next, root, allLeaves,
+                                    append(acc, assignSpecs(v, root,
+                                                            allLeaves)))
+      (o: PStmt)  => assignAllSpecs(l.next, root, allLeaves,
                                     append(acc, l.value))
 
 # ── control ─────────────────────────────────────────────────────────────────

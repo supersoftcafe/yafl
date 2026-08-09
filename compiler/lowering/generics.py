@@ -191,7 +191,8 @@ def __find_concrete_instantiations(
 
 def __substitute_type_params(
     node: s.Statement | e.Expression | t.TypeSpec,
-    type_param_map: dict[t.TypeSpec, t.TypeSpec]
+    type_param_map: dict[t.TypeSpec, t.TypeSpec],
+    template_formals: dict[str, tuple] | None = None,
 ) -> s.Statement | e.Expression | t.TypeSpec:
     """Replace generic type parameters with concrete types throughout a node.
 
@@ -231,7 +232,20 @@ def __substitute_type_params(
             new_tp = tuple(_substitute_in_field(tp, visited) for tp in es.type_params)
             if any(n is not o for n, o in zip(new_tp, es.type_params)):
                 es = dataclasses.replace(es, type_params=new_tp)
-        return es.walk_all_fields(_substitute_in_field, visited)
+        elif template_formals is not None:
+            # IDENTITY COMPLETION (identity-vs-state ruling): a bare
+            # template-rooted spec inside a specialisation is an incomplete
+            # identity. The stored-fields walk used to bake the function's
+            # placeholder bindings into each copy; with fields DERIVED, the
+            # spec must carry its full type arguments so that
+            # substitution-on-read can reconstruct the instance view.
+            formals = template_formals.get(es.root_name)
+            if formals:
+                es = dataclasses.replace(
+                    es, type_params=tuple(_resolve_gp(f) for f in formals))
+        # Fields are DERIVED from the instance statement (which carries
+        # substituted variant params); there is no stored copy to walk.
+        return es
 
     def _substitute_in_field(ft: t.TypeSpec, visited: frozenset[str]) -> t.TypeSpec:
         if isinstance(ft, t.GenericPlaceholderSpec):
@@ -263,7 +277,8 @@ def __substitute_type_params(
 
 def __create_specialized_version(
     stmt: s.NamedStatement,
-    type_args: tuple[t.TypeSpec, ...]
+    type_args: tuple[t.TypeSpec, ...],
+    template_formals: dict[str, tuple] | None = None,
 ) -> s.NamedStatement:
     """Create a concrete specialized version of a generic statement with specific type arguments."""
 
@@ -279,7 +294,7 @@ def __create_specialized_version(
     new_name = __create_unique_name(stmt.name, type_args)
 
     # Substitute type parameters in the statement body
-    new_stmt = __substitute_type_params(stmt, type_param_map)
+    new_stmt = __substitute_type_params(stmt, type_param_map, template_formals)
 
     # Remove type_params from the specialized version and update name
     new_stmt = dataclasses.replace(
@@ -331,13 +346,10 @@ def __rename_variant_tree(stmt: s.EnumStatement, type_args: tuple) -> s.EnumStat
 def __rebuild_enum_spec(stmt: s.EnumStatement) -> s.EnumStatement:
     """Rebuild _enum_spec for a specialized EnumStatement from its (now-concrete) variants."""
     root_name = stmt.name
-    tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(stmt.line_ref, "int32"))
     all_leaf_names = tuple(stmt._collect_leaf_names())
-    data_fields = stmt._collect_data_fields()
-    all_fields = (tag_field,) + tuple(data_fields)
-    final_variants = [v._assign_specs(root_name, all_leaf_names, all_fields) for v in stmt.variants]
+    final_variants = [v._assign_specs(root_name, all_leaf_names) for v in stmt.variants]
     my_leaves = frozenset(all_leaf_names)
-    my_spec = t.EnumSpec(stmt.line_ref, root_name, my_leaves, all_leaf_names, all_fields)
+    my_spec = t.EnumSpec(stmt.line_ref, root_name, my_leaves, all_leaf_names)
     return dataclasses.replace(stmt, variants=final_variants, _root_name=root_name, _enum_spec=my_spec)
 
 
@@ -351,6 +363,11 @@ def __create_specialized_statements(
     Keep original generic statements (they'll be pruned later).
     """
     specialized: list[s.Statement] = []
+    # Template formals for identity completion: root -> the declaration's
+    # formal placeholder specs, in order.
+    template_formals = {st.name: tuple(tp.get_type() for tp in st.type_params)
+                        for st in statements
+                        if isinstance(st, s.EnumStatement) and st.type_params}
     # Tie-break beyond the uid spelling with the DEEP structural spelling:
     # uid collapses id-less specs, and a hash-order tie is unreproducible in
     # the bootstrap port (the last source of whole-compiler C divergence).
@@ -374,7 +391,8 @@ def __create_specialized_statements(
                     key = (new_name, type(stmt).__name__)
                     if key in existing_keys:
                         continue  # already specialized in a prior iteration
-                    specialized_stmt = __create_specialized_version(stmt, type_args)
+                    specialized_stmt = __create_specialized_version(stmt, type_args,
+                                                                    template_formals)
                     # For enum statements, rename the cloned VARIANT tree with
                     # the same $generic$ suffix — the redirect pass mangles
                     # leaf names inside every EnumSpec it visits, so the
@@ -1021,89 +1039,6 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
     return [rw.resolved(stmt.search_and_replace(resolver, redirect), stmt) for stmt in statements]
 
 
-def __refresh_enum_spec_all_fields(statements: list[s.Statement]) -> list[s.Statement]:
-    """Sync all embedded EnumSpec.all_fields to the canonical _enum_spec built by
-    __rebuild_enum_spec.
-
-    __replace_concrete_references redirects root_name but copies all_fields from the
-    original generic EnumSpec, which may contain GenericPlaceholderSpec entries or
-    reference un-redirected generic child enums (e.g. _DictBucket@hash instead of
-    _DictBucket$generic$bigint_bigint).  This pass looks up the canonical _enum_spec
-    from the corresponding EnumStatement (the authoritative source after all
-    __rebuild_enum_spec calls) and overwrites all_fields in every embedded copy.
-
-    Runs after __prune_unused_generics so only specialized enums are in the lookup
-    table, which means stale copies whose root_name no longer exists (e.g. the
-    original generic Dict@hash in a match arm's type_spec) are left untouched —
-    those are handled separately by match.py using the subject type instead.
-    """
-    canonical: dict[str, t.EnumSpec] = {}
-    for stmt in statements:
-        if (isinstance(stmt, s.EnumStatement)
-                and stmt._enum_spec is not None
-                and stmt._root_name == stmt.name):   # root only, skip nested variant stmts
-            canonical.setdefault(stmt._enum_spec.root_name, stmt._enum_spec)
-
-    if not canonical:
-        return statements
-
-    # Fix nested stale EnumSpec copies inside canonical all_fields.
-    # EnumSpec.search_and_replace never recurses into all_fields (to prevent
-    # infinite loops on recursive enums), so a non-generic enum like JsonValue
-    # that was rebuilt by __finalize_specialized_enum_specs may have all_fields
-    # entries whose root_name is correct (e.g. List$generic$JsonValue) but whose
-    # own all_fields still came from the original redirect (stale GenericPlaceholders
-    # or pruned-generic child references).  Each pass propagates one extra level
-    # of nesting through the canonical-spec dependency graph.
-    #
-    # IMPORTANT: identity-perfect convergence is impossible for self-recursive
-    # enums (every pass creates a fresh tuple while the spec keeps referencing
-    # itself by identity), but the *content* of all_fields stabilises within a
-    # few passes. We therefore cap iterations at a generous bound and accept
-    # whatever state exists after — downstream passes only inspect content.
-    _MAX_REFRESH_ITERS = 16
-    for _ in range(_MAX_REFRESH_ITERS):
-        changed = False
-        new_canonical: dict[str, t.EnumSpec] = {}
-        for root_name, es in canonical.items():
-            new_fields = list(es.all_fields)
-            fields_changed = False
-            for i, (fn, ft) in enumerate(new_fields):
-                if isinstance(ft, t.EnumSpec):
-                    spec = canonical.get(ft.root_name)
-                    if spec is not None and ft.all_fields is not spec.all_fields:
-                        new_fields[i] = (fn, dataclasses.replace(
-                            ft, all_fields=spec.all_fields,
-                            all_leaf_names=spec.all_leaf_names))
-                        fields_changed = True
-            if fields_changed:
-                new_canonical[root_name] = dataclasses.replace(
-                    es, all_fields=tuple(new_fields))
-                changed = True
-            else:
-                new_canonical[root_name] = es
-        canonical = new_canonical
-        if not changed:
-            break
-
-    def refresh(resolver: g.Resolver, thing):
-        if not isinstance(thing, t.EnumSpec):
-            return rw.UNCHANGED
-        spec = canonical.get(thing.root_name)
-        if spec is None:
-            return rw.UNCHANGED
-        # Use identity check, not equality: EnumSpec.__eq__ excludes all_fields
-        # and all_leaf_names, so == would falsely match stale copies.
-        if spec.all_fields is thing.all_fields and spec.all_leaf_names is thing.all_leaf_names:
-            return rw.UNCHANGED
-        return dataclasses.replace(thing,
-                                   all_fields=spec.all_fields,
-                                   all_leaf_names=spec.all_leaf_names)
-
-    resolver = g.ResolverRoot(statements)
-    return [rw.resolved(stmt.search_and_replace(resolver, refresh), stmt) for stmt in statements]
-
-
 def report_unresolved_generic_calls(statements: list[s.Statement]) -> "list":
     """Post-monomorphisation guard: a reference from NON-generic code to a
     still-generic function means call-site inference could not ground its type
@@ -1184,6 +1119,5 @@ def convert_generic_to_concrete(statements: list[s.Statement]) -> "tuple[list[s.
     converted, errors = __convert_generics_iterative(statements)
     if errors:
         return statements, errors
-    converted = __refresh_enum_spec_all_fields(converted)
     resolved = __resolve_trait_references(converted)
     return resolved, []

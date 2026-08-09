@@ -354,8 +354,9 @@ def __build_replace_fn(
         # search_and_replace skips (its cycle guard for self-referential enums).
         # Doing it here keeps codegen's field-access types as TupleSpec, not
         # ClassSpec, so ConvertExpression conversion matches the updated struct fields.
-        if isinstance(thing, t.EnumSpec):
-            return thing.replace_in_all_fields(g.ResolverRoot([]), flatten_rule)
+        # EnumSpec: nothing to do — fields are DERIVED from statements,
+        # and every nested spec position in a statement is visited
+        # directly by this same walk.
 
         # NewExpression whose type was already converted to TupleSpec → just the params
         if isinstance(thing, e.NewExpression) and isinstance(thing.type, t.TupleSpec):
@@ -464,18 +465,4 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
     # on self-referential enums; the main pass above therefore leaves stale
     # ClassSpec entries in complex enums' all_fields.  Fix them now so that the
     # C struct fields match the flat-struct types used elsewhere.
-    flatten_rule = __flatten_class_rule(simple_classes, simple_tuple_specs)
-
-    def _fix_enum_stmt(stmt: s.Statement) -> s.Statement:
-        if (isinstance(stmt, s.EnumStatement)
-                and stmt._enum_spec is not None
-                and stmt._enum_spec.is_complex):
-            new_spec = stmt._enum_spec.replace_in_all_fields(
-                g.ResolverRoot([]), flatten_rule)
-            if new_spec is not stmt._enum_spec:
-                return dataclasses.replace(stmt, _enum_spec=new_spec)
-        return stmt
-
-    new_statements = [_fix_enum_stmt(stmt) for stmt in new_statements]
-
     return new_statements + lifted_final

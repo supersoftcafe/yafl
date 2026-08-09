@@ -843,8 +843,9 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
             container, vmap = cg_t.compute_union_slots(t.enum_variant_types(stmt, resolver),
                                                        max_tag=_global_max_tag(resolver))
             return TaggedRepr(union_type, container, vmap)
-        container = cg_t.Struct(tuple((name, ftype.generate(resolver))
-                                      for name, ftype in union_type.all_fields))
+        # Statement not found: a stale reference to a pruned root — only
+        # ever a pointer; there are no fields to lay out.
+        container = cg_t.Struct(())
         return TaggedRepr(union_type, container, ())
 
     if isinstance(union_type, t.CombinationSpec):

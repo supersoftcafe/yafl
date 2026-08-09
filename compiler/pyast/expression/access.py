@@ -57,7 +57,7 @@ def _enum_fields(resolver: g.Resolver, espec: "t.EnumSpec"):
         stmt = found[0].statement
         if hasattr(stmt, "derive_all_fields"):
             return stmt.derive_all_fields()
-    return espec.all_fields
+    return ()   # unreachable root (pruned): no fields to resolve against
 
 
 def _substitute_class_type_params(

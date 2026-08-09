@@ -34,8 +34,7 @@ enum Spec
   # Python's compare=False does). Never read them off an instance — resolve
   # the declaration and read the canonical spec.
   enum SEnum(seRoot: String, seValidLeaves: List<String>, seAllLeaves: List<String>,
-             seParams: List<Spec>, seLine: PLine,
-             seAllFields: List<SField>, seComplex: Bool = false)
+             seParams: List<Spec>, seLine: PLine, seComplex: Bool = false)
   enum SGeneric(sgName: String, sgLinear: Bool, sgLine: PLine)
   enum SCallable(scParams2: Spec, scResult: Spec|None, sclLine: PLine)
   enum SCombination(scTypes: List<Spec>, scmLine: PLine)
@@ -404,7 +403,7 @@ fun parseEnumText(body: String): Spec
   let root = c < 0 ? body : slice(body, 0, c)
   let tail2 = c < 0 ? "" : slice(body, c + 1, length(body))
   let leaves = tail2 == "" ? List<String>() : split(tail2, "|")
-  ret SEnum(root, leaves, leaves, List<Spec>(), noLine(), List<SField>())
+  ret SEnum(root, leaves, leaves, List<Spec>(), noLine())
 
 fun parseUnionText(body: String): Spec|None
   ret unionParts(chain(topLevelParts(body)), List<Spec>())

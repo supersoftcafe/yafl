@@ -122,10 +122,10 @@ class EnumStatement(TypeStatement):
         tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(self.line_ref, "int32"))
         return (tag_field,) + tuple(self._collect_data_fields())
 
-    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...], all_fields: tuple[tuple[str, t.TypeSpec], ...]) -> EnumStatement:
+    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...]) -> EnumStatement:
         my_leaves = frozenset(self._collect_leaf_names())
-        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, all_fields)
-        new_variants = [v._assign_specs(root_name, all_leaf_names, all_fields) for v in self.variants]
+        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names)
+        new_variants = [v._assign_specs(root_name, all_leaf_names) for v in self.variants]
         return dataclasses.replace(self, variants=new_variants, _root_name=root_name, _enum_spec=my_spec)
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement]]:
@@ -141,14 +141,11 @@ class EnumStatement(TypeStatement):
             new_variants.append(cv)
             var_stmts.extend(vg)
         root_name = self.name
-        tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(self.line_ref, "int32"))
         temp = dataclasses.replace(self, parameters=new_parameters, variants=new_variants)
         all_leaf_names = tuple(temp._collect_leaf_names())
-        data_fields = temp._collect_data_fields()
-        all_fields = (tag_field,) + tuple(data_fields)
-        final_variants = [v._assign_specs(root_name, all_leaf_names, all_fields) for v in new_variants]
+        final_variants = [v._assign_specs(root_name, all_leaf_names) for v in new_variants]
         my_leaves = frozenset(all_leaf_names)
-        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, all_fields)
+        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names)
         new_self = dataclasses.replace(self,
             parameters=new_parameters, variants=final_variants,
             _root_name=root_name, _enum_spec=my_spec)
