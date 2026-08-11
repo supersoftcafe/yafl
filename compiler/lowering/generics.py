@@ -12,6 +12,32 @@ import pyast.typespec as t
 
 from langtools import checked_cast
 from pyast.statement import ImportGroup
+from pyast.typespec.identity import TypeId, spelling_of, serialise
+
+# An instantiation request, deduplicated BY IDENTITY (the ruling: identity =
+# name + ALL type arguments, as TypeIds). The value keeps the argument SPECS —
+# instantiation needs the full descriptions to substitute into the template;
+# they just no longer serve as the key.
+InstanceRefs = dict[tuple[str, tuple[TypeId, ...]], tuple[str, tuple["t.TypeSpec", ...]]]
+
+
+def __instance_key(name: str, type_args: tuple[t.TypeSpec, ...]) -> tuple[str, tuple[TypeId, ...]]:
+    """The identity key of an instantiation request. Callers gate on
+    __is_concrete_type_args first, where the total spelling IS the identity
+    (identity_of returns the same TypeId for a complete spec); keying by the
+    spelling keeps two hypothetical ungated incomplete requests distinct
+    rather than collapsing them onto None — and matches the port's mkGRef."""
+    return (name, tuple(spelling_of(tp) for tp in type_args))
+
+
+def __merge_refs(base: InstanceRefs, extra: InstanceRefs) -> InstanceRefs:
+    """First-wins merge: an identity already requested keeps its original
+    request, exactly as the old set.add was a no-op for a member already
+    present — and as the port's addOnce folds keep the first."""
+    merged = dict(base)
+    for k, v in extra.items():
+        merged.setdefault(k, v)
+    return merged
 
 
 def __create_unique_name(base_name: str, type_args: tuple[t.TypeSpec, ...]) -> str:
@@ -25,36 +51,13 @@ def __create_unique_name(base_name: str, type_args: tuple[t.TypeSpec, ...]) -> s
 
 
 def __deep_id(spec) -> str:
-    """A TOTAL recursive spelling of a spec, for the instantiation sort's
-    tie-break: as_unique_id_str collapses id-less specs to None/"unknown", so
-    structurally DIFFERENT argument lists can share a sort key — and the tie
-    then falls to set-iteration order, which the bootstrap port cannot
-    reproduce (it is hash-seed order, not structure). Every constructor is
-    spelled with its name and children; unions sort their member spellings
-    (set semantics). The port mirrors this function byte-for-byte."""
-    if spec is None:
-        return "_"
-    if isinstance(spec, t.BuiltinSpec):
-        return f"B({spec.type_name})"
-    if isinstance(spec, t.NamedSpec):
-        return f"N({spec.name};{','.join(__deep_id(p) for p in spec.type_params)})"
-    if isinstance(spec, t.ClassSpec):
-        return f"C({spec.name};{','.join(__deep_id(p) for p in spec.type_params)})"
-    if isinstance(spec, t.EnumSpec):
-        return f"E({spec.root_name};{','.join(__deep_id(p) for p in spec.type_params)})"
-    if isinstance(spec, t.TupleSpec):
-        return "T(" + ",".join(f"{en.name or ''}:{__deep_id(en.type)}" for en in spec.entries) + ")"
-    if isinstance(spec, t.CallableSpec):
-        return f"F({__deep_id(spec.parameters)};{__deep_id(spec.result)})"
-    if isinstance(spec, t.CombinationSpec):
-        return "U(" + "|".join(sorted(__deep_id(m) for m in spec.types)) + ")"
-    if isinstance(spec, t.GenericPlaceholderSpec):
-        return f"G({spec.name})"
-    if isinstance(spec, t.LazyStubSpec):
-        return f"L({__deep_id(spec.target_type)})"
-    if isinstance(spec, t.ArrayFieldSpec):
-        return f"A({__deep_id(spec.element)};{spec.length_field})"
-    return f"X({type(spec).__name__})"
+    """The TOTAL spelling of a spec, for the instantiation sort's tie-break:
+    as_unique_id_str collapses id-less specs to None/"unknown", so structurally
+    DIFFERENT argument lists can share a sort key — and the tie then falls to
+    set-iteration order, which the bootstrap port cannot reproduce. This is now
+    just the serialised TypeId spelling — ONE identity spelling, defined in
+    pyast/typespec/identity.py and mirrored by the port's ast/identity.yafl."""
+    return serialise(spelling_of(spec))
 
 
 def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
@@ -145,40 +148,41 @@ def __appears_outside_union(spec: t.TypeSpec, name: str, in_union: bool = False)
 
 def __find_concrete_instantiations(
     statements: list[s.Statement]
-) -> tuple[set[tuple[str, tuple[t.TypeSpec, ...]]], set[tuple[str, tuple[t.TypeSpec, ...]]]]:
+) -> tuple[InstanceRefs, InstanceRefs]:
     """
     Find all concrete instantiations of generics.
-    Returns (data_references, type_references) as sets of (name, type_args).
+    Returns (data_references, type_references) keyed by instantiation identity
+    (name + argument TypeIds), each holding its (name, type_args) request.
     Only includes instantiations where type_args are concrete (not GenericPlaceholderSpec).
     """
-    data_refs: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
-    type_refs: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
+    data_refs: InstanceRefs = {}
+    type_refs: InstanceRefs = {}
 
     def find_instantiations(resolver: g.Resolver, thing):
         # Find NamedExpression with concrete type_params (e.g., doNothing<Int>(x))
         if isinstance(thing, e.NamedExpression) and thing.type_params:
             if __is_concrete_type_args(thing.type_params):
-                data_refs.add((thing.name, thing.type_params))
+                data_refs.setdefault(__instance_key(thing.name, thing.type_params), (thing.name, thing.type_params))
 
         # Find NewEnumExpression with concrete type_params (e.g., DictEmpty<Int,Str>())
         if isinstance(thing, e.NewEnumExpression) and thing.type_params:
             if __is_concrete_type_args(thing.type_params):
-                data_refs.add((thing.root_spec_name, thing.type_params))
+                data_refs.setdefault(__instance_key(thing.root_spec_name, thing.type_params), (thing.root_spec_name, thing.type_params))
 
         # Find ClassSpec with concrete type_params (e.g., List<Int>)
         if isinstance(thing, t.ClassSpec) and thing.type_params:
             if __is_concrete_type_args(thing.type_params):
-                type_refs.add((thing.name, thing.type_params))
+                type_refs.setdefault(__instance_key(thing.name, thing.type_params), (thing.name, thing.type_params))
 
         # Find EnumSpec with concrete type_params (from return type annotations)
         if isinstance(thing, t.EnumSpec) and thing.type_params:
             if __is_concrete_type_args(thing.type_params):
-                data_refs.add((thing.root_name, thing.type_params))
+                data_refs.setdefault(__instance_key(thing.root_name, thing.type_params), (thing.root_name, thing.type_params))
 
         # Find NamedSpec with concrete type_params (e.g., Dict<Int,Str> in type annotations)
         if isinstance(thing, t.NamedSpec) and thing.type_params:
             if __is_concrete_type_args(thing.type_params):
-                data_refs.add((thing.name, thing.type_params))
+                data_refs.setdefault(__instance_key(thing.name, thing.type_params), (thing.name, thing.type_params))
 
         return rw.UNCHANGED
 
@@ -355,8 +359,8 @@ def __rebuild_enum_spec(stmt: s.EnumStatement) -> s.EnumStatement:
 
 def __create_specialized_statements(
     statements: list[s.Statement],
-    data_refs: set[tuple[str, tuple[t.TypeSpec, ...]]],
-    type_refs: set[tuple[str, tuple[t.TypeSpec, ...]]]
+    data_refs: InstanceRefs,
+    type_refs: InstanceRefs
 ) -> list[s.Statement]:
     """
     Create specialized versions for all NamedStatements that match the concrete instantiations.
@@ -371,7 +375,8 @@ def __create_specialized_statements(
     # Tie-break beyond the uid spelling with the DEEP structural spelling:
     # uid collapses id-less specs, and a hash-order tie is unreproducible in
     # the bootstrap port (the last source of whole-compiler C divergence).
-    all_refs = sorted(data_refs | type_refs,
+    # data | type: one request per identity survives the merge.
+    all_refs = sorted(__merge_refs(data_refs, type_refs).values(),
                       key=lambda item: (item[0],
                                         tuple(tp.as_unique_id_str() or "" for tp in item[1]),
                                         tuple(__deep_id(tp) for tp in item[1])))
@@ -415,8 +420,8 @@ def __create_specialized_statements(
 
 def __replace_concrete_references(
     statements: list[s.Statement],
-    data_refs: set[tuple[str, tuple[t.TypeSpec, ...]]],
-    type_refs: set[tuple[str, tuple[t.TypeSpec, ...]]]
+    data_refs: InstanceRefs,
+    type_refs: InstanceRefs
 ) -> list[s.Statement]:
     """Replace all concrete generic references with references to specialized versions.
 
@@ -445,7 +450,7 @@ def __replace_concrete_references(
         if not thing.type_params or not __is_concrete_type_args(thing.type_params):
             return None
         current_name = getattr(thing, name_attr)
-        if (current_name, thing.type_params) not in refs:
+        if __instance_key(current_name, thing.type_params) not in refs:
             return None
         new_name = __create_unique_name(current_name, thing.type_params)
         new_fields = {name_attr: new_name, "type_params": ()}
@@ -531,26 +536,29 @@ def __generic_instance_providers(
     return providers
 
 
-def __collect_concrete_constraints(statements: list[s.Statement]) -> set[t.ClassSpec]:
+def __collect_concrete_constraints(statements: list[s.Statement]) -> dict[TypeId, t.ClassSpec]:
     """Every concrete trait constraint appearing in a `where` clause anywhere in
     `statements` (top-level functions and nested method bodies alike). Inner types
     may be in either structural (`Box<Wrap<Leaf,Int>,Int>`) or already-mangled
     (`Box<Wrap$generic$Leaf_Int,Int>`) form depending on how far redirection has
-    progressed; __generic_instance_refs re-inflates the latter before unifying."""
+    progressed; __generic_instance_refs re-inflates the latter before unifying.
+    Keyed by the constraint's TOTAL spelling (not identity_of — is_concrete()
+    deliberately counts a bare placeholder as concrete, so a constraint may
+    carry one and must still be kept distinct, not collapsed onto None)."""
     resolver = g.ResolverRoot(statements)
-    found: set[t.ClassSpec] = set()
+    found: dict[TypeId, t.ClassSpec] = {}
     def collect(_, thing):
         if isinstance(thing, s.NamedStatement):
             for tp in thing.trait_params:
                 if isinstance(tp, t.ClassSpec) and tp.is_concrete():
-                    found.add(tp)
+                    found.setdefault(spelling_of(tp), tp)
         # An AMBIENT instance member call records its demand on the use, not
         # in any `where` clause: the solved scope (Sized<List<Int>>) committed
         # by NamedExpression.compile is a concrete constraint to discharge.
         if (isinstance(thing, e.NamedExpression)
                 and isinstance(thing.resolved_trait_scope, t.ClassSpec)
                 and thing.resolved_trait_scope.is_concrete()):
-            found.add(thing.resolved_trait_scope)
+            found.setdefault(spelling_of(thing.resolved_trait_scope), thing.resolved_trait_scope)
         return rw.UNCHANGED
     for st in statements:
         st.search_and_replace(resolver, collect)
@@ -692,19 +700,23 @@ def __bind_where_params(st: s.LetStatement, mapping: dict[str, t.TypeSpec],
 
 def __generic_instance_refs(
     providers: list[tuple[s.LetStatement, t.ClassSpec]],
-    constraints: set[t.ClassSpec],
-    mono_refs: set[tuple[str, tuple[t.TypeSpec, ...]]],
+    constraints: dict[TypeId, t.ClassSpec],
+    mono_refs: InstanceRefs,
     instance_ifaces: list[t.ClassSpec],
-) -> set[tuple[str, tuple[t.TypeSpec, ...]]]:
+) -> InstanceRefs:
     """Witness-let instantiations (name, type_args) needed to satisfy `constraints`
     via the generic `providers`. The witness's own `where` becomes a fresh, more
     concrete constraint that a later loop iteration discharges — so nested wrappers
     resolve by recursion."""
-    mono_map = {__create_unique_name(n, ta): (n, ta) for n, ta in mono_refs if ta}
-    extra: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
+    # The mono_map key is a mangled NAME: after redirect an instantiation's
+    # identity IS its name alone (type params baked in, then cleared), and the
+    # same name serves ClassSpec and EnumSpec reference forms alike — a
+    # name-identity lookup, legitimate under the identity ruling.
+    mono_map = {__create_unique_name(n, ta): (n, ta) for n, ta in mono_refs.values() if ta}
+    extra: InstanceRefs = {}
     for st, pattern in providers:
         names = {p.name for p in st.type_params}
-        for constraint in constraints:
+        for constraint in constraints.values():
             if pattern.name != constraint.name:
                 continue
             inflated = __spec_from_mangled(constraint, mono_map)
@@ -726,7 +738,7 @@ def __generic_instance_refs(
                 continue
             type_args = tuple(__mangled_from_spec(mapping[p.name]) for p in st.type_params)
             if __is_concrete_type_args(type_args):
-                extra.add((st.name, type_args))
+                extra.setdefault(__instance_key(st.name, type_args), (st.name, type_args))
     return extra
 
 
@@ -757,23 +769,24 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> "tuple[list[s
     all_specialized_enum_names: set[str] = set()
     # Concrete `where` constraints seen so far, accumulated across iterations so a
     # generic instance can be discharged once its constraint first appears.
-    seen_constraints: set[t.ClassSpec] = set()
+    seen_constraints: dict[TypeId, t.ClassSpec] = {}
     # Every (generic-name, concrete type_args) ever specialised, so a mangled
     # name in a constraint can be re-inflated to the structure the unifier needs.
-    seen_mono_refs: set[tuple[str, tuple[t.TypeSpec, ...]]] = set()
+    seen_mono_refs: InstanceRefs = {}
 
     for _round in range(_MAX_MONO_ROUNDS):
         # Step 1: Find all concrete instantiations
         data_refs, type_refs = __find_concrete_instantiations(statements)
-        seen_mono_refs |= data_refs | type_refs
+        seen_mono_refs = __merge_refs(seen_mono_refs, __merge_refs(data_refs, type_refs))
 
         # Step 1b: Generic trait instances are selected by constraint discharge,
         # not by an explicit type-param reference. Discharge the constraints seen
         # so far against the generic instances, seeding witness-let refs.
-        seen_constraints |= __collect_concrete_constraints(statements)
-        data_refs = data_refs | __generic_instance_refs(
+        for k, v in __collect_concrete_constraints(statements).items():
+            seen_constraints.setdefault(k, v)
+        data_refs = __merge_refs(data_refs, __generic_instance_refs(
             __generic_instance_providers(statements), seen_constraints, seen_mono_refs,
-            __concrete_instance_interfaces(statements))
+            __concrete_instance_interfaces(statements)))
 
         if not data_refs and not type_refs:
             # No concrete instantiations found - we're done iterating
@@ -795,13 +808,13 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> "tuple[list[s
         if specialized:
             extra_data, extra_type = __find_concrete_instantiations(specialized)
             existing_names = {stmt.name for stmt in statements}
-            extra_data = {(n, tp) for n, tp in extra_data
+            extra_data = {k: (n, tp) for k, (n, tp) in extra_data.items()
                           if __create_unique_name(n, tp) in existing_names}
-            extra_type = {(n, tp) for n, tp in extra_type
+            extra_type = {k: (n, tp) for k, (n, tp) in extra_type.items()
                           if __create_unique_name(n, tp) in existing_names}
             if extra_data or extra_type:
-                data_refs = data_refs | extra_data
-                type_refs = type_refs | extra_type
+                data_refs = __merge_refs(data_refs, extra_data)
+                type_refs = __merge_refs(type_refs, extra_type)
 
         # Step 3: Replace concrete references with specialized names in ALL statements
         # (including newly specialized ones).  We do this even when `specialized` is

@@ -15,10 +15,15 @@ import Bootstrap::Types
 
 
 
-# A concrete instantiation: (generic name, type args). Sets of these are kept
-# as lists deduplicated by their MANGLED key.
-class [final] GRef(grName: String, grArgs: List<Spec>)
+# A concrete instantiation: (generic name, type args). Kept as lists (the
+# ordered carrier) deduplicated BY IDENTITY — grIds is the request's identity
+# key, the argument TypeIds, computed once at construction exactly as Python
+# builds its dict key once per add.
+class [final] GRef(grName: String, grArgs: List<Spec>, grIds: List<TypeId>)
 class [final] GRefs(gdData: List<GRef>, gdTypes: List<GRef>)
+
+fun mkGRef(name: String, args: List<Spec>): GRef
+  ret GRef(name, args, spellList(args))
 
 # name$generic$uid1_uid2 — "unknown" for an id-less arg, exactly as Python.
 fun mangledName(base: String, args: List<Spec>): String
@@ -38,10 +43,12 @@ fun uidOrUnknown(sp: Spec): String
 fun refKey(g2: GRef): String
   ret mangledName(g2.grName, g2.grArgs)
 
-# Dedupe STRUCTURALLY, not by mangled key: Python's set holds (name, args)
-# tuples, so two spellings that collide on an id-less "unknown" key are BOTH
-# kept — the redirect must match whichever spelling a given node carries.
-# Creation stays single per mangled name via existingKeys.
+# Dedupe BY IDENTITY, not by mangled key: two requests are the same request
+# iff name and argument TypeIds agree (Python's dict keyed by (name, ids)).
+# Id-less "unknown" mangled-key collisions stay distinct when their argument
+# identities differ — the redirect must match whichever spelling a node
+# carries. Creation stays single per mangled name via existingKeys.
+# First one in wins, as Python's setdefault.
 fun addRef(refs: List<GRef>, g2: GRef): List<GRef>
   ret hasRefStruct(chain(refs), g2) ? refs : append(refs, g2)
 
@@ -49,7 +56,7 @@ fun [tail] hasRefStruct(rs: Chain<GRef>, g2: GRef): Bool
   ret match(rs)
     (nil: ChainEnd) => false
     (l: ChainLink)  => (l.value.grName == g2.grName
-                        && eqSpecs(l.value.grArgs, g2.grArgs))
+                        && eqTypeIds(l.value.grIds, g2.grIds))
       ? true
       : hasRefStruct(l.next, g2)
 
@@ -212,7 +219,7 @@ fun fciExpr(x: PExpr, acc: GRefs): GRefs
 
 fun nameRef(name: String, args: List<Spec>, acc: GRefs): GRefs
   ret !isEmpty(args) && isConcreteTypeArgs(args)
-    ? GRefs(addRef(acc.gdData, GRef(name, args)), acc.gdTypes)
+    ? GRefs(addRef(acc.gdData, mkGRef(name, args)), acc.gdTypes)
     : acc
 
 fun [tail] fciEntries(es: Chain<PTupEnt>, acc: GRefs): GRefs
@@ -240,14 +247,14 @@ fun fciSpec(sp: Spec, acc: GRefs): GRefs
                                      && isConcreteTypeArgs(c.scParams)
                                      ? GRefs(acc.gdData,
                                              addRef(acc.gdTypes,
-                                                    GRef(c.scName, c.scParams)))
+                                                    mkGRef(c.scName, c.scParams)))
                                      : acc)
     (e2: SEnum)        => fciSpecs(chain(e2.seParams),
                                    !isEmpty(e2.seParams)
                                      && isConcreteTypeArgs(e2.seParams)
                                      ? GRefs(addRef(acc.gdData,
-                                                    GRef(e2.seRoot,
-                                                         e2.seParams)),
+                                                    mkGRef(e2.seRoot,
+                                                           e2.seParams)),
                                              acc.gdTypes)
                                      : acc)
     # NamedSpec is a traversal LEAF: its search_and_replace is the base
@@ -255,7 +262,7 @@ fun fciSpec(sp: Spec, acc: GRefs): GRefs
     # never visited.
     (n: SNamed)        => !isEmpty(n.snParams)
                           && isConcreteTypeArgs(n.snParams)
-      ? GRefs(addRef(acc.gdData, GRef(n.snName, n.snParams)), acc.gdTypes)
+      ? GRefs(addRef(acc.gdData, mkGRef(n.snName, n.snParams)), acc.gdTypes)
       : acc
     (cm: SCombination) => fciSpecs(chain(cm.scTypes), acc)
     (t2: STuple)       => fciSpecEntries(chain(t2.stEntries), acc)
@@ -777,8 +784,8 @@ fun [tail] insertRef(as2: Chain<GRef>, x: GRef, acc: List<GRef>): List<GRef>
 # Order: name, then the uid spellings ELEMENT-WISE (Python compares the
 # tuple, not a joined string), then the DEEP structural spelling — uid
 # collapses id-less specs, and a tie decided by set-iteration order was the
-# last source of whole-compiler C divergence. deepId mirrors Python's
-# __deep_id byte-for-byte.
+# last source of whole-compiler C divergence. deepId is the serialised
+# TypeId spelling, the same spelling Python's __deep_id routes through.
 fun refLess(a: GRef, b: GRef): Bool
   ret a.grName != b.grName ? a.grName < b.grName
     : strsLess(chain(map(a.grArgs, refUid)), chain(map(b.grArgs, refUid)))
@@ -802,28 +809,10 @@ fun [tail] strsLess(a: Chain<String>, b: Chain<String>): Bool
         ? la.value < lb.value
         : strsLess(la.next, lb.next)
 
+# The deep spelling is the serialised TypeId — ONE identity spelling, defined
+# in ast/identity.yafl and mirrored by Python's pyast/typespec/identity.py.
 fun deepId(sp: Spec): String
-  ret match(sp)
-    (bi: SBuiltin)     => "B(" + bi.sbName + ")"
-    (n: SNamed)        => "N(" + n.snName + ";" + joinDeep(n.snParams) + ")"
-    (c: SClass)        => "C(" + c.scName + ";" + joinDeep(c.scParams) + ")"
-    (e2: SEnum)        => "E(" + e2.seRoot + ";" + joinDeep(e2.seParams) + ")"
-    (t2: STuple)       => "T(" + join(map(t2.stEntries, (en: SEntry) =>
-                            en.seName + ":" + deepIdOpt(en.seType)), ",") + ")"
-    (cl: SCallable)    => "F(" + deepId(cl.scParams2) + ";"
-                          + deepIdOpt(cl.scResult) + ")"
-    (cm: SCombination) => "U(" + join(sort(map(cm.scTypes, deepId)), "|") + ")"
-    (g2: SGeneric)     => "G(" + g2.sgName + ")"
-    (ls: SLazyStub)    => "L(" + deepIdOpt(ls.slsTarget) + ")"
-    (af: SArrayField)  => "A(" + deepId(af.safElem) + ";" + af.safLenField + ")"
-
-fun deepIdOpt(sp: Spec|None): String
-  ret match(sp)
-    (s2: Spec) => deepId(s2)
-    ()          => "_"
-
-fun joinDeep(ps: List<Spec>): String
-  ret join(map(ps, deepId), ",")
+  ret tiSerialise(spellingOf(sp))
 
 class [final] CssState(csOut: List<PStmt>, csKeys: List<String>)
 
@@ -904,18 +893,21 @@ fun inRefs(ix: Dict<String, List<GRef>>, name: String,
   ret !isEmpty(args) && isConcreteTypeArgs(args)
       && inRefsHit(ix, name, args, mangledName(name, args))
 
+# The mangled key is only the bucket INDEX; the membership answer is decided
+# by identity — name plus argument TypeIds, computed once per query, exactly
+# as Python's __instance_key builds the dict key once per membership test.
 fun inRefsHit(ix: Dict<String, List<GRef>>, name: String, args: List<Spec>,
               key: String): Bool
   ret match(get(ix, key))
-    (bucket: List<GRef>) => inBucket(chain(bucket), name, args)
+    (bucket: List<GRef>) => inBucket(chain(bucket), name, spellList(args))
     ()                    => false
 
-fun [tail] inBucket(bs: Chain<GRef>, name: String, args: List<Spec>): Bool
+fun [tail] inBucket(bs: Chain<GRef>, name: String, ids: List<TypeId>): Bool
   ret match(bs)
     (nil: ChainEnd) => false
-    (l: ChainLink)  => (l.value.grName == name && eqSpecs(l.value.grArgs, args))
+    (l: ChainLink)  => (l.value.grName == name && eqTypeIds(l.value.grIds, ids))
       ? true
-      : inBucket(l.next, name, args)
+      : inBucket(l.next, name, ids)
 
 fun rcrClass(c: SClass, refs: GRefsIx): Spec
   let ps = rcrSpecs(c.scParams, refs)
@@ -1218,6 +1210,20 @@ fun [tail] patternLoop(ps: Chain<Spec>, remap: List<Binding>, let2: PsLet,
         (o: Spec)     => patternLoop(l.next, remap, let2, acc)
       (o2: Spec)   => patternLoop(l.next, remap, let2, acc)
 
+# Constraint identity is the TOTAL spelling (Python keys its dict by
+# spelling_of): is_concrete deliberately admits a bare placeholder, so the
+# spelling — not a completeness-gated identity — is the honest dedup key.
+# First one in wins, as Python's setdefault.
+fun addConstraintOnce(acc: List<Spec>, sp: Spec): List<Spec>
+  ret hasConstraint(chain(acc), spellingOf(sp)) ? acc : append(acc, sp)
+
+fun [tail] hasConstraint(cs: Chain<Spec>, id2: TypeId): Bool
+  ret match(cs)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => eqTypeId(spellingOf(l.value), id2)
+      ? true
+      : hasConstraint(l.next, id2)
+
 # Every concrete trait constraint in any `where` clause anywhere in the tree
 # (top-level and nested method wheres alike) — Python walks with
 # search_and_replace, so this fold visits every statement and expression.
@@ -1283,7 +1289,7 @@ fun cccExprOpt(x: PExpr|None, acc: List<Spec>): List<Spec>
 fun cccTraitScope(ts: Spec|None, acc: List<Spec>): List<Spec>
   ret match(ts)
     (t2: Spec) => match(t2)
-      (c: SClass) => isConcrete(c) ? addSpecOnce(acc, t2) : acc
+      (c: SClass) => isConcrete(c) ? addConstraintOnce(acc, t2) : acc
       (o: Spec)   => acc
     ()         => acc
 
@@ -1304,7 +1310,7 @@ fun [tail] cccWheres(ws: Chain<Spec>, acc: List<Spec>): List<Spec>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (wc: SClass) => isConcrete(wc)
-        ? cccWheres(l.next, addSpecOnce(acc, l.value))
+        ? cccWheres(l.next, addConstraintOnce(acc, l.value))
         : cccWheres(l.next, acc)
       (o: Spec)    => cccWheres(l.next, acc)
 
@@ -1511,7 +1517,7 @@ fun girBound(p: GProvider, letGens: List<PGen>, names: List<String>,
     ret acc
   let args = mangledArgs(chain(letGens), mapping, List<Spec>())
   ret isConcreteTypeArgs(args)
-    ? addRef(acc, GRef(p.gpLet.lName, args))
+    ? addRef(acc, mkGRef(p.gpLet.lName, args))
     : acc
 
 fun [tail] allUnionOnly(ns: Chain<String>, pattern: SClass): Bool
@@ -1546,7 +1552,7 @@ fun [tail] addRefsAll(rs: Chain<GRef>, acc: List<GRef>): List<GRef>
 fun [tail] addSpecsAll(ss: Chain<Spec>, acc: List<Spec>): List<Spec>
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => addSpecsAll(l.next, addSpecOnce(acc, l.value))
+    (l: ChainLink)  => addSpecsAll(l.next, addConstraintOnce(acc, l.value))
 
 fun [tail] addNamesAll(ns: Chain<String>, acc: List<String>): List<String>
   ret match(ns)

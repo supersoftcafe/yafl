@@ -1,0 +1,208 @@
+# bootstrap/ast/identity.yafl — TypeId, a type's identity reified as a
+# dedicated value type. Ported from compiler/pyast/typespec/identity.py.
+#
+# The identity-vs-state ruling: a type's identity is its NAME plus ALL its
+# type arguments, recursively — never its descriptive state (fields, leaves,
+# resolution snapshots). A TypeId is that identity as a plain immutable
+# value: structurally comparable, hashable through the hidden $hash slot,
+# and safe as a key precisely because there is no state on it to go stale.
+#
+# spellingOf is TOTAL: every spec gets a spelling, including the incomplete
+# arms (unbound placeholders, raw named spellings) — defensive orderings use
+# it (the instantiation sort's tie-break). Python additionally has the
+# PARTIAL identity_of (None for an incomplete spec); the port does not carry
+# it yet — every port key construction sits behind the concreteness gate,
+# where spellingOf and identityOf coincide. Port it when a key site needs
+# the None distinction.
+#
+# tiSerialise is the canonical spelling — byte-for-byte the format the old
+# hand-mirrored deepId used; the instantiation sort orders by it, so the
+# formats are load-bearing for whole-compiler byte-identity.
+namespace Bootstrap::Ast
+
+import System
+
+
+# ── the identity tree ────────────────────────────────────────────────────────
+
+enum TypeId
+  enum TiNone()                                           # an absent spec position
+  enum TiBuiltin(tibName: String)
+  enum TiNamed(tinName: String, tinArgs: List<TypeId>)    # raw spelling — incomplete
+  enum TiClass(ticName: String, ticArgs: List<TypeId>)
+  enum TiEnum(tieRoot: String, tieArgs: List<TypeId>)
+  enum TiTuple(titEntries: List<(tteName: String, tteId: TypeId)>)
+  enum TiCallable(tcbParams: TypeId, tcbResult: TypeId)
+  enum TiUnion(tiuMembers: List<TypeId>)                  # sorted by spelling at build
+  enum TiPlaceholder(tipName: String)                     # unbound param — incomplete
+  enum TiLazy(tilTarget: TypeId)
+  enum TiArray(tiaElem: TypeId, tiaLenField: String)
+
+
+# ── building ─────────────────────────────────────────────────────────────────
+
+fun spellingOf(sp: Spec): TypeId
+  ret match(sp)
+    (bi: SBuiltin)     => TiBuiltin(bi.sbName)
+    (n: SNamed)        => TiNamed(n.snName, spellList(n.snParams))
+    (c: SClass)        => TiClass(c.scName, spellList(c.scParams))
+    (e2: SEnum)        => TiEnum(e2.seRoot, spellList(e2.seParams))
+    (t2: STuple)       => TiTuple(map<SEntry, (tteName: String, tteId: TypeId)>(
+                            t2.stEntries, (en: SEntry) =>
+                              (en.seName, spellingOfOpt(en.seType))))
+    (cl: SCallable)    => TiCallable(spellingOf(cl.scParams2),
+                                     spellingOfOpt(cl.scResult))
+    (cm: SCombination) => TiUnion(tiSortBySpelling(map(cm.scTypes, spellingOf)))
+    (g2: SGeneric)     => TiPlaceholder(g2.sgName)
+    (ls: SLazyStub)    => TiLazy(spellingOfOpt(ls.slsTarget))
+    (af: SArrayField)  => TiArray(spellingOf(af.safElem), af.safLenField)
+
+fun spellingOfOpt(sp: Spec|None): TypeId
+  ret match(sp)
+    (s2: Spec) => spellingOf(s2)
+    ()         => TiNone()
+
+fun spellList(ps: List<Spec>): List<TypeId>
+  ret map(ps, spellingOf)
+
+# Union members are stored in spelling order, so structurally equal unions
+# are EQUAL VALUES (set semantics by construction). Stable insertion sort,
+# mirroring Python's sorted(..., key=serialise).
+fun tiSortBySpelling(ids: List<TypeId>): List<TypeId>
+  ret tiSortLoop(chain(ids), List<TypeId>())
+
+fun [tail] tiSortLoop(ids: Chain<TypeId>, acc: List<TypeId>): List<TypeId>
+  ret match(ids)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => tiSortLoop(l.next, tiInsert(chain(acc), l.value, List<TypeId>()))
+
+fun [tail] tiInsert(as2: Chain<TypeId>, x: TypeId, acc: List<TypeId>): List<TypeId>
+  ret match(as2)
+    (nil: ChainEnd) => append(acc, x)
+    (l: ChainLink)  => tiSerialise(x) < tiSerialise(l.value)
+      ? concat(append(acc, x), List<TypeId>(as2))
+      : tiInsert(l.next, x, append(acc, l.value))
+
+
+# ── the canonical spelling ───────────────────────────────────────────────────
+
+fun tiSerialise(t2: TypeId): String
+  ret match(t2)
+    (x: TiNone)        => "_"
+    (b: TiBuiltin)     => "B(" + b.tibName + ")"
+    (n: TiNamed)       => "N(" + n.tinName + ";" + tiJoin(n.tinArgs) + ")"
+    (c: TiClass)       => "C(" + c.ticName + ";" + tiJoin(c.ticArgs) + ")"
+    (e2: TiEnum)       => "E(" + e2.tieRoot + ";" + tiJoin(e2.tieArgs) + ")"
+    (tp: TiTuple)      => "T(" + join(map(tp.titEntries,
+                            (en: (tteName: String, tteId: TypeId)) =>
+                              en.tteName + ":" + tiSerialise(en.tteId)), ",") + ")"
+    (cb: TiCallable)   => "F(" + tiSerialise(cb.tcbParams) + ";"
+                          + tiSerialise(cb.tcbResult) + ")"
+    (u: TiUnion)       => "U(" + join(map(u.tiuMembers, tiSerialise), "|") + ")"
+    (g2: TiPlaceholder) => "G(" + g2.tipName + ")"
+    (lz: TiLazy)       => "L(" + tiSerialise(lz.tilTarget) + ")"
+    (ar: TiArray)      => "A(" + tiSerialise(ar.tiaElem) + ";" + ar.tiaLenField + ")"
+
+fun tiJoin(ids: List<TypeId>): String
+  ret join(map(ids, tiSerialise), ",")
+
+
+# ── equality and hashing ─────────────────────────────────────────────────────
+
+fun eqTypeId(a: TypeId, b: TypeId): Bool
+  ret match(a)
+    (x: TiNone)        => b is TiNone
+    (x: TiBuiltin)     => match(b)
+      (y: TiBuiltin) => x.tibName == y.tibName
+      (o: TypeId)    => false
+    (x: TiNamed)       => match(b)
+      (y: TiNamed)   => x.tinName == y.tinName && eqTypeIds(x.tinArgs, y.tinArgs)
+      (o: TypeId)    => false
+    (x: TiClass)       => match(b)
+      (y: TiClass)   => x.ticName == y.ticName && eqTypeIds(x.ticArgs, y.ticArgs)
+      (o: TypeId)    => false
+    (x: TiEnum)        => match(b)
+      (y: TiEnum)    => x.tieRoot == y.tieRoot && eqTypeIds(x.tieArgs, y.tieArgs)
+      (o: TypeId)    => false
+    (x: TiTuple)       => match(b)
+      (y: TiTuple)   => eqTiEntries(chain(x.titEntries), chain(y.titEntries))
+      (o: TypeId)    => false
+    (x: TiCallable)    => match(b)
+      (y: TiCallable) => eqTypeId(x.tcbParams, y.tcbParams)
+                         && eqTypeId(x.tcbResult, y.tcbResult)
+      (o: TypeId)    => false
+    (x: TiUnion)       => match(b)
+      (y: TiUnion)   => eqTypeIds(x.tiuMembers, y.tiuMembers)
+      (o: TypeId)    => false
+    (x: TiPlaceholder) => match(b)
+      (y: TiPlaceholder) => x.tipName == y.tipName
+      (o: TypeId)    => false
+    (x: TiLazy)        => match(b)
+      (y: TiLazy)    => eqTypeId(x.tilTarget, y.tilTarget)
+      (o: TypeId)    => false
+    (x: TiArray)       => match(b)
+      (y: TiArray)   => x.tiaLenField == y.tiaLenField
+                        && eqTypeId(x.tiaElem, y.tiaElem)
+      (o: TypeId)    => false
+
+fun eqTypeIds(a: List<TypeId>, b: List<TypeId>): Bool
+  ret eqTiLoop(chain(a), chain(b))
+
+fun [tail] eqTiLoop(a: Chain<TypeId>, b: Chain<TypeId>): Bool
+  ret match(a)
+    (nil: ChainEnd) => b is ChainEnd
+    (la: ChainLink) => match(b)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => eqTypeId(la.value, lb.value)
+        ? eqTiLoop(la.next, lb.next)
+        : false
+
+fun [tail] eqTiEntries(a: Chain<(tteName: String, tteId: TypeId)>,
+                       b: Chain<(tteName: String, tteId: TypeId)>): Bool
+  ret match(a)
+    (nil: ChainEnd) => b is ChainEnd
+    (la: ChainLink) => match(b)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => (la.value.tteName == lb.value.tteName
+                           && eqTypeId(la.value.tteId, lb.value.tteId))
+        ? eqTiEntries(la.next, lb.next)
+        : false
+
+fun _tiMix(acc: Int32, h: Int32): Int32
+  ret (acc * 31i32 + h) & 2147483647i32
+
+# Structural hash, cached per node through the hidden $hash slot — self-calls
+# reach child nodes through THEIR caches, so a deep identity hashes O(fanout).
+fun [hashed] hashTypeId(v: TypeId): Int32
+  ret match(v)
+    (x: TiNone)        => 11i32
+    (b: TiBuiltin)     => _tiMix(13i32, hashOf(b.tibName))
+    (n: TiNamed)       => hashTiList(chain(n.tinArgs), _tiMix(17i32, hashOf(n.tinName)))
+    (c: TiClass)       => hashTiList(chain(c.ticArgs), _tiMix(19i32, hashOf(c.ticName)))
+    (e2: TiEnum)       => hashTiList(chain(e2.tieArgs), _tiMix(23i32, hashOf(e2.tieRoot)))
+    (tp: TiTuple)      => hashTiEntries(chain(tp.titEntries), 29i32)
+    (cb: TiCallable)   => _tiMix(_tiMix(31i32, hashTypeId(cb.tcbParams)),
+                                 hashTypeId(cb.tcbResult))
+    (u: TiUnion)       => hashTiList(chain(u.tiuMembers), 37i32)
+    (g2: TiPlaceholder) => _tiMix(41i32, hashOf(g2.tipName))
+    (lz: TiLazy)       => _tiMix(43i32, hashTypeId(lz.tilTarget))
+    (ar: TiArray)      => _tiMix(_tiMix(47i32, hashTypeId(ar.tiaElem)),
+                                 hashOf(ar.tiaLenField))
+
+fun [tail] hashTiList(ids: Chain<TypeId>, acc: Int32): Int32
+  ret match(ids)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => hashTiList(l.next, _tiMix(acc, hashTypeId(l.value)))
+
+fun [tail] hashTiEntries(es: Chain<(tteName: String, tteId: TypeId)>, acc: Int32): Int32
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => hashTiEntries(l.next,
+                                     _tiMix(_tiMix(acc, hashOf(l.value.tteName)),
+                                            hashTypeId(l.value.tteId)))
+
+instance [ambient] BasicEquality<TypeId>
+  fun `==`(left: TypeId, right: TypeId): Bool
+    ret eqTypeId(left, right)
+  fun hashOf(value: TypeId): Int32
+    ret hashTypeId(value)

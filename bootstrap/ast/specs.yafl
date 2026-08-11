@@ -29,10 +29,6 @@ enum Spec
   enum SBuiltin(sbName: String, sbLine: PLine)
   enum SNamed(snName: String, snParams: List<Spec>, snLine: PLine)
   enum SClass(scName: String, scParams: List<Spec>, scLine: PLine)
-  # seAllFields / seComplex are METADATA, not identity: the declaration owns
-  # them, an instance's copy can go stale, and equality ignores both (as
-  # Python's compare=False does). Never read them off an instance — resolve
-  # the declaration and read the canonical spec.
   enum SEnum(seRoot: String, seValidLeaves: List<String>, seAllLeaves: List<String>,
              seParams: List<Spec>, seLine: PLine)
   enum SGeneric(sgName: String, sgLinear: Bool, sgLine: PLine)
