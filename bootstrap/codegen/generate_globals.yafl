@@ -241,7 +241,7 @@ fun arrayLengthFieldName(ap: PsLet): String|None
 # Simple enums (and non-root statements of a complex one) emit nothing.
 fun enumGlobalCodegen(st: PsEnum, r: Resolver): List<CgObject>
   ret match(asEnumVariant(st.eSpec))
-    (sp: SEnum) => sp.seComplex && enumIsRootStmt(st)
+    (sp: SEnum) => isComplexRoot(r, sp.seRoot) && enumIsRootStmt(st)
       ? enumComplexObjects(st, sp, r)
       : List<CgObject>()
     ()           => List<CgObject>()

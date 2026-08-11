@@ -271,7 +271,8 @@ enum Resolver
   # in generate_expr.yafl. Carried on the root (rather than as a wrapping layer,
   # as Python does) because generate always starts from a fresh root built for
   # that one codegen run — there is no nested rebinding to support.
-  enum RRoot(rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
+  enum RRoot(rrComplex: (:String): Bool,
+             rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
@@ -350,6 +351,19 @@ fun [tail] traitInstanceStmts(r: Resolver): List<PStmt>
     (tr: RTraits)    => traitInstanceStmts(tr.rtrParent)
     (cb: RClassBody) => traitInstanceStmts(cb.rcbParent)
     (rg: RGen)       => traitInstanceStmts(rg.rgParent)
+
+# DERIVED is_complex: walk to the root resolver and ask its breaker
+# analysis (identity vs state — no stamps anywhere). Mirror of
+# Python Resolver.is_complex_root.
+fun [tail] isComplexRoot(r: Resolver, root2: String): Bool
+  ret match(r)
+    (root: RRoot)    => root.rrComplex(root2)
+    (sc: RScopes)    => isComplexRoot(sc.rsParent, root2)
+    (d: RData)    => isComplexRoot(d.rdParent, root2)
+    (t2: RTypes)    => isComplexRoot(t2.rtParent, root2)
+    (tr: RTraits)    => isComplexRoot(tr.rtrParent, root2)
+    (cb: RClassBody)    => isComplexRoot(cb.rcbParent, root2)
+    (rg: RGen)    => isComplexRoot(rg.rgParent, root2)
 
 fun ambientEntries(r: Resolver): AmbEntries
   ret ambEntryWalk(r, List<String>())

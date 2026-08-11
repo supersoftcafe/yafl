@@ -658,7 +658,7 @@ fun withArmSpecParams(a: PArm, t2: Spec, params: List<Spec>): PArm
       : a
     (e2: SEnum) => isEmpty(e2.seParams)
       ? PArm(a.armName, SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                              params, e2.seLine, e2.seComplex),
+                              params, e2.seLine),
              a.armBody, a.armLiterals, a.armGuard, a.parmLine)
       : a
     (o: Spec)   => a

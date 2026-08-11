@@ -475,14 +475,6 @@ class EnumSpec(TypeSpec):
     # compile-loop iterations without changing the type's identity).
     # Including them in equality breaks compile-loop convergence on
     # recursive enums whose all_fields stabilises a tier at a time.
-    # Set by lowering/complex_enums.py for enums that should lower to
-    # a heap-allocated object instead of a flat by-value struct. An
-    # enum is complex when (a) its all_fields graph contains a cycle
-    # through this root_name — directly or via mutual recursion through
-    # other enums (so the by-value struct would have infinite size),
-    # or (b) it has more than eight fields (large by-value pass-by
-    # becomes expensive). Both cases use the same heap-pointer codegen.
-    is_complex: bool = field(default=False, compare=False)
     # Set when NamedSpec._compile() produces an EnumSpec that still
     # carries the source NamedSpec's type arguments (K, V, etc.).
     # Used by the generics pass to detect and redirect concrete

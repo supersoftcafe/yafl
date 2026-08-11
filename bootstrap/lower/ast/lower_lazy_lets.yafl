@@ -196,7 +196,7 @@ fun containsSub(s: String, needle: String): Bool
 # ── the lowering ─────────────────────────────────────────────────────────────
 
 fun lowerLazyLets(statements: List<PStmt>): List<PStmt>
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   let promoted = promoteNonTrivialGlobals(statements, r)
   let lazies = foldStmts<OuterTypes>(promoted, lllCollect, lllIdExpr,
                                      OuterTypes(List<String>(),

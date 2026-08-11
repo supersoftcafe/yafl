@@ -163,61 +163,35 @@ def _pick_cycle_breakers(edges: dict[str, set[str]], roots: dict[str, t.EnumSpec
     return result
 
 
-def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
-    # 1. Index every top-level EnumStatement by its root_name.
-    #    Variants nested inside the root share the same root_name and the
-    #    same all_fields (assigned by EnumStatement._assign_specs) — we
-    #    only need to walk the root.
+def compute_breakers(statements: list[s.Statement]) -> set[str]:
+    """The breaker set — WHICH enum roots must lower complex — as a pure
+    function of the statements: collect roots, build the reachability graph
+    over DERIVED fields, pick one breaker per cycle. Exposed so is_complex
+    can become derive-only (identity vs state): late readers query this
+    analysis (memoized per compile) instead of reading stamps."""
     roots: dict[str, t.EnumSpec] = {}
     for stmt in statements:
         if isinstance(stmt, s.EnumStatement) and stmt._enum_spec is not None:
             spec = stmt._enum_spec
-            # If two top-level statements share a root_name they must agree
-            # on all_fields (compiler invariant); take the first.
             roots.setdefault(spec.root_name, spec)
-
     if not roots:
-        return statements
-
+        return set()
     from lowering.enum_fields import fields_provider
     fields_of = fields_provider(statements)
-
     name_to_root = _build_name_to_root(roots)
-
-    # 2. Build the directed reachability graph between root_names. A
-    #    self-loop (this enum's fields contain a reference back to its
-    #    own root_name) is the common case for self-recursive enums;
-    #    larger cycles arise from mutual recursion.
     edges: dict[str, set[str]] = {}
     for name, spec in roots.items():
         children: set[str] = set()
         for _, ftype in fields_of(name):
             _collect_reachable_roots(ftype, children, name_to_root)
         edges[name] = children
-
-    # 3. Pick exactly one breaker per cycle.
-    complex_set = _pick_cycle_breakers(edges, roots, fields_of)
+    return _pick_cycle_breakers(edges, roots, fields_of)
 
 
-    if not complex_set:
-        return statements
-
-    # 4. Stamp is_complex on every EnumSpec position throughout the AST.
-    #    With all_fields DERIVED (never stored), every nested spec position
-    #    lives in a statement and is visited DIRECTLY by search_and_replace —
-    #    the old recursion/visited/memo machinery existed only to chase the
-    #    stored-copy graph, and the NamedSpec resolution existed only because
-    #    stored copies froze early-round spellings. Both die with the field.
-    #    The stale-pruned rule does NOT apply at tree positions (it never
-    #    did — the port's !cx divergence taught exactly this placement); it
-    #    belonged to the stored-copy resolve, which is gone. Pruned roots at
-    #    tree positions keep their flags; their FIELDS derive empty.
-    def mark(_resolver: g.Resolver, thing: Any) -> Any:
-        if isinstance(thing, t.EnumSpec):
-            is_complex = thing.root_name in complex_set
-            if is_complex != thing.is_complex:
-                return dataclasses.replace(thing, is_complex=is_complex)
-        return thing
-
-    resolver = g.ResolverRoot(statements)
-    return [stmt.search_and_replace(resolver, mark) for stmt in statements]
+def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
+    """IDENTITY. is_complex is DERIVED (identity vs state): every reader
+    queries the breaker analysis through its resolver (is_complex_root) or
+    computes it from its statements (compute_breakers) — there are no stamps
+    to apply and no stale copies to repair. The pipeline slot is kept for
+    wiring stability; removing it everywhere is cosmetic cleanup."""
+    return statements

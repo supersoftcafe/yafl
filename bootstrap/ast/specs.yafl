@@ -34,7 +34,7 @@ enum Spec
   # Python's compare=False does). Never read them off an instance — resolve
   # the declaration and read the canonical spec.
   enum SEnum(seRoot: String, seValidLeaves: List<String>, seAllLeaves: List<String>,
-             seParams: List<Spec>, seLine: PLine, seComplex: Bool = false)
+             seParams: List<Spec>, seLine: PLine)
   enum SGeneric(sgName: String, sgLinear: Bool, sgLine: PLine)
   enum SCallable(scParams2: Spec, scResult: Spec|None, sclLine: PLine)
   enum SCombination(scTypes: List<Spec>, scmLine: PLine)

@@ -375,186 +375,38 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 # Pruned generic EnumSpecs (not in roots) are marked complex so generate()
 # never expands their placeholder fields.
 
-# The pass context: canonical roots, the name map, the breaker set.
-class [final] CeCtx(ceRoots: ERoots, ceMap: NameMap, ceSet: List<String>)
-
 # With all_fields DERIVED (never stored), every nested spec position lives
 # in a statement and is visited DIRECTLY by the walk — the old resolve
 # machinery (recursion, visited sets, the CeKey memo) chased the stored-copy
 # graph and dies with it. Python's collapse is the mirror. The fields
 # provider (enumFieldsProvider — THE System::memoize parity site now) serves
 # the graph builders.
+# IDENTITY. is_complex is DERIVED (identity vs state): every reader queries
+# the breaker analysis through its resolver (rrComplex, built by
+# rootResolver) — there are no stamps to apply and no stale copies to
+# repair. The pipeline slot is kept for wiring stability.
 fun markComplexEnums(statements: List<PStmt>): List<PStmt>
+  ret statements
+
+# The breaker set — WHICH enum roots must lower complex — as a pure function
+# of the statements (mirror of Python's compute_breakers): collect roots,
+# build the reachability graph over DERIVED fields, pick one breaker per
+# cycle.
+# The root resolver, carrying the DERIVED is_complex query: the breaker
+# analysis computes lazily once per resolver from its own statements — the
+# same lifetime as every per-pass cache. Mirror of Python
+# ResolverRoot.is_complex_root. The breaker list is small; membership is a
+# linear scan.
+fun rootResolver(statements: List<PStmt>,
+                 suggest: Dict<String, Spec>|None = None): Resolver
+  let [lazy] breakers: List<String> = computeBreakers(statements)
+  ret RRoot((root: String) => contains2(breakers, root),
+            buildStatements(statements), suggest)
+
+fun computeBreakers(statements: List<PStmt>): List<String>
   let roots = ceCollectRoots(statements)
   if isEmpty(roots.erNames)
-    ret statements
+    ret List<String>()
   let fieldsOf = enumFieldsProvider(statements)
   let map = ceNameMap(roots)
-  let complexSet = cePickBreakers(ceEdges(roots, map, fieldsOf), roots,
-                                  fieldsOf)
-  if isEmpty(complexSet)
-    ret statements
-  ret ceStmts(chain(statements), CeCtx(roots, map, complexSet),
-              List<PStmt>())
-
-# ── the traversal (search_and_replace visit sets, as ever) ──────────────────
-
-fun [tail] ceStmts(ss: Chain<PStmt>, c: CeCtx, acc: List<PStmt>): List<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceStmts(l.next, c, append(acc, ceStmt(l.value, c)))
-
-fun ceStmt(st: PStmt, c: CeCtx): PStmt
-  ret match(st)
-    (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, ceStmt(f.fParams, c),
-                         ceExprOpt(f.fBody, c), ceSpecOpt(f.fRet, c),
-                         ceSpecList(f.fWheres, c), f.psfLine,
-                         f.fRetInferred, f.fNested, f.fImports)
-    (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, ceSpecOpt(l.lType, c),
-                         ceExprOpt(l.lDefault, c), l.lArrayLen, l.lWheres,
-                         l.pslLine, l.lTypeInferred, l.lImports)
-    (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
-                                        ceSpecOpt(d.dType, c),
-                                        ceStmts(chain(d.dTargets), c,
-                                                List<PStmt>()),
-                                        ceExprOpt(d.dDefault, c),
-                                        d.psdLine, d.dTypeInferred)
-    (cl: PsClass) => PsClass(cl.cName, cl.cAttrs, cl.cGens,
-                             ceStmt(cl.cParams, c),
-                             ceSpecList(cl.cImplements, c),
-                             ceSpecList(cl.cWheres, c),
-                             ceStmts(chain(cl.cMembers), c, List<PStmt>()),
-                             cl.cIsInterface, cl.pscLine,
-                             ceSpecsOpt(cl.cAllParents, c),
-                             cl.cAllSlots, cl.cImports)
-    (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, ceStmt(e2.eParams, c),
-                           ceStmts(chain(e2.eVariants), c, List<PStmt>()),
-                           e2.eHasParams, e2.pseLine, e2.eRootName,
-                           ceSpecOpt(e2.eSpec, c), e2.eImports)
-    (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
-                                     ceSpec(ta.taType, c), ta.taWheres,
-                                     ta.pstLine, ta.taImports)
-    (rt: PsRet)  => PsRet(ceExpr(rt.retValue, c), rt.psrLine)
-    (a: PsAction) => PsAction(ceExpr(a.action, c), a.psaLine)
-    (i: PsIf)    => PsIf(ceExpr(i.ifCond, c),
-                         ceStmts(chain(i.ifTrue), c, List<PStmt>()),
-                         ceStmts(chain(i.ifFalse), c, List<PStmt>()),
-                         i.psifLine)
-    (o: PStmt)   => st
-
-fun ceExprOpt(x: PExpr|None, c: CeCtx): PExpr|None
-  ret match(x)
-    (e2: PExpr) => ceExpr(e2, c)
-    ()          => None
-
-fun ceExpr(x: PExpr, c: CeCtx): PExpr
-  ret match(x)
-    (nm: PeName)   => PeName(nm.refName, ceSpecList(nm.refTypeParams, c),
-                             nm.penLine, ceSpecOpt(nm.penTrait, c))
-    (d: PeDot)     => PeDot(ceExpr(d.base, c), d.member, d.pedLine)
-    (cc: PeCall)   => PeCall(ceExpr(cc.function, c), ceExpr(cc.parameter, c),
-                             cc.pecLine)
-    (tp: PeTuple)  => PeTuple(ceTupEnts(chain(tp.exprs), c, List<PTupEnt>()),
-                              tp.petLine)
-    (te: PeTernary) => PeTernary(ceExpr(te.condition, c),
-                                 ceExpr(te.trueResult, c),
-                                 ceExpr(te.falseResult, c), te.pety)
-    (lm: PeLambda) => PeLambda(ceStmt(lm.lamParams, c),
-                               ceExpr(lm.lamBody, c), lm.pelLine,
-                               ceSpecOpt(lm.lamRet, c))
-    (bk: PeBlock)  => PeBlock(ceStmts(chain(bk.blockStmts), c,
-                                      List<PStmt>()),
-                              ceExpr(bk.blockValue, c), bk.blockTag,
-                              bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(ceExpr(mt.subject, c),
-                              ceArms(chain(mt.arms), c, List<PArm>()),
-                              mt.pemLine)
-    (op: PeBuiltinOp) => PeBuiltinOp(ceSpec(op.opType, c), op.opName,
-                                     ceExpr(op.opParams, c), op.peboLine)
-    (nw: PeNew)    => PeNew(ceSpec(nw.newType, c), ceExpr(nw.newParam, c),
-                            nw.penwLine)
-    (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                                 map(ne.fieldArgs, (fa: PFieldArg) =>
-                                   PFieldArg(fa.faName, ceExpr(fa.faValue, c))),
-                                 ceSpecList(ne.neTypeParams, c),
-                                 ne.penewLine)
-    (ar: PeArrayRead) => PeArrayRead(ceExpr(ar.arrObj, c),
-                                     ceExpr(ar.arrIndex, c), ar.pearLine)
-    (cv: PeConvert) => PeConvert(ceExpr(cv.convInner, c),
-                                 ceSpec(cv.convTarget, c), cv.pecvLine)
-    (wx: PeWith)   => PeWith(ceExpr(wx.withSubject, c),
-                             ceExpr(wx.withRepls, c), wx.pewLine)
-    (pl: PeParallel) => PeParallel(ceExpr(pl.parParams, c), pl.pepLine)
-    (o: PExpr)     => x
-
-fun [tail] ceTupEnts(es: Chain<PTupEnt>, c: CeCtx,
-                     acc: List<PTupEnt>): List<PTupEnt>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceTupEnts(l.next, c,
-        append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
-                            ceExpr(l.value.tupValue, c))))
-
-fun [tail] ceArms(as2: Chain<PArm>, c: CeCtx, acc: List<PArm>): List<PArm>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceArms(l.next, c,
-        append(acc, PArm(l.value.armName, ceSpecOpt(l.value.armType, c),
-                         ceExpr(l.value.armBody, c), l.value.armLiterals,
-                         ceExprOpt(l.value.armGuard, c), l.value.parmLine)))
-
-fun ceSpecOpt(sp: Spec|None, c: CeCtx): Spec|None
-  ret match(sp)
-    (s2: Spec) => ceSpec(s2, c)
-    ()         => None
-
-fun ceSpecsOpt(ss: List<Spec>|None, c: CeCtx): List<Spec>|None
-  ret match(ss)
-    (l: List<Spec>) => ceSpecList(l, c)
-    ()              => None
-
-fun ceSpecList(ts: List<Spec>, c: CeCtx): List<Spec>
-  ret ceSpecLoop(chain(ts), c, List<Spec>())
-
-fun [tail] ceSpecLoop(ts: Chain<Spec>, c: CeCtx,
-                      acc: List<Spec>): List<Spec>
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceSpecLoop(l.next, c, append(acc, ceSpec(l.value, c)))
-
-fun ceSpec(sp: Spec, c: CeCtx): Spec
-  ret match(sp)
-    (e2: SEnum)        => ceMarkEnumNode(e2, c)
-    (cl: SClass)       => SClass(cl.scName, ceSpecList(cl.scParams, c),
-                                 cl.scLine)
-    (n: SNamed)        => sp   # traversal LEAF
-    (cm: SCombination) => SCombination(ceSpecList(cm.scTypes, c),
-                                       cm.scmLine)
-    (t2: STuple)       => STuple(ceEntries(chain(t2.stEntries), c,
-                                           List<SEntry>()),
-                                 t2.stLine)
-    (cb: SCallable)    => SCallable(ceSpec(cb.scParams2, c),
-                                    ceSpecOpt(cb.scResult, c), cb.sclLine)
-    (af: SArrayField)  => SArrayField(ceSpec(af.safElem, c),
-                                      af.safLenField, af.safLine)
-    (ls: SLazyStub)    => SLazyStub(ceSpecOpt(ls.slsTarget, c), ls.slsLine)
-    (o: Spec)          => sp
-
-# EnumSpec traversal: params visited generally, then the mark callback.
-# Tree site: Python's `mark` exactly — the NODE's flag is plain set
-# membership; no stale rule at tree positions (the port-taught placement),
-# no field rebuild (fields are DERIVED; nested spec positions are visited
-# directly by this walk).
-fun ceMarkEnumNode(e2: SEnum, c: CeCtx): Spec
-  ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-            ceSpecList(e2.seParams, c), e2.seLine,
-            contains2(c.ceSet, e2.seRoot))
-
-fun [tail] ceEntries(es: Chain<SEntry>, c: CeCtx,
-                     acc: List<SEntry>): List<SEntry>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceEntries(l.next, c,
-        append(acc, SEntry(l.value.seName,
-                           ceSpecOpt(l.value.seType, c),
-                           l.value.seDefault)))
+  ret cePickBreakers(ceEdges(roots, map, fieldsOf), roots, fieldsOf)

@@ -172,7 +172,7 @@ class EnumStatement(TypeStatement):
         # discriminant lives in the vtable, once per type. Emit only at the
         # root statement (variants nested in `variants` carry the same
         # root_name).
-        if self._enum_spec is None or not self._enum_spec.is_complex:
+        if self._enum_spec is None or not resolver.is_complex_root(self.name):
             return []
         if self._root_name is not None and self._root_name != self.name:
             return []

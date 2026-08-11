@@ -798,7 +798,7 @@ fun [tail] scRewriteLifted(ls: Chain<PStmt>, w: Rw, acc: List<PStmt>): List<PStm
     (l: ChainLink)  => scRewriteLifted(l.next, w, append(acc, rwStmt(l.value, w)))
 
 fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   let cands0 = scFindSimpleClasses(statements)
   if isEmpty(cands0.scNames)
     ret statements
@@ -814,7 +814,7 @@ fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
   let specs = filtered2.sfSpecs
   let t2c = scTupleIdToClass(specs)
   let liftedPre = scLiftAll(cands, specs)
-  let rewriteResolver = RRoot(buildStatements(concat(statements, liftedPre)))
+  let rewriteResolver = rootResolver(concat(statements, liftedPre))
   # Resolver-THREADED rewrite (scT*): Python's callback sees the resolver in
   # effect at each node — a receiver that is a param or local must resolve.
   let ctx = ScCtx(cands, specs, t2c)

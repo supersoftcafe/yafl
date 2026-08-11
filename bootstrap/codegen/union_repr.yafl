@@ -295,16 +295,10 @@ enum GRepr
   enum GPointer(grpType: Spec)
   enum GComplexEnum(grcType: Spec)
 
+# DERIVED is_complex: the resolver carries the breaker analysis (identity
+# vs state — no stamps to read, no canon lookup, no stale copies).
 fun isComplexEnum(sp: SEnum, r: Resolver): Bool
-  ret match(soleItem(findType(r, sp.seRoot)))
-    (found: Found) => match(found.fStmt)
-      (stmt: PsEnum) => match(stmt.eSpec)
-        (canonical: Spec) => match(canonical)
-          (ce: SEnum) => ce.seComplex
-          (o: Spec)   => sp.seComplex
-        ()             => sp.seComplex
-      (o: PStmt)     => sp.seComplex
-    ()               => sp.seComplex
+  ret isComplexRoot(r, sp.seRoot)
 
 fun classifyRepr(sp: Spec, r: Resolver): GRepr
   ret match(sp)

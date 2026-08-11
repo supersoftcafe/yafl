@@ -711,7 +711,7 @@ fun [tail] clTupEnts(es: Chain<PTupEnt>, r: Resolver, paths: ClPaths,
                                              v.clExExpr)))
 
 # ── 3. the entry point (lambdas.py:226-240) ──────────────────────────────────
-# r = RRoot(buildStatements(statements)) built ONCE per recursion level; every
+# r = rootResolver(statements) built ONCE per recursion level; every
 # top-level statement's own path table is computed fresh from ITS (original)
 # tree; exports collect and, when non-empty, recurse (appended AFTER).
 
@@ -730,7 +730,7 @@ fun [tail] clScanAll(ss: Chain<PStmt>, r: Resolver, accStmts: List<PStmt>,
                           concat(accExports, o.clStExports))
 
 fun convertLambdasToFunctions(statements: List<PStmt>): List<PStmt>
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   let scanned = clScanAll(chain(statements), r, List<PStmt>(), List<PStmt>())
   ret isEmpty(scanned.csaExports)
     ? scanned.csaStmts

@@ -194,7 +194,9 @@ fun answerOne(idx: Statements, q: String, sb: StringBuilder): StringBuilder
     ret sb
   let kind = slice(q, 0, sp)
   let name = slice(q, sp + 1, length(q))
-  let r = RRoot(idx)
+  # A pure lookup resolver for the query interface: nothing on this path
+  # asks the breaker analysis.
+  let r = RRoot((root: String) => false, idx)
   let bag = kind == "type" ? findType(r, name) : findData(r, name)
   ret append(sb, String(bagSize(bag)) + "|" + foundNames(chain(bag.bItems), "") + "\n")
 
@@ -212,7 +214,7 @@ fun convertMode(text: String): (out: String, code: Int)
   let cases = slice(text, cut + 3, length(text))
   ret match(parseProgram(srcPart, "x"))
     (f: PFail)           => ("parse error\n", 1)
-    (stmts: List<PStmt>) => (convertAll(RRoot(buildStatements(stmts)),
+    (stmts: List<PStmt>) => (convertAll(rootResolver(stmts),
                                         chain(splitLines(cases))), 0)
 
 fun convertAll(r: Resolver, cs: Chain<String>): String
@@ -244,7 +246,7 @@ fun assignMode(text: String): (out: String, code: Int)
   let cases = slice(text, cut + 3, length(text))
   ret match(parseProgram(srcPart, "x"))
     (f: PFail)           => ("parse error\n", 1)
-    (stmts: List<PStmt>) => (assignAll(RRoot(buildStatements(stmts)),
+    (stmts: List<PStmt>) => (assignAll(rootResolver(stmts),
                                        chain(splitLines(cases))), 0)
 
 fun assignAll(r: Resolver, cs: Chain<String>): String
@@ -317,13 +319,13 @@ fun checkMode(text: String): (out: String, code: Int)
 # re-convergence when it inserted) → diagnostics → linearity.
 fun checkOutput(stmts0: List<PStmt>): String
   let lowered = lowerLambdaGlobals(stmts0)
-  let d0 = insertDrops(lowered, RRoot(buildStatements(lowered)))
+  let d0 = insertDrops(lowered, rootResolver(lowered))
   ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
     (ok: CvOk)      => checkedOutput(ok.cvStatements)
     (dv: CvDiverged) => "diverged\n"
 
 fun checkedOutput(stmts: List<PStmt>): String
-  let r = RRoot(buildStatements(stmts), collectParamSuggestions(stmts))
+  let r = rootResolver(stmts, collectParamSuggestions(stmts))
   let d = collectDiagnostics(stmts, r)
   if !isEmpty(d.dFails)
     ret printedDiagnostics(d.dFails)
@@ -346,7 +348,7 @@ fun genericsMode(text: String): (out: String, code: Int)
 
 fun genericsOutput(stmts0: List<PStmt>): (out: String, code: Int)
   let lowered = lowerLambdaGlobals(stmts0)
-  let d0 = insertDrops(lowered, RRoot(buildStatements(lowered)))
+  let d0 = insertDrops(lowered, rootResolver(lowered))
   ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
     (ok: CvOk)       => genericsDump(ok.cvStatements)
     (dv: CvDiverged) => ("diverged\n", 2)
@@ -403,7 +405,7 @@ fun postmonoRes(text: String): PmRes
 
 fun postmonoRes2(stmts0: List<PStmt>): PmRes
   let lowered = lowerLambdaGlobals(stmts0)
-  let d0 = insertDrops(lowered, RRoot(buildStatements(lowered)))
+  let d0 = insertDrops(lowered, rootResolver(lowered))
   ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
     (ok: CvOk)       => postmonoRes3(ok.cvStatements)
     (dv: CvDiverged) => PmText("diverged\n", 2)

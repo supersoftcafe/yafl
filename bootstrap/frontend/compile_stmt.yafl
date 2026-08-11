@@ -477,7 +477,7 @@ fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>): PStmt
                             List<PStmt>()),
              e.eHasParams, e.pseLine, root,
              SEnum(root, collectLeafNames(e), allLeaves, List<Spec>(),
-                   e.pseLine, false),
+                   e.pseLine),
              e.eImports)
 
 fun [tail] assignAllSpecs(vs: Chain<PStmt>, root: String,

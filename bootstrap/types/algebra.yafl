@@ -84,8 +84,7 @@ fun substitute(sp: Spec, mapping: List<Binding>): Spec
     (g: SGeneric)      => substGeneric(sp, mapping, g.sgName)
     (c: SClass)        => SClass(c.scName, substList(c.scParams, mapping), c.scLine)
     (e: SEnum)         => SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
-                                substList(e.seParams, mapping), e.seLine,
-                                e.seComplex)
+                                substList(e.seParams, mapping), e.seLine)
     (n: SNamed)        => SNamed(n.snName, substList(n.snParams, mapping), n.snLine)
     (cm: SCombination) => canonUnion(SCombination(substList(cm.scTypes, mapping),
                                                   cm.scmLine))
@@ -303,7 +302,7 @@ fun withParams(base: Spec, params: List<Spec>): Spec
   ret match(base)
     (c: SClass) => SClass(c.scName, params, c.scLine)
     (e: SEnum)  => SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves, params,
-                         e.seLine, e.seComplex)
+                         e.seLine)
     (o)         => base
 
 # refine: the ONE rule for a stored inferred type (an untyped let's declared

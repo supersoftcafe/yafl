@@ -85,7 +85,8 @@ class BuiltinOpExpression(Expression):
         if not isinstance(self.params, TupleExpression) or not self.params.expressions:
             return None
         subject_type = self.params.expressions[0].value.get_type(resolver)
-        if isinstance(subject_type, t.EnumSpec) and subject_type.is_complex:
+        if (isinstance(subject_type, t.EnumSpec)
+                and resolver.is_complex_root(subject_type.root_name)):
             return None    # boxed: the generic path emits the runtime call
         if self.op.value == "yafl_hash_peek":
             return g.OperationBundle((), (), cg_p.Integer(0, 32))

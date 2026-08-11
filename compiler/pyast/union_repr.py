@@ -803,15 +803,9 @@ class ComplexEnumRepr(UnionRepr):
 
 
 def _is_complex_enum(spec: t.EnumSpec, resolver: g.Resolver) -> bool:
-    """The CANONICAL complexity of `spec`'s enum: the flag on the declaration's
-    own spec, falling back to this instance's when the root doesn't resolve."""
-    types = resolver.find_type(spec.root_name)
-    if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
-        canonical = types[0].statement._enum_spec
-        if canonical is not None:
-            return canonical.is_complex
-    return spec.is_complex
-
+    """DERIVED is_complex: the resolver carries the breaker analysis
+    (identity vs state — no stamps to read, no stale copies to distrust)."""
+    return resolver.is_complex_root(spec.root_name)
 
 def _global_max_tag(resolver: g.Resolver) -> int:
     """The largest discriminator value any tagged union stores. Tag width is

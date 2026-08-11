@@ -163,6 +163,12 @@ class Resolver:
     def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
         return EMPTY
 
+    def is_complex_root(self, root_name: str) -> bool:
+        # DERIVED is_complex (identity vs state): overridden by ResolverRoot
+        # with the lazily-computed breaker analysis; an empty resolver has no
+        # enum graph, so nothing is complex.
+        return False
+
     def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
         return EMPTY
 
@@ -223,6 +229,9 @@ class DelegatingResolver(Resolver):
 
     def __init__(self, parent: Resolver):
         self._parent = parent
+
+    def is_complex_root(self, root_name: str) -> bool:
+        return self._parent.is_complex_root(root_name)
 
     def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
         return self._parent.find_type(name)
@@ -369,6 +378,17 @@ class ResolverRoot(Resolver):
         self.__param_suggestions = param_suggestions or {}
         # Lazy per-pass memo for get_ambient_patterns (roots are per-pass).
         self.__ambient = None
+        # Lazy breaker analysis (derived is_complex) — computed once per
+        # resolver from its own statements, the same lifetime as every other
+        # per-pass cache. The port mirrors with a memoized closure carried by
+        # RRoot (mechanism parity).
+        self.__breakers = None
+
+    def is_complex_root(self, root_name: str) -> bool:
+        if self.__breakers is None:
+            from lowering.complex_enums import compute_breakers
+            self.__breakers = compute_breakers(list(self.__statements))
+        return root_name in self.__breakers
 
     def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
         return Bag(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)

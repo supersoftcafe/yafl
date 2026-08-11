@@ -1745,7 +1745,7 @@ fun [tail] aiRounds(current: List<PStmt>, round2: Int, n: Int): List<PStmt>
   let catalog = aiBuildCatalog(current)
   if isEmpty(catalog.caNames)
     ret aiFlattenBlockValues(current)
-  let r = RRoot(buildStatements(current))
+  let r = rootResolver(current)
   let out = aiRound(chain(current), catalog, r, n, List<PStmt>(), false)
   if !out.arChanged
     ret aiFlattenBlockValues(out.arStmts)

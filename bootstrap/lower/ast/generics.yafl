@@ -367,7 +367,7 @@ fun gsubEnumNode(e2: SEnum, params0: List<Spec>, sub: GSub,
                  visited: List<String>): Spec
   let params2 = gsubInFieldList(params0, sub, visited)
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-            gsubCompleted(e2, params2, sub), e2.seLine, e2.seComplex)
+            gsubCompleted(e2, params2, sub), e2.seLine)
 
 fun gsubCompleted(e2: SEnum, params2: List<Spec>, sub: GSub): List<Spec>
   if !isEmpty(params2)
@@ -929,9 +929,8 @@ fun rcrEnum(e2: SEnum, refs: GRefsIx): Spec
     ? SEnum(mangledName(e2.seRoot, ps),
             mangleLeaves(e2.seValidLeaves, ps),
             mangleLeaves(e2.seAllLeaves, ps),
-            List<Spec>(), e2.seLine, e2.seComplex)
-    : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine,
-            e2.seComplex)
+            List<Spec>(), e2.seLine)
+    : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine)
 
 fun rcrName(nm: PeName, refs: GRefsIx): PExpr
   let tps = rcrSpecs(nm.refTypeParams, refs)
@@ -1333,15 +1332,14 @@ fun specFromMangled(sp: Spec, mono: List<GRef>): Spec
     (e2: SEnum) => isEmpty(e2.seParams)
       ? sfmEnumBare(e2, mono)
       : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-              sfmList(chain(e2.seParams), mono, List<Spec>()), e2.seLine,
-              e2.seComplex)
+              sfmList(chain(e2.seParams), mono, List<Spec>()), e2.seLine)
     (o: Spec)   => sp
 
 fun sfmEnumBare(e2: SEnum, mono: List<GRef>): Spec
   ret match(monoLookup(chain(mono), e2.seRoot))
     (g2: GRef) => SEnum(g2.grName, e2.seValidLeaves, e2.seAllLeaves,
                         sfmList(chain(g2.grArgs), mono, List<Spec>()),
-                        e2.seLine, e2.seComplex)
+                        e2.seLine)
     ()         => e2
 
 fun sfmBare(c: SClass, mono: List<GRef>): Spec
@@ -1572,7 +1570,7 @@ fun [tail] monoRound(statements: List<PStmt>, round2: Int,
   # Step 1b: generic trait instances are selected by constraint discharge, not
   # by an explicit type-param reference. Discharge the constraints seen so far
   # against the generic instances, seeding witness-let refs.
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   let seenCons2 = addSpecsAll(chain(collectConcreteConstraints(statements,
                                                                List<Spec>())),
                               seenCons)
@@ -1710,7 +1708,7 @@ fun [tail] offLineLoop(ss: Chain<PStmt>, name: String, best: PLine): PLine
 # so codegen sees a normal method call.
 
 fun resolveTraitReferences(statements: List<PStmt>): List<PStmt>
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   ret rtrStmts(chain(statements), r, traitLets(r), List<PStmt>())
 
 fun [tail] rtrStmts(ss: Chain<PStmt>, r: Resolver, traits: List<PStmt>,
@@ -2045,7 +2043,7 @@ fun [tail] sfieldListEq(a: Chain<SField>, b: Chain<SField>): Bool
 
 fun refreshedEnum(fe: SEnum, spec: SEnum): Spec
   ret SEnum(fe.seRoot, fe.seValidLeaves, spec.seAllLeaves, fe.seParams,
-            fe.seLine, fe.seComplex)
+            fe.seLine)
 
 fun [tail] rfrStmts(ss: Chain<PStmt>, c: Canon,
                     acc: List<PStmt>): List<PStmt>
@@ -2204,8 +2202,7 @@ fun [tail] rfrEntries(es: Chain<SEntry>, c: Canon,
 
 fun rfrEnum(e2: SEnum, c: Canon): Spec
   let rebuilt = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                      rfrSpecList(e2.seParams, c), e2.seLine,
-                      e2.seComplex)
+                      rfrSpecList(e2.seParams, c), e2.seLine)
   ret match(rebuilt)
     (re: SEnum) => match(canonLookup(c, re.seRoot))
       (spec: SEnum) => fieldsStale(re, spec)
@@ -2233,7 +2230,7 @@ fun rfrEnum(e2: SEnum, c: Canon): Spec
 class [final] UtAcc(utSeen: List<String>, utErrs: List<PErr>)
 
 fun reportUndischargedTraits(statements: List<PStmt>): List<PErr>
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   ret utTop(chain(statements), r, traitLets(r),
             UtAcc(List<String>(), List<PErr>())).utErrs
 
@@ -2293,7 +2290,7 @@ fun traitDisplay(ts: SClass): String
 
 
 fun reportUnresolvedGenericCalls(statements: List<PStmt>): List<PErr>
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   ret rugTop(chain(statements), r, List<PErr>())
 
 fun [tail] rugTop(ss: Chain<PStmt>, r: Resolver,

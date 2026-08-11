@@ -50,11 +50,9 @@ def _ty(spec) -> str:
         return f"C({spec.name}{'<' + args + '>' if spec.type_params else ''})"
     if isinstance(spec, t.EnumSpec):
         # valid_leaf_names is a frozenset — sorted for a deterministic dump.
-        # `!cx` marks is_complex so the complex-enums lowering contract has
-        # teeth (always absent before mark_complex_enums runs — earlier
-        # contracts' output is unchanged).
-        cx = "!cx" if spec.is_complex else ""
-        return f"E({spec.root_name}:{','.join(sorted(spec.valid_leaf_names))}{cx})"
+        # (`!cx` is gone: it witnessed STAMP consistency, and there are no
+        # stamps — is_complex derives from the breaker analysis on demand.)
+        return f"E({spec.root_name}:{','.join(sorted(spec.valid_leaf_names))})"
     return type(spec).__name__
 
 

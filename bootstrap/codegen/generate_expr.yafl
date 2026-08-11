@@ -807,7 +807,7 @@ fun builtinSubjectBoxed(op: PeBuiltinOp, r: Resolver): Bool
     (tp: PeTuple) => match(head<PTupEnt>(tp.exprs))
       (e2: PTupEnt) => match(exprType(e2.tupValue, r))
         (sp: Spec) => match(sp)
-          (se: SEnum) => se.seComplex
+          (se: SEnum) => isComplexRoot(r, se.seRoot)
           (o: Spec)   => false
         ()         => false
       ()            => false

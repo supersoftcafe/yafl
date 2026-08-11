@@ -21,6 +21,7 @@ namespace Bootstrap::Frontend
 import System
 
 import Bootstrap::Ast
+import Bootstrap::Lower::Ast
 import Bootstrap::Resolve
 
 
@@ -45,7 +46,7 @@ fun [tail] convergeLoop(statements: List<PStmt>, pass: Int): Converged
 # One pass: every statement compiles against a resolver over the CURRENT set,
 # and the extra statements it creates join the set for the next pass.
 fun compilePass(statements: List<PStmt>): List<PStmt>
-  let r = RRoot(buildStatements(statements), collectParamSuggestions(statements))
+  let r = rootResolver(statements, collectParamSuggestions(statements))
   ret passLoop(chain(statements), r, List<PStmt>())
 
 fun [tail] passLoop(ss: Chain<PStmt>, r: Resolver, acc: List<PStmt>): List<PStmt>

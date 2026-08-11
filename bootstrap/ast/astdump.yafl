@@ -81,7 +81,7 @@ fun tyOf(ty: Spec): String
     # `!cx` marks is_complex — absent before mark_complex_enums runs.
     (e: SEnum)        => "E(" + e.seRoot + ":"
                          + join(sort(e.seValidLeaves), ",")
-                         + (e.seComplex ? "!cx" : "") + ")"
+                         + ")"
     (ls: SLazyStub)   => "LazyStubSpec"
 
 fun tyList(ts: List<Spec>): String

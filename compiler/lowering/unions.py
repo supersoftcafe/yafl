@@ -38,11 +38,13 @@ def collect_discriminator_ids(statements: list[s.Statement]) -> dict[str, int]:
 
     resolver = g.ResolverRoot(statements)
     # Enum leaves first, taken from the root enum STATEMENTS in statement
-    # order: each root's _enum_spec is authoritative (spec copies reachable
-    # by the tree walk can carry stale `is_complex` flags).
+    # order. is_complex DERIVES from the breaker analysis — no stamps, no
+    # stale copies to distrust.
+    from lowering.complex_enums import compute_breakers
+    breakers = compute_breakers(statements)
     for stmt in statements:
         if isinstance(stmt, s.EnumStatement) and stmt._root_name == stmt.name \
-                and stmt._enum_spec is not None and stmt._enum_spec.is_complex:
+                and stmt._enum_spec is not None and stmt.name in breakers:
             for leaf in stmt._enum_spec.all_leaf_names:
                 assign(f"enumleaf({t.enum_leaf_object_name(stmt.name, leaf)})")
     for stmt in statements:

@@ -36,7 +36,7 @@ class [final] DeLeaves(dlNames: List<String>, dlSets: List<List<PStmt>>)
 class [final] DeInfo(diKeys: List<String>, diArities: List<Int>)
 
 fun deriveEquality(statements: List<PStmt>): (deStmts: List<PStmt>, deChanged: Bool)
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   let info = deCollectInstanced(chain(statements), r,
                                 DeInfo(List<String>(), List<Int>()))
   let cands = deCandidates(chain(statements), info,

@@ -19,6 +19,7 @@ namespace Bootstrap::Resolve
 import System
 
 import Bootstrap::Ast
+import Bootstrap::Lower::Ast
 import Bootstrap::Frontend
 import Bootstrap::Parse
 import Bootstrap::Types
@@ -32,7 +33,7 @@ class [final] Hints(hNames: List<String>, hSlots: Dict<String, List<Meet> >,
                     hDetail: Dict<String, List<List<String> > >)
 
 fun collectHints(statements: List<PStmt>): Hints
-  let r = RRoot(buildStatements(statements))
+  let r = rootResolver(statements)
   ret hintStmts(chain(statements), r,
                 Hints(List<String>(), Dict<String, List<Meet> >(),
                       Dict<String, List<List<String> > >()))
