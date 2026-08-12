@@ -274,10 +274,34 @@ INLINE bool vtable_is_pinned(vtable_t* vt) {
     return ((uintptr_t)vt & VTABLE_PIN_BIT) != 0;
 }
 
-// Pin: DIRECTLY after allocation only — the object is not yet shared, so a
-// plain store is enough.
+// Pin: DIRECTLY after allocation — the object is not yet shared, so a plain
+// store is enough. This is the ListBuilder case, one per list cell, and it
+// stays a plain store because it cannot contend with anything.
 INLINE void object_pin(object_t* o) {
     o->vtable = (vtable_t*)((uintptr_t)o->vtable | VTABLE_PIN_BIT);
+}
+
+// LATE pin: take the pin on an object that is already shared and may already
+// have aged, moved, or be moving. The bit doubles as a MUTEX — exactly one
+// owner at a time, mutator or collector — so a caller that wins it may write
+// the object's fields with plain stores, and the compactor that loses it
+// simply leaves the object where it is.
+//
+// Fails (returns false) when someone else holds the pin, or when the object
+// has been relocated: a forwarding word means this address is a stale copy
+// and the caller must re-resolve and retry on the target, or its write would
+// land somewhere nothing will read. object_pin_resolve does that loop.
+//
+// Acquire on success pairs with the release in object_unpin, so an owner sees
+// every field the previous owner wrote.
+INLINE bool object_try_pin(object_t* o) {
+    vtable_t* vt = (vtable_t*)__atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_ACQUIRE);
+    if (vtable_is_pinned(vt) || vtable_is_forward(vt))
+        return false;
+    uintptr_t expected = (uintptr_t)vt;
+    return __atomic_compare_exchange_n((uintptr_t*)&o->vtable, &expected,
+                                       expected | VTABLE_PIN_BIT, false,
+                                       __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 }
 
 // Unpin: any time, but only on a pinned object. Release order so every
@@ -288,6 +312,25 @@ INLINE void object_unpin(object_t* o) {
                      (uintptr_t)o->vtable & ~(uintptr_t)VTABLE_PIN_BIT,
                      __ATOMIC_RELEASE);
 }
+
+// Take a late pin on the CURRENT copy of `o`, following relocation and
+// retrying against whoever else wants it. Returns the object actually pinned,
+// which may differ from `o` if the collector moved it. Callers must write
+// through the returned pointer, never through their original.
+//
+// The wait is bounded: the only other holders are a peer writer doing one
+// field store, or the compactor doing one memcpy — neither allocates or
+// suspends while holding it (see gc_compact_page, which allocates its target
+// BEFORE claiming for exactly this reason), so no back-off is needed.
+EXTERN object_t* object_pin_resolve(object_t* o);
+
+// Announce that a late pin is about to write `o`. If `o` has aged into the
+// old generation its page returns to the collection rotation: the store may
+// install a reference to a YOUNG object, and minor cycles skip old pages, so
+// otherwise nothing would ever trace the new referent and prune would free it
+// while the writer still holds it. Cost is paid per WRITE, not per object per
+// cycle, which is what makes a write-once structure cheap to keep.
+EXTERN void gc_note_late_write(object_t* o);
 
 enum {
     PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.
@@ -352,6 +395,13 @@ typedef struct page_head {
     bool     mutable; // Contains mutable objects.
     bool   compacted; // Don't compact again.
     bool         old; // Promoted to the old generation: exempt from minor cycles.
+    _Atomic(bool) redirty; // A late pin wrote an object on this page while it
+                      // was `old`. Set by the MUTATOR (gc_note_late_write),
+                      // consumed at the next cycle's start, which demotes the
+                      // page back into the rotation. One cycle of latency is
+                      // sound: the referent the write installed was allocated
+                      // on a birth-protected page, so the in-flight cycle
+                      // cannot free it before the demotion takes effect.
     bool   dirty_old; // Aged page still holding young references: exempt from
                       // pruning, but force-marked as a root every cycle until
                       // its targets promote (then it graduates to `old`).

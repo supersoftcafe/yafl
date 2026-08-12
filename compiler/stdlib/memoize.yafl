@@ -29,11 +29,14 @@ import System
 # which is also what lets a plain CAS suffice (no ABA) and avoids the
 # indirection nodes a Ctrie needs for removal.
 #
-# The nodes are [mutable] because the collector must NOT relocate them: a
-# relocation can drop a published entry into a copy that is then abandoned,
-# which would break (2). The cost is that they are never compacted and stay in
-# the scan set, so a memoize cache should be SHORT-LIVED. See
-# docs/memoize-proposal.md.
+# The nodes are ORDINARY IMMUTABLE objects. Publication takes a LATE PIN on
+# the node for the duration of the store (yafl.h object_try_pin): the pin bit
+# is a mutex the compactor honours, so a relocation can no longer drop a
+# published entry into a copy that is then abandoned — the failure that used
+# to force [mutable] here, and with it a lifetime in the young rotation.
+# Nodes now compact and promote like any other immutable data, so a cache that
+# outlives many collections stops costing a full re-trace on every one.
+# See docs/memoize-proposal.md §4c.
 
 
 # ─── the trie ────────────────────────────────────────────────────────────────
@@ -41,17 +44,17 @@ import System
 # set once at construction. The slots MUST be the last fields declared — the
 # runtime locates them as the top set bits of the vtable's pointer mask.
 
-class [final, mutable] MemoNode<K,V>(mnKey: K, mnValue: V, mnHash: System::Int32,
-                                     mnC0: MemoNode<K,V>|System::None,
-                                     mnC1: MemoNode<K,V>|System::None,
-                                     mnC2: MemoNode<K,V>|System::None,
-                                     mnC3: MemoNode<K,V>|System::None)
+class [final, pinnable] MemoNode<K,V>(mnKey: K, mnValue: V, mnHash: System::Int32,
+                            mnC0: MemoNode<K,V>|System::None,
+                            mnC1: MemoNode<K,V>|System::None,
+                            mnC2: MemoNode<K,V>|System::None,
+                            mnC3: MemoNode<K,V>|System::None)
 
 # The root holds slots but no entry of its own, so a cache can start empty.
-class [final, mutable] MemoRoot<K,V>(mrC0: MemoNode<K,V>|System::None,
-                                     mrC1: MemoNode<K,V>|System::None,
-                                     mrC2: MemoNode<K,V>|System::None,
-                                     mrC3: MemoNode<K,V>|System::None)
+class [final, pinnable] MemoRoot<K,V>(mrC0: MemoNode<K,V>|System::None,
+                            mrC1: MemoNode<K,V>|System::None,
+                            mrC2: MemoNode<K,V>|System::None,
+                            mrC3: MemoNode<K,V>|System::None)
 
 # Same C symbol either way: the ABI is (object, slot, nslots, value) and the
 # emitted call casts the function pointer, as it does for every foreign.

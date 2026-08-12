@@ -861,6 +861,48 @@ EXPORT bool list_builder_seal(object_t *tail) {
     return true;
 }
 
+// ── late pinning ─────────────────────────────────────────────────────────────
+// Taking the pin on an object that is already published, so that a write-once
+// field can be filled in without the object being exiled from relocation and
+// promotion for the rest of its life. The bit is a MUTEX with exactly one
+// owner: a peer writer, or the compactor claiming the object to evacuate it.
+
+// Set whenever a late write lands on an `old` page, so the start of the next
+// cycle knows whether the old-generation walk below is worth doing at all.
+// Without it every cycle would pay a list traversal of the whole old
+// generation (12k+ pages on a self-compile) to discover nothing.
+static _Atomic(bool) gc_redirty_requested = false;
+
+static bool gc_object_is_on_heap_fast(object_t *object);   // defined with the marker
+
+EXPORT object_t* object_pin_resolve(object_t* o) {
+    for (;;) {
+        // Resolve relocation FIRST and afresh on every attempt: the write must
+        // land on the copy the rest of the world will read, and the chain can
+        // grow while we are waiting.
+        vtable_t *vt = o->vtable;
+        while (UNLIKELY(vtable_is_forward(vt))) {
+            o  = (object_t*)vt;
+            vt = o->vtable;
+        }
+        if (object_try_pin(o))
+            return o;
+        // Every possible holder releases after a bounded, allocation-free
+        // section, so spinning is right and back-off would only add latency.
+        __builtin_ia32_pause();
+    }
+}
+
+EXPORT void gc_note_late_write(object_t* o) {
+    if (!gc_object_is_on_heap_fast(o))
+        return;                                  // static or tagged: not ours
+    gc_page_t *page = (gc_page_t*)((uintptr_t)o &~ (uintptr_t)(GC_PAGE_SIZE-1));
+    if (!page->head.old)
+        return;                                  // already in the rotation
+    atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
+    atomic_store_explicit(&gc_redirty_requested, true, memory_order_release);
+}
+
 // Exported out-of-line alias of the inline accessor (yafl.h) for any caller
 // that takes its address or links against the symbol.
 #undef object_get_vtable
@@ -1045,10 +1087,32 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         object_t *object = (object_t*)&page->slots[objects[index].o];
         size_t      size = objects[index].s;
 
-        object_t *target = (object_t*)object_alloc_fast(size, false); // Allocate new object
-        memcpy(target, object, size);                        // Copy contents across
-        object->vtable = (vtable_t*)target;                  // Forwarding pointer: a heap
-                                                             // address here means "moved"
+        // Target FIRST, claim second. The pin bit is a mutex shared with late
+        // writers (yafl.h object_try_pin), so the window between claiming and
+        // publishing the forward word is time a writer may spend spinning —
+        // it must contain no allocation. A target that goes unused because
+        // the claim lost is ordinary garbage, collected next cycle; that only
+        // happens under genuine contention, which is rare.
+        object_t *target = (object_t*)object_alloc_fast(size, false);
+
+        // Claim: CAS the vtable word to pinned. Fails if a mutator holds the
+        // pin (mid-write — leave the object where it is, exactly as the
+        // pre-scan's pinned check does) or if the word already forwards.
+        if (!object_try_pin(object))
+            continue;
+
+        vtable_t *vt = vtable_untag(object->vtable);
+        memcpy(target, object, size);
+        // The memcpy copied the CLAIMED word, pin bit and all. Clear it on the
+        // copy before anyone can reach it — the target is still private here,
+        // so a plain store is enough.
+        target->vtable = vt;
+        // Publish the forwarding pointer, releasing the copy's contents: a
+        // reader that follows this word must see a fully written object. The
+        // store also drops the pin (a heap address has bit 0 clear), handing
+        // the object over to the lazy-fixup protocol.
+        __atomic_store_n((uintptr_t*)&object->vtable, (uintptr_t)target,
+                         __ATOMIC_RELEASE);
     }
     gc_thread_info.in_relocation = was_in_relocation;
 }
@@ -1135,6 +1199,31 @@ static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) 
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
+
+    // Pages a late write touched while they were `old`: return them to the
+    // rotation BEFORE this cycle's decisions, so the young objects those
+    // writes installed are traced from here on. Marked dirty_old rather than
+    // merely young, because the referent is young by definition and the page
+    // must be force-marked as a root until it has caught up. Gated on the
+    // global so the common case — no late writes — costs one atomic read.
+    if (UNLIKELY(atomic_exchange_explicit(&gc_redirty_requested, false,
+                                          memory_order_acquire))) {
+        gc_pool_lock();
+        for (list_element_t *node = old_pages.next; node != &old_pages; ) {
+            gc_page_t *p = (gc_page_t*)node;
+            node = node->next;               // saved: the unlink below clears it
+            if (!atomic_exchange_explicit(&p->head.redirty, false,
+                                          memory_order_relaxed))
+                continue;
+            p->head.old       = false;
+            p->head.dirty_old = true;
+            p->head.refs_defer = p->head.refs_backoff = 0;
+            list_unlink((list_element_t*)&p->head.list);
+            list_link(&pages_to_scan, (list_element_t*)&p->head.list);
+            atomic_fetch_sub_explicit(&gc_old_page_count, 1, memory_order_relaxed);
+        }
+        gc_pool_unlock();
+    }
 
     // Major-cycle decision: collect the old generation when it has doubled
     // since the last major (floored), under heap pressure, or on request.

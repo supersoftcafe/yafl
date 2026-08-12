@@ -4,10 +4,18 @@
 // what lets a lock-free structure grow in place while every reader sees either
 // "not there yet" or a fully constructed node — never a half-built one.
 //
-// The containing class MUST be declared [mutable] in YAFL. That is not a
-// style preference: a mutable object is never relocated by the collector, so
-// the write cannot land in a copy that is then abandoned. Publishing into a
-// compactable object would silently lose entries.
+// The containing class is an ORDINARY IMMUTABLE object. The write is made
+// safe by a LATE PIN rather than by exiling the type from relocation: the pin
+// bit is a one-owner mutex that the compactor also takes to claim an object,
+// so a store and an evacuation can never overlap. The object keeps its place
+// in the generational scheme — it compacts, and it promotes.
+//
+// Two consequences worth knowing. The write lands on the CURRENT copy, which
+// may not be the pointer the caller passed (relocation is followed first), so
+// callers must not cache field addresses across this call. And a reader still
+// holding a pre-relocation pointer can miss an entry published afterwards —
+// harmless here, because a miss only recomputes, but it is why this primitive
+// suits write-once caches and not late mutation in general.
 //
 // See docs/memoize-proposal.md for the full argument.
 #pragma once
