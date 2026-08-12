@@ -224,7 +224,7 @@ fun threadExpected(params: PStmt, expected: Spec|None): PStmt
 fun threadTuple(params: PStmt, tp: STuple): PStmt
   ret match(params)
     (d: PsDestructure) => isConcrete(tp)
-                          && listLen(tp.stEntries) == listLen(d.dTargets)
+                          && sameLen(chain(tp.stEntries), chain(d.dTargets))
       ? PsDestructure(d.dName, d.dAttrs, tp, d.dTargets, d.dDefault,
                       d.psdLine, d.dTypeInferred)
       : params
@@ -307,7 +307,7 @@ fun narrowedName(n: Narrowed, fallback: String): String
 fun narrowedEnumField(r: Resolver, e2: SEnum, bare: String): Narrowed
   let cands = fieldsMatching(chain(enumFieldsVia(r, e2.seRoot)), bare,
                              List<SField>())
-  if listLen(cands) == 1
+  if exactly(chain(cands), 1)
     ret hitOf(cands)
   if isEmpty(cands)
     ret NfMiss()
@@ -333,7 +333,7 @@ fun hitOf(cands: List<SField>): Narrowed
 
 fun ownedHit(cands: List<SField>, covering: List<SField>): Narrowed
   let owned = fieldsCovered(chain(cands), covering, List<SField>())
-  ret listLen(owned) == 1 ? hitOf(owned) : NfAmbiguous()
+  ret exactly(chain(owned), 1) ? hitOf(owned) : NfAmbiguous()
 
 fun [tail] fieldsCovered(cs: Chain<SField>, covering: List<SField>,
                          acc: List<SField>): List<SField>
@@ -386,7 +386,7 @@ fun substituteEnumTypeParams(r: Resolver, receiver: SEnum,
 fun mapEnumField(r: Resolver, receiver: SEnum, ft: Spec): Spec|None
   ret match(soleItem(findType(r, receiver.seRoot)))
     (f: Found) => match(f.fStmt)
-      (en: PsEnum) => listLen(en.eGens) == listLen(receiver.seParams)
+      (en: PsEnum) => sameLen(chain(en.eGens), chain(receiver.seParams))
         ? substitute(ft, paramMapping(en.eGens, receiver.seParams))
         : ft
       (o: PStmt)   => ft
@@ -528,20 +528,25 @@ fun [tail] nameOfEnts(es: Chain<PTupEnt>, acc: List<String>): List<String>
 # what each entry needs to converge toward.
 fun slotsFor(declared: List<SEntry>, binding: List<Int>,
              tp: PeTuple): List<SEntry>
-  ret invertLoop(chain(declared), chain(binding), listLen(tp.exprs),
-                 emptySlots(listLen(tp.exprs), List<SEntry>()))
+  ret invertLoop(chain(declared), chain(binding),
+                 emptySlots(chain(tp.exprs), List<SEntry>()))
 
-fun [tail] emptySlots(n: Int, acc: List<SEntry>): List<SEntry>
-  ret n <= 0 ? acc : emptySlots(n - 1, append(acc, SEntry("", None, None)))
+# One blank slot per supplied entry — sized by the walk, never by a count.
+fun [tail] emptySlots(es: Chain<PTupEnt>, acc: List<SEntry>): List<SEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => emptySlots(l.next, append(acc, SEntry("", None, None)))
 
-fun [tail] invertLoop(ds: Chain<SEntry>, bs: Chain<Int>, n: Int,
+# setAt walks structurally, so an out-of-range index rebuilds unchanged —
+# the old `< n` guard is subsumed.
+fun [tail] invertLoop(ds: Chain<SEntry>, bs: Chain<Int>,
                       acc: List<SEntry>): List<SEntry>
   ret match(ds)
     (nil: ChainEnd) => acc
     (d: ChainLink)  => match(bs)
       (nil2: ChainEnd) => acc
-      (b: ChainLink)   => invertLoop(d.next, b.next, n,
-                                     b.value >= 0 && b.value < n
+      (b: ChainLink)   => invertLoop(d.next, b.next,
+                                     b.value >= 0
                                        ? setAt(acc, b.value, d.value)
                                        : acc)
 
@@ -785,7 +790,7 @@ class [final] IntPair(ipLeft: Int, ipRight: Int)
 # literal is a different type and does not fold here.
 fun twoBigints(params: PExpr): IntPair|None
   ret match(params)
-    (tp: PeTuple) => listLen(tp.exprs) == 2 ? pairOf(tp) : None
+    (tp: PeTuple) => exactly(chain(tp.exprs), 2) ? pairOf(tp) : None
     (o: PExpr)    => None
 
 fun pairOf(tp: PeTuple): IntPair|None
@@ -999,7 +1004,7 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum): PExpr|None
   let valid = withValidLeaves(chain(leaves.names), e2.seValidLeaves)
   if isEmpty(valid)
     ret None
-  if listLen(valid) == 1
+  if exactly(chain(valid), 1)
     # A single valid leaf needs no dispatch — carried fields read through the
     # binder-free subject, exactly as Python's single-arm special case.
     ret withAssemble(wx,

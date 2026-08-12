@@ -1,3 +1,58 @@
+# OPEN BUGS — take these first, fresh session
+
+## 1. Nested-generic inference gap, THIRD SHAPE: silent runtime abort
+
+The severe one. A top-level function with TWO type parameters whose body
+makes INFERRED generic calls (or nests matches over `Chain<T>` and
+`Chain<U>`) monomorphises with ONE instantiation latched for both params.
+It compiles clean and the binary aborts at runtime (match fall-through)
+whenever `T != U`. Found 2026-08-11 when the no-length sweep's
+`sameLen<SEntry, String>` co-walk crashed the bootstrap binary on every
+input (536 harness failures, exit -6, empty output).
+
+  * Witness: `compiler/tests/test_two_generic_match.py`
+    (@expectedFailure; 12-line repro inside). Flip it to a plain test when
+    fixed.
+  * Workaround in tree: `bootstrap/ast/classtools.yafl` spells every
+    generic call in the co-walk helpers with explicit `<T>`/`<U>` — those
+    explicit args are load-bearing; the comment there says so.
+  * Real fix: use-site latching for multi-param hosts in inference —
+    BOTH compilers (`compiler/pyast/…/inference` + port `resolve/`).
+    Shapes 1–2 of the same family are ledgered in the memory file
+    `project_nested_fn_generic_inference.md`.
+  * Interim hardening worth doing even before the real fix: a check that
+    REJECTS an un-latched inferred generic call inside a multi-param
+    generic host — converts a silent abort into a compile error.
+
+## 2. Checker accepts a WRONG RETURN SHAPE through a union (silent)
+
+Found 2026-08-12 during the no-length sweep: `alPtrLeaves` DECLARED
+`(ls: List<String>, n: Int)|None` while its arms still returned
+`List<String>|None` from a helper — BOTH compilers accepted it silently
+and the mis-shaped value flowed to runtime (the port emitted extra state
+slots; caught only by the byte-parity harness). A returned value whose
+type matches NO union member must be a check error. Minimal repro: declare
+a fun returning `(a: List<String>, n: Int)|None` and return a bare
+`List<String>` — expect a diagnostic, get silence. Likely the union
+assignability path unifying the list against the tuple's first field.
+
+## 3. Port silently compiles an UNDEFINED name
+
+Python rejects the program; the port emits broken C (ledgered 08-01,
+`project_port_accepts_unresolved_name.md`). The golden rule (byte-identical
+C) is only meaningful if both compilers also REJECT identically — there is
+no gate feeding invalid programs to both compilers today. Fix the port's
+resolution hole, then add a small invalid-program parity harness.
+
+## 4. Undischarged `where` crashes codegen
+
+Ledgered in `project_undischarged_where_crash.md`: a `where` constraint
+that survives monomorphisation undischarged reaches codegen and crashes it.
+Needs a post-mono discharge check with a proper diagnostic (both compilers).
+
+(Fixed-and-guarded, for context, not work: the arm-binder-into-pipe-stage
+bug has a regression test at `compiler/tests/test_arm_binder_in_pipe.py`.)
+
 
 # TODO: a cached (memoised) function in YAFL
 

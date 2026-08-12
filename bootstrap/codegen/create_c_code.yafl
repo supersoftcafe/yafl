@@ -167,9 +167,9 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
   # tuples exactly).
   let a3a = optLevel >= 2
-    ? ccO2Fixpoint(a3, 0, List<String>(), optLevel >= 3)
+    ? ccO2Fixpoint(a3, 0, None, optLevel >= 3)
     : a3
-  let a3s = optLevel >= 3 ? ccO3Fixpoint(a3a, 0, List<String>()) : a3a
+  let a3s = optLevel >= 3 ? ccO3Fixpoint(a3a, 0, None) : a3a
   let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
   let spStatic = spanBegin("codegen", "staticinit")
   let a4 = resolveFlatStructGlobalInits(a3b)
@@ -179,7 +179,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let _sync = spanEnd(spSync)
   let spFoldStart = spanBegin("codegen", "fold_fixpoint")
   let a6 = optLevel >= 1
-    ? ccFoldFixpoint(a5, 0, List<String>())
+    ? ccFoldFixpoint(a5, 0, None)
     : propagateCopies(threadBranches(a5))
   # Space correctness, every -O level (see sroa.yafl).
   let spFold = spanEnd(spFoldStart)
@@ -215,35 +215,31 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
 # Python compiler.py: `if optimization_level >= 2` — resolve indirect fun_t
 # calls to known targets first (a direct call is what makes the closure
 # inlinable), inline + trim, stop on shape stability; 16-round bound.
-fun [tail] ccO2Fixpoint(a0: CgApp, round2: Int, prevShape: List<String>,
+fun [tail] ccO2Fixpoint(a0: CgApp, round2: Int, prev: CgApp|None,
                         inlineAlways: Bool): CgApp
   if round2 >= 16
     ret a0
   let a1 = discoverGlobalFunctionCalls(a0)
-  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways))
-  let shape = ccShape(a2)
-  ret ccShapeEq(shape, prevShape)
+  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways, round2))
+  ret ccSameShape(prev, a2, false)
     ? a2
-    : ccO2Fixpoint(a2, round2 + 1, shape, inlineAlways)
+    : ccO2Fixpoint(a2, round2 + 1, a2, inlineAlways)
 
 # The -O3 single-caller fold: drop undispatched vtable entries, re-derive
 # direct calls, inline every function referenced exactly once, trim; the
 # shape adds the SORTED per-object slot counts so a cascade that only sheds
 # vtable entries still iterates.
 fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
-                        prevShape: List<String>): CgApp
+                        prev: CgApp|None): CgApp
   if round2 >= 16
     ret a0
   let a1 = discoverGlobalFunctionCalls(trimUnusedVtableSlots(a0))
   # Recomputed each round: folding a callee away can newly prove its caller
   # sync, unlocking the next fold in the chain.
-  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncNames(a1)))
-  let shape = concat(ccShape(a2),
-                     sort(map(a2.appObjects, (o: CgObject) =>
-                       o.objName + ":" + String(listLen(o.objFunctions)))))
-  ret ccShapeEq(shape, prevShape)
+  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncNames(a1), round2))
+  ret ccSameShape(prev, a2, true)
     ? a2
-    : ccO3Fixpoint(a2, round2 + 1, shape)
+    : ccO3Fixpoint(a2, round2 + 1, a2)
 
 # ── the -O1+ pass blocks ─────────────────────────────────────────────────────
 # Python compiler.py: inside `if optimization_level > 0` — bounds-check
@@ -280,7 +276,7 @@ fun [tail] ccStaticRounds(a: CgApp, round2: Int, counter: Int): CgApp
 # 16-round bound or SHAPE stability — shape = every function's (name, op
 # count), exactly Python's `tuple((n, len(f.ops)) ...)`.
 fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
-                          prevShape: List<String>): CgApp
+                          prev: CgApp|None): CgApp
   if round2 >= 16
     ret a0
   let a1 = threadBranches(a0)
@@ -291,24 +287,57 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
   let a6 = flattenStringAppends(a5)
   let a7 = deforestStringAccumulation(a6)
   let a8 = eliminateDeadStores(a7)
-  let shape = ccShape(a8)
-  ret ccShapeEq(shape, prevShape) ? a8 : ccFoldFixpoint(a8, round2 + 1, shape)
+  ret ccSameShape(prev, a8, false) ? a8 : ccFoldFixpoint(a8, round2 + 1, a8)
 
-fun ccShape(a: CgApp): List<String>
-  ret map(a.appFunctions,
-          (f: CgFunction) => f.fnName + ":" + String(listLen(f.fnOps)))
+# Structural shape compare against the PREVIOUS round's app — Python
+# compares tuples of (name, len(ops)); equal names plus sameLen op-lists is
+# the identical predicate with no length ever taken (no-length ruling). O3
+# additionally compares per-object slot lists, sorted by object name (names
+# are unique, so Python's (name, count) sort order IS name order).
+fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects: Bool): Bool
+  ret match(prev)
+    (p: CgApp) => ccFnsSame(chain(p.appFunctions), chain(cur.appFunctions))
+                  && (!withObjects
+                      || ccObjsSame(chain(ccSortObjs(p.appObjects)),
+                                    chain(ccSortObjs(cur.appObjects))))
+    ()         => false
 
-fun ccShapeEq(a: List<String>, b: List<String>): Bool
-  ret listLen(a) == listLen(b) && ccShapeLoop(chain(a), chain(b))
-
-fun [tail] ccShapeLoop(a: Chain<String>, b: Chain<String>): Bool
+fun [tail] ccFnsSame(a: Chain<CgFunction>, b: Chain<CgFunction>): Bool
   ret match(a)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => match(b)
-      (lb: ChainLink) => l.value == lb.value
-        ? ccShapeLoop(l.next, lb.next)
+    (nil: ChainEnd) => b is ChainEnd
+    (la: ChainLink) => match(b)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => (la.value.fnName == lb.value.fnName
+                           && sameLen(chain(la.value.fnOps),
+                                      chain(lb.value.fnOps)))
+        ? ccFnsSame(la.next, lb.next)
         : false
-      ()              => false
+
+fun [tail] ccObjsSame(a: Chain<CgObject>, b: Chain<CgObject>): Bool
+  ret match(a)
+    (nil: ChainEnd) => b is ChainEnd
+    (la: ChainLink) => match(b)
+      (nil2: ChainEnd) => false
+      (lb: ChainLink)  => (la.value.objName == lb.value.objName
+                           && sameLen(chain(la.value.objFunctions),
+                                      chain(lb.value.objFunctions)))
+        ? ccObjsSame(la.next, lb.next)
+        : false
+
+fun ccSortObjs(os: List<CgObject>): List<CgObject>
+  ret ccSortObjsLoop(chain(os), List<CgObject>())
+
+fun [tail] ccSortObjsLoop(os: Chain<CgObject>, acc: List<CgObject>): List<CgObject>
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ccSortObjsLoop(l.next, ccInsertObj(chain(acc), l.value, List<CgObject>()))
+
+fun [tail] ccInsertObj(as2: Chain<CgObject>, x: CgObject, acc: List<CgObject>): List<CgObject>
+  ret match(as2)
+    (nil: ChainEnd) => append(acc, x)
+    (l: ChainLink)  => x.objName < l.value.objName
+      ? concat(append(acc, x), List<CgObject>(as2))
+      : ccInsertObj(l.next, x, append(acc, l.value))
 
 fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
   let r2 = scopeResolver(st, r)

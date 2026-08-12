@@ -43,7 +43,7 @@ fun useSiteTypeParams(stmt: PStmt, supplied: List<Spec>, expected: Spec|None,
 
 fun suppliedComplete(supplied: List<Spec>, gens: List<PGen>,
                      r: Resolver): Bool
-  ret listLen(supplied) == listLen(gens) && !anyFree(chain(supplied), r)
+  ret sameLen(chain(supplied), chain(gens)) && !anyFree(chain(supplied), r)
 
 fun [tail] anyFree(ts: Chain<Spec>, r: Resolver): Bool
   ret match(ts)
@@ -67,7 +67,7 @@ fun reinferred(stmt: PStmt, gens: List<PGen>, supplied: List<Spec>,
 # generic until a later pass.
 fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
                  mapping: List<Binding>): List<Spec>
-  let prior = listLen(supplied) == listLen(gens)
+  let prior = sameLen(chain(supplied), chain(gens))
     ? priorBindings(chain(gens), chain(supplied), List<Binding>())
     : List<Binding>()
   ret mergeLoop(chain(gens), prior, mapping, List<Spec>())
@@ -252,7 +252,7 @@ fun witnessParents(let2: PsLet, dc: SClass, cls: PsClass,
 
 fun witnessRemap(dc: SClass, cls: PsClass): List<Binding>
   ret !isEmpty(cls.cGens)
-      && chainLength(chain(cls.cGens)) == chainLength(chain(dc.scParams))
+      && sameLen(chain(cls.cGens), chain(dc.scParams))
     ? paramMapping(cls.cGens, dc.scParams)
     : List<Binding>()
 
@@ -288,6 +288,6 @@ fun [tail] insertByCount(as2: Chain<TraitInst>, x: TraitInst,
                          acc: List<TraitInst>): List<TraitInst>
   ret match(as2)
     (nil: ChainEnd) => append(acc, x)
-    (l: ChainLink)  => listLen(x.tiParams) < listLen(l.value.tiParams)
+    (l: ChainLink)  => shorterThan(chain(x.tiParams), chain(l.value.tiParams))
       ? concat(append(acc, x), List<TraitInst>(as2))
       : insertByCount(l.next, x, append(acc, l.value))

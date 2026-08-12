@@ -13,6 +13,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Codegen
 import Bootstrap::Frontend
 import Bootstrap::Ir
@@ -116,13 +118,15 @@ fun alRuntimeDiscard(sv: RParam, name: String, args: List<RpNamedValue>): Op
              true, List<RParam>())
 
 # par_task alloc + init + remaining + per-slot closures.
+# nClosures is CARRIED from the walk that built `closures` — the par-join
+# countdown is genuine runtime data, never a recalculated length.
 fun alEmitParTaskSetup(parTaskVar: RParam, parTaskName: String,
-                       closures: List<RParam>): List<Op>
+                       closures: List<RParam>, nClosures: Int): List<Op>
   let setup = list3(OpNewObject(parTaskName, parTaskVar, None, List<RParam>()),
                     alRuntimeDiscard(alSvDiscard(), "task_init",
                                      list1(RpNamedValue("task", parTaskVar))),
                     OpMove(RpObjectField(CgInt(32), parTaskVar, parTaskName, "remaining", None, false),
-                           RpInteger(listLen(closures), 32), false, List<RParam>()))
+                           RpInteger(nClosures, 32), false, List<RParam>()))
   ret concat(setup, alClosureStores(chain(closures), parTaskVar, parTaskName, 0, List<Op>()))
 
 fun [tail] alClosureStores(cs: Chain<RParam>, parTaskVar: RParam, parTaskName: String,
@@ -183,7 +187,7 @@ fun alEmitSuspendToAsync(idxField: RParam, idx: Int, untaggedTask: RParam,
 # cleared, result_type set); void Call; ReturnVoid → musttail. Codegen emits
 # `return foo(...)` which clang TCOs even at -O0.
 fun alDiscoverTailCalls(f: CgFunction): CgFunction
-  if listLen(f.fnOps) < 2
+  if !atLeast(chain(f.fnOps), 2)
     ret f
   ret cgFunctionWith(f, alTailScan(chain(f.fnOps), f.fnResult, List<Op>()), f.fnStackVars)
 
@@ -249,7 +253,7 @@ fun svSetSub(a: List<RParam>, b: List<RParam>): List<RParam>
   ret filter(a, (x: RParam) => !alSvMember(b, x))
 
 fun svSetEq(a: List<RParam>, b: List<RParam>): Bool
-  ret listLen(a) == listLen(b) && !any(a, (x: RParam) => !alSvMember(b, x))
+  ret sameLen(chain(a), chain(b)) && !any(a, (x: RParam) => !alSvMember(b, x))
 
 fun svSortedByName(a: List<RParam>): List<RParam>
   ret map(sortNamesAsc(chain(map(a, stackVarName)), List<String>()),
@@ -288,16 +292,17 @@ class [final] AlInv(avLabels: Dict<String, Int>, avBlocks: Dict<Int, String>,
                     avN: Int)
 
 fun alInvariants(ops: List<Op>): AlInv
-  ret AlInv(ucLabelIndex(ops), alBlockIndex(ops), listLen(ops))
+  let bi = alBlockIndex(ops)
+  ret AlInv(ucLabelIndex(ops), bi.d, bi.n)
 
 # Enclosing block label per op index (nearest preceding Label; "" before any).
-fun alBlockIndex(ops: List<Op>): Dict<Int, String>
+fun alBlockIndex(ops: List<Op>): (d: Dict<Int, String>, n: Int)
   ret alBlockIndexLoop(chain(ops), 0, "", Dict<Int, String>())
 
 fun [tail] alBlockIndexLoop(os: Chain<Op>, i: Int, cur: String,
-                            acc: Dict<Int, String>): Dict<Int, String>
+                            acc: Dict<Int, String>): (d: Dict<Int, String>, n: Int)
   ret match(os)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => (acc, i)
     (l: ChainLink)  => alLabelNameOr(l.value, cur)
       |> (nxt) => alBlockIndexLoop(l.next, i + 1, nxt, put(acc, i, nxt))
 
@@ -438,13 +443,18 @@ class [final] ABlock(abName: String, abOps: List<Op>, abLive: List<RParam>,
 # splitter is the LAST op of its block); block name cont$<i>; live = last
 # op's saved_vars; result = last op's register.
 fun alCreateBasicBlocks(f: CgFunction): List<ABlock>
+  ret alCreateBasicBlocksN(f).bs
+
+# The block count rides alPartition's existing carried counter.
+fun alCreateBasicBlocksN(f: CgFunction): (bs: List<ABlock>, n: Int)
   let annotated = alCalculateSavedVars(f)
   ret alPartition(chain(annotated.fnOps), 0, List<Op>(), List<ABlock>())
 
-# `n` is the count of blocks already in `acc` — carried, not re-measured.
-fun [tail] alPartition(os: Chain<Op>, n: Int, cur: List<Op>, acc: List<ABlock>): List<ABlock>
+# `n` is the count of blocks already in `acc` — carried, not re-measured;
+# the final tuple's n is the TOTAL block count (last block is n, so n+1).
+fun [tail] alPartition(os: Chain<Op>, n: Int, cur: List<Op>, acc: List<ABlock>): (bs: List<ABlock>, n: Int)
   ret match(os)
-    (nil: ChainEnd) => append(acc, alMakeBlock(n, cur))
+    (nil: ChainEnd) => (append(acc, alMakeBlock(n, cur)), n + 1)
     (l: ChainLink)  => alIsSplitter(l.value)
       ? alPartition(l.next, n + 1, List<Op>(),
                     append(acc, alMakeBlock(n, append(cur, l.value))))
@@ -492,6 +502,17 @@ fun alFrameFieldTypes(bbs: List<ABlock>): List<CgField>
 
 fun alNonTerminal(bbs: List<ABlock>): List<ABlock>
   ret alDropLast(bbs)
+
+# Non-terminal blocks AND their count from one walk (no-length ruling).
+fun alNonTerminalN(bbs: List<ABlock>): (bs: List<ABlock>, n: Int)
+  ret alNtLoop(chain(bbs), 0, List<ABlock>())
+
+fun [tail] alNtLoop(c: Chain<ABlock>, n: Int, acc: List<ABlock>): (bs: List<ABlock>, n: Int)
+  ret match(c)
+    (nil: ChainEnd) => (acc, n)
+    (l: ChainLink)  => l.next is ChainEnd
+      ? (acc, n)
+      : alNtLoop(l.next, n + 1, append(acc, l.value))
 
 fun alDropLast<T>(l: List<T>): List<T>
   ret alDropLastLoop(chain(l), List<T>())
@@ -619,32 +640,34 @@ fun [tail] alFirstFree(used: List<Int>, c: Int): Int
   ret any(used, (x: Int) => x == c) ? alFirstFree(used, c + 1) : c
 
 # All-pointer struct leaf paths (nested), None otherwise.
-fun alPtrLeaves(t2: CgType): List<String>|None
+fun alPtrLeaves(t2: CgType): (ls: List<String>, n: Int)|None
   ret match(t2)
     (s2: CgStruct)          => alPtrLeavesFields(s2.fields)
     (im: CgImmediateStruct) => alPtrLeavesFields(im.fields)
     (o: CgType)             => None
 
-# Paths encoded as "/"-joined field names (root-first).
-fun alPtrLeavesFields(fields: List<CgField>): List<String>|None
-  let out = fold(fields, (List<String>(), true),
-                 (acc: (paths: List<String>, ok: Bool), f2: CgField) => alPlfOne(acc, f2))
-  ret out.ok && !isEmpty(out.paths) ? out.paths : None
+# Paths encoded as "/"-joined field names (root-first); the leaf count
+# rides the same fold (no-length ruling).
+fun alPtrLeavesFields(fields: List<CgField>): (ls: List<String>, n: Int)|None
+  let out = fold(fields, (List<String>(), 0, true),
+                 (acc: (paths: List<String>, n: Int, ok: Bool), f2: CgField) => alPlfOne(acc, f2))
+  ret out.ok && out.n > 0 ? (out.paths, out.n) : None
 
-fun alPlfOne(acc: (paths: List<String>, ok: Bool), f2: CgField): (paths: List<String>, ok: Bool)
+fun alPlfOne(acc: (paths: List<String>, n: Int, ok: Bool), f2: CgField): (paths: List<String>, n: Int, ok: Bool)
   if !acc.ok
     ret acc
   ret match(f2.fieldType)
-    (d: CgDataPointer) => (append(acc.paths, f2.fieldName), true)
+    (d: CgDataPointer) => (append(acc.paths, f2.fieldName), acc.n + 1, true)
     (s2: CgStruct)     => alPlfNested(acc, f2, alPtrLeavesFields(s2.fields))
     (im: CgImmediateStruct) => alPlfNested(acc, f2, alPtrLeavesFields(im.fields))
-    (o: CgType)        => (acc.paths, false)
+    (o: CgType)        => (acc.paths, acc.n, false)
 
-fun alPlfNested(acc: (paths: List<String>, ok: Bool), f2: CgField,
-                inner: List<String>|None): (paths: List<String>, ok: Bool)
+fun alPlfNested(acc: (paths: List<String>, n: Int, ok: Bool), f2: CgField,
+                inner: (ls: List<String>, n: Int)|None): (paths: List<String>, n: Int, ok: Bool)
   ret match(inner)
-    (ps: List<String>) => (concat(acc.paths, map(ps, (p: String) => f2.fieldName + "/" + p)), true)
-    ()                  => (acc.paths, false)
+    (ps: (ls: List<String>, n: Int)) => (concat(acc.paths, map(ps.ls, (p: String) => f2.fieldName + "/" + p)),
+                                         acc.n + ps.n, true)
+    ()                  => (acc.paths, acc.n, false)
 
 # Frame layout: coalesce per exact-type class (by_type in FIRST-SEEN type
 # order — type_index numbers from it), then route slots: strict DataPointer →
@@ -688,20 +711,20 @@ fun alLayoutGroup(g2: TypeGroup, graph: IGraph, ti: Int, acc: AFrame): AFrame
 
 fun alLayoutNonPtr(g2: TypeGroup, colour: List<NameIdx>, nColours: Int, ti: Int, acc: AFrame): AFrame
   ret match(alPtrLeaves(g2.tgType))
-    (leaves: List<String>) => alLayoutDecomposed(colour, listLen(leaves), acc)
+    (leaves: (ls: List<String>, n: Int)) => alLayoutDecomposed(colour, leaves.n, acc)
     ()                      => alLayoutInline(g2, colour, ti, acc)
 
 # colour_base maps each distinct colour (sorted) to array base indices.
 fun alLayoutDecomposed(colour: List<NameIdx>, width: Int, acc: AFrame): AFrame
-  let sortedColours = alSortedColours(colour)
+  let sorted2 = alSortedColours(colour)
   let entries = map(colour, (e2: NameIdx) => NameIdx(e2.niName,
-                      acc.afNArray + alIndexOfInt(sortedColours, e2.niIdx) * width))
+                      acc.afNArray + alIndexOfInt(sorted2.cs, e2.niIdx) * width))
   ret AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
-             acc.afNArray + width * listLen(sortedColours),
+             acc.afNArray + width * sorted2.n,
              concat(acc.afDecomposed, entries))
 
 fun alLayoutInline(g2: TypeGroup, colour: List<NameIdx>, ti: Int, acc: AFrame): AFrame
-  let sortedColours = alSortedColours(colour)
+  let sortedColours = alSortedColours(colour).cs
   let newFields = map(sortedColours, (c: Int) => CgField("$slot$" + String(ti) + "$" + String(c), g2.tgType))
   ret AFrame(acc.afPtrSlots,
              concat(acc.afInlineSlots, map(colour, (e2: NameIdx) =>
@@ -709,11 +732,15 @@ fun alLayoutInline(g2: TypeGroup, colour: List<NameIdx>, ti: Int, acc: AFrame): 
              concat(acc.afSlotFields, newFields), acc.afNArray, acc.afDecomposed)
 
 fun alDistinctColourCount(colour: List<NameIdx>): Int
-  ret listLen(alSortedColours(colour))
+  ret alSortedColours(colour).n
 
-fun alSortedColours(colour: List<NameIdx>): List<Int>
-  ret alSortInts(fold(colour, List<Int>(), (acc: List<Int>, e2: NameIdx) =>
-                   any(acc, (x: Int) => x == e2.niIdx) ? acc : append(acc, e2.niIdx)))
+fun alSortedColours(colour: List<NameIdx>): (cs: List<Int>, n: Int)
+  let dd = fold(colour, (List<Int>(), 0),
+                (acc: (cs: List<Int>, n: Int), e2: NameIdx) =>
+                  any(acc.cs, (x: Int) => x == e2.niIdx)
+                    ? acc
+                    : (append(acc.cs, e2.niIdx), acc.n + 1))
+  ret (alSortInts(dd.cs), dd.n)
 
 fun alSortInts(l: List<Int>): List<Int>
   ret alSortIntsLoop(l, List<Int>())
@@ -759,7 +786,7 @@ fun alStoreVar(v: RParam, sp: RParam, stateName: String, layout: AFrame): List<O
 
 fun alStoreDecomposed(v: RParam, sp: RParam, stateName: String, base: Int): List<Op>
   ret match(alPtrLeaves(rpGetType(v)))
-    (paths: List<String>) => alSdLoop(chain(paths), v, sp, stateName, base, 0, List<Op>())
+    (paths: (ls: List<String>, n: Int)) => alSdLoop(chain(paths.ls), v, sp, stateName, base, 0, List<Op>())
     ()                     => List<Op>()   # unreachable: decomposed entries are all-ptr structs
 
 fun [tail] alSdLoop(ps: Chain<String>, v: RParam, sp: RParam, stateName: String,
@@ -942,10 +969,10 @@ fun alHotSite(bb: ABlock, f: CgFunction, wrappedResult: CgType, i: Int, acc: Hot
 fun alHotPar(bb: ABlock, pc: OpParallelCall, f: CgFunction, wrappedResult: CgType,
              i: Int, acc: HotOut): HotOut
   let parTaskName = "task$par$" + String(i) + "$" + f.fnName
-  let closures = map(pc.parCalls, alClosureOf)
+  let closures = alClosuresCounted(chain(pc.parCalls), 0, List<RParam>())
   let ops1 = concat(acc.hoOps, alConvertReturnsHot(alDropLast(bb.abOps), wrappedResult))
-  let ops2 = concat(ops1, alEmitParTaskSetup(alSvParTask(), parTaskName, closures))
-  let ops3 = alHotParLaunchers(ops2, f.fnName, i, listLen(pc.parCalls), 0)
+  let ops2 = concat(ops1, alEmitParTaskSetup(alSvParTask(), parTaskName, closures.cs, closures.n))
+  let ops3 = alHotParLaunchers(ops2, f.fnName, i, chain(pc.parCalls), 0)
   ret HotOut(concat(ops3, list3(OpMove(alSvAsyncTask(), alSvParTask(), false, List<RParam>()),
                                 OpMove(alSvCallId(), RpInteger(i + 1, 32), false, List<RParam>()),
                                 OpJump("$asynccommon", List<RParam>()))),
@@ -958,11 +985,20 @@ fun alClosureOf(callRef: RParam): RParam
       ()             => RpNullPointer()
     (o: RParam)             => RpNullPointer()
 
-fun [tail] alHotParLaunchers(acc: List<Op>, fnName: String, site: Int, n: Int, k: Int): List<Op>
-  if k >= n
-    ret acc
-  ret alHotParLaunchers(concat(acc, alEmitPostLauncher(alSvLauncher(), alSvParTask(), fnName, site, k)),
-                        fnName, site, n, k + 1)
+fun [tail] alHotParLaunchers(acc: List<Op>, fnName: String, site: Int,
+                             calls: Chain<RParam>, k: Int): List<Op>
+  ret match(calls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alHotParLaunchers(
+        concat(acc, alEmitPostLauncher(alSvLauncher(), alSvParTask(), fnName, site, k)),
+        fnName, site, l.next, k + 1)
+
+# One closure per parallel call, its count riding the walk (no-length ruling).
+fun [tail] alClosuresCounted(ps: Chain<RParam>, n: Int,
+                             acc: List<RParam>): (cs: List<RParam>, n: Int)
+  ret match(ps)
+    (nil: ChainEnd) => (acc, n)
+    (l: ChainLink)  => alClosuresCounted(l.next, n + 1, append(acc, alClosureOf(l.value)))
 
 fun alHotCall(bb: ABlock, c: OpCall, wrappedResult: CgType, i: Int, acc: HotOut): HotOut
   ret match(c.callRegister)
@@ -1045,7 +1081,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName: String, subtype: String|None,
   # clobbered by dead locals — dispatched on the recorded call id (1-based).
   let common1 = append(common0,
                        OpSwitchJump(alSvCallId(),
-                                    alSaveCases(listLen(nonTerminal), 0, List<OpCase>()),
+                                    alSaveCases(chain(nonTerminal), 0, List<OpCase>()),
                                     List<RParam>()))
   let common2 = append(common1, OpJump("$save$done", List<RParam>()))
   let common3 = alSaveBlocks(chain(nonTerminal), stateName, layout, 0, common2)
@@ -1079,10 +1115,11 @@ fun alHotAssembleAsync(f: CgFunction, stateName: String, subtype: String|None,
                  concat(body.hoOps, common7), f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
 
-fun [tail] alSaveCases(n: Int, i: Int, acc: List<OpCase>): List<OpCase>
-  if i >= n
-    ret acc
-  ret alSaveCases(n, i + 1, append(acc, OpCase(i + 1, "$save$" + String(i))))
+fun [tail] alSaveCases(bs: Chain<ABlock>, i: Int, acc: List<OpCase>): List<OpCase>
+  ret match(bs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSaveCases(l.next, i + 1,
+                                   append(acc, OpCase(i + 1, "$save$" + String(i))))
 
 fun [tail] alSaveBlocks(bs: Chain<ABlock>, stateName: String, layout: AFrame,
                         i: Int, acc: List<Op>): List<Op>
@@ -1119,8 +1156,8 @@ fun alAugOne(acc: AFrame, p: CgField): AFrame
 
 fun alAugNonPtr(acc: AFrame, p: CgField): AFrame
   ret match(alPtrLeaves(p.fieldType))
-    (leaves: List<String>) => AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
-                                     acc.afNArray + listLen(leaves),
+    (leaves: (ls: List<String>, n: Int)) => AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
+                                     acc.afNArray + leaves.n,
                                      append(acc.afDecomposed, NameIdx(p.fieldName, acc.afNArray)))
     ()                      => AFrame(acc.afPtrSlots,
                                      append(acc.afInlineSlots, NameStr(p.fieldName, p.fieldName)),
@@ -1182,8 +1219,9 @@ fun alWritesDiscard(op: Op): Bool
 # ssa_validate exempts $async multi-defs.
 fun alCreateStateMachineFunc(f: CgFunction, stateName: String, subtype: String|None,
                              bbs: List<ABlock>, layout: AFrame, withEntryCase: Bool): CgFunction
-  let nonTerminal = alNonTerminal(bbs)
-  let n = listLen(nonTerminal)
+  let nt = alNonTerminalN(bbs)
+  let nonTerminal = nt.bs
+  let n = nt.n
   # Park stores skip loaded-only vars (loop invariants — their field is
   # already current; the only way in is a dispatch load).
   let bodyDefs = fold(bbs, List<String>(), (acc: List<String>, bb: ABlock) =>
@@ -1253,9 +1291,9 @@ fun alSmPar(pc: OpParallelCall, f: CgFunction, stateName: String, layout: AFrame
   let parTaskName = "task$par$" + String(i) + "$" + f.fnName
   let svParSm = RpStackVar(CgDataPointer(), "$sv_par_sm$" + String(i))
   let svLauncherSm = RpStackVar(CgDataPointer(), "$sv_launcher_sm$" + String(i))
-  let closures = map(pc.parCalls, alClosureOf)
-  let ops1 = concat(acc.smOps, alEmitParTaskSetup(svParSm, parTaskName, closures))
-  let ops2 = alSmParLaunchers(ops1, svLauncherSm, svParSm, f.fnName, i, listLen(pc.parCalls), 0)
+  let closures = alClosuresCounted(chain(pc.parCalls), 0, List<RParam>())
+  let ops1 = concat(acc.smOps, alEmitParTaskSetup(svParSm, parTaskName, closures.cs, closures.n))
+  let ops2 = alSmParLaunchers(ops1, svLauncherSm, svParSm, f.fnName, i, chain(pc.parCalls), 0)
   let ops3 = concat(concat(ops2, saveStores),
                     alEmitSuspendToAsync(idxField, i + 1, svParSm, f.fnName))
   ret SmOut(append(ops3, OpLabel("$resume$" + String(i), List<RParam>())),
@@ -1264,11 +1302,12 @@ fun alSmPar(pc: OpParallelCall, f: CgFunction, stateName: String, layout: AFrame
                                            CgField("$sv_launcher_sm$" + String(i), CgDataPointer()))))
 
 fun [tail] alSmParLaunchers(acc: List<Op>, launcherVar: RParam, parVar: RParam,
-                            fnName: String, site: Int, n: Int, k: Int): List<Op>
-  if k >= n
-    ret acc
-  ret alSmParLaunchers(concat(acc, alEmitPostLauncher(launcherVar, parVar, fnName, site, k)),
-                       launcherVar, parVar, fnName, site, n, k + 1)
+                            fnName: String, site: Int, calls: Chain<RParam>, k: Int): List<Op>
+  ret match(calls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSmParLaunchers(
+        concat(acc, alEmitPostLauncher(launcherVar, parVar, fnName, site, k)),
+        launcherVar, parVar, fnName, site, l.next, k + 1)
 
 fun alSmCall(c: OpCall, f: CgFunction, idxField: RParam, i: Int,
              acc: SmOut, saveStores: List<Op>): SmOut
@@ -1494,7 +1533,7 @@ fun alPpsPhi(acc: List<Op>, ph: OpPhi, preds: List<BlockPreds>, cur: String): Li
     ret append<Op>(acc, ph)
   let blockPreds = alBpOf(preds, cur)
   let kept = filter(ph.phiSources, (s2: OpPhiSource) => strListMember(blockPreds, s2.sourceLabel))
-  ret listLen(kept) == listLen(ph.phiSources)
+  ret sameLen(chain(kept), chain(ph.phiSources))
     ? append<Op>(acc, ph)
     : (isEmpty(kept) ? acc : append(acc, OpPhi(ph.phiTarget, kept, ph.phiSavedVars)))
 
@@ -1507,10 +1546,10 @@ fun alConvertFunction(f: CgFunction): AlOut
     ret AlOut(list1(f), List<CgObject>())
   let afterTail = alDiscoverTailCalls(f)
   let stateName = f.fnName + "$state"
-  let bbs = alCreateBasicBlocks(afterTail)
-  if listLen(bbs) < 2
+  let built = alCreateBasicBlocksN(afterTail)
+  if !atLeast(chain(built.bs), 2)
     ret AlOut(list1(alSimpleWrap(afterTail)), List<CgObject>())
-  ret alConvertMulti(f, afterTail, stateName, bbs)
+  ret alConvertMulti(f, afterTail, stateName, built.bs, built.n)
 
 # <2 blocks: only the return type adjusts (SyncWrap promotion when wrapped).
 fun alSimpleWrap(f: CgFunction): CgFunction
@@ -1525,16 +1564,19 @@ fun alSimpleWrap(f: CgFunction): CgFunction
                                      f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
 
 fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName: String,
-                   bbs: List<ABlock>): AlOut
+                   bbs: List<ABlock>, nBbs: Int): AlOut
   let subtype = taskSubtypeName(f.fnResult)
   # The SM view (musttail unrolled) defines the authoritative frame layout.
   let smFn = any(afterTail.fnOps, alIsMusttailCall) ? alUnrollMusttail(afterTail) : afterTail
-  let smBbs = any(afterTail.fnOps, alIsMusttailCall) ? alCreateBasicBlocks(smFn) : bbs
+  let smBuilt = any(afterTail.fnOps, alIsMusttailCall)
+    ? alCreateBasicBlocksN(smFn)
+    : (bbs, nBbs)
+  let smBbs = smBuilt.bs
   let layout0 = alComputeFrameLayout(smBbs, bbs, alCalculateSavedVars(smFn).fnOps)
-  let useStub = !f.fnSync && listLen(smFn.fnOps) > alStubThresholdOps() && alHasParkingLoop(smFn.fnOps)
+  let useStub = !f.fnSync && atLeast(chain(smFn.fnOps), alStubThresholdOps() + 1) && alHasParkingLoop(smFn.fnOps)
   let layout = useStub ? alAugmentLayoutWithParams(layout0, cgFieldsOfOrEmpty(f.fnParams)) : layout0
   let hotFn = useStub
-    ? alCreateStubLaunchFunc(afterTail, stateName, subtype, layout, listLen(smBbs))
+    ? alCreateStubLaunchFunc(afterTail, stateName, subtype, layout, smBuilt.n)
     : alCreateHotPathFunc(afterTail, stateName, subtype, bbs, layout)
   let par = alParMachinery(f, bbs)
   if f.fnSync
@@ -1635,23 +1677,24 @@ fun alLambdaNameOf(callRef: RParam, k: Int): String
 # par_task: task_t prefix + remaining + closure_k + result_k.
 fun alParTaskObject(parTaskName: String, resultTypes: List<CgType>): CgObject
   let fields0 = append(taskFields(), CgField("remaining", CgInt(32)))
-  let fields1 = alPtoClosures(fields0, listLen(resultTypes), 0)
-  let fields2 = alPtoResults(fields1, chain(resultTypes), 0)
+  let fields1 = alPtoClosures(fields0, chain(resultTypes), 0)
+  let fields2 = alPtoResults(fields1, chain(resultTypes), 0, 0)
   ret CgObject(parTaskName, list1("task"), List<CgFuncSlot>(),
-               CgImmediateStruct(fields2),
-               None, "parallel join task with " + String(listLen(resultTypes)) + " slots",
+               CgImmediateStruct(fields2.fs),
+               None, "parallel join task with " + String(fields2.n) + " slots",
                false, true, 0)
 
-fun [tail] alPtoClosures(acc: List<CgField>, n: Int, k: Int): List<CgField>
-  if k >= n
-    ret acc
-  ret alPtoClosures(append(acc, CgField("closure_" + String(k), CgDataPointer())), n, k + 1)
-
-fun [tail] alPtoResults(acc: List<CgField>, ts: Chain<CgType>, k: Int): List<CgField>
+fun [tail] alPtoClosures(acc: List<CgField>, ts: Chain<CgType>, k: Int): List<CgField>
   ret match(ts)
     (nil: ChainEnd) => acc
+    (l: ChainLink)  => alPtoClosures(append(acc, CgField("closure_" + String(k), CgDataPointer())), l.next, k + 1)
+
+fun [tail] alPtoResults(acc: List<CgField>, ts: Chain<CgType>, k: Int,
+                        n: Int): (fs: List<CgField>, n: Int)
+  ret match(ts)
+    (nil: ChainEnd) => (acc, n)
     (l: ChainLink)  => alPtoResults(append(acc, CgField("result_" + String(k), l.value)),
-                                    l.next, k + 1)
+                                    l.next, k + 1, n + 1)
 
 # Slot callback: result_k = extract(completed sub-task) + task_par_decrement.
 fun alSlotCallback(fnName: String, site: Int, slot: Int, parTaskName: String,
@@ -1792,8 +1835,7 @@ fun alIsGlobalFn(c: RParam): Bool
 
 fun alBuildOutline(pc: OpParallelCall, f: CgFunction, opIndex: Int): OutlineOne
   let helperName = f.fnName + "$par_site$" + String(opIndex)
-  let n = listLen(pc.parCalls)
-  let closureParams = alCpList(n, 0, List<RParam>())
+  let closureParams = alCpList(chain(pc.parCalls), 0, List<RParam>())
   let helperCalls = alHcList(chain(pc.parCalls), chain(closureParams), List<RParam>())
   let svAccepting = RpStackVar(CgInt(32), "$accepting")
   let register = alForceRegister(pc.parRegister)
@@ -1829,10 +1871,10 @@ fun alForceRegister(r: RParam|None): RParam
     (x: RParam) => x
     ()           => RpNullPointer()   # unreachable: well-formedness checked
 
-fun [tail] alCpList(n: Int, k: Int, acc: List<RParam>): List<RParam>
-  if k >= n
-    ret acc
-  ret alCpList(n, k + 1, append(acc, RpStackVar(CgDataPointer(), "$c" + String(k))))
+fun [tail] alCpList(ps: Chain<RParam>, k: Int, acc: List<RParam>): List<RParam>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alCpList(l.next, k + 1, append(acc, RpStackVar(CgDataPointer(), "$c" + String(k))))
 
 fun [tail] alHcList(calls: Chain<RParam>, cps: Chain<RParam>, acc: List<RParam>): List<RParam>
   ret match(calls)

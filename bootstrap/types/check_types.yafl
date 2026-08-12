@@ -69,18 +69,18 @@ fun isKnownBuiltin(name: String): Bool
 
 fun checkNamed(n: SNamed, r: Resolver): List<PErr>
   let found = findType(r, n.snName)
-  if bagSize(found) > 1
+  if atLeast(chain(found.bItems), 2)
     ret oneErr(n.snLine, "Ambiguous reference to '" + n.snName + "'")
-  if bagSize(found) == 1
+  if exactly(chain(found.bItems), 1)
     ret noErrs()
   ret oneErr(n.snLine, "Unresolved reference to '" + n.snName + "'")
 
 fun checkClassSpec(c: SClass, r: Resolver): List<PErr>
   let tpErrs = checkSpecs(chain(c.scParams), r, noErrs())
   let found = findType(r, c.scName)
-  if bagSize(found) == 0
+  if isEmpty(found.bItems)
     ret concat(oneErr(c.scLine, "Failed to resolve class " + c.scName), tpErrs)
-  if bagSize(found) > 1
+  if atLeast(chain(found.bItems), 2)
     ret concat(oneErr(c.scLine, "Found too many classes named " + c.scName),
                tpErrs)
   ret match(soleItem(found))
@@ -98,20 +98,17 @@ fun checkTuple(t2: STuple, r: Resolver): List<PErr>
                "Named parameters are not allowed before positional parameters")
   ret checkEntries(chain(t2.stEntries), r, noErrs())
 
+# True iff an unnamed entry follows a named one — a single flag-carrying
+# walk (was last-unnamed-index > first-named-index; same relation).
 fun namedBeforePositional(es: List<SEntry>): Bool
-  ret maxUnnamedIndex(chain(es), 0, 0) > minNamedIndex(chain(es), 0, listLen(es))
+  ret unnamedAfterNamed(chain(es), false)
 
-fun [tail] maxUnnamedIndex(es: Chain<SEntry>, i: Int, best: Int): Int
+fun [tail] unnamedAfterNamed(es: Chain<SEntry>, seenNamed: Bool): Bool
   ret match(es)
-    (nil: ChainEnd) => best
-    (l: ChainLink)  => maxUnnamedIndex(l.next, i + 1,
-                                       l.value.seName == "" ? i : best)
-
-fun [tail] minNamedIndex(es: Chain<SEntry>, i: Int, best: Int): Int
-  ret match(es)
-    (nil: ChainEnd) => best
-    (l: ChainLink)  => minNamedIndex(l.next, i + 1,
-                                     l.value.seName != "" && i < best ? i : best)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value.seName == ""
+      ? (seenNamed ? true : unnamedAfterNamed(l.next, seenNamed))
+      : unnamedAfterNamed(l.next, true)
 
 fun [tail] checkEntries(es: Chain<SEntry>, r: Resolver,
                         acc: List<PErr>): List<PErr>
@@ -199,11 +196,9 @@ fun narrowClassStmt(st: PsClass): PStmt
 fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
                         r: Resolver): List<PErr>
   let gens = stmtGens(st)
-  let want = listLen(gens)
-  let got = listLen(callerParams)
-  if got > want
+  if shorterThan(chain(gens), chain(callerParams))
     ret oneErr(lr, "Excess type parameters")
-  if got < want
+  if shorterThan(chain(callerParams), chain(gens))
     ret oneErr(lr, "Not enough type parameters")
   ret checkWheres(chain(stmtWheres(st)),
                   RTypes(callerGenFounds(chain(gens), chain(callerParams),

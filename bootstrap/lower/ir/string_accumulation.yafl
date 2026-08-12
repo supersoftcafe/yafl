@@ -22,6 +22,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Codegen
 import Bootstrap::Ir
 import Bootstrap::Parse
@@ -64,7 +66,7 @@ fun saOperandsOf(inv: RpRuntimeInvoke): List<RParam>|None
                                     (v: RpNamedValue) => v.name != "count"),
                              (v: RpNamedValue) => v.value)
       |> (values) =>
-        inv.function == scAppendName() && listLen(values) == 2 ? values
+        inv.function == scAppendName() && exactly(chain(values), 2) ? values
         : inv.function == scConcatName() ? values
         : None
     (o: RParam)       => None
@@ -126,7 +128,7 @@ fun saFlattenChase(sv: RpStackVar, acc: String, defs: SsaDefs,
 
 fun saStepFromSpine(edge: String, resultName: String, acc: String,
                     spine: List<RParam>, moves: List<String>): SaStep|None
-  if listLen(spine) < 2
+  if !atLeast(chain(spine), 2)
     ret None
   let pushes = tail(spine)
   ret saRootIsAcc(head(spine), acc)
@@ -306,7 +308,7 @@ fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: SsaDefs,
                  plan.saAcc, chainAll)
     ret f
   let out = saRewriteOps(chain(f.fnOps), 0, plan, chainAll,
-                         (List<Op>(), List<RParam>()))
+                         (List<Op>(), List<RParam>(), 0))
   ret saRestack(f, plan, chainAll, out.ops, out.snaps)
 
 fun [tail] saAnyBuried(ops: Chain<Op>, i: Int, plan: SaPlan): Bool
@@ -327,7 +329,7 @@ fun saSnapshot(plan: SaPlan): RParam
 
 fun [tail] saRewriteOps(ops: Chain<Op>, i: Int, plan: SaPlan,
                         chainAll: List<String>,
-                        acc: (ops: List<Op>, snaps: List<RParam>)): (ops: List<Op>, snaps: List<RParam>)
+                        acc: (ops: List<Op>, snaps: List<RParam>, n: Int)): (ops: List<Op>, snaps: List<RParam>, n: Int)
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => saRewriteOps(l.next, i + 1, plan, chainAll,
@@ -335,12 +337,12 @@ fun [tail] saRewriteOps(ops: Chain<Op>, i: Int, plan: SaPlan,
                                                  acc))
 
 fun saRewriteOne(op: Op, i: Int, plan: SaPlan, chainAll: List<String>,
-                 acc: (ops: List<Op>, snaps: List<RParam>)): (ops: List<Op>, snaps: List<RParam>)
+                 acc: (ops: List<Op>, snaps: List<RParam>, n: Int)): (ops: List<Op>, snaps: List<RParam>, n: Int)
   if i == plan.saPhiIdx
-    ret (concat(acc.ops, saPhiPair(plan)), acc.snaps)
+    ret (concat(acc.ops, saPhiPair(plan)), acc.snaps, acc.n)
   ret match(saStepOrChainMove(op, plan, chainAll))
     (kind: Int) => kind == 1
-      ? (concat(acc.ops, saPushSeq(saStepFor(op, plan), plan)), acc.snaps)
+      ? (concat(acc.ops, saPushSeq(saStepFor(op, plan), plan)), acc.snaps, acc.n)
       : acc                          # kind 2: absorbed intermediate — drop
     ()          => saRewriteRead(op, plan, acc)
 
@@ -390,20 +392,20 @@ fun saPhiPair(plan: SaPlan): List<Op>
 # The chain's final Move becomes the in-place push sequence: reserve →
 # dangerous copy, then advance the offset, once per operand.
 fun saPushSeq(step: SaStep, plan: SaPlan): List<Op>
-  ret saPushLoop(chain(step.saPushes), 0, listLen(step.saPushes), step,
+  ret saPushLoop(chain(step.saPushes), 0, step,
                  saBufVar(plan), saOffVar(plan), List<Op>())
 
-fun saPushLoop(ps: Chain<RParam>, i: Int, n: Int, step: SaStep,
+fun saPushLoop(ps: Chain<RParam>, i: Int, step: SaStep,
                       curBuf: RParam, curOff: RParam,
                       acc: List<Op>): List<Op>
   ret match(ps)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => saPushStep(l, i, n, step, curBuf, curOff, acc)
+    (l: ChainLink)  => saPushStep(l, i, step, curBuf, curOff, acc)
 
-fun saPushStep(l: ChainLink<RParam>, i: Int, n: Int, step: SaStep,
+fun saPushStep(l: ChainLink<RParam>, i: Int, step: SaStep,
                       curBuf: RParam, curOff: RParam,
                       acc: List<Op>): List<Op>
-  let names = saPushNames(step, i, n)
+  let names = saPushNames(step, i, l.next is ChainEnd)
   let nbuf = RpStackVar(CgDataPointer(), names.buf)
   let noff = RpStackVar(CgDataPointer(), names.off)
   let grown = saInvoke3("string_builder_reserve", curBuf, curOff,
@@ -415,10 +417,12 @@ fun saPushStep(l: ChainLink<RParam>, i: Int, n: Int, step: SaStep,
                false, List<RParam>())),
         OpMove(noff, saInvoke2("integer_add", curOff, saLengthOf(l.value)),
                false, List<RParam>()))
-  ret saPushLoop(l.next, i + 1, n, step, nbuf, noff, pushed)
+  ret saPushLoop(l.next, i + 1, step, nbuf, noff, pushed)
 
-fun saPushNames(step: SaStep, i: Int, n: Int): (buf: String, off: String)
-  ret i == n - 1
+# The LAST push takes the result names — detected structurally, never by an
+# index-versus-length compare (no-length ruling).
+fun saPushNames(step: SaStep, i: Int, isLast: Bool): (buf: String, off: String)
+  ret isLast
     ? (saBufName(step.saResult), saOffName(step.saResult))
     : (saBufName(step.saResult) + "@" + String(i),
        saOffName(step.saResult) + "@" + String(i))
@@ -426,16 +430,16 @@ fun saPushNames(step: SaStep, i: Int, n: Int): (buf: String, off: String)
 # Everything else: reads of the accumulator become snapshots, and a saved
 # accumulator becomes a saved (buf, off) pair.
 fun saRewriteRead(op: Op, plan: SaPlan,
-                  acc: (ops: List<Op>, snaps: List<RParam>)): (ops: List<Op>, snaps: List<RParam>)
+                  acc: (ops: List<Op>, snaps: List<RParam>, n: Int)): (ops: List<Op>, snaps: List<RParam>, n: Int)
   let stage1 = match(op)
-    (ph: OpPhi) => saPhiRead(ph, plan, acc.snaps)
-    (o: Op)     => saSnapRead(op, plan, acc.snaps)
+    (ph: OpPhi) => saPhiRead(ph, plan, acc.snaps, acc.n)
+    (o: Op)     => saSnapRead(op, plan, acc.snaps, acc.n)
   let staged = saResave(stage1.op, plan)
-  ret (append(concat(acc.ops, stage1.pre), staged), stage1.snaps)
+  ret (append(concat(acc.ops, stage1.pre), staged), stage1.snaps, stage1.n)
 
 fun saPhiRead(ph: OpPhi, plan: SaPlan,
-              snaps: List<RParam>): (op: Op, pre: List<Op>, snaps: List<RParam>)
-  ret (saOtherPhi(ph, plan), List<Op>(), snaps)
+              snaps: List<RParam>, n: Int): (op: Op, pre: List<Op>, snaps: List<RParam>, n: Int)
+  ret (saOtherPhi(ph, plan), List<Op>(), snaps, n)
 
 fun saOtherPhi(ph: OpPhi, plan: SaPlan): Op
   ret OpPhi(ph.phiTarget,
@@ -445,18 +449,20 @@ fun saOtherPhi(ph: OpPhi, plan: SaPlan): Op
                   : s2),
             ph.phiSavedVars)
 
+# The snap ordinal is the CARRIED count of snaps taken so far — never the
+# list's length (no-length ruling).
 fun saSnapRead(op: Op, plan: SaPlan,
-               snaps: List<RParam>): (op: Op, pre: List<Op>, snaps: List<RParam>)
+               snaps: List<RParam>, n: Int): (op: Op, pre: List<Op>, snaps: List<RParam>, n: Int)
   if !any(opGetLiveVars(op).reads,
           (sv: RParam) => saIsDirectAcc(sv, plan.saAcc))
-    ret (op, List<Op>(), snaps)
+    ret (op, List<Op>(), snaps, n)
   let snap = RpStackVar(CgDataPointer(),
-                        plan.saAcc + "$snap@" + String(listLen(snaps)))
+                        plan.saAcc + "$snap@" + String(n))
   ret (opRenameVars(op, append<RpRename>(List<RpRename>(),
                                RpRename(plan.saAcc, stackVarName(snap)))),
        append<Op>(List<Op>(), OpMove(snap, saSnapshot(plan), false,
                                  List<RParam>())),
-       append(snaps, snap))
+       append(snaps, snap), n + 1)
 
 fun saResave(op: Op, plan: SaPlan): Op
   ret any(opSavedVars(op), (sv: RParam) => saIsDirectAcc(sv, plan.saAcc))
@@ -485,13 +491,13 @@ fun saRestack(f: CgFunction, plan: SaPlan, chainAll: List<String>,
                      CgStruct(fold(plan.saSteps, withSnaps, saStepFields)))
 
 fun saStepFields(acc: List<CgField>, step: SaStep): List<CgField>
-  ret saStepFieldLoop(0, listLen(step.saPushes), step, acc)
+  ret saStepFieldLoop(chain(step.saPushes), 0, step, acc)
 
-fun [tail] saStepFieldLoop(i: Int, n: Int, step: SaStep,
+fun [tail] saStepFieldLoop(ps: Chain<RParam>, i: Int, step: SaStep,
                            acc: List<CgField>): List<CgField>
-  if i >= n
-    ret acc
-  ret saPushNames(step, i, n)
-    |> (names) => saStepFieldLoop(i + 1, n, step,
-                    append(append(acc, CgField(names.buf, CgDataPointer())),
-                           CgField(names.off, CgDataPointer())))
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => saPushNames(step, i, l.next is ChainEnd)
+      |> (names) => saStepFieldLoop(l.next, i + 1, step,
+                      append(append(acc, CgField(names.buf, CgDataPointer())),
+                             CgField(names.off, CgDataPointer())))

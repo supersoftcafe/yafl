@@ -1328,12 +1328,9 @@ fun funBlock(body: List<PStmt>, lr: PLine): PExpr|None
     ret None
   ret match(last(body))
     (st: PStmt) => match(st)
-      (r: PsRet) => PeBlock(take(body, listLen(body) - 1), r.retValue, "", lr)
+      (r: PsRet) => PeBlock(initOf(body), r.retValue, "", lr)
       (other)    => PeBlock(body, PeNothing(lr), "", lr)
     ()          => PeBlock(body, PeNothing(lr), "", lr)
-
-fun listLen<T>(l: List<T>): Int
-  ret chainLength(chain(l))
 
 # `instance [ambient]<T> Iface<Pattern> where C` + member funs — anonymous;
 # builds the PsInstance marker the fixup expands (parser.py __parse_instance).

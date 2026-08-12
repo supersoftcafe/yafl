@@ -250,3 +250,64 @@ fun thisType(cs: PsClass): Spec
              map(cs.cGens, (g2: PGen) => SGeneric(g2.genName, isLinearGen(g2),
                                                   g2.pgLine)),
              cs.pscLine)
+
+
+# ── structural size probes ───────────────────────────────────────────────────
+# The no-length ruling (user, 08-11): a list's length is never CALCULATED.
+# Bounded questions are answered by bounded probes, length comparisons by
+# co-walks, and a count that genuinely must exist is carried from the walk
+# that built the list. These helpers are the whole vocabulary.
+
+# At least n elements: walks at most n cells.
+fun [tail] atLeast<T>(c: Chain<T>, n: Int): Bool
+  ret n <= 0 ? true : match(c)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => atLeast(l.next, n - 1)
+
+# At most n elements: walks at most n+1 cells.
+fun atMost<T>(c: Chain<T>, n: Int): Bool
+  ret !atLeast<T>(c, n + 1)
+
+# Exactly n elements: two bounded probes.
+fun exactly<T>(c: Chain<T>, n: Int): Bool
+  ret atLeast<T>(c, n) && !atLeast<T>(c, n + 1)
+
+# The two-list co-walks spell EVERY generic call with explicit type args:
+# inside a two-type-param host, inferred generic-into-generic calls latch the
+# wrong instantiation when T != U and the binary aborts at runtime (the
+# ledgered nested-generic inference gap, third shape — witness test:
+# tests/test_two_generic_match.py). isEnd/restOf keep each match on one
+# enum instantiation; the explicit <T>/<U> arguments are load-bearing.
+
+fun isEnd<T>(c: Chain<T>): Bool
+  ret match(c)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => false
+
+# The next link, or the (empty) chain itself at the end — callers guard with
+# isEnd, so the self-return arm never drives a loop.
+fun restOf<T>(c: Chain<T>): Chain<T>
+  ret match(c)
+    (nil: ChainEnd) => c
+    (l: ChainLink)  => l.next
+
+# Same length: co-walk, stops at the shorter.
+fun [tail] sameLen<T, U>(a: Chain<T>, b: Chain<U>): Bool
+  ret isEnd<T>(a) || isEnd<U>(b)
+    ? isEnd<T>(a) && isEnd<U>(b)
+    : sameLen<T, U>(restOf<T>(a), restOf<U>(b))
+
+# Strictly fewer elements than b: co-walk, stops at the shorter.
+fun [tail] shorterThan<T, U>(a: Chain<T>, b: Chain<U>): Bool
+  ret isEnd<U>(b)
+    ? false
+    : (isEnd<T>(a) ? true : shorterThan<T, U>(restOf<T>(a), restOf<U>(b)))
+
+# All but the last element, structurally.
+fun initOf<T>(l: List<T>): List<T>
+  ret initLoop<T>(chain(l), List<T>())
+
+fun [tail] initLoop<T>(c: Chain<T>, acc: List<T>): List<T>
+  ret match(c)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => l.next is ChainEnd ? acc : initLoop(l.next, append(acc, l.value))

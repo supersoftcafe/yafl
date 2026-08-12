@@ -15,7 +15,7 @@ import Bootstrap::Types
 
 
 fun soleOf(datas: List<Found>): Found|None
-  ret listLen(datas) == 1 ? head(datas) : None
+  ret exactly(chain(datas), 1) ? head(datas) : None
 
 # ── _resolve_overloads ───────────────────────────────────────────────────────
 # Partition by verdict against the expected type: definite matches (True) win
@@ -28,7 +28,7 @@ fun soleOf(datas: List<Found>): Found|None
 
 fun resolveOverloads(r: Resolver, expected: Spec|None,
                      candidates: List<Found>): List<Found>
-  if listLen(candidates) <= 1
+  if atMost(chain(candidates), 1)
     ret candidates
   let survivors = partitionByVerdict(candidates, expected, r)
   if !isEmpty(survivors)

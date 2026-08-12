@@ -36,7 +36,7 @@ fun collectDiagnostics(statements: List<PStmt>, r: Resolver): Diag
   let diagnostics = withMainCount(statements,
                                   stmtChecks(chain(statements), r, noErrs()))
   let warnings = onlyWarnings(chain(diagnostics), noErrs())
-  if listLen(warnings) != listLen(diagnostics)
+  if !sameLen(chain(warnings), chain(diagnostics))
     ret Diag(diagnostics, warnings)          # some real error: fail with all
   let named = namedSpecErrors(statements)
   ret isEmpty(named) ? Diag(noErrs(), warnings) : Diag(named, warnings)
@@ -151,7 +151,7 @@ fun detailSlot(detail: Dict<String, List<List<String> > >, name: String,
     ()                           => List<String>()
 
 fun clueFor(seen: List<String>): String
-  if listLen(seen) > 1
+  if atLeast(chain(seen), 2)
     ret "call sites disagree (" + join(sort(seen), ", ") + ")"
   ret match(head(seen))
     (one: String) => "call sites only partly determine it (" + one + ")"

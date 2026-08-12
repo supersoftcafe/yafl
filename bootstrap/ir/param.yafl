@@ -2,6 +2,8 @@ namespace Bootstrap::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Codegen
 import Bootstrap::Resolve
 import Bootstrap::Types
@@ -450,7 +452,7 @@ fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Boo
 fun rpToCNewStruct(x: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let xtype = rpGetType(RpNewStruct(x.values))
   let declared = cgDeclare(xtype, cache0)
-  ret chainLength(chain(x.values)) <= 2
+  ret atMost(chain(x.values), 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
@@ -539,7 +541,7 @@ fun rpZeroOfInitText(vt: CgType): String
 
 fun rpToCNewStructTyped(x: RpNewStructTyped, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.structType, cache0)
-  ret chainLength(chain(x.values)) <= 2
+  ret atMost(chain(x.values), 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 

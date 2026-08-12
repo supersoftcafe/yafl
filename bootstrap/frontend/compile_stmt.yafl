@@ -133,7 +133,7 @@ fun propagate(parentTy: Spec|None, targets: List<PStmt>,
               r: Resolver): List<PStmt>
   ret match(parentTy)
     (p: Spec) => match(p)
-      (st: STuple) => listLen(st.stEntries) == listLen(targets)
+      (st: STuple) => sameLen(chain(st.stEntries), chain(targets))
         ? propagateLoop(chain(targets), chain(st.stEntries), r, List<PStmt>())
         : targets
       (o: Spec)    => targets

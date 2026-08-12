@@ -4,12 +4,15 @@
 # about compilation at all. Collected here so they can be judged on their
 # merits as stdlib API rather than discovered one at a time.
 #
-# NOT proposed for stdlib, deliberately, and left where they are:
-#   listLen / forceNth / listAt  — list.yafl OMITS `length` on purpose ("a list
-#   is a sequence, not an indexable buffer, and asking for its size invites the
+# NOT proposed for stdlib, deliberately:
+#   forceNth / listAt  — list.yafl OMITS `length` on purpose ("a list is a
+#   sequence, not an indexable buffer, and asking for its size invites the
 #   O(n) index-by-count patterns"). Measured 2026-08-01: an indexed loop costs
 #   743x a single walk at n=400 and is quadratic in TIME even with allocation
-#   removed. Promoting them would bless the anti-pattern.
+#   removed. Promoting them would bless the anti-pattern. listLen itself was
+#   DELETED under the no-length ruling (2026-08-11): the compiler never
+#   calculates a list's length — bounded probes, co-walks and carried counts
+#   (see ast/classtools.yafl) replaced every site.
 namespace Bootstrap::StdlibCandidates
 
 import System

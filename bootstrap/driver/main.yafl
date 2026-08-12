@@ -198,13 +198,15 @@ fun answerOne(idx: Statements, q: String, sb: StringBuilder): StringBuilder
   # asks the breaker analysis.
   let r = RRoot((root: String) => false, idx)
   let bag = kind == "type" ? findType(r, name) : findData(r, name)
-  ret append(sb, String(bagSize(bag)) + "|" + foundNames(chain(bag.bItems), "") + "\n")
+  ret append(sb, foundLine(chain(bag.bItems), 0, "") + "\n")
 
-fun [tail] foundNames(fs: Chain<Found>, acc: String): String
+# Count and names from ONE walk (the no-length ruling: the count rides the
+# traversal that already exists for the names).
+fun [tail] foundLine(fs: Chain<Found>, n: Int, acc: String): String
   ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => foundNames(l.next,
-                                  acc + (acc == "" ? "" : ",") + l.value.fName)
+    (nil: ChainEnd) => String(n) + "|" + acc
+    (l: ChainLink)  => foundLine(l.next, n + 1,
+                                 acc + (acc == "" ? "" : ",") + l.value.fName)
 
 fun convertMode(text: String): (out: String, code: Int)
   let cut = indexOf(text, "\n?\n", 0)
@@ -583,7 +585,6 @@ fun cMode(text: String, optLevel: Int): (outs: List<String>, code: Int)
     ()                   => (append(List<String>(), "parse error\n"), 1)
 
 fun cModeConverge(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
-  let _c = count("compile", "statements.parsed", listLen(stmts))
   let sp = spanBegin("compile", "converge+mono")
   let pm = convergeToPostmono(stmts)
   let _ = spanEnd(sp)

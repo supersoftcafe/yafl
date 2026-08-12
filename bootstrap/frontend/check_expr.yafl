@@ -142,7 +142,7 @@ fun checkClassDot(d: PeDot, c2: SClass, r: Resolver): List<PErr>
 fun classDotErrs(d: PeDot, datas: List<Found>): List<PErr>
   if isEmpty(datas)
     ret oneErr(d.pedLine, "Could not find a field named " + d.member)
-  if listLen(datas) > 1
+  if atLeast(chain(datas), 2)
     ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
   ret noErrs()
 
@@ -492,10 +492,10 @@ fun armHasNoType(a: PArm): Bool
 
 # One arm, one literal KIND (a range counts as its lo's kind).
 fun mixedKindErr(a: PArm): List<PErr>
-  if listLen(a.armLiterals) <= 1
+  if atMost(chain(a.armLiterals), 1)
     ret noErrs()
   let kinds = litKinds(chain(a.armLiterals), List<String>())
-  ret listLen(kinds) > 1
+  ret atLeast(chain(kinds), 2)
     ? oneErr(a.parmLine,
              "all literals in one arm must be the same kind (integers, floats or strings)")
     : noErrs()

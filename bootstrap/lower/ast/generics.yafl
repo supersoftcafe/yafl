@@ -1853,6 +1853,18 @@ fun redirectWith(nm: PeName, ts: SClass, r: Resolver,
     (provider: PsLet) => redirectVia(nm, ts, provider, r)
     ()                => nm
 
+# Provider count taken on the finding walk itself (no-length ruling) — the
+# ambiguity diagnostic needs the number; soleLetOf keeps the list variant.
+fun [tail] traitProviderCount(ls: Chain<PStmt>, ts: SClass, r: Resolver,
+                              n: Int): Int
+  ret match(ls)
+    (nil: ChainEnd) => n
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => implementsTrait(let2, ts, r)
+        ? traitProviderCount(l.next, ts, r, n + 1)
+        : traitProviderCount(l.next, ts, r, n)
+      (o: PStmt)    => traitProviderCount(l.next, ts, r, n)
+
 fun [tail] traitProviders(ls: Chain<PStmt>, ts: SClass, r: Resolver,
                           acc: List<PsLet>): List<PsLet>
   ret match(ls)
@@ -2267,7 +2279,7 @@ fun utExprCb(a: UtAcc, x: PExpr, r: Resolver, traits: List<PStmt>): UtAcc
 # container.
 fun utCheck(a: UtAcc, nm: PeName, ts: SClass, r: Resolver,
             traits: List<PStmt>): UtAcc
-  let n = listLen(traitProviders(chain(traits), ts, r, List<PsLet>()))
+  let n = traitProviderCount(chain(traits), ts, r, 0)
   if n == 1
     ret a
   let shown = traitDisplay(ts)
@@ -2387,8 +2399,8 @@ fun rugUnresolved(nm: PeName, r: Resolver): Bool
       # The template survived pruning: the use is fine only when it carries a
       # full, ground set of type arguments.
       (fn: PsFun) => !isEmpty(fn.fGens)
-                     && (chainLength(chain(nm.refTypeParams))
-                           != chainLength(chain(fn.fGens))
+                     && (!sameLen(chain(nm.refTypeParams),
+                                    chain(fn.fGens))
                          || anyFreePlaceholders(chain(nm.refTypeParams), r))
       (o: PStmt)  => false
     # Dangling: the name WAS resolved (it carries the @-hash) but its generic

@@ -63,7 +63,7 @@ fun lhOne(st: PStmt, roots: List<String>,
 fun lhFun(f: PsFun, roots: List<String>,
           acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
   let params = flattenParams(f.fParams)
-  if listLen(params) != 1 || !lhFirstParamHashed(params, roots)
+  if !exactly(chain(params), 1) || !lhFirstParamHashed(params, roots)
     ret (append<PStmt>(acc.stmts, f),
          append(acc.errs, PErr(f.psfLine,
            "a [hashed] function must take exactly one parameter of an "
@@ -140,7 +140,7 @@ fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
 fun lhRefeqFun(f: PsFun, roots: List<String>,
                acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
   let params = flattenParams(f.fParams)
-  if listLen(params) != 2 || !lhRefeqParamsOk(params, roots)
+  if !exactly(chain(params), 2) || !lhRefeqParamsOk(params, roots)
     ret (append<PStmt>(acc.stmts, f),
          append(acc.errs, PErr(f.psfLine,
            "a [refeq] function must take two parameters of one enum "

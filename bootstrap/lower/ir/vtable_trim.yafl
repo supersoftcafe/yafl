@@ -11,6 +11,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Ir
 import Bootstrap::Parse
 
@@ -46,7 +48,7 @@ fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
               used: StrSet): (objs: List<CgObject>, changed: Bool)
   let kept = filter(o.objFunctions,
                     (s2: CgFuncSlot) => setHas(used, s2.slotVirtualName))
-  ret listLen(kept) != listLen(o.objFunctions)
+  ret !sameLen(chain(kept), chain(o.objFunctions))
     ? (append(acc.objs,
               CgObject(o.objName, o.objExtends, kept, o.objFields,
                        o.objLengthField, o.objComment, o.objIsForeign,

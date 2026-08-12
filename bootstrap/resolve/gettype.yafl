@@ -137,14 +137,14 @@ fun nameType(nm: PeName, r: Resolver): Spec|None
 # scope through the instance's own placeholders (_scope_filtered).
 fun traitFiltered(datas: List<Found>, cache: Spec|None): List<Found>
   ret match(cache)
-    (c: Spec) => listLen(datas) <= 1
+    (c: Spec) => atMost(chain(datas), 1)
       ? datas
       : preferScoped(scopeMatches(datas, c), datas)
     ()        => datas
 
 fun scopeMatches(datas: List<Found>, c: Spec): List<Found>
   let exact = filterByScope(chain(datas), c, List<Found>())
-  ret listLen(exact) == 1
+  ret exactly(chain(exact), 1)
     ? exact
     : filterByPattern(chain(datas), c, List<Found>())
 
@@ -166,7 +166,7 @@ fun patternMatches(f: Found, cache: Spec): Bool
     ()                  => false
 
 fun preferScoped(scoped: List<Found>, datas: List<Found>): List<Found>
-  ret listLen(scoped) == 1 ? scoped : datas
+  ret exactly(chain(scoped), 1) ? scoped : datas
 
 fun [tail] filterByScope(ds: Chain<Found>, cache: Spec,
                          acc: List<Found>): List<Found>

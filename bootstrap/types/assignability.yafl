@@ -428,7 +428,7 @@ fun unionMembers(sp: Spec): List<Spec>
 # so the caller must treat the comparison as undecided.
 fun unwrapOne(sp: Spec): Spec|None
   ret match(sp)
-    (t2: STuple) => listLen(t2.stEntries) == 1
+    (t2: STuple) => exactly(chain(t2.stEntries), 1)
       ? unwrapEntry(head(t2.stEntries))
       : sp
     (o: Spec)    => sp

@@ -11,6 +11,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Codegen
 import Bootstrap::Ir
 import Bootstrap::Parse
@@ -37,11 +39,13 @@ enum InitSet
 class [final] UcIx(uiOps: Dict<Int, Op>, uiN: Int)
 
 fun ucIndexOps(ops: List<Op>): UcIx
-  ret UcIx(ucIxLoop(chain(ops), 0, Dict<Int, Op>()), listLen(ops))
+  let built = ucIxLoop(chain(ops), 0, Dict<Int, Op>())
+  ret UcIx(built.d, built.n)
 
-fun [tail] ucIxLoop(os: Chain<Op>, i: Int, acc: Dict<Int, Op>): Dict<Int, Op>
+# The op count rides the indexing walk (no-length ruling).
+fun [tail] ucIxLoop(os: Chain<Op>, i: Int, acc: Dict<Int, Op>): (d: Dict<Int, Op>, n: Int)
   ret match(os)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => (acc, i)
     (l: ChainLink)  => ucIxLoop(l.next, i + 1, put(acc, i, l.value))
 
 fun ucIxOp(ix: UcIx, i: Int): Op
@@ -213,7 +217,7 @@ fun ucJoinInto(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
 fun ucJoinExisting(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
                    old: List<String>, incoming: List<String>): (e: Dict<Int, InitSet>, w: List<Int>)
   let met = filter(old, (n: String) => strListMember(incoming, n))
-  ret listLen(met) == listLen(old)
+  ret sameLen(chain(met), chain(old))
     ? (entry, worklist)
     : (put(entry, succ, IsSet(met)), append(worklist, succ))
 

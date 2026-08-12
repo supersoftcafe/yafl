@@ -205,13 +205,13 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         if optimization_level >= 2:
             inline_always = optimization_level >= 3
             prev_shape: tuple | None = None
-            for _ in range(16):  # bounded; converges as inlined-away functions are trimmed
+            for inl_round in range(16):  # bounded; converges as inlined-away functions are trimmed
                 # Resolve indirect fun_t calls to their known targets first —
                 # a direct call is what makes the closure inlinable (the array
                 # fill loop's init call is the motivating case).
                 a = lowering.globalfuncs.discover_global_function_calls(a)
                 a = lowering.trim.removed_unused_stuff(
-                    lowering.inlining.inline_small_functions(a, inline_always))
+                    lowering.inlining.inline_small_functions(a, inline_always, inl_round))
                 shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
                 if shape == prev_shape:
                     break
@@ -229,14 +229,14 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         # drain with no [inline(always)] annotations.
         if optimization_level >= 3:
             prev_shape = None
-            for _ in range(16):  # bounded; recount each round as chains collapse
+            for sc_round in range(16):  # bounded; recount each round as chains collapse
                 a = lowering.vtable_trim.trim_unused_vtable_slots(a)
                 a = lowering.globalfuncs.discover_global_function_calls(a)
                 # Recomputed each round: folding a callee away can newly prove
                 # its caller sync, unlocking the next fold in the chain.
                 sync_names = lowering.sync_inference.compute_sync_names(a)
                 a = lowering.trim.removed_unused_stuff(
-                    lowering.inlining.inline_single_caller_functions(a, sync_names))
+                    lowering.inlining.inline_single_caller_functions(a, sync_names, sc_round))
                 shape = (tuple((n, len(f.ops)) for n, f in a.functions.items()),
                          tuple(sorted((n, len(o.functions)) for n, o in a.objects.items())))
                 if shape == prev_shape:

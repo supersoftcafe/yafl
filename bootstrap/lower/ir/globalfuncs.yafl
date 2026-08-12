@@ -9,6 +9,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Ir
 import Bootstrap::Parse
 import Bootstrap::StdlibCandidates
@@ -127,7 +129,7 @@ fun gfOptimizeCall(c: OpCall, slots: List<SlotFuncs>, vmap: FunValues): Op
 
 fun gfDevirtualise(c: OpCall, vf: RpVirtualFunction, slots: List<SlotFuncs>): Op
   let globals2 = gfSlotLookup(slots, vf.name)
-  ret listLen(globals2) == 1
+  ret exactly(chain(globals2), 1)
     ? OpCall(RpGlobalFunction(forceHead(globals2), vf.object, false, None, false, false),
              c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
              c.callResultType, c.callSavedVars)

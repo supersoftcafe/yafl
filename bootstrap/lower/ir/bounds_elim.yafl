@@ -67,7 +67,7 @@ fun [tail] beEq(a: BeVal, b: BeVal): Bool
 fun beArgsEq(a: List<BeVal>|None, b: List<BeVal>|None): Bool
   ret match(a)
     (la: List<BeVal>) => match(b)
-      (lb: List<BeVal>) => listLen(la) == listLen(lb)
+      (lb: List<BeVal>) => sameLen(chain(la), chain(lb))
                            && beListEq(chain(la), chain(lb))
       ()                => false
     ()                => b is None
@@ -193,7 +193,7 @@ fun beResolveVar(name: String, defs: List<BeDefEntry>,
 
 fun beResolvePhi(name: String, phi: OpPhi, defs: List<BeDefEntry>,
                  visiting: List<String>): BeVal
-  if listLen(phi.phiSources) != 2
+  if !exactly(chain(phi.phiSources), 2)
     ret BeOpaque()
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
   let id1 = bePhiSourceId(phi, 1, defs, visiting)
@@ -224,7 +224,7 @@ fun beIsIncrement(back: BeVal, name: String): Bool
 
 fun beIncArgs(args0: List<BeVal>|None, name: String): Bool
   ret match(args0)
-    (args: List<BeVal>) => listLen(args) == 2
+    (args: List<BeVal>) => exactly(chain(args), 2)
                            && beContains(args, BeCycle(name))
                            && beContains(args, BeInt(1, 32))
     ()                  => false
@@ -239,7 +239,7 @@ fun beEntryOf(name: String, defs: List<BeDefEntry>): BeVal|None
 
 fun beEntryFromPhi(name: String, phi: OpPhi,
                    defs: List<BeDefEntry>): BeVal|None
-  if listLen(phi.phiSources) != 2
+  if !exactly(chain(phi.phiSources), 2)
     ret None
   let visiting = append<String>(List<String>(), name)
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
@@ -360,7 +360,7 @@ fun beGuardOne(op: Op, i: Int, ops: List<Op>, region: BeRegion,
     (ji: OpJumpIf) => match(beResolve(ji.jumpIfCondition, defs,
                                       List<String>()))
       (inv: BeInvoke) => match(inv.beInvArgs)
-        (args: List<BeVal>) => listLen(args) == 2
+        (args: List<BeVal>) => exactly(chain(args), 2)
           ? beGuardWithTruth(inv.beInvFn, args, ji, i, ops, region, labels,
                              defs, acc)
           : acc

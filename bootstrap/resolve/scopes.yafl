@@ -288,7 +288,7 @@ fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Bag
     ()         => incompleteBag()
 
 fun arityMatches(cs: PsClass, c: SClass): Bool
-  ret chainLength(chain(cs.cGens)) == chainLength(chain(c.scParams))
+  ret sameLen(chain(cs.cGens), chain(c.scParams))
 
 # member_index is the class's constructor params (flattened to leaf lets)
 # PLUS its body statements. A trait find carries the interface INSTANTIATION

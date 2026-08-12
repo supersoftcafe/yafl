@@ -2,6 +2,8 @@ namespace Bootstrap::Codegen
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Ir
 import Bootstrap::Lower::Ast
 import Bootstrap::StdlibCandidates
@@ -30,7 +32,9 @@ import Bootstrap::StdlibCandidates
 # Ported as-is (see the port report for this being flagged as dead
 # import / stale comment upstream, not a behavioural bug).
 
-class [final] VtableEntry(className: String, methods: List<String>)
+# vtN is the method count, CARRIED from the walk that builds `methods`
+# (no-length ruling) — the hash-table sizing needs it as data.
+class [final] VtableEntry(className: String, methods: List<String>, vtN: Int)
 class [final] MethodId(mName: String, mId: Int)
 class [final] VtableSize(vsClassName: String, vsSize: Int)
 class [final] PerfectHashResult(methodIds: List<MethodId>, vtableSizes: List<VtableSize>)
@@ -50,16 +54,17 @@ fun phAllMethodNames(vtables: List<VtableEntry>): List<String>
 fun phDedupeNames(names: List<String>): List<String>
   ret fold(names, List<String>(), (acc: List<String>, n: String) => strListAdd(acc, n))
 
-fun [tail] phAssignIdsLoop(names: List<String>, nextId: Int, acc: List<MethodId>): List<MethodId>
+fun [tail] phAssignIdsLoop(names: List<String>, nextId: Int, acc: List<MethodId>): (ids: List<MethodId>, next: Int)
   ret match(head<String>(names))
     (n: String) => phAssignIdsLoop(tail<String>(names), nextId + 1, append<MethodId>(acc, MethodId(n, nextId)))
-    ()           => acc
+    ()           => (acc, nextId)
 
-fun phAssignIds(names: List<String>): List<MethodId>
+# Returns the ids AND the next free id — the count rides the assigning walk.
+fun phAssignIds(names: List<String>): (ids: List<MethodId>, next: Int)
   ret phAssignIdsLoop(names, 0, List<MethodId>())
 
 fun phVtableSizes(vtables: List<VtableEntry>): List<VtableSize>
-  ret map(vtables, (v: VtableEntry) => VtableSize(v.className, nextPowerOfTwo(chainLength(chain(v.methods)) * 2)))
+  ret map(vtables, (v: VtableEntry) => VtableSize(v.className, nextPowerOfTwo(v.vtN * 2)))
 
 fun [tail] methodIdGet(ids: List<MethodId>, name: String): Int
   ret match(head<MethodId>(ids))
@@ -134,19 +139,25 @@ fun conflictGraphHasAnyEdges(graph: List<ConflictEntry>): Bool
 # Ties broken by first occurrence — matches Python's max(dict, key=...) over
 # an insertion-ordered dict (this graph is built in the same discovery order
 # as `phScanAllSlots`, so insertion order matches Python's exactly).
-fun pickMaxDegreeLoop(graph: List<ConflictEntry>, bestMethod: String, bestDegree: Int): String
+# Max-degree pick by CO-WALK: the previous best's neighbour list is the
+# yardstick (None = nothing picked yet); strictly-longer wins, exactly the
+# old `degree > bestDegree` with the -1 seed (no-length ruling).
+fun pickMaxDegreeLoop(graph: List<ConflictEntry>, bestMethod: String,
+                      bestNs: List<String>|None): String
   ret match(head<ConflictEntry>(graph))
-    (e: ConflictEntry) => pickMaxDegreeNext(tail<ConflictEntry>(graph), e, bestMethod, bestDegree)
+    (e: ConflictEntry) => pickMaxDegreeNext(tail<ConflictEntry>(graph), e, bestMethod, bestNs)
     ()                   => bestMethod
 
-fun pickMaxDegreeNext(rest: List<ConflictEntry>, e: ConflictEntry, bestMethod: String, bestDegree: Int): String
-  let degree = chainLength(chain(e.cfNeighbors))
-  ret degree > bestDegree
-    ? pickMaxDegreeLoop(rest, e.cfMethod, degree)
-    : pickMaxDegreeLoop(rest, bestMethod, bestDegree)
+fun pickMaxDegreeNext(rest: List<ConflictEntry>, e: ConflictEntry, bestMethod: String,
+                      bestNs: List<String>|None): String
+  ret match(bestNs)
+    (ns: List<String>) => shorterThan(chain(ns), chain(e.cfNeighbors))
+      ? pickMaxDegreeLoop(rest, e.cfMethod, e.cfNeighbors)
+      : pickMaxDegreeLoop(rest, bestMethod, bestNs)
+    ()                 => pickMaxDegreeLoop(rest, e.cfMethod, e.cfNeighbors)
 
 fun pickMaxDegree(graph: List<ConflictEntry>): String
-  ret pickMaxDegreeLoop(graph, "", -1)
+  ret pickMaxDegreeLoop(graph, "", None)
 
 fun conflictGraphRemoveOne(graph: List<ConflictEntry>, from2: String, target: String): List<ConflictEntry>
   ret map(graph, (e: ConflictEntry) => e.cfMethod == from2 ? ConflictEntry(e.cfMethod, filter<String>(e.cfNeighbors, (x: String) => x != target)) : e)
@@ -197,8 +208,7 @@ fun phFixpoint(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSiz
 
 fun createPerfectLookups(vtables: List<VtableEntry>): PerfectHashResult
   let names = phAllMethodNames(vtables)
-  let methodIds0 = phAssignIds(names)
-  let nextId0 = chainLength(chain(names))
+  let assigned = phAssignIds(names)
   let vtableSizes = phVtableSizes(vtables)
-  let finalIds = phFixpoint(vtables, methodIds0, vtableSizes, 0, nextId0)
+  let finalIds = phFixpoint(vtables, assigned.ids, vtableSizes, 0, assigned.next)
   ret PerfectHashResult(finalIds, vtableSizes)

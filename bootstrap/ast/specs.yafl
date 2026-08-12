@@ -215,7 +215,7 @@ fun [tail] anyWider(os: Chain<Spec>, e: SEnum): Bool
 fun widerEnum(o: Spec, e: SEnum): Bool
   ret match(o)
     (oe: SEnum) => oe.seRoot == e.seRoot
-                   && listLen(oe.seValidLeaves) > listLen(e.seValidLeaves)
+                   && shorterThan(chain(e.seValidLeaves), chain(oe.seValidLeaves))
                    && allIn(chain(e.seValidLeaves), oe.seValidLeaves)
     (other)     => false
 
@@ -252,14 +252,13 @@ fun contains2(names: List<String>, n: String): Bool
 
 fun bindTupleEntries(declared: List<SEntry>,
                      supplied: List<String>): List<Int>|None
-  let nd = listLen(declared)
-  let ns = listLen(supplied)
-  if ns > nd
+  if shorterThan(chain(declared), chain(supplied))
     ret None
   let bare = bareNames(chain(declared), List<String>())
-  if ns == nd && !anyOverlap(chain(supplied), bare)
-    ret range0(nd)
-  ret bindLoop(chain(supplied), 0, declared, bare, initSlots(nd), false)
+  if sameLen(chain(supplied), chain(declared)) && !anyOverlap(chain(supplied), bare)
+    ret identityBinding(chain(declared), 0, List<Int>())
+  ret bindLoop(chain(supplied), 0, declared, bare,
+               blankSlots(chain(declared), List<Int>()), false)
 
 fun [tail] bareNames(ds: Chain<SEntry>, acc: List<String>): List<String>
   ret match(ds)
@@ -277,17 +276,16 @@ fun [tail] anyOverlap(ss: Chain<String>, bare: List<String>): Bool
       ? true
       : anyOverlap(l.next, bare)
 
-fun range0(n: Int): List<Int>
-  ret rangeLoop(0, n, List<Int>())
+# One slot per declared entry, sized by the walk (no-length ruling).
+fun [tail] identityBinding(ds: Chain<SEntry>, i: Int, acc: List<Int>): List<Int>
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => identityBinding(l.next, i + 1, append(acc, i))
 
-fun [tail] rangeLoop(i: Int, n: Int, acc: List<Int>): List<Int>
-  ret i >= n ? acc : rangeLoop(i + 1, n, append(acc, i))
-
-fun initSlots(n: Int): List<Int>
-  ret slotLoop(0, n, List<Int>())
-
-fun [tail] slotLoop(i: Int, n: Int, acc: List<Int>): List<Int>
-  ret i >= n ? acc : slotLoop(i + 1, n, append(acc, -1))
+fun [tail] blankSlots(ds: Chain<SEntry>, acc: List<Int>): List<Int>
+  ret match(ds)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => blankSlots(l.next, append(acc, -1))
 
 # `slots` carries -1 for "unbound so far"; a field bound by name or position
 # takes the supplied index. seenName tracks the "bare positional after a
@@ -307,9 +305,16 @@ fun bindOne(l: ChainLink<String>, i: Int, declared: List<SEntry>,
       : bindLoop(l.next, i + 1, declared, bare, setSlot(slots, byName, i), true)
   if l.value == "" && seenName
     ret None                                  # bare positional after a name bind
-  if i >= listLen(declared) || nth(slots, i) >= 0
-    ret None
-  ret bindLoop(l.next, i + 1, declared, bare, setSlot(slots, i, i), seenName)
+  ret match(slotAt(chain(slots), i))
+    (v: Int) => v >= 0
+      ? None
+      : bindLoop(l.next, i + 1, declared, bare, setSlot(slots, i, i), seenName)
+    ()       => None                           # positional index past declared
+
+fun [tail] slotAt(ss: Chain<Int>, i: Int): Int|None
+  ret match(ss)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => i <= 0 ? l.value : slotAt(l.next, i - 1)
 
 # An unbound field is filled by its default, or the binding fails.
 fun [tail] fillDefaults(ds: Chain<SEntry>, ss: Chain<Int>, i: Int,

@@ -148,7 +148,7 @@ fun scIsSimple(cls: PsClass, baseNames: List<String>): Bool
   if contains2(baseNames, cls.cName)
     ret false
   let fields = flattenParams(cls.cParams)
-  if chainLength(chain(fields)) > 4
+  if atLeast(chain(fields), 5)
     ret false
   ret !scHasArrayField(chain(fields))
 
@@ -683,24 +683,23 @@ fun scLiftAll(cands: ScCands, specs: ScSpecs): List<PStmt>
 
 # ── 10. nameTupleEntries ─────────────────────────────────────────────────────
 
-fun scEntryNameAt(entries: List<SEntry>, idx: Int): String
-  ret match(head(drop(entries, idx)))
-    (e2: SEntry) => e2.seName
-    ()           => ""
-
-fun [tail] scNteLoop(es: Chain<PTupEnt>, idx: Int, specEntries: List<SEntry>,
+# Co-walk the spec entries alongside the supplied ones — the positional
+# pairing is the structure itself, never an index bound.
+fun [tail] scNteLoop(es: Chain<PTupEnt>, ses: Chain<SEntry>,
                      acc: List<PTupEnt>): List<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scNteLoop(l.next, idx + 1, specEntries,
-        append(acc, l.value.tupName == "" && idx < listLen(specEntries)
-          ? PTupEnt(scEntryNameAt(specEntries, idx), l.value.tupSpread, l.value.tupValue)
-          : l.value))
+    (l: ChainLink)  => match(ses)
+      (sl: ChainLink)  => scNteLoop(l.next, sl.next,
+          append(acc, l.value.tupName == ""
+            ? PTupEnt(sl.value.seName, l.value.tupSpread, l.value.tupValue)
+            : l.value))
+      (nil2: ChainEnd) => scNteLoop(l.next, ses, append(acc, l.value))
 
 fun scNameTupleEntries(param: PExpr, spec: Spec): PExpr
   ret match(param)
     (tp: PeTuple) => match(spec)
-      (t2: STuple) => PeTuple(scNteLoop(chain(tp.exprs), 0, t2.stEntries, List<PTupEnt>()), tp.petLine)
+      (t2: STuple) => PeTuple(scNteLoop(chain(tp.exprs), chain(t2.stEntries), List<PTupEnt>()), tp.petLine)
       (o: Spec)    => param
     (o: PExpr)    => param
 

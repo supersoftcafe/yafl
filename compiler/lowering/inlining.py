@@ -25,7 +25,7 @@ __CUTOFF_COMPLEXITY = 10
 
 
 def __do_inlining(fn: Function, others: dict[str, Function],
-                  should_inline: Callable[[Function], bool]) -> Function:
+                  should_inline: Callable[[Function], bool], tag: str) -> Function:
     """Inline eligible call sites within `fn`. The structural guards (must be a
     direct call to an internal global function with struct args, not a self-call,
     not musttail, target non-empty and ParallelCall-free) are fixed; the policy
@@ -100,12 +100,12 @@ def __do_inlining(fn: Function, others: dict[str, Function],
                 new_ops.pop() # The only jump is just prior to the label
 
     for index, old_op in enumerate(fn.ops):
-        replace_op_with_func(old_op, f"{len(fn.ops)}${index}")
+        replace_op_with_func(old_op, f"{tag}${index}")
     stack_vars = fn.stack_vars+Struct(fields=tuple(new_vars))
     return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=stack_vars)
 
 
-def inline_small_functions(app: Application, inline_always: bool = True) -> Application:
+def inline_small_functions(app: Application, inline_always: bool = True, epoch: int = 0) -> Application:
     # Inline a small function (under the cutoff) always; inline an
     # `[inline(always)]` target regardless of size only when `inline_always` is
     # set (-O3), so a chain of marked stream `next` stages fuses into its
@@ -114,11 +114,11 @@ def inline_small_functions(app: Application, inline_always: bool = True) -> Appl
     def policy(target: Function) -> bool:
         return (len(target.ops) < __CUTOFF_COMPLEXITY
                 or (inline_always and target.always_inline))
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy) for name, func in app.functions.items()}
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"s{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)
 
 
-def inline_single_caller_functions(app: Application, sync_names: set[str]) -> Application:
+def inline_single_caller_functions(app: Application, sync_names: set[str], epoch: int = 0) -> Application:
     """Inline every SYNC function referenced exactly once into that sole call
     site, regardless of its size — folding it away costs no code growth (the
     original becomes unreferenced and is removed by the next trim). Runs after
@@ -140,6 +140,6 @@ def inline_single_caller_functions(app: Application, sync_names: set[str]) -> Ap
     def policy(target: Function) -> bool:
         return refcounts[target.name] == 1 and target.name in sync_names
 
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy) for name, func in app.functions.items()}
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"c{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)
 

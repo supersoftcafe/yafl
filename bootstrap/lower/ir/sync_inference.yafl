@@ -10,6 +10,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Ir
 import Bootstrap::Parse
 import Bootstrap::StdlibCandidates
@@ -76,7 +78,7 @@ fun isNoneStr(s2: String|None): Bool
 fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: List<String>): List<String>
   let grown = fold(a.appFunctions, syncSet,
                    (acc: List<String>, f: CgFunction) => siTryAdd(acc, f, impls))
-  ret listLen(grown) == listLen(syncSet) ? grown : siFixpoint(a, impls, grown)
+  ret sameLen(chain(grown), chain(syncSet)) ? grown : siFixpoint(a, impls, grown)
 
 # Foreign functions have empty bodies (all([]) would falsely qualify) — their
 # sync-ness comes only from the programmer seed.

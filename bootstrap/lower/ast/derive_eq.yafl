@@ -33,12 +33,14 @@ import Bootstrap::Types
 
 
 class [final] DeLeaves(dlNames: List<String>, dlSets: List<List<PStmt>>)
-class [final] DeInfo(diKeys: List<String>, diArities: List<Int>)
+# diArities holds REPRESENTATIVE entry lists; arity membership is a
+# sameLen co-walk against them (the no-length ruling: never a count).
+class [final] DeInfo(diKeys: List<String>, diArities: List<List<SEntry> >)
 
 fun deriveEquality(statements: List<PStmt>): (deStmts: List<PStmt>, deChanged: Bool)
   let r = rootResolver(statements)
   let info = deCollectInstanced(chain(statements), r,
-                                DeInfo(List<String>(), List<Int>()))
+                                DeInfo(List<String>(), List<List<SEntry> >()))
   let cands = deCandidates(chain(statements), info,
                            (List<String>(), List<DeLeaves>()))
   let ok = deFixpoint(cands.names, cands.leaves, info)
@@ -129,7 +131,7 @@ fun deRecordArg(arg: Spec|None, r: Resolver, acc: DeInfo): DeInfo
   ret match(arg)
     (sp: Spec) => match(sp)
       (t2: STuple) => DeInfo(acc.diKeys,
-                             append(acc.diArities, listLen(t2.stEntries)))
+                             append(acc.diArities, t2.stEntries))
       (o: Spec)    => deAddKey(deKeyOf(o, r, 0), acc)
     ()         => acc
 
@@ -204,7 +206,7 @@ fun deFixpoint(names: List<String>, leaves: List<DeLeaves>,
                       info: DeInfo): List<String>
   let ok2 = deSurvivors(chain(names), chain(leaves), names, info,
                         List<String>())
-  ret listLen(ok2) == listLen(names)
+  ret sameLen(chain(ok2), chain(names))
     ? ok2
     : deFixpoint2(ok2, names, leaves, info)
 
@@ -212,7 +214,7 @@ fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
                        leaves: List<DeLeaves>, info: DeInfo): List<String>
   let ok2 = deSurvivors(chain(names), chain(leaves), ok, info,
                         List<String>())
-  ret listLen(ok2) == listLen(ok)
+  ret sameLen(chain(ok2), chain(ok))
     ? ok2
     : deFixpoint2(ok2, names, leaves, info)
 
@@ -253,14 +255,16 @@ fun deSatisfies(sp: Spec, ok: List<String>, info: DeInfo): Bool
     (e2: SEnum)   => contains2(ok, e2.seRoot)
                      || contains2(info.diKeys, "e:" + e2.seRoot)
     (c: SClass)   => contains2(info.diKeys, "c:" + c.scName)
-    (t2: STuple)  => deArityOk(chain(info.diArities), listLen(t2.stEntries))
+    (t2: STuple)  => deArityOk(chain(info.diArities), t2.stEntries)
                      && deEntriesSat(chain(t2.stEntries), ok, info)
     (o: Spec)     => false
 
-fun [tail] deArityOk(as2: Chain<Int>, n: Int): Bool
+fun [tail] deArityOk(as2: Chain<List<SEntry> >, es: List<SEntry>): Bool
   ret match(as2)
     (nil: ChainEnd) => false
-    (l: ChainLink)  => l.value == n ? true : deArityOk(l.next, n)
+    (l: ChainLink)  => sameLen(chain(l.value), chain(es))
+      ? true
+      : deArityOk(l.next, es)
 
 fun [tail] deEntriesSat(es: Chain<SEntry>, ok: List<String>, info: DeInfo): Bool
   ret match(es)
@@ -345,7 +349,7 @@ fun deParam(name: String, typeName: String, lr: PLine): PStmt
 fun deEqMember(e2: PsEnum, dl: DeLeaves): PStmt
   let lr = e2.pseLine
   let arms = deEqArms(chain(dl.dlNames), chain(dl.dlSets), 0,
-                      listLen(dl.dlNames), e2, List<PArm>())
+                      atLeast(chain(dl.dlNames), 2), e2, List<PArm>())
   let body = PeBlock(List<PStmt>(),
                      PeTernary(deOp("bool", "yafl_ref_eq",
                                     append(list1(deEnt(deRef("left", lr))),
@@ -359,22 +363,22 @@ fun deEqMember(e2: PsEnum, dl: DeLeaves): PStmt
             body, SBuiltin("bool", lr), List<Spec>(), lr)
 
 fun [tail] deEqArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
-                    total: Int, e2: PsEnum, acc: List<PArm>): List<PArm>
+                    many: Bool, e2: PsEnum, acc: List<PArm>): List<PArm>
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(sets)
       (nil2: ChainEnd) => acc
-      (l: ChainLink)   => deEqArms(n.next, l.next, i + 1, total, e2,
+      (l: ChainLink)   => deEqArms(n.next, l.next, i + 1, many, e2,
                                    append(acc, deEqArm(n.value, l.value, i,
-                                                       total, e2)))
+                                                       many, e2)))
 
-fun deEqArm(leafName: String, fields: List<PStmt>, i: Int, total: Int,
+fun deEqArm(leafName: String, fields: List<PStmt>, i: Int, many: Bool,
             e2: PsEnum): PArm
   let lr = e2.pseLine
   let xn = "x" + String(i)
   let yn = "y" + String(i)
   let cmp = deFieldsCmp(chain(fields), xn, yn, None, lr)
-  let innerArms = total > 1
+  let innerArms = many
     ? append(list1(PArm(hashName(yn, lr), SNamed(leafName, List<Spec>(), lr),
                         cmp, List<PLit>(), None, lr)),
              PArm(hashName("o" + String(i), lr),

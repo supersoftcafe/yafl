@@ -416,14 +416,14 @@ fun emitTupleIntoTuple(value: RParam, source: Spec, target: Spec, r: Resolver): 
     ()           => convertTuple(value, source, target, r)
 
 fun emitNonTupleIntoTupleTarget(value: RParam, source: Spec, target: Spec, r: Resolver): GBundle
-  ret tupleArity(target) == 1
+  ret tupleSingle(target)
     ? emitWholeWrap(value, source, forceEntryType(target, 0), r)
     : bundleValue(value)
 
 # The target is a 1-entry tuple whose sole entry the SOURCE-AS-A-WHOLE fits —
 # a wrap(+box), not an entry-wise rebind. None when this special case doesn't apply.
 fun wholeWrapFit(source: Spec, target: Spec, r: Resolver): Spec|None
-  ret tupleArity(target) != 1
+  ret !tupleSingle(target)
     ? None
     : match(entryTypeAt(target, 0))
       (ety: Spec) => wholeWrapFitEntry(source, ety, r)
@@ -507,7 +507,7 @@ fun emitTargetOther(value: RParam, source: Spec, target: Spec, r: Resolver): GBu
 fun emitTargetOtherUnequal(value: RParam, source: Spec, target: Spec, r: Resolver): GBundle
   ret isUnion(target)
     ? emitIntoUnionTarget(value, source, target, r)
-    : ((isTuple(source) && tupleArity(source) == 1)
+    : ((isTuple(source) && tupleSingle(source))
         ? emitConversionForField(RpStructField(value, "_0"), entryTypeAt(source, 0), target, r)
         : bundleValue(value))
 
@@ -524,7 +524,7 @@ fun emitTupleSourceIntoUnion(value: RParam, source: Spec, target: Spec, r: Resol
     : emitTupleSourceIntoUnionNoVariant(value, source, target, r)
 
 fun emitTupleSourceIntoUnionNoVariant(value: RParam, source: Spec, target: Spec, r: Resolver): GBundle
-  ret (tupleArity(source) == 1 && singleEntryMatchesUid(source, target))
+  ret (tupleSingle(source) && singleEntryMatchesUid(source, target))
     ? emitConversionForField(RpStructField(value, "_0"), entryTypeAt(source, 0), target, r)
     : tupleIntoUnion(value, source, target, r)
 
@@ -572,7 +572,7 @@ fun genFloatValue(text: String): Float
 fun foreignSymbol(f: PsFun): String|None
   ret match(attrValueOf(f.fAttrs, "foreign"))
     (v: PExpr) => match(v)
-      (tp: PeTuple) => listLen(tp.exprs) == 1 ? firstStringValue(head(tp.exprs)) : None
+      (tp: PeTuple) => exactly(chain(tp.exprs), 1) ? firstStringValue(head(tp.exprs)) : None
       (o: PExpr)    => None
     ()          => None
 
@@ -763,7 +763,7 @@ fun genLazy(lz: PeLazy, r: Resolver): GBundle
 
 fun lazyStubRef(lz: PeLazy, r: Resolver): RParam
   let found = findData(r, lz.stubName)
-  ret (bagSize(found) == 1 && foundIsGlobalScope(head(found.bItems)))
+  ret (exactly(chain(found.bItems), 1) && foundIsGlobalScope(head(found.bItems)))
     ? RpGlobalVar(CgDataPointer(), lz.stubName)
     : RpStackVar(CgDataPointer(), lz.stubName)
 
@@ -873,7 +873,8 @@ fun isImpureCall(funRef: RParam): Bool
 # natural (declaration) order.
 
 fun genTuple(tp: PeTuple, r: Resolver): GBundle
-  let paramBundles = genTupleEntryBundles(chain(tp.exprs), r, 0, List<GBundle>())
+  let built = genTupleEntryBundles(chain(tp.exprs), r, 0, List<GBundle>())
+  let paramBundles = built.bs
   # NewStruct field-name → result mapping is pinned to DECLARED positions, so
   # the tuple value is unaffected by any reordering of evaluation below.
   let value = RpNewStruct(namedValuesOf(paramBundles))
@@ -881,16 +882,19 @@ fun genTuple(tp: PeTuple, r: Resolver): GBundle
   # code accidentally relying on left-to-right tuple evaluation surfaces.
   # Seeded from the source location via FNV-1a + xorshift32 Fisher–Yates —
   # Python's _location_shuffle (tuple_expr.py) runs the identical arithmetic.
-  let evalBundles = getOptLevel(r) == 0 && listLen(paramBundles) > 1
-    ? locationShuffle(paramBundles,
+  let evalBundles = getOptLevel(r) == 0 && atLeast(chain(paramBundles), 2)
+    ? locationShuffle(paramBundles, built.n,
                       tp.petLine.plFile + ":" + String(tp.petLine.plLine)
                       + ":" + String(tp.petLine.plCol))
     : paramBundles
   ret bundleJoin(bundleJoinAll(evalBundles), bundleValue(value))
 
-fun locationShuffle(items: List<GBundle>, key: String): List<GBundle>
+# n is the item count, CARRIED from the walk that built the items — the
+# Fisher-Yates index sequence needs it as data (the RNG consumption order
+# is pinned by Python parity); it is never recalculated from the list.
+fun locationShuffle(items: List<GBundle>, n: Int, key: String): List<GBundle>
   let seed = fnv1a(key, 0, 2166136261)
-  ret fisherYates(items, listLen(items) - 1, seed == 0 ? 1 : seed)
+  ret fisherYates(items, n - 1, seed == 0 ? 1 : seed)
 
 fun [tail] fnv1a(key: String, at: Int, h: Int): Int
   ret at >= length(key)
@@ -922,9 +926,11 @@ fun [tail] swapLoop(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
                                             : at == j ? vi
                                             : l.value))
 
-fun [tail] genTupleEntryBundles(es: Chain<PTupEnt>, r: Resolver, idx: Int, acc: List<GBundle>): List<GBundle>
+# Returns the bundles AND their count — idx already rides the walk, so the
+# count is free at the end (no-length ruling: counts are carried, not taken).
+fun [tail] genTupleEntryBundles(es: Chain<PTupEnt>, r: Resolver, idx: Int, acc: List<GBundle>): (bs: List<GBundle>, n: Int)
   ret match(es)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => (acc, idx)
     (l: ChainLink)  => genTupleEntryBundles(l.next, r, idx + 1,
                         append(acc, withPrefix(genExpr(l.value.tupValue, r), "e" + String(idx))))
 
@@ -1279,7 +1285,7 @@ fun genLoop(lp: PeLoop, r: Resolver, expected: Spec|None): GBundle
                             List<RecurSource>(), List<ExitSource>())
   let entry = "loopentry$" + tag
   let lvStackVars = map3(lp.loopParams, paramCTypes, lv, (p: PExpr, ct: CgType, pr: LoopRename) => RpStackVar(ct, pr.lrNew))
-  let phis = buildLoopPhis(lp.loopParams, paramCTypes, paramRefs, lv, entry, bodyBundle.gbRecurSources, 0)
+  let phis = buildLoopPhis(chain(lp.loopParams), paramCTypes, paramRefs, lv, entry, bodyBundle.gbRecurSources, 0)
   let ops = concat(list2(OpLabel(entry, List<RParam>()), OpLabel(loopHead(frame), List<RParam>())), concat(phis, bodyRenamed.gbOps))
   ret GBundle(concat(lvStackVars, bodyRenamed.gbStackVars), ops, bodyRenamed.gbResult, List<RecurSource>(), List<ExitSource>())
 
@@ -1305,12 +1311,12 @@ fun [tail] map3Loop<A, B, C, D>(as2: Chain<A>, bs: Chain<B>, cs: Chain<C>, f: (:
         (nil3: ChainEnd) => acc
         (lc: ChainLink)  => map3Loop(l.next, lb.next, lc.next, f, append<D>(acc, f(l.value, lb.value, lc.value)))
 
-fun buildLoopPhis(params: List<PExpr>, ctypes: List<CgType>, refs: List<RParam>,
+fun buildLoopPhis(params: Chain<PExpr>, ctypes: List<CgType>, refs: List<RParam>,
                          lv: List<LoopRename>, entry: String,
                          recurSources: List<RecurSource>, i: Int): List<Op>
-  ret i >= listLen(params)
-    ? List<Op>()
-    : concat(list1(buildLoopPhi(ctypes, refs, lv, entry, recurSources, i)), buildLoopPhis(params, ctypes, refs, lv, entry, recurSources, i + 1))
+  ret match(params)
+    (nil: ChainEnd) => List<Op>()
+    (l: ChainLink)  => concat(list1(buildLoopPhi(ctypes, refs, lv, entry, recurSources, i)), buildLoopPhis(l.next, ctypes, refs, lv, entry, recurSources, i + 1))
 
 fun buildLoopPhi(ctypes: List<CgType>, refs: List<RParam>, lv: List<LoopRename>,
                  entry: String, recurSources: List<RecurSource>, i: Int): Op

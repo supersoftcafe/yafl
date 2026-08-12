@@ -203,7 +203,7 @@ fun pointerWordKindNonUnit(member: Spec, r: Resolver): PtrKind|None
     (o: Spec)     => None
 
 fun pointerWordKindTuple(t2: STuple, r: Resolver): PtrKind|None
-  ret listLen(t2.stEntries) == 1 ? pointerWordKindTupleEntry(entryTypeAt(t2, 0), r) : None
+  ret exactly(chain(t2.stEntries), 1) ? pointerWordKindTupleEntry(entryTypeAt(t2, 0), r) : None
 
 fun pointerWordKindTupleEntry(ety: Spec|None, r: Resolver): PtrKind|None
   ret match(ety)
@@ -256,7 +256,7 @@ fun [tail] unwrapToPointerWord(value: RParam, ctype: CgType): RParam
     ()               => value
 
 fun soleField(fields: List<CgField>): CgField|None
-  ret listLen(fields) == 1 ? head(fields) : None
+  ret exactly(chain(fields), 1) ? head(fields) : None
 
 class [final] SlotValuePair(svpName: String, svpValue: RParam)
 
@@ -991,7 +991,7 @@ fun taggedReadFieldStep(field: PStmt, rest: Chain<PStmt>, offset: Int, leafSlots
 fun taggedReadFieldLet(l: PsLet, rest: Chain<PStmt>, offset: Int, leafSlots: List<CgSlotEntry>,
                        slotFields: List<CgField>, baseValue: RParam, fieldName: String, r: Resolver): RParam|None
   let fieldType = specGenerateOpt(l.lType, r)
-  let nPrims = listLen(cgFlattenPrimitives(fieldType))
+  let nPrims = cgFlattenPrimitivesN(fieldType).n
   ret l.lName == fieldName
     ? reconstructFromSlots(fieldType, sliceList<CgSlotEntry>(leafSlots, offset, nPrims), slotFields, baseValue, 0).rfValue
     : taggedReadFieldInLeafLoop(rest, offset + nPrims, leafSlots, slotFields, baseValue, fieldName, r)
@@ -1063,7 +1063,7 @@ fun [tail] primStartsOf(fields: Chain<PStmt>, offset: Int, r: Resolver, acc: Lis
   ret match(fields)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => primStartsOf(l.next, offset + listLen(cgFlattenPrimitives(specGenerateOpt(let2.lType, r))), r,
+      (let2: PsLet) => primStartsOf(l.next, offset + cgFlattenPrimitivesN(specGenerateOpt(let2.lType, r)).n, r,
                                     append(acc, PrimStart(let2.lName, offset)))
       (o: PStmt)    => primStartsOf(l.next, offset, r, acc)
 

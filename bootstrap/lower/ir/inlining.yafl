@@ -12,6 +12,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Codegen
 import Bootstrap::Ir
 import Bootstrap::Parse
@@ -24,10 +26,10 @@ fun inlCutoffComplexity(): Int
 
 # ── the two passes ───────────────────────────────────────────────────────────
 
-fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool): CgApp
+fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool, epoch: Int): CgApp
   ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
-        doInlining(f, a, (target: CgFunction) =>
-          listLen(target.fnOps) < inlCutoffComplexity()
+        doInlining(f, "s" + String(epoch), a, (target: CgFunction) =>
+          !atLeast(chain(target.fnOps), inlCutoffComplexity())
           || (inlineAlways && target.fnAlwaysInline))))
 
 # `syncNames` restricts the fold to callees that provably never suspend:
@@ -36,10 +38,11 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool): CgApp
 # state object (unrestricted, a 7-field frame became 137 fields and doubled
 # wall time). A suspending helper keeps its call: its own small frame is all
 # a suspension inside it ever saves.
-fun inlineSingleCallerFunctions(a: CgApp, syncNames: List<String>): CgApp
+fun inlineSingleCallerFunctions(a: CgApp, syncNames: List<String>,
+                                epoch: Int): CgApp
   let refcounts = functionReferenceCounts(a)
   ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
-        doInlining(f, a, (target: CgFunction) =>
+        doInlining(f, "c" + String(epoch), a, (target: CgFunction) =>
           sdCountOf(refcounts, target.fnName) == 1
           && strListMember(syncNames, target.fnName))))
 
@@ -47,23 +50,25 @@ fun inlineSingleCallerFunctions(a: CgApp, syncNames: List<String>): CgApp
 
 class [final] InlAcc(inlOps: List<Op>, inlVars: List<CgField>)
 
-fun doInlining(f: CgFunction, a: CgApp,
+# The inlined-name uniquifier is the fixpoint EPOCH, not the op count:
+# distinct per round by construction (the count merely happened to change
+# every round), and never a calculated length. Python mirrors this exactly.
+fun doInlining(f: CgFunction, tag: String, a: CgApp,
                shouldInline: (:CgFunction): Bool): CgFunction
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret f
-  let n = listLen(f.fnOps)
-  let out = inlLoop(chain(f.fnOps), 0, n, f, a, shouldInline,
+  let out = inlLoop(chain(f.fnOps), 0, tag, f, a, shouldInline,
                     InlAcc(List<Op>(), List<CgField>()))
   ret cgFunctionWith(f, out.inlOps,
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
 
-fun [tail] inlLoop(ops: Chain<Op>, index: Int, n: Int, f: CgFunction,
+fun [tail] inlLoop(ops: Chain<Op>, index: Int, tag: String, f: CgFunction,
                    a: CgApp, shouldInline: (:CgFunction): Bool,
                    acc: InlAcc): InlAcc
   ret match(ops)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => inlLoop(l.next, index + 1, n, f, a, shouldInline,
-                               inlStep(l.value, String(n) + "$" + String(index),
+    (l: ChainLink)  => inlLoop(l.next, index + 1, tag, f, a, shouldInline,
+                               inlStep(l.value, tag + "$" + String(index),
                                        f, a, shouldInline, acc))
 
 # One op: splice the callee in when every guard passes, else keep the op.
@@ -206,22 +211,23 @@ fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
 # if it is not the very last op, some jump needs a target: append the Label;
 # otherwise the sole jump sits just before where the label would go: pop it.
 fun inlEndBookkeeping(ops: List<Op>, endLabel: String): List<Op>
-  let n = listLen(ops)
-  let first = inlFirstEndJump(chain(ops), endLabel, 0)
-  if first < 0
-    ret ops
-  ret first < n - 1
-    ? append(ops, OpLabel(endLabel, List<RParam>()))
-    : inlDropLast(chain(ops), List<Op>())
+  ret match(inlFirstEndJumpIsLast(chain(ops), endLabel))
+    (isLast: Bool) => isLast
+      ? inlDropLast(chain(ops), List<Op>())
+      : append(ops, OpLabel(endLabel, List<RParam>()))
+    ()             => ops
 
-fun [tail] inlFirstEndJump(ops: Chain<Op>, endLabel: String, i: Int): Int
+# None: no end-jump. true: the FIRST end-jump is the very last op (pop it).
+# false: it has a successor (append the Label). Purely structural — the old
+# index-vs-length compare is gone (no-length ruling).
+fun [tail] inlFirstEndJumpIsLast(ops: Chain<Op>, endLabel: String): Bool|None
   ret match(ops)
-    (nil: ChainEnd) => 0 - 1
+    (nil: ChainEnd) => None
     (l: ChainLink)  => match(l.value)
       (j: OpJump) => j.jumpName == endLabel
-        ? i
-        : inlFirstEndJump(l.next, endLabel, i + 1)
-      (o: Op)     => inlFirstEndJump(l.next, endLabel, i + 1)
+        ? !(l.next is ChainLink)
+        : inlFirstEndJumpIsLast(l.next, endLabel)
+      (o: Op)     => inlFirstEndJumpIsLast(l.next, endLabel)
 
 fun [tail] inlDropLast(ops: Chain<Op>, acc: List<Op>): List<Op>
   ret match(ops)

@@ -2,6 +2,8 @@ namespace Bootstrap::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Codegen
 import Bootstrap::Frontend
 import Bootstrap::Lower::Ir
@@ -666,7 +668,7 @@ fun cgObjectMaskFields(o: CgObject): CgType
   let allFields = cgFieldsOfOrEmpty(o.objFields)
   let withoutFirst = tail<CgField>(allFields)
   ret match(cgObjectArrayType(o))
-    (a: CgType) => CgStruct(take<CgField>(withoutFirst, chainLength(chain(withoutFirst)) - 1))
+    (a: CgType) => CgStruct(initOf<CgField>(withoutFirst))
     ()           => CgStruct(withoutFirst)
 
 fun cgObjectGetPointerMask(o: CgObject): String

@@ -337,18 +337,14 @@ fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots,
   let bSelf = contains2(ceChildrenOf(work, b), b)
   if aSelf != bSelf
     ret aSelf
-  let aLen = ceFieldCount(roots, a, fieldsOf)
-  let bLen = ceFieldCount(roots, b, fieldsOf)
-  if aLen != bLen
-    ret aLen < bLen
+  let aFields = fieldsOf(a)
+  let bFields = fieldsOf(b)
+  if !sameLen(chain(aFields), chain(bFields))
+    ret shorterThan(chain(aFields), chain(bFields))
   ret a < b
 
 fun ceIsSystem(name: String): Bool
   ret startsWith(simpleName(name), "System::")
-
-fun ceFieldCount(roots: ERoots, name: String,
-                 fieldsOf: (:String): List<SField>): Int
-  ret chainLength(chain(fieldsOf(name)))
 
 fun ceRemoveNode(work: EEdges, v: String): EEdges
   ret ceRemoveLoop(chain(work.eeNames), chain(work.eeChildren), v,

@@ -100,11 +100,8 @@ fun incompleteBag(): Bag
 fun addBags(a: Bag, b: Bag): Bag
   ret Bag(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
 
-fun bagSize(b: Bag): Int
-  ret listLen(b.bItems)
-
 fun soleItem(b: Bag): Found|None
-  ret bagSize(b) == 1 ? head(b.bItems) : None
+  ret exactly(chain(b.bItems), 1) ? head(b.bItems) : None
 
 # ── the statement index ─────────────────────────────────────────────────────
 # Built ONCE per statement set: name-prefix → statements, plus the two

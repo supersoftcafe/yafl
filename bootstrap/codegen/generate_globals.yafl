@@ -69,7 +69,7 @@ fun targetType(st: PStmt): Spec|None
 fun foreignSymbolOf(f: PsFun): String|None
   ret match(attrValueOf(f.fAttrs, "foreign"))
     (v: PExpr) => match(v)
-      (tp: PeTuple) => listLen(tp.exprs) == 1 ? tupleFirstString(tp) : None
+      (tp: PeTuple) => exactly(chain(tp.exprs), 1) ? tupleFirstString(tp) : None
       (o: PExpr)    => None
     ()          => None
 
@@ -438,7 +438,7 @@ fun sgpEmitInstance(cls: PsClass, args: PeTuple, r: Resolver, chasing: List<Stri
   if cls.cIsInterface || isSomeLet(classArrayParam(chain(flattenParams(cls.cParams))))
     ret sgpNo()
   let fields = flattenParams(cls.cParams)
-  if listLen(args.exprs) != listLen(fields)
+  if !sameLen(chain(args.exprs), chain(fields))
     ret sgpNo()
   ret sgpEmitFields(chain(args.exprs), chain(fields), cls, r, chasing, hint, 0,
                     List<RpNamedValue>(), List<CgGlobal>())

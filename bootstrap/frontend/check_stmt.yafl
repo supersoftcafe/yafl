@@ -128,7 +128,7 @@ fun foreignErrs(f: PsFun): List<PErr>
 fun isOneStringArg(v: PExpr|None): Bool
   ret match(v)
     (x: PExpr) => match(x)
-      (tp: PeTuple) => listLen(tp.exprs) == 1 && firstIsString(head(tp.exprs))
+      (tp: PeTuple) => exactly(chain(tp.exprs), 1) && firstIsString(head(tp.exprs))
       (o: PExpr)    => false
     ()         => false
 
@@ -375,7 +375,7 @@ fun arrayFieldErrs(c: PsClass, r: Resolver): List<PErr>
   let arrays = arrayFieldsOf(chain(fields), List<PStmt>())
   if isEmpty(arrays)
     ret noErrs()
-  let countErr = listLen(arrays) > 1
+  let countErr = atLeast(chain(arrays), 2)
     ? oneErr(c.pscLine, "a class may have at most one array field")
     : noErrs()
   let finalErr2 = hasAttr(c.cAttrs, "final")
@@ -460,9 +460,9 @@ fun implError(xtype: Spec, r: Resolver): List<PErr>
 
 fun implNameError(name: String, lr: PLine, r: Resolver): List<PErr>
   let found = findType(r, name)
-  if bagSize(found) == 0
+  if isEmpty(found.bItems)
     ret oneErr(lr, "Could not find class named \"" + name + "\"")
-  if bagSize(found) > 1
+  if atLeast(chain(found.bItems), 2)
     ret oneErr(lr, "Found too many classes named \"" + name + "\"")
   ret match(soleItem(found))
     (f: Found) => match(f.fStmt)
@@ -513,27 +513,30 @@ fun [tail] fbParents(slot: Slot, fs: Chain<FoundClass>, c: PsClass,
 
 fun fbOne(slot: Slot, p: PsClass, c: PsClass, r: Resolver,
           acc: List<PErr>): List<PErr>
-  let captured = sort(capturedNames(chain(createSlotsFromMembers(p)), slot, r,
-                                    List<String>()))
-  ret listLen(captured) > 1
+  let nCaptured = capturedCount(chain(createSlotsFromMembers(p)), slot, r,
+                                List<String>(), 0)
+  ret nCaptured > 1
     ? append(acc, PErr(c.pscLine,
                        "`" + bareOfUnique(slot.slotName) + "` overrides "
-                       + String(listLen(captured)) + " similar methods of `"
+                       + String(nCaptured) + " similar methods of `"
                        + bareOfUnique(p.cName)
                        + "` at once — a broad override silently captures "
                        + "them; give it a narrower signature or override "
                        + "each explicitly", true))
     : acc
 
-fun [tail] capturedNames(ps: Chain<Slot>, slot: Slot, r: Resolver,
-                         acc: List<String>): List<String>
+# The deduped capture count, taken on the SAME walk that dedups — the names
+# exist only to dedup; the diagnostic needs the count (no-length ruling).
+fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r: Resolver,
+                         seen: List<String>, n: Int): Int
   ret match(ps)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => n
     (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
                        && triTrue(assignableEq(r, l.value.slotType,
                                                slot.slotType))
-      ? capturedNames(l.next, slot, r, addNameOnce(acc, l.value.slotName))
-      : capturedNames(l.next, slot, r, acc)
+                       && !contains2(seen, l.value.slotName)
+      ? capturedCount(l.next, slot, r, append(seen, l.value.slotName), n + 1)
+      : capturedCount(l.next, slot, r, seen, n)
 
 fun checkEnum2(e2: PsEnum, r: Resolver): List<PErr>
   ret match(e2.eSpec)

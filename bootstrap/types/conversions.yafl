@@ -48,7 +48,7 @@ fun needsConv(r: Resolver, source: Spec, target: Spec): Bool
   # is a one-field struct), so a non-tuple source must WRAP. A wider tuple with
   # a non-tuple source is not assignable at all — the receiver reports that.
   if isTuple(target)
-    ret tupleArity(target) == 1
+    ret tupleSingle(target)
   if isUnion(target)
     ret intoUnion(r, source, target, su, tu)
   # A genuine 1-tuple WRAPPER of the target: unwrap.
@@ -73,7 +73,7 @@ fun tupleIntoTuple(r: Resolver, source: Spec, target: Spec,
     ()             => false                     # not assignable — not our call
 
 fun wrapsWhole(r: Resolver, source: Spec, target: Spec, su: String): Bool
-  if tupleArity(target) != 1
+  if !tupleSingle(target)
     ret false
   ret match(entryTypeAt(target, 0))
     (ety: Spec) => uid(ety) == ""
@@ -178,15 +178,16 @@ fun tupleEntries(sp: Spec): List<SEntry>
     (t2: STuple) => t2.stEntries
     (o: Spec)    => List<SEntry>()
 
-fun tupleArity(sp: Spec): Int
-  ret listLen(tupleEntries(sp))
+# Single-entry test, structurally — arity is never counted, only probed.
+fun tupleSingle(sp: Spec): Bool
+  ret exactly(chain(tupleEntries(sp)), 1)
 
 fun entryTypeAt(sp: Spec, i: Int): Spec|None
   ret entryAt(tupleEntries(sp), i)
 
 # A genuine 1-tuple wrapper of the type with id `tu`.
 fun isWrapperOf(source: Spec, tu: String): Bool
-  if !isTuple(source) || tupleArity(source) != 1
+  if !isTuple(source) || !tupleSingle(source)
     ret false
   ret match(entryTypeAt(source, 0))
     (ety: Spec) => uid(ety) == tu

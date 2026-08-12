@@ -161,7 +161,7 @@ fun [tail] entryTypes(es: Chain<SEntry>, acc: List<Meet>): List<Meet>
 
 fun addHint(name: String, args: List<Meet>, acc: Hints): Hints
   ret match(get(acc.hSlots, name))
-    (existing: List<Meet>) => listLen(existing) == listLen(args)
+    (existing: List<Meet>) => sameLen(chain(existing), chain(args))
       ? Hints(acc.hNames, put(acc.hSlots, name,
                               meetSlots(chain(existing), chain(args),
                                         List<Meet>())),
@@ -174,7 +174,7 @@ fun addHint(name: String, args: List<Meet>, acc: Hints): Hints
 # ground ids call sites supplied (a not-yet-ground entry contributes nothing).
 fun addDetail(name: String, tp: STuple, acc: Hints): Hints
   ret match(get(acc.hDetail, name))
-    (slots: List<List<String> >) => listLen(slots) == listLen(tp.stEntries)
+    (slots: List<List<String> >) => sameLen(chain(slots), chain(tp.stEntries))
       ? Hints(acc.hNames, acc.hSlots,
               put(acc.hDetail, name,
                   mergeDetail(chain(slots), chain(tp.stEntries),
@@ -182,13 +182,16 @@ fun addDetail(name: String, tp: STuple, acc: Hints): Hints
       : acc
     ()                           => Hints(acc.hNames, acc.hSlots,
                                           put(acc.hDetail, name,
-                                              mergeDetail(chain(blankDetail(listLen(tp.stEntries),
+                                              mergeDetail(chain(blankDetail(chain(tp.stEntries),
                                                                            List<List<String> >())),
                                                           chain(tp.stEntries),
                                                           List<List<String> >())))
 
-fun [tail] blankDetail(n: Int, acc: List<List<String> >): List<List<String> >
-  ret n <= 0 ? acc : blankDetail(n - 1, append(acc, List<String>()))
+# One blank per tuple entry — sized by the walk, never by a count.
+fun [tail] blankDetail(es: Chain<SEntry>, acc: List<List<String> >): List<List<String> >
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => blankDetail(l.next, append(acc, List<String>()))
 
 fun [tail] mergeDetail(slots: Chain<List<String> >, es: Chain<SEntry>,
                        acc: List<List<String> >): List<List<String> >
@@ -272,7 +275,7 @@ fun withParamSuggestion(f: PsFun, r: Resolver): PStmt
 
 fun fillParams(params: PStmt, tp: STuple, r: Resolver): PStmt
   ret match(params)
-    (d: PsDestructure) => listLen(tp.stEntries) == listLen(d.dTargets)
+    (d: PsDestructure) => sameLen(chain(tp.stEntries), chain(d.dTargets))
       ? PsDestructure(d.dName, d.dAttrs, d.dType,
                       fillTargets(chain(d.dTargets), chain(tp.stEntries), r,
                                   List<PStmt>()),

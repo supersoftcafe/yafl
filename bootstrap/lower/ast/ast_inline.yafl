@@ -1221,7 +1221,7 @@ fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef: PLine,
                   n: Int): InlOut|None
   let params = flattenParams(target.fParams)
   let args = tlEntValues(chain(tp.exprs), List<PExpr>())
-  if chainLength(chain(args)) != chainLength(chain(params))
+  if !sameLen(chain(args), chain(params))
     ret None
   let fresh = aiFresh(n)
   # Clone body statements with renamed lets AND match arm patterns; the value
@@ -1351,7 +1351,7 @@ class [final] IlbOut(ilN: Int, ilExpr: PExpr)
 fun aiInlineLetBound(body: PExpr, params: List<PStmt>, args: List<PExpr>,
                      returnType: Spec|None, r: Resolver|None,
                      n: Int): IlbOut|None
-  if chainLength(chain(params)) != chainLength(chain(args))
+  if !sameLen(chain(params), chain(args))
     ret None
   let fresh = aiFresh(n)
   # Every name the body binds — params plus every let at ANY depth.
@@ -1451,7 +1451,7 @@ fun aiBindType(param: PStmt, arg: PExpr, r: Resolver|None): Spec|None
 
 fun aiBetaReduceLambda(lam: PeLambda, args: List<PExpr>, n: Int): IlbOut|None
   let params = flattenParams(lam.lamParams)
-  if chainLength(chain(params)) != chainLength(chain(args))
+  if !sameLen(chain(params), chain(args))
     ret None
   if aiAnyHigherOrder(chain(params)) || aiAnyExpensive(chain(args))
     ret None
@@ -1576,9 +1576,7 @@ fun aiBetaBlock(bk: PeBlock, catalog: Catalog, r: Resolver|None,
   ret match(last(out.rnssStmts))
     (lastStmt: PStmt) => match(lastStmt)
       (rt: PsRet) => aiRep(out.rnssN,
-                           PeBlock(take(out.rnssStmts,
-                                        chainLength(chain(out.rnssStmts))
-                                          - 1),
+                           PeBlock(initOf(out.rnssStmts),
                                    rt.retValue, bk.blockTag, bk.pebkLine))
       (o: PStmt)  => aiNoRep(out.rnssN)
     ()                => aiNoRep(out.rnssN)
@@ -1705,9 +1703,7 @@ fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r: Resolver|None,
     (lastStmt: PStmt) => match(lastStmt)
       (rt: PsRet) => RfOut(p2.rnssN,
                            PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
-                                 PeBlock(take(p2.rnssStmts,
-                                              chainLength(chain(
-                                                p2.rnssStmts)) - 1),
+                                 PeBlock(initOf(p2.rnssStmts),
                                          rt.retValue, bk.blockTag,
                                          bk.pebkLine),
                                  f.fRet, f.fWheres, f.psfLine,

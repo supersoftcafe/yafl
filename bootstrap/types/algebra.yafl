@@ -230,7 +230,7 @@ fun meetCallablePair(a: SCallable, b: SCallable): Meet
 fun meetClass(ca: SClass, b: Spec): Meet
   ret match(b)
     (cb: SClass) => ca.scName == cb.scName
-                    && listLen(ca.scParams) == listLen(cb.scParams)
+                    && sameLen(chain(ca.scParams), chain(cb.scParams))
       ? meetParams(ca, ca.scParams, cb.scParams)
       : MConflict()
     (o)          => MConflict()
@@ -243,19 +243,19 @@ fun meetEnum(ea: SEnum, b: Spec): Meet
   ret match(b)
     (eb: SEnum) => !sameEnum(ea, eb)
       ? MConflict()
-      : isEmpty(ea.seParams) || listLen(ea.seParams) != listLen(eb.seParams)
+      : isEmpty(ea.seParams) || !sameLen(chain(ea.seParams), chain(eb.seParams))
         ? MSpec(ea)
         : meetParams(ea, ea.seParams, eb.seParams)
     (o)         => MConflict()
 
 fun sameEnum(ea: SEnum, eb: SEnum): Bool
   ret ea.seRoot == eb.seRoot
-      && listLen(ea.seValidLeaves) == listLen(eb.seValidLeaves)
+      && sameLen(chain(ea.seValidLeaves), chain(eb.seValidLeaves))
       && allIn(chain(ea.seValidLeaves), eb.seValidLeaves)
 
 fun meetTuple(ta: STuple, b: Spec): Meet
   ret match(b)
-    (tb: STuple) => listLen(ta.stEntries) != listLen(tb.stEntries)
+    (tb: STuple) => !sameLen(chain(ta.stEntries), chain(tb.stEntries))
       ? MConflict()
       : meetEntries(ta, chain(ta.stEntries), chain(tb.stEntries), List<SEntry>())
     (o)          => MConflict()
@@ -451,7 +451,7 @@ fun unifyClass(c: SClass, concrete: Spec, names: List<String>,
                mapping: List<Binding>): Unify
   ret match(concrete)
     (cc: SClass) => c.scName != cc.scName
-                    || listLen(c.scParams) != listLen(cc.scParams)
+                    || !sameLen(chain(c.scParams), chain(cc.scParams))
       ? UMap(mapping)
       : unifyList(chain(c.scParams), chain(cc.scParams), names, mapping)
     (o)          => UMap(mapping)
@@ -464,7 +464,7 @@ fun unifyEnum(e: SEnum, concrete: Spec, names: List<String>,
   ret match(concrete)
     (ce: SEnum) => e.seRoot != ce.seRoot
                    || isEmpty(e.seParams)
-                   || listLen(e.seParams) != listLen(ce.seParams)
+                   || !sameLen(chain(e.seParams), chain(ce.seParams))
       ? UMap(mapping)
       : unifyList(chain(e.seParams), chain(ce.seParams), names, mapping)
     (o)         => UMap(mapping)
@@ -474,7 +474,7 @@ fun unifyNamed(n: SNamed, concrete: Spec, names: List<String>,
   ret match(concrete)
     (cn: SNamed) => n.snName != cn.snName
                     || isEmpty(n.snParams)
-                    || listLen(n.snParams) != listLen(cn.snParams)
+                    || !sameLen(chain(n.snParams), chain(cn.snParams))
       ? UMap(mapping)
       : unifyList(chain(n.snParams), chain(cn.snParams), names, mapping)
     (o)          => UMap(mapping)
@@ -557,7 +557,7 @@ fun unifyUnion(cm: SCombination, concrete: Spec, names: List<String>,
 
 fun unifyUnionSets(cm: SCombination, cc: SCombination, names: List<String>,
                    mapping: List<Binding>): Unify
-  if listLen(cm.scTypes) == listLen(cc.scTypes)
+  if sameLen(chain(cm.scTypes), chain(cc.scTypes))
     let trial = unifyList(chain(cm.scTypes), chain(cc.scTypes), names, mapping)
     ret match(trial)
       (um: UMap)  => um
@@ -570,7 +570,7 @@ fun unifyUnionBySet(cm: SCombination, cc: SCombination, names: List<String>,
   let con = reprMembers(cc)
   let holes = ownHoles(chain(gen), names, List<String>())
   let ground = groundMembers(chain(gen), names, List<Spec>())
-  if listLen(holes) != 1 || anyGroundHole(chain(ground), names)
+  if !exactly(chain(holes), 1) || anyGroundHole(chain(ground), names)
     ret UMap(mapping)                      # no single-hole partition: defer
   ret match(removeGround(chain(ground), con))
     (rest: List<Spec>) => bindRemainder(holes, rest, con, cm, mapping)
@@ -706,7 +706,7 @@ fun joinBoth(x: Spec, y: Spec): Spec
   if eqSpec(x, y)
     ret x
   let members = reprMembersOf(append(append(List<Spec>(), x), y))
-  ret listLen(members) == 1
+  ret exactly(chain(members), 1)
     ? soleMember(members, x)
     : SCombination(members, specLine(x))
 
@@ -768,7 +768,7 @@ class [final] TraitInst(tiParams: List<String>, tiIface: SClass)
 fun bindFromConstraintMatch(constraint: SClass, iface: SClass,
                             targets: List<String>): List<Binding>|None
   if constraint.scName != iface.scName
-     || chainLength(chain(constraint.scParams)) != chainLength(chain(iface.scParams))
+     || !sameLen(chain(constraint.scParams), chain(iface.scParams))
     ret None
   ret match(bfcLoop(chain(constraint.scParams), chain(iface.scParams),
                     targets, List<Binding>()))

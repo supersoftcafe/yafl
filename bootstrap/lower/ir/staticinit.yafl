@@ -9,6 +9,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Ir
 import Bootstrap::Parse
 import Bootstrap::StdlibCandidates
@@ -248,7 +250,7 @@ fun siPromoTry(cand: SiNewObj, f: CgFunction, a: CgApp,
   ret match(siPayload(a, cand.snClass))
     (dataFields: List<CgField>) =>
       siAssignsFor(assigns, cand.snReg)
-      |> (own) => listLen(own) != listLen(dataFields)
+      |> (own) => !sameLen(chain(own), chain(dataFields))
         ? (None, counter)
         : siPromoCommit(cand, dataFields, own, vmap, a, counter)
     ()                          => (None, counter)
@@ -425,7 +427,7 @@ fun siIsTrivialCopyFn(f: CgFunction, source: String, target: String): Bool
   if any(f.fnOps, siHardOp)
     ret false
   let writes = filter(f.fnOps, (op: Op) => siWritesGlobal(op, target))
-  if listLen(writes) != 1
+  if !exactly(chain(writes), 1)
     ret false
   ret match(head(writes))
     (w: Op) => match(w)

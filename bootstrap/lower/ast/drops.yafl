@@ -128,7 +128,7 @@ fun [tail] tiIdsLoop(ts: Chain<PStmt>, dn: String,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (ti: PsTraitInstance) => match(ti.tiPattern)
-        (c: SClass) => c.scName == dn && listLen(c.scParams) == 1
+        (c: SClass) => c.scName == dn && exactly(chain(c.scParams), 1)
           ? tiIdsLoop(l.next, dn, dropArgId(chain(c.scParams), acc))
           : tiIdsLoop(l.next, dn, acc)
         (o: Spec)   => tiIdsLoop(l.next, dn, acc)
@@ -161,7 +161,7 @@ fun [tail] parentDropIds(ps: Chain<Spec>, dn: String,
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (pc: SClass) => pc.scName == dn && listLen(pc.scParams) == 1
+      (pc: SClass) => pc.scName == dn && exactly(chain(pc.scParams), 1)
         ? parentDropIds(l.next, dn, dropArgId(chain(pc.scParams), acc))
         : parentDropIds(l.next, dn, acc)
       (o: Spec)    => parentDropIds(l.next, dn, acc)
@@ -194,7 +194,7 @@ fun [tail] whereDropsPlaceholder(ws: Chain<Spec>, dn: String,
   ret match(ws)
     (nil: ChainEnd) => false
     (l: ChainLink)  => match(l.value)
-      (wc: SClass) => wc.scName == dn && listLen(wc.scParams) == 1
+      (wc: SClass) => wc.scName == dn && exactly(chain(wc.scParams), 1)
                       && firstIsPlaceholder(chain(wc.scParams), name)
         ? true
         : whereDropsPlaceholder(l.next, dn, name)

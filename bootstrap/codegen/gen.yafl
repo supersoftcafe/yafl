@@ -9,6 +9,8 @@ namespace Bootstrap::Codegen
 
 import System
 
+import Bootstrap::Ast
+
 import Bootstrap::Driver
 import Bootstrap::Ir
 import Bootstrap::Lower::Ir
@@ -109,6 +111,35 @@ fun objVisitParents(acc: (order: List<CgObject>, seen: List<String>), o: CgObjec
 
 class [final] VtRow(vtI: String, vtF: String)
 
+# One walk each: the rendered C fragment AND the count the macro argument
+# needs (no-length ruling — counts ride existing walks, joins unchanged).
+fun [tail] vtRowsText(rs: Chain<VtRow>, n: Int, acc: String): (n: Int, text: String)
+  ret match(rs)
+    (nil: ChainEnd) => (n, acc)
+    (l: ChainLink)  => vtRowsText(l.next, n + 1,
+                         (acc == "" ? "" : acc + ",")
+                         + "\n        { .i = " + l.value.vtI
+                         + ", .f = " + l.value.vtF + " }")
+
+fun [tail] vtImplText(es: Chain<String>, n: Int, acc: String): (n: Int, text: String)
+  ret match(es)
+    (nil: ChainEnd) => (n, acc)
+    (l: ChainLink)  => vtImplText(l.next, n + 1,
+                         (acc == "" ? "" : acc + ", ")
+                         + "obj_" + mangleName(l.value))
+
+# Method names AND their count from one walk (no-length ruling).
+fun vtEntryOf(o: CgObject): VtableEntry
+  let ms = vtMethodsOf(chain(o.objFunctions), 0, List<String>())
+  ret VtableEntry(o.objName, ms.names, ms.n)
+
+fun [tail] vtMethodsOf(fs: Chain<CgFuncSlot>, n: Int,
+                       acc: List<String>): (names: List<String>, n: Int)
+  ret match(fs)
+    (nil: ChainEnd) => (acc, n)
+    (l: ChainLink)  => vtMethodsOf(l.next, n + 1,
+                                   append(acc, l.value.slotVirtualName))
+
 fun vtDefaultRow(): VtRow
   ret VtRow("-1", "(void*)&abort_on_vtable_lookup")
 
@@ -124,9 +155,11 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: List<MethodId>,
   # Ensure the last entry is an empty catch-all.
   let rows = vtLastIsDefault(rows1) ? rows1 : append(rows1, vtDefaultRow())
   let mangled = mangleName(o.objName)
-  let implementsArr = map(o.objExtends, (e2: String) => "obj_" + mangleName(e2))
-  let vtableStr = join(map(rows, (r: VtRow) =>
-        "\n        { .i = " + r.vtI + ", .f = " + r.vtF + " }"), ",")
+  # Counts ride the SAME walks that render the text (no-length ruling):
+  # one pass produces both the joined C fragment and the number the macro
+  # argument needs.
+  let impl = vtImplText(chain(o.objExtends), 0, "")
+  let vt = vtRowsText(chain(rows), 0, "")
   let commentLine = cgObjectCommentLine(o)
   let typedefDecl = cgDeclare(o.objFields, acc.gaCache)
   let typedefs1 = append(acc.gaTypedefs,
@@ -136,7 +169,7 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: List<MethodId>,
   let masks = genObjectMasks(o, commentLine, mangled)
   let variables1 = concat(concat(acc.gaVariables, masks.gmVarLines),
         list1(commentLine + "static vtable_t* const obj_" + mangled
-              + " = VTABLE_DECLARE(" + String(listLen(rows)) + "){\n"
+              + " = VTABLE_DECLARE(" + String(vt.n) + "){\n"
               + "    .object_size = " + cgObjectGetObjectSize(o) + ",\n"
               + "    .array_el_size = " + arrElSize.text + ",\n"
               + "    .functions_mask = rotate_function_id(" + String(vtableSize - 1) + "),\n"
@@ -147,9 +180,9 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: List<MethodId>,
               + "    .is_mutable = " + (o.objIsMutable ? "1" : "0") + ",\n"
               + "    .discriminator = " + String(o.objDiscriminator) + ",\n"
               + "    .name = \"" + o.objName + "\",\n"
-              + "    .implements_array = VTABLE_IMPLEMENTS(" + String(listLen(implementsArr))
-              + ", " + join(implementsArr, ", ") + "),\n"
-              + "    .lookup = { " + vtableStr + " },\n"
+              + "    .implements_array = VTABLE_IMPLEMENTS(" + String(impl.n)
+              + ", " + impl.text + "),\n"
+              + "    .lookup = { " + vt.text + " },\n"
               + "};\n"))
   ret GenAcc(arrPtrMask.cache, typedefs1,
              append(acc.gaForwards, commentLine + "static vtable_t* const obj_" + mangled + ";\n"),
@@ -261,7 +294,7 @@ fun genStaticInstanceRoots(g2: CgGlobal, a: CgApp): List<String>
 
 fun genStaticRootsFields(cls: CgObject, g2: CgGlobal): List<String>
   let fields = cgFieldsOfOrEmpty(cls.objFields)
-  if listLen(fields) <= 1
+  if atMost(chain(fields), 1)
     ret List<String>()
   ret cgPathsFields(tail(fields), cgGlobalToCName(g2) + "_data")
 
@@ -297,8 +330,7 @@ fun genApplication(a: CgApp, headers: List<String>): List<String>
   let vtables = fold(a.appObjects, List<VtableEntry>(), (acc: List<VtableEntry>, o: CgObject) =>
                   o.objIsForeign
                     ? acc
-                    : append(acc, VtableEntry(o.objName,
-                        map(o.objFunctions, (s2: CgFuncSlot) => s2.slotVirtualName))))
+                    : append(acc, vtEntryOf(o)))
   let ph = createPerfectLookups(vtables)
   let acc1 = fold(a.appFunctions, genAccEmpty(), (acc: GenAcc, f: CgFunction) =>
                isNoneStr(f.fnForeignSymbol) ? genFunction(acc, f) : genExtern(acc, f))

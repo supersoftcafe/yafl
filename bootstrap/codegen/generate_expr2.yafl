@@ -81,7 +81,7 @@ fun emArm(st0: GEmit, resolver: Resolver, resultType: Spec|None, arm: PArm,
   let armLabel = "match_arm_" + String(idx)
   let nextLabel = "match_next_" + String(idx)
   let st1 = fold(pre, ni.niState, (acc: GEmit, b: GBundle) => emAdd(acc, b))
-  let st2 = emStages(st1, chain(stages), 0, listLen(stages), idx, armLabel, nextLabel)
+  let st2 = emStages(st1, chain(stages), 0, idx, armLabel, nextLabel)
   let prefix = "arm" + String(idx)
   let armResolver = match(bind)
     (b: GBind) => b.gbdResolver
@@ -95,19 +95,19 @@ fun emArm(st0: GEmit, resolver: Resolver, resultType: Spec|None, arm: PArm,
   let st5 = emBody(st4, armResolver, resultType, arm, None, prefix)
   ret emOp1(st5, OpLabel(nextLabel, List<RParam>()))
 
-fun emStages(st: GEmit, stages: Chain<List<RParam>>, stageNo: Int, total: Int,
+fun emStages(st: GEmit, stages: Chain<List<RParam>>, stageNo: Int,
                     idx: Int, armLabel: String, nextLabel: String): GEmit
   ret match(stages)
     (nil: ChainEnd) => st
-    (l: ChainLink)  => emStagesStep(st, l, stageNo, total, idx, armLabel, nextLabel)
+    (l: ChainLink)  => emStagesStep(st, l, stageNo, idx, armLabel, nextLabel)
 
-fun emStagesStep(st: GEmit, l: ChainLink<List<RParam>>, stageNo: Int, total: Int,
+fun emStagesStep(st: GEmit, l: ChainLink<List<RParam>>, stageNo: Int,
                 idx: Int, armLabel: String, nextLabel: String): GEmit
-  let passLabel = stageNo == total - 1 ? armLabel : "match_stage_" + String(idx) + "_" + String(stageNo)
+  let passLabel = l.next is ChainEnd ? armLabel : "match_stage_" + String(idx) + "_" + String(stageNo)
   let withGuards = fold(l.value, st, (acc: GEmit, guard: RParam) => emOp1(acc, OpJumpIf(passLabel, guard, false, List<RParam>())))
   let withJump = emOp1(withGuards, OpJump(nextLabel, List<RParam>()))
   let withLabel = emOp1(withJump, OpLabel(passLabel, List<RParam>()))
-  ret emStages(withLabel, l.next, stageNo + 1, total, idx, armLabel, nextLabel)
+  ret emStages(withLabel, l.next, stageNo + 1, idx, armLabel, nextLabel)
 
 # ── multi_entry_arm(arm, entries, bound_ctype) ──────────────────────────────
 # One arm with several entry edges, each binding a DIFFERENT value — the
@@ -269,7 +269,7 @@ fun [tail] eqCgTypeList(a: List<CgType>, b: List<CgType>): Bool
 # one-field structs ending in a DataPointer) from a bare pointer word.
 fun wrapPointerInto(ctype: CgType, ptrValue: RParam): RParam
   ret match(cgFieldsOf(ctype))
-    (fields: List<CgField>) => listLen(fields) == 1 ? wrapPointerIntoField(head(fields), ptrValue) : ptrValue
+    (fields: List<CgField>) => exactly(chain(fields), 1) ? wrapPointerIntoField(head(fields), ptrValue) : ptrValue
     ()                       => ptrValue
 
 fun wrapPointerIntoField(f: CgField|None, ptrValue: RParam): RParam
