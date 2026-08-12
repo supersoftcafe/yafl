@@ -1,0 +1,217 @@
+# memo_bench — timed workloads for System::memoize.
+#
+#   memo_bench <mode>
+#
+# Modes, in the order they stress the machinery:
+#
+#   hit     a small key space hammered — the read-only probe path, no
+#           publication after warm-up. Should be untouched by any change to
+#           how nodes are written.
+#   insert  a large key space, every key seen once — the publish path, so
+#           every call pays whatever a store costs.
+#   churn   a long-lived cache queried while the heap turns over underneath
+#           it. This is the one that measures what a cache costs the
+#           COLLECTOR: nodes that cannot leave the young rotation are
+#           re-traced on every cycle for as long as the cache lives.
+#   par     four workers sharing one cache — contention on the store path.
+#
+# The language has no clock by design (System::Log's contract: YAFL never
+# sees a time or a duration), so every mode is one run of the binary and the
+# timing is taken outside. Each mode prints a checksum: the workloads must be
+# seen to compute the same answer before their times mean anything.
+#
+# SHAPE NOTE. Every loop takes the memo closure as an explicit PARAMETER and
+# lives inside a top-level worker. A nested [tail] loop that instead captures
+# a closure-valued `let` from its host either fails to compile or silently
+# loses its tail marking and blows the stack — see bench/tailprobe.yafl.
+namespace Bench
+
+import System
+
+
+# ── the memoized function ────────────────────────────────────────────────────
+# Deliberately cheap. The subject is the trie, not the payload — an expensive
+# body would swamp exactly the cost we are trying to read. Values stay well
+# inside the unboxed integer range so the arithmetic never allocates.
+
+fun payload(k: System::Int): System::Int
+  let a = (k * 2654435761) % 1000000007
+  ret (a + k * 40503) % 1000000007
+
+
+# ── scales ───────────────────────────────────────────────────────────────────
+# Sized so each mode lands well inside the one-minute ceiling at -O3 on five
+# cores, with headroom for the slower side of an A/B.
+
+let hitKeys:      System::Int = 4096
+let hitLookups:   System::Int = 250000000
+
+# Insert repeats over FRESH caches rather than growing one without bound: the
+# publish path is what is being measured, and an ever-larger trie would turn
+# the mode into a memory test instead.
+let insertKeys:   System::Int = 900000
+let insertRounds: System::Int = 50
+
+let churnEntries: System::Int = 1000000
+let churnRounds:  System::Int = 40000000
+
+let parKeys:      System::Int = 250000
+let parRounds:    System::Int = 600000000
+
+# parins repeats over fresh caches for the same reason insert does; the point
+# is the contended store, not the size of the trie.
+let parInsKeys:   System::Int = 500000
+let parInsRounds: System::Int = 120
+
+let modulus:      System::Int = 1000000007
+
+
+# ── workers ──────────────────────────────────────────────────────────────────
+# Each takes the memo as a parameter so its [tail] loop closes only over
+# parameters, never over an enclosing closure-valued let.
+
+fun warmRange(memo: (:System::Int): System::Int, count: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= count ? acc : loop(i + 1, (acc + memo(i)) % modulus)
+  ret loop(0, 0)
+
+fun probeRange(memo: (:System::Int): System::Int, rounds: System::Int,
+               keys: System::Int, seed: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= rounds ? acc : loop(i + 1, (acc + memo(i % keys)) % modulus)
+  ret loop(0, seed)
+
+
+# ── hit: the probe path ──────────────────────────────────────────────────────
+# Warm the cache, then read it and nothing else. Every call is a hit, so this
+# is a pure measurement of the walk down the trie.
+
+fun runHit(): System::Int
+  let memo = memoize<System::Int, System::Int>(payload)
+  let warmed = warmRange(memo, hitKeys)
+  ret probeRange(memo, hitLookups, hitKeys, warmed)
+
+
+# ── insert: the publish path ─────────────────────────────────────────────────
+# Every key is new, so every call walks to an empty slot and publishes. This
+# is where a store-side change shows up most directly.
+
+fun insertOnce(seed: System::Int): System::Int
+  let memo = memoize<System::Int, System::Int>(payload)
+  ret (seed + warmRange(memo, insertKeys)) % modulus
+
+fun runInsert(): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= insertRounds ? acc : loop(i + 1, insertOnce(acc))
+  ret loop(0, 0)
+
+
+# ── churn: what a long-lived cache costs the collector ───────────────────────
+# Build a cache big enough to matter, then keep it live while allocating hard
+# around it. The garbage forces cycles; the cache is traced by every one of
+# them unless it can age out of the rotation. Allocation is a two-cell list
+# per round — small, short-lived, and immediately unreachable.
+
+fun churnCell(k: System::Int): System::Int
+  let cell = prepend<System::Int>(k, prepend<System::Int>(k + 1, List<System::Int>()))
+  ret match(head<System::Int>(cell))
+    (v: System::Int)  => v
+    (e: System::None) => 0
+
+fun churnRange(memo: (:System::Int): System::Int, rounds: System::Int,
+               keys: System::Int, seed: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= rounds
+      ? acc
+      : loop(i + 1, (acc + memo(i % keys) + churnCell(i)) % modulus)
+  ret loop(0, seed)
+
+fun runChurn(): System::Int
+  let memo = memoize<System::Int, System::Int>(payload)
+  let built = warmRange(memo, churnEntries)
+  ret churnRange(memo, churnRounds, churnEntries, built)
+
+
+# ── par: four workers on one cache ───────────────────────────────────────────
+# One memo shared by every worker, each sweeping the key space from a
+# different offset with a stride that keeps them colliding in the upper
+# levels of the trie. Nested __parallel__ gives four-way work.
+
+fun parWorker(memo: (:System::Int): System::Int, base: System::Int,
+              rounds: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= rounds
+      ? acc
+      : loop(i + 1, (acc + memo((base + i * 7) % parKeys)) % modulus)
+  ret loop(0, 0)
+
+fun parPair(memo: (:System::Int): System::Int, a: System::Int,
+            b: System::Int, rounds: System::Int): System::Int
+  let (l, r) = __parallel__(
+        () => parWorker(memo, a, rounds),
+        () => parWorker(memo, b, rounds))
+  ret (l + r) % modulus
+
+fun runPar(): System::Int
+  let memo = memoize<System::Int, System::Int>(payload)
+  let quarter = parRounds / 4
+  let (left, right) = __parallel__(
+        () => parPair(memo, 0, 61, quarter),
+        () => parPair(memo, 1237, 55001, quarter))
+  ret (left + right) % modulus
+
+
+# ── parins: four workers racing to fill ONE cache ────────────────────────────
+# Every worker walks the SAME key sequence in the same order, so each key is a
+# genuine race: one publisher wins the slot, the losers re-read and return the
+# winner's answer. Overlapping ranges are what produce sustained contention —
+# disjoint ranges would have the workers publishing into mostly separate
+# subtrees and barely meeting at all.
+
+fun parInsWorker(memo: (:System::Int): System::Int, count: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= count ? acc : loop(i + 1, (acc + memo(i * 3)) % modulus)
+  ret loop(0, 0)
+
+fun parInsPair(memo: (:System::Int): System::Int, count: System::Int): System::Int
+  let (l, r) = __parallel__(
+        () => parInsWorker(memo, count),
+        () => parInsWorker(memo, count))
+  ret (l + r) % modulus
+
+fun parInsOnce(seed: System::Int): System::Int
+  let memo = memoize<System::Int, System::Int>(payload)
+  let (a, b) = __parallel__(
+        () => parInsPair(memo, parInsKeys),
+        () => parInsPair(memo, parInsKeys))
+  ret (seed + a + b) % modulus
+
+fun runParIns(): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= parInsRounds ? acc : loop(i + 1, parInsOnce(acc))
+  ret loop(0, 0)
+
+
+# ── entry point ──────────────────────────────────────────────────────────────
+
+fun report(mode: System::String, result: System::Int): System::Int
+  println(mode + " checksum " + String(result))
+  ret 0
+
+fun main(): System::Int
+  fun usage(): System::Int
+    println("usage: memo_bench <hit|insert|churn|par|parins>")
+    ret 2
+
+  fun run(mode: System::String): System::Int
+    let result = mode == "hit"    ? runHit()
+               : mode == "insert" ? runInsert()
+               : mode == "churn"  ? runChurn()
+               : mode == "par"    ? runPar()
+               : mode == "parins" ? runParIns()
+               : -1
+    ret result < 0 ? usage() : report(mode, result)
+
+  ret match(head<System::String>(args()))
+    (mode: System::String) => run(mode)
+    (e: System::None)      => usage()
