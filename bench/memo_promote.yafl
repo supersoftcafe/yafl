@@ -1,0 +1,85 @@
+# memo_promote — the correctness case that late pinning newly creates.
+#
+# Making memo nodes immutable lets their pages age into the old generation.
+# Minor cycles skip old pages entirely, so a store made AFTER promotion
+# installs a reference that nothing would ever trace — and prune would free
+# the referent while the trie still holds it. gc_note_late_write is what
+# prevents that, by returning the page to the rotation.
+#
+# Nothing in memo_bench exercises it: `churn` finishes building before it
+# starts beating, so every write there lands on a young page. This test
+# deliberately interleaves the two.
+#
+#   phase 1  fill the cache, so there is something to age
+#   phase 2  allocate hard WITHOUT inserting, so the cache promotes
+#   phase 3  insert a second, disjoint key range — these are the writes that
+#            land on old pages and install young children
+#   phase 4  allocate hard again, giving a broken collector every chance to
+#            free what phase 3 published
+#   phase 5  read back BOTH ranges and check every answer
+#
+# A wrong answer, a crash, or a poison abort in phase 5 is the failure. Run it
+# under YAFL_GC_POISON=1 to turn a silent use-after-free into a loud one.
+namespace Promote
+
+import System
+
+
+fun payload(k: System::Int): System::Int
+  let a = (k * 2654435761) % 1000000007
+  ret (a + k * 40503) % 1000000007
+
+
+let keys:    System::Int = 120000
+let settle:  System::Int = 4000000
+let modulus: System::Int = 1000000007
+
+
+# Allocation with no insertion: drives collection cycles so the cache ages.
+fun cell(k: System::Int): System::Int
+  let c = prepend<System::Int>(k, prepend<System::Int>(k + 1, List<System::Int>()))
+  ret match(head<System::Int>(c))
+    (v: System::Int)  => v
+    (e: System::None) => 0
+
+fun settleFor(rounds: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= rounds ? acc : loop(i + 1, (acc + cell(i)) % modulus)
+  ret loop(0, 0)
+
+
+# Insert a half-open key range into the cache.
+fun fillRange(memo: (:System::Int): System::Int, from: System::Int,
+              upto: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= upto ? acc : loop(i + 1, (acc + memo(i)) % modulus)
+  ret loop(from, 0)
+
+
+# Read a range back and count every answer that does NOT match the function
+# the cache is supposed to be standing in for. Zero is the only pass.
+fun verifyRange(memo: (:System::Int): System::Int, from: System::Int,
+                upto: System::Int): System::Int
+  fun [tail] loop(i: System::Int, bad: System::Int): System::Int
+    ret i >= upto
+      ? bad
+      : loop(i + 1, memo(i) == payload(i) ? bad : bad + 1)
+  ret loop(from, 0)
+
+
+fun main(): System::Int
+  let memo = memoize<System::Int, System::Int>(payload)
+
+  let phase1 = fillRange(memo, 0, keys)
+  let phase2 = settleFor(settle)
+  let phase3 = fillRange(memo, keys, keys * 2)
+  let phase4 = settleFor(settle)
+
+  let badLow  = verifyRange(memo, 0, keys)
+  let badHigh = verifyRange(memo, keys, keys * 2)
+  let bad     = badLow + badHigh
+
+  println("checked " + String(keys * 2) + " keys, wrong " + String(bad)
+          + " (low " + String(badLow) + ", high " + String(badHigh) + ")")
+  println("phase mix " + String((phase1 + phase2 + phase3 + phase4) % modulus))
+  ret bad == 0 ? 0 : 1

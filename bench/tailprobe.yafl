@@ -1,0 +1,18 @@
+namespace TailProbe
+
+import System
+
+# A top-level [tail] loop, the exact shape the stdlib uses in args().
+fun [tail] topLoop(i: System::Int, acc: System::Int): System::Int
+  ret i >= 6000000 ? acc : topLoop(i + 1, acc + 1)
+
+# The same loop nested inside a host that it captures a variable from.
+fun nested(limit: System::Int): System::Int
+  fun [tail] inner(i: System::Int, acc: System::Int): System::Int
+    ret i >= limit ? acc : inner(i + 1, acc + 1)
+  ret inner(0, 0)
+
+fun main(): System::Int
+  println(topLoop(0, 0))
+  println(nested(6000000))
+  ret 0

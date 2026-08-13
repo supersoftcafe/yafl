@@ -33,9 +33,16 @@ class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnS
                           fnOps: List<Op>, fnComment: String, fnForeignSymbol: String|None,
                           fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool)
 
+# objIsPinnable: [pinnable] — immutable EXCEPT inside a late pin, which
+# publishes into a write-once field. Unlike objIsMutable the object still
+# relocates, so its READS must follow forwarding (lower/ir/pinnable_reads);
+# a pointer taken before a relocation would otherwise see the pre-write copy.
+# Declared LAST with a default so the eight other construction sites — all
+# compiler-emitted classes, none of them pinnable — stay untouched.
 class [final] CgObject(objName: String, objExtends: List<String>, objFunctions: List<CgFuncSlot>,
                         objFields: CgType, objLengthField: String|None, objComment: String,
-                        objIsForeign: Bool, objIsMutable: Bool, objDiscriminator: Int)
+                        objIsForeign: Bool, objIsMutable: Bool, objDiscriminator: Int,
+                        objIsPinnable: Bool = false)
 
 class [final] CgGlobal(globalName: String, globalType: CgType, globalInit: RParam|None,
                         globalObjectName: String|None, globalLazyInitFunction: String|None,

@@ -191,8 +191,15 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let _phi = spanEnd(spPhi)
   let a8b = optLevel >= 1 ? promoteToStack(a8) : a8
   let spAsync = spanBegin("codegen", "async_lower")
-  let a9 = removedUnusedStuff(lowerAsync(a8b))
+  let a9pre = removedUnusedStuff(lowerAsync(a8b))
   let _async = spanEnd(spAsync)
+  # Reads of a [pinnable] object follow relocation first: it is immutable
+  # except inside a late pin, so a pointer taken before a relocation would see
+  # the pre-write copy. Last, so every RpObjectField the pipeline can produce
+  # is already in place.
+  let spPin = spanBegin("codegen", "pinnable_reads")
+  let a9 = resolvePinnableReads(a9pre)
+  let _pin = spanEnd(spPin)
   let spCheck = spanBegin("codegen", "uninit_check")
   let v2 = checkApplication(a9)
   let _chk = spanEnd(spCheck)

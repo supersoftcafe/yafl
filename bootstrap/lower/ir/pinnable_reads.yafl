@@ -1,0 +1,79 @@
+# bootstrap/lower/ir/pinnable_reads.yafl — ported from
+# lowering/pinnable_reads.py: resolve relocation before touching a
+# [pinnable] object's fields.
+#
+# An ordinary immutable object needs no read barrier: every copy of one holds
+# the same bytes for ever, which is precisely why a field access is a plain
+# `->` with nothing around it. A [pinnable] object is immutable EXCEPT inside
+# a late pin, and that write lands on the live copy alone — so a pointer taken
+# before a relocation reads the pre-write bytes.
+#
+# Cross-thread that would be tolerable: a reader that has not yet seen another
+# thread's publication is indistinguishable from one that ran a moment
+# earlier, and no ordering was promised. Within ONE thread it is not. A walk
+# that reads a field, and later reads the same field of the same logical
+# object through a pointer it was already holding, must not get two different
+# answers.
+#
+# So the access's POINTER is wrapped in `object_resolve`. Wrapping the pointer
+# rather than flagging the access is what keeps this off RpObjectField's
+# forty-odd positional construction sites.
+#
+# ONE PLACE ON PURPOSE: rewriting here, over every RpObjectField in the
+# finished program and keyed on the object list, cannot miss a site — whereas
+# wrapping at construction would mean auditing every one, and a missed site is
+# a silent stale read rather than a compile error.
+#
+# Runs after async_lower, so every RpObjectField the pipeline can produce is
+# already in place.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
+
+
+fun resolvePinnableReads(a: CgApp): CgApp
+  let names = prNames(chain(a.appObjects), setEmpty())
+  ret isEmpty(names.setNames)
+    ? a
+    : appWithFunctions(a, map(a.appFunctions,
+                              (f: CgFunction) => prFunction(f, names)))
+
+fun [tail] prNames(os: Chain<CgObject>, acc: StrSet): StrSet
+  ret match(os)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => prNames(l.next, l.value.objIsPinnable
+                                         ? setAdd(acc, l.value.objName)
+                                         : acc)
+
+fun prFunction(f: CgFunction, names: StrSet): CgFunction
+  let ops = map(f.fnOps,
+                (op: Op) => opReplaceParams(op, (p: RParam) => prRewrite(p, names)))
+  ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars,
+                 ops, f.fnComment, f.fnForeignSymbol,
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+
+fun prRewrite(p: RParam, names: StrSet): RParam
+  ret match(p)
+    (x: RpObjectField) => prRewriteField(x, names)
+    (o: RParam)        => p
+
+# A FRESH store needs no resolve: the object was allocated moments ago on a
+# thread-private page, straight-line before this store, so it cannot have been
+# relocated yet.
+fun prRewriteField(x: RpObjectField, names: StrSet): RParam
+  ret !setHas(names, x.objectName) || x.fresh || prAlreadyResolved(x.pointer)
+    ? x
+    : RpObjectField(x.fieldType,
+                    RpRuntimeInvoke("object_resolve",
+                                    RpNewStruct(list1<RpNamedValue>(
+                                        RpNamedValue("o", x.pointer))),
+                                    CgDataPointer()),
+                    x.objectName, x.field, x.index, x.fresh)
+
+fun prAlreadyResolved(p: RParam): Bool
+  ret match(p)
+    (x: RpRuntimeInvoke) => x.function == "object_resolve"
+    (o: RParam)          => false

@@ -107,8 +107,11 @@ fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
         # [mutable]: fields written after construction, so the collector must not
         # relocate it — a write can otherwise land in a copy that is then
         # abandoned. See docs/memoize-proposal.md.
+        # [pinnable]: written only inside a late pin, so it DOES relocate and
+        # its reads follow forwarding instead.
         CgObject(c.cName, extends, functions, fields.cofStruct, fields.cofLengthField,
-                 c.cName, hasAttr(c.cAttrs, "foreign"), hasAttr(c.cAttrs, "mutable"), 0),
+                 c.cName, hasAttr(c.cAttrs, "foreign"), hasAttr(c.cAttrs, "mutable"), 0,
+                 hasAttr(c.cAttrs, "pinnable")),
         concat(genFunctions, thunks))
 
 fun [tail] classMemberFunctions(ms: Chain<PStmt>, r: Resolver, acc: List<CgFunction>): List<CgFunction>

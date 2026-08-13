@@ -366,7 +366,12 @@ class ClassStatement(TypeStatement):
             # must not relocate it — a write can otherwise land in a copy that is
             # then abandoned. Required by any late-initialised ("once") field;
             # see docs/memoize-proposal.md.
-            is_mutable="mutable" in self.attributes
+            is_mutable="mutable" in self.attributes,
+            # [pinnable]: immutable except inside a late pin, which publishes
+            # into a write-once field. Unlike [mutable] the object still
+            # relocates, so its READS must follow forwarding — a pointer taken
+            # before a relocation would otherwise see the pre-write copy.
+            is_pinnable="pinnable" in self.attributes
         )
 
         return xobject, gen_functions+thunks

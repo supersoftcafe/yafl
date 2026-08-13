@@ -52,6 +52,6 @@ fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
     ? (append(acc.objs,
               CgObject(o.objName, o.objExtends, kept, o.objFields,
                        o.objLengthField, o.objComment, o.objIsForeign,
-                       o.objIsMutable, o.objDiscriminator)),
+                       o.objIsMutable, o.objDiscriminator, o.objIsPinnable)),
        true)
     : (append(acc.objs, o), acc.changed)

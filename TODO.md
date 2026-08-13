@@ -228,6 +228,50 @@ constant initialiser needs no thunk. This would also make some function-typed
 globals avoid the lazy path, but it does NOT fix the bug above for the
 run-code cases.
 
+## OPEN (optimisation): CSE the `object_resolve` read barrier
+
+`lowering/pinnable_reads.py` (port: `lower/ir/pinnable_reads.yafl`) wraps
+every read of a `[pinnable]` object's fields in `object_resolve`, because a
+late pinned write lands on the live copy only and a stale pointer would read
+the pre-write bytes. Correct, and currently **resolving the same pointer 3–6
+times inside one function**. From the emitted C of `bench/memo_bench.yafl`:
+
+    6 object_resolve(loopvar_n_zE8BDY)
+    4 object_resolve(r_yNrf64)
+    4 object_resolve(n_mnu3WB)
+
+`_walkNode` reads `mnHash`, then `mnKey`, then a child — three resolves of
+one pointer with nothing between them that could move the object. Clang
+cannot fold them: `object_resolve` loads through a pointer that may alias the
+loads in between, so it must redo the work each time (and each resolve also
+reloads the two `_memory_heap_base`/`_memory_heap_bytes` globals).
+
+**The fix:** resolve once per pointer per basic block and reuse the register —
+a local CSE in our own IR, in the same pass, BOTH compilers. Invalidate at
+anything that could relocate (a call, a safe point); within straight-line
+field reads the resolved value is stable.
+
+**Measured cost of not doing it** (-O3, median of 5 interleaved A/B, vs the
+same build without the barrier): `hit` +81%, `par` +77%, `insert` +39%,
+`parins` +35%. `churn` is still −30% overall because promotion outweighs it.
+`hit` is pure probing, i.e. exactly what a cache is for, so this is the
+number that matters.
+
+**Second, independent lever — needs a user ruling, do not just do it.** The
+barrier is applied per TYPE, but only LATE-WRITTEN fields can differ between
+copies. `mnHash`/`mnKey`/`mnValue` are set at construction and identical in
+every copy, so reading them through a stale pointer is already correct; only
+the write-once child slots `mnC0..3` need resolving — and the probe path is
+dominated by the fields that don't. Narrowing the barrier to late-written
+fields is exactly `[once]` from `docs/memoize-proposal.md` §4b, which was
+already scoped there for enforcing zero-to-value and emitting the right
+ordering. Sound on the same argument that motivated the barrier: a field
+never late-written keeps the "every copy is authoritative" property, so an
+intra-thread re-read cannot disagree.
+
+Both deferred 2026-08-13 by explicit user instruction: correctness first,
+optimise later. See memory `project_late_pinning.md`.
+
 ## OPEN (idea): lazy-backed eager parallelism
 
 Use the existing lazy/task machinery to speculatively parallelise: a function

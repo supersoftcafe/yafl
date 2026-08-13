@@ -449,6 +449,11 @@ class Object:
     # being written loses the writes that land in the stale copy. Ordinary
     # YAFL objects are immutable after construction and stay compactable.
     is_mutable: bool = False
+    # True for [pinnable] objects: immutable EXCEPT inside a late pin, which
+    # publishes into a write-once field. They relocate like any other
+    # immutable object, so a pointer taken before a relocation reads stale
+    # fields — reads therefore resolve first (lowering/pinnable_reads.py).
+    is_pinnable: bool = False
     # Globally unique discriminator id (the union/variant registry). Enum
     # variants carry their own vtables, so match dispatch reads this — once
     # per TYPE — instead of a tag byte stored in every instance. 0 for

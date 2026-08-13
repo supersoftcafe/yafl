@@ -1,0 +1,29 @@
+# pinnable_probe — does [pinnable] keep a class boxed, in BOTH compilers?
+#
+# simple_classes flattens a qualifying class (<= 4 fields, final, no
+# inheritance) into an unboxed field tuple. A [pinnable] class must be
+# exempted: the pin lives in the vtable word and a value struct has none.
+#
+# Boxy and Flat are identical apart from the attribute, so the two compilers'
+# dumps answer the question directly — Flat must disappear as a class, Boxy
+# must survive. Both are NON-GENERIC on purpose: the stdlib's own MemoNode /
+# MemoRoot are generic, so they never reach simple_classes in a per-file dump
+# and cannot serve as the test case.
+namespace Probe
+
+import System
+
+
+class [final, pinnable] Boxy(b0: System::Int, b1: System::Int)
+
+class [final] Flat(f0: System::Int, f1: System::Int)
+
+
+fun useBoxy(x: Boxy): System::Int
+  ret x.b0 + x.b1
+
+fun useFlat(y: Flat): System::Int
+  ret y.f0 + y.f1
+
+fun main(): System::Int
+  ret useBoxy(Boxy(1, 2)) + useFlat(Flat(3, 4))

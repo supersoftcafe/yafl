@@ -46,10 +46,13 @@ def __is_simple_class(
         return False
     if "foreign" in cls.attributes:
         return False
-    # [mutable] classes are published into after construction, which needs a
-    # real object with a stable identity to CAS into. Flattening one to an
-    # unboxed struct would leave nothing to publish to.
-    if "mutable" in cls.attributes:
+    # Classes that are published into after construction need a real object
+    # with a stable identity to write through; flattening one to an unboxed
+    # struct would leave nothing to publish to. [mutable] says so by being
+    # writable at any time; [pinnable] says so for an object that is immutable
+    # except inside a late pin, which is a heap object for the same reason —
+    # the pin lives in its vtable word, and a value struct has none.
+    if "mutable" in cls.attributes or "pinnable" in cls.attributes:
         return False
     if cls.implements:
         return False
