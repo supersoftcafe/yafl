@@ -570,11 +570,18 @@ fun compileTernary(te: PeTernary, r: Resolver, expected: Spec|None): ExprOut
               concat(cond.eoGlobals, concat(t2.eoGlobals, f.eoGlobals)))
 
 # The subject compiles first (no expectation). Its type is the bound ELSE
-# arm's binding type — only this level knows it — and, when it is a CONCRETE
-# generic-enum instantiation, its type arguments propagate onto each variant
-# arm that didn't spell them out. In generic context the args are still
-# placeholders/unresolved and correctly stay put; the fixpoint fires the
-# propagation once they ground.
+# arm's binding type — only this level knows it — and, when its type arguments
+# are RESOLVED, they propagate onto each variant arm that didn't spell them
+# out. A concrete arg always qualifies; a placeholder arg qualifies when it
+# resolves in scope — the enclosing generic's own param passing through
+# (Chain<U> inside sameLen2<T, U> stamps its arms ChainEnd<U>/ChainLink<U>),
+# which monomorphisation then substitutes exactly. Leaving such an arm BARE is
+# not an option: mono's identity completion falls back to matching the enum
+# template's formal names against the host's params, so both of a two-param
+# host's matches latched the instantiation whose param happened to share the
+# enum formal's spelling — a silent runtime abort. An unresolved NamedSpec or
+# a FREE placeholder (another declaration's blank) stays deferred; the
+# fixpoint fires the propagation once it grounds.
 fun compileMatch(mt: PeMatch, r: Resolver, expected: Spec|None): ExprOut
   let subj = compileExpr(mt.subject, r, None)
   let subjTy = exprType(subj.eoExpr, r)
@@ -603,7 +610,7 @@ class [final] ArmOut(a1Arm: PArm, a1Globals: List<PStmt>)
 # body's rewritten names.
 fun compileArm(a0: PArm, r: Resolver, subjTy: Spec|None,
                expected: Spec|None): ArmOut
-  let a = propagateSubjParams(a0, subjTy)
+  let a = propagateSubjParams(a0, subjTy, r)
   let bodyR = bindingScope(a, armBindType(a, subjTy), r)
   let body = compileExpr(a.armBody, bodyR, expected)
   let ty = compileSpecOpt(a.armType, r)
@@ -643,9 +650,9 @@ fun armBinderLet(a: PArm, ty: Spec): PStmt
   ret PsLet(armUniqueName(a), List<PAttr>(), List<PGen>(), ty, None, "",
             List<Spec>(), a.parmLine)
 
-fun propagateSubjParams(a: PArm, subjTy: Spec|None): PArm
+fun propagateSubjParams(a: PArm, subjTy: Spec|None, r: Resolver): PArm
   ret match(subjTy)
-    (st: Spec) => concreteParams(typeParamsOf(st))
+    (st: Spec) => resolvedParams(typeParamsOf(st), r)
       ? withSubjParams(a, typeParamsOf(st))
       : a
     ()         => a
@@ -675,17 +682,19 @@ fun typeParamsOf(sp: Spec): List<Spec>
     (e2: SEnum) => e2.seParams
     (o: Spec)   => List<Spec>()
 
-# Concrete = non-empty and free of NamedSpec / placeholder args.
-fun concreteParams(ps: List<Spec>): Bool
-  ret !isEmpty(ps) && !anyHoleParam(chain(ps))
+# Resolved = non-empty, no unresolved NamedSpec arg, and no FREE placeholder —
+# a placeholder that resolves in scope is the host's own param and latches.
+fun resolvedParams(ps: List<Spec>, r: Resolver): Bool
+  ret !isEmpty(ps) && !anyHoleParam(chain(ps), r)
 
-fun [tail] anyHoleParam(ps: Chain<Spec>): Bool
+fun [tail] anyHoleParam(ps: Chain<Spec>, r: Resolver): Bool
   ret match(ps)
     (nil: ChainEnd) => false
     (l: ChainLink)  => match(l.value)
       (n: SNamed)   => true
-      (g: SGeneric) => true
-      (o: Spec)     => anyHoleParam(l.next)
+      (o: Spec)     => hasFreePlaceholders(l.value, r)
+        ? true
+        : anyHoleParam(l.next, r)
 
 class [final] LitsOut(loLits: List<PLit>, loGlobals: List<PStmt>)
 class [final] LitOut(l1Lit: PLit, l1Globals: List<PStmt>)

@@ -113,9 +113,15 @@ fun intoUnion(r: Resolver, source: Spec, target: Spec,
       ? true
       # A 1-tuple that genuinely WRAPS a union value unwraps to its element.
       : isWrapperOf(source, tu)
-  # Two distinct union ids ⇒ widening / re-slotting.
+  # Two distinct union ids ⇒ widening / re-slotting — but only a genuine
+  # WIDENING (every source member assignable into the target) is a conversion.
+  # Anything else must NOT wrap: the conversion node reports the TARGET type,
+  # which would hide the mismatch from the receiver's own check forever — a
+  # declared `(ls: List<String>, n: Int)|None` silently accepted a returned
+  # `List<String>|None` this way. Not assignable — the receiver reports that,
+  # not us.
   if isUnion(source)
-    ret true
+    ret triTrue(assignableEq(r, target, source))
   # An ordinary value boxes in when it IS one of the members.
   ret anyMemberIs(chain(reprMembersOf(unionMembers(target))), su)
 

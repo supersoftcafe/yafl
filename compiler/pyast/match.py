@@ -473,16 +473,22 @@ class MatchExpression(e.Expression):
         # type_params apply. Field substitution then happens in
         # access._substitute_enum_type_params.
         subj_tparams = getattr(subj_type, "type_params", ()) or ()
-        # Only propagate RESOLVED CONCRETE type arguments. In generic context the
-        # subject's args are still placeholders (GenericPlaceholderSpec) or
-        # unresolved (NamedSpec); pushing those onto an arm binder breaks
-        # resolution and is unnecessary (the field correctly stays the
-        # placeholder, matching the generic body). The iterate-to-fixpoint
-        # compile loop fires this once the args resolve to real types.
-        subj_tparams_concrete = (
+        # Propagate RESOLVED type arguments only. A concrete arg always
+        # qualifies; a placeholder arg qualifies when it resolves in scope —
+        # the enclosing generic's own param passing through (`Chain<U>` inside
+        # `sameLen2<T, U>` stamps its arms ChainEnd<U>/ChainLink<U>), which
+        # monomorphisation then substitutes exactly. Leaving such an arm BARE
+        # is not an option: mono's identity completion falls back to matching
+        # the enum template's formal names against the host's params, so both
+        # of a two-param host's matches latched the instantiation whose param
+        # happened to share the enum formal's spelling — a silent runtime
+        # abort (test_two_generic_match). An unresolved NamedSpec or a FREE
+        # placeholder (another declaration's blank) stays deferred: the
+        # iterate-to-fixpoint compile loop fires this once the args resolve.
+        subj_tparams_resolved = (
             bool(subj_tparams)
-            and not any(isinstance(tp, (t.NamedSpec, t.GenericPlaceholderSpec))
-                        for tp in subj_tparams))
+            and not any(isinstance(tp, t.NamedSpec) for tp in subj_tparams)
+            and not any(t.has_free_placeholders(tp, resolver) for tp in subj_tparams))
         arm_results = []
         for arm in self.arms:
             # A bound else arm receives the whole subject: its binding type
@@ -490,7 +496,7 @@ class MatchExpression(e.Expression):
             if arm.type_spec is None and subj_type is not None:
                 arm_results.append(arm.compile(_binding_resolver(resolver, arm, subj_type), expected_type))
             else:
-                if (subj_tparams_concrete and isinstance(arm.type_spec, (t.NamedSpec, t.EnumSpec))
+                if (subj_tparams_resolved and isinstance(arm.type_spec, (t.NamedSpec, t.EnumSpec))
                         and not arm.type_spec.type_params):
                     arm = dataclasses.replace(
                         arm, type_spec=dataclasses.replace(arm.type_spec, type_params=tuple(subj_tparams)))

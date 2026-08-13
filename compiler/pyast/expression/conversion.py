@@ -198,7 +198,15 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
                 return source.entries[0].type.as_unique_id_str() == tu
             return False
         if isinstance(source, t.CombinationSpec):
-            return True     # distinct union ids ⇒ widening/re-slotting
+            # Distinct union ids ⇒ widening/re-slotting — but only a genuine
+            # WIDENING (every source member assignable into the target) is a
+            # conversion. Anything else must NOT wrap: a ConvertExpression's
+            # get_type reports the TARGET, which would hide the mismatch from
+            # the receiver's own check forever — a declared
+            # `(ls: List<String>, n: Int)|None` silently accepted a returned
+            # `List<String>|None` this way. Not assignable — the receiver
+            # reports that, not us (test_union_return_shape).
+            return t.trivially_assignable_equals(resolver, target, source) is True
         return any(v.as_unique_id_str() == su for v in target.repr_members())
     if (isinstance(source, t.TupleSpec) and len(source.entries) == 1
             and source.entries[0].type is not None

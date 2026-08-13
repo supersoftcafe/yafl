@@ -1126,7 +1126,7 @@ fun stmtExprStart(ps: Ps, x: PExpr): PLine
 fun parseAction(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   let e = parseExpr(ps)
   ret match(e.v)
-    (f: PFail) => e
+    (f: PFail) => (f, e.rest)
     (a: PExpr) => (PsAction(a, stmtExprStart(ps, a)), e.rest)
 
 fun parseRet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)

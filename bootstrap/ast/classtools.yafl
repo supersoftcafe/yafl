@@ -272,12 +272,15 @@ fun atMost<T>(c: Chain<T>, n: Int): Bool
 fun exactly<T>(c: Chain<T>, n: Int): Bool
   ret atLeast<T>(c, n) && !atLeast<T>(c, n + 1)
 
-# The two-list co-walks spell EVERY generic call with explicit type args:
-# inside a two-type-param host, inferred generic-into-generic calls latch the
-# wrong instantiation when T != U and the binary aborts at runtime (the
-# ledgered nested-generic inference gap, third shape — witness test:
-# tests/test_two_generic_match.py). isEnd/restOf keep each match on one
-# enum instantiation; the explicit <T>/<U> arguments are load-bearing.
+# The two-list co-walks spell EVERY generic call with explicit type args.
+# The silent third-shape abort (a bare match arm inside a two-type-param host
+# latching the wrong enum instantiation) is FIXED — witness test:
+# tests/test_two_generic_match.py — so nested matches over Chain<T>/Chain<U>
+# are safe now. The explicit <T>/<U> on the CALLS remain load-bearing for a
+# different, LOUD reason: a cross-function inferred generic call inside a
+# generic host still fails "cannot infer the type arguments" (the ledgered
+# nested-generic inference gap, shapes 1-2); explicit args are the
+# sanctioned form until that inference lands.
 
 fun isEnd<T>(c: Chain<T>): Bool
   ret match(c)
