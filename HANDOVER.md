@@ -36,6 +36,14 @@ record, kept deliberately.
 
 ## Traps (hard-won this week)
 
+- O1+ tests link `yafllib/build/release/libyafl.a` (libyafl_for), and the
+  debug-unix preset does NOT rebuild it — after ANY yafllib edit run
+  `cmake --build yafllib/build/release --target yafl_static` too, or every
+  optimised test runs new compiler output against an old runtime.
+  (2026-08-13: an Aug-6 archive under the [pinnable] compiler = memoize UAF
+  only YAFL_GC_POISON could see; the whole suite passed silently on the
+  skew.) The bootstrap-binary cache now hashes the archive BYTES, so at
+  least shared_bootstrap_binary can't reuse a binary across that skew.
 - FULL suite before commit; `unittest-parallel` rc = failure count; suites
   ~85 min warm, ~135 min cold (assignability/test edits go cold).
 - Never edit sources under a running suite. Kill workers by PROCESS TREE

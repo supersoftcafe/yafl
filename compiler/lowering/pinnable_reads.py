@@ -53,10 +53,15 @@ def resolve_pinnable_reads(app: Application) -> Application:
     def rewrite(p: RParam) -> RParam:
         # A FRESH store needs no resolve: the object was allocated moments ago
         # on a thread-private page, straight-line before this store, so it
-        # cannot have been relocated yet.
+        # cannot have been relocated yet. The only other exemption is a
+        # pointer that is ALREADY an object_resolve wrap (idempotency) —
+        # exempting any RuntimeInvoke would silently omit the barrier if a
+        # runtime call ever returned a pinnable pointer, and an extra resolve
+        # is merely redundant while a missing one is a stale read.
         if (isinstance(p, ObjectField) and p.object_name in pinnable
                 and not p.fresh
-                and not isinstance(p.pointer, RuntimeInvoke)):
+                and not (isinstance(p.pointer, RuntimeInvoke)
+                         and p.pointer.function == "object_resolve")):
             resolved = RuntimeInvoke("object_resolve",
                                      NewStruct((("o", p.pointer),)),
                                      t.DataPointer())

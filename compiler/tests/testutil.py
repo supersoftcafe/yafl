@@ -266,7 +266,14 @@ def _bootstrap_tree_hash() -> str:
                 continue
             h.update(str(p).encode())
             h.update(p.read_bytes())
-    h.update(libyafl_for(1).encode())   # archive choice invalidates the cache
+    # The ARCHIVE the binary actually links, by content — not just by path.
+    # The yafllib source group above states intent, but the build step links
+    # whatever archive exists: a stale libyafl.a slips under a fresh key and
+    # the cached binary silently runs an old allocator/GC against new
+    # compiler output (2026-08-13: an Aug-6 release archive under a
+    # [pinnable]-emitting compiler — memoize UAF only poison could see).
+    h.update(libyafl_for(1).encode())
+    h.update(Path(libyafl_for(1)).read_bytes())
     return h.hexdigest()[:16]
 
 

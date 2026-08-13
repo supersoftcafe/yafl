@@ -345,12 +345,17 @@ INLINE void object_unpin(object_t* o) {
 // BEFORE claiming for exactly this reason), so no back-off is needed.
 EXTERN object_t* object_pin_resolve(object_t* o);
 
-// Announce that a late pin is about to write `o`. If `o` has aged into the
-// old generation its page returns to the collection rotation: the store may
-// install a reference to a YOUNG object, and minor cycles skip old pages, so
-// otherwise nothing would ever trace the new referent and prune would free it
-// while the writer still holds it. Cost is paid per WRITE, not per object per
-// cycle, which is what makes a write-once structure cheap to keep.
+// Announce that a late pin is about to write `o`. The store may install a
+// reference to a YOUNG object, and minor cycles skip old pages, so a page
+// that has aged into the old generation must return to the collection
+// rotation — otherwise nothing would ever trace the new referent and prune
+// would free it while the writer still holds it. The page's flag is set
+// UNCONDITIONALLY (young pages included) and only then is `old` read: the
+// promotion decision writes `old` before re-reading the flag, so whichever
+// way the race falls, one side sees the other (a Dekker handshake — see
+// gc_note_late_write and the promotion site in object.c). Cost is paid per
+// WRITE, not per object per cycle, which is what makes a write-once
+// structure cheap to keep.
 EXTERN void gc_note_late_write(object_t* o);
 
 enum {

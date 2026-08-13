@@ -129,4 +129,12 @@ add_yafl_test(test_parallel)
 add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)
+# test_gc_late_pin_race: the Dekker handshake between gc_note_late_write and
+# the promotion decision. Builds its own object.c with YAFL_GC_RACE_PROBE,
+# which hooks the check-then-act window between the promotion refs walk and
+# the old-claim so the test can land a late write inside it deterministically.
+# Without the handshake the page promotes holding an untraced young edge and
+# the next minor reclaims the referent.
+add_yafl_test(test_gc_late_pin_race)
+target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
 

@@ -897,9 +897,20 @@ EXPORT void gc_note_late_write(object_t* o) {
     if (!gc_object_is_on_heap_fast(o))
         return;                                  // static or tagged: not ours
     gc_page_t *page = (gc_page_t*)((uintptr_t)o &~ (uintptr_t)(GC_PAGE_SIZE-1));
-    if (!page->head.old)
-        return;                                  // already in the rotation
+    // Dekker handshake with the promotion decision (gc_fsa_prune_body): each
+    // side WRITES its flag, fences, then READS the other's, so at least one
+    // of them must observe the other. Checking `old` first — as this
+    // originally did — is check-then-act: prune's refs walk can pass this
+    // object before the pin lands and set `old` after the check read it as
+    // false, promoting a page whose young referent nothing would ever trace.
+    // So the flag is set UNCONDITIONALLY, young pages included: a young
+    // page's stale flag costs one spurious dirty_old round at its eventual
+    // promotion attempt (the exchange there consumes it), never correctness.
     atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
+    atomic_thread_fence(memory_order_seq_cst);
+    if (!page->head.old)
+        return;         // in the rotation, or mid-promotion — in which case
+                        // the promoter's own re-check sees the flag we set
     atomic_store_explicit(&gc_redirty_requested, true, memory_order_release);
 }
 
@@ -1039,6 +1050,13 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // Don't compact these types of pages.
     if (page->head.mutable || page->head.pages > 1)
         return;
+    // (Dirty-old pages CAN be compacted, and old referrers stay sound — by a
+    // conspiracy worth recording: a dirty page's dead slots are frozen by its
+    // force-mark, so it only goes sparse in a MAJOR's honest trace, and that
+    // same major demoted every old referrer, which is then re-scanned — and
+    // fixed up through the forwarding — while still young. The old-generation
+    // purity validator (YAFL_GC_VALIDATE_OLD) guards this reasoning in test
+    // builds.)
 
     // Don't compact pages with too many objects. This test is faster than counting up
     // the total size of all of the objects.
@@ -1196,6 +1214,71 @@ static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) 
 
 
 
+#ifdef YAFL_GC_VALIDATE_OLD
+// Diagnostic walk (test builds): see the call site in gc_fsa_start.
+static void gc_validate_old_edge(gc_page_t *page, object_t *object,
+                                 object_t *child) {
+    if (!gc_object_is_on_heap_fast(child)) return;
+    gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
+    // Liveness first: the child's slot bit must be set in its page's object
+    // bitmap. A page-flag check alone can be laundered — a dangling pointer
+    // into a freed-and-recycled page reads whatever flags the new tenant
+    // has. (Forwarded children excluse: the slot bit moves with the copy.)
+    unsigned slot = (unsigned)(((uintptr_t)child - (uintptr_t)cp->slots) / GC_SLOT_SIZE);
+    bool live = (uintptr_t)child >= (uintptr_t)cp->slots
+             && bitmap_test(&cp->head.objects, slot);
+    if (live && (cp == page || cp->head.old || cp->head.dirty_old)) return;
+    if (live && vtable_is_forward(child->vtable)) return;
+    if (atomic_load_explicit(&page->head.redirty, memory_order_relaxed)) return;
+    if (!live) fprintf(stderr, "[VALIDATE_OLD] DEAD TARGET (slot bit clear)\n");
+    fprintf(stderr, "[VALIDATE_OLD] cycle=%llu old page %p obj %p -> child %p "
+            "on page %p (old=%d dirty=%d compacted=%d mutable=%d redirty=%d) "
+            "child vtable word=%p forward=%d\n",
+            (unsigned long long)atomic_load(&gc_cycle_count),
+            (void*)page, (void*)object, (void*)child, (void*)cp,
+            cp->head.old, cp->head.dirty_old, cp->head.compacted,
+            cp->head.mutable,
+            (int)atomic_load_explicit(&cp->head.redirty, memory_order_relaxed),
+            (void*)child->vtable, (int)vtable_is_forward(child->vtable));
+    fflush(stderr);
+    abort();
+}
+
+static void gc_validate_old_pages(void) {
+    gc_pool_lock();
+    for (list_element_t *node = old_pages.next; node != &old_pages; node = node->next) {
+        gc_page_t *page = (gc_page_t*)node;
+        for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
+            mask_bits_t bits = page->head.objects.a[index];
+            unsigned  offset = index * GC_MASK_SIZE;
+            while (bits) {
+                unsigned slot = __builtin_ctzll(bits) + offset;
+                bits &= bits-1;
+                object_t *object = (object_t*)&page->slots[slot];
+                vtable_t *vt = vtable_untag(object->vtable);
+                GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
+                while (m) {
+                    unsigned i = __builtin_ctzll(m); m &= m-1;
+                    gc_validate_old_edge(page, object, slots[i]);
+                }
+                if (vt->array_el_pointer_locations) {
+                    uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
+                    char*  array = ((char*)object) + vt->object_size;
+                    for (; len-- > 0; array += vt->array_el_size) {
+                        ptr_mask_t am = vt->array_el_pointer_locations;
+                        while (am) {
+                            unsigned i = __builtin_ctzll(am); am &= am-1;
+                            gc_validate_old_edge(page, object, ((object_t**)array)[i]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    gc_pool_unlock();
+}
+#endif
+
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
@@ -1224,6 +1307,18 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
         }
         gc_pool_unlock();
     }
+
+#ifdef YAFL_GC_VALIDATE_OLD
+    // Diagnostic (test builds only): the old-generation purity invariant,
+    // checked at every cycle start. Every outgoing reference of every object
+    // on a fully-OLD page must land on an old, dirty-old, or non-heap target
+    // — except when the source page's redirty flag is up, which is a late
+    // write's pending demotion (handled just above on the NEXT cycle). An
+    // old->young edge with no flag is the state that lets a minor reclaim a
+    // live object; catching it here names the breaking cycle instead of the
+    // crash a hundred cycles later.
+    gc_validate_old_pages();
+#endif
 
     // Major-cycle decision: collect the old generation when it has doubled
     // since the last major (floored), under heap pressure, or on request.
@@ -1900,14 +1995,17 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
             bits &= bits-1;
             object_t *object = (object_t*)&page->slots[slot];
             // A PINNED object is mid-mutation (a ListBuilder tail whose
-            // `next` is still to be written): its fields can acquire YOUNG
-            // references after this walk, with no barrier and no dirty_old
-            // transition — promoting the page would hide those young targets
-            // from every minor cycle and prune would free them while the
-            // chain is live (the -O3 self-compile ChainLink dangle). The pin
-            // is exactly coextensive with mutability — once unpinned the
-            // cell is frozen forever — so block promotion while any pin is
-            // present; a later prune re-walks and promotes normally.
+            // `next` is still to be written, or a late pin publishing a
+            // write-once slot): its fields can acquire YOUNG references
+            // after this walk — promoting the page would hide those young
+            // targets from every minor cycle and prune would free them while
+            // the structure is live (the -O3 self-compile ChainLink dangle).
+            // So block promotion while any pin is present; a later prune
+            // re-walks and promotes normally. NOTE this check alone is
+            // check-then-act: a LATE pin can land on an object this walk has
+            // already passed. That window is closed by the Dekker handshake
+            // at the promotion site (old-then-recheck-redirty, paired with
+            // gc_note_late_write's redirty-then-read-old), not here.
             if (vtable_is_pinned(object->vtable))
                 return false;
             // Non-compacted page: the vtable word is a real vtable (mask the
@@ -2131,18 +2229,52 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                         page->head.refs_defer -= 1;
                         if (UNLIKELY(gc_stats_enabled)) gc_prof_defer++;
                     } else if (gc_page_refs_are_old(page)) {
-                        if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_ok++;
-                        page->head.dirty_old = false;
-                        // Belt-and-braces: the only road back into the
-                        // rotation (major demotion) resets these anyway.
-                        page->head.refs_defer = page->head.refs_backoff = 0;
-                        // No lock: the page sits on this batch's LOCAL
-                        // survivors chain — move it to the local promoted
-                        // chain; publication happens once, below.
-                        list_unlink((list_element_t*)&page->head.list);
-                        list_link(&promoted, (list_element_t*)&page->head.list);
+#ifdef YAFL_GC_RACE_PROBE
+                        // Test-only hook (tests/test_gc_late_pin_race.c),
+                        // compiled into that target alone: called between
+                        // the refs walk and the old-claim, the check-then-act
+                        // window the handshake below closes, so the test can
+                        // land a late write inside it deterministically.
+                        { extern void gc_test_race_probe(gc_page_t*);
+                          gc_test_race_probe(page); }
+#endif
+                        // Claim `old` FIRST, then re-check for a late write
+                        // that raced the walk. This is the promoter's half of
+                        // the Dekker handshake with gc_note_late_write: each
+                        // side writes its flag, fences, then reads the
+                        // other's. The refs walk alone is check-then-act — a
+                        // late pin can land on an object the walk already
+                        // passed, its note read `old` as still false, and the
+                        // page would promote holding a young edge nothing
+                        // traces. With the handshake, either the writer sees
+                        // `old` set (and flags the global for next cycle's
+                        // demotion) or the exchange below sees the writer's
+                        // flag — dropping to dirty_old, which is force-marked
+                        // and therefore always safe.
                         page->head.old = true;
-                        batch_promoted += 1;
+                        atomic_thread_fence(memory_order_seq_cst);
+                        if (atomic_exchange_explicit(&page->head.redirty, false,
+                                                     memory_order_relaxed)) {
+                            // A late write raced us (or landed while young and
+                            // left its flag). Not a refusal, a deferral: no
+                            // backoff bump, the next prune re-walks and
+                            // promotes an untouched page normally.
+                            page->head.old = false;
+                            page->head.dirty_old = true;
+                            if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_dirty++;
+                        } else {
+                            if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_ok++;
+                            page->head.dirty_old = false;
+                            // Belt-and-braces: the only road back into the
+                            // rotation (major demotion) resets these anyway.
+                            page->head.refs_defer = page->head.refs_backoff = 0;
+                            // No lock: the page sits on this batch's LOCAL
+                            // survivors chain — move it to the local promoted
+                            // chain; publication happens once, below.
+                            list_unlink((list_element_t*)&page->head.list);
+                            list_link(&promoted, (list_element_t*)&page->head.list);
+                            batch_promoted += 1;
+                        }
                     } else {
                         if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_dirty++;
                         page->head.dirty_old = true;
