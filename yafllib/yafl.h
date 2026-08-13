@@ -254,6 +254,27 @@ INLINE bool vtable_is_forward(vtable_t* vt) {
     return (size_t)((char*)vt - _memory_heap_base) < _memory_heap_bytes;
 }
 
+// The CURRENT copy of `o`, following any relocation. Ordinary immutable
+// objects do not need this — every copy of one holds the same bytes forever,
+// which is exactly why field reads are plain `->` accesses with no barrier.
+//
+// A [pinnable] object breaks that: a late write under the pin lands on the
+// live copy only, so a pre-relocation pointer reads STALE fields. Two reads
+// through such a pointer, either side of a write, disagree about the same
+// object — and while cross-thread timing is undefined anyway (seeing NULL
+// where another thread has just published is fine), a single thread seeing
+// two different values for one field is not something a caller can defend
+// against. So reads of [pinnable] fields resolve first; the compiler emits
+// this around them (lowering/pinnable_reads.py) and nowhere else.
+INLINE object_t* object_resolve(object_t* o) {
+    vtable_t* vt = o->vtable;
+    while (UNLIKELY(vtable_is_forward(vt))) {
+        o  = (object_t*)vt;
+        vt = o->vtable;
+    }
+    return o;
+}
+
 // ── object pinning ───────────────────────────────────────────────────────────
 // A marker bit in the OBJECT's vtable word: compaction skips a pinned object
 // (it stays at its address), letting a runtime primitive hold a raw pointer

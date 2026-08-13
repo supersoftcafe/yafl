@@ -50,6 +50,7 @@ import lowering.copy_propagation
 import lowering.ssa_validate
 import lowering.linearity
 import lowering.phi_removal
+import lowering.pinnable_reads
 import lowering.sync_inference
 import lowering.sroa
 import lowering.tail_loop
@@ -329,6 +330,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     if optimization_level >= 1:
         a = lowering.stack_promotion.promote_to_stack(a)
     a = lowering.trim.removed_unused_stuff(lowering.async_lower.lower_async(a))
+    # Reads of a [pinnable] object follow relocation first: it is immutable
+    # except inside a late pin, so a pointer taken before a relocation would
+    # see the pre-write copy. Last, so every ObjectField the pipeline can
+    # produce is already in place.
+    a = lowering.pinnable_reads.resolve_pinnable_reads(a)
     lowering.uninit_check.check_application(a)
 
     # Final SSA validation, just before C emission. The IR is still SSA at
