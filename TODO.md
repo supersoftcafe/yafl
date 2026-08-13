@@ -20,14 +20,44 @@ predated the 08-12 bug fixes (deRef structurally absent from cba122e's
 port output). Worth adding: a whole-stream parity test in the suite,
 gated like selfhost.)
 
-## 0. Union-conversion RSS follow-up (from the 08-12 wrong-shape fix)
+## 0. Self-compile peak RSS +60% from the 08-12 fixes — needs a remedy
 
-The union→union `needs_conversion` gate costs self-compile RSS — same-day
-A/B: ~830-850s/1.94-2.05GB with fixes vs 883.7s/1.22GB at cba122e (wall
-FINE, peak RSS +60%). Remedy to design: cheap uid-subset prefilter (every
-source member uid present in the target's member uid set → widening, no
-full assignability walk), and/or memoise the verdict per (source, target)
-id pair. BOTH compilers.
+MEASURED (same-day A/B, same protocol: port built Python -O3 emit +
+clang -O2, then `YAFL_HEAP_SIZE=6G <binary> c1 < stdlib+bootstrap stream`,
+peak RSS via /usr/bin/time %M):
+
+  * cba122e (before the fixes):  883.7 s wall / 1.22 GB peak RSS
+  * 9538ec0/20045cb (after):     829-851 s wall / 1.94-2.05 GB peak RSS
+
+Wall is FINE (slightly better). Peak RSS is +0.7-0.8 GB (+60%) and that is
+a REAL regression from the fixes, not noise (two independent runs, and the
+1.22 GB side matches the ledgered 1.32 GB best-tree figure).
+
+Prime suspect — the bug-2 gate: `needs_conversion`'s union→union arm
+(compiler/pyast/expression/conversion.py, and the port's `intoUnion` in
+bootstrap/types/conversions.yafl) used to `return True` for any two
+distinct union ids; it now runs FULL member-wise assignability
+(trivially_assignable_equals / assignableEq) un-memoised on the compile
+fixpoint's hot path. The port's assignability walk allocates chains/lists
+per query, and under the structural-pacing GC that garbage IS the peak.
+Secondary suspect (likely smaller): the bug-1 arm stamping puts type args
+on every bare variant arm in generic bodies — more distinct EnumSpec
+instances and deeper spec equality in converge/mono.
+
+Remedies to design (BOTH compilers, in preference order):
+  1. uid-subset prefilter: if every SOURCE member uid is present in the
+     TARGET's member uid set, it is a genuine widening — answer True from
+     string compares alone, no assignability walk. Covers the overwhelming
+     common case; fall through to the full check only on a miss.
+  2. Memoise the verdict per (source uid, target uid) pair — but mind the
+     ledgered memo traps (d61ffd5: value-keyed memos that pay a deep walk
+     per hit made things WORSE; key by the uid STRINGS, not specs).
+
+Gate for any change here: whole-stream c1 byte parity MUST stay green
+(port c1 vs the _python_c_text MIRROR framing — sorted per-file parse,
+just_testing=True, yafl.h; NEVER compare against c.compile output), plus
+the full suite, plus a re-measured A/B pair. Success = peak RSS back
+toward ~1.2-1.4 GB with wall no worse.
 
 (Fixed 2026-08-12, for context: the two-generic-match silent abort — a bare
 variant arm in a generic host latched the wrong enum instantiation at mono —
