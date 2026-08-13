@@ -398,12 +398,16 @@ enum PmRes
   enum PmOk(pmStmts: List<PStmt>)
   enum PmText(pmOut: String, pmCode: Int)
 
+# parseMulti, not parseProgram: a `#FILE#`-marked stream parses per part in
+# canonical (name-sorted) order exactly as mode c does — so every telescoping
+# dump mode can compare the SAME framing the C contract runs under. A plain
+# single file is unchanged (parseMulti falls back to one-part parse).
 fun postmonoRes(text: String): PmRes
-  ret match(parseProgram(text, "x"))
-    (fp: PFail)          => PmText("parse error\n", 1)
+  ret match(parseMulti(text))
     (stmts: List<PStmt>) => match(converge(stmts))
       (ok: CvOk)      => postmonoRes2(ok.cvStatements)
       (d: CvDiverged) => PmText("diverged\n", 2)
+    ()                   => PmText("parse error\n", 1)
 
 fun postmonoRes2(stmts0: List<PStmt>): PmRes
   let lowered = lowerLambdaGlobals(stmts0)

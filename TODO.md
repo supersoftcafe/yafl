@@ -1,42 +1,48 @@
 # OPEN BUGS — take these first, fresh session
 
-## 1. Nested-generic inference gap, THIRD SHAPE: silent runtime abort
+(FIXED 2026-08-12, same session it was found: whole-compiler c1 byte parity
+RESTORED — FINAL PARITY: BYTE-IDENTICAL, 93,686,568 bytes, port c1 vs the
+_python_c_text mirror framing. Root cause was the port's fold walkers
+(rewrite.yafl foldExpr/foldStmt family) never descending SPEC positions, so
+aiNodeCount missed the default-value EXPRESSIONS riding inside a Convert
+TARGET's tuple entries — Python's search_and_replace counts those — and
+`deRef`'s body counted 8 in the port vs 10 in Python once its inner
+`List<Spec>()` call inlined: under the <10 threshold the port catalogued
+and inlined it at all 14 sites, Python never did. Fold family now mirrors
+the rw walker's spec reach exactly (comment at the foldSpec block records
+the incident). Also: driver dump modes now parse `#FILE#` streams per-file
+via parseMulti (postmonoRes), so every telescoping stage contract can run
+under the C contract's framing. GATE LESSON, do not repeat: the
+whole-stream comparison MUST use the _python_c_text MIRROR framing
+(sorted per-file parse + just_testing=True + yafl.h) — comparing against
+`c.compile(use_stdlib=True)` fabricates counter-skew diffs. The defect
+predated the 08-12 bug fixes (deRef structurally absent from cba122e's
+port output). Worth adding: a whole-stream parity test in the suite,
+gated like selfhost.)
 
-The severe one. A top-level function with TWO type parameters whose body
-makes INFERRED generic calls (or nests matches over `Chain<T>` and
-`Chain<U>`) monomorphises with ONE instantiation latched for both params.
-It compiles clean and the binary aborts at runtime (match fall-through)
-whenever `T != U`. Found 2026-08-11 when the no-length sweep's
-`sameLen<SEntry, String>` co-walk crashed the bootstrap binary on every
-input (536 harness failures, exit -6, empty output).
+## 0. Union-conversion RSS follow-up (from the 08-12 wrong-shape fix)
 
-  * Witness: `compiler/tests/test_two_generic_match.py`
-    (@expectedFailure; 12-line repro inside). Flip it to a plain test when
-    fixed.
-  * Workaround in tree: `bootstrap/ast/classtools.yafl` spells every
-    generic call in the co-walk helpers with explicit `<T>`/`<U>` — those
-    explicit args are load-bearing; the comment there says so.
-  * Real fix: use-site latching for multi-param hosts in inference —
-    BOTH compilers (`compiler/pyast/…/inference` + port `resolve/`).
-    Shapes 1–2 of the same family are ledgered in the memory file
-    `project_nested_fn_generic_inference.md`.
-  * Interim hardening worth doing even before the real fix: a check that
-    REJECTS an un-latched inferred generic call inside a multi-param
-    generic host — converts a silent abort into a compile error.
+The union→union `needs_conversion` gate costs self-compile RSS — same-day
+A/B: ~830-850s/1.94-2.05GB with fixes vs 883.7s/1.22GB at cba122e (wall
+FINE, peak RSS +60%). Remedy to design: cheap uid-subset prefilter (every
+source member uid present in the target's member uid set → widening, no
+full assignability walk), and/or memoise the verdict per (source, target)
+id pair. BOTH compilers.
 
-## 2. Checker accepts a WRONG RETURN SHAPE through a union (silent)
+(Fixed 2026-08-12, for context: the two-generic-match silent abort — a bare
+variant arm in a generic host latched the wrong enum instantiation at mono —
+propagation of resolvable subject type args onto bare arms fixed it, both
+compilers, witness `compiler/tests/test_two_generic_match.py`; and the
+wrong-return-shape-through-a-union silent acceptance — `needs_conversion`
+treated ANY two distinct union ids as a widening, now gated on genuine
+member-wise assignability, both compilers, test
+`compiler/tests/test_union_return_shape.py`. The LOUD cross-function
+inference gap in multi-param generic hosts — "cannot infer the type
+arguments" — remains open, ledgered as shapes 1–2 in
+`project_nested_fn_generic_inference.md`; explicit `<T>`/`<U>` args stay the
+sanctioned form, e.g. `bootstrap/ast/classtools.yafl` co-walks.)
 
-Found 2026-08-12 during the no-length sweep: `alPtrLeaves` DECLARED
-`(ls: List<String>, n: Int)|None` while its arms still returned
-`List<String>|None` from a helper — BOTH compilers accepted it silently
-and the mis-shaped value flowed to runtime (the port emitted extra state
-slots; caught only by the byte-parity harness). A returned value whose
-type matches NO union member must be a check error. Minimal repro: declare
-a fun returning `(a: List<String>, n: Int)|None` and return a bare
-`List<String>` — expect a diagnostic, get silence. Likely the union
-assignability path unifying the list against the tuple's first field.
-
-## 3. Port silently compiles an UNDEFINED name
+## 1. Port silently compiles an UNDEFINED name
 
 Python rejects the program; the port emits broken C (ledgered 08-01,
 `project_port_accepts_unresolved_name.md`). The golden rule (byte-identical
@@ -44,7 +50,7 @@ C) is only meaningful if both compilers also REJECT identically — there is
 no gate feeding invalid programs to both compilers today. Fix the port's
 resolution hole, then add a small invalid-program parity harness.
 
-## 4. Undischarged `where` crashes codegen
+## 2. Undischarged `where` crashes codegen
 
 Ledgered in `project_undischarged_where_crash.md`: a `where` constraint
 that survives monomorphisation undischarged reaches codegen and crashes it.

@@ -330,12 +330,16 @@ fun foldStmt<T>(st: PStmt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                 acc: T): T
   let acc2 = f(acc, st)
   ret match(st)
-    (fn: PsFun)  => foldExprOpt<T>(fn.fBody, f, fx,
-                                   foldStmt<T>(fn.fParams, f, fx, acc2))
-    (l: PsLet)   => foldExprOpt<T>(l.lDefault, f, fx, acc2)
+    (fn: PsFun)  => foldSpecs<T>(chain(fn.fWheres), f, fx,
+                      foldSpecOpt<T>(fn.fRet, f, fx,
+                        foldExprOpt<T>(fn.fBody, f, fx,
+                          foldStmt<T>(fn.fParams, f, fx, acc2))))
+    (l: PsLet)   => foldExprOpt<T>(l.lDefault, f, fx,
+                                   foldSpecOpt<T>(l.lType, f, fx, acc2))
     (d: PsDestructure) => foldStmts<T>(d.dTargets, f, fx,
                                        foldExprOpt<T>(d.dDefault, f, fx,
-                                                      acc2))
+                                         foldSpecOpt<T>(d.dType, f, fx,
+                                                        acc2)))
     (rt: PsRet)  => foldExpr<T>(rt.retValue, f, fx, acc2)
     (a: PsAction) => foldExpr<T>(a.action, f, fx, acc2)
     (i: PsIf)    => foldStmts<T>(i.ifFalse, f, fx,
@@ -343,9 +347,14 @@ fun foldStmt<T>(st: PStmt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                               foldExpr<T>(i.ifCond, f, fx,
                                                           acc2)))
     (c: PsClass) => foldStmts<T>(c.cMembers, f, fx,
-                                 foldStmt<T>(c.cParams, f, fx, acc2))
-    (e2: PsEnum) => foldStmts<T>(e2.eVariants, f, fx,
-                                 foldStmt<T>(e2.eParams, f, fx, acc2))
+                      foldSpecs<T>(chain(c.cWheres), f, fx,
+                        foldSpecs<T>(chain(c.cImplements), f, fx,
+                          foldStmt<T>(c.cParams, f, fx,
+                            foldSpecsOpt<T>(c.cAllParents, f, fx, acc2)))))
+    (e2: PsEnum) => foldSpecOpt<T>(e2.eSpec, f, fx,
+                      foldStmts<T>(e2.eVariants, f, fx,
+                        foldStmt<T>(e2.eParams, f, fx, acc2)))
+    (ta: PsTypealias) => foldSpec<T>(ta.taType, f, fx, acc2)
     (o: PStmt)   => acc2
 
 fun foldExprOpt<T>(x: PExpr|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
@@ -358,6 +367,8 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                 acc: T): T
   let acc2 = fx(acc, x)
   ret match(x)
+    (nm: PeName)   => foldSpecOpt<T>(nm.penTrait, f, fx,
+                        foldSpecs<T>(chain(nm.refTypeParams), f, fx, acc2))
     (d: PeDot)     => foldExpr<T>(d.base, f, fx, acc2)
     (c: PeCall)    => foldExpr<T>(c.parameter, f, fx,
                                   foldExpr<T>(c.function, f, fx, acc2))
@@ -365,27 +376,32 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
     (te: PeTernary) => foldExpr<T>(te.falseResult, f, fx,
                          foldExpr<T>(te.trueResult, f, fx,
                            foldExpr<T>(te.condition, f, fx, acc2)))
-    (lm: PeLambda) => foldExpr<T>(lm.lamBody, f, fx,
-                                  foldStmt<T>(lm.lamParams, f, fx, acc2))
+    (lm: PeLambda) => foldSpecOpt<T>(lm.lamRet, f, fx,
+                        foldExpr<T>(lm.lamBody, f, fx,
+                          foldStmt<T>(lm.lamParams, f, fx, acc2)))
     (bk: PeBlock)  => foldExpr<T>(bk.blockValue, f, fx,
                                   foldStmts<T>(bk.blockStmts, f, fx, acc2))
     (mt: PeMatch)  => foldArms<T>(chain(mt.arms), f, fx,
                                   foldExpr<T>(mt.subject, f, fx, acc2))
-    (op: PeBuiltinOp) => foldExpr<T>(op.opParams, f, fx, acc2)
-    (nw: PeNew)    => foldExpr<T>(nw.newParam, f, fx, acc2)
+    (op: PeBuiltinOp) => foldExpr<T>(op.opParams, f, fx,
+                                     foldSpec<T>(op.opType, f, fx, acc2))
+    (nw: PeNew)    => foldExpr<T>(nw.newParam, f, fx,
+                                  foldSpec<T>(nw.newType, f, fx, acc2))
     (ar: PeArrayRead) => foldExpr<T>(ar.arrIndex, f, fx,
                                      foldExpr<T>(ar.arrObj, f, fx, acc2))
-    (cv: PeConvert) => foldExpr<T>(cv.convInner, f, fx, acc2)
+    (cv: PeConvert) => foldSpec<T>(cv.convTarget, f, fx,
+                                   foldExpr<T>(cv.convInner, f, fx, acc2))
     (wx: PeWith)   => foldExpr<T>(wx.withRepls, f, fx,
                                   foldExpr<T>(wx.withSubject, f, fx, acc2))
     (pl: PeParallel) => foldExpr<T>(pl.parParams, f, fx, acc2)
-    (ne: PeNewEnum) => fold<PFieldArg, T>(ne.fieldArgs, acc2, (a3: T, fa: PFieldArg) =>
-                            foldExpr<T>(fa.faValue, f, fx, a3))
+    (ne: PeNewEnum) => foldSpecs<T>(chain(ne.neTypeParams), f, fx,
+                         fold<PFieldArg, T>(ne.fieldArgs, acc2, (a3: T, fa: PFieldArg) =>
+                            foldExpr<T>(fa.faValue, f, fx, a3)))
     (lp: PeLoop)   => foldExpr<T>(lp.loopBody, f, fx,
                                   foldExprs<T>(chain(lp.loopParams), f, fx,
                                                acc2))
     (rc: PeRecur)  => foldExprs<T>(chain(rc.recArgs), f, fx, acc2)
-    (lz: PeLazy)   => acc2
+    (lz: PeLazy)   => foldSpec<T>(lz.lzTarget, f, fx, acc2)
     (o: PExpr)     => acc2
 
 fun [tail] foldExprs<T>(es: Chain<PExpr>, f: (:T, :PStmt): T,
@@ -411,7 +427,8 @@ fun [tail] foldArms<T>(as2: Chain<PArm>, f: (:T, :PStmt): T,
         foldExprOpt<T>(l.value.armGuard, f, fx,
                        foldLits<T>(chain(l.value.armLiterals), f, fx,
                                    foldExpr<T>(l.value.armBody, f, fx,
-                                               acc))))
+                                     foldSpecOpt<T>(l.value.armType, f, fx,
+                                                    acc)))))
 
 fun [tail] foldLits<T>(ls: Chain<PLit>, f: (:T, :PStmt): T,
                        fx: (:T, :PExpr): T, acc: T): T
@@ -425,6 +442,58 @@ fun foldLit<T>(lt: PLit, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T
     (le: PlExpr)  => foldExpr<T>(le.litExpr, f, fx, acc)
     (lr: PlRange) => foldExpr<T>(lr.rangeHi, f, fx,
                                  foldExpr<T>(lr.rangeLo, f, fx, acc))
+
+# Specs carry EXPRESSIONS: a tuple entry's default (Python's
+# TupleEntrySpec.search_and_replace descends `default`, so its callback
+# fires on those Expression instances). The fold twins must therefore
+# thread fx through every spec position the rewrite walker descends —
+# skipping them undercounts the _node_count mirror. That exact miss broke
+# whole-compiler c1 byte parity (found 08-12): aiNodeCount never saw the
+# default riding in a Convert TARGET, deRef fell under the inline
+# threshold in the port only, and Python kept calls the port inlined.
+# Specs themselves fire NO callback — Python counts only Expression/
+# Statement instances. Reach mirrors rwSpecKids/rwEntry exactly.
+
+fun foldSpec<T>(sp: Spec, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+                acc: T): T
+  ret match(sp)
+    (e2: SEnum)        => foldSpecs<T>(chain(e2.seParams), f, fx, acc)
+    (cl: SClass)       => foldSpecs<T>(chain(cl.scParams), f, fx, acc)
+    (n: SNamed)        => acc   # traversal LEAF (rwSpecKids parity)
+    (cm: SCombination) => foldSpecs<T>(chain(cm.scTypes), f, fx, acc)
+    (t2: STuple)       => foldEntries<T>(chain(t2.stEntries), f, fx, acc)
+    (cb: SCallable)    => foldSpecOpt<T>(cb.scResult, f, fx,
+                            foldSpec<T>(cb.scParams2, f, fx, acc))
+    (af: SArrayField)  => foldSpec<T>(af.safElem, f, fx, acc)
+    (ls: SLazyStub)    => foldSpecOpt<T>(ls.slsTarget, f, fx, acc)
+    (o: Spec)          => acc
+
+fun foldSpecOpt<T>(sp: Spec|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+                   acc: T): T
+  ret match(sp)
+    (s2: Spec) => foldSpec<T>(s2, f, fx, acc)
+    ()         => acc
+
+fun [tail] foldSpecs<T>(ts: Chain<Spec>, f: (:T, :PStmt): T,
+                        fx: (:T, :PExpr): T, acc: T): T
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldSpecs<T>(l.next, f, fx,
+                                    foldSpec<T>(l.value, f, fx, acc))
+
+fun foldSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :PStmt): T,
+                    fx: (:T, :PExpr): T, acc: T): T
+  ret match(ss)
+    (l: List<Spec>) => foldSpecs<T>(chain(l), f, fx, acc)
+    ()              => acc
+
+fun [tail] foldEntries<T>(es: Chain<SEntry>, f: (:T, :PStmt): T,
+                          fx: (:T, :PExpr): T, acc: T): T
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldEntries<T>(l.next, f, fx,
+        foldExprOpt<T>(l.value.seDefault, f, fx,
+                       foldSpecOpt<T>(l.value.seType, f, fx, acc)))
 
 fun foldNoStmt<T>(acc: T, st: PStmt): T
   ret acc
