@@ -799,7 +799,7 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
         // and NULL is safe where garbage is not.
         object = (object_t*)object_alloc_fast(total, vtable->is_mutable);
     }
-    object->vtable = vtable;
+    object->vtable = vtable_tag(vtable);
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);
     return object;
@@ -1119,7 +1119,9 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         if (!object_try_pin(object))
             continue;
 
-        vtable_t *vt = vtable_untag(object->vtable);
+        // Drop the PIN only: the vtable TAG must survive onto the copy, or the
+        // copy's own header would read as a forwarding pointer.
+        vtable_t *vt = (vtable_t*)((uintptr_t)object->vtable & ~(uintptr_t)VTABLE_PIN_BIT);
         memcpy(target, object, size);
         // The memcpy copied the CLAIMED word, pin bit and all. Clear it on the
         // copy before anyone can reach it — the target is still private here,

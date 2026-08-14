@@ -52,7 +52,7 @@ static vtable_t MIXED_VT = {
 static object_t* alloc_with(vtable_t* vt, size_t size) {
     object_t* o = (object_t*)object_alloc_fast_raw(size, true);
     for (size_t i = 0; i < size / sizeof(void*); i++) ((void**)o)[i] = NULL;
-    o->vtable = vt;
+    o->vtable = vtable_tag(vt);
     return o;
 }
 

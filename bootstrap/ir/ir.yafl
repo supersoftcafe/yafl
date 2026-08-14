@@ -792,11 +792,11 @@ fun cgGlobalImplementValueLine(acc: (text: String, cache: List<CgCacheEntry>), v
 fun cgGlobalToCImplementInitArrayForm(g: CgGlobal, objName: String, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let proto = cgGlobalPrototype(g, cache0)
   let result = fold(values, ("", proto.cache), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => cgGlobalImplementValueLine(acc, v.value))
-  ret (proto.text + " = {\n    (object_t*)obj_" + mangleName(objName) + "\n" + result.text + "};\n", result.cache)
+  ret (proto.text + " = {\n    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n" + result.text + "};\n", result.cache)
 
 fun cgGlobalToCImplementDataForm(g: CgGlobal, objName: String, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let dataName = cgGlobalToCName(g) + "_data"
-  let result = fold(values, ("    (object_t*)obj_" + mangleName(objName) + "\n", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => cgGlobalImplementValueLine(acc, v.value))
+  let result = fold(values, ("    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => cgGlobalImplementValueLine(acc, v.value))
   ret ("static " + mangleName(objName) + "_t " + dataName + " = {\n" + result.text + "};\n"
        + "static object_t* " + cgGlobalToCName(g) + " = (object_t*)&" + dataName + ";\n", result.cache)
 

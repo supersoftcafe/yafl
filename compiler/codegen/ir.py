@@ -596,14 +596,20 @@ class Global:
             # initializer is the same clang constant-expression extension the
             # vtables' implements_array uses — valid because vtables are
             # emitted before globals, in extends order.
+            #
+            # The stored word carries VTABLE_TAG_BIT, exactly as a heap
+            # instance's does (yafl.h object_new): an untagged header word
+            # means "forwarding pointer". Written as `(char*)obj_X + 2` and
+            # not `| 2` because only pointer arithmetic on an address
+            # constant is a C constant expression.
             if self.init.values and isinstance(self.init.values[-1], p.InitArray):
                 return (f"{self.__prototype(type_cache)} = {{\n"
-                 f"    (object_t*)obj_{mangle_name(self.object_name)}\n"
+                 f"    (object_t*)((char*)obj_{mangle_name(self.object_name)} + VTABLE_TAG_BIT)\n"
                  + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
                  f"}};\n")
             # Generate a named struct for the data, then a pointer to it.
             data_name = f"{self.to_c_name()}_data"
-            struct_body = ("    (object_t*)obj_{}\n".format(mangle_name(self.object_name))
+            struct_body = ("    (object_t*)((char*)obj_{} + VTABLE_TAG_BIT)\n".format(mangle_name(self.object_name))
                            + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
             return (f"static {mangle_name(self.object_name)}_t {data_name} = {{\n"
                     f"{struct_body}"

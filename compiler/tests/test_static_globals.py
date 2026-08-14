@@ -78,9 +78,11 @@ class TestStaticObjectGraphs(TestCase):
         self.assertNotIn("lambda_Test__nodes", code,
                          "the constant chain still carries a runtime init thunk")
         # All three Nodes are static object instances (each `_data` struct
-        # opens with its vtable value).
-        self.assertGreaterEqual(code.count("(object_t*)obj_Test__Node"), 3,
-                                "expected three static Node instances")
+        # opens with its vtable value, carrying VTABLE_TAG_BIT exactly as a
+        # heap instance's header does — see yafl.h vtable_is_forward).
+        self.assertGreaterEqual(
+            code.count("(object_t*)((char*)obj_Test__Node"), 3,
+            "expected three static Node instances")
 
     def test_bigint_fields_and_cross_reference_run(self):
         rc, out = compile_and_run_stdlib_capture(_CHAIN_BIGINT, timeout=30,
@@ -93,8 +95,9 @@ class TestStaticObjectGraphs(TestCase):
                          "the bigint chain still carries a runtime init thunk")
         self.assertNotIn("lambda_Test__tail3", code,
                          "the referenced static still carries a runtime init thunk")
-        self.assertGreaterEqual(code.count("(object_t*)obj_Test__Node"), 3,
-                                "expected three static Node instances")
+        self.assertGreaterEqual(
+            code.count("(object_t*)((char*)obj_Test__Node"), 3,
+            "expected three static Node instances")
 
     def test_mutually_referencing_globals_compile(self):
         # A reference cycle between global initialisers must not recurse the

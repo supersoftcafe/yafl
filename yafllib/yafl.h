@@ -242,17 +242,45 @@ typedef struct {
 #define rotate_function_id(id)\
         ((id * sizeof(intptr_t) * 2) | (id / (134217728 / sizeof(intptr_t) * 8)))
 
-// The vtable word is an ordinary, untagged pointer. Real vtables are static C
-// globals and therefore live OUTSIDE the managed mmap heap; when compaction
-// relocates an object it stores the new object's address — a heap address —
-// in the old object's vtable word. So "is this word a forwarding pointer?"
-// is exactly the managed-heap range check, no tag bits needed.
+// The vtable word carries a TAG BIT. Bit 1 is set on every real vtable
+// pointer an object holds, and clear on a compaction forwarding pointer —
+// which is a plain heap address, and heap objects are slot-aligned, so the
+// bit is free. "Is this word a forwarding pointer?" is therefore one AND on
+// a word the caller has already loaded.
+//
+// It used to be the managed-heap RANGE check (`vt - _memory_heap_base <
+// _memory_heap_bytes`): correct, tag-free, but it reloads two mutable
+// externs on every dispatch, instance test and resolve — and because they
+// are mutable externs the C compiler must re-read them after any call it
+// cannot see through, which also blocks CSE of repeated resolves of one
+// pointer (lowering/pinnable_reads.py emits 3-6 per function).
 EXTERN char*  _memory_heap_base;    // set once at heap init (mmap.c)
 EXTERN size_t _memory_heap_bytes;
 
+// Bit 0 is the PIN (see object pinning below); bit 1 marks "this word is a
+// vtable, not a forwarding address". Both are stripped by vtable_untag.
+enum { VTABLE_PIN_BIT = 0x1,
+       VTABLE_TAG_BIT = 0x2,
+       VTABLE_BITS    = VTABLE_PIN_BIT | VTABLE_TAG_BIT };
+
 INLINE bool vtable_is_forward(vtable_t* vt) {
-    return (size_t)((char*)vt - _memory_heap_base) < _memory_heap_bytes;
+    return ((uintptr_t)vt & VTABLE_TAG_BIT) == 0;
 }
+
+// Applied wherever a vtable is INSTALLED in an object's header: object_new
+// and array_create (below and in object.c), compaction's copy, and the
+// static instances the code generator emits (there as `(char*)obj_X +
+// VTABLE_TAG_BIT`, since `|` on an address is not a C constant expression).
+INLINE vtable_t* vtable_tag(vtable_t* vt) {
+    return (vtable_t*)((uintptr_t)vt | VTABLE_TAG_BIT);
+}
+
+// The same tag for a STATIC initialiser — every object built as a compound
+// literal (string and integer literals below, and the code generator's static
+// instances) needs it too, or its header reads as a forwarding pointer.
+// Pointer arithmetic, not `|`: only an address constant plus an integer is a
+// C constant expression, and vtables are aligned so +2 IS |2.
+#define VTABLE_TAG_CONST(vt) ((vtable_t*)((char*)(vt) + VTABLE_TAG_BIT))
 
 // The CURRENT copy of `o`, following any relocation. Ordinary immutable
 // objects do not need this — every copy of one holds the same bytes forever,
@@ -281,14 +309,12 @@ INLINE object_t* object_resolve(object_t* o) {
 // and mutate a not-yet-published field without racing lazy relocation —
 // the concurrent-compaction contract ("either copy is fine") only covers
 // immutable objects. Real vtables are aligned statics so bit 0 is free, and
-// a pinned word still fails vtable_is_forward's heap-range test (the bit
-// never appears on a forwarding pointer: compaction skips pinned objects,
-// and pinning is only legal directly after allocation, before the object is
-// visible to anything but its allocator).
-enum { VTABLE_PIN_BIT = 0x1 };
-
+// a pinned word still carries the vtable tag, so it is never mistaken for a
+// forwarding pointer (the pin bit never appears on one anyway: compaction
+// skips pinned objects, and the object stays pinned only while its owner
+// holds it).
 INLINE vtable_t* vtable_untag(vtable_t* vt) {
-    return (vtable_t*)((uintptr_t)vt & ~(uintptr_t)VTABLE_PIN_BIT);
+    return (vtable_t*)((uintptr_t)vt & ~(uintptr_t)VTABLE_BITS);
 }
 
 INLINE bool vtable_is_pinned(vtable_t* vt) {
@@ -568,7 +594,7 @@ INLINE void *object_alloc_fast(size_t size, bool is_mutable) {
 // elide the redundant zeroes.
 INLINE void *object_new(vtable_t *vtable) {
     object_t *object = (object_t*)object_alloc_fast(vtable->object_size, vtable->is_mutable);
-    object->vtable = vtable;
+    object->vtable = vtable_tag(vtable);
     return object;
 }
 
@@ -972,13 +998,13 @@ EXTERN struct integer_vtable INTEGER_VTABLE;
 
 
 #if WORD_SIZE == 64
-#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,((count)+1)/2,sign,array})
+#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){VTABLE_TAG_CONST(&INTEGER_VTABLE),((count)+1)/2,sign,array})
 #define INTEGER_LITERAL_N_1(value1) ((intptr_t)(value1))
 #define INTEGER_LITERAL_N_2(value1, value2) (((intptr_t)(value1)&0xffffffffull)|((intptr_t)(value2)<<32))
 #define INTEGER_LITERAL_1(sign, value1) ((object_t*)((intptr_t)value1*(sign?-1:1)*4+PTR_TAG_INTEGER))
 #define INTEGER_LITERAL_2(sign, value1, value2) (((!sign)&&(value2>INT32_MAX/4))||(value2>INT32_MAX/4+1)?INTEGER_LITERAL_N(sign,2,{INTEGER_LITERAL_N_2(value1, value2)}):(object_t*)((((intptr_t)value2<<32)+value1)*(sign?-1:1)*4+PTR_TAG_INTEGER))
 #else
-#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){(vtable_t*)&INTEGER_VTABLE,count,sign,array})
+#define INTEGER_LITERAL_N(sign, count, array) ((object_t*)&(struct{vtable_t*v;uint32_t l;int32_t s;intptr_t a[count];}){VTABLE_TAG_CONST(&INTEGER_VTABLE),count,sign,array})
 #define INTEGER_LITERAL_N_1(value1) value1
 #define INTEGER_LITERAL_N_2(value1, value2) value1, value2
 #define INTEGER_LITERAL_1(sign, value1) (((!sign)&&value1>INT32_MAX/4)||(value1>INT32_MAX/4+1)?INTEGER_LITERAL_N(sign,1,{value1}):(object_t*)((intptr_t)value1*(sign?-1:1)*4+PTR_TAG_INTEGER))
@@ -1422,7 +1448,7 @@ EXTERN struct string_vtable STRING_VTABLE;
                 uint32_t l; \
                 uint32_t h; \
                 char a[sizeof(contents)]; \
-            }){(vtable_t*)&STRING_VTABLE, sizeof(contents), 0, contents})
+            }){VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(contents), 0, contents})
 
 
 INLINE int32_t string_length(object_t* self) {

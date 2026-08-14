@@ -13,7 +13,7 @@ static vtable_t TEST_VT = { .object_size = 2*sizeof(void*), .is_mutable = 0, .na
 
 static object_t* alloc_obj(void) {
     object_t* o = (object_t*)object_alloc_fast_raw(2*sizeof(void*), false);
-    o->vtable = &TEST_VT;
+    o->vtable = vtable_tag(&TEST_VT);
     ((uintptr_t*)o)[1] = 0xC0FFEE;
     return o;
 }
@@ -41,7 +41,7 @@ static void run_tests(object_t* _, fun_t continuation) {
 
     object_unpin(pinned);
     CHECK(!vtable_is_pinned(pinned->vtable), "unpin failed");
-    CHECK(pinned->vtable == &TEST_VT, "vtable wrong after unpin");
+    CHECK(vtable_untag(pinned->vtable) == &TEST_VT, "vtable wrong after unpin");
 
     for (int i = 0; i < CHURN; ++i) {
         (void)alloc_obj();
