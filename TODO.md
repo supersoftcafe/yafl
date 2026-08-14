@@ -228,7 +228,53 @@ constant initialiser needs no thunk. This would also make some function-typed
 globals avoid the lazy path, but it does NOT fix the bug above for the
 run-code cases.
 
+## MEASUREMENT RULE: peak RSS is only valid when the heap cap BINDS (08-14)
+
+Learned the hard way while A/B-ing the vtable tag bit (3eb36ae). At the
+reference `YAFL_HEAP_SIZE=6G` the pair read 1.464GB vs 2.520GB — a +73%
+"regression" that does not exist. Re-run at caps that bind:
+
+    heap 3G   A 1.590GB   B 1.617GB   (+1.7%)
+    heap 2G   A 1.975GB   B 1.987GB   (+0.6%)
+
+With a 6G cap and a ~1.4GB live set the reserve gate never engages, so peak
+RSS measures how far the allocation frontier outran the collector — a RATE
+difference, not liveness. Proof it is not a property of the code under test:
+adding only relaxed atomic counters to `gc_compact_page` moved an otherwise
+identical build from 1.449GB to 2.280GB. Same semantics, same emitted C,
++57% RSS.
+
+**So: quote peak RSS only from a run whose heap cap binds, or quote the
+frontier (`max in_use` pages) instead.** Structural metrics stayed honest
+throughout the same investigation — bytes evacuated, objects marked, symbol
+reference counts, text size — and they, not RSS, are what caught the real
+effects. Three plausible mechanisms (misclassification, compaction
+starvation, promote-volume runaway) were each refuted by direct counters
+after being argued convincingly from the code; instrument before believing.
+
+Related and still open: **release pages more deterministically** (user, 08-14
+— direction chosen: WARM-FIRST REUSE ORDERING). Every term in the current
+policy is clocked on cycles or on a floating quantity, never on the
+allocation clock the rest of the GC uses: `SCAVENGE_FREE_AGE` counts scavenge
+epochs (i.e. GC cycles), `memory_scavenge` is per-call budget-limited, and
+retention is `slack = young * 3`. Meanwhile 62-69% of returned pages are
+re-claimed (returned 613k-684k vs reclaimed 379k-470k on one self-compile) —
+we madvise pages and take them straight back. First step agreed: never claim
+a virgin page while a warm free page exists, so the frontier stops growing
+and RSS self-limits without any madvise policy change.
+
 ## OPEN (optimisation): CSE the `object_resolve` read barrier
+
+**HAZARD, noted 08-14 (Fable):** every resolve hoisted out of a loop is a
+heap pointer with a LONGER LIVE RANGE, and the root scan is CONSERVATIVE —
+a pointer parked in a callee-saved register pins its page
+(`scanner.pinned`), and pinned pages are exactly the ones `gc_compact_page`
+refuses. So the TODO's "per basic block, invalidate at anything that could
+relocate" is a HARD CONSTRAINT, not an implementation detail: do not
+loop-hoist resolves without a story for pinned-page pressure. (Measured on
+the tag-bit branch, this effect did NOT appear — `cons_seeds` 24.6M -> 23.8M
+and `cs_skip_pinned` 7.66M -> 7.59M, both DOWN — but that was clang's CSE,
+not ours, and a deliberate IR-level pass hoists further.)
 
 `lowering/pinnable_reads.py` (port: `lower/ir/pinnable_reads.yafl`) wraps
 every read of a `[pinnable]` object's fields in `object_resolve`, because a
