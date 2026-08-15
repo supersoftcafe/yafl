@@ -232,6 +232,7 @@ fun checkOneWhere(w: Spec, r: Resolver, lr: PLine): List<PErr>
     ret oneErr(lr, "Compile steps incomplete for '" + ctWhereName(w)
                    + "'. Seeing this message indicates a compiler error.")
   ret anyTraitMatches(chain(traitLets(r)), compiled.soSpec, r)
+       || anyInstanceMatches(chain(traitInstanceStmts(r)), compiled.soSpec, r)
     ? noErrs()
     : oneErr(lr, "Trait parameter '" + ctWhereName(w)
                  + "' does not match any trait")
@@ -245,6 +246,46 @@ fun [tail] anyTraitMatches(ts: Chain<PStmt>, compiled: Spec,
         ? true
         : anyTraitMatches(l.next, compiled, r)
       (o: PStmt)    => anyTraitMatches(l.next, compiled, r)
+
+# PRE-LOWERING first-class instances: the pattern IS the interface, so a
+# constraint matches when it equals the pattern, or when a GENERIC instance
+# unifies through its own params (base.py's `inst_found`).
+#
+# The port had only the `[trait]`-let half. That was invisible while the C
+# path ran no check phase at all: gate the C path and the bootstrap itself
+# stops compiling — 512 "does not match any trait" failures, every one a
+# constraint a first-class `instance` satisfies. Lowering already knew about
+# them (lower_instances runs in postmonoRes3b); only checking did not.
+fun [tail] anyInstanceMatches(ts: Chain<PStmt>, compiled: Spec,
+                              r: Resolver): Bool
+  ret match(ts)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (ti: PsTraitInstance) => instancePatternMatches(ti, compiled, r)
+        ? true
+        : anyInstanceMatches(l.next, compiled, r)
+      (o: PStmt)            => anyInstanceMatches(l.next, compiled, r)
+
+fun instancePatternMatches(ti: PsTraitInstance, compiled: Spec,
+                           r: Resolver): Bool
+  ret match(ti.tiPattern)
+    (pat: SClass) => match(compiled)
+      (cmp: SClass) => pat.scName != cmp.scName
+        ? false
+        : triTrue2(assignableEq(r, cmp, pat))
+          || unifiesWithInstance(pat, cmp, ti)
+      (o: Spec)     => false
+    (o2: Spec)    => false
+
+# `unify_generic(inst.pattern, compiled, {p.name for p in inst.type_params})
+#  is not None` — the instance's OWN params are the holes; anything else is
+# rigid.
+fun unifiesWithInstance(pat: SClass, cmp: SClass, ti: PsTraitInstance): Bool
+  ret match(unifyGeneric(pat, cmp,
+                         genNames(chain(ti.tiGens), builder<String>()),
+                         List<Binding>()))
+    (m: UMap)   => true
+    (f2: UFail) => false
 
 # Python uses the RAW truthiness of trivially_assignable_equals here (None is
 # falsy), so only a definite True matches.

@@ -27,14 +27,26 @@ import Bootstrap::Types
 class [final] Diag(dFails: List<PErr>, dWarns: List<PErr>)
 
 fun collectDiagnostics(statements: List<PStmt>, r: Resolver): Diag
+  ret collectDiagnostics2(statements, r, true)
+
+# `requireMain` false for the C path. compiler.py's __collect_diagnostics does
+# include the main check, but the C path reports a missing main SEPARATELY, as
+# the bare `No main function found\n` (cStage, mirroring the byte-parity
+# harness in test_bootstrap_c which telescopes past compile() and returns that
+# same bare string). Emitting it here as well produced the DIAGNOSTIC spelling
+# `none[0:0] - No main function found` for every main-less corpus file and
+# broke 56 contract tests — the corpus is stdlib and bootstrap sources, none of
+# which has a main.
+fun collectDiagnostics2(statements: List<PStmt>, r: Resolver,
+                        requireMain: Bool): Diag
   let untyped = untypedParamErrors(statements)
   if !isEmpty(untyped)
     ret Diag(untyped, noErrs())
   let future = futureGlobalErrors(chain(statements), noErrs())
   if !isEmpty(future)
     ret Diag(future, noErrs())
-  let diagnostics = withMainCount(statements,
-                                  stmtChecks(chain(statements), r, noErrs()))
+  let checks = stmtChecks(chain(statements), r, noErrs())
+  let diagnostics = requireMain ? withMainCount(statements, checks) : checks
   let warnings = onlyWarnings(chain(diagnostics), noErrs())
   if !sameLen(chain(warnings), chain(diagnostics))
     ret Diag(diagnostics, warnings)          # some real error: fail with all

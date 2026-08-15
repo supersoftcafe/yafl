@@ -339,12 +339,42 @@ fun enumFieldType(e: SEnum, name: String, r: Resolver): Spec|None
                                                 name))
 
 # An array read yields the ELEMENT type of the array field it indexes.
+# access.py's __array_info: the object's type is the array CLASS, so getting
+# the element type is a two-step lookup — resolve the class spec to its
+# statement, then take the element off that class's trailing array field.
+#
+# The port used to test the object's own type for SArrayField and give up
+# otherwise. A class spec is never an SArrayField, so the generated accessor
+# `(index: Int32): Elem { ret this[index] }` typed to NOTHING, and the check
+# phase then reported it as a function whose body never returns a value. It
+# stayed hidden because only the check phase asks — and the C path never ran
+# the check phase (see postmonoRes2's `gated`).
 fun arrayReadType(ar: PeArrayRead, r: Resolver): Spec|None
   ret match(exprType(ar.arrObj, r))
-    (ot: Spec) => elementOf(ot)
+    (ot: Spec) => elementOf(ot, r)
     ()         => None
 
-fun elementOf(ot: Spec): Spec|None
+fun elementOf(ot: Spec, r: Resolver): Spec|None
   ret match(ot)
+    # Already the field itself — kept for callers that hold one directly.
     (af: SArrayField) => af.safElem
+    (sc: SClass)      => classArrayElem(sc, r)
     (o: Spec)         => None
+
+fun classArrayElem(sc: SClass, r: Resolver): Spec|None
+  ret match(soleItem(findType(r, sc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => firstArrayElem(chain(classFields(cls)))
+      (o: PStmt)     => None
+    ()         => None
+
+fun [tail] firstArrayElem(fs: Chain<PStmt>): Spec|None
+  ret match(fs)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => match(let2.lType)
+        (t2: Spec) => match(t2)
+          (af: SArrayField) => af.safElem
+          (o: Spec)         => firstArrayElem(l.next)
+        ()         => firstArrayElem(l.next)
+      (o: PStmt)    => firstArrayElem(l.next)

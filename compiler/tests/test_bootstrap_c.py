@@ -34,6 +34,7 @@ import lowering.lower_lazy_lets
 import lowering.strings
 import lowering.hoist_nested
 import lowering.lambda_globals
+import lowering.linearity
 import lowering.lambda_lift
 import lowering.tail_loop
 import lowering.unions
@@ -55,6 +56,7 @@ _CORPUS = sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
 
 _CONVERGE = c.__dict__["__converge"]
+_DIAGNOSE = c.__dict__["__collect_diagnostics"]
 _CREATE_C = c.__dict__["__create_c_code"]
 _IS_MAIN = c.__dict__["__is_main_function"]
 
@@ -196,6 +198,41 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0) -> st
     statements, dropped = lowering.drops.insert_drops(statements)
     if dropped:
         statements, _resolver, _p2 = _CONVERGE(statements)
+    # The CHECK PHASE, at compiler.py's position — after the drops
+    # re-convergence, before derive_equality.
+    #
+    # This mirror used to telescope straight past it, and so did the port's C
+    # path, so the two agreed by both skipping. They no longer can: the port
+    # now runs diagnostics before emitting C (postmonoRes2's `gated`), which
+    # is the whole point — a compiler that emits C for a program with an
+    # undefined name is the worst failure class there is. Skipping it here
+    # would compare two different pipelines.
+    #
+    # It bites on the corpus_converge files because they are self-contained
+    # preludes — drop_balancing.yafl declares `namespace System` and its own
+    # `typealias Int`, `+`, `true`, `false` — and this harness prepends the
+    # real stdlib, so the combined program genuinely IS ambiguous. Both
+    # compilers say so, identically (1879 diagnostics, verified equal); only
+    # the old telescoping hid it.
+    # sorted(set(errors)) over Error OBJECTS, exactly as compiler.py's
+    # __print_errors does — Error is @dataclass(order=True), so this orders by
+    # line_ref NUMERICALLY. Sorting the formatted strings instead puts
+    # `[19:28]` before `[19:9]`, which is the same 1879 diagnostics in a
+    # different order and diffs against the port on line 2.
+    _failures, _warnings = _DIAGNOSE(statements, _resolver)
+    # __collect_diagnostics always adds "No main function found", but the C
+    # path reports a missing main SEPARATELY and in a different spelling — the
+    # bare string returned below, which the port's cStage emits too. Drop it
+    # here so both sides decide identically (the port passes requireMain=false
+    # for the same reason). Python's rule then applies unchanged: a real error
+    # prints ALL diagnostics, warnings included; warnings alone are not a
+    # failure.
+    _failures = [e for e in _failures if e.message != "No main function found"]
+    if any(e.severity != "warning" for e in _failures):
+        return "".join(f"{e}\n" for e in sorted(set(_failures)))
+    _lin = lowering.linearity.check_linearity(statements, _resolver)
+    if _lin:
+        return "".join(f"{e}\n" for e in sorted(set(_lin)))
     # Derived enum equality, then the [hashed] split, as compiler.py does.
     statements, _derived = lowering.derive_eq.derive_equality(statements)
     if _derived:

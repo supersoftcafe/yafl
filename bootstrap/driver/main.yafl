@@ -405,16 +405,48 @@ enum PmRes
 fun postmonoRes(text: String): PmRes
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => match(converge(stmts))
-      (ok: CvOk)      => postmonoRes2(ok.cvStatements)
+      (ok: CvOk)      => postmonoRes2(ok.cvStatements, false)
       (d: CvDiverged) => PmText("diverged\n", 2)
     ()                   => PmText("parse error\n", 1)
 
-fun postmonoRes2(stmts0: List<PStmt>): PmRes
+# `gated` runs the user-facing CHECK PHASE — diagnostics then linearity — at
+# compiler.py's exact position: after the drops re-convergence, before
+# derive_equality. The C path passes true because that is what compile() does;
+# the dump modes pass false because they telescope past it deliberately,
+# mirroring the Python test harnesses that drive the lowering passes directly
+# rather than through compile().
+#
+# Without this the C path ran NO checks at all: `let x = System::nosuchname`
+# compiled to C and exited 0 where Python printed "Failed to resolve" and
+# exited 1. Byte-identical output means nothing if the two compilers disagree
+# about which programs are legal, and every invalid-program shape tried —
+# bare undefined name, undefined call, undefined name inside a generic call,
+# plain type mismatch — leaked through this hole.
+fun postmonoRes2(stmts0: List<PStmt>, gated: Bool): PmRes
   let lowered = lowerLambdaGlobals(stmts0)
   let d0 = insertDrops(lowered, rootResolver(lowered))
   ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
-    (ok: CvOk)       => postmonoRes3(ok.cvStatements)
+    (ok: CvOk)       => gated
+      ? postmonoGate(ok.cvStatements)
+      : postmonoRes3(ok.cvStatements)
     (dv: CvDiverged) => PmText("diverged\n", 2)
+
+# compiler.py: `failures, warnings = __collect_diagnostics(...)` then
+# `if failures: return failures`, and linearity right after on a clean check.
+# A failure is a REFUSAL — code 1, no C — matching main.py, which exits 1 when
+# compile_project hands back no code so a build system cannot pick up a stale
+# object file.
+fun postmonoGate(stmts: List<PStmt>): PmRes
+  let r = rootResolver(stmts, collectParamSuggestions(stmts))
+  # requireMain false: cStage reports a missing main itself, in the bare
+  # spelling the byte-parity contract pins.
+  let d = collectDiagnostics2(stmts, r, false)
+  if !isEmpty(d.dFails)
+    ret PmText(printedDiagnostics(d.dFails), 1)
+  let lin = checkLinearity(stmts, r)
+  if !isEmpty(lin)
+    ret PmText(printedDiagnostics(lin), 1)
+  ret postmonoRes3(stmts)
 
 fun postmonoRes3(stmts0: List<PStmt>): PmRes
   # Derived enum equality, then the [hashed] split, as compiler.py orders it.
@@ -598,7 +630,7 @@ fun cModeConverge(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code:
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
   ret match(converge(stmts))
-    (ok: CvOk)      => postmonoRes2(ok.cvStatements)
+    (ok: CvOk)      => postmonoRes2(ok.cvStatements, true)
     (d: CvDiverged) => PmText("diverged\n", 2)
 
 # Parts are parsed in CANONICAL ORDER — sorted by file name — so the emitted C
