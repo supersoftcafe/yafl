@@ -92,6 +92,11 @@ bool gc_object_is_on_heap_slow(object_t *object);
 extern size_t memory_watermark(void);
 extern size_t memory_total_pages(void);
 extern size_t memory_count(void);
+extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale,
+                              size_t* misses, size_t* warm_at_miss);
+extern void memory_pool_release_cycle(void);
+extern void memory_pool_release_stats(size_t* released, size_t* retained, size_t* lost,
+                                      unsigned* pct);
 
 // Page-pool lock: guards pages_to_scan / pages_to_prune list surgery only —
 // O(1) critical sections, taken once per page claimed/linked. A CAS spinlock

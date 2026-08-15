@@ -6,9 +6,15 @@
 
 #include "test_framework.h"
 
-// Internal accessor — not declared in yafl.h because it exists only for tests.
+// Internal accessors — not declared in yafl.h because they exist only for
+// tests and the [GC POOL] diagnostic line.
 extern size_t memory_watermark(void);
 extern size_t memory_total_pages(void);
+extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale,
+                              size_t* misses, size_t* warm_at_miss);
+extern void memory_pool_release_cycle(void);
+extern void memory_pool_release_stats(size_t* released, size_t* retained, size_t* lost,
+                                      unsigned* pct);
 
 
 // Each test captures the watermark at its start; allocations may grow it by at
@@ -248,6 +254,149 @@ TEST(scan_cap_reaches_holes_beyond_cap_distance)
 TEST_END()
 
 
+// REUSE REGRESSION: a free page must be reused however far it sits from the
+// scan cursor. The previous test churns ONE page at a time, so after the first
+// bump the cursor is parked next to the hole and every later cycle finds it.
+// Sustained allocation does not get that luck: the cursor is reset to 0 once
+// per scavenge epoch (every 256 pages claimed), so on a heap whose live prefix
+// is longer than the probe budget, the first allocation after every epoch tick
+// walks the budget over live markers, gives up, and extends the watermark —
+// while thousands of free pages sit just past where it stopped looking.
+//
+// Measured on a self-compile before the per-thread page pool: 62% of ALL
+// watermark bumps (33,561 of 53,972) happened with WARM free pages below the
+// watermark, a mean of 1,869 of them (29 MiB). The cost is not the bump
+// itself — the scavenger hands the abandoned pages back — but the churn it
+// creates: 742 MiB returned to the OS over a 240 s slice, 55% of it faulted
+// straight back in.
+//
+// So: claim a dense prefix, free a block beyond the budget, and re-allocate
+// exactly that many DISTINCT pages. Every one must come from the free block.
+TEST(reuse_reaches_free_pages_across_epoch_cursor_resets)
+    // HOLE_START must clear MAX_SCAN_PROBES (4096, private to mmap.c) with
+    // margin; HOLE_SIZE must span many epoch ticks (256 claims each) so the
+    // test measures the sustained case rather than a single cold start.
+    enum { FILL = 12000, HOLE_START = 8000, HOLE_SIZE = 3000 };
+
+    void** pages = malloc(FILL * sizeof(void*));
+    ASSERT(pages != NULL);
+    for (int i = 0; i < FILL; ++i)
+        pages[i] = memory_pages_alloc(1);
+
+    // Free one contiguous block, well past the budget from the bottom. It is
+    // the only free region below the watermark — asserted, not assumed, since
+    // a hole left by an earlier test would let the scan succeed and make this
+    // pass for the wrong reason.
+    for (int i = HOLE_START; i < HOLE_START + HOLE_SIZE; ++i) {
+        memory_pages_free(pages[i], 1);
+        pages[i] = NULL;
+    }
+
+    size_t hole_index = (size_t)(((char*)pages[HOLE_START - 1] - _memory_heap_base)
+                                 / GC_PAGE_SIZE) + 1;
+    ASSERT(hole_index > 4096);
+    for (size_t p = 0; p < hole_index; ++p) {
+        if (!memory_pages_is_alloc_head(_memory_heap_base + p * GC_PAGE_SIZE)) {
+            printf("\n    free page at index %zu below the hole at %zu"
+                   " — precondition broken, run this test earlier\n", p, hole_index);
+            ASSERT(false);
+        }
+    }
+
+    // Assert on the allocator's own accounting, not on watermark arithmetic.
+    // A watermark delta depends on where the epoch boundary happens to fall
+    // relative to this loop: on a virgin heap the same scenario grew the
+    // watermark by 24 pages, and inside the full test binary it grew by 0 —
+    // the defect was present both times. `premature` counts bumps taken while
+    // a warm free page was going spare, which is exactly the defect.
+    size_t hits0, steals0, stale0, miss0, warm0;
+    size_t hits1, steals1, stale1, miss1, warm1;
+    memory_pool_stats(&hits0, &steals0, &stale0, &miss0, &warm0);
+    size_t before = memory_watermark();
+
+    void** reused = malloc(HOLE_SIZE * sizeof(void*));
+    ASSERT(reused != NULL);
+    for (int k = 0; k < HOLE_SIZE; ++k)
+        reused[k] = memory_pages_alloc(1);
+
+    memory_pool_stats(&hits1, &steals1, &stale1, &miss1, &warm1);
+    size_t grew_by = memory_watermark() - before;
+    if (miss1 != miss0 || grew_by != 0) {
+        printf("\n    %zu scans fell through (mean %.0f warm pages going spare)"
+               " and %zu pages of growth, while %d free pages waited past the"
+               " scan budget (pool hits %zu)\n",
+               miss1 - miss0,
+               miss1 > miss0 ? (double)(warm1 - warm0) / (double)(miss1 - miss0) : 0.0,
+               grew_by, HOLE_SIZE, hits1 - hits0);
+    }
+    // The pool must serve every one of them: not one allocation may fall
+    // through to the bounded scan while the pages it needs are pooled.
+    ASSERT(miss1 == miss0);
+    ASSERT(grew_by == 0);
+    // ...and they must have come from the pool, not from a lucky scan.
+    ASSERT(hits1 - hits0 == (size_t)HOLE_SIZE);
+
+    for (int k = 0; k < HOLE_SIZE; ++k)
+        memory_pages_free(reused[k], 1);
+    for (int i = 0; i < FILL; ++i)
+        if (pages[i] != NULL) memory_pages_free(pages[i], 1);
+    free(reused);
+    free(pages);
+TEST_END()
+
+
+// THE RELEASE RULE: pages that go a whole cycle unwanted are handed back, and
+// the fraction is the knob. Asserted as an identity rather than a count, so it
+// holds whatever YAFL_GC_RELEASE_PCT is set to and whatever else other tests
+// have left in the pool:
+//
+//     drained == surplus * pct / 100      and      surplus == drained + retained
+//
+// At pct=0 that forces drained==0 (nothing released); at pct=100 it forces
+// retained==0 (the plain rule, everything aged goes back). The drain being
+// TOTAL is what makes it an identity at all — a per-call page budget would
+// leave "scheduled" and "released" differing by an unknowable amount.
+TEST(release_rule_hands_back_the_configured_fraction)
+    enum { N = 4096 };
+    void** pages = malloc(N * sizeof(void*));
+    ASSERT(pages != NULL);
+    for (int i = 0; i < N; ++i) pages[i] = memory_pages_alloc(1);
+    for (int i = 0; i < N; ++i) memory_pages_free(pages[i], 1);   // -> fresh
+
+    size_t rel0, ret0, lost0; unsigned pct;
+    memory_pool_release_stats(&rel0, &ret0, &lost0, &pct);
+
+    // First rotation moves fresh -> aged; the pages are not surplus yet.
+    memory_pool_release_cycle();
+    size_t rel1, ret1, lost1; memory_pool_release_stats(&rel1, &ret1, &lost1, &pct);
+
+    // Churn a pool's worth so the ALLOCATION CLOCK advances past the horizon —
+    // the release deliberately does nothing until enough demand has gone by to
+    // make "nobody took this page" mean something. Back-to-back calls with no
+    // allocation between them are a no-op by design.
+    for (int i = 0; i < N; ++i) pages[i] = memory_pages_alloc(1);
+    for (int i = 0; i < N; ++i) memory_pages_free(pages[i], 1);
+
+    // Now the first batch has sat through a pool's worth of demand unclaimed.
+    memory_pool_release_cycle();
+    size_t rel2, ret2, lost2; memory_pool_release_stats(&rel2, &ret2, &lost2, &pct);
+
+    size_t drained  = (rel2 - rel1) + (lost2 - lost1);
+    size_t retained = ret2 - ret1;
+    size_t surplus  = drained + retained;
+
+    if (surplus < N || drained != surplus * pct / 100) {
+        printf("\n    pct=%u surplus=%zu drained=%zu retained=%zu (expected drained=%zu)\n",
+               pct, surplus, drained, retained, surplus * pct / 100);
+    }
+    ASSERT(surplus >= (size_t)N);              // the pages we freed are in there
+    ASSERT(drained == surplus * pct / 100);    // the knob decides, exactly
+    ASSERT(surplus == drained + retained);     // nothing went missing
+
+    free(pages);
+TEST_END()
+
+
 // FRAGMENTATION REGRESSION: keep one single page alive between every run,
 // then free all the runs. Under a single shared fresh-allocation watermark
 // the kept singles pepper the address space at RUN-page intervals, so after
@@ -301,12 +450,17 @@ int main(void) {
     // Runs FIRST: it sizes its fill from the total heap, so it needs the
     // virgin map before other tests latch the band watermarks.
     RUN(interleaved_singles_and_runs_leave_a_run_window);
+    // Second: it asserts that nothing below its hole is free, which only holds
+    // while the low region is still packed by its own fill.
+    RUN(reuse_reaches_free_pages_across_epoch_cursor_resets);
     RUN(single_page_watermark_tracks_live_set);
     RUN(alloc_free_churn_does_not_grow_heap);
     RUN(multi_page_watermark_tracks_live_set);
     RUN(mixed_sizes_bounded_by_fragmentation);
     RUN(concurrent_churn_bounded_watermark);
     RUN(scan_cap_reaches_holes_beyond_cap_distance);
+    // Last: it drives release cycles, which take pages other tests freed.
+    RUN(release_rule_hands_back_the_configured_fraction);
 
     PRINT_RESULTS("mmap", _r);
     return results.failed == 0 ? 0 : 1;

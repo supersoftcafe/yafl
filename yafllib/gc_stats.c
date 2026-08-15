@@ -137,6 +137,16 @@ void gc_stats_report(void) {
     memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);
     fprintf(stderr, "[GC SCAV] returned=%zu reclaimed=%zu (runs=%zu) cold_now=%zu (pages)\n",
             scav_ret, scav_rec, scav_rec_runs, scav_cold);
+    // Page pool. `premature` is the one to watch: a bump that followed a scan
+    // which merely ran out of probe budget abandoned a free page the pool
+    // should have supplied. It is the metric the reuse defect was invisible
+    // without — watermark totals hid it completely.
+    size_t pool_hits, pool_steals, pool_stale, misses, warm_at_miss;
+    memory_pool_stats(&pool_hits, &pool_steals, &pool_stale, &misses, &warm_at_miss);
+    fprintf(stderr, "[GC POOL] hits=%zu steals=%zu stale=%zu | scan_miss=%zu"
+                    " mean_warm_at_miss=%.0f pages\n",
+            pool_hits, pool_steals, pool_stale, misses,
+            misses ? (double)warm_at_miss / (double)misses : 0.0);
 }
 
 void gc_stats_tick(void) {
@@ -153,12 +163,18 @@ void gc_stats_tick(void) {
     gc_pool_unlock();
     size_t scav_ret, scav_rec, scav_cold, scav_rec_runs;
     memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);
+    // Pool hits and PREMATURE bumps ride the sampled line, not just the exit
+    // summary: a run killed by a timeout still yields them, and they are the
+    // pair that says whether reuse is working (see memory_pool_stats).
+    size_t pool_hits, pool_steals, pool_stale, scan_miss, scan_waste;
+    memory_pool_stats(&pool_hits, &pool_steals, &pool_stale, &scan_miss, &scan_waste);
     fprintf(stderr,
         "[GC] allocs=%llu watermark=%llu live=%llu cycles=%llu stage=%d epoch=%u "
         "wl=%u scanq=%u "
         "mark_steps=%llu popped=%llu requeued=%llu overflows=%llu "
         "rq_drain=%llu rq_repro=%llu prune_steps=%llu freed=%llu "
-        "scav_ret=%zu scav_rec=%zu cold=%zu\n",
+        "scav_ret=%zu scav_rec=%zu cold=%zu "
+        "pool_hits=%zu pool_steals=%zu pool_stale=%zu scan_miss=%zu warm_at_miss=%zu\n",
         (unsigned long long)n,
         (unsigned long long)memory_watermark(),
         (unsigned long long)memory_count(),
@@ -173,7 +189,8 @@ void gc_stats_tick(void) {
         (unsigned long long)atomic_load(&gc_stat_rq_repro),
         (unsigned long long)atomic_load(&gc_stat_prune_steps),
         (unsigned long long)atomic_load(&gc_stat_pages_freed),
-        scav_ret, scav_rec, scav_cold);
+        scav_ret, scav_rec, scav_cold,
+        pool_hits, pool_steals, pool_stale, scan_miss, scan_waste);
 }
 
 

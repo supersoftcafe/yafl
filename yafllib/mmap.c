@@ -61,6 +61,18 @@ enum {
     SCAVENGE_MIN_SPAN    = 8,
 };
 
+// Percentage of the pool's aged generation handed back each rotation;
+// overridden by YAFL_GC_RELEASE_PCT in init(). See "The release rule" below.
+// DEFAULT 10 (user, 08-15). Measured on a self-compile at 3G, madvise traffic
+// rises steeply with the fraction while the frontier does not improve:
+//   pct=0   198k pages returned, frontier 108,598
+//   pct=10  667k                 frontier 104,381
+//   pct=75  846k                 frontier 109,746
+// so a small fraction keeps the rule live — surplus still decays away — without
+// paying for it in churn on workloads whose demand is steady and which
+// therefore have no surplus to find.
+static unsigned pool_release_pct = 10;
+
 // Saturating subtraction: the scan budgets must floor at zero, never wrap.
 static inline size_t sat_sub(size_t x, size_t y) { return x > y ? x - y : 0; }
 
@@ -136,6 +148,33 @@ static thread_local size_t alloc_cursor = 0;
 // every run scan starts from the very top, see scan_runs_topdown.)
 static thread_local uint8_t epoch_seen = 0;
 
+// REUSE DIAGNOSTIC. A watermark bump is legitimate only when the heap really
+// has no page to give. Measuring that needs the count of pages the allocator
+// SHOULD have found: FREE, warm, and inside the singles band.
+//
+// Two wrong versions were tried first and are recorded so they are not tried
+// again. Watermark arithmetic in a test is not it — whether a bump shows up in
+// the delta depends on where the epoch boundary happens to fall, and the same
+// scenario grew by 24 pages on a virgin heap and 0 inside the test binary with
+// the defect present both times. "The scan exhausted its probe budget" is not
+// it either: on any heap larger than the budget the scan nearly always stops
+// early rather than completing a lap, so that counter reads ~87% whether or
+// not a free page existed. It measures the scan, not the heap.
+//
+// So count the population directly. `singles_warm` is FREE ∧ warm ∧ below the
+// watermark, maintained by the four transitions that can change it. Runs
+// placed inside the singles band by the near-OOM whole-map scan are not
+// tracked and would skew it slightly; that path runs only when the heap is
+// otherwise full, where every bump is honest anyway.
+// SIGNED, deliberately. The increment that publishes a page into the band and
+// the decrement that claims it are not atomic with respect to each other: a
+// scanner can claim a just-exposed page between our watermark CAS and our
+// increment, decrementing first. Unsigned, that single transient wrapped the
+// counter to ~2^64 and it never recovered — every reading after it was garbage.
+static _Atomic(intptr_t) singles_warm = 0;  // FREE, warm, below the watermark
+static _Atomic(size_t) scan_miss = 0;       // bounded singles scans that found nothing
+static _Atomic(size_t) scan_miss_warm = 0;  // sum of singles_warm over those misses
+
 
 static size_t get_size_of_heap() {
     const char* env_heap_size = getenv("YAFL_HEAP_SIZE");
@@ -202,6 +241,16 @@ static void init() {
     _memory_heap_bytes = heap_size;
 
     atomic_store_explicit(&run_floor, total_page_count, memory_order_relaxed);
+
+    // YAFL_GC_RELEASE_PCT: percentage of the aged generation handed back each
+    // rotation (see the release rule). 0 disables release entirely, which is
+    // the pool-only arm; 100 is the plain rule with no dead band. A percentage
+    // rather than a shift so the whole range is reachable, including both ends.
+    const char *pct = getenv("YAFL_GC_RELEASE_PCT");
+    if (pct != NULL && pct[0]) {
+        long v = atol(pct);
+        pool_release_pct = (unsigned)(v < 0 ? 0 : v > 100 ? 100 : v);
+    }
 }
 
 
@@ -413,6 +462,475 @@ static size_t scan_runs_topdown(size_t floor, size_t page_count, size_t step_bud
 }
 
 
+// ── Per-thread page pool ─────────────────────────────────────────────────────
+//
+// A freed single page is remembered by the thread that freed it, so the next
+// single-page allocation gets it for the price of a pop instead of a scan.
+// The scan is BOUNDED (MAX_SCAN_PROBES), and once the live prefix is longer
+// than that budget it stops reaching the free pages beyond it: measured on a
+// self-compile, 62% of all watermark bumps (33,561 of 53,972) happened with a
+// mean of 1,869 warm free pages sitting below the watermark. The abandoned
+// pages are not lost — the scavenger hands them back to the OS — but that is
+// the allocator and the scavenger undoing each other's work, and it cost 742
+// MiB of madvise traffic over a 240 s slice with 55% of it faulted straight
+// back in.
+//
+// THE POOL IS A HINT, NOT AN OWNER. A pooled page is FREE in `pages_info`,
+// exactly as before, so:
+//   * the conservative scanner still rejects it (memory_pages_is_alloc_head
+//     tests the marker and never dereferences a free page),
+//   * scan_runs_topdown can still claim it for a contiguous window — which is
+//     what stops a growing pool from starving large runs, the failure that
+//     once aborted the self-host on an 83 MB output string, and
+//   * the scavenger can still return it.
+// Anything that takes a pooled page leaves a STALE entry behind, detected at
+// pop by the marker CAS failing. That is the whole of the coherence protocol:
+// the marker array remains the single source of truth about who owns a page.
+//
+// Entries are page INDICES, not pointers into the pages themselves: an
+// intrusive free list would put its links inside pages that a run scan or the
+// scavenger may claim and overwrite at any moment, corrupting the list.
+//
+// Pools live in a STATIC ARRAY, never in thread-local storage, and are never
+// reclaimed. Only worker threads reach the allocator, and that pool is fixed at
+// startup and never exits — but a pool is not private to its thread: STEALING
+// reads and writes it from every other worker. Tying a shared structure's
+// lifetime to one thread's storage duration is the wrong coupling regardless of
+// who is expected to exit, and it is not theoretical: an earlier version kept
+// pools in thread_local storage with a registry of pointers into it, and the
+// release cycle segfaulted the first time a thread that had allocated went
+// away. A static slot is both simpler (no registry list) and outlives every
+// participant by construction.
+//
+// Slots are claimed once per thread and never freed. Past the cap, threads
+// share a slot by wrapping — safe, since the lock is what protects a pool, and
+// sharing only costs contention.
+enum { POOL_CHUNK_SLOTS = (GC_PAGE_SIZE - sizeof(void*) - sizeof(uint32_t)) / sizeof(uint32_t) };
+enum { POOL_STEAL_BATCH = 32 };   // pages moved per steal: one victim-lock hold
+                                  // per batch, not per page (the pool-lock
+                                  // contention lesson, 2026-07-08)
+
+typedef struct pool_chunk {
+    struct pool_chunk *prev;
+    uint32_t           count;
+    uint32_t           slots[POOL_CHUNK_SLOTS];
+} pool_chunk_t;
+
+typedef struct pool_gen {
+    pool_chunk_t *top;     // NULL when empty
+    size_t        count;   // entries held, stale ones included
+} pool_gen_t;
+
+// TWO GENERATIONS. All page freeing happens during PRUNE, so at the moment one
+// prune ends, every entry still in `aged` was put there by the PREVIOUS prune
+// and has survived a whole GC cycle without any thread wanting it. That is the
+// surplus, identified exactly rather than counted: no snapshot, no cross-thread
+// arithmetic, one hook. `fresh` takes this prune's frees, and the two rotate at
+// the prune tail (memory_pool_release_cycle).
+//
+// Allocation drains `aged` FIRST, so a page the mutator actually wanted is
+// consumed before it can be mistaken for surplus — the release only ever sees
+// what demand left behind.
+enum { POOL_MAX_SLOTS = 256 };
+
+typedef struct page_pool {
+    _Atomic(bool)      lock;    // TTAS; the owner takes it too — a page op runs
+                                // about once per 16 KiB allocated, so the
+                                // uncontended CAS does not register
+    pool_gen_t         aged;    // survived a full cycle unclaimed: the surplus
+    pool_gen_t         fresh;   // freed during the current cycle
+    pool_chunk_t      *spare;   // one emptied chunk kept back, so a pool
+                                // oscillating across a chunk boundary does not
+                                // allocate and free a chunk per page
+} page_pool_t;
+
+static page_pool_t     pool_slots[POOL_MAX_SLOTS];
+static _Atomic(unsigned) pool_slots_used = 0;
+static thread_local page_pool_t *pool_mine = NULL;
+static thread_local unsigned     steal_from = 0;   // rotating victim cursor
+
+// Pools that have ever been handed out. Read before iterating; a slot claimed
+// after the read is simply missed this round, which costs nothing — its pages
+// are judged next cycle.
+static inline unsigned pool_count(void) {
+    unsigned n = atomic_load_explicit(&pool_slots_used, memory_order_acquire);
+    return n > POOL_MAX_SLOTS ? POOL_MAX_SLOTS : n;
+}
+static _Atomic(size_t) pool_hits   = 0;   // allocations served from the pool
+static _Atomic(size_t) pool_steals = 0;   // ...of which taken from another thread
+static _Atomic(size_t) pool_stale  = 0;   // entries dropped: page taken elsewhere
+
+static void* memory_pages_alloc_raw(size_t page_count);
+static void  memory_pages_free_raw(void* ptr, size_t page_count);
+static bool  try_claim_run(size_t idx, size_t n);
+static void* claimed_run(size_t idx, size_t page_count, bool was_free);
+
+static inline void pool_lock(page_pool_t *p) {
+    for (;;) {
+        bool expected = false;
+        if (atomic_compare_exchange_weak_explicit(&p->lock, &expected, true,
+                                                  memory_order_acquire, memory_order_relaxed))
+            return;
+        do { __builtin_ia32_pause(); }
+        while (atomic_load_explicit(&p->lock, memory_order_relaxed));
+    }
+}
+static inline void pool_unlock(page_pool_t *p) {
+    atomic_store_explicit(&p->lock, false, memory_order_release);
+}
+
+static page_pool_t* pool_self(void) {
+    page_pool_t *p = pool_mine;
+    if (UNLIKELY(p == NULL)) {
+        unsigned slot = atomic_fetch_add_explicit(&pool_slots_used, 1, memory_order_acq_rel);
+        pool_mine = p = &pool_slots[slot % POOL_MAX_SLOTS];
+    }
+    return p;
+}
+
+// Push under the caller's own lock. A chunk comes from the RAW allocator: the
+// pooled path would re-enter this pool and deadlock on its own lock.
+static void pool_push_locked(page_pool_t *pool, pool_gen_t *gen, uint32_t index) {
+    pool_chunk_t *c = gen->top;
+    if (c == NULL || c->count == POOL_CHUNK_SLOTS) {
+        pool_chunk_t *empty = pool->spare;
+        if (empty != NULL) {
+            pool->spare = NULL;
+        } else {
+            empty = memory_pages_alloc_raw(1);
+        }
+        empty->prev  = c;
+        empty->count = 0;
+        gen->top = c = empty;
+    }
+    c->slots[c->count++] = index;
+    gen->count++;
+}
+
+static bool pool_pop_locked(page_pool_t *pool, pool_gen_t *gen, uint32_t *out) {
+    pool_chunk_t *c = gen->top;
+    if (c == NULL)
+        return false;
+    *out = c->slots[--c->count];
+    gen->count--;
+    if (c->count == 0) {
+        gen->top = c->prev;
+        if (pool->spare == NULL) pool->spare = c;
+        else                     memory_pages_free_raw(c, 1);
+    }
+    return true;
+}
+
+// Oldest first: a page the mutator wants should be consumed out of `aged`
+// before the release can mistake it for surplus.
+static bool pool_pop_any_locked(page_pool_t *pool, uint32_t *out) {
+    return pool_pop_locked(pool, &pool->aged, out)
+        || pool_pop_locked(pool, &pool->fresh, out);
+}
+
+// Pop entries until one can actually be claimed. The CAS is taken OUTSIDE the
+// pool lock: it can fail (a run scan or the scavenger got there first) and
+// retrying must not hold a pool against its owner.
+//
+// Cold entries are dropped rather than claimed. A cold page has been returned
+// to the OS, and taking it back would fault it in for no reason — the pool
+// would quietly undo the scavenger's work, which is the very churn it exists
+// to stop. Dropping leaves it returned and reachable by the scan's own
+// cold-fallback path if the heap ever genuinely needs it.
+static void* pool_claim_from(page_pool_t *pool) {
+    for (;;) {
+        uint32_t index;
+        pool_lock(pool);
+        bool got = pool_pop_any_locked(pool, &index);
+        pool_unlock(pool);
+        if (!got)
+            return NULL;
+        if (atomic_load_explicit(&pages_cold[index], memory_order_relaxed)
+                || !try_claim_run(index, 1)) {
+            atomic_fetch_add_explicit(&pool_stale, 1, memory_order_relaxed);
+            continue;
+        }
+        return claimed_run(index, 1, true);
+    }
+}
+
+// Move up to POOL_STEAL_BATCH entries from a victim into this thread's pool,
+// then serve from our own. Batched so a thread whose pool has run dry does not
+// take the victim's lock once per page.
+static bool pool_steal_batch(page_pool_t *self, page_pool_t *victim) {
+    uint32_t taken[POOL_STEAL_BATCH];
+    unsigned n = 0;
+    pool_lock(victim);
+    while (n < POOL_STEAL_BATCH && pool_pop_any_locked(victim, &taken[n]))
+        n++;
+    pool_unlock(victim);
+    if (n == 0)
+        return false;
+    // Stolen pages land in `aged`: they are already at least as old as the
+    // victim's oldest, and putting them in `fresh` would reset their age and
+    // hide surplus from the release for another whole cycle.
+    pool_lock(self);
+    for (unsigned k = 0; k < n; ++k)
+        pool_push_locked(self, &self->aged, taken[k]);
+    pool_unlock(self);
+    atomic_fetch_add_explicit(&pool_steals, n, memory_order_relaxed);
+    return true;
+}
+
+// Own pool first, then steal. Returns NULL only when no thread holds a
+// claimable page, which is when a scan — and possibly a bump — is honest.
+static void* pool_take(void) {
+    page_pool_t *self = pool_self();
+    void *p = pool_claim_from(self);
+    if (p != NULL) {
+        atomic_fetch_add_explicit(&pool_hits, 1, memory_order_relaxed);
+        return p;
+    }
+
+    // Walk the slots from where the last steal left off, so N dry threads do
+    // not all drain the same victim. One full lap, then give up.
+    unsigned n = pool_count();
+    for (unsigned i = 0; i < n; ++i) {
+        unsigned slot = (steal_from + i) % n;
+        page_pool_t *v = &pool_slots[slot];
+        if (v == self || !pool_steal_batch(self, v))
+            continue;
+        steal_from = slot;
+        p = pool_claim_from(self);
+        if (p != NULL) {
+            atomic_fetch_add_explicit(&pool_hits, 1, memory_order_relaxed);
+            return p;
+        }
+    }
+    return NULL;
+}
+
+// Remember a freed single page. Runs are not pooled: they are rare (23 bumps
+// over a 240 s self-compile), they need a size-matched structure the pool does
+// not have, and leaving them to the banded top-down scan keeps the contiguity
+// story exactly as it was.
+static void pool_give(void* ptr) {
+    ptrdiff_t offset = ((char*)ptr - pages_heap) / GC_PAGE_SIZE;
+    // A uint32 index spans 2^32 pages — 64 TiB at GC_PAGE_SIZE — so the cast
+    // cannot lose a heap anyone can configure; assert rather than assume.
+    assert(offset >= 0 && (size_t)offset < total_page_count);
+    page_pool_t *self = pool_self();
+    pool_lock(self);
+    pool_push_locked(self, &self->fresh, (uint32_t)offset);
+    pool_unlock(self);
+}
+
+// ── The release rule ─────────────────────────────────────────────────────────
+//
+// At the end of each prune, hand back most of what went a whole GC cycle
+// without anyone wanting it, and rotate the generations. That surplus is a
+// MEASUREMENT of unmet-demand-that-never-came, which is what makes this
+// self-calibrating; every term it replaces was a constant against a floating
+// quantity. `retain = max(young*3, 256)` was measured 3x LARGER than the entire
+// free pool on test_gc_pressure — 278 of 278 scavenge calls returned nothing
+// while 30 MiB sat idle to process exit — and too small on the self-compile,
+// where 55% of everything returned was faulted straight back in. One constant,
+// wrong in both directions, because it was never measuring the thing it was
+// deciding about.
+//
+// FRACTION, not all of it. Releasing every aged page has no dead band: any
+// per-cycle wobble in demand converts one-for-one into madvise + fault. Keeping
+// a slice makes the pool decay geometrically toward the working set instead of
+// stepping off a cliff, and costs nothing in steady state, where `aged` is
+// empty anyway because demand consumed it. YAFL_GC_RELEASE_PCT selects it:
+// 0 disables release entirely (the pool-only arm), 100 is the plain rule, and
+// the default is 10 (see the declaration for the measurements behind that).
+// (pool_release_pct itself is declared up with the other tunables, because
+// init() reads its environment override.)
+static _Atomic(size_t) pool_released = 0;   // pages handed back by this path
+static _Atomic(size_t) pool_retained = 0;   // ...kept back as the dead band
+static _Atomic(size_t) pool_lost     = 0;   // aged entries claimed before we could
+
+// Hand a contiguous span back. Deliberately NOT scavenge_release: that one
+// keeps spans under SCAVENGE_MIN_SPAN warm, because it is guessing at idleness
+// from span length. Here idleness is not a guess — the page went a whole GC
+// cycle with every thread free to take it and none did — so span length has no
+// say. (At GC_PAGE_SIZE a single page is already four host pages, well above
+// madvise granularity.) Cold bit and counter go BEFORE the FREE store: the
+// instant the marker reads FREE an allocator may claim it, and claimed_run's
+// exchange-and-decrement must find them already in place.
+static void pool_madvise_span(size_t lo, size_t end) {
+    if (end == lo)
+        return;
+    madvise(pages_heap + lo * GC_PAGE_SIZE, (end - lo) * GC_PAGE_SIZE, MADV_DONTNEED);
+    for (size_t k = lo; k < end; ++k) {
+        atomic_store_explicit(&pages_cold[k], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&cold_count, 1, memory_order_relaxed);
+        atomic_store_explicit(&pages_info[k], PAGE_MARKER_FREE, memory_order_release);
+    }
+    atomic_fetch_add_explicit(&scavenge_returned, end - lo, memory_order_relaxed);
+}
+
+// Drain a gathered batch: claim what is still ours, release it in ADDRESS ORDER
+// so adjacent pages merge into one madvise, and account for every entry either
+// way. Returns released via *out_released and entries lost to a concurrent
+// claimant via *out_lost; the two must together account for every entry.
+static void pool_release_batch(uint32_t *idx, size_t n,
+                               size_t *out_released, size_t *out_lost) {
+    // Insertion sort: n is the batch bound, and the array is near-sorted in
+    // practice because frees follow the prune's own page order.
+    for (size_t i = 1; i < n; ++i) {
+        uint32_t v = idx[i];
+        size_t j = i;
+        while (j > 0 && idx[j-1] > v) { idx[j] = idx[j-1]; j--; }
+        idx[j] = v;
+    }
+    size_t released = 0, lost = 0, run_lo = 0, run_end = 0;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t k = idx[i];
+        // Already returned to the OS by the age-based scavenger: there is
+        // nothing to hand back, and it left the warm population when it went
+        // cold. Claiming it here would fault it in only to advise it away
+        // again, and the unconditional decrement below would take a page out
+        // of singles_warm twice — which underflowed the counter to ~2^64 on
+        // the first -O3 run.
+        if (atomic_load_explicit(&pages_cold[k], memory_order_relaxed)) {
+            lost++;
+            continue;
+        }
+        // Claim it back. Failure means a run scan or the scavenger took it
+        // while it sat in the list: it is in use again, which is a correct
+        // outcome — counted, never silently dropped.
+        if (!try_claim_run(k, 1)) {
+            lost++;
+            continue;
+        }
+        atomic_fetch_sub_explicit(&singles_warm, 1, memory_order_relaxed);
+        if (run_end != 0 && k == run_end) {
+            run_end = k + 1;                  // extend the pending span
+        } else {
+            pool_madvise_span(run_lo, run_end);
+            run_lo = k; run_end = k + 1;
+        }
+        released++;
+    }
+    pool_madvise_span(run_lo, run_end);
+    atomic_fetch_add_explicit(&pool_lost, lost, memory_order_relaxed);
+    *out_released = released;
+    *out_lost     = lost;
+}
+
+// Called from the PRUNE tail, under fsa_lock with no concurrent executors —
+// the same exclusive moment the scavenger has always used, so the transient
+// HEAD marker stays invisible to the conservative scanner.
+//
+// The drain is TOTAL: it loops until the gathered generation is empty, bounded
+// by how much there is rather than by a per-call page budget. A budget here is
+// indistinguishable from forgetting, and leaves the caller unable to say
+// whether what was scheduled actually went back.
+EXPORT void memory_pool_release_cycle(void) {
+    enum { BATCH = 256 };
+    uint32_t batch[BATCH];
+
+    // THE CLOCK IS ALLOCATION VOLUME, NOT CYCLES. Rotating once per GC cycle
+    // was measured catastrophic: a cycle is about 30 pages of allocation on a
+    // self-compile (935k cycles over 28M page claims), so "unused for a whole
+    // cycle" is no evidence of surplus at all. The pool was emptied and
+    // refaulted continuously — the frontier went from 109,605 pages back to
+    // 194,068 and madvise traffic to 19 GB with 91% of it faulted straight
+    // back, and no release FRACTION could fix it: 0.9^n is under 1% within 44
+    // cycles, an effective horizon three orders of magnitude too short.
+    //
+    // So hold the rotation until at least one POOL'S WORTH of allocation has
+    // gone by. Then a page reaching `aged` has sat through enough demand to
+    // have been taken if anyone wanted it, which is the honest test — and it
+    // self-calibrates off the pool's own size exactly as the surplus
+    // measurement does, on the same allocation clock the rest of the GC uses.
+    static size_t rotate_at = 0;
+    size_t ever = atomic_load_explicit(&pages_ever, memory_order_relaxed);
+    if (ever < rotate_at)
+        return;
+
+    // Pass 1: how much surplus is there? Read-only, so the fraction is decided
+    // against the whole population rather than per pool.
+    unsigned slots = pool_count();
+    size_t surplus = 0;
+    for (unsigned i = 0; i < slots; ++i) {
+        page_pool_t *p = &pool_slots[i];
+        pool_lock(p);
+        surplus += p->aged.count;
+        pool_unlock(p);
+    }
+    // Next rotation once a further pool's worth of allocation has passed. The
+    // floor keeps a tiny or empty pool from rotating every call and turning
+    // back into the per-cycle clock this replaced.
+    size_t horizon = surplus > 256 ? surplus : 256;
+    rotate_at = ever + horizon;
+
+    size_t quota = surplus * pool_release_pct / 100;
+    atomic_fetch_add_explicit(&pool_retained, surplus - quota, memory_order_relaxed);
+
+    // Pass 2: drain `aged` up to the quota, then rotate every pool. What the
+    // quota leaves behind stays in `aged` — still surplus, still first in line
+    // to be reused, and released next cycle if demand still does not want it.
+    size_t drained = 0, released = 0, lost_total = 0;
+    for (unsigned i = 0; i < slots; ++i) {
+        page_pool_t *p = &pool_slots[i];
+        while (drained < quota) {
+            size_t n = 0;
+            pool_lock(p);
+            while (n < BATCH && drained + n < quota
+                   && pool_pop_locked(p, &p->aged, &batch[n]))
+                n++;
+            pool_unlock(p);
+            if (n == 0)
+                break;
+            size_t rel = 0, lost = 0;
+            pool_release_batch(batch, n, &rel, &lost);
+            // Every entry the batch took out of the pool is accounted for.
+            assert(rel + lost == n);
+            drained  += n;
+            released += rel;
+            lost_total += lost;
+        }
+        // Rotate: this prune's frees become next cycle's surplus candidates.
+        pool_lock(p);
+        if (p->aged.top == NULL) {
+            p->aged = p->fresh;
+        } else {
+            // Splice `fresh` under `aged` so the older entries stay on top and
+            // are consumed (and judged) first.
+            pool_chunk_t *c = p->aged.top;
+            while (c->prev != NULL) c = c->prev;
+            c->prev = p->fresh.top;
+            p->aged.count += p->fresh.count;
+        }
+        p->fresh.top = NULL;
+        p->fresh.count = 0;
+        pool_unlock(p);
+    }
+    atomic_fetch_add_explicit(&pool_released, released, memory_order_relaxed);
+    // POST-CONDITION: everything drained was either handed back to the OS or is
+    // demonstrably in use again. This is the guarantee that a per-call page
+    // budget would have destroyed — with one, "scheduled" and "released" differ
+    // by an unknown amount and nothing can be asserted about either.
+    assert(drained == released + lost_total);
+    (void)lost_total;
+}
+
+EXPORT void memory_pool_release_stats(size_t* released, size_t* retained, size_t* lost,
+                                      unsigned* pct) {
+    *released = atomic_load_explicit(&pool_released, memory_order_relaxed);
+    *retained = atomic_load_explicit(&pool_retained, memory_order_relaxed);
+    *lost     = atomic_load_explicit(&pool_lost,     memory_order_relaxed);
+    *pct      = pool_release_pct;
+}
+
+EXPORT void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale,
+                              size_t* misses, size_t* warm_at_miss) {
+    *hits     = atomic_load_explicit(&pool_hits,       memory_order_relaxed);
+    *steals   = atomic_load_explicit(&pool_steals,     memory_order_relaxed);
+    *stale    = atomic_load_explicit(&pool_stale,      memory_order_relaxed);
+    *misses       = atomic_load_explicit(&scan_miss,      memory_order_relaxed);
+    *warm_at_miss = atomic_load_explicit(&scan_miss_warm, memory_order_relaxed);
+}
+
+
 // Pages handed out by memory_pages_alloc have UNDEFINED contents — stale data
 // from their previous life (the page-claim memset that used to live here
 // streamed whole runs through the cache long before their lines were needed).
@@ -422,25 +940,51 @@ static size_t scan_runs_topdown(size_t floor, size_t page_count, size_t step_bud
 // unconditional — never inherited from the kernel's zero-fill promise for
 // virgin or madvised pages, so a future switch to MADV_FREE (whose pages keep
 // their old contents until reclaim) cannot resurrect stale data.
-static void* claimed_run(size_t idx, size_t page_count) {
+// Every page below the watermark is in the singles_warm population from the
+// moment the watermark exposes it (see the bump site, which increments) until
+// someone claims it — so the decrement here is unconditional on band, with no
+// need to know whether this claim came from reuse or from a fresh bump. An
+// earlier attempt to distinguish the two with a `was_free` flag still missed
+// the race where a concurrent scanner claims a page the bumping thread has
+// just published.
+static void* claimed_run(size_t idx, size_t page_count, bool was_free) {
+    (void)was_free;
     atomic_fetch_add_explicit(&alloc_count, page_count, memory_order_relaxed);
     atomic_fetch_add_explicit(&pages_ever, page_count, memory_order_relaxed);
+    size_t watermark = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
     for (size_t j = 0; j < page_count; ++j) {
         if (atomic_exchange_explicit(&pages_cold[idx + j], 0, memory_order_relaxed)) {
             atomic_fetch_sub_explicit(&cold_count, 1, memory_order_relaxed);
             atomic_fetch_add_explicit(&scavenge_reclaimed, 1, memory_order_relaxed);
             if (page_count > 1)
                 atomic_fetch_add_explicit(&scavenge_reclaimed_runs, 1, memory_order_relaxed);
+        } else if (idx + j < watermark) {
+            // Warm free page inside the singles band, now live (see singles_warm).
+            atomic_fetch_sub_explicit(&singles_warm, 1, memory_order_relaxed);
         }
     }
     return pages_heap + idx * GC_PAGE_SIZE;
 }
 
+// The public entry: consult the per-thread pool (own, then steal) before doing
+// any scanning at all. Only when no thread holds a claimable page does the
+// bounded scan — and, failing that, a watermark bump — get to run.
 EXPORT void* memory_pages_alloc(size_t page_count) {
     assert(page_count > 0);
 
     // pthread_once' own fast path is a single relaxed load; an outer
     // pages_heap-NULL check would race with the non-atomic write inside init().
+    pthread_once(&pages_once, init);
+
+    if (page_count == 1) {
+        void* pooled = pool_take();
+        if (pooled != NULL)
+            return pooled;
+    }
+    return memory_pages_alloc_raw(page_count);
+}
+
+static void* memory_pages_alloc_raw(size_t page_count) {
     pthread_once(&pages_once, init);
 
     // New scavenge epoch: reset both cursors (see epoch_seen). The first
@@ -462,12 +1006,30 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
             size_t snapshot = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
             size_t idx = scan_within(snapshot, 1, MAX_SCAN_PROBES, false);
             if (idx != SIZE_MAX) {
-                return claimed_run(idx, 1);
+                return claimed_run(idx, 1, true);
             }
 
             // Phase 2: extend the singles region upward by one page. The
             // CAS-loop never advances into the runs band even under
             // concurrent bumps.
+            //
+            // The bounded scan found nothing. Was that honest? A warm free
+            // page going spare means it stopped looking too soon. Counted
+            // HERE rather than after the watermark CAS below, because the
+            // waste is the same whether the miss ends in a bump or in the
+            // unbounded whole-map rescan that follows once the two bands have
+            // met — and it was that second case which made a watermark-delta
+            // assertion read zero with the defect fully present.
+            // Accumulate the POPULATION, not a yes/no. "Was any warm page
+            // going spare" is nearly always true — a handful of strays makes
+            // it read 100% — whereas the mean says how much was abandoned:
+            // a mean of one or two is noise, a mean in the thousands is the
+            // allocator walking away from megabytes.
+            atomic_fetch_add_explicit(&scan_miss, 1, memory_order_relaxed);
+            intptr_t warm = atomic_load_explicit(&singles_warm, memory_order_relaxed);
+            atomic_fetch_add_explicit(&scan_miss_warm, warm > 0 ? (size_t)warm : 0,
+                                      memory_order_relaxed);
+
             size_t cur = snapshot;
             while (true) {
                 if (cur >= atomic_load_explicit(&run_floor, memory_order_relaxed)) {
@@ -476,14 +1038,20 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
                     // unbounded before declaring OOM.
                     size_t last = scan_within(total_page_count, 1, SIZE_MAX, true);
                     if (last != SIZE_MAX) {
-                        return claimed_run(last, 1);
+                        return claimed_run(last, 1, true);
                     }
                     abort_on_out_of_memory();
                 }
                 if (atomic_compare_exchange_weak_explicit(
                         &upper_watermark, &cur, cur + 1,
-                        memory_order_acq_rel, memory_order_relaxed))
+                        memory_order_acq_rel, memory_order_relaxed)) {
+                    // The page at `cur` is now inside the band and free, so it
+                    // joins the warm population — whether this thread goes on
+                    // to claim it or a concurrent scanner beats us to it. Both
+                    // outcomes decrement exactly once.
+                    atomic_fetch_add_explicit(&singles_warm, 1, memory_order_relaxed);
                     break;
+                }
             }
 
             if (try_claim_run(cur, 1)) {
@@ -491,7 +1059,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
                 // parked it just past where it gave up; preserving that lets
                 // the next allocation resume the walk instead of redoing the
                 // same fruitless probes from the bump location.
-                return claimed_run(cur, 1);
+                return claimed_run(cur, 1, false);   // virgin: just exposed by the bump
             }
             // A concurrent scanner that observed our new watermark snuck in
             // and claimed the freshly exposed page first. The advance is not
@@ -504,7 +1072,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
         size_t floor = atomic_load_explicit(&run_floor, memory_order_relaxed);
         size_t idx = scan_runs_topdown(floor, page_count, MAX_SCAN_PROBES);
         if (idx != SIZE_MAX) {
-            return claimed_run(idx, page_count);
+            return claimed_run(idx, page_count, true);
         }
 
         // Phase 2: extend the runs band downward. Overflow-safe: check the
@@ -520,7 +1088,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
                 // straddle what the banded scans never look at.
                 size_t last = scan_within(total_page_count, page_count, SIZE_MAX, true);
                 if (last != SIZE_MAX) {
-                    return claimed_run(last, page_count);
+                    return claimed_run(last, page_count, true);
                 }
                 abort_on_out_of_memory();
             }
@@ -532,7 +1100,7 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
         }
 
         if (try_claim_run(begin, page_count)) {
-            return claimed_run(begin, page_count);
+            return claimed_run(begin, page_count, false);  // virgin runs-band pages
         }
         // A concurrent top-down scanner observed the lowered floor and took
         // the freshly exposed window first. The advance is not wasted — loop
@@ -540,7 +1108,17 @@ EXPORT void* memory_pages_alloc(size_t page_count) {
     }
 }
 
+// The public entry: release the pages, then remember a single page in this
+// thread's pool so the next single-page allocation finds it without scanning.
+// The marker is FREE either way — pooling changes who looks first, never who
+// may claim (see the pool header).
 EXPORT void memory_pages_free(void* ptr, size_t page_count) {
+    memory_pages_free_raw(ptr, page_count);
+    if (page_count == 1)
+        pool_give(ptr);
+}
+
+static void memory_pages_free_raw(void* ptr, size_t page_count) {
     assert(page_count > 0);
     assert(memory_pages_is_alloc_head(ptr));
     assert(((uintptr_t)ptr & (GC_PAGE_SIZE-1)) == 0);
@@ -575,6 +1153,9 @@ EXPORT void memory_pages_free(void* ptr, size_t page_count) {
         // orders its read after this store).
         atomic_store_explicit(&pages_free_epoch[offset + index],
             scavenge_epoch_now(), memory_order_relaxed);
+        // A just-released page is warm by construction (see singles_warm).
+        if ((size_t)(offset + index) < atomic_load_explicit(&upper_watermark, memory_order_relaxed))
+            atomic_fetch_add_explicit(&singles_warm, 1, memory_order_relaxed);
         atomic_store_explicit(&pages_info[offset + index], PAGE_MARKER_FREE, memory_order_release);
     }
 
@@ -626,11 +1207,28 @@ static void scavenge_release(size_t lo, size_t end) {
     for (size_t k = lo; k < end; ++k) {
         assert(atomic_load_explicit(&pages_info[k], memory_order_relaxed) == PAGE_MARKER_HEAD);
     }
+    size_t watermark = atomic_load_explicit(&upper_watermark, memory_order_relaxed);
     if (end - lo < SCAVENGE_MIN_SPAN) {
         uint8_t now = scavenge_epoch_now();
         for (size_t k = lo; k < end; ++k) {
             atomic_store_explicit(&pages_free_epoch[k], now, memory_order_relaxed);
+            // Released still warm, so it re-joins the singles_warm population
+            // that the claim took it out of. BEFORE the FREE store, for the
+            // reason in this function's header: the instant the marker reads
+            // FREE another thread may claim the page, and claimed_run's
+            // decrement must never run ahead of this increment.
+            if (k < watermark)
+                atomic_fetch_add_explicit(&singles_warm, 1, memory_order_relaxed);
             atomic_store_explicit(&pages_info[k], PAGE_MARKER_FREE, memory_order_release);
+            // NOT re-pooled. An earlier version pushed these back into a pool
+            // so the scavenger could not strip warm pages out of it. That was
+            // a stopgap from before the pool released anything itself, and it
+            // manufactures DUPLICATE entries without bound: the same page is
+            // re-pooled every cycle it survives, and each copy is popped and
+            // discarded later. Measured at 62.8M stale drops against 28.1M
+            // allocations on one self-compile. The page stays FREE and warm
+            // and the fallback scan can still find it; the pool's own release
+            // is what governs the population now.
         }
         return;
     }
@@ -745,6 +1343,11 @@ EXPORT void memory_scavenge(size_t retain, size_t max_pages) {
             claimed = atomic_compare_exchange_strong_explicit(
                 &pages_info[cand], &expected, PAGE_MARKER_HEAD,
                 memory_order_acq_rel, memory_order_relaxed);
+            // Eligibility above required it warm, so a won claim takes a page
+            // out of the singles_warm population; scavenge_release puts it
+            // back if the span turns out too short to return.
+            if (claimed && cand < watermark)
+                atomic_fetch_sub_explicit(&singles_warm, 1, memory_order_relaxed);
         }
         if (claimed) {
             if (run_end != 0 && cand + 1 == run_lo) {

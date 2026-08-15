@@ -2343,9 +2343,21 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
         size_t volume = young * 8;
         gc_promote_volume = volume > floor_ ? volume : floor_;
 
-        // Hand excess free pages back to the OS now that the prune has
-        // settled the live set: warm slack retained = three young turnovers,
-        // floored (see GC_SCAVENGE_RETAIN_FLOOR).
+        // Hand back the pages that went this whole cycle without any thread
+        // wanting them, and rotate the pool's generations. This is the
+        // measured surplus; it needs no retain target because it is not
+        // guessing at how much slack to keep — it is reporting how much went
+        // unused. Runs as the last thing in the exclusive prune tail, where
+        // the transient HEAD marker it uses stays invisible to the
+        // conservative scanner.
+        memory_pool_release_cycle();
+
+        // The age-based scavenger still covers what the pool does not: freed
+        // RUNS, and singles claimed by the fallback scan rather than the pool.
+        // Its retain target is the term the release rule is meant to retire —
+        // measured simultaneously 3x too large on test_gc_pressure and too
+        // small here — so it stays only until the pool's numbers show the
+        // remainder is not worth a second mechanism.
         size_t slack = young * 3;
         memory_scavenge(slack > GC_SCAVENGE_RETAIN_FLOOR ? slack : GC_SCAVENGE_RETAIN_FLOOR,
                         GC_SCAVENGE_BUDGET);
