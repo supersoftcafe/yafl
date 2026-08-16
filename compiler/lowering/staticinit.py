@@ -119,7 +119,19 @@ def _promote_one_function(fn: Function, app: Application) -> tuple[Function, lis
         if obj.array_type is not None:
             continue  # Skip objects with array fields
 
-        data_fields = [(name, typ) for name, typ in obj.fields.fields if name != "type"]
+        # `$hash` is the hidden Int32 cache every BOXED ENUM LEAF carries
+        # directly after the vtable (EnumStatement.global_codegen's prefix).
+        # Nothing ever ASSIGNS it — the allocator zero-fills it and
+        # yafl_hash_store writes it lazily — so counting it among the fields
+        # that must be assigned made this test fail for EVERY enum leaf, which
+        # silently disabled promotion across all enums: a whole-compiler
+        # self-emit produced ONE $si$ global, and `ChainEnd()` — a no-field
+        # terminator that should be a single shared static — was allocated
+        # fresh at every use (~984k live instances, 48 MiB, in a self-compile).
+        # It still needs a VALUE in the emitted initialiser, which is
+        # positional, so it is re-inserted as ZeroOf in declaration order below.
+        data_fields = [(name, typ) for name, typ in obj.fields.fields
+                       if name not in ("type", "$hash")]
         assigns = field_assigns.get(sv_name, {})
 
         if len(assigns) != len(data_fields):
@@ -142,12 +154,21 @@ def _promote_one_function(fn: Function, app: Application) -> tuple[Function, lis
         if not ok:
             continue
 
-        # Create a new static global for this object
+        # Create a new static global for this object. The initialiser is
+        # POSITIONAL (ir.Global emits `{ vtable, v1, v2, ... }`), so every
+        # field after `type` needs a value in declaration order — including
+        # the `$hash` slot excluded from the assignment check above, which
+        # zeroes exactly as a fresh allocation would.
+        consts = dict(field_values)
+        init_values = [
+            (name, ZeroOf(typ) if name == "$hash" else consts[name])
+            for name, typ in obj.fields.fields if name != "type"
+        ]
         gname = f"$si${next(_si_counter)}"
         new_globals.append(Global(
             name=gname,
             type=DataPointer(),
-            init=NewStruct(tuple(field_values)),
+            init=NewStruct(tuple(init_values)),
             object_name=class_name
         ))
 
