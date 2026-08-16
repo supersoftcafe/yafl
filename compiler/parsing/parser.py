@@ -208,8 +208,8 @@ def __named() -> p.Parser[e.Expression]:
     return p.Parser(_p)
 
 
-def __to_flat_list[_T](result: p.Result[list[list[_T]]], tokens: list[p.Token]) -> p.Result[list[_T]]:
-    return p.Result([Y for X in result.value for Y in X], result.tokens, result.line_ref, result.errors)
+def __to_flat_list[_T](value: list[list[_T]]) -> list[_T]:
+    return [Y for X in value for Y in X]
 
 
 def __to_dot_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result:
@@ -223,10 +223,10 @@ def __to_dot_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Resu
                     result.tokens, result.line_ref, result.errors)
 
 
-def __to_named_fully_qualified(result: p.Result[tuple[e.NamedExpression, list[e.NamedExpression], list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    first, path, type_params = result.value
+def __to_named_fully_qualified(value: tuple[e.NamedExpression, list[e.NamedExpression], list[t.TypeSpec]]) -> e.Expression:
+    first, path, type_params = value
     expr = e.NamedExpression(first.line_ref, "::".join(ne.name for ne in ([first] + path)), type_params=tuple(type_params))
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+    return expr
 
 
 def __to_builtin_op(result: p.Result[tuple[str, e.TupleExpression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -238,39 +238,38 @@ def __to_builtin_op(result: p.Result[tuple[str, e.TupleExpression]], tokens: lis
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
-def __to_call_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result:
+def __to_call_op(value: e.Expression, line_ref: p.LineRef):
     # `(args)` -> a transformer applying its left operand as the callee.
-    args = result.value
-    line = result.line_ref
-    return p.Result(lambda left: e.CallExpression(line, left, args),
-                    result.tokens, result.line_ref, result.errors)
+    args = value
+    line = line_ref
+    return lambda left: e.CallExpression(line, left, args)
 
 
-def __to_index_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result:
+def __to_index_op(value: e.Expression, line_ref: p.LineRef) -> object:
     # `[i]` -> a transformer lowering to the `[]` operator: ``[]``(left, i),
     # exactly as `left + right` lowers to `+`(left, right). Nothing is
     # auto-generated for arrays here; resolution finds whatever ``[]`` is in
     # scope, like any other operator.
-    idx = result.value
-    line = result.line_ref
+    idx = value
+    line = line_ref
     def wrap(left: e.Expression) -> e.Expression:
         return e.CallExpression(line,
             e.NamedExpression(line, "`[]`"),
             e.TupleExpression(line, [
                 e.TupleEntryExpression(None, left),
                 e.TupleEntryExpression(None, idx)]))
-    return p.Result(wrap, result.tokens, result.line_ref, result.errors)
+    return wrap
 
 
-def __to_invokes(result: p.Result[tuple[e.Expression, list]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_invokes(value: tuple[e.Expression, list]) -> e.Expression:
     # A primary expression followed by a left-associative chain of postfix
     # operators — `.field`, `(...)`, `[...]` — that interleave freely, so
     # `f().g()`, `a().b`, `m()[0].x` all parse. Each op parsed to an Expr->Expr
     # closure (see __to_dot_op/__to_call_op/__to_index_op), so folding is just
     # left-to-right application — no per-op tag or discrimination needed.
-    left_expr, ops = result.value
+    left_expr, ops = value
     expr = reduce(lambda acc, op: op(acc), ops, left_expr)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+    return expr
 
 
 def __placeholder_entries(function: e.Expression) -> list[int]:
@@ -417,27 +416,27 @@ def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Resu
     return p.Result(negated, result.tokens, result.line_ref, result.errors)
 
 
-def __to_not(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    line = result.line_ref
+def __to_not(value: e.Expression, line_ref: p.LineRef) -> e.Expression:
+    line = line_ref
     notted = e.CallExpression(line,
         e.NamedExpression(line, "`!`"),
         e.TupleExpression(line, [
-            e.TupleEntryExpression(None, result.value),
+            e.TupleEntryExpression(None, value),
         ]))
-    return p.Result(notted, result.tokens, result.line_ref, result.errors)
+    return notted
 
 
-def __to_invert(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    line = result.line_ref
+def __to_invert(value: e.Expression, line_ref: p.LineRef) -> e.Expression:
+    line = line_ref
     inverted = e.CallExpression(line,
         e.NamedExpression(line, "`~`"),
         e.TupleExpression(line, [
-            e.TupleEntryExpression(None, result.value),
+            e.TupleEntryExpression(None, value),
         ]))
-    return p.Result(inverted, result.tokens, result.line_ref, result.errors)
+    return inverted
 
 
-def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_ternery(value: tuple[e.Expression, list[tuple[e.Expression, e.Expression]]]) -> e.Expression:
     def get_right_expr(condition: e.Expression, expressions: list[tuple[e.Expression, e.Expression]]) -> e.Expression:
         if not expressions:
             return condition
@@ -447,29 +446,29 @@ def __to_ternery(result: p.Result[tuple[e.Expression, list[tuple[e.Expression, e
         else:
             false_expr = get_right_expr(false_expr, expressions[1:])
             return e.TernaryExpression(condition.line_ref, condition, true_expr, false_expr)
-    left_expr, right_list = result.value
+    left_expr, right_list = value
     expr = get_right_expr(left_expr, right_list)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+    return expr
 
 
-def __to_logical_and(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_logical_and(value: tuple[e.Expression, list[e.Expression]]) -> e.Expression:
     # `a && b` is short-circuit sugar for `a ? b : false` — guaranteed control
     # flow, not a function call, so the right operand is never evaluated when the
     # left is false. Left-associative; `&` stays the eager both-operands bool op.
     def accumulate(left: e.Expression, right: e.Expression) -> e.Expression:
         return e.TernaryExpression(left.line_ref, left, right, e.BoolExpression(left.line_ref, False))
-    left_expr, right_list = result.value
+    left_expr, right_list = value
     expr = reduce(accumulate, right_list, left_expr)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+    return expr
 
 
-def __to_logical_or(result: p.Result[tuple[e.Expression, list[e.Expression]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_logical_or(value: tuple[e.Expression, list[e.Expression]]) -> e.Expression:
     # `a || b` is short-circuit sugar for `a ? true : b`; mirrors __to_logical_and.
     def accumulate(left: e.Expression, right: e.Expression) -> e.Expression:
         return e.TernaryExpression(left.line_ref, left, e.BoolExpression(left.line_ref, True), right)
-    left_expr, right_list = result.value
+    left_expr, right_list = value
     expr = reduce(accumulate, right_list, left_expr)
-    return p.Result(expr, result.tokens, result.line_ref, result.errors)
+    return expr
 
 
 def __to_is(result: p.Result, tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -490,38 +489,37 @@ def __to_is(result: p.Result, tokens: list[p.Token]) -> p.Result[e.Expression]:
     return p.Result(m.MatchExpression(lr, left, arms), result.tokens, result.line_ref, result.errors)
 
 
-def __to_expr_tuple_entry(result: p.Result[tuple[list[str], e.Expression]], tokens: list[p.Token]) -> p.Result[e.TupleEntryExpression]:
-    name, value = result.value
-    return p.Result(e.TupleEntryExpression(p.first_or_none(name), value), result.tokens, result.line_ref, result.errors)
+def __to_expr_tuple_entry(value: tuple[list[str], e.Expression]) -> e.TupleEntryExpression:
+    name, value = value
+    return e.TupleEntryExpression(p.first_or_none(name), value)
 
 
-def __to_spread_entry(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.TupleEntryExpression]:
+def __to_spread_entry(value: e.Expression) -> e.TupleEntryExpression:
     # `*expr` — splice the tuple value's fields into this tuple, positionally.
-    return p.Result(e.TupleEntryExpression(None, result.value, spread=True),
-                    result.tokens, result.line_ref, result.errors)
+    return e.TupleEntryExpression(None, value, spread=True)
 
 
-def __to_expr_tuple(result: p.Result[list[e.TupleEntryExpression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    items = result.value
-    return p.Result(e.TupleExpression(result.line_ref, items), result.tokens, result.line_ref, result.errors)
+def __to_expr_tuple(value: list[e.TupleEntryExpression], line_ref: p.LineRef) -> e.Expression:
+    items = value
+    return e.TupleExpression(line_ref, items)
 
 
-def __to_paren_expr(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_paren_expr(value: e.Expression) -> e.Expression:
     """`( expr )` as a primary expression: a single un-named entry is just a
     parenthesised expression, so collapse the 1-tuple wrap. `()`, `(a, b)` and
     `(name = value)` are left as TupleExpressions."""
-    value = result.value
+    value = value
     if (isinstance(value, e.TupleExpression)
             and len(value.expressions) == 1
             and value.expressions[0].name is None):
         value = value.expressions[0].value
-    return p.Result(value, result.tokens, result.line_ref, result.errors)
+    return value
 
 
-def __to_parallel_expr(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    assert isinstance(result.value, e.TupleExpression)
-    exprs = [entry.value for entry in result.value.expressions]
-    return p.Result(e.ParallelExpression(result.line_ref, exprs), result.tokens, result.line_ref, result.errors)
+def __to_parallel_expr(value: e.Expression, line_ref: p.LineRef) -> e.Expression:
+    assert isinstance(value, e.TupleExpression)
+    exprs = [entry.value for entry in value.expressions]
+    return e.ParallelExpression(line_ref, exprs)
 
 
 def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -530,29 +528,26 @@ def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]]
     return p.Result(e.LambdaExpression(tokens[0].line_ref, params2, expression, None), result.tokens, result.line_ref, result.errors)
 
 
-def __to_ret_statement(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[s.ReturnStatement]:
-    return p.Result(s.ReturnStatement(result.line_ref, result.value), result.tokens, result.line_ref, result.errors)
+def __to_ret_statement(value: e.Expression, line_ref: p.LineRef) -> s.ReturnStatement:
+    return s.ReturnStatement(line_ref, value)
 
 
-def __to_action_statement(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[s.ReturnStatement]:
-    return p.Result(s.ActionStatement(result.line_ref, result.value), result.tokens, result.line_ref, result.errors)
+def __to_action_statement(value: e.Expression, line_ref: p.LineRef) -> s.ReturnStatement:
+    return s.ActionStatement(line_ref, value)
 
 
-def __to_if_statement(result, tokens) -> p.Result[s.IfStatement]:
-    cond, body = result.value
-    return p.Result(s.IfStatement(result.line_ref, cond, body, []),
-                    result.tokens, result.line_ref, result.errors)
+def __to_if_statement(value, line_ref: p.LineRef) -> s.IfStatement:
+    cond, body = value
+    return s.IfStatement(line_ref, cond, body, [])
 
 
-def __to_else_if_statement(result, tokens) -> p.Result[s.ElseIfStatement]:
-    cond, body = result.value
-    return p.Result(s.ElseIfStatement(result.line_ref, cond, body),
-                    result.tokens, result.line_ref, result.errors)
+def __to_else_if_statement(value, line_ref: p.LineRef) -> s.ElseIfStatement:
+    cond, body = value
+    return s.ElseIfStatement(line_ref, cond, body)
 
 
-def __to_else_statement(result, tokens) -> p.Result[s.ElseStatement]:
-    return p.Result(s.ElseStatement(result.line_ref, result.value),
-                    result.tokens, result.line_ref, result.errors)
+def __to_else_statement(value, line_ref: p.LineRef) -> s.ElseStatement:
+    return s.ElseStatement(line_ref, value)
 
 
 def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|list[s.LetStatement], list[t.TypeSpec], list[str], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
@@ -620,50 +615,45 @@ def __to_match_arm_literal(result: p.Result[tuple[list[e.Expression], list[e.Exp
                     result.tokens, result.line_ref, result.errors)
 
 
-def __to_match_expression(result: p.Result[tuple[e.Expression, list[m.MatchArm]]], tokens: list[p.Token]) -> p.Result[m.MatchExpression]:
-    subject, arms = result.value
-    return p.Result(m.MatchExpression(result.line_ref, subject, arms), result.tokens, result.line_ref, result.errors)
+def __to_match_expression(value: tuple[e.Expression, list[m.MatchArm]], line_ref: p.LineRef) -> m.MatchExpression:
+    subject, arms = value
+    return m.MatchExpression(line_ref, subject, arms)
 
 
-def __to_import_statement(result: p.Result[list[str]], tokens: list[p.Token]) -> p.Result[s.ImportStatement]:
-    return p.Result(s.ImportStatement(result.line_ref, '::'.join(result.value)),
-                  result.tokens, result.line_ref, result.errors)
+def __to_import_statement(value: list[str], line_ref: p.LineRef) -> s.ImportStatement:
+    return s.ImportStatement(line_ref, '::'.join(value))
 
 
-def __to_namespace_statement(result: p.Result[list[str]], tokens: list[p.Token]) -> p.Result[s.NamespaceStatement]:
-    return p.Result(s.NamespaceStatement(result.line_ref, '::'.join(result.value)),
-                  result.tokens, result.line_ref, result.errors)
+def __to_namespace_statement(value: list[str], line_ref: p.LineRef) -> s.NamespaceStatement:
+    return s.NamespaceStatement(line_ref, '::'.join(value))
 
 
-def __to_named_spec(result: p.Result[tuple[list[str], str, list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[t.NamedSpec]:
-    path, name, generics = result.value
-    ns = t.NamedSpec(result.line_ref, '::'.join(path + [name]), tuple(generics))
-    return p.Result(ns, result.tokens, result.line_ref, result.errors)
+def __to_named_spec(value: tuple[list[str], str, list[t.TypeSpec]], line_ref: p.LineRef) -> t.NamedSpec:
+    path, name, generics = value
+    ns = t.NamedSpec(line_ref, '::'.join(path + [name]), tuple(generics))
+    return ns
 
 
-def __to_builtin_spec(result: p.Result[str], tokens: list[p.Token]) -> p.Result[t.NamedSpec]:
-    name = result.value
-    return p.Result(t.BuiltinSpec(result.line_ref, name),
-                  result.tokens, result.line_ref, result.errors)
+def __to_builtin_spec(value: str, line_ref: p.LineRef) -> t.NamedSpec:
+    name = value
+    return t.BuiltinSpec(line_ref, name)
 
 
-def __to_named_tuple_entry(result: p.Result[tuple[str, list[t.TypeSpec], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[t.TupleEntrySpec]:
-    name, e_type, default_expr = result.value
-    return p.Result(t.TupleEntrySpec(name, p.first_or_none(e_type), p.first_or_none(default_expr)),
-                  result.tokens, result.line_ref, result.errors)
+def __to_named_tuple_entry(value: tuple[str, list[t.TypeSpec], list[e.Expression]]) -> t.TupleEntrySpec:
+    name, e_type, default_expr = value
+    return t.TupleEntrySpec(name, p.first_or_none(e_type), p.first_or_none(default_expr))
 
 
-def __to_type_only_tuple_entry(result: p.Result[t.TypeSpec], tokens: list[p.Token]) -> p.Result[t.TupleEntrySpec]:
-    return p.Result(t.TupleEntrySpec(None, result.value, None),
-                  result.tokens, result.line_ref, result.errors)
+def __to_type_only_tuple_entry(value: t.TypeSpec) -> t.TupleEntrySpec:
+    return t.TupleEntrySpec(None, value, None)
 
 
-def __to_tuple_or_callable_spec(result: p.Result[tuple[list[t.TupleEntrySpec],list[t.TypeSpec]]], tokens: list[p.Token]) -> p.Result[t.TypeSpec]:
-    entries, callable_result = result.value
-    result_type = t.TupleSpec(result.line_ref, entries)
+def __to_tuple_or_callable_spec(value: tuple[list[t.TupleEntrySpec],list[t.TypeSpec]], line_ref: p.LineRef) -> t.TypeSpec:
+    entries, callable_result = value
+    result_type = t.TupleSpec(line_ref, entries)
     if callable_result:
-        result_type = t.CallableSpec(result.line_ref, result_type, callable_result[0])
-    return p.Result(result_type, result.tokens, result.line_ref, result.errors)
+        result_type = t.CallableSpec(line_ref, result_type, callable_result[0])
+    return result_type
 
 
 def __to_tagged_spec_or_simple_type(result: p.Result[list[t.TypeSpec]], tokens: list[p.Token]) -> p.Result[t.TypeSpec]:
@@ -676,29 +666,29 @@ def __to_tagged_spec_or_simple_type(result: p.Result[list[t.TypeSpec]], tokens: 
     return p.Result(t.CombinationSpec(result.line_ref, entries), result.tokens, result.line_ref, result.errors)
 
 
-def __to_function(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.FunctionStatement]:
-    attributes, name, generics, params, dtype, where_traits, body_stmts = result.value
+def __to_function(value: tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]], line_ref: p.LineRef) -> s.FunctionStatement:
+    attributes, name, generics, params, dtype, where_traits, body_stmts = value
     if body_stmts and isinstance(body_stmts[-1], s.ReturnStatement):
-        body = e.BlockExpression(result.line_ref, list(body_stmts[:-1]), body_stmts[-1].value)
+        body = e.BlockExpression(line_ref, list(body_stmts[:-1]), body_stmts[-1].value)
     elif body_stmts:
-        body = e.BlockExpression(result.line_ref, list(body_stmts), e.NothingExpression(result.line_ref))
+        body = e.BlockExpression(line_ref, list(body_stmts), e.NothingExpression(line_ref))
     else:
         body = None
     statement = s.FunctionStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
-        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params),
+        line_ref, f"{name}@{line_ref.hash6()}", None, attributes or {}, generics,
+        s.DestructureStatement(line_ref, '_', None, {}, (), None, None, params),
         body, p.first_or_none(dtype), trait_params=where_traits)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
 
-def __to_function_oneliner(result: p.Result, tokens: list[p.Token]) -> p.Result[s.FunctionStatement]:
-    attributes, name, generics, params, dtype, where_traits, expr = result.value
-    body = e.BlockExpression(result.line_ref, [], expr)
+def __to_function_oneliner(value, line_ref: p.LineRef) -> s.FunctionStatement:
+    attributes, name, generics, params, dtype, where_traits, expr = value
+    body = e.BlockExpression(line_ref, [], expr)
     statement = s.FunctionStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
-        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params),
+        line_ref, f"{name}@{line_ref.hash6()}", None, attributes or {}, generics,
+        s.DestructureStatement(line_ref, '_', None, {}, (), None, None, params),
         body, p.first_or_none(dtype), trait_params=where_traits)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
 
 def __flatten_inheritance(implements: list[t.TypeSpec]) -> list[t.TypeSpec]:
@@ -712,59 +702,59 @@ def __flatten_inheritance(implements: list[t.TypeSpec]) -> list[t.TypeSpec]:
             for member in (entry.types if isinstance(entry, t.CombinationSpec) else [entry])]
 
 
-def __to_class(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.ClassStatement]:
-    attributes, name, generics, params, implements, where_traits, body = result.value
+def __to_class(value: tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[s.LetStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]], line_ref: p.LineRef) -> s.ClassStatement:
+    attributes, name, generics, params, implements, where_traits, body = value
     statement = s.ClassStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
-        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params),
+        line_ref, f"{name}@{line_ref.hash6()}", None, attributes or {}, generics,
+        s.DestructureStatement(line_ref, '_', None, {}, (), None, None, params),
         body, __flatten_inheritance(implements), False, trait_params=where_traits)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
 
-def __to_interface(result: p.Result[tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]]], tokens: list[p.Token]) -> p.Result[s.ClassStatement]:
-    attributes, name, generics, implements, where_traits, body = result.value
+def __to_interface(value: tuple[dict[str, e.Expression|None], str, list[s.TypeAliasStatement], list[t.TypeSpec], list[t.TypeSpec], list[s.Statement]], line_ref: p.LineRef) -> s.ClassStatement:
+    attributes, name, generics, implements, where_traits, body = value
     statement = s.ClassStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes or {}, generics,
-        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, []),
+        line_ref, f"{name}@{line_ref.hash6()}", None, attributes or {}, generics,
+        s.DestructureStatement(line_ref, '_', None, {}, (), None, None, []),
         body, __flatten_inheritance(implements), True, trait_params=where_traits)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
 
-def __to_instance(result: p.Result, tokens: list[p.Token]) -> p.Result[s.Statement]:
+def __to_instance(value, line_ref: p.LineRef) -> s.Statement:
     # A first-class TraitInstanceStatement: anonymous at the surface — the
     # synthesized `instance$<tag>` name exists only for statement indexing
     # and never appears in diagnostics. Lowered to witness class + record
     # let AFTER checking, by lowering/instances.py.
-    attributes, generics, pattern, where_traits, members = result.value
+    attributes, generics, pattern, where_traits, members = value
     statement = s.TraitInstanceStatement(
-        result.line_ref, f"instance${result.line_ref.hash6()}", None,
+        line_ref, f"instance${line_ref.hash6()}", None,
         attributes or {}, tuple(generics),
         trait_params=tuple(where_traits),
         pattern=pattern, ambient='ambient' in (attributes or {}),
         statements=members)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
 
-def __to_type_alias(result: p.Result[tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
+def __to_type_alias(value: tuple[dict, str, list[s.TypeAliasStatement], t.TypeSpec], line_ref: p.LineRef) -> s.TypeAliasStatement:
     # A typealias is purely a name for a type: no `where` clause (the old
     # `typealias [where]` conditional-instance channel was replaced by
     # `instance [ambient]`).
-    attributes, name, generics, typespec = result.value
-    statement = s.TypeAliasStatement(result.line_ref, f"{name}@{result.line_ref.hash6()}", None,
+    attributes, name, generics, typespec = value
+    statement = s.TypeAliasStatement(line_ref, f"{name}@{line_ref.hash6()}", None,
                                      attributes or {}, tuple(generics), typespec)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
-def __to_attributes(result: p.Result[list[tuple[str, list[e.Expression]]]], tokens: list[p.Token]) -> p.Result[dict[str, e.Expression|None]]:
-    d = {key: (value[0] if value else None) for key, value in result.value[0]} if result.value else {}
-    return p.Result(d, result.tokens, result.line_ref, result.errors)
+def __to_attributes(value: list[tuple[str, list[e.Expression]]]) -> dict[str, e.Expression|None]:
+    d = {key: (value[0] if value else None) for key, value in value[0]} if value else {}
+    return d
 
-def __to_generic_placeholder(result: p.Result[tuple[dict[str, e.Expression|None], str]], tokens: list[p.Token]) -> p.Result[s.TypeAliasStatement]:
-    attributes, ident = result.value
-    name = f"{ident}@{result.line_ref.hash6()}"
+def __to_generic_placeholder(value: tuple[dict[str, e.Expression|None], str], line_ref: p.LineRef) -> s.TypeAliasStatement:
+    attributes, ident = value
+    name = f"{ident}@{line_ref.hash6()}"
     is_linear = "linear" in attributes
-    statement = s.TypeAliasStatement(result.line_ref, name, None, attributes, (),
-                                     t.GenericPlaceholderSpec(result.line_ref, name, is_linear))
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    statement = s.TypeAliasStatement(line_ref, name, None, attributes, (),
+                                     t.GenericPlaceholderSpec(line_ref, name, is_linear))
+    return statement
 
 def __to_flat_type_list(result: p.Result[list[t.TypeSpec]], tokens: list[p.Token]) -> p.Result[list[t.TypeSpec]]:
     if len(result.value) == 0:
@@ -797,21 +787,21 @@ __parse_maybe_equal_expr = p.maybe(p.requires(p.sym("="), __parse_expression, "m
 
 __parse_maybe_generic_spec = p.maybe(p.requires(
     p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
-    "missing generics")) >> __to_flat_list
+    "missing generics")).map(__to_flat_list)
 
-__parse_type_builtin = (p.discard_sym("__builtin_type__") & p.discard_sym("<") & p.ident() & p.discard_sym(">")) >> __to_builtin_spec
-__parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident() & __parse_maybe_generic_spec) >> __to_named_spec
+__parse_type_builtin = (p.discard_sym("__builtin_type__") & p.discard_sym("<") & p.ident() & p.discard_sym(">")).build(__to_builtin_spec)
+__parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident() & __parse_maybe_generic_spec).build(__to_named_spec)
 # A tuple-type entry: the colon PRECEDES the type, always. `name[: Type][=
 # default]` is a named field (type optional — inference may fill it), and
 # `:Type` is an unnamed typed field. So `(Int, Int)` is two fields NAMED
 # `Int` with no type, and `(:Int, :Int)` is the unnamed pair-of-Ints —
 # exactly the function-parameter model, applied to every tuple type.
 __parse_type_tuple_entry = (
-      ((p.ident() & __parse_maybe_colon_type & __parse_maybe_equal_expr) >> __to_named_tuple_entry)
-    | ((p.discard_sym(":") & __parse_type) >> __to_type_only_tuple_entry))
+      ((p.ident() & __parse_maybe_colon_type & __parse_maybe_equal_expr).map(__to_named_tuple_entry))
+    | ((p.discard_sym(":") & __parse_type).map(__to_type_only_tuple_entry)))
 __parse_type_tuple_or_callable = p.requires(
     p.discard_sym("("),
-      ((p.delimited_list(__parse_type_tuple_entry, ",") & p.discard_sym(")") & __parse_maybe_colon_type) >> __to_tuple_or_callable_spec),
+      ((p.delimited_list(__parse_type_tuple_entry, ",") & p.discard_sym(")") & __parse_maybe_colon_type).build(__to_tuple_or_callable_spec)),
     "incomplete structured type")
 __parse_type_grouped = p.requires(
     p.discard_sym("("),
@@ -831,7 +821,7 @@ __parse_attr_name = p.ident() | p.sym(["where", "let", "fun", "class", "interfac
 __parse_attr_value = (p.discard_sym("=") & (__string() | __integer())) | p.Parser(__parse_attr_tuple)
 __parse_attributes = p.maybe(p.discard_sym("[") & p.delimited_list(
     __parse_attr_name & p.maybe(__parse_attr_value)
-    , ",") & p.discard_sym("]")) >> __to_attributes
+    , ",") & p.discard_sym("]")).map(__to_attributes)
 
 def parse_target_type_expr(tokens: list[p.Token]) -> p.Result[s.LetStatement]:
     return __parse_target_type_expr_any(tokens)
@@ -845,19 +835,19 @@ __parse_target_type_expr = p.Parser(parse_target_type_expr)
 # valid length field), and codegen moves it to the end of the object.
 __parse_maybe_array_marker = p.maybe(p.discard_sym("[") & p.ident() & p.discard_sym("]"))
 __parse_destructure_parts = p.discard_sym('(') & p.delimited_list(__parse_target_type_expr, ',') & p.discard_sym(')')
-__parse_maybe_destructure_parts = p.maybe(__parse_destructure_parts) >> __to_flat_list
+__parse_maybe_destructure_parts = p.maybe(__parse_destructure_parts).map(__to_flat_list)
 __parse_target_type_expr_any = (__parse_attributes & (p.ident()|__parse_destructure_parts) & __parse_maybe_colon_type & __parse_maybe_array_marker & __parse_maybe_equal_expr) >> __to_let_statement
 
 __parse_maybe_type_params = p.maybe(p.requires(
     p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
-    "missing generics")) >> __to_flat_list
+    "missing generics")).map(__to_flat_list)
 
-__parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression) >> __to_spread_entry)
-                            | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression) >> __to_expr_tuple_entry))
-__parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple") >> __to_expr_tuple
+__parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression).map(__to_spread_entry))
+                            | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression).map(__to_expr_tuple_entry)))
+__parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple").build(__to_expr_tuple)
 __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_expr_lambda
 __parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & p.ident() & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
-__parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params) >> __to_named_fully_qualified
+__parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params).map(__to_named_fully_qualified)
 
 # match arm: "(" literal ("," literal)* ")" |  "(" name ":" type ")"  |  "()"
 # — each optionally guarded by `if cond` — then "=>" expr. A literal may be
@@ -867,14 +857,13 @@ __parse_signed_integer = ((p.discard_sym("-") & __integer()) >> __to_negate) | _
 __parse_signed_float   = ((p.discard_sym("-") & __float())   >> __to_negate) | __float()
 
 
-def __to_match_range(result: p.Result[tuple[e.Expression, e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchRange]:
-    lo, hi = result.value
-    return p.Result(m.MatchRange(result.line_ref, lo, hi),
-                    result.tokens, result.line_ref, result.errors)
+def __to_match_range(value: tuple[e.Expression, e.Expression], line_ref: p.LineRef) -> m.MatchRange:
+    lo, hi = value
+    return m.MatchRange(line_ref, lo, hi)
 
 
 __parse_match_bound = __parse_signed_float | __parse_signed_integer | __char()
-__parse_match_range = (__parse_match_bound & p.discard_sym("..") & __parse_match_bound) >> __to_match_range
+__parse_match_range = (__parse_match_bound & p.discard_sym("..") & __parse_match_bound).build(__to_match_range)
 __parse_match_literal   = __parse_match_range | __parse_signed_float | __parse_signed_integer | __char() | __string()
 __parse_maybe_arm_guard = p.maybe(p.requires(
     p.discard_sym("if"), __parse_expression, "missing guard expression"))
@@ -884,39 +873,39 @@ __parse_match_arm_literal = p.block(
 __parse_match_arm_destructure = p.block((__parse_destructure_parts & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
 __parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
 __parse_match_subject = p.requires(p.sym("("), __parse_expression & p.discard_sym(")"), "invalid match subject")
-__parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression") >> __to_match_expression
+__parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
 
-__parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__") >> __to_parallel_expr
+__parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__").build(__to_parallel_expr)
 
-__parse_paren_expr = __parse_expr_tuple >> __to_paren_expr
+__parse_paren_expr = __parse_expr_tuple.map(__to_paren_expr)
 __parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 # Postfix operators form ONE left-associative chain so dot/call/index interleave
 # freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats
 # tokenise their own `.`), so consuming it greedily here is unambiguous.
 __parse_postfix_dot   = (p.discard_sym(".") & __parse_terminal) >> __to_dot_op
-__parse_postfix_call  = __parse_expr_tuple >> __to_call_op
-__parse_postfix_index = p.requires(p.discard_sym("["), __parse_expression & p.discard_sym("]"), "invalid index expression") >> __to_index_op
-__parse_invoke  = (__parse_terminal & p.many(__parse_postfix_dot | __parse_postfix_call | __parse_postfix_index)) >> __to_invokes
-def __to_with(result: p.Result, tokens: list[p.Token]) -> p.Result:
+__parse_postfix_call  = __parse_expr_tuple.build(__to_call_op)
+__parse_postfix_index = p.requires(p.discard_sym("["), __parse_expression & p.discard_sym("]"), "invalid index expression").build(__to_index_op)
+__parse_invoke  = (__parse_terminal & p.many(__parse_postfix_dot | __parse_postfix_call | __parse_postfix_index)).map(__to_invokes)
+def __to_with(value, line_ref: p.LineRef):
     # `with subject(name = value, …)` parses as `with` + an ordinary invoke:
     # the invoke is naturally Call(subject, named-tuple), and the builder
     # REINTERPRETS it. Anything else (no call, no replacements) still builds
     # the node — the shape rules are CHECK errors per the ruling, not parse
     # errors.
-    expr = result.value
+    expr = value
     if isinstance(expr, e.CallExpression) and isinstance(expr.parameter, e.TupleExpression):
-        statement = e.WithExpression(result.line_ref, expr.function, expr.parameter)
+        statement = e.WithExpression(line_ref, expr.function, expr.parameter)
     else:
-        statement = e.WithExpression(result.line_ref, expr,
-                                     e.TupleExpression(result.line_ref, []))
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+        statement = e.WithExpression(line_ref, expr,
+                                     e.TupleExpression(line_ref, []))
+    return statement
 
 
-__parse_unary   = (((p.discard_sym("with") & __parse_invoke) >> __to_with)
+__parse_unary   = (((p.discard_sym("with") & __parse_invoke).build(__to_with))
                  | (p.discard_sym("-") & __parse_invoke) >> __to_negate
-                 | (p.discard_sym("!") & __parse_invoke) >> __to_not
-                 | (p.discard_sym("~") & __parse_invoke) >> __to_invert
+                 | (p.discard_sym("!") & __parse_invoke).build(__to_not)
+                 | (p.discard_sym("~") & __parse_invoke).build(__to_invert)
                  | __parse_invoke)
 __parse_divmul  = (__parse_unary    & p.many(p.sym(["%", "/", "*"]) & __parse_unary     )) >> __to_call_operators
 __parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
@@ -943,9 +932,9 @@ __parse_bind    = (__parse_is       & p.many(p.sym(["?>", "|>"])     & __parse_i
 # the comparison/bind level and tighter than the ternary `?:`. They are parse-time
 # sugar for the ternary (see __to_logical_and/__to_logical_or), so short-circuit
 # is a guaranteed semantic rather than an optimiser artefact.
-__parse_logand  = (__parse_bind     & p.many(p.discard_sym("&&")     & __parse_bind      )) >> __to_logical_and
-__parse_logor   = (__parse_logand   & p.many(p.discard_sym("||")     & __parse_logand    )) >> __to_logical_or
-__parse_ternery = (__parse_logor    & p.many(p.discard_sym("?") & __parse_logor & p.discard_sym(":") & __parse_logor)) >> __to_ternery
+__parse_logand  = (__parse_bind     & p.many(p.discard_sym("&&")     & __parse_bind      )).map(__to_logical_and)
+__parse_logor   = (__parse_logand   & p.many(p.discard_sym("||")     & __parse_logand    )).map(__to_logical_or)
+__parse_ternery = (__parse_logor    & p.many(p.discard_sym("?") & __parse_logor & p.discard_sym(":") & __parse_logor)).map(__to_ternery)
 
 
 #############
@@ -956,31 +945,31 @@ __parse_maybe_where_constraints = p.maybe(p.requires(
     "missing type constraints")) >> __to_flat_type_list
 
 __parse_maybe_generic_statement = p.maybe(p.requires(
-    p.sym("<"), p.delimited_list((__parse_attributes & p.ident()) >> __to_generic_placeholder, ",") & p.discard_sym(">"),
-    "missing generics")) >> __to_flat_list
+    p.sym("<"), p.delimited_list((__parse_attributes & p.ident()).build(__to_generic_placeholder), ",") & p.discard_sym(">"),
+    "missing generics")).map(__to_flat_list)
 
 __parse_action = p.block(
-    __parse_expression >> __to_action_statement)
+    __parse_expression.build(__to_action_statement))
 
 __parse_ret = p.block(p.requires(
     p.discard_sym("ret"),
-    __parse_expression >> __to_ret_statement,
+    __parse_expression.build(__to_ret_statement),
     "missing return value"))
 
 __parse_fun = p.block(p.requires(
     p.discard_sym("fun"),
-    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.discard_sym("=>") & __parse_expression) >> __to_function_oneliner
-    | (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_function,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.discard_sym("=>") & __parse_expression).build(__to_function_oneliner)
+    | (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)).build(__to_function),
     "invalid function statement"))
 
 __parse_class = p.block(p.requires(
     p.discard_sym("class"),
-    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_maybe_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_class,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_maybe_destructure_parts & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)).build(__to_class),
     "invalid class statement"))
 
 __parse_interface = p.block(p.requires(
     p.discard_sym("interface"),
-    (__parse_attributes & p.ident() & __parse_maybe_generic_statement                             & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_interface,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement                             & __parse_maybe_colon_type & __parse_maybe_where_constraints & p.many(__parse_statement)).build(__to_interface),
     "invalid interface statement"))
 
 # A single-name let may carry generic params and a trailing `where` (generic
@@ -1001,23 +990,23 @@ __parse_let = p.block(p.requires(
 __parse_instance = p.block(p.requires(
     p.discard_sym("instance"),
     (__parse_attributes & __parse_maybe_generic_statement & __parse_type
-     & __parse_maybe_where_constraints & p.many(__parse_statement)) >> __to_instance,
+     & __parse_maybe_where_constraints & p.many(__parse_statement)).build(__to_instance),
     "invalid instance statement"))
 
 __parse_type_alias = p.block(p.requires(
     p.discard_sym("typealias"),
     (__parse_attributes & p.ident() & __parse_maybe_generic_statement & p.discard_sym(":")
-     & __parse_type) >> __to_type_alias,
+     & __parse_type).build(__to_type_alias),
     "invalid typealias statement"))
 
 __parse_import = p.block(p.requires(
     p.discard_sym("import"),
-    p.delimited_list(p.ident(), "::") >> __to_import_statement,
+    p.delimited_list(p.ident(), "::").build(__to_import_statement),
     "invalid import statement"))
 
 __parse_namespace = p.block(p.requires(
     p.discard_sym("namespace"),
-    p.delimited_list(p.ident(), "::") >> __to_namespace_statement,
+    p.delimited_list(p.ident(), "::").build(__to_namespace_statement),
     "invalid namespace statement"))
 
 # `if`, `else if`, `else` parse as independent sibling statements at the
@@ -1026,17 +1015,17 @@ __parse_namespace = p.block(p.requires(
 # orphan `else`/`else if` are reported by their `check()`.
 __parse_if = p.block(p.requires(
     p.discard_sym("if"),
-    (__parse_expression & p.many(__parse_statement)) >> __to_if_statement,
+    (__parse_expression & p.many(__parse_statement)).build(__to_if_statement),
     "invalid if statement"))
 
 __parse_else_if = p.block(p.requires(
     p.discard_sym("else") & p.discard_sym("if"),
-    (__parse_expression & p.many(__parse_statement)) >> __to_else_if_statement,
+    (__parse_expression & p.many(__parse_statement)).build(__to_else_if_statement),
     "invalid else-if statement"))
 
 __parse_else = p.block(p.requires(
     p.discard_sym("else"),
-    p.many(__parse_statement) >> __to_else_statement,
+    p.many(__parse_statement).build(__to_else_statement),
     "invalid else statement"))
 
 # Sentinel for "no constructor parameter list was written" (distinct from an
@@ -1045,27 +1034,27 @@ __parse_else = p.block(p.requires(
 # combinator keeps it as a single sequence element.
 __NO_ENUM_PARAMS = object()
 
-def __to_enum_params(result: p.Result, tokens: list[p.Token]) -> p.Result:
+def __to_enum_params(value):
     # `p.maybe` yields [] when no parens were written and [fields] when a `(...)`
     # list was (fields possibly empty for `()`). Preserve that distinction
     # rather than flattening both to [] like __parse_maybe_destructure_parts.
-    parts = result.value
+    parts = value
     value = __NO_ENUM_PARAMS if not parts else parts[0]
-    return p.Result(value, result.tokens, result.line_ref, result.errors)
-__parse_enum_params = p.maybe(__parse_destructure_parts) >> __to_enum_params
+    return value
+__parse_enum_params = p.maybe(__parse_destructure_parts).map(__to_enum_params)
 
 
-def __to_enum(result: p.Result, tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
-    attributes, name, generics, params, variants = result.value
+def __to_enum(value, line_ref: p.LineRef) -> s.EnumStatement:
+    attributes, name, generics, params, variants = value
     type_params = tuple(generics) if generics else ()
     has_param_list = params is not __NO_ENUM_PARAMS
     fields = [] if params is __NO_ENUM_PARAMS else params
     statement = s.EnumStatement(
-        result.line_ref, f"{name}@{result.line_ref.hash6()}", None, attributes, type_params,
-        s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, fields),
+        line_ref, f"{name}@{line_ref.hash6()}", None, attributes, type_params,
+        s.DestructureStatement(line_ref, '_', None, {}, (), None, None, fields),
         variants,
         has_param_list=has_param_list)
-    return p.Result(statement, result.tokens, result.line_ref, result.errors)
+    return statement
 
 
 def parse_enum(tokens: list[p.Token]) -> p.Result[s.EnumStatement]:
@@ -1075,7 +1064,7 @@ __parse_enum = p.Parser(parse_enum)
 # Attributes come BEFORE the name (`enum [hashed] Foo`), exactly as for class.
 __parse_enum_any = p.block(p.requires(
     p.discard_sym("enum"),
-    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_enum_params & p.many(__parse_enum)) >> __to_enum,
+    (__parse_attributes & p.ident() & __parse_maybe_generic_statement & __parse_enum_params & p.many(__parse_enum)).build(__to_enum),
     "invalid enum statement"))
 
 

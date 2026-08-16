@@ -106,6 +106,44 @@ class Parser(Generic[T]):
             return other(left, tokens)
         return Parser(p)
 
+    def map(self, transform: Callable[[T], Y]) -> Parser[Y]:
+        """`>>` for the common case: transform the VALUE and nothing else.
+
+        Most of what `>>` was used for only rewrites `result.value` and then
+        hand-copies `tokens`, `line_ref` and `errors` across — three fields
+        that must be threaded verbatim, so every callback repeated them and
+        every one was a chance to drop an error or a line reference. `map`
+        threads them itself, leaving `>>` for the callbacks that genuinely
+        need more: adding a diagnostic, or inspecting the tokens.
+
+        A failed parse passes straight through untouched — `transform` is
+        never called on a non-match, so it can assume a value.
+        """
+        def p(tokens: List[Token]) -> Result[Y]:
+            left = self(tokens)
+            if not left:
+                return left
+            return Result(transform(left.value), left.tokens,
+                          left.line_ref, left.errors)
+        return Parser(p)
+
+    def build(self, transform: Callable[[T, LineRef], Y]) -> Parser[Y]:
+        """`map` for the usual case: the transform also gets the `line_ref`.
+
+        Nearly every AST node carries a line reference, so most callbacks need
+        it alongside the value — `map` alone would leave them on `>>` for the
+        sake of one field. Together the two cover everything except the
+        callbacks that add a diagnostic or inspect the tokens, which is what
+        `>>` is for.
+        """
+        def p(tokens: List[Token]) -> Result[Y]:
+            left = self(tokens)
+            if not left:
+                return left
+            return Result(transform(left.value, left.line_ref), left.tokens,
+                          left.line_ref, left.errors)
+        return Parser(p)
+
     def __getitem__(self, index) -> Parser[list[T]]:
         #   [:] == any amount
         #   [1:] == 1 or more
