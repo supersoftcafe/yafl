@@ -99,10 +99,28 @@ fun unescapeU(raw: String, i: Int, acc: String): Unescaped
     ? unescapeLoop(raw, i + 6, acc + Char(cp))
     : Unescaped("", cpError(cp))
 
+# parser.py's _codepoint_char formats the OFFENDING codepoint into the message
+# (`f"codepoint U+{cp:X} ..."`). Message strings are verbatim across the two
+# compilers — the contracts diff diagnostics byte for byte — so the spelling
+# has to include the digits. These two read "codepoint out of range (max
+# 10FFFF)" and "surrogate codepoints are not valid scalars" until the `unesc`
+# contract was finally driven against Python and found them.
 fun cpError(cp: Int32): String
   ret cp > 1114111i32
-    ? "codepoint out of range (max 10FFFF)"
-    : "surrogate codepoints are not valid scalars"
+    ? "codepoint U+" + upperHex(Int(cp)) + " is out of range (max U+10FFFF)"
+    : "codepoint U+" + upperHex(Int(cp)) + " is a UTF-16 surrogate, not a scalar value"
+
+# Uppercase hex, unpadded — Python's `{cp:X}`. Same shape as hashes.yafl's
+# b64Char: index the digit alphabet by slice.
+let hexDigits: String = "0123456789ABCDEF"
+
+fun hexChar(v: Int): String
+  ret slice(hexDigits, v, v + 1)
+
+fun upperHex(v: Int): String
+  ret v < 16
+    ? hexChar(v)
+    : upperHex(v / 16) + hexChar(v % 16)
 
 # ── integer lexeme → (value, precision) ─────────────────────────────────────
 # Mirrors __integer(): radix by 0x/0b/0o prefix, i8/i16/i32/i64 suffix sets
