@@ -1179,17 +1179,24 @@ fun [tail] aiPruneCycles(ns: Chain<String>, fs: Chain<PsFun>, edges: EEdges,
 fun aiReachesSelf(start: String, edges: EEdges): Bool
   ret aiDfs(ceChildrenOf(edges, start), start, edges, List<String>())
 
+# The stack's top is its FRONT. Python pops from the END (`stack.pop()`), and
+# mirroring that literally cost two O(n) reversals per step — one to reach the
+# last element, another to put the remainder back — making a reachability walk
+# quadratic. Only the ANSWER is observable here (does `start` reach itself),
+# and reachability is a set property: visiting the graph in a different order
+# finds the same cycle or the same absence of one. `seen` is read solely by
+# contains2, so its order is not observable either.
 fun [tail] aiDfs(stack: List<String>, start: String, edges: EEdges,
                  seen: List<String>): Bool
-  ret match(chain(reverse(stack)))
+  ret match(chain(stack))
     (nil: ChainEnd) => false
     (l: ChainLink)  => l.value == start
       ? true
       : contains2(seen, l.value)
-        ? aiDfs(reverse(List<String>(l.next)), start, edges, seen)
-        : aiDfs(concat(reverse(List<String>(l.next)),
-                       ceChildrenOf(edges, l.value)),
-                start, edges, append(seen, l.value))
+        ? aiDfs(List<String>(l.next), start, edges, seen)
+        : aiDfs(concat(ceChildrenOf(edges, l.value),
+                       List<String>(l.next)),
+                start, edges, prepend(l.value, seen))
 
 fun aiCatLookup(c: Catalog, name: String): PsFun|None
   ret get<String, PsFun>(c.caMap, name)
