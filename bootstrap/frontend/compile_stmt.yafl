@@ -543,11 +543,18 @@ class [final] FoldedChain(fcIf: PStmt, fcRest: Chain<PStmt>)
 fun foldChain(i: PsIf, rest: Chain<PStmt>): FoldedChain
   ret gatherArms(rest, List<PStmt>(), i)
 
+# Arms accumulate INNERMOST-FIRST (prepend), which is the order nestArms
+# consumes them in — so nothing is reversed. Python builds them in source order
+# and walks back with `reversed(chain)` (control.py), which is free over a
+# native list; a singly-linked Chain has no backward walk, so the port would
+# have to materialise the reversal. Building backwards instead costs nothing
+# and keeps the list FRONT-NORMAL: prepend conses onto the front, so the rear
+# stays empty and no chain reversal is ever triggered downstream either.
 fun [tail] gatherArms(ss: Chain<PStmt>, arms: List<PStmt>, i: PsIf): FoldedChain
   ret match(ss)
     (nil: ChainEnd) => finishFold(i, arms, None, ss)
     (l: ChainLink)  => match(l.value)
-      (ei: PsElseIf) => gatherArms(l.next, append(arms, l.value), i)
+      (ei: PsElseIf) => gatherArms(l.next, prepend(l.value, arms), i)
       (el: PsElse)   => finishFold(i, arms, el.elStmts, l.next)
       (o: PStmt)     => finishFold(i, arms, None, ss)
 
@@ -556,7 +563,7 @@ fun finishFold(i: PsIf, arms: List<PStmt>, elseBody: List<PStmt>|None,
   ret isEmpty(arms) && elseBody is None
     ? FoldedChain(i, rest)
     : FoldedChain(PsIf(i.ifCond, i.ifTrue,
-                       nestArms(chain(reverse(arms)), elseTail(elseBody)),
+                       nestArms(chain(arms), elseTail(elseBody)),
                        i.psifLine),
                   rest)
 
