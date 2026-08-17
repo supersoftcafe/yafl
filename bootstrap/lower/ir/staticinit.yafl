@@ -196,6 +196,17 @@ fun [tail] siAssignFor(as2: Chain<SiAssign>, field: String): SiAssign|None
       ? l.value
       : siAssignFor(l.next, field)
 
+# `$hash` is the hidden Int32 cache every BOXED ENUM LEAF carries directly
+# after the vtable (types.py EnumStatement.global_codegen's prefix). Nothing
+# ever ASSIGNS it — the allocator zero-fills it and yafl_hash_store writes it
+# lazily — so counting it among the fields that must be assigned made the
+# sameLen test below fail for EVERY enum leaf, silently disabling this pass
+# across all enums: a whole-compiler self-emit produced ONE $si$ global, and
+# `ChainEnd()` — a no-field terminator that should be one shared static — was
+# allocated fresh at every use (~984k live instances, 48 MiB, in a
+# self-compile). It still needs a VALUE in the emitted initialiser, which is
+# positional, so siInitValues re-inserts it as RpZeroOf in declaration order.
+#
 # The class's data payload, or None when it isn't promotable (absent class,
 # or an array — Python obj.array_type: the LAST field is an Array).
 fun siPayload(a: CgApp, className: String): List<CgField>|None
@@ -203,7 +214,8 @@ fun siPayload(a: CgApp, className: String): List<CgField>|None
     (obj: CgObject) => siHasArray(cgFieldsOfOrEmpty(obj.objFields))
       ? None
       : filter(cgFieldsOfOrEmpty(obj.objFields),
-               (fld: CgField) => fld.fieldName != "type")
+               (fld: CgField) => fld.fieldName != "type"
+                              && fld.fieldName != "$hash")
     ()              => None
 
 fun siHasArray(fields: List<CgField>): Bool
@@ -268,10 +280,34 @@ fun siPromoCommit(cand: SiNewObj, dataFields: List<CgField>,
                                     false, List<RParam>()),
                              map(own, (a2: SiAssign) => a2.saIdx),
                              CgGlobal(gname, CgDataPointer(),
-                                      RpNewStruct(values), cand.snClass,
-                                      None, None)),
+                                      RpNewStruct(siInitValues(a, cand.snClass,
+                                                               values)),
+                                      cand.snClass, None, None)),
                      counter + 1)
     ()                           => (None, counter)
+
+# Traced values, back in DECLARATION order with `$hash` re-inserted as zero:
+# ir.Global emits `{ vtable, v1, v2, ... }` positionally, so a field skipped
+# by siPayload would otherwise shift every field after it.
+fun siInitValues(a: CgApp, className: String,
+                 traced: List<RpNamedValue>): List<RpNamedValue>
+  ret match(appObject(a, className))
+    (obj: CgObject) =>
+      fold(filter(cgFieldsOfOrEmpty(obj.objFields),
+                  (fld: CgField) => fld.fieldName != "type"),
+           List<RpNamedValue>(),
+           (acc: List<RpNamedValue>, fld: CgField) =>
+             append(acc, fld.fieldName == "$hash"
+               ? RpNamedValue(fld.fieldName, RpZeroOf(fld.fieldType))
+               : RpNamedValue(fld.fieldName,
+                              siTracedValue(chain(traced), fld.fieldName))))
+    ()              => traced
+
+fun [tail] siTracedValue(vs: Chain<RpNamedValue>, field: String): RParam
+  ret match(vs)
+    (l: ChainLink)  => l.value.name == field ? l.value.value
+                                             : siTracedValue(l.next, field)
+    (nil: ChainEnd) => RpZeroOf(CgInt(32))   # unreachable: siPayload order
 
 # Trace each field IN dataFields ORDER to a compile-time constant.
 fun [tail] siTracedFields(fs: Chain<CgField>, own: List<SiAssign>,
