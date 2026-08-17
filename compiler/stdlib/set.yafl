@@ -38,3 +38,55 @@ fun remove<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
 # loops).
 fun size<T>(s: Set<T>): Int
   ret size<T,()>(s._d)
+
+
+# ── questions whose answer does not depend on order ──────────────────────────
+# A Set is UNORDERED and exposes no walk: no chain(), no head, no fold. These
+# are the questions worth asking of one, answered without materialising an
+# order that would only be a lie.
+
+fun isEmpty<T>(s: Set<T>): Bool
+  ret isEmpty<T,()>(s._d)
+
+
+# The member of a one-member set, else None — for the shape where a filter is
+# expected to narrow to exactly one answer.
+fun singleOrNone<T>(s: Set<T>): T|None
+  ret match(_dictKeyChain<T,()>(s._d))
+    (l: ChainLink) => l.next is ChainEnd ? l.value : None
+    (e: ChainEnd)  => None
+
+
+fun isMoreThanOne<T>(s: Set<T>): Bool
+  ret match(_dictKeyChain<T,()>(s._d))
+    (l: ChainLink) => l.next !is ChainEnd
+    (e: ChainEnd)  => false
+
+
+fun any<T>(s: Set<T>, f: (:T): Bool): Bool
+  ret _chainAny<T>(_dictKeyChain<T,()>(s._d), f)
+
+
+fun all<T>(s: Set<T>, f: (:T): Bool): Bool
+  ret !any<T>(s, (x: T) => !f(x))
+
+
+# ── bulk transforms — unordered in, unordered out ────────────────────────────
+# `map` may collapse two members onto one image, so the result is a Set of
+# whatever survived, not a same-sized collection.
+
+fun map<T,U>(s: Set<T>, f: (:T): U): Set<U> where BasicEquality<U>
+  ret _chainToSet<U>(_chainMapRev<T,U>(_dictKeyChain<T,()>(s._d), f, ChainEnd<U>()),
+                     Set<U>())
+
+
+fun filter<T>(s: Set<T>, f: (:T): Bool): Set<T> where BasicEquality<T>
+  ret _chainToSet<T>(_chainFilterRev<T>(_dictKeyChain<T,()>(s._d), f, ChainEnd<T>()),
+                     Set<T>())
+
+
+# ── the one way out ──────────────────────────────────────────────────────────
+# sort names an ordering, so it alone may hand back a List.
+
+fun sort<T>(s: Set<T>): List<T> where BasicCompare<T>
+  ret sort<T>(build<T>(_pushChain<T>(builder<T>(), _dictKeyChain<T,()>(s._d))))

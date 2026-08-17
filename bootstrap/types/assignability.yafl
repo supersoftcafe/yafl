@@ -422,7 +422,7 @@ fun isLazy(sp: Spec): Bool
 fun unionMembers(sp: Spec): List<Spec>
   ret match(sp)
     (cm: SCombination) => cm.scTypes
-    (o: Spec)          => append(List<Spec>(), sp)
+    (o: Spec)          => prepend(sp, List<Spec>())
 
 # Unwrap a 1-tuple to its element, repeatedly. None = an entry type is unknown,
 # so the caller must treat the comparison as undecided.

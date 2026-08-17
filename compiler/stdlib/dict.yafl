@@ -189,33 +189,56 @@ fun size<K,V>(d: Dict<K,V>): Int
     (n: DictNode)  => bucket_size(n.bucket, 0) + size<K,V>(n.left) + size<K,V>(n.right)
 
 
-# ─── iteration ───────────────────────────────────────────────────────────────
-# In-order over the hash tree (bucket order within a hash) — an unspecified
-# but DETERMINISTIC order: the same dictionary content always walks the same
-# way. keys(d) and values(d) walk in the same order, so zipping them pairs
-# each key with its value.
+# ─── bulk access ─────────────────────────────────────────────────────────────
+# A Dict is UNORDERED, so it hands out unordered containers. It used to return
+# a List of keys and a List of values, walked in hash-tree order — "unspecified
+# but deterministic", which is precisely the lie this rule exists to stop: the
+# order is an artefact of tree shape and insertion history, and callers come to
+# depend on it. Keys are unique, so they come back as a Set; values may repeat,
+# so they come back as a Bag. Either way the only route to an ordered List is
+# `sort`, which names the ordering it uses.
 
-fun keys<K,V>(d: Dict<K,V>): List<K>
-  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: List<K>): List<K>
+fun isEmpty<K,V>(d: Dict<K,V>): Bool
+  ret d is DictEmpty
+
+
+fun keys<K,V>(d: Dict<K,V>): Set<K> where BasicEquality<K>
+  ret _chainToSet<K>(_dictKeyChain<K,V>(d), Set<K>())
+
+# O(1): the chain becomes the bag's front as it lies. Nothing is ordered, so
+# nothing needs reordering.
+fun values<K,V>(d: Dict<K,V>): Bag<V>
+  ret Bag<V>(_dictValueChain<K,V>(d), ChainEnd<V>())
+
+
+fun [tail] _chainToSet<K>(c: Chain<K>, acc: Set<K>): Set<K> where BasicEquality<K>
+  ret match(c)
+    (l: ChainLink) => _chainToSet<K>(l.next, add<K>(acc, l.value))
+    (e: ChainEnd)  => acc
+
+
+# Private walks. The chain order is whatever the tree yields — never exposed,
+# only fed to unordered containers.
+fun _dictKeyChain<K,V>(d: Dict<K,V>): Chain<K>
+  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: Chain<K>): Chain<K>
     ret match(b)
       (n: _BucketNil)  => acc
-      (c: _BucketCons) => bucket_keys(c.tail, append<K>(acc, c.key))
+      (c: _BucketCons) => bucket_keys(c.tail, ChainLink<K>(c.key, acc))
   # NOT [tail]: the inner walk(n.left, acc) is an ARGUMENT, so this is tree
-  # recursion (depth = tree height). `values` below has the same shape and is
-  # correctly unmarked.
-  fun walk(d2: Dict<K,V>, acc: List<K>): List<K>
+  # recursion (depth = tree height).
+  fun walk(d2: Dict<K,V>, acc: Chain<K>): Chain<K>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_keys(n.bucket, walk(n.left, acc)))
-  ret walk(d, List<K>())
+  ret walk(d, ChainEnd<K>())
 
-fun values<K,V>(d: Dict<K,V>): List<V>
-  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: List<V>): List<V>
+fun _dictValueChain<K,V>(d: Dict<K,V>): Chain<V>
+  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: Chain<V>): Chain<V>
     ret match(b)
       (n: _BucketNil)  => acc
-      (c: _BucketCons) => bucket_values(c.tail, append<V>(acc, c.value))
-  fun walk(d2: Dict<K,V>, acc: List<V>): List<V>
+      (c: _BucketCons) => bucket_values(c.tail, ChainLink<V>(c.value, acc))
+  fun walk(d2: Dict<K,V>, acc: Chain<V>): Chain<V>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_values(n.bucket, walk(n.left, acc)))
-  ret walk(d, List<V>())
+  ret walk(d, ChainEnd<V>())

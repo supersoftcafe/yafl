@@ -406,7 +406,7 @@ fun llCallArgs(p: PExpr): List<PTupEnt>
   ret match(p)
     (tp: PeTuple)   => tp.exprs
     (ng: PeNothing) => List<PTupEnt>()
-    (o: PExpr)      => append(List<PTupEnt>(), PTupEnt("", false, p))
+    (o: PExpr)      => prepend(PTupEnt("", false, p), List<PTupEnt>())
 
 fun llStmt(st: PStmt, ctx: LiftCtx, paramLets: List<PStmt>): PStmt
   ret match(st)

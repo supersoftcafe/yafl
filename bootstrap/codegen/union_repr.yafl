@@ -106,7 +106,7 @@ fun getOr0(d: Dict<String, Int>, key: String): Int
     ()        => 0
 
 fun globalMaxTag(r: Resolver): Int
-  ret fold(values(getDiscriminators(r)), 0, (acc: Int, x: Int) => x > acc ? x : acc)
+  ret maxOr(values(getDiscriminators(r)), 0)
 
 fun takeList<T>(l: List<T>, n: Int): List<T>
   ret (n <= 0) ? List<T>() : match(head<T>(l))
@@ -371,7 +371,7 @@ fun insertByLeafId(sorted: List<String>, lf: String, allLeafNames: List<String>)
     (h: String) => leafId(allLeafNames, lf) < leafId(allLeafNames, h)
       ? prepend<String>(lf, sorted)
       : prepend<String>(h, insertByLeafId(tail<String>(sorted), lf, allLeafNames))
-    ()           => append(List<String>(), lf)
+    ()           => prepend(lf, List<String>())
 
 # ── flat enum ────────────────────────────────────────────────────────────
 
@@ -754,7 +754,7 @@ fun insertByComplexId(sorted: List<String>, lf: String, rootName: String, discs:
     (h: String) => complexLeafId(rootName, lf, discs) < complexLeafId(rootName, h, discs)
       ? prepend<String>(lf, sorted)
       : prepend<String>(h, insertByComplexId(tail<String>(sorted), lf, rootName, discs))
-    ()           => append(List<String>(), lf)
+    ()           => prepend(lf, List<String>())
 
 fun generateComplexEnumMatch(em0: GEmit, resultType: Spec|None, subjBundle: GBundle, subjType: Spec,
                              arms: List<PArm>, elseArm: PArm|None, r: Resolver): GEmit

@@ -20,7 +20,7 @@ import Bootstrap::Types
 fun flattenParams(params: PStmt): List<PStmt>
   ret match(params)
     (d: PsDestructure) => flattenTargets(chain(d.dTargets), List<PStmt>())
-    (l: PsLet)         => append(List<PStmt>(), params)
+    (l: PsLet)         => prepend(params, List<PStmt>())
     (o: PStmt)         => List<PStmt>()
 
 fun flattenTargets(ts: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
@@ -108,9 +108,9 @@ fun toSlot(st: PStmt): Slot
 
 fun providesOwn(st: PStmt): List<String>
   ret match(st)
-    (l: PsLet) => append(List<String>(), l.lName)
+    (l: PsLet) => prepend(l.lName, List<String>())
     (f: PsFun) => match(f.fBody)
-      (b: PExpr) => append(List<String>(), f.fName)
+      (b: PExpr) => prepend(f.fName, List<String>())
       ()         => List<String>()
     (o: PStmt) => List<String>()
 
@@ -238,7 +238,7 @@ fun [tail] parentFinds(fs: Chain<FoundClass>, r: Resolver, query: String,
 # ClassSpec would fail the declared-arity check later.
 fun thisFound(cs: PsClass, query: String): List<Found>
   ret query == "this"
-    ? append(List<Found>(), Found("this", thisLet(cs), ScLocal()))
+    ? prepend(Found("this", thisLet(cs), ScLocal()), List<Found>())
     : List<Found>()
 
 fun thisLet(cs: PsClass): PStmt

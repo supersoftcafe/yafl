@@ -609,15 +609,15 @@ fun checkWith(wx: PeWith, r: Resolver): List<PErr>
     ret reps
   let shape = withShapeError(wx)
   if shape != ""
-    ret append(List<PErr>(), PErr(wx.pewLine, shape))
+    ret prepend(PErr(wx.pewLine, shape), List<PErr>())
   ret match(exprType(wx.withSubject, r))
     (sp: Spec) => match(sp)
       (c: SClass) => checkWithFields(wx, r)
       (e2: SEnum) => checkWithFields(wx, r)
-      (o: Spec)   => append(List<PErr>(), PErr(wx.pewLine,
-        "the subject of `with` must be a class- or enum-typed expression"))
-    ()         => append(List<PErr>(), PErr(wx.pewLine,
-      "the subject type of `with` did not resolve"))
+      (o: Spec)   => prepend(PErr(wx.pewLine,
+        "the subject of `with` must be a class- or enum-typed expression"), List<PErr>())
+    ()         => prepend(PErr(wx.pewLine,
+      "the subject type of `with` did not resolve"), List<PErr>())
 
 fun withShapeError(wx: PeWith): String
   ret match(wx.withRepls)
@@ -649,8 +649,8 @@ fun [tail] withNamesKnown(es: Chain<PTupEnt>, visible: List<String>,
     (nil: ChainEnd) => List<PErr>()
     (l: ChainLink)  => contains2(visible, l.value.tupName)
       ? withNamesKnown(l.next, visible, lr)
-      : append(List<PErr>(), PErr(lr,
-          "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
+      : prepend(PErr(lr,
+          "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"), List<PErr>())
 
 fun withVisibleFields(wx: PeWith, r: Resolver): List<String>
   ret match(exprType(wx.withSubject, r))

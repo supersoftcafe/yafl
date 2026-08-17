@@ -21,13 +21,13 @@ import Bootstrap::Lower::Ast
 
 
 fun list1<T>(a: T): List<T>
-  ret append(List<T>(), a)
+  ret prepend(a, List<T>())
 
 fun list2<T>(a: T, b: T): List<T>
-  ret append(append(List<T>(), a), b)
+  ret append(prepend(a, List<T>()), b)
 
 fun list3<T>(a: T, b: T, c: T): List<T>
-  ret append(append(append(List<T>(), a), b), c)
+  ret append(append(prepend(a, List<T>()), b), c)
 
 
 fun strListMember(l: List<String>, x: String): Bool

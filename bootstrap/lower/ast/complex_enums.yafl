@@ -201,7 +201,7 @@ fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj): Tj
 
 fun tjVisit(v: String, work: EEdges, st0: Tj): Tj
   let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
-               append(st0.tjStack, v), append(st0.tjOn, v),
+               prepend(v, st0.tjStack), append(st0.tjOn, v),
                st0.tjSccs, st0.tjN + 1)
   let st2 = tjNeighbours(chain(sortNamesAsc(chain(ceChildrenOf(work, v)),
                                             List<String>())),
@@ -240,22 +240,28 @@ fun tjSetLow(st: Tj, v: String, x: Int): Tj
 fun minInt(a: Int, b: Int): Int
   ret a < b ? a : b
 
-# Pop the stack down to v inclusive — that suffix is one SCC. Python pops
-# ONE AT A TIME, appending: the member list is [latest-discovered … v], the
-# REVERSE of the stack suffix. The order is observable (hoisted-statement
-# order in ast_inline's SCC hoisting), so it must match exactly.
+# Pop the stack down to v inclusive — that prefix is one SCC. Python pops ONE
+# AT A TIME, appending, so its member list runs [latest-discovered … v]. The
+# order is observable (hoisted-statement order in ast_inline's SCC hoisting),
+# so it must match exactly.
+#
+# The stack is stored NEWEST-FIRST, which is that order already: the SCC is
+# just the prefix, and what remains is the suffix. Storing it oldest-first
+# meant taking the tail and REVERSING it to get the same answer — the last
+# list reversal in the port, deleted by choosing the representation that
+# matches how the value is consumed.
 fun tjPop(st: Tj, v: String): Tj
-  let at = tjLastIndex(chain(st.tjStack), v, 0, -1)
-  let scc = reverse<String>(drop(st.tjStack, at))
-  ret Tj(st.tjIndex, st.tjLow, take(st.tjStack, at),
+  let at = tjFirstIndex(chain(st.tjStack), v, 0)
+  let scc = take(st.tjStack, at + 1)
+  ret Tj(st.tjIndex, st.tjLow, drop(st.tjStack, at + 1),
          tjRemoveAll(chain(st.tjOn), scc, List<String>()),
          append(st.tjSccs, scc), st.tjN)
 
-fun [tail] tjLastIndex(ss: Chain<String>, v: String, at: Int, best: Int): Int
+# The stack is newest-first, so the MOST RECENT v is the FIRST match.
+fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at: Int): Int
   ret match(ss)
-    (nil: ChainEnd) => best
-    (l: ChainLink)  => tjLastIndex(l.next, v, at + 1,
-                                   l.value == v ? at : best)
+    (nil: ChainEnd) => at
+    (l: ChainLink)  => l.value == v ? at : tjFirstIndex(l.next, v, at + 1)
 
 fun [tail] tjRemoveAll(ss: Chain<String>, gone: List<String>,
                        acc: List<String>): List<String>
@@ -362,7 +368,7 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
                        EEdges(append(acc.eeNames, n.value),
                               append(acc.eeChildren,
                                      tjRemoveAll(chain(c.value),
-                                                 append(List<String>(), v),
+                                                 prepend(v, List<String>()),
                                                  List<String>()))))
 
 # ── the rewrite ──────────────────────────────────────────────────────────────

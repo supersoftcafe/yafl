@@ -1,5 +1,8 @@
 """Bool equality instance + Dict keys/values + String find.
 
+keys() returns a Set and values() a Bag; both are sorted into Lists before
+being walked, since an unordered container exposes no iteration.
+
 Three stdlib gaps found porting the compiler to YAFL:
 - `==`/`!=` on Bool had NO BasicEquality instance — and an undischargeable
   `where` reaches codegen as a crash (see memory: undischarged-where-crash),
@@ -23,8 +26,11 @@ fun boolChecks(): Int
 
 fun dictChecks(): Int
   let d = put(put(put(Dict<String, Int>(), "a", 1), "b", 2), "c", 3)
-  let ks = keys(d)
-  let vs = values(d)
+  # keys() is a Set and values() is a Bag — both UNORDERED, so neither can be
+  # walked directly. sort names an ordering and hands back a List, which is
+  # the only sanctioned route from an unordered container to a sequence.
+  let ks = sort(keys(d))
+  let vs = sort(values(d))
   # Every key resolves through get, so the walk really visited the tree.
   fun [tail] sumVals(c: Chain<String>, acc: Int): Int
     ret match(c)

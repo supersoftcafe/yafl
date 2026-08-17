@@ -64,7 +64,7 @@ class TestMeetClass(TestCase):
         self.assertIs(t.meet(cls("Box@b", i32), cls("Box@b", boolt)), t._CONFLICT)
 
     def test_different_classes_conflict(self):
-        self.assertIs(t.meet(cls("Box@b", i32), cls("Bag@g", i32)), t._CONFLICT)
+        self.assertIs(t.meet(cls("Box@b", i32), cls("Findings@g", i32)), t._CONFLICT)
 
 
 class TestMeetGenericEnum(TestCase):

@@ -347,16 +347,16 @@ fun genApplication(a: CgApp, headers: List<String>): List<String>
   ret genFlatten(append(append(append(append(append(append(append(append(append(append(append(
         List<List<String>>(),
         map(headers, (h: String) => "#include <" + h + ">")),
-        append(List<String>(), genDiagnostics())),
-        append(List<String>(), genFunctionIds(ph.methodIds))),
+        prepend(genDiagnostics(), List<String>())),
+        prepend(genFunctionIds(ph.methodIds), List<String>())),
         map(acc3.gaCache, (e2: CgCacheEntry) => e2.entryTypedef)),
         acc3.gaTypedefs),
         acc3.gaForwards),
         List<String>()),
         acc3.gaVariables),
         acc3.gaFunctions),
-        append(List<String>(), genDeclareRoots(acc3.gaGcRoots))),
-        append(List<String>(), genDeclareMain())))
+        prepend(genDeclareRoots(acc3.gaGcRoots), List<String>())),
+        prepend(genDeclareMain(), List<String>())))
 
 # Flatten sections into the parts list with separator elements. Byte-exact
 # twin of the old nested join: "\n\n" precedes every section but the first,

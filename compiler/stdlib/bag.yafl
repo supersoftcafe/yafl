@@ -1,0 +1,139 @@
+namespace System
+
+import System
+
+
+# Bag<T> — an UNORDERED collection that may hold duplicates.
+#
+# The shape is the banker's pair (`_front`, `_rear`) with the reversal
+# DELETED. That reversal only ever existed to restore ORDER when draining the
+# rear of an ordered list; a Bag has no order to restore, so both chains are
+# walked as they lie and nothing is ever reversed. Two chains rather than one
+# because a List is then convertible in O(1) — its front becomes the front,
+# its rear the rear — and because a cheap merge has somewhere to land when we
+# come to it.
+#
+# NO ITERATION. A Bag has no order, so it exposes none: there is no chain(),
+# no head, no fold. Exposing the order the elements happen to lie in would be
+# a lie callers would come to depend on. What a Bag offers is bulk transforms
+# whose result is also unordered (map, filter), questions whose answer does
+# not depend on order (isEmpty, any, all, singleOrNone, isMoreThanOne), and
+# ONE way out: sort, which names an ordering and hands back a List.
+#
+# No `size` either, by the same rule that killed list length: ask the question
+# you actually have (isEmpty / singleOrNone / isMoreThanOne) instead of
+# counting to answer it.
+class Bag<T>(_front: Chain<T>, _rear: Chain<T>)
+
+
+# Public factory — an empty bag.
+fun Bag<T>(): Bag<T>
+  ret Bag<T>(ChainEnd<T>(), ChainEnd<T>())
+
+
+# Add an element. O(1), and duplicates are kept — that is what distinguishes a
+# Bag from a Set.
+fun add<T>(b: Bag<T>, x: T): Bag<T>
+  ret Bag<T>(ChainLink<T>(x, b._front), b._rear)
+
+
+fun isEmpty<T>(b: Bag<T>): Bool
+  ret b._front is ChainEnd && b._rear is ChainEnd
+
+
+# The element of a one-element bag, else None — for the common shape where a
+# filter is expected to narrow to exactly one answer. Order cannot matter
+# here: with one element there is nothing to order, and with more the answer
+# is None whichever element came first.
+fun singleOrNone<T>(b: Bag<T>): T|None
+  ret match(b._front)
+    (f: ChainLink)  => f.next is ChainEnd && b._rear is ChainEnd ? f.value : None
+    (e: ChainEnd)   => match(b._rear)
+      (r: ChainLink) => r.next is ChainEnd ? r.value : None
+      (e2: ChainEnd) => None
+
+
+fun isMoreThanOne<T>(b: Bag<T>): Bool
+  ret match(b._front)
+    (f: ChainLink)  => f.next !is ChainEnd || b._rear !is ChainEnd
+    (e: ChainEnd)   => match(b._rear)
+      (r: ChainLink) => r.next !is ChainEnd
+      (e2: ChainEnd) => false
+
+
+# ── bulk transforms — unordered in, unordered out ────────────────────────────
+# The _chain* helpers below are shared with Set (same namespace). `Rev` names
+# the fact that they build their output in the OPPOSITE order to the input,
+# because prepending is the cheap way to walk a chain. That is only ever safe
+# for an unordered consumer — never reach for these when building a List.
+
+fun map<T,U>(b: Bag<T>, f: (:T): U): Bag<U>
+  ret Bag<U>(_chainMapRev<T,U>(b._front, f, ChainEnd<U>()),
+             _chainMapRev<T,U>(b._rear, f, ChainEnd<U>()))
+
+fun [tail] _chainMapRev<T,U>(c: Chain<T>, f: (:T): U, acc: Chain<U>): Chain<U>
+  ret match(c)
+    (l: ChainLink)  => _chainMapRev<T,U>(l.next, f, ChainLink<U>(f(l.value), acc))
+    (e: ChainEnd)   => acc
+
+
+fun filter<T>(b: Bag<T>, f: (:T): Bool): Bag<T>
+  ret Bag<T>(_chainFilterRev<T>(b._front, f, ChainEnd<T>()),
+             _chainFilterRev<T>(b._rear, f, ChainEnd<T>()))
+
+fun [tail] _chainFilterRev<T>(c: Chain<T>, f: (:T): Bool, acc: Chain<T>): Chain<T>
+  ret match(c)
+    (l: ChainLink)  => _chainFilterRev<T>(l.next, f, f(l.value) ? ChainLink<T>(l.value, acc) : acc)
+    (e: ChainEnd)   => acc
+
+
+# ── order-independent questions ──────────────────────────────────────────────
+
+fun any<T>(b: Bag<T>, f: (:T): Bool): Bool
+  ret _chainAny<T>(b._front, f) || _chainAny<T>(b._rear, f)
+
+fun [tail] _chainAny<T>(c: Chain<T>, f: (:T): Bool): Bool
+  ret match(c)
+    (l: ChainLink)  => f(l.value) ? true : _chainAny<T>(l.next, f)
+    (e: ChainEnd)   => false
+
+
+fun all<T>(b: Bag<T>, f: (:T): Bool): Bool
+  ret !any<T>(b, (x: T) => !f(x))
+
+
+fun contains<T>(b: Bag<T>, x: T): Bool where BasicEquality<T>
+  ret any<T>(b, (y: T) => y == x)
+
+
+# Largest element, or `dflt` when empty. Order-independent — the maximum of a
+# collection does not depend on the order you meet its elements — so it is a
+# fair question to ask of a Bag, and answering it directly is O(n) where
+# sorting to read the last element would be O(n log n).
+fun maxOr<T>(b: Bag<T>, dflt: T): T where BasicCompare<T>
+  ret _chainMaxOr<T>(b._rear, _chainMaxOr<T>(b._front, dflt))
+
+fun [tail] _chainMaxOr<T>(c: Chain<T>, best: T): T where BasicCompare<T>
+  ret match(c)
+    (l: ChainLink) => _chainMaxOr<T>(l.next, l.value > best ? l.value : best)
+    (e: ChainEnd)  => best
+
+
+# ── the one way out ──────────────────────────────────────────────────────────
+# sort names an ordering, so it — and only it — may produce a List. Both
+# chains are pushed into a builder and the result sorted; the push order is
+# unspecified but deterministic for a given construction history, which is
+# what keeps two compilers agreeing.
+
+fun sort<T>(b: Bag<T>): List<T> where BasicCompare<T>
+  ret sort<T>(_bagDrain<T>(b))
+
+# sortBy (the same, taking a comparison function, for types with no natural
+# order) lands with the sort rework: the merge machinery currently bakes
+# BasicCompare into _mergeRuns/_seedRuns, so the comparator has to be threaded
+# through those before a Bag can offer it.
+
+# Private: the elements as a List in unspecified order. NOT public — handing
+# this out would be iteration on an unordered container by another name.
+fun _bagDrain<T>(b: Bag<T>): List<T>
+  ret build<T>(_pushChain<T>(_pushChain<T>(builder<T>(), b._front), b._rear))

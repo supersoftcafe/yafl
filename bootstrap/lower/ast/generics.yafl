@@ -1651,8 +1651,8 @@ fun [tail] enumNamesLoop(ss: Chain<PStmt>, acc: List<String>): List<String>
 fun monoErrors(statements: List<PStmt>, seenMono: List<GRef>): GIter
   let offenders = sortNamesAsc(chain(offenderNames(seenMono)), List<String>())
   ret isEmpty(offenders)
-    ? GIter(statements, append(List<PErr>(), PErr(PLine("$generics", 1, 1),
-        "generic instantiation did not stabilise after 64 rounds — likely polymorphic recursion through mutually recursive generics; recursive calls must use the functions' own type parameters")))
+    ? GIter(statements, prepend(PErr(PLine("$generics", 1, 1),
+        "generic instantiation did not stabilise after 64 rounds — likely polymorphic recursion through mutually recursive generics; recursive calls must use the functions' own type parameters"), List<PErr>()))
     : GIter(statements, offenderErrs(chain(offenders), statements, seenMono,
                                      List<PErr>()))
 

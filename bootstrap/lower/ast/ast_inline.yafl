@@ -345,7 +345,7 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
                               lr),
                         "", List<Spec>(), lr, false, List<PStmt>())
   ret Coalesced(cls, coMethodLets(chain(sccFns), renames, sharedName, lr,
-                                  append(List<PStmt>(), sharedLet)))
+                                  prepend(sharedLet, List<PStmt>())))
 
 fun coFirstLine(sccFns: List<PsFun>): PLine
   ret match(chain(sccFns))

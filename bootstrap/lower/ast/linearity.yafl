@@ -143,13 +143,13 @@ fun linLeaves(sp: Spec|None, r: Resolver): List<String>
 fun leavesOf(sp: Spec, r: Resolver, seen: List<String>): List<String>
   ret match(sp)
     (g2: SGeneric)     => g2.sgLinear
-      ? append(List<String>(), "")
+      ? prepend("", List<String>())
       : List<String>()
     (c: SClass)        => classLeaves(c, r, seen)
     (t2: STuple)       => tupleLeaves(chain(t2.stEntries), r, seen,
                                       List<String>())
     (cm: SCombination) => anyMemberLinear(chain(cm.scTypes), r, seen)
-      ? append(List<String>(), "")
+      ? prepend("", List<String>())
       : List<String>()
     (o: Spec)          => List<String>()
 
@@ -157,12 +157,12 @@ fun classLeaves(c: SClass, r: Resolver, seen: List<String>): List<String>
   if !isLinearClassSpec(c, r)
     ret List<String>()
   if contains2(seen, c.scName)
-    ret append(List<String>(), "")          # recursive linear type: one leaf
+    ret prepend("", List<String>())          # recursive linear type: one leaf
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
       (cs: PsClass) => classFieldLeaves(cs, c, r, append(seen, c.scName))
-      (o: PStmt)    => append(List<String>(), "")
-    ()         => append(List<String>(), "")
+      (o: PStmt)    => prepend("", List<String>())
+    ()         => prepend("", List<String>())
 
 fun classFieldLeaves(cs: PsClass, c: SClass, r: Resolver,
                      seen: List<String>): List<String>
@@ -170,7 +170,7 @@ fun classFieldLeaves(cs: PsClass, c: SClass, r: Resolver,
   let out = fieldLeaves(chain(classFields(cs)), mapping, r, seen,
                         List<String>())
   # A linear class with no linear fields is itself the leaf.
-  ret isEmpty(out) ? append(List<String>(), "") : out
+  ret isEmpty(out) ? prepend("", List<String>()) : out
 
 fun [tail] fieldLeaves(fs: Chain<PStmt>, mapping: List<Binding>, r: Resolver,
                        seen: List<String>, acc: List<String>): List<String>

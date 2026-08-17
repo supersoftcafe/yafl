@@ -13,7 +13,7 @@ import pyast.typespec as t
 
 
 @dataclass(frozen=True)
-class Bag[T]:
+class Findings[T]:
     """A found set plus whether that set is COMPLETE — whether the search saw
     everything it needed to. Every `find` over a resolver returns one of these,
     and a name is only ever committed to a candidate from a *complete* bag: an
@@ -29,13 +29,13 @@ class Bag[T]:
     items: tuple[T, ...] = ()
     complete: bool = True
 
-    def __add__(self, other: "Bag[T] | Iterable[T]") -> "Bag[T]":
-        if isinstance(other, Bag):
-            return Bag(self.items + other.items, self.complete and other.complete)
-        return Bag(self.items + tuple(other), self.complete)
+    def __add__(self, other: "Findings[T] | Iterable[T]") -> "Findings[T]":
+        if isinstance(other, Findings):
+            return Findings(self.items + other.items, self.complete and other.complete)
+        return Findings(self.items + tuple(other), self.complete)
 
-    def __radd__(self, other: "Iterable[T]") -> "Bag[T]":
-        return Bag(tuple(other) + self.items, self.complete)
+    def __radd__(self, other: "Iterable[T]") -> "Findings[T]":
+        return Findings(tuple(other) + self.items, self.complete)
 
     def __iter__(self): return iter(self.items)
     def __len__(self) -> int: return len(self.items)
@@ -43,16 +43,16 @@ class Bag[T]:
     def __bool__(self) -> bool: return bool(self.items)
 
 
-# A Bag is a sequence of its items (with completeness riding alongside), so the
+# A Findings is a sequence of its items (with completeness riding alongside), so the
 # many `match resolver.find_*(): case [x]:` sites treat it exactly as they did
 # the old list. Registering it keeps those sequence patterns working.
-Sequence.register(Bag)
+Sequence.register(Findings)
 
 
-# The shared empties (see Bag): found-nothing-and-that's-final vs found-nothing-
+# The shared empties (see Findings): found-nothing-and-that's-final vs found-nothing-
 # -yet-because-blocked. Everything else is built by `+`-ing bags together.
-EMPTY: Bag = Bag((), True)
-INCOMPLETE: Bag = Bag((), False)
+EMPTY: Findings = Findings((), True)
+INCOMPLETE: Findings = Findings((), False)
 
 
 class FunctionBuilder:
@@ -160,7 +160,7 @@ class Resolved[T]:
 
 
 class Resolver:
-    def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
+    def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
         return EMPTY
 
     def is_complex_root(self, root_name: str) -> bool:
@@ -169,7 +169,7 @@ class Resolver:
         # enum graph, so nothing is complex.
         return False
 
-    def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
+    def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         return EMPTY
 
     def get_traits(self) -> list[s.LetStatement]:
@@ -347,8 +347,8 @@ class Statements:
     # The by-name index is exhaustive over this collection, so a lookup is
     # always a COMPLETE bag — incompleteness only ever enters via the trait
     # finder meeting an unresolved alias, never from a plain name miss here.
-    def __getitem__(self, name: str) -> "Bag[s.Statement]": return Bag(self._index.get(name, ()))
-    def get(self, name: str) -> "Bag[s.Statement]": return Bag(self._index.get(name, ()))
+    def __getitem__(self, name: str) -> "Findings[s.Statement]": return Findings(self._index.get(name, ()))
+    def get(self, name: str) -> "Findings[s.Statement]": return Findings(self._index.get(name, ()))
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Statements):
@@ -390,12 +390,12 @@ class ResolverRoot(Resolver):
             self.__breakers = compute_breakers(list(self.__statements))
         return root_name in self.__breakers
 
-    def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
-        return Bag(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
+    def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
+        return Findings(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
                 for st in self.__statements[name] if isinstance(st, s.TypeStatement)))
 
-    def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
-        return Bag(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
+    def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
+        return Findings(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
                 for st in self.__statements[name] if isinstance(st, s.DataStatement)))
 
     def get_traits(self) -> list[s.LetStatement]:
@@ -495,12 +495,12 @@ class ResolverType(DelegatingResolver):
         self.__find = find
         self.__cache = {}
 
-    def find_type(self, name: str) -> "Bag[Resolved[s.TypeStatement]]":
+    def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
         cached = self.__cache.get(name)
         if cached is not None:
             return cached
         found = self.__find(name)
-        result = self._parent.find_type(name) + (found if isinstance(found, Bag) else Bag(tuple(found)))
+        result = self._parent.find_type(name) + (found if isinstance(found, Findings) else Findings(tuple(found)))
         self.__cache[name] = result
         return result
 
@@ -523,7 +523,7 @@ class ResolverData(DelegatingResolver):
         # inside a function with a parameter also named `io` triggers an
         # ambiguity error ("Resolved too many io") instead of shadowing.
         own = self.__find(name)
-        own = own if isinstance(own, Bag) else Bag(tuple(own))
+        own = own if isinstance(own, Findings) else Findings(tuple(own))
         result = own if own else self._parent.find_data(name)
         self.__cache[name] = result
         return result
@@ -537,15 +537,15 @@ class ResolverTraitData(DelegatingResolver):
     or let (see _initialiser_resolver); an inner function carries no `where` and
     never adds its own, inheriting this scope lexically from its owner, so a name
     resolves to the same operators whether used at top level or nested."""
-    __find_trait: Callable[[Resolver, str], "Bag[Resolved[s.DataStatement]]"]
-    __cache: dict[str, "Bag[Resolved[s.DataStatement]]"]
+    __find_trait: Callable[[Resolver, str], "Findings[Resolved[s.DataStatement]]"]
+    __cache: dict[str, "Findings[Resolved[s.DataStatement]]"]
 
-    def __init__(self, parent: Resolver, find_trait: Callable[[Resolver, str], "Bag[Resolved[s.DataStatement]]"]):
+    def __init__(self, parent: Resolver, find_trait: Callable[[Resolver, str], "Findings[Resolved[s.DataStatement]]"]):
         super().__init__(parent)
         self.__find_trait = find_trait
         self.__cache = {}
 
-    def find_data(self, name: str) -> "Bag[Resolved[s.DataStatement]]":
+    def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         cached = self.__cache.get(name)
         if cached is not None:
             return cached

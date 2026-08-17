@@ -124,12 +124,12 @@ fun compileName(nm: PeName, r: Resolver, expected: Spec|None): ExprOut
 
 # Already committed: the ambiguity check is skipped, but the type-param step
 # below still reruns (inference may only ground on a later pass).
-fun hashedName(nm: PeName, bag: Bag, r: Resolver, expected: Spec|None): ExprOut
+fun hashedName(nm: PeName, bag: Findings, r: Resolver, expected: Spec|None): ExprOut
   ret match(soleItem(bag))
     (f: Found) => finishName(nm, f.fStmt, nm.refName, nm.penTrait, r, expected)
     ()         => noGlobals(nm)
 
-fun unhashedName(nm: PeName, bag: Bag, r: Resolver,
+fun unhashedName(nm: PeName, bag: Findings, r: Resolver,
                  expected: Spec|None): ExprOut
   if !bag.bComplete
     ret noGlobals(nm)

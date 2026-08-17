@@ -18,10 +18,10 @@ fun hashName(name: String, lr: PLine): String
   ret name + "@" + hash6(lr.plFile, lr.plLine, lr.plCol)
 
 fun oneEntryTuple(x: PExpr, lr: PLine): PExpr
-  ret PeTuple(append(List<PTupEnt>(), PTupEnt("", false, x)), lr)
+  ret PeTuple(prepend(PTupEnt("", false, x), List<PTupEnt>()), lr)
 
 fun twoEntryTuple(a: PExpr, b: PExpr, lr: PLine): PExpr
-  ret PeTuple(append(append(List<PTupEnt>(), PTupEnt("", false, a)),
+  ret PeTuple(append(prepend(PTupEnt("", false, a), List<PTupEnt>()),
                      PTupEnt("", false, b)), lr)
 
 fun callNamed(name: String, args: PExpr, lr: PLine): PExpr
@@ -103,7 +103,7 @@ fun pipePlaceholder(last: PExpr, stage: PExpr): PExpr
     (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine)
     (other)     => stage
   let bind = PsLet(tmp, List<PAttr>(), List<PGen>(), None, last, "", List<Spec>(), lr)
-  ret PeBlock(append(List<PStmt>(), bind), filled, "", lr)
+  ret PeBlock(prepend(bind, List<PStmt>()), filled, "", lr)
 
 fun fillHole(param: PExpr, tmp: String, lr: PLine): PExpr
   ret match(param)
@@ -122,9 +122,9 @@ fun pipeBeta(last: PExpr, lm: PeLambda): PExpr
   let tmp = "$pipe@" + hash6(lr.plFile, lr.plLine, lr.plCol)
   let ref = PeName(tmp, List<Spec>(), lr)
   let binder = betaBinder(lm.lamParams, ref, lr)
-  let inner = PeBlock(append(List<PStmt>(), binder), lm.lamBody, "", lr)
+  let inner = PeBlock(prepend(binder, List<PStmt>()), lm.lamBody, "", lr)
   let outer = PsLet(tmp, List<PAttr>(), List<PGen>(), None, last, "", List<Spec>(), lr)
-  ret PeBlock(append(List<PStmt>(), outer), inner, "", lr)
+  ret PeBlock(prepend(outer, List<PStmt>()), inner, "", lr)
 
 fun betaBinder(params: PStmt, ref: PExpr, lr: PLine): PStmt
   ret match(params)
@@ -244,7 +244,7 @@ fun arrayAccessor(field: String, elem: Spec, lr: PLine): PStmt
                                  PeName(idxName, List<Spec>(), lr), lr), "", lr)
   ret PsFun(field + "@" + hash6(lr.plFile, lr.plLine, lr.plCol) + "r",
             List<PAttr>(), List<PGen>(),
-            PsDestructure("_", List<PAttr>(), None, append(List<PStmt>(), idx), None, lr),
+            PsDestructure("_", List<PAttr>(), None, prepend(idx, List<PStmt>()), None, lr),
             body, elem, List<Spec>(), lr)
 
 fun bareName(name: String): String

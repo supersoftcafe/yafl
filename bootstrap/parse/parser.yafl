@@ -497,7 +497,7 @@ fun parseMaybeWhere(ps: Ps): (v: List<Spec>|PFail, rest: Ps)
 fun whereList(ty: Spec): List<Spec>
   ret match(ty)
     (u: SCombination) => u.scTypes
-    (other)      => append(List<Spec>(), ty)
+    (other)      => prepend(ty, List<Spec>())
 
 # ══ Expressions ══════════════════════════════════════════════════════════════
 # The ladder, tightest first, mirroring parser.py's node construction:

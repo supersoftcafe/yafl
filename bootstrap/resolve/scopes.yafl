@@ -151,7 +151,7 @@ fun addLetFound(acc: List<Found>, st: PStmt): List<Found>
 fun paramLets(params: PStmt): List<PStmt>
   ret match(params)
     (d: PsDestructure) => d.dTargets
-    (l: PsLet)         => append(List<PStmt>(), params)
+    (l: PsLet)         => prepend(params, List<PStmt>())
     (o: PStmt)         => List<PStmt>()
 
 # A block's statements bind names for the whole block — a block-scoped `let` is
@@ -209,9 +209,9 @@ class [final] AmbEntries(aeEntries: List<TraitEntry>, aeBlocked: Bool)
 # `instance [ambient]` records join the SAME search — availability, not
 # constraint. Entries and dedupe are PREBUILT on the layer (traitScope);
 # per query only the member search runs.
-fun traitBag(tr: RTraits, query: String, r: Resolver): Bag
+fun traitFindings(tr: RTraits, query: String, r: Resolver): Findings
   ret traitLoop(chain(tr.rtEntries), query, r,
-                tr.rtBlocked ? incompleteBag() : emptyBag())
+                tr.rtBlocked ? incompleteFindings() : emptyFindings())
 
 fun [tail] plainEntries(ws: Chain<Spec>,
                         acc: ListBuilder<TraitEntry>): List<TraitEntry>
@@ -236,16 +236,16 @@ fun [tail] anyNamed(ws: Chain<Spec>): Bool
       (o: Spec)   => anyNamed(l.next)
 
 fun [tail] traitLoop(es: Chain<TraitEntry>, query: String, r: Resolver,
-                     acc: Bag): Bag
+                     acc: Findings): Findings
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => traitLoop(l.next, query, r,
-                                 addBags(acc, entryMembers(l.value, query, r)))
+                                 addFindings(acc, entryMembers(l.value, query, r)))
 
-fun entryMembers(e2: TraitEntry, query: String, r: Resolver): Bag
+fun entryMembers(e2: TraitEntry, query: String, r: Resolver): Findings
   ret match(e2.teSpec)
     (c: SClass) => membersOf(c, e2.teOwn, query, r)
-    (o: Spec)   => emptyBag()
+    (o: Spec)   => emptyFindings()
 
 fun [tail] entrySeen(ss: Chain<TraitEntry>, x: TraitEntry): Bool
   ret match(ss)
@@ -278,14 +278,14 @@ fun [tail] specSeen(ss: Chain<Spec>, sp: Spec): Bool
 # params substituted through). An interface whose name has not resolved is
 # INCOMPLETE — blocked, not absent. (On MORE than one resolution Python raises
 # a LookupError; the port answers incomplete, the nearest non-crashing reading.)
-fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Bag
+fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Findings
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
       (cs: PsClass) => arityMatches(cs, c)
                        ? classMembers(cs, c, own, query, r)
-                       : emptyBag()
-      (o: PStmt)    => emptyBag()
-    ()         => incompleteBag()
+                       : emptyFindings()
+      (o: PStmt)    => emptyFindings()
+    ()         => incompleteFindings()
 
 fun arityMatches(cs: PsClass, c: SClass): Bool
   ret sameLen(chain(cs.cGens), chain(c.scParams))
@@ -295,13 +295,13 @@ fun arityMatches(cs: PsClass, c: SClass): Bool
 # it came through and the interface's declaration — overload resolution
 # substitutes the instantiation's type args through the member's type.
 fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
-                 r: Resolver): Bag
+                 r: Resolver): Findings
   let direct = memberMatches(chain(concat(flattenParams(cs.cParams),
                                           cs.cMembers)),
                              query, c, cs, own, List<Found>())
   ret isEmpty(direct)
     ? parentMembers(cs, c, own, query, r)
-    : Bag(direct, true)
+    : Findings(direct, true)
 
 fun [tail] memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
                          owner: PsClass, own: List<String>,
@@ -319,27 +319,27 @@ fun [tail] memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
 # not grounded — its own name, OR any of its type args, still an SNamed —
 # BLOCKS the whole search.
 fun parentMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
-                  r: Resolver): Bag
+                  r: Resolver): Findings
   let mapping = paramMapping(cs.cGens, c.scParams)
-  ret parentLoop(chain(cs.cImplements), mapping, own, query, r, emptyBag())
+  ret parentLoop(chain(cs.cImplements), mapping, own, query, r, emptyFindings())
 
 fun [tail] parentLoop(ps: Chain<Spec>, mapping: List<Binding>,
                       own: List<String>, query: String,
-                      r: Resolver, acc: Bag): Bag
+                      r: Resolver, acc: Findings): Findings
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => parentLoop(l.next, mapping, own, query, r,
-                                  addBags(acc, parentBag(substitute(l.value,
+                                  addFindings(acc, parentFindings(substitute(l.value,
                                                                     mapping),
                                                          own, query, r)))
 
-fun parentBag(p: Spec, own: List<String>, query: String, r: Resolver): Bag
+fun parentFindings(p: Spec, own: List<String>, query: String, r: Resolver): Findings
   ret match(p)
-    (n: SNamed) => incompleteBag()
+    (n: SNamed) => incompleteFindings()
     (c: SClass) => anyNamed(chain(c.scParams))
-      ? incompleteBag()
+      ? incompleteFindings()
       : membersOf(c, own, query, r)
-    (o: Spec)   => emptyBag()
+    (o: Spec)   => emptyFindings()
 
 fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
   ret mapLoop(chain(gens), chain(args), List<Binding>())

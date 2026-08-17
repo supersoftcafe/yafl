@@ -392,11 +392,11 @@ fun classOf(lm: PeLambda, nme: String, cpt: ClCaps, fn: PStmt): PStmt
   let entries = clEntries(chain(cpt.ccNames), chain(cpt.ccTypes), List<SEntry>())
   let paramLets = clParamLets(chain(cpt.ccNames), chain(cpt.ccTypes), lr,
                               List<PStmt>())
-  ret PsClass(nme, append(List<PAttr>(), PAttr("final", PeInt(1, 32, lr))),
+  ret PsClass(nme, prepend(PAttr("final", PeInt(1, 32, lr)), List<PAttr>()),
              List<PGen>(),
              PsDestructure("_", List<PAttr>(), STuple(entries, lr), paramLets,
                           None, lr, false),
-             List<Spec>(), List<Spec>(), append(List<PStmt>(), fn), false, lr,
+             List<Spec>(), List<Spec>(), prepend(fn, List<PStmt>()), false, lr,
              List<Spec>(), List<Slot>(), List<PStmt>())
 
 fun [tail] clEntries(ns: Chain<String>, ts: Chain<Spec|None>,

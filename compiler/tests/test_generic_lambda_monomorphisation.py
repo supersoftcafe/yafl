@@ -1,11 +1,16 @@
 """A lambda inside a GENERIC function must be specialised per instantiation.
 
-`stdlib/list.yafl`'s `concat<T>` is the shape:
+The shape is a generic lambda inside a generic function:
 
-    fun concat<T>(a: List<T>, b: List<T>): List<T>
-      ret fold<T, List<T>>(b, a, (acc: List<T>, x: T) => append<T>(acc, x))
+    fun addAll<T>(a: List<T>, b: List<T>): List<T>
+      ret fold<T, List<T>>(b, a, (acc: List<T>, x: T) => prepend<T>(x, acc))
 
-— a generic lambda inside a generic function. Monomorphisation copies the body
+This test DEFINES that function itself rather than borrowing one from the
+stdlib. It used to ride on `concat<T>`, which had exactly this shape until
+`concat` was rewritten to build through a ListBuilder — at which point the
+lambda disappeared and this test silently stopped guarding anything. A test
+for a LANGUAGE guarantee must not depend on how a library happens to be
+implemented today. Monomorphisation copies the body
 per `T`, but every copy keeps the SAME `line_ref`, so the lifted lambda class
 must be named per instantiation or the copies collide onto one class and
 whichever `T` was lowered first wins.
@@ -34,6 +39,10 @@ import System
 class [final] A2(aname: String)
 class [final] B2(bnum: Int)
 
+# The vehicle: a generic function whose body holds a generic lambda.
+fun addAll<T>(a: List<T>, b: List<T>): List<T>
+  ret fold<T, List<T> >(b, a, (acc: List<T>, x: T) => prepend<T>(x, acc))
+
 fun countA(l: List<A2>): Int
   ret walkA(chain(l), 0)
 
@@ -51,8 +60,8 @@ fun [tail] walkB(c: Chain<B2>, n: Int): Int
     (x: ChainLink)  => walkB(x.next, n + 1)
 
 fun main(): Int
-  let a = concat(append(List<A2>(), A2("p")), append(List<A2>(), A2("q")))
-  let b = concat(append(List<B2>(), B2(1)), append(List<B2>(), B2(2)))
+  let a = addAll(prepend(A2("p"), List<A2>()), prepend(A2("q"), List<A2>()))
+  let b = addAll(prepend(B2(1), List<B2>()), prepend(B2(2), List<B2>()))
   print(String(countA(a)) + "|" + String(countB(b)) + "\\n")
   ret 0
 """
@@ -73,5 +82,5 @@ class TestGenericLambdaMonomorphisation(TestCase):
         classes = set(re.findall(r"_lambdas__lambda_[A-Za-z0-9_]+", code))
         self.assertGreaterEqual(
             len(classes), 2,
-            f"concat<A2> and concat<B2> collapsed onto {len(classes)} lambda "
+            f"addAll<A2> and addAll<B2> collapsed onto {len(classes)} lambda "
             f"class(es): {sorted(classes)}")

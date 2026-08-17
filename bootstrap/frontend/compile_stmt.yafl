@@ -425,7 +425,7 @@ fun enumFieldsVia(r: Resolver, root: String): List<SField>
 # no parameter list, which is the uninhabited empty type (`enum Never`).
 fun collectLeafNames(e: PsEnum): List<String>
   ret isEmpty(e.eVariants)
-    ? (e.eHasParams ? append(List<String>(), e.eName) : List<String>())
+    ? (e.eHasParams ? prepend(e.eName, List<String>()) : List<String>())
     : leafLoop(chain(e.eVariants), List<String>())
 
 fun [tail] leafLoop(vs: Chain<PStmt>, acc: List<String>): List<String>

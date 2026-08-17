@@ -672,7 +672,7 @@ fun checkPinned(prior: Spec, rest: List<Spec>, con: List<Spec>,
       (l: ChainLink)  => isHoleSpec(l.value) ? true : anyHole(l.next)
   let bound = match(prior)
     (u: SCombination) => reprMembers(u)
-    (o: Spec)         => append(List<Spec>(), o)
+    (o: Spec)         => prepend(o, List<Spec>())
   if allInSet(chain(rest), bound) && allInSet(chain(bound), con)
     ret UMap(mapping)
   ret anyHole(chain(con)) ? UMap(mapping) : UFail()
@@ -705,7 +705,7 @@ fun join(a: Spec|None, b: Spec|None): Spec|None
 fun joinBoth(x: Spec, y: Spec): Spec
   if eqSpec(x, y)
     ret x
-  let members = reprMembersOf(append(append(List<Spec>(), x), y))
+  let members = reprMembersOf(append(prepend(x, List<Spec>()), y))
   ret exactly(chain(members), 1)
     ? soleMember(members, x)
     : SCombination(members, specLine(x))

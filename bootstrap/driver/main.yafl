@@ -618,7 +618,7 @@ fun cMode(text: String, optLevel: Int): (outs: List<String>, code: Int)
   let _ = spanEnd(spParse)
   ret match(parsed)
     (stmts: List<PStmt>) => cModeConverge(stmts, optLevel)
-    ()                   => (append(List<String>(), "parse error\n"), 1)
+    ()                   => (prepend("parse error\n", List<String>()), 1)
 
 fun cModeConverge(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
   let sp = spanBegin("compile", "converge+mono")
@@ -626,7 +626,7 @@ fun cModeConverge(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code:
   let _ = spanEnd(sp)
   ret match(pm)
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel)
-    (tx: PmText) => (append(List<String>(), tx.pmOut), tx.pmCode)
+    (tx: PmText) => (prepend(tx.pmOut, List<String>()), tx.pmCode)
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
   ret match(converge(stmts))
@@ -663,8 +663,7 @@ fun [tail] collectParts(text: String, at: Int,
   ret nextMark < 0 ? acc2 : collectParts(text, nextMark + 1, acc2)
 
 fun parseSorted(parts: Dict<String, String>): List<PStmt>|None
-  ret parseInOrder(chain(sortNamesAsc(chain(keys(parts)), List<String>())),
-                   parts, List<PStmt>())
+  ret parseInOrder(chain(sort(keys(parts))), parts, List<PStmt>())
 
 fun [tail] parseInOrder(ns: Chain<String>, parts: Dict<String, String>,
                         acc: List<PStmt>): List<PStmt>|None
@@ -684,13 +683,13 @@ fun cStage(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
   let _1 = spanEnd(spTail)
   if !isEmpty(tl.tlErrs)
-    ret (append(List<String>(), printedDiagnostics(tl.tlErrs)), 1)
+    ret (prepend(printedDiagnostics(tl.tlErrs), List<String>()), 1)
   let spInline = spanBegin("lower", "ast_inline+literals")
   let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
   let _2 = spanEnd(spInline)
   let fwd = checkLazyForwardRefs(lowered)
   if !isEmpty(fwd)
-    ret (append(List<String>(), printedDiagnostics(fwd)), 1)
+    ret (prepend(printedDiagnostics(fwd), List<String>()), 1)
   let spLazy = spanBegin("lower", "lazy_lets")
   let low1 = lowerLazyLets(lowered)
   let _3 = spanEnd(spLazy)
@@ -705,7 +704,7 @@ fun cStage(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
   let _6 = spanEnd(spExits)
   ret match(cFindMain(chain(final2)))
     (nm: System::String) => cEmit(final2, nm, optLevel)
-    ()                    => (append(List<String>(), "No main function found\n"), 1)
+    ()                    => (prepend("No main function found\n", List<String>()), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
 # `main` in no namespace is not a main), the return type must be the bigint
@@ -737,11 +736,11 @@ fun cEmit(stmts: List<PStmt>, mainName: System::String,
           optLevel: Int): (outs: List<String>, code: Int)
   let sp = spanBegin("codegen", "create_c_code")
   let out = createCCode(stmts, mainName, optLevel,
-                        append(List<System::String>(), "yafl.h"))
+                        prepend("yafl.h", List<System::String>()))
   let _ = spanEnd(sp)
   ret isEmpty(out.ccErrors)
     ? (out.ccParts, 0)
-    : (append(List<String>(), join(out.ccErrors, "\n") + "\n"), 1)
+    : (prepend(join(out.ccErrors, "\n") + "\n", List<String>()), 1)
 
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))

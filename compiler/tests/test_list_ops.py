@@ -1,6 +1,6 @@
 """Consolidated List<T> runtime test.
 
-Covers empty/head/append/prepend/fold-order/reverse/map/filter/get/
+Covers empty/head/append/prepend/fold-order/sort/sortBy/map/filter/get/
 large_append in one program.
 """
 from __future__ import annotations
@@ -64,9 +64,15 @@ fun main(): Int
   emit("mixed_length",   fold<Int,Int>(mixed, 0, (a: Int, x: Int) => a + 1))
   emit("mixed_fold_sum", fold<Int,Int>(mixed, 0, (acc: Int, x: Int) => acc + x))
 
-  # ─── reverse ───────────────────────────────────────────────────────────
-  let reversed = reverse<Int>(prepended)
-  emit("reverse_head", unwrap(head<Int>(reversed)))
+  # ─── sort: the only way to impose an order ─────────────────────────────
+  # `reverse` is gone. On a front-normal list it could only be a rebuilt
+  # copy — a chain reversal under another name — so an ordering is named
+  # explicitly instead. sortBy with the comparison flipped is what "reversed"
+  # used to mean.
+  let ascending = sort<Int>(prepended)
+  emit("sort_head", unwrap(head<Int>(ascending)))
+  let descending = sortBy<Int>(prepended, (a: Int, b: Int) => b < a)
+  emit("sortBy_desc_head", unwrap(head<Int>(descending)))
 
   # ─── map ───────────────────────────────────────────────────────────────
   let mapped = map<Int,Int>(prepended, (x: Int) => x * x)
@@ -91,7 +97,8 @@ _EXPECTED_LINES = [
     "prepend_fold_sum=6",
     "mixed_length=4",
     "mixed_fold_sum=6",
-    "reverse_head=3",
+    "sort_head=1",
+    "sortBy_desc_head=3",
     "map_sum_of_squares=14",
     "filter_sum=12",
     "large_append_sum=1275",

@@ -185,13 +185,13 @@ fun cgGetPointerPaths(t: CgType, path: String): List<String>
     (i: CgInt) => List<String>()
     (f: CgFloat) => List<String>()
     (p: CgIntPtr) => List<String>()
-    (d: CgDataPointer) => append(List<String>(), path)
-    (fp: CgFuncPointer) => append(List<String>(), path + ".o")
+    (d: CgDataPointer) => prepend(path, List<String>())
+    (fp: CgFuncPointer) => prepend(path + ".o", List<String>())
     (v: CgVoid) => List<String>()
     (s: CgStruct) => cgStructPointerPaths(s.fields, path)
     (m: CgImmediateStruct) => cgStructPointerPaths(m.fields, path)
     (a: CgArray) => cgArrayPointerPaths(a.elemType, a.arrLength, path, 0)
-    (w: CgTaskWrapper) => append(List<String>(), path + ".task")
+    (w: CgTaskWrapper) => prepend(path + ".task", List<String>())
 
 fun cgStructPointerPaths(fields: List<CgField>, path: String): List<String>
   ret fold(fields, List<String>(), (acc: List<String>, fld: CgField) =>
@@ -509,8 +509,8 @@ fun cgFlattenPrimitivesN(t: CgType): (ps: List<CgType>, n: Int)
           cgFlattenPrimitivesN(fld.fieldType)
             |> (sub) => (concat<CgType>(acc.ps, sub.ps), acc.n + sub.n))
     () => match(t)
-      (fp: CgFuncPointer) => (append(append(List<CgType>(), CgIntPtr()), CgDataPointer()), 2)
-      (o: CgType)         => (append(List<CgType>(), o), 1)
+      (fp: CgFuncPointer) => (append(prepend(CgIntPtr(), List<CgType>()), CgDataPointer()), 2)
+      (o: CgType)         => (prepend(o, List<CgType>()), 1)
 
 fun cgPrimitiveRank(t: CgType): Int
   ret match(t)
@@ -557,9 +557,9 @@ fun cgAddPrimitive(slots: List<CgSlot>, vi: Int, prim: CgType, vmapVi: List<CgSl
   ret found >= 0
     ? (cgUpdateSlotUsers(slots, found, vi), append(vmapVi, CgSlotEntry(found, prim)))
     : match(last(slots))
-        (prev: CgSlot) => (append(slots, CgSlot(prim, append(List<Int>(), vi), true, prev.sIdx + 1)),
+        (prev: CgSlot) => (append(slots, CgSlot(prim, prepend(vi, List<Int>()), true, prev.sIdx + 1)),
                            append(vmapVi, CgSlotEntry(prev.sIdx + 1, prim)))
-        ()             => (append(slots, CgSlot(prim, append(List<Int>(), vi), true, 0)),
+        ()             => (append(slots, CgSlot(prim, prepend(vi, List<Int>()), true, 0)),
                            append(vmapVi, CgSlotEntry(0, prim)))
 
 fun cgAddPrimitivesForVariant(slots: List<CgSlot>, vi: Int, prims: List<CgType>, vmapVi: List<CgSlotEntry>): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
@@ -668,7 +668,7 @@ fun cgInsertIdxByRank(sorted: List<CgIdxSlot>, s: CgIdxSlot): List<CgIdxSlot>
     (h: CgIdxSlot) => cgPrimitiveRank(s.isSlot.slotType) < cgPrimitiveRank(h.isSlot.slotType)
       ? prepend<CgIdxSlot>(s, sorted)
       : prepend<CgIdxSlot>(h, cgInsertIdxByRank(tail<CgIdxSlot>(sorted), s))
-    () => append(List<CgIdxSlot>(), s)
+    () => prepend(s, List<CgIdxSlot>())
 
 class [final] CgUnionLayout(fieldsStruct: CgType, variantMap: List<List<CgSlotEntry> >)
 

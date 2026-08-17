@@ -88,19 +88,19 @@ class [final] Found(fName: String, fStmt: PStmt, fScope: RScope,
                     fTraitScope: Spec|None = None, fOwner: PStmt|None = None,
                     fInstanceParams: List<String>|None = None)
 
-class [final] Bag(bItems: List<Found>, bComplete: Bool)
+class [final] Findings(bItems: List<Found>, bComplete: Bool)
 
-fun emptyBag(): Bag
-  ret Bag(List<Found>(), true)
+fun emptyFindings(): Findings
+  ret Findings(List<Found>(), true)
 
 # Nothing found YET: the search was blocked, so absence proves nothing.
-fun incompleteBag(): Bag
-  ret Bag(List<Found>(), false)
+fun incompleteFindings(): Findings
+  ret Findings(List<Found>(), false)
 
-fun addBags(a: Bag, b: Bag): Bag
-  ret Bag(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
+fun addFindings(a: Findings, b: Findings): Findings
+  ret Findings(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
 
-fun soleItem(b: Bag): Found|None
+fun soleItem(b: Findings): Found|None
   ret exactly(chain(b.bItems), 1) ? head(b.bItems) : None
 
 # ── the statement index ─────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ fun putUnder(d: Dict<String, List<PStmt> >, key: String,
              st: PStmt): Dict<String, List<PStmt> >
   ret match(get(d, key))
     (prev: List<PStmt>) => put(d, key, append(prev, st))
-    ()                  => put(d, key, append(List<PStmt>(), st))
+    ()                  => put(d, key, prepend(st, List<PStmt>()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
 # iteration; `[trait]` lets are precomputed.
@@ -300,9 +300,9 @@ enum Resolver
   # versa) so this file need not carry two near-identical cases.
   enum RGen(rgFrame: GenFrame, rgParent: Resolver)
 
-fun findData(r: Resolver, query: String): Bag
+fun findData(r: Resolver, query: String): Findings
   ret match(r)
-    (root: RRoot) => globalBag(root.rrStmts, query, false)
+    (root: RRoot) => globalFindings(root.rrStmts, query, false)
     (rg: RGen)    => findData(rg.rgParent, query)
     # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
     # same name in every enclosing scope — the parent is consulted only on a
@@ -311,19 +311,19 @@ fun findData(r: Resolver, query: String): Bag
     (d: RData)    => localsFirst(matchingFound(d.rdNames, query),
                                  d.rdParent, query)
     (t2: RTypes)  => findData(t2.rtParent, query)
-    (sc: RScopes) => scopedBag(sc, query, false)
-    (tr: RTraits) => addBags(traitBag(tr, query, tr.rtrParent),
+    (sc: RScopes) => scopedFindings(sc, query, false)
+    (tr: RTraits) => addFindings(traitFindings(tr, query, tr.rtrParent),
                              findData(tr.rtrParent, query))
-    (cb: RClassBody) => classBodyBag(cb, query)
+    (cb: RClassBody) => classBodyFindings(cb, query)
 
-fun findType(r: Resolver, query: String): Bag
+fun findType(r: Resolver, query: String): Findings
   ret match(r)
-    (root: RRoot) => globalBag(root.rrStmts, query, true)
+    (root: RRoot) => globalFindings(root.rrStmts, query, true)
     (rg: RGen)    => findType(rg.rgParent, query)
     (d: RData)    => findType(d.rdParent, query)
-    (t2: RTypes)  => addBags(matchingFound(t2.rtNames, query),
+    (t2: RTypes)  => addFindings(matchingFound(t2.rtNames, query),
                              findType(t2.rtParent, query))
-    (sc: RScopes) => scopedBag(sc, query, true)
+    (sc: RScopes) => scopedFindings(sc, query, true)
     (tr: RTraits) => findType(tr.rtrParent, query)
     (cb: RClassBody) => findType(cb.rcbParent, query)
 
@@ -437,7 +437,7 @@ fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
 # for a name that is still unqualified (no `::`) and unhashed (no `@`).
-fun scopedBag(sc: RScopes, query: String, wantType: Bool): Bag
+fun scopedFindings(sc: RScopes, query: String, wantType: Bool): Findings
   let direct = wantType ? findType(sc.rsParent, query)
                         : findData(sc.rsParent, query)
   ret contains(query, "::") || contains(query, "@")
@@ -445,22 +445,22 @@ fun scopedBag(sc: RScopes, query: String, wantType: Bool): Bag
     : scopeLoop(chain(sc.rsNames), sc.rsParent, query, wantType, direct)
 
 fun [tail] scopeLoop(ns: Chain<String>, parent: Resolver, query: String,
-                     wantType: Bool, acc: Bag): Bag
+                     wantType: Bool, acc: Findings): Findings
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => scopeLoop(l.next, parent, query, wantType,
-                                 addBags(acc, qualifiedIn(parent, l.value,
+                                 addFindings(acc, qualifiedIn(parent, l.value,
                                                           query, wantType)))
 
 fun qualifiedIn(parent: Resolver, ns: String, query: String,
-                wantType: Bool): Bag
+                wantType: Bool): Findings
   ret wantType ? findType(parent, ns + "::" + query)
                : findData(parent, ns + "::" + query)
 
 # The root's answer: every indexed statement under the query, split by whether
 # it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let).
-fun globalBag(idx: Statements, query: String, wantType: Bool): Bag
-  ret Bag(globalLoop(chain(lookup(idx, query)), wantType, List<Found>()), true)
+fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
+  ret Findings(globalLoop(chain(lookup(idx, query)), wantType, List<Found>()), true)
 
 fun [tail] globalLoop(ss: Chain<PStmt>, wantType: Bool,
                       acc: List<Found>): List<Found>
@@ -494,16 +494,16 @@ fun isNeitherStmt(st: PStmt): Bool
     (ti: PsTraitInstance) => true
     (o: PStmt)            => false
 
-fun localsFirst(own: Bag, parent: Resolver, query: String): Bag
+fun localsFirst(own: Findings, parent: Resolver, query: String): Findings
   ret isEmpty(own.bItems) ? findData(parent, query) : own
 
-fun classBodyBag(cb: RClassBody, query: String): Bag
+fun classBodyFindings(cb: RClassBody, query: String): Findings
   let own = concat(classFindData(cb.rcbClass, cb.rcbParent, query),
                    thisFound(cb.rcbClass, query))
-  ret isEmpty(own) ? findData(cb.rcbParent, query) : Bag(own, true)
+  ret isEmpty(own) ? findData(cb.rcbParent, query) : Findings(own, true)
 
-fun matchingFound(names: List<Found>, query: String): Bag
-  ret Bag(matchLoop(chain(names), query, List<Found>()), true)
+fun matchingFound(names: List<Found>, query: String): Findings
+  ret Findings(matchLoop(chain(names), query, List<Found>()), true)
 
 fun [tail] matchLoop(fs: Chain<Found>, query: String,
                      acc: List<Found>): List<Found>

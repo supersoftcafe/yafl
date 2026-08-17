@@ -57,13 +57,13 @@ class NamedStatement(Statement):
     type_params: tuple[TypeAliasStatement, ...]     # SomeClass<TValue1, TValue1>
     trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)   # SomeClass<TValue>() where Numeric<TValue>
 
-    def _find_trait_data(self, resolver: g.Resolver, query: str) -> "g.Bag[g.Resolved[DataStatement]]":
+    def _find_trait_data(self, resolver: g.Resolver, query: str) -> "g.Findings[g.Resolved[DataStatement]]":
         # Deferred: base ← classdef would be an import cycle (ClassStatement IS
         # a NamedStatement); this method only runs long after both initialise.
         from pyast.statement.classdef import ClassStatement
 
         def find_in_class(tp: t.ClassSpec | t.NamedSpec,
-                          instance_params: tuple[str, ...] = ()) -> "g.Bag[g.Resolved[DataStatement]]":
+                          instance_params: tuple[str, ...] = ()) -> "g.Findings[g.Resolved[DataStatement]]":
             found = [rs.statement for rs in resolver.find_type(tp.name)]
             match found:
                 case [ClassStatement() as cls]:
@@ -72,7 +72,7 @@ class NamedStatement(Statement):
                     # Direct members first (the by-name index is a dict hit).
                     direct = cls.member_index()[query]
                     if direct:
-                        return g.Bag(tuple(g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls,
+                        return g.Findings(tuple(g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls,
                                                       instance_params) for x in direct))
                     # Recurse into each parent interface with type params
                     # substituted (Math<TVal> : Plus<TVal>, tp Math<Int> ⇒

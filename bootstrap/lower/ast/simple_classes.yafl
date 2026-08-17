@@ -648,7 +648,7 @@ fun scThisLet(tupleSpec: Spec, lr: PLine): PStmt
 fun scPrependThis(params: PStmt, tupleSpec: Spec, lr: PLine): PStmt
   ret match(params)
     (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
-        concat(append(List<PStmt>(), scThisLet(tupleSpec, lr)), d.dTargets),
+        concat(prepend(scThisLet(tupleSpec, lr), List<PStmt>()), d.dTargets),
         d.dDefault, d.psdLine, d.dTypeInferred)
     (o: PStmt) => o
 
@@ -747,7 +747,7 @@ fun scMakeLiftedCall(c: PeCall, d: PeDot, clsName: String): PExpr
   let args = match(c.parameter)
     (tp: PeTuple) => tp.exprs
     (o: PExpr)    => List<PTupEnt>()
-  let newArgs = PeTuple(concat(append(List<PTupEnt>(), PTupEnt("", false, d.base)), args), lr)
+  let newArgs = PeTuple(concat(prepend(PTupEnt("", false, d.base), List<PTupEnt>()), args), lr)
   ret PeCall(PeName(clsName + "__" + d.member, List<Spec>(), lr), newArgs, lr)
 
 fun scBuildMethodCall(c: PeCall, d: PeDot, clsName: String, cands: ScCands): PExpr|None

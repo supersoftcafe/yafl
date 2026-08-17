@@ -22,7 +22,7 @@ fun noErrs(): List<PErr>
   ret List<PErr>()
 
 fun oneErr(lr: PLine, msg: String): List<PErr>
-  ret append(List<PErr>(), PErr(lr, msg))
+  ret prepend(PErr(lr, msg), List<PErr>())
 
 # ── TypeSpec.check ──────────────────────────────────────────────────────────
 
