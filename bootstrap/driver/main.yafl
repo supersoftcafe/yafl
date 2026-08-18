@@ -485,8 +485,10 @@ fun postmonoRes4(stmts: List<PStmt>): PmRes
   if !isEmpty(undischarged)
     ret PmText(printedDiagnostics(undischarged), 0)
   ret match(converge(it.giStmts))
-    (ok: CvOk)       => PmOk(inlineConstants(markComplexEnums(
-                                               ok.cvStatements)))
+    (ok: CvOk)       => markComplexEnums(ok.cvStatements)
+      |> (stmts, errs) => isEmpty(errs)
+        ? PmOk(inlineConstants(stmts))
+        : PmText(printedDiagnostics(errs), 1)
     (dv: CvDiverged) => PmText("diverged\n", 2)
 
 fun postmonoMode(text: String): (out: String, code: Int)

@@ -632,7 +632,11 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # main converge. Sits before tail-loop lowering so a recursive call's boxed
     # arguments carry over to the loop back-edge.
     new_statements, resolver, _passes = __converge(new_statements)
-    new_statements = lowering.complex_enums.mark_complex_enums(new_statements)
+    # Validates the enum-name resolution the breaker analysis relies on: an
+    # ambiguous suffix match is an error rather than first-insertion-wins.
+    new_statements, enum_ref_errors = lowering.complex_enums.mark_complex_enums(new_statements)
+    if enum_ref_errors:
+        return enum_ref_errors
     new_statements = lowering.constants.inline_constants(new_statements)
     # `[tail]` self-recursion → loop. Runs before inlining / closure conversion,
     # while every self-call is still a direct, name-resolved call so the

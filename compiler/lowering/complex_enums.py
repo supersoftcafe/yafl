@@ -25,13 +25,15 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+from parsing.parselib import Error
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
 
 
 
-def _collect_reachable_roots(spec: t.TypeSpec | None, out: set[str], name_to_root: dict[str, str]) -> None:
+def _collect_reachable_roots(spec: t.TypeSpec | None, out: set[str], name_to_root: dict[str, str],
+                             errors: list[Error]) -> None:
     """Collect every EnumSpec.root_name directly referenced in `spec`,
     without crossing EnumSpec or class boundaries.
 
@@ -54,13 +56,13 @@ def _collect_reachable_roots(spec: t.TypeSpec | None, out: set[str], name_to_roo
         # Stop here — do not recurse into spec.all_fields.
     elif isinstance(spec, t.TupleSpec):
         for ent in spec.entries:
-            _collect_reachable_roots(ent.type, out, name_to_root)
+            _collect_reachable_roots(ent.type, out, name_to_root, errors)
     elif isinstance(spec, t.CombinationSpec):
         for tt in spec.types:
-            _collect_reachable_roots(tt, out, name_to_root)
+            _collect_reachable_roots(tt, out, name_to_root, errors)
     elif isinstance(spec, t.CallableSpec):
-        _collect_reachable_roots(spec.parameters, out, name_to_root)
-        _collect_reachable_roots(spec.result, out, name_to_root)
+        _collect_reachable_roots(spec.parameters, out, name_to_root, errors)
+        _collect_reachable_roots(spec.result, out, name_to_root, errors)
     elif isinstance(spec, t.NamedSpec):
         # Map bare/qualified names to canonical root_name. Only enum
         # targets contribute; class/builtin targets aren't in the map.
@@ -69,10 +71,27 @@ def _collect_reachable_roots(spec: t.TypeSpec | None, out: set[str], name_to_roo
         else:
             # Try matching by suffix form ("Foo::Bar" → match
             # "AnyNs::Foo::Bar@hash" via simple-name comparison).
-            for known_name, canonical in name_to_root.items():
-                if known_name.endswith("::" + spec.name) or spec.name.endswith("::" + known_name):
-                    out.add(canonical)
-                    break
+            #
+            # EVERY candidate is considered, not just the first. Stopping at
+            # the first made the answer depend on map INSERTION ORDER: two
+            # roots that both suffix-match resolved to whichever was inserted
+            # earlier, and that choice decides which enum breaks a cycle — i.e.
+            # which enum gets BOXED, which reaches the emitted C. The two
+            # compilers agreed only because they insert in the same order;
+            # neither was deciding anything. An ambiguous reference is now an
+            # ERROR naming the candidates (USER RULING). Candidates are SORTED
+            # so the message does not depend on map order either.
+            matches = sorted({canonical
+                              for known_name, canonical in name_to_root.items()
+                              if known_name.endswith("::" + spec.name)
+                              or spec.name.endswith("::" + known_name)})
+            if len(matches) == 1:
+                out.add(matches[0])
+            elif len(matches) > 1:
+                errors.append(Error(
+                    spec.line_ref,
+                    f"ambiguous enum reference '{spec.name}' — matches "
+                    + ", ".join(f"'{m}'" for m in matches) + "; qualify it"))
     # ClassSpec, BuiltinSpec, GenericPlaceholderSpec: no descent.
 
 
@@ -183,15 +202,35 @@ def compute_breakers(statements: list[s.Statement]) -> set[str]:
     for name, spec in roots.items():
         children: set[str] = set()
         for _, ftype in fields_of(name):
-            _collect_reachable_roots(ftype, children, name_to_root)
+            _collect_reachable_roots(ftype, children, name_to_root, [])
         edges[name] = children
     return _pick_cycle_breakers(edges, roots, fields_of)
 
 
-def mark_complex_enums(statements: list[s.Statement]) -> list[s.Statement]:
+def mark_complex_enums(statements: list[s.Statement]) -> tuple[list[s.Statement], list[Error]]:
     """IDENTITY. is_complex is DERIVED (identity vs state): every reader
     queries the breaker analysis through its resolver (is_complex_root) or
     computes it from its statements (compute_breakers) — there are no stamps
-    to apply and no stale copies to repair. The pipeline slot is kept for
-    wiring stability; removing it everywhere is cosmetic cleanup."""
-    return statements
+    to apply and no stale copies to repair.
+
+    The slot now earns its place: it VALIDATES the enum-name resolution that
+    the breaker analysis depends on. compute_breakers is a lazy, cached
+    resolver query with nowhere to report a diagnostic, so the same walk runs
+    here purely to surface ambiguities (USER RULING: an ambiguous suffix match
+    is an error, not first-insertion-wins)."""
+    roots: dict[str, t.EnumSpec] = {}
+    for st in statements:
+        if isinstance(st, s.EnumStatement) and st._enum_spec is not None:
+            spec = st._enum_spec
+            if "@" in spec.root_name:
+                roots.setdefault(spec.root_name, spec)
+    if not roots:
+        return statements, []
+    from lowering.enum_fields import fields_provider
+    fields_of = fields_provider(statements)
+    name_to_root = _build_name_to_root(roots)
+    errors: list[Error] = []
+    for name in roots:
+        for _, ftype in fields_of(name):
+            _collect_reachable_roots(ftype, set(), name_to_root, errors)
+    return statements, sorted(set(errors))

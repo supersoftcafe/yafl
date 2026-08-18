@@ -88,7 +88,7 @@ class TestBootstrapPostmono(TestCase):
         if unresolved:
             return "".join(f"{e}\n" for e in sorted(set(unresolved)))
         statements, _resolver, _p3 = _CONVERGE(statements)
-        statements = lowering.complex_enums.mark_complex_enums(statements)
+        statements, _enum_ref_errors = lowering.complex_enums.mark_complex_enums(statements)
         statements = lowering.constants.inline_constants(statements)
         return dump(statements)
 

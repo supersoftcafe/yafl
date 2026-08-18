@@ -85,19 +85,28 @@ fun ceMapAdd(acc: NameMap, key: String, root: String): NameMap
 fun ceLookup2(map: NameMap, name: String): String|None
   ret match(get(map.nmIndex, name))
     (hit: String) => hit
-    ()            => ceSuffixLoop(chain(map.nmNames), chain(map.nmRoots),
-                                  name)
+    ()            => singleOrNone<String>(ceSuffixMatches(chain(map.nmNames),
+                                                          chain(map.nmRoots),
+                                                          name, Set<String>()))
 
-fun [tail] ceSuffixLoop(ks: Chain<String>, rs: Chain<String>,
-                        name: String): String|None
+# EVERY candidate, not just the first. Stopping at the first made the answer
+# depend on NameMap INSERTION ORDER: two roots that both suffix-match resolved
+# to whichever was inserted earlier, and that choice decides which enum breaks
+# a cycle — i.e. which enum gets BOXED, which reaches the emitted C. The two
+# compilers agreed only because they insert in the same order; neither was
+# deciding anything. A Set collects the distinct matches, so singleOrNone above
+# yields the answer only when it is UNAMBIGUOUS, and ceAmbiguous below reports
+# the rest (USER RULING).
+fun [tail] ceSuffixMatches(ks: Chain<String>, rs: Chain<String>, name: String,
+                           acc: Set<String>): Set<String>
   ret match(ks)
-    (nil: ChainEnd) => None
+    (nil: ChainEnd) => acc
     (k: ChainLink)  => match(rs)
-      (nil2: ChainEnd) => None
-      (r: ChainLink)   => endsWith(k.value, "::" + name)
-                          || endsWith(name, "::" + k.value)
-        ? r.value
-        : ceSuffixLoop(k.next, r.next, name)
+      (nil2: ChainEnd) => acc
+      (r: ChainLink)   => ceSuffixMatches(k.next, r.next, name,
+        endsWith(k.value, "::" + name) || endsWith(name, "::" + k.value)
+          ? add<String>(acc, r.value)
+          : acc)
 
 # ── reachability ─────────────────────────────────────────────────────────────
 # Collect every enum root directly referenced in a spec, stopping at SEnum
@@ -394,8 +403,74 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 # the breaker analysis through its resolver (rrComplex, built by
 # rootResolver) — there are no stamps to apply and no stale copies to
 # repair. The pipeline slot is kept for wiring stability.
-fun markComplexEnums(statements: List<PStmt>): List<PStmt>
-  ret statements
+# The slot now earns its place: it VALIDATES the enum-name resolution the
+# breaker analysis depends on. The breaker computation itself is a lazy,
+# cached resolver query with nowhere to report, so the same walk runs here
+# purely to surface ambiguities (USER RULING: an ambiguous suffix match is an
+# error, not first-insertion-wins). Message text is VERBATIM with Python's.
+fun markComplexEnums(statements: List<PStmt>): (stmts: List<PStmt>, errs: Set<PErr>)
+  let roots = ceCollectRoots(statements)
+  ret (stmts = statements,
+       errs = isEmpty(roots.erNames)
+         ? Set<PErr>()
+         : ceAmbiguities(chain(roots.erNames), ceNameMap(roots),
+                         enumFieldsProvider(statements), Set<PErr>()))
+
+fun [tail] ceAmbiguities(ns: Chain<String>, map: NameMap,
+                         fieldsOf: (:String): List<SField>,
+                         acc: Set<PErr>): Set<PErr>
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (n: ChainLink)  => ceAmbiguities(n.next, map, fieldsOf,
+                                     ceFieldAmbig(chain(fieldsOf(n.value)),
+                                                  map, acc))
+
+fun [tail] ceFieldAmbig(fs: Chain<SField>, map: NameMap,
+                        acc: Set<PErr>): Set<PErr>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceFieldAmbig(l.next, map,
+                                    ceSpecAmbig(l.value.sfType, map, acc))
+
+# Only a NAMED spec can be ambiguous; the structural cases just descend.
+fun ceSpecAmbig(sp: Spec, map: NameMap, acc: Set<PErr>): Set<PErr>
+  ret match(sp)
+    (n: SNamed)        => get(map.nmIndex, n.snName) is None
+      ? ceReportAmbig(n, ceSuffixMatches(chain(map.nmNames),
+                                         chain(map.nmRoots), n.snName,
+                                         Set<String>()), acc)
+      : acc
+    (t2: STuple)       => ceEntryAmbig(chain(t2.stEntries), map, acc)
+    (cm: SCombination) => ceListAmbig(chain(cm.scTypes), map, acc)
+    (cl: SCallable)    => ceSpecAmbig(cl.scParams2, map, acc)
+    (o: Spec)          => acc
+
+fun ceReportAmbig(n: SNamed, ms: Set<String>, acc: Set<PErr>): Set<PErr>
+  ret isMoreThanOne<String>(ms)
+    ? add(acc, PErr(n.snLine,
+        "ambiguous enum reference '" + n.snName + "' — matches "
+          + join(sort<String>(ms), ", ") + "; qualify it"))
+    : acc
+
+fun [tail] ceEntryAmbig(es: Chain<SEntry>, map: NameMap,
+                        acc: Set<PErr>): Set<PErr>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceEntryAmbig(l.next, map,
+                                    ceSpecAmbigOpt(l.value.seType, map, acc))
+
+# Optional-spec variant, mirroring ceReachOpt: a match cannot be spelled
+# inline as a call argument.
+fun ceSpecAmbigOpt(sp: Spec|None, map: NameMap, acc: Set<PErr>): Set<PErr>
+  ret match(sp)
+    (s2: Spec) => ceSpecAmbig(s2, map, acc)
+    ()         => acc
+
+fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
+                       acc: Set<PErr>): Set<PErr>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => ceListAmbig(l.next, map, ceSpecAmbig(l.value, map, acc))
 
 # The breaker set — WHICH enum roots must lower complex — as a pure function
 # of the statements (mirror of Python's compute_breakers): collect roots,

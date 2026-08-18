@@ -253,7 +253,7 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0) -> st
     if unresolved:
         return "".join(f"{e}\n" for e in sorted(set(unresolved)))
     statements, resolver3, _p3 = _CONVERGE(statements)
-    statements = lowering.complex_enums.mark_complex_enums(statements)
+    statements, _enum_ref_errors = lowering.complex_enums.mark_complex_enums(statements)
     statements = lowering.constants.inline_constants(statements)
     statements = lowering.lambda_lift.lift_captured_calls(statements)
     statements = lowering.hoist_nested.hoist_nested_functions(statements)
