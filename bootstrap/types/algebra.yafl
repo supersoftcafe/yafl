@@ -118,12 +118,16 @@ fun substOpt(sp: Spec|None, mapping: List<Binding>): Spec|None
 fun substEntries(es: List<SEntry>, mapping: List<Binding>): List<SEntry>
   ret substEntLoop(chain(es), mapping, List<SEntry>())
 
-fun [tail] substEntLoop(es: Chain<SEntry>, mapping: List<Binding>,
+fun substEntLoop(es: Chain<SEntry>, mapping: List<Binding>,
                         acc: List<SEntry>): List<SEntry>
+  ret build<SEntry >(substEntLoopB(es, mapping, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+
+fun [tail] substEntLoopB(es: Chain<SEntry>, mapping: List<Binding>,
+                        [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => substEntLoop(l.next, mapping,
-        append(acc, SEntry(l.value.seName, substOpt(l.value.seType, mapping),
+    (l: ChainLink)  => substEntLoopB(l.next, mapping,
+        push<SEntry >(acc, SEntry(l.value.seName, substOpt(l.value.seType, mapping),
                            l.value.seDefault)))
 
 fun bindingOf(ms: List<Binding>, name: String): Spec|None
@@ -435,12 +439,16 @@ fun mergeBinding(name: String, prior: Spec, concrete: Spec,
 fun rebind(mapping: List<Binding>, name: String, sp: Spec): List<Binding>
   ret rebindLoop(chain(mapping), name, sp, List<Binding>())
 
-fun [tail] rebindLoop(ms: Chain<Binding>, name: String, sp: Spec,
+fun rebindLoop(ms: Chain<Binding>, name: String, sp: Spec,
                       acc: List<Binding>): List<Binding>
+  ret build<Binding >(rebindLoopB(ms, name, sp, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+
+fun [tail] rebindLoopB(ms: Chain<Binding>, name: String, sp: Spec,
+                      [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
   ret match(ms)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => rebindLoop(l.next, name, sp,
-        append(acc, l.value.bName == name ? Binding(name, sp) : l.value))
+    (l: ChainLink)  => rebindLoopB(l.next, name, sp,
+        push<Binding >(acc, l.value.bName == name ? Binding(name, sp) : l.value))
 
 fun unifyBuiltin(b: SBuiltin, concrete: Spec, mapping: List<Binding>): Unify
   ret match(concrete)
@@ -507,10 +515,13 @@ fun unifyTuple(t2: STuple, concrete: Spec, names: List<String>,
       ()              => UMap(mapping)
     (o)          => UMap(mapping)
 
-fun [tail] entryNames(es: Chain<SEntry>, acc: List<String>): List<String>
+fun entryNames(es: Chain<SEntry>, acc: List<String>): List<String>
+  ret build<String >(entryNamesB(es, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] entryNamesB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => entryNames(l.next, append(acc, l.value.seName))
+    (l: ChainLink)  => entryNamesB(l.next, push<String >(acc, l.value.seName))
 
 fun [tail] unifyBound(ds: Chain<SEntry>, binding: List<Int>, supplied: List<SEntry>,
                names: List<String>, mapping: List<Binding>): Unify

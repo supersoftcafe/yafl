@@ -98,7 +98,7 @@ fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
   # left `this` unresolvable inside member bodies at generate.
   let r = genScope(c.cGens, RClassBody(c, r0))
   let genFunctions = classMemberFunctions(chain(c.cMembers), r, List<CgFunction>())
-  let extends = c.cIsInterface ? List<String>() : sortNamesAsc(chain(classParentUids(c)), List<String>())
+  let extends = c.cIsInterface ? List<String>() : sort<String>(classParentUids(c))
   let functions = c.cIsInterface ? List<CgFuncSlot>() : classSlotEntries(c)
   let functionNames = map(functions, (s2: CgFuncSlot) => s2.slotGlobalName)
   let thunks = classFieldThunks(chain(flattenParams(c.cParams)), c.cName, functionNames, r, List<CgFunction>())
@@ -114,12 +114,15 @@ fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
                  hasAttr(c.cAttrs, "pinnable")),
         concat(genFunctions, thunks))
 
-fun [tail] classMemberFunctions(ms: Chain<PStmt>, r: Resolver, acc: List<CgFunction>): List<CgFunction>
+fun classMemberFunctions(ms: Chain<PStmt>, r: Resolver, acc: List<CgFunction>): List<CgFunction>
+  ret build<CgFunction >(classMemberFunctionsB(ms, r, _pushChain<CgFunction >(builder<CgFunction >(), chain<CgFunction >(acc))))
+
+fun [tail] classMemberFunctionsB(ms: Chain<PStmt>, r: Resolver, [terminal] acc: ListBuilder<CgFunction >): ListBuilder<CgFunction >
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f2: PsFun) => classMemberFunctions(l.next, r, append(acc, funGlobalCodegen(f2, r)))
-      (o: PStmt)  => classMemberFunctions(l.next, r, acc)
+      (f2: PsFun) => classMemberFunctionsB(l.next, r, push<CgFunction >(acc, funGlobalCodegen(f2, r)))
+      (o: PStmt)  => classMemberFunctionsB(l.next, r, acc)
 
 # extends: sorted unique-id strings of the transitive parent closure.
 fun classParentUids(c: PsClass): List<String>
@@ -138,20 +141,24 @@ fun [tail] cseLoop(ss: Chain<Slot>, acc: List<CgFuncSlot>): List<CgFuncSlot>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cseLoop(l.next,
-                         concat(acc, map(sortNamesAsc(chain(l.value.slotProvides), List<String>()),
+                         concat(acc, map(sort<String>(l.value.slotProvides),
                                          (y: String) => CgFuncSlot(y, l.value.slotName))))
 
 # A fun-typed FIELD occupying a vtable slot needs a dispatch thunk: load the
 # field off `this`, call it with the packed params, return the result.
-fun [tail] classFieldThunks(ps: Chain<PStmt>, className: String, functionNames: List<String>,
+fun classFieldThunks(ps: Chain<PStmt>, className: String, functionNames: List<String>,
                             r: Resolver, acc: List<CgFunction>): List<CgFunction>
+  ret build<CgFunction >(classFieldThunksB(ps, className, functionNames, r, _pushChain<CgFunction >(builder<CgFunction >(), chain<CgFunction >(acc))))
+
+fun [tail] classFieldThunksB(ps: Chain<PStmt>, className: String, functionNames: List<String>,
+                            r: Resolver, [terminal] acc: ListBuilder<CgFunction >): ListBuilder<CgFunction >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => contains2(functionNames, let2.lName)
-        ? classFieldThunks(l.next, className, functionNames, r, append(acc, createThunk(className, let2, r)))
-        : classFieldThunks(l.next, className, functionNames, r, acc)
-      (o: PStmt)    => classFieldThunks(l.next, className, functionNames, r, acc)
+        ? classFieldThunksB(l.next, className, functionNames, r, push<CgFunction >(acc, createThunk(className, let2, r)))
+        : classFieldThunksB(l.next, className, functionNames, r, acc)
+      (o: PStmt)    => classFieldThunksB(l.next, className, functionNames, r, acc)
 
 fun createThunk(className: String, let2: PsLet, r: Resolver): CgFunction
   let paramStruct = thunkParamStruct(let2.lType, r)
@@ -278,15 +285,20 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
              enumLeafObjects(chain(sp.seAllLeaves), chain(leafSets), st.eName,
                              discs, r, prefix, List<CgObject>()))
 
-fun [tail] enumLeafObjects(names: Chain<String>, sets: Chain<List<PStmt>>, rootName: String,
+fun enumLeafObjects(names: Chain<String>, sets: Chain<List<PStmt>>, rootName: String,
                            discs: Dict<String, Int>, r: Resolver,
                            prefix: List<CgField>, acc: List<CgObject>): List<CgObject>
+  ret build<CgObject >(enumLeafObjectsB(names, sets, rootName, discs, r, prefix, _pushChain<CgObject >(builder<CgObject >(), chain<CgObject >(acc))))
+
+fun [tail] enumLeafObjectsB(names: Chain<String>, sets: Chain<List<PStmt>>, rootName: String,
+                           discs: Dict<String, Int>, r: Resolver,
+                           prefix: List<CgField>, [terminal] acc: ListBuilder<CgObject >): ListBuilder<CgObject >
   ret match(names)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(sets)
       (nil2: ChainEnd) => acc   # unreachable: leaf names and field sets zip 1:1
-      (ls: ChainLink)  => enumLeafObjects(l.next, ls.next, rootName, discs, r, prefix,
-                            append(acc, enumLeafObject(l.value, ls.value, rootName, discs, r, prefix)))
+      (ls: ChainLink)  => enumLeafObjectsB(l.next, ls.next, rootName, discs, r, prefix,
+                            push<CgObject >(acc, enumLeafObject(l.value, ls.value, rootName, discs, r, prefix)))
 
 fun enumLeafObject(leafName: String, leafFields: List<PStmt>, rootName: String,
                    discs: Dict<String, Int>, r: Resolver, prefix: List<CgField>): CgObject

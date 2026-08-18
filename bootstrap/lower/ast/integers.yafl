@@ -55,12 +55,16 @@ fun giName(v: Int): String
   ret v < 0 ? "$integers::integer@n" + String(0 - v)
             : "$integers::integer@p" + String(v)
 
-fun [tail] giGlobals(vs: Chain<Int>, index: Int,
+fun giGlobals(vs: Chain<Int>, index: Int,
                      acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(giGlobalsB(vs, index, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] giGlobalsB(vs: Chain<Int>, index: Int,
+                     [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(vs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => giGlobals(l.next, index + 1,
-        append(acc, PsLet(giName(l.value), List<PAttr>(), List<PGen>(),
+    (l: ChainLink)  => giGlobalsB(l.next, index + 1,
+        push<PStmt >(acc, PsLet(giName(l.value), List<PAttr>(), List<PGen>(),
                           SBuiltin("bigint",
                                    PLine("$integers", index + 1, 1)),
                           PeInt(l.value, 0,

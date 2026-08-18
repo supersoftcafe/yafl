@@ -467,16 +467,21 @@ fun unusedDroppable(lets: List<PStmt>, referenced: List<String>,
                     ids: List<String>): List<PStmt>
   ret udLoop(chain(lets), referenced, wheres, r, ids, List<PStmt>())
 
-fun [tail] udLoop(ls: Chain<PStmt>, referenced: List<String>,
+fun udLoop(ls: Chain<PStmt>, referenced: List<String>,
                   wheres: List<Spec>, r: Resolver, ids: List<String>,
                   acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(udLoopB(ls, referenced, wheres, r, ids, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] udLoopB(ls: Chain<PStmt>, referenced: List<String>,
+                  wheres: List<Spec>, r: Resolver, ids: List<String>,
+                  [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => isUnusedDroppable(let2, referenced, wheres, r, ids)
-        ? udLoop(l.next, referenced, wheres, r, ids, append(acc, l.value))
-        : udLoop(l.next, referenced, wheres, r, ids, acc)
-      (o: PStmt)    => udLoop(l.next, referenced, wheres, r, ids, acc)
+        ? udLoopB(l.next, referenced, wheres, r, ids, push<PStmt >(acc, l.value))
+        : udLoopB(l.next, referenced, wheres, r, ids, acc)
+      (o: PStmt)    => udLoopB(l.next, referenced, wheres, r, ids, acc)
 
 fun isUnusedDroppable(let2: PsLet, referenced: List<String>,
                       wheres: List<Spec>, r: Resolver,
@@ -498,17 +503,22 @@ fun partiallyUsedDroppable(lets: List<PStmt>, referenced: List<String>,
                            ids: List<String>): List<PStmt>
   ret puLoop(chain(lets), referenced, wheres, r, ids, List<PStmt>())
 
-fun [tail] puLoop(ls: Chain<PStmt>, referenced: List<String>,
+fun puLoop(ls: Chain<PStmt>, referenced: List<String>,
                   wheres: List<Spec>, r: Resolver, ids: List<String>,
                   acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(puLoopB(ls, referenced, wheres, r, ids, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] puLoopB(ls: Chain<PStmt>, referenced: List<String>,
+                  wheres: List<Spec>, r: Resolver, ids: List<String>,
+                  [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => contains2(referenced, let2.lName)
                        && eligibleDroppable(let2, wheres, r, ids)
-        ? puLoop(l.next, referenced, wheres, r, ids, append(acc, l.value))
-        : puLoop(l.next, referenced, wheres, r, ids, acc)
-      (o: PStmt)    => puLoop(l.next, referenced, wheres, r, ids, acc)
+        ? puLoopB(l.next, referenced, wheres, r, ids, push<PStmt >(acc, l.value))
+        : puLoopB(l.next, referenced, wheres, r, ids, acc)
+      (o: PStmt)    => puLoopB(l.next, referenced, wheres, r, ids, acc)
 
 # `body` extended so each drop releases at scope exit: value computed FIRST
 # (a derived view of a dropped handle drains before the close), then the
@@ -534,12 +544,15 @@ fun blockValueOf(body: PExpr): PExpr
     (bk: PeBlock) => bk.blockValue
     (o: PExpr)    => body
 
-fun [tail] dropCalls(ds: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun dropCalls(ds: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(dropCallsB(ds, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] dropCallsB(ds: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ds)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => dropCalls(l.next, append(acc, dropCall(let2)))
-      (o: PStmt)    => dropCalls(l.next, acc)
+      (let2: PsLet) => dropCallsB(l.next, push<PStmt >(acc, dropCall(let2)))
+      (o: PStmt)    => dropCallsB(l.next, acc)
 
 # ── path-level balancing ────────────────────────────────────────────────────
 # A droppable binding referenced on SOME paths gets a drop on each abandoning
@@ -636,10 +649,13 @@ fun drEnsureRet(rt: PsRet, rest: Chain<PStmt>, value: PExpr|None,
   ret DrBs(drCopyRest(rest, append(acc, PsRet(nv, rt.psrLine))), value,
            did || fx.bxDid || need == 1, true)
 
-fun [tail] drCopyRest(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun drCopyRest(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(drCopyRestB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] drCopyRestB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => drCopyRest(l.next, append(acc, l.value))
+    (l: ChainLink)  => drCopyRestB(l.next, push<PStmt >(acc, l.value))
 
 fun drEnsureIfStep(i2: PsIf, rest: Chain<PStmt>, value: PExpr|None,
                    tail2: Bool, consumed: Bool, let2: PsLet,
@@ -904,14 +920,18 @@ fun [tail] drFixArmLoop(as2: Chain<PArm>, let2: PsLet, acc: List<PArm>,
                        did || o.bxDid)
         : DrArmB(acc, false, false)
 
-fun [tail] drWrapArms(as2: Chain<PArm>, name: String, let2: PsLet,
+fun drWrapArms(as2: Chain<PArm>, name: String, let2: PsLet,
                       acc: List<PArm>): List<PArm>
+  ret build<PArm >(drWrapArmsB(as2, name, let2, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+
+fun [tail] drWrapArmsB(as2: Chain<PArm>, name: String, let2: PsLet,
+                      [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => drRefs(l.value.armBody, name)
-      ? drWrapArms(l.next, name, let2, append(acc, l.value))
-      : drWrapArms(l.next, name, let2,
-                   append(acc, PArm(l.value.armName, l.value.armType,
+      ? drWrapArmsB(l.next, name, let2, push<PArm >(acc, l.value))
+      : drWrapArmsB(l.next, name, let2,
+                   push<PArm >(acc, PArm(l.value.armName, l.value.armType,
                                     withDrops(l.value.armBody,
                                               oneDrop(let2)),
                                     l.value.armLiterals, l.value.armGuard,

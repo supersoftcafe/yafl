@@ -493,11 +493,15 @@ fun saRestack(f: CgFunction, plan: SaPlan, chainAll: List<String>,
 fun saStepFields(acc: List<CgField>, step: SaStep): List<CgField>
   ret saStepFieldLoop(chain(step.saPushes), 0, step, acc)
 
-fun [tail] saStepFieldLoop(ps: Chain<RParam>, i: Int, step: SaStep,
+fun saStepFieldLoop(ps: Chain<RParam>, i: Int, step: SaStep,
                            acc: List<CgField>): List<CgField>
+  ret build<CgField >(saStepFieldLoopB(ps, i, step, _pushChain<CgField >(builder<CgField >(), chain<CgField >(acc))))
+
+fun [tail] saStepFieldLoopB(ps: Chain<RParam>, i: Int, step: SaStep,
+                           [terminal] acc: ListBuilder<CgField >): ListBuilder<CgField >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => saPushNames(step, i, l.next is ChainEnd)
-      |> (names) => saStepFieldLoop(l.next, i + 1, step,
-                      append(append(acc, CgField(names.buf, CgDataPointer())),
+      |> (names) => saStepFieldLoopB(l.next, i + 1, step,
+                      push<CgField >(push<CgField >(acc, CgField(names.buf, CgDataPointer())),
                              CgField(names.off, CgDataPointer())))

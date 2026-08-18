@@ -197,12 +197,15 @@ fun lazyCapMark(c: String|None): String
     (n: String) => "!cap=" + n
     ()          => ""
 
-fun [tail] loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
+fun loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
+  ret build<String >(loopParamNamesB(ps, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (nm: PeName) => loopParamNames(l.next, append(acc, nm.refName))
-      (o: PExpr)   => loopParamNames(l.next, acc)
+      (nm: PeName) => loopParamNamesB(l.next, push<String >(acc, nm.refName))
+      (o: PExpr)   => loopParamNamesB(l.next, acc)
 
 fun [tail] dumpExprs(es: List<PExpr>, depth: Int,
                      sb: StringBuilder): StringBuilder

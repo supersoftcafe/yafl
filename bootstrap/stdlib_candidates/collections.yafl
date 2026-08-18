@@ -51,10 +51,3 @@ fun disjointInt(a: List<Int>, b: List<Int>): Bool
 fun unionInt(a: List<Int>, b: List<Int>): List<Int>
   ret fold(b, a, (acc: List<Int>, x: Int) => memberInt(acc, x) ? acc : append(acc, x))
 
-
-fun [tail] sortNamesAsc(ns: Chain<String>, acc: List<String>): List<String>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => sortNamesAsc(l.next,
-                                    insertNameAsc(chain(acc), l.value,
-                                                  List<String>()))

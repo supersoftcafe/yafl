@@ -85,8 +85,26 @@ fun filter<T>(s: Set<T>, f: (:T): Bool): Set<T> where BasicEquality<T>
                      Set<T>())
 
 
+# Every member of both. Done the SLOW way for now — one insert per member of
+# `b` — which is the standing position on merging two containers.
+fun union<T>(a: Set<T>, b: Set<T>): Set<T> where BasicEquality<T>
+  ret _chainToSet<T>(_dictKeyChain<T,()>(b._d), a)
+
+
 # ── the one way out ──────────────────────────────────────────────────────────
 # sort names an ordering, so it alone may hand back a List.
 
 fun sort<T>(s: Set<T>): List<T> where BasicCompare<T>
-  ret sort<T>(build<T>(_pushChain<T>(builder<T>(), _dictKeyChain<T,()>(s._d))))
+  ret sort<T>(_setDrain<T>(s))
+
+# The same, for element types with no natural order: `less` must be a STRICT
+# ordering, true iff its first argument precedes its second. This is the only
+# way a Set becomes a sequence, and naming the ordering is what makes that
+# legitimate.
+fun sortBy<T>(s: Set<T>, less: (:T, :T): Bool): List<T>
+  ret sortBy<T>(_setDrain<T>(s), less)
+
+# Private: members as a List in unspecified order. NOT public — handing this
+# out would be iteration on an unordered container by another name.
+fun _setDrain<T>(s: Set<T>): List<T>
+  ret build<T>(_pushChain<T>(builder<T>(), _dictKeyChain<T,()>(s._d)))

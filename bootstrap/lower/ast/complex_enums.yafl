@@ -187,7 +187,7 @@ class [final] Tj(tjIndex: Dict<String, Int>, tjLow: Dict<String, Int>,
                  tjSccs: List<List<String>>, tjN: Int)
 
 fun ceSccs(work: EEdges): List<List<String>>
-  let order = sortNamesAsc(chain(work.eeNames), List<String>())
+  let order = sort<String>(work.eeNames)
   ret tjRoots(chain(order), work,
               Tj(Dict<String, Int>(), Dict<String, Int>(), List<String>(),
                  List<String>(), List<List<String>>(), 0)).tjSccs
@@ -203,8 +203,7 @@ fun tjVisit(v: String, work: EEdges, st0: Tj): Tj
   let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
                prepend(v, st0.tjStack), append(st0.tjOn, v),
                st0.tjSccs, st0.tjN + 1)
-  let st2 = tjNeighbours(chain(sortNamesAsc(chain(ceChildrenOf(work, v)),
-                                            List<String>())),
+  let st2 = tjNeighbours(chain(sort<String>(ceChildrenOf(work, v))),
                          v, work, st1)
   ret tjIndexOf(st2, v) == tjLowOf(st2, v) ? tjPop(st2, v) : st2
 
@@ -263,13 +262,17 @@ fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at: Int): Int
     (nil: ChainEnd) => at
     (l: ChainLink)  => l.value == v ? at : tjFirstIndex(l.next, v, at + 1)
 
-fun [tail] tjRemoveAll(ss: Chain<String>, gone: List<String>,
+fun tjRemoveAll(ss: Chain<String>, gone: List<String>,
                        acc: List<String>): List<String>
+  ret build<String >(tjRemoveAllB(ss, gone, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] tjRemoveAllB(ss: Chain<String>, gone: List<String>,
+                       [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains2(gone, l.value)
-      ? tjRemoveAll(l.next, gone, acc)
-      : tjRemoveAll(l.next, gone, append(acc, l.value))
+      ? tjRemoveAllB(l.next, gone, acc)
+      : tjRemoveAllB(l.next, gone, push<String >(acc, l.value))
 
 # ── cycle breakers ───────────────────────────────────────────────────────────
 # Iterate until no cycles remain; per round, every cyclic SCC contributes its
@@ -290,13 +293,17 @@ fun [tail] cePickLoop(work: EEdges, roots: ERoots,
   ret ceBreakSccs(chain(cyclic), work, roots, fieldsOf, acc)
     |> (out) => cePickLoop(out.pbWork, roots, fieldsOf, out.pbChosen)
 
-fun [tail] ceCyclicSccs(ss: Chain<List<String>>, work: EEdges,
+fun ceCyclicSccs(ss: Chain<List<String>>, work: EEdges,
                         acc: List<List<String>>): List<List<String>>
+  ret build<List<String> >(ceCyclicSccsB(ss, work, _pushChain<List<String> >(builder<List<String> >(), chain<List<String> >(acc))))
+
+fun [tail] ceCyclicSccsB(ss: Chain<List<String>>, work: EEdges,
+                        [terminal] acc: ListBuilder<List<String> >): ListBuilder<List<String> >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => ceIsCyclic(l.value, work)
-      ? ceCyclicSccs(l.next, work, append(acc, l.value))
-      : ceCyclicSccs(l.next, work, acc)
+      ? ceCyclicSccsB(l.next, work, push<List<String> >(acc, l.value))
+      : ceCyclicSccsB(l.next, work, acc)
 
 fun ceIsCyclic(scc: List<String>, work: EEdges): Bool
   if !isEmpty(drop(scc, 1))

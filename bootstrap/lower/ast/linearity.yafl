@@ -22,7 +22,7 @@ import Bootstrap::Types
 # The counter carries its key list (Dict has no key enumeration): addition
 # unions keys and keeps POSITIVE sums only — Python Counter semantics.
 class [final] LinCnt(lcKeys: List<String>, lcCounts: Dict<String, Int>)
-class [final] LinOut(loCnt: LinCnt, loErrs: List<PErr>)
+class [final] LinOut(loCnt: LinCnt, loErrs: Set<PErr>)
 # The env likewise: binding names (insertion order — discharge order matches
 # Python's dict iteration) plus their types.
 class [final] LinEnv(leNames: List<String>, leTypes: Dict<String, Spec>)
@@ -30,7 +30,7 @@ class [final] LinEnv(leNames: List<String>, leTypes: Dict<String, Spec>)
 fun emptyCnt(): LinCnt
   ret LinCnt(List<String>(), Dict<String, Int>())
 
-fun linZero(errs: List<PErr>): LinOut
+fun linZero(errs: Set<PErr>): LinOut
   ret LinOut(emptyCnt(), errs)
 
 fun emptyEnv(): LinEnv
@@ -69,30 +69,35 @@ fun cntDrop(c: LinCnt, key: String): LinCnt
   ret LinCnt(dropName(chain(c.lcKeys), key, List<String>()),
              remove(c.lcCounts, key))
 
-fun [tail] dropName(ks: Chain<String>, key: String,
+fun dropName(ks: Chain<String>, key: String,
                     acc: List<String>): List<String>
+  ret build<String >(dropNameB(ks, key, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] dropNameB(ks: Chain<String>, key: String,
+                    [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ks)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => l.value == key
-      ? dropName(l.next, key, acc)
-      : dropName(l.next, key, append(acc, l.value))
+      ? dropNameB(l.next, key, acc)
+      : dropNameB(l.next, key, push<String >(acc, l.value))
 
 # Per-branch merge: counts must AGREE per obligation; result is c1 unless
 # empty (Python: `c1 if c1 else c2`).
-fun cntMerge(c1: LinCnt, c2: LinCnt, lr: PLine, acc: List<PErr>): LinOut
+fun cntMerge(c1: LinCnt, c2: LinCnt, lr: PLine, acc: Set<PErr>): LinOut
   let errs = mergeErrs(chain(addNamesOnce(c1.lcKeys, chain(c2.lcKeys))),
                        c1, c2, lr, acc)
   ret LinOut(isEmpty(c1.lcKeys) ? c2 : c1, errs)
 
+
 fun [tail] mergeErrs(ks: Chain<String>, c1: LinCnt, c2: LinCnt, lr: PLine,
-                     acc: List<PErr>): List<PErr>
+                     acc: Set<PErr>): Set<PErr>
   ret match(ks)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => countOf(c1.lcCounts, l.value)
                        == countOf(c2.lcCounts, l.value)
       ? mergeErrs(l.next, c1, c2, lr, acc)
       : mergeErrs(l.next, c1, c2, lr,
-                  append(acc, PErr(lr, "linear value '" + rootOf(l.value)
+                  add(acc, PErr(lr, "linear value '" + rootOf(l.value)
                                        + "' is used inconsistently across branches")))
 
 fun rootOf(key: String): String
@@ -101,25 +106,25 @@ fun rootOf(key: String): String
 
 # ── entry point ─────────────────────────────────────────────────────────────
 
-fun checkLinearity(statements: List<PStmt>, r: Resolver): List<PErr>
+fun checkLinearity(statements: List<PStmt>, r: Resolver): Set<PErr>
   ret checkInstantiations(statements, r,
                           linToplevels(chain(statements), r, noErrs()))
 
 fun [tail] linToplevels(ss: Chain<PStmt>, r: Resolver,
-                        acc: List<PErr>): List<PErr>
+                        acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => linToplevels(l.next, r, linToplevel(l.value, r, acc))
 
 fun [tail] linInstMembers(ms: Chain<PStmt>, r: Resolver,
-                          acc: List<PErr>): List<PErr>
+                          acc: Set<PErr>): Set<PErr>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => linInstMembers(l.next, r, linFunction(f, None, r, acc))
       (o: PStmt) => linInstMembers(l.next, r, acc)
 
-fun linToplevel(st: PStmt, r: Resolver, acc: List<PErr>): List<PErr>
+fun linToplevel(st: PStmt, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(st)
     (f: PsFun)   => linFunction(f, None, r, acc)
     (c: PsClass) => linClass(c, r, acc)
@@ -127,7 +132,7 @@ fun linToplevel(st: PStmt, r: Resolver, acc: List<PErr>): List<PErr>
     (ti: PsTraitInstance) => linInstMembers(chain(ti.tiMembers), r, acc)
     (e2: PsEnum) => linEnum(e2, r, acc)
     (l: PsLet)   => carriesLinearity(l.lType, r)
-      ? append(acc, PErr(l.pslLine, "linear value not allowed in a global let"))
+      ? add(acc, PErr(l.pslLine, "linear value not allowed in a global let"))
       : acc
     (o: PStmt)   => acc
 
@@ -235,13 +240,13 @@ fun isLinearClassSpec(c: SClass, r: Resolver): Bool
 # generic argument of a NON-linear class. Inside a union is allowed.
 
 fun checkTypePosition(sp: Spec|None, lr: PLine, r: Resolver,
-                      acc: List<PErr>): List<PErr>
+                      acc: Set<PErr>): Set<PErr>
   ret match(sp)
     (s2: Spec) => typePosition(s2, lr, r, acc)
     ()         => acc
 
 fun typePosition(sp: Spec, lr: PLine, r: Resolver,
-                 acc: List<PErr>): List<PErr>
+                 acc: Set<PErr>): Set<PErr>
   ret match(sp)
     (cm: SCombination) => positionList(chain(cm.scTypes), lr, r, acc)
     (c: SClass)        => isLinearClassSpec(c, r)
@@ -254,25 +259,25 @@ fun typePosition(sp: Spec, lr: PLine, r: Resolver,
     (o: Spec)          => acc
 
 fun [tail] positionList(ms: Chain<Spec>, lr: PLine, r: Resolver,
-                        acc: List<PErr>): List<PErr>
+                        acc: Set<PErr>): Set<PErr>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => positionList(l.next, lr, r,
                                     typePosition(l.value, lr, r, acc))
 
 fun [tail] classArgPositions(as2: Chain<Spec>, lr: PLine, r: Resolver,
-                             acc: List<PErr>): List<PErr>
+                             acc: Set<PErr>): Set<PErr>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => classArgPositions(l.next, lr, r,
         typePosition(l.value, lr, r,
                      carriesLinearity(l.value, r)
-                       ? append(acc, PErr(lr,
+                       ? add(acc, PErr(lr,
                            "linear type not allowed as a generic type argument"))
                        : acc))
 
 fun [tail] entryPositions(es: Chain<SEntry>, lr: PLine, r: Resolver,
-                          acc: List<PErr>): List<PErr>
+                          acc: Set<PErr>): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => entryPositions(l.next, lr, r,
@@ -281,21 +286,21 @@ fun [tail] entryPositions(es: Chain<SEntry>, lr: PLine, r: Resolver,
 
 # ── declarations ────────────────────────────────────────────────────────────
 
-fun linEnum(e2: PsEnum, r: Resolver, acc: List<PErr>): List<PErr>
+fun linEnum(e2: PsEnum, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret enumFieldLin(chain(collectDataFields(e2)), e2.pseLine, r, acc)
 
 fun [tail] enumFieldLin(fs: Chain<SField>, lr: PLine, r: Resolver,
-                        acc: List<PErr>): List<PErr>
+                        acc: Set<PErr>): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => enumFieldLin(l.next, lr, r,
         checkTypePosition(l.value.sfType, lr, r,
                           carriesLinearity(l.value.sfType, r)
-                            ? append(acc, PErr(lr,
+                            ? add(acc, PErr(lr,
                                 "a linear value may not be stored in an enum"))
                             : acc))
 
-fun linClass(c: PsClass, r: Resolver, acc: List<PErr>): List<PErr>
+fun linClass(c: PsClass, r: Resolver, acc: Set<PErr>): Set<PErr>
   let isLin = hasAttr(c.cAttrs, "linear")
   let acc2 = classFieldLin(chain(classFields(c)), c, isLin, r, acc)
   let thisTy = isLin ? classThis(c) : None
@@ -305,20 +310,20 @@ fun classThis(c: PsClass): Spec|None
   ret thisType(c)
 
 fun [tail] classFieldLin(fs: Chain<PStmt>, c: PsClass, isLin: Bool,
-                         r: Resolver, acc: List<PErr>): List<PErr>
+                         r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => classFieldLin(l.next, c, isLin, r,
           checkTypePosition(let2.lType, let2.pslLine, r,
                             !isLin && carriesLinearity(let2.lType, r)
-                              ? append(acc, PErr(c.pscLine,
+                              ? add(acc, PErr(c.pscLine,
                                   "a class with a linear field must be declared [linear]"))
                               : acc))
       (o: PStmt)    => classFieldLin(l.next, c, isLin, r, acc)
 
 fun [tail] classMethodLin(ms: Chain<PStmt>, thisTy: Spec|None, r: Resolver,
-                          acc: List<PErr>): List<PErr>
+                          acc: Set<PErr>): Set<PErr>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -329,13 +334,13 @@ fun [tail] classMethodLin(ms: Chain<PStmt>, thisTy: Spec|None, r: Resolver,
 # ── functions ───────────────────────────────────────────────────────────────
 
 fun linFunction(f: PsFun, thisTy: Spec|None, r0: Resolver,
-                acc: List<PErr>): List<PErr>
+                acc: Set<PErr>): Set<PErr>
   let params = flattenParams(f.fParams)
   let acc2 = checkTypePosition(f.fRet, f.psfLine, r0,
                                paramPositions(chain(params), r0, acc))
   if hasAttr(f.fAttrs, "foreign")
     ret anyLinearSignature(chain(params), f.fRet, r0)
-      ? append(acc2, PErr(f.psfLine,
+      ? add(acc2, PErr(f.psfLine,
                           "[foreign] functions may not name a linear type"))
       : acc2
   ret match(f.fBody)
@@ -343,7 +348,7 @@ fun linFunction(f: PsFun, thisTy: Spec|None, r0: Resolver,
     ()         => acc2
 
 fun [tail] paramPositions(ps: Chain<PStmt>, r: Resolver,
-                          acc: List<PErr>): List<PErr>
+                          acc: Set<PErr>): Set<PErr>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -365,7 +370,7 @@ fun [tail] anyLinearSignature(ps: Chain<PStmt>, retTy: Spec|None,
 # env: {binding → type} for every linear obligation in scope. `[terminal]` on
 # the method opts out `this`; on a parameter, that parameter.
 fun linBody(f: PsFun, b: PExpr, params: List<PStmt>, thisTy: Spec|None,
-            r0: Resolver, acc: List<PErr>): List<PErr>
+            r0: Resolver, acc: Set<PErr>): Set<PErr>
   let env0 = match(thisTy)
     (tt: Spec) => hasAttr(f.fAttrs, "terminal")
       ? emptyEnv()
@@ -394,14 +399,14 @@ fun linearParam(let2: PsLet, r: Resolver): Bool
 
 # Check a function/lambda body: every linear binding discharged once.
 fun analyzeScope(b: PExpr, env: LinEnv, lr: PLine,
-                 bodyR: Resolver, r: Resolver, acc: List<PErr>): List<PErr>
+                 bodyR: Resolver, r: Resolver, acc: Set<PErr>): Set<PErr>
   let out = linCount(b, env, bodyR, acc)
   ret dischargeEnv(chain(env.leNames), env, out.loCnt.lcCounts, lr, r, true,
                    out.loErrs)
 
 fun [tail] dischargeEnv(ns: Chain<String>, env: LinEnv,
                         counts: Dict<String, Int>, lr: PLine, r: Resolver,
-                        isParam: Bool, acc: List<PErr>): List<PErr>
+                        isParam: Bool, acc: Set<PErr>): Set<PErr>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => dischargeEnv(l.next, env, counts, lr, r, isParam,
@@ -410,12 +415,12 @@ fun [tail] dischargeEnv(ns: Chain<String>, env: LinEnv,
 
 # Each obligation consumed exactly once. `isParam` adds the [terminal] hint.
 fun discharge(name: String, leaves: List<String>, counts: Dict<String, Int>,
-              lr: PLine, isParam: Bool, acc: List<PErr>): List<PErr>
+              lr: PLine, isParam: Bool, acc: Set<PErr>): Set<PErr>
   ret dischargeLoop(chain(leaves), name, counts, lr, isParam, acc)
 
 fun [tail] dischargeLoop(ls: Chain<String>, name: String,
                          counts: Dict<String, Int>, lr: PLine, isParam: Bool,
-                         acc: List<PErr>): List<PErr>
+                         acc: Set<PErr>): Set<PErr>
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => dischargeLoop(l.next, name, counts, lr, isParam,
@@ -424,13 +429,13 @@ fun [tail] dischargeLoop(ls: Chain<String>, name: String,
                                                    acc))
 
 fun dischargeOne2(key: String, name: String, counts: Dict<String, Int>,
-                  lr: PLine, isParam: Bool, acc: List<PErr>): List<PErr>
+                  lr: PLine, isParam: Bool, acc: Set<PErr>): Set<PErr>
   let n = countOf(counts, key)
   if n > 1
-    ret append(acc, PErr(lr, "linear value '" + name + "' is used "
+    ret add(acc, PErr(lr, "linear value '" + name + "' is used "
                              + String(n) + " times; must be used once"))
   if n == 0
-    ret append(acc, PErr(lr, "linear value '" + name
+    ret add(acc, PErr(lr, "linear value '" + name
                              + "' is never used; it must be consumed once"
                              + (isParam
                                 ? " (mark the parameter [terminal] if this is its terminus)"
@@ -450,7 +455,7 @@ fun countOf(counts: Dict<String, Int>, key: String): Int
 # ── the count flow analysis ─────────────────────────────────────────────────
 # Per-execution-path consumption of the env's obligations by an expression.
 
-fun [tail] linCount(x: PExpr, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
+fun [tail] linCount(x: PExpr, env: LinEnv, r: Resolver, acc: Set<PErr>): LinOut
   ret match(x)
     (nm: PeName)   => LinOut(countPath(x, env, r), acc)
     (d: PeDot)     => LinOut(countPath(x, env, r), acc)
@@ -471,13 +476,13 @@ fun [tail] linCount(x: PExpr, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
 
 # A method call `recv.method(args)` passes `recv` as `this`: count the
 # RECEIVER itself (counting the method-access dot would read as a borrow).
-fun countCall(c: PeCall, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
+fun countCall(c: PeCall, env: LinEnv, r: Resolver, acc: Set<PErr>): LinOut
   ret match(c.function)
     (d: PeDot) => linPair(d.base, c.parameter, env, r, acc)
     (o: PExpr) => linPair(c.function, c.parameter, env, r, acc)
 
 fun linPair(a: PExpr, b: PExpr, env: LinEnv, r: Resolver,
-            acc: List<PErr>): LinOut
+            acc: Set<PErr>): LinOut
   let o1 = linCount(a, env, r, acc)
   let o2 = linCount(b, env, r, o1.loErrs)
   ret LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
@@ -486,13 +491,13 @@ fun linPair(a: PExpr, b: PExpr, env: LinEnv, r: Resolver,
 # NamedExpressions inside field_args). Not [tail]: the counts sum on the way
 # back up; fieldArgs lists are tiny.
 fun linFieldArgs(fas: Chain<PFieldArg>, env: LinEnv, r: Resolver,
-                 acc: List<PErr>): LinOut
+                 acc: Set<PErr>): LinOut
   ret match(fas)
     (nil: ChainEnd) => linZero(acc)
     (l: ChainLink)  => linFaStep(l, env, r, acc)
 
 fun linFaStep(l: ChainLink<PFieldArg>, env: LinEnv, r: Resolver,
-              acc: List<PErr>): LinOut
+              acc: Set<PErr>): LinOut
   let o1 = linCount(l.value.faValue, env, r, acc)
   let o2 = linFieldArgs(l.next, env, r, o1.loErrs)
   ret LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
@@ -506,7 +511,7 @@ fun [tail] countEntries(es: Chain<PTupEnt>, env: LinEnv, r: Resolver,
                              LinOut(cntAdd(acc.loCnt, o.loCnt), o.loErrs))
 
 fun countTernary(te: PeTernary, env: LinEnv, r: Resolver,
-                 acc: List<PErr>): LinOut
+                 acc: Set<PErr>): LinOut
   let cond = linCount(te.condition, env, r, acc)
   let tb = linCount(te.trueResult, env, r, cond.loErrs)
   let fb = linCount(te.falseResult, env, r, tb.loErrs)
@@ -517,7 +522,7 @@ fun countTernary(te: PeTernary, env: LinEnv, r: Resolver,
 # env for its body, is discharged per arm, then popped so it doesn't leak
 # into the merge; arm counts pairwise-merge.
 fun countMatch(mt: PeMatch, env: LinEnv, r: Resolver,
-               acc: List<PErr>): LinOut
+               acc: Set<PErr>): LinOut
   let subj = linCount(mt.subject, env, r, acc)
   ret armCounts(chain(mt.arms), env, r,
                 LinOut(subj.loCnt, subj.loErrs), true, emptyCnt(),
@@ -535,7 +540,7 @@ fun [tail] armCounts(as2: Chain<PArm>, env: LinEnv, r: Resolver, subj: LinOut,
           |> (m) => armCounts(l.next, env, r, LinOut(subj.loCnt, m.loErrs),
                               false, m.loCnt, lr)
 
-fun oneArmCount(a: PArm, env: LinEnv, r: Resolver, acc: List<PErr>): LinOut
+fun oneArmCount(a: PArm, env: LinEnv, r: Resolver, acc: Set<PErr>): LinOut
   let bound = armBindsLinear(a, r)
   let armEnv = bound ? envPut(env, a.armName, armTypeOf(a)) : env
   let armR = a.armName != "" && a.armName != "_"
@@ -570,16 +575,16 @@ fun [tail] popObligations(ls: Chain<String>, name: String,
 # until an `if` whose branch early-returns — the continuation folds into the
 # falling-through branches and merges, never charged to a returned path.
 
-class [final] ScopeOut(soCnt: LinCnt, soErrs: List<PErr>,
+class [final] ScopeOut(soCnt: LinCnt, soErrs: Set<PErr>,
                        soBindings: List<PStmt>)
 
 fun countBlock(bk: PeBlock, env: LinEnv, r0: Resolver,
-               acc: List<PErr>): LinOut
+               acc: Set<PErr>): LinOut
   ret countStmtList(bk.blockStmts, bk.blockValue, env,
                     blockScope(bk.blockStmts, r0), r0, acc)
 
 fun countStmtList(stmts: List<PStmt>, trailing: PExpr|None, env: LinEnv,
-                  r: Resolver, r0: Resolver, acc: List<PErr>): LinOut
+                  r: Resolver, r0: Resolver, acc: Set<PErr>): LinOut
   let out = countSuffix(stmts, 0, env, r, r0, trailing, List<PStmt>(), acc)
   ret dischargeLocals(chain(out.soBindings), r0,
                       LinOut(out.soCnt, out.soErrs))
@@ -605,7 +610,7 @@ fun blockTerminates(stmts: List<PStmt>): Bool
 
 fun countSuffix(stmts: List<PStmt>, i: Int, env: LinEnv, r: Resolver,
                 r0: Resolver, trailing: PExpr|None, bindings: List<PStmt>,
-                acc: List<PErr>): ScopeOut
+                acc: Set<PErr>): ScopeOut
   ret match(nthOf(stmts, i))
     (st: PStmt) => suffixStmt(st, stmts, i, env, r, r0, trailing, bindings,
                               acc)
@@ -616,7 +621,7 @@ fun countSuffix(stmts: List<PStmt>, i: Int, env: LinEnv, r: Resolver,
 
 fun suffixStmt(st: PStmt, stmts: List<PStmt>, i: Int, env: LinEnv,
                r: Resolver, r0: Resolver, trailing: PExpr|None,
-               bindings: List<PStmt>, acc: List<PErr>): ScopeOut
+               bindings: List<PStmt>, acc: Set<PErr>): ScopeOut
   ret match(st)
     (f: PsFun) => suffixFun(f, stmts, i, env, r, r0, trailing, bindings, acc)
     (d: PsDestructure) => suffixDestructure(d, stmts, i, env, r, r0, trailing,
@@ -639,7 +644,7 @@ fun suffixStmt(st: PStmt, stmts: List<PStmt>, i: Int, env: LinEnv,
 # binding.
 fun suffixFun(f: PsFun, stmts: List<PStmt>, i: Int, env: LinEnv, r: Resolver,
               r0: Resolver, trailing: PExpr|None, bindings: List<PStmt>,
-              acc: List<PErr>): ScopeOut
+              acc: Set<PErr>): ScopeOut
   let acc2 = match(f.fBody)
     (b: PExpr) => checkCapture(b, env, f.psfLine, r0, acc)
     ()         => acc
@@ -649,7 +654,7 @@ fun suffixFun(f: PsFun, stmts: List<PStmt>, i: Int, env: LinEnv, r: Resolver,
 fun suffixDestructure(d: PsDestructure, stmts: List<PStmt>, i: Int,
                       env: LinEnv, r: Resolver, r0: Resolver,
                       trailing: PExpr|None, bindings: List<PStmt>,
-                      acc: List<PErr>): ScopeOut
+                      acc: Set<PErr>): ScopeOut
   let o = match(d.dDefault)
     (x: PExpr) => linCount(x, env, r, acc)
     ()         => linZero(acc)
@@ -673,7 +678,7 @@ fun [tail] growEnv(ts: Chain<PStmt>, r: Resolver, env: LinEnv,
 
 fun suffixLet(let2: PsLet, stmts: List<PStmt>, i: Int, env: LinEnv,
               r: Resolver, r0: Resolver, trailing: PExpr|None,
-              bindings: List<PStmt>, acc: List<PErr>): ScopeOut
+              bindings: List<PStmt>, acc: Set<PErr>): ScopeOut
   let acc2 = lazyLinearErrs(let2, env, r0, acc)
   let o = match(let2.lDefault)
     (x: PExpr) => linCount(x, env, r, acc2)
@@ -693,13 +698,13 @@ fun narrowLet(let2: PsLet): PStmt
 # PAYLOAD is the sound exception (claim protocol), otherwise the same capture
 # rule applies.
 fun lazyLinearErrs(let2: PsLet, env: LinEnv, r: Resolver,
-                   acc: List<PErr>): List<PErr>
+                   acc: Set<PErr>): Set<PErr>
   let deferred = hasAttr(let2.lAttrs, "lazy") || hasAttr(let2.lAttrs, "future")
   if !deferred
     ret acc
   let payloadLinear = carriesLinearity(let2.lType, r)
   let acc2 = payloadLinear && !hasAttr(let2.lAttrs, "future")
-    ? append(acc, PErr(let2.pslLine,
+    ? add(acc, PErr(let2.pslLine,
                        "[lazy] let '" + let2.lName + "' may not hold a "
                        + "linear value — the stub memoises across "
                        + "forces, so multiple reads would yield "
@@ -715,10 +720,10 @@ fun lazyLinearErrs(let2: PsLet, env: LinEnv, r: Resolver,
 # produced and dropped here leaks.
 fun suffixAction(a: PsAction, stmts: List<PStmt>, i: Int, env: LinEnv,
                  r: Resolver, r0: Resolver, trailing: PExpr|None,
-                 bindings: List<PStmt>, acc: List<PErr>): ScopeOut
+                 bindings: List<PStmt>, acc: Set<PErr>): ScopeOut
   let o = linCount(a.action, env, r, acc)
   let acc2 = exprIsLinear(a.action, r, r0)
-    ? append(o.loErrs, PErr(a.psaLine,
+    ? add(o.loErrs, PErr(a.psaLine,
                             "linear value is discarded; bind it and consume it"))
     : o.loErrs
   ret countSuffix(stmts, i + 1, env, r, r0, trailing, bindings, acc2)
@@ -732,7 +737,7 @@ fun exprIsLinear(x: PExpr, r: Resolver, r0: Resolver): Bool
 # continuation joins only the branches that fall through.
 fun suffixIf(i2: PsIf, stmts: List<PStmt>, i: Int, env: LinEnv, r: Resolver,
              r0: Resolver, trailing: PExpr|None, bindings: List<PStmt>,
-             acc: List<PErr>): ScopeOut
+             acc: Set<PErr>): ScopeOut
   let cond = linCount(i2.ifCond, env, r, acc)
   let tb = countStmtList(i2.ifTrue, None, env, blockScope(i2.ifTrue, r), r0,
                          cond.loErrs)
@@ -781,25 +786,25 @@ fun isPathPrefix(prefix: String, full: String): Bool
 # many times, so it may not capture an enclosing linear binding, and its own
 # linear params are its own scope's obligations.
 fun countLambda(lm: PeLambda, env: LinEnv, r: Resolver,
-                acc: List<PErr>): LinOut
+                acc: Set<PErr>): LinOut
   let acc2 = checkCapture(lm.lamBody, env, lm.pelLine, r, acc)
   ret linZero(checkLambdaScope(lm, r, acc2))
 
-fun checkLambdaScope(lm: PeLambda, r: Resolver, acc: List<PErr>): List<PErr>
+fun checkLambdaScope(lm: PeLambda, r: Resolver, acc: Set<PErr>): Set<PErr>
   let params = flattenParams(lm.lamParams)
   let env = paramEnv(chain(params), r, emptyEnv())
   ret analyzeScope(lm.lamBody, env, lm.pelLine,
                    localScope(params, r), r, acc)
 
 fun countParallel(pl: PeParallel, env: LinEnv, r: Resolver,
-                  acc: List<PErr>): LinOut
+                  acc: Set<PErr>): LinOut
   let acc2 = checkCapture(pl.parParams, env, pl.pepLine, r, acc)
   let o = linCount(pl.parParams, env, r, acc2)
   ret linZero(o.loErrs)
 
 # A blind name scan — sound because bindings carry path-unique names.
 fun checkCapture(b: PExpr, env: LinEnv, lr: PLine, r: Resolver,
-                 acc: List<PErr>): List<PErr>
+                 acc: Set<PErr>): Set<PErr>
   ret captureErrs(chain(sort(capturedIn(b, env))), lr, acc)
 
 fun capturedIn(b: PExpr, env: LinEnv): List<String>
@@ -814,28 +819,29 @@ fun [tail] capturedLoop(ns: Chain<String>, env: LinEnv,
       ? capturedLoop(l.next, env, addNameOnce(acc, l.value))
       : capturedLoop(l.next, env, acc)
 
+
 fun [tail] captureErrs(ns: Chain<String>, lr: PLine,
-                       acc: List<PErr>): List<PErr>
+                       acc: Set<PErr>): Set<PErr>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => captureErrs(l.next, lr,
-        append(acc, PErr(lr, "linear value '" + l.value
+        add(acc, PErr(lr, "linear value '" + l.value
                              + "' captured by a nested function or lambda")))
 
 # ── generic instantiation kind check ────────────────────────────────────────
 # A linear type argument may only bind a [linear] type parameter.
 
 fun checkInstantiations(statements: List<PStmt>, r: Resolver,
-                        acc: List<PErr>): List<PErr>
+                        acc: Set<PErr>): Set<PErr>
   ret instStmts(chain(statements), r, acc)
 
 fun [tail] instStmts(ss: Chain<PStmt>, r: Resolver,
-                     acc: List<PErr>): List<PErr>
+                     acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => instStmts(l.next, r, instStmt(l.value, r, acc))
 
-fun instStmt(st: PStmt, r: Resolver, acc: List<PErr>): List<PErr>
+fun instStmt(st: PStmt, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(st)
     (f: PsFun)         => instExprOpt(f.fBody, r,
                             instSpecsIn(chain(f.fWheres), r,
@@ -859,7 +865,7 @@ fun instStmt(st: PStmt, r: Resolver, acc: List<PErr>): List<PErr>
                                       instExpr(i.ifCond, r, acc)))
     (o: PStmt)         => acc
 
-fun instExpr(x: PExpr, r: Resolver, acc: List<PErr>): List<PErr>
+fun instExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(x)
     (nm: PeName)   => isEmpty(nm.refTypeParams)
       ? acc
@@ -885,14 +891,14 @@ fun instExpr(x: PExpr, r: Resolver, acc: List<PErr>): List<PErr>
     (o: PExpr)     => acc
 
 fun [tail] instEntries(es: Chain<PTupEnt>, r: Resolver,
-                       acc: List<PErr>): List<PErr>
+                       acc: Set<PErr>): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => instEntries(l.next, r,
                                    instExpr(l.value.tupValue, r, acc))
 
 fun [tail] instArms(as2: Chain<PArm>, r: Resolver,
-                    acc: List<PErr>): List<PErr>
+                    acc: Set<PErr>): Set<PErr>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => instArms(l.next, r,
@@ -900,17 +906,17 @@ fun [tail] instArms(as2: Chain<PArm>, r: Resolver,
                           instExpr(l.value.armBody, r,
                                    instSpecOpt(l.value.armType, r, acc))))
 
-fun instExprOpt(x: PExpr|None, r: Resolver, acc: List<PErr>): List<PErr>
+fun instExprOpt(x: PExpr|None, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(x)
     (e2: PExpr) => instExpr(e2, r, acc)
     ()          => acc
 
-fun instSpecOpt(sp: Spec|None, r: Resolver, acc: List<PErr>): List<PErr>
+fun instSpecOpt(sp: Spec|None, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(sp)
     (s2: Spec) => instSpec(s2, r, acc)
     ()         => acc
 
-fun instSpec(sp: Spec, r: Resolver, acc: List<PErr>): List<PErr>
+fun instSpec(sp: Spec, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(sp)
     (c: SClass) => instSpecsIn(chain(c.scParams), r,
                                isEmpty(c.scParams)
@@ -929,33 +935,33 @@ fun instSpec(sp: Spec, r: Resolver, acc: List<PErr>): List<PErr>
     (o: Spec)          => acc
 
 fun [tail] instSpecsIn(ss: Chain<Spec>, r: Resolver,
-                       acc: List<PErr>): List<PErr>
+                       acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => instSpecsIn(l.next, r, instSpec(l.value, r, acc))
 
 fun [tail] instSpecEntries(es: Chain<SEntry>, r: Resolver,
-                           acc: List<PErr>): List<PErr>
+                           acc: Set<PErr>): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => instSpecEntries(l.next, r,
                                        instSpecOpt(l.value.seType, r, acc))
 
 fun instCheck(name: String, args: List<Spec>, lr: PLine, isType: Bool,
-              r: Resolver, acc: List<PErr>): List<PErr>
+              r: Resolver, acc: Set<PErr>): Set<PErr>
   let found = isType ? findType(r, name) : findData(r, name)
   ret match(soleItem(found))
     (f: Found) => instArgs(chain(stmtGens(f.fStmt)), chain(args), lr, r, acc)
     ()         => acc
 
 fun [tail] instArgs(gs: Chain<PGen>, as2: Chain<Spec>, lr: PLine, r: Resolver,
-                    acc: List<PErr>): List<PErr>
+                    acc: Set<PErr>): Set<PErr>
   ret match(gs)
     (nil: ChainEnd) => acc
     (g2: ChainLink) => match(as2)
       (nil2: ChainEnd) => acc
       (a: ChainLink)   => instArgs(g2.next, a.next, lr, r,
           carriesLinearity(a.value, r) && !hasAttr(g2.value.genAttrs, "linear")
-            ? append(acc, PErr(lr,
+            ? add(acc, PErr(lr,
                 "linear type cannot be passed to an unrestricted type parameter"))
             : acc)

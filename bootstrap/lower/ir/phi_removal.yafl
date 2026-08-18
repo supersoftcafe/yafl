@@ -162,14 +162,18 @@ fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int): Bool
     (b: Bool) => b
     ()        => false
 
-fun [tail] prRebuildLoop(os: Chain<Op>, out: PrOut, removedSet: Dict<Int, Bool>,
+fun prRebuildLoop(os: Chain<Op>, out: PrOut, removedSet: Dict<Int, Bool>,
                          i: Int, acc: List<Op>): List<Op>
+  ret build<Op >(prRebuildLoopB(os, out, removedSet, i, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+
+fun [tail] prRebuildLoopB(os: Chain<Op>, out: PrOut, removedSet: Dict<Int, Bool>,
+                         i: Int, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => prIsRemoved(removedSet, i)
-      ? prRebuildLoop(l.next, out, removedSet, i + 1, acc)
-      : prRebuildLoop(l.next, out, removedSet, i + 1,
-                      append(acc, prApplyRename(l.value, i, out.proRenames)))
+      ? prRebuildLoopB(l.next, out, removedSet, i + 1, acc)
+      : prRebuildLoopB(l.next, out, removedSet, i + 1,
+                      push<Op >(acc, prApplyRename(l.value, i, out.proRenames)))
 
 fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
   ret fold(renames, op, (o: Op, r: PrRename) => r.prrIdx == i

@@ -149,10 +149,13 @@ fun [tail] emEntryLabelJumps(st: GEmit, es: Chain<GEntry>, idx: Int, k: Int, bod
 fun phiSourcesOf(es: List<GEntry>, idx: Int): List<OpPhiSource>
   ret phiSourcesLoop(chain(es), idx, 0, List<OpPhiSource>())
 
-fun [tail] phiSourcesLoop(es: Chain<GEntry>, idx: Int, k: Int, acc: List<OpPhiSource>): List<OpPhiSource>
+fun phiSourcesLoop(es: Chain<GEntry>, idx: Int, k: Int, acc: List<OpPhiSource>): List<OpPhiSource>
+  ret build<OpPhiSource >(phiSourcesLoopB(es, idx, k, _pushChain<OpPhiSource >(builder<OpPhiSource >(), chain<OpPhiSource >(acc))))
+
+fun [tail] phiSourcesLoopB(es: Chain<GEntry>, idx: Int, k: Int, [terminal] acc: ListBuilder<OpPhiSource >): ListBuilder<OpPhiSource >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => phiSourcesLoop(l.next, idx, k + 1, append(acc, OpPhiSource(entryLabel(idx, k), l.value.geValue)))
+    (l: ChainLink)  => phiSourcesLoopB(l.next, idx, k + 1, push<OpPhiSource >(acc, OpPhiSource(entryLabel(idx, k), l.value.geValue)))
 
 # ── the arm's own `if` guard (private in Python: `__guard`) ─────────────────
 # Evaluated after the binding: a False guard falls through to the next arm.

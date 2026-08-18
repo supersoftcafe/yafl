@@ -22,12 +22,15 @@ import Bootstrap::StdlibCandidates
 fun liftCapturedCalls(statements: List<PStmt>): List<PStmt>
   ret llTop(chain(statements), List<PStmt>())
 
-fun [tail] llTop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun llTop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(llTopB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] llTopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => llTop(l.next, append(acc, liftInFunction(f)))
-      (o: PStmt) => llTop(l.next, append(acc, l.value))
+      (f: PsFun) => llTopB(l.next, push<PStmt >(acc, liftInFunction(f)))
+      (o: PStmt) => llTopB(l.next, push<PStmt >(acc, l.value))
 
 # Lift what qualifies inside f's own body (deepest nesting first: a nested
 # function's own helpers lift before it is itself considered).
@@ -53,21 +56,27 @@ fun llInBlock(f0: PsFun, bk0: PeBlock): PStmt
     (f2: PsFun) => llAnalyse(f2, nested)
     (o: PStmt)  => rebuilt
 
-fun [tail] llDeepFirst(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun llDeepFirst(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(llDeepFirstB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] llDeepFirstB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (nf: PsFun) => llDeepFirst(l.next, append(acc, liftInFunction(nf)))
-      (o: PStmt)  => llDeepFirst(l.next, append(acc, l.value))
+      (nf: PsFun) => llDeepFirstB(l.next, push<PStmt >(acc, liftInFunction(nf)))
+      (o: PStmt)  => llDeepFirstB(l.next, push<PStmt >(acc, l.value))
 
 # ALL nested fns count here (Python gates on FunctionStatement only, not on
 # block-bodied ones like the hoist does).
-fun [tail] hoNestedFns2(ss: Chain<PStmt>, acc: List<PsFun>): List<PsFun>
+fun hoNestedFns2(ss: Chain<PStmt>, acc: List<PsFun>): List<PsFun>
+  ret build<PsFun >(hoNestedFns2B(ss, _pushChain<PsFun >(builder<PsFun >(), chain<PsFun >(acc))))
+
+fun [tail] hoNestedFns2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PsFun >): ListBuilder<PsFun >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (nf: PsFun) => hoNestedFns2(l.next, append(acc, nf))
-      (o: PStmt)  => hoNestedFns2(l.next, acc)
+      (nf: PsFun) => hoNestedFns2B(l.next, push<PsFun >(acc, nf))
+      (o: PStmt)  => hoNestedFns2B(l.next, acc)
 
 class [final] LiftCtx(lcNames: List<String>, lcExtras: List<List<String>>)
 
@@ -90,13 +99,18 @@ fun llAnalyse(f: PsFun, nested: List<PsFun>): PStmt
     ret f
   ret llStmt(f, ctx, paramLets)
 
-fun [tail] llCapturesOf(fs: Chain<PsFun>, siblingNames: List<String>,
+fun llCapturesOf(fs: Chain<PsFun>, siblingNames: List<String>,
                         paramNames: List<String>,
                         acc: List<List<String>>): List<List<String>>
+  ret build<List<String> >(llCapturesOfB(fs, siblingNames, paramNames, _pushChain<List<String> >(builder<List<String> >(), chain<List<String> >(acc))))
+
+fun [tail] llCapturesOfB(fs: Chain<PsFun>, siblingNames: List<String>,
+                        paramNames: List<String>,
+                        [terminal] acc: ListBuilder<List<String> >): ListBuilder<List<String> >
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => llCapturesOf(l.next, siblingNames, paramNames,
-        append(acc, hoIntersect(chain(freeRefs(l.value, siblingNames)),
+    (l: ChainLink)  => llCapturesOfB(l.next, siblingNames, paramNames,
+        push<List<String> >(acc, hoIntersect(chain(freeRefs(l.value, siblingNames)),
                                 paramNames, List<String>())))
 
 # Per-SCC solve, in reverse-topo order: the threaded set is the members'
@@ -268,7 +282,7 @@ fun [tail] llLiftScc(ns: Chain<String>, scc: List<String>, solved: LlSolved,
     (l: ChainLink)  => llLiftScc(l.next, scc, solved,
         LiftCtx(append(acc.lcNames, l.value),
                 append(acc.lcExtras,
-                       sortNamesAsc(chain(threaded), List<String>()))))
+                       sort<String>(threaded))))
 
 fun llFirstOf(scc: List<String>): String
   ret match(chain(scc))
@@ -455,13 +469,17 @@ fun llWithParams(st: PStmt, extras: List<String>,
       (o: PStmt)         => f
     (o2: PStmt) => st
 
-fun [tail] llParamCopies(ns: Chain<String>, paramLets: List<PStmt>,
+fun llParamCopies(ns: Chain<String>, paramLets: List<PStmt>,
                          acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(llParamCopiesB(ns, paramLets, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] llParamCopiesB(ns: Chain<String>, paramLets: List<PStmt>,
+                         [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(llParamByName(chain(paramLets), l.value))
-      (p: PStmt) => llParamCopies(l.next, paramLets, append(acc, p))
-      ()         => llParamCopies(l.next, paramLets, acc)
+      (p: PStmt) => llParamCopiesB(l.next, paramLets, push<PStmt >(acc, p))
+      ()         => llParamCopiesB(l.next, paramLets, acc)
 
 fun [tail] llParamByName(ps: Chain<PStmt>, name: String): PStmt|None
   ret match(ps)
@@ -470,12 +488,16 @@ fun [tail] llParamByName(ps: Chain<PStmt>, name: String): PStmt|None
       ? l.value
       : llParamByName(l.next, name)
 
-fun [tail] llStmts(ss: Chain<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>,
+fun llStmts(ss: Chain<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>,
                    acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(llStmtsB(ss, ctx, paramLets, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] llStmtsB(ss: Chain<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>,
+                   [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => llStmts(l.next, ctx, paramLets,
-                               append(acc, llStmt(l.value, ctx, paramLets)))
+    (l: ChainLink)  => llStmtsB(l.next, ctx, paramLets,
+                               push<PStmt >(acc, llStmt(l.value, ctx, paramLets)))
 
 fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>): PExpr|None
   ret match(x)
@@ -548,35 +570,51 @@ fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
       (o: PExpr)   => rebuilt
     (o2: PExpr)  => rebuilt
 
-fun [tail] llExtraEnts(ns: Chain<String>, lr: PLine,
+fun llExtraEnts(ns: Chain<String>, lr: PLine,
                        acc: List<PTupEnt>): List<PTupEnt>
+  ret build<PTupEnt >(llExtraEntsB(ns, lr, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+
+fun [tail] llExtraEntsB(ns: Chain<String>, lr: PLine,
+                       [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
   ret match(ns)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => llExtraEnts(l.next, lr,
-        append(acc, PTupEnt("", false,
+    (l: ChainLink)  => llExtraEntsB(l.next, lr,
+        push<PTupEnt >(acc, PTupEnt("", false,
                             PeName(l.value, List<Spec>(), lr, None))))
 
-fun [tail] llExprs(es: Chain<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>,
+fun llExprs(es: Chain<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>,
                    acc: List<PExpr>): List<PExpr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => llExprs(l.next, ctx, paramLets,
-                               append(acc, llExpr(l.value, ctx, paramLets)))
+  ret build<PExpr >(llExprsB(es, ctx, paramLets, _pushChain<PExpr >(builder<PExpr >(), chain<PExpr >(acc))))
 
-fun [tail] llEnts(es: Chain<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
-                  acc: List<PTupEnt>): List<PTupEnt>
+fun [tail] llExprsB(es: Chain<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>,
+                   [terminal] acc: ListBuilder<PExpr >): ListBuilder<PExpr >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => llEnts(l.next, ctx, paramLets,
-        append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
+    (l: ChainLink)  => llExprsB(l.next, ctx, paramLets,
+                               push<PExpr >(acc, llExpr(l.value, ctx, paramLets)))
+
+fun llEnts(es: Chain<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
+                  acc: List<PTupEnt>): List<PTupEnt>
+  ret build<PTupEnt >(llEntsB(es, ctx, paramLets, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+
+fun [tail] llEntsB(es: Chain<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
+                  [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => llEntsB(l.next, ctx, paramLets,
+        push<PTupEnt >(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                             llExpr(l.value.tupValue, ctx, paramLets))))
 
-fun [tail] llArms(as2: Chain<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
+fun llArms(as2: Chain<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
                   acc: List<PArm>): List<PArm>
+  ret build<PArm >(llArmsB(as2, ctx, paramLets, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+
+fun [tail] llArmsB(as2: Chain<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
+                  [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
   ret match(as2)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => llArms(l.next, ctx, paramLets,
-        append(acc, PArm(l.value.armName, l.value.armType,
+    (l: ChainLink)  => llArmsB(l.next, ctx, paramLets,
+        push<PArm >(acc, PArm(l.value.armName, l.value.armType,
                          llExpr(l.value.armBody, ctx, paramLets),
                          l.value.armLiterals,
                          llExprOpt(l.value.armGuard, ctx, paramLets),

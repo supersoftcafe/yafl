@@ -15,23 +15,23 @@ enum Chain<T>
   enum ChainLink(value: T, next: Chain<T>)
 
 
-# Public list: front stores elements in traversal order,
-# rear stores elements in reverse-append order.
-# Invariant: when non-empty, front is always non-empty.
+# Public list: ONE chain, in traversal order.
+#
+# There was a rear chain, holding appended elements in reverse. It made
+# append O(1), and it made every walk pay to put the elements back in order —
+# `chain()` materialised front ++ reverse(rear), and map/filter/fold each
+# reversed too. That normalisation was the ONLY reason _chainReverse existed.
+#
+# A List is now constructed in the order it will be walked, so walking it is
+# just walking it. Build with ListBuilder (in order, O(1) per push) or prepend
+# (the cons). `append` survives as a convenience and is O(n): it rebuilds.
+# Reach for a builder in a loop.
 enum List<T>
   enum ListEmpty()
-  enum ListFull(front: Chain<T>, rear: Chain<T>)
+  enum ListFull(front: Chain<T>)
 
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
-
-# [tail]: tail-recursive, so it must lower to a loop — a long list would otherwise
-# recurse on the C stack (the async hot path runs synchronous recursion there).
-fun [tail] _chainReverse<T>(src: Chain<T>, acc: Chain<T>): Chain<T>
-  ret match(src)
-    (nil: ChainEnd) => acc
-    (c: ChainLink)  => _chainReverse<T>(c.next, ChainLink<T>(c.value, acc))
-
 
 fun _chainHead<T>(n: Chain<T>): T|None
   ret match(n)
@@ -39,15 +39,11 @@ fun _chainHead<T>(n: Chain<T>): T|None
     (c: ChainLink)  => c.value
 
 
-# Normalize: if new front is empty and rear is non-empty, rotate rear → front.
-fun _listFromChains<T>(front: Chain<T>, rear: Chain<T>): List<T>
-  fun whenEmpty(r: Chain<T>): List<T>
-    ret match(r)
-      (rnil: ChainEnd) => ListEmpty<T>()
-      (rc: ChainLink)  => ListFull<T>(_chainReverse<T>(r, ChainEnd<T>()), ChainEnd<T>())
-  ret match(front)
-    (c: ChainLink)  => ListFull<T>(front, rear)
-    (nil: ChainEnd) => whenEmpty(rear)
+# A chain as a List. O(1) — the chain IS the list.
+fun _listOf<T>(c: Chain<T>): List<T>
+  ret match(c)
+    (nil: ChainEnd) => ListEmpty<T>()
+    (l: ChainLink)  => ListFull<T>(c)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -61,19 +57,14 @@ fun List<T>(): List<T>
 # the reversed rear becomes the tail and the front is copied onto it (≤ n
 # cells, one-off) — after which the walk itself allocates nothing.
 fun chain<T>(l: List<T>): Chain<T>
-  fun whole(front: Chain<T>, rear: Chain<T>): Chain<T>
-    ret match(rear)
-      (nil: ChainEnd) => front
-      (rc: ChainLink) => _chainReverse<T>(_chainReverse<T>(front, ChainEnd<T>()),
-                                          _chainReverse<T>(rear, ChainEnd<T>()))
   ret match(l)
     (e: ListEmpty) => ChainEnd<T>()
-    (fl: ListFull) => whole(fl.front, fl.rear)
+    (fl: ListFull) => fl.front
 
 
 # A List over an existing chain: O(1), the chain becomes the front.
 fun List<T>(c: Chain<T>): List<T>
-  ret _listFromChains<T>(c, ChainEnd<T>())
+  ret _listOf<T>(c)
 
 
 # Allocation-free uncons: the first element (None when exhausted) and the
@@ -98,16 +89,15 @@ fun chainLength<T>(c: Chain<T>): Int
 
 # Add element to the front: O(1)
 fun prepend<T>(x: T, l: List<T>): List<T>
-  ret match(l)
-    (e: ListEmpty) => ListFull<T>(ChainLink<T>(x, ChainEnd<T>()), ChainEnd<T>())
-    (fl: ListFull) => ListFull<T>(ChainLink<T>(x, fl.front), fl.rear)
+  ret ListFull<T>(ChainLink<T>(x, chain<T>(l)))
 
 
-# Add element to the back: O(1)
+# Add element to the back: O(n), because it rebuilds. A list is stored in the
+# order it is walked, so there is nowhere cheap to put a new last element.
+# Appending in a loop is therefore O(n^2) — use a ListBuilder, which pushes in
+# order for O(1), or prepend if the order suits.
 fun append<T>(l: List<T>, x: T): List<T>
-  ret match(l)
-    (e: ListEmpty) => ListFull<T>(ChainLink<T>(x, ChainEnd<T>()), ChainEnd<T>())
-    (fl: ListFull) => ListFull<T>(fl.front, ChainLink<T>(x, fl.rear))
+  ret build<T>(push<T>(_pushChain<T>(builder<T>(), chain<T>(l)), x))
 
 
 fun head<T>(l: List<T>): T|None
@@ -117,13 +107,9 @@ fun head<T>(l: List<T>): T|None
 
 
 fun tail<T>(l: List<T>): List<T>
-  fun tailFull(front: Chain<T>, rear: Chain<T>): List<T>
-    ret match(front)
-      (nil: ChainEnd) => ListEmpty<T>()
-      (c: ChainLink)  => _listFromChains<T>(c.next, rear)
-  ret match(l)
-    (e: ListEmpty) => ListEmpty<T>()
-    (fl: ListFull) => tailFull(fl.front, fl.rear)
+  ret match(chain<T>(l))
+    (nil: ChainEnd) => ListEmpty<T>()
+    (c: ChainLink)  => _listOf<T>(c.next)
 
 
 # O(1) emptiness test. There is deliberately no `length`: a list is a sequence,
@@ -147,29 +133,16 @@ fun last<T>(l: List<T>): T|None
       (c: ChainLink)  => match(c.next)
         (next: ChainLink) => lastNode(c.next)
         (e: ChainEnd)     => c.value
-  ret match(l)
-    (e: ListEmpty) => None
-    (fl: ListFull) => match(fl.rear)
-      (c: ChainLink)  => c.value
-      (nil: ChainEnd) => lastNode(fl.front)
+  ret lastNode(chain<T>(l))
 
 
 # Concatenate two lists, preserving order: every element of `a` then every
 # element of `b`. O(length b) — each of b's elements is appended onto `a`.
-# Fold in REVERSE order (newest first) — no rear reversal: `rear` is stored
-# newest-first, so the walk visits it as-is; only the front (one element for
-# append-built lists) pays a small reversal. For order-invisible walks
-# (equality, uid spelling, membership) this replaces fold-over-chain(l) and
-# its O(n) reversal per call.
-fun foldRev<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
-  fun [tail] go(c: Chain<T>, acc: U): U
-    ret match(c)
-      (nil: ChainEnd) => acc
-      (c2: ChainLink) => go(c2.next, f(acc, c2.value))
-  ret match(l)
-    (e: ListEmpty) => init
-    (fl: ListFull) => go(_chainReverse<T>(fl.front, ChainEnd<T>()),
-                         go(fl.rear, init))
+# foldRev is GONE. It existed to walk a list newest-first without paying for
+# the rear's reversal; with one in-order chain there is no cheap reverse walk,
+# and a function whose whole purpose is "these elements, backwards" is the
+# thing this design set out to remove. Fold in order, or name an ordering
+# with sortBy.
 
 fun concat<T>(a: List<T>, b: List<T>): List<T>
   ret build<T>(_pushChain<T>(_pushChain<T>(builder<T>(), chain<T>(a)), chain<T>(b)))
@@ -234,38 +207,34 @@ fun flatMap<T,U>(l: List<T>, f: (:T): List<U>): List<U>
 
 
 
-# map/filter run on fold + append (concat's idiom): the per-element ChainLink
-# recursion put one C frame on the stack per element and overflowed a standard
-# 8MB stack on compiler-sized lists (an -O3 mega-function's label index).
-# fold is [tail]; append is amortised O(1); order preserved by construction.
-# map/filter walk in REVERSE (rear as stored, then the reversed front) and
-# PREPEND-build: the last element prepended is the first of the list, so the
-# result comes out in forward order as a FRONT-NORMAL list — later chain()
-# on it is free. Zero rear reversals; the only allocations are the result
-# links; [tail] walks throughout.
+# map/filter walk FORWARD and push into a ListBuilder, so the result is built
+# in the order it will be read. They used to walk in reverse — rear as stored,
+# then the reversed front — and prepend, which arrived at forward order the
+# long way round; with one in-order chain there is no rear to walk and nothing
+# to reverse.
+#
+# Both are [tail] over the chain: per-element ChainLink recursion put one C
+# frame on the stack per element and overflowed a standard 8MB stack on
+# compiler-sized lists (an -O3 mega-function's label index).
 fun map<T,U>(l: List<T>, f: (:T): U): List<U>
-  fun [tail] go(c: Chain<T>, acc: Chain<U>): Chain<U>
-    ret match(c)
-      (nil: ChainEnd) => acc
-      (c2: ChainLink) => go(c2.next, ChainLink<U>(f(c2.value), acc))
-  ret match(l)
-    (e: ListEmpty) => ListEmpty<U>()
-    (fl: ListFull) => ListFull<U>(
-        go(_chainReverse<T>(fl.front, ChainEnd<T>()), go(fl.rear, ChainEnd<U>())),
-        ChainEnd<U>())
+  ret build<U>(_mapInto<T,U>(builder<U>(), chain<T>(l), f))
+
+fun [tail] _mapInto<T,U>([terminal] b: ListBuilder<U>, c: Chain<T>,
+                         f: (:T): U): ListBuilder<U>
+  ret match(c)
+    (nil: ChainEnd) => b
+    (l: ChainLink)  => _mapInto<T,U>(push<U>(b, f(l.value)), l.next, f)
 
 
 fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
-  fun [tail] go(c: Chain<T>, acc: Chain<T>): Chain<T>
-    ret match(c)
-      (nil: ChainEnd) => acc
-      (c2: ChainLink) => f(c2.value) ? go(c2.next, ChainLink<T>(c2.value, acc))
-                                     : go(c2.next, acc)
-  ret match(l)
-    (e: ListEmpty) => ListEmpty<T>()
-    (fl: ListFull) => _listFromChains<T>(
-        go(_chainReverse<T>(fl.front, ChainEnd<T>()), go(fl.rear, ChainEnd<T>())),
-        ChainEnd<T>())
+  ret build<T>(_filterInto<T>(builder<T>(), chain<T>(l), f))
+
+fun [tail] _filterInto<T>([terminal] b: ListBuilder<T>, c: Chain<T>,
+                          f: (:T): Bool): ListBuilder<T>
+  ret match(c)
+    (nil: ChainEnd) => b
+    (l: ChainLink)  => _filterInto<T>(f(l.value) ? push<T>(b, l.value) : b,
+                                      l.next, f)
 
 
 fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
@@ -273,9 +242,7 @@ fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
     ret match(n)
       (nil: ChainEnd) => acc
       (c: ChainLink)  => foldNode(c.next, f(acc, c.value))
-  ret match(l)
-    (e: ListEmpty) => init
-    (fl: ListFull) => foldNode(_chainReverse<T>(fl.rear, ChainEnd<T>()), foldNode(fl.front, init))
+  ret foldNode(chain<T>(l), init)
 
 
 # Index of the first element satisfying `pred`, or None when no element
@@ -451,7 +418,7 @@ fun push<T>([terminal] b: ListBuilder<T>, x: T): ListBuilder<T>
 fun build<T>([terminal] b: ListBuilder<T>): List<T>
   ret match(b._tail)
     (t2: ChainLink) => __builtin_op__<bool>("list_builder_seal", t2)
-      ? ListFull<T>(b._head, ChainEnd<T>())
+      ? ListFull<T>(b._head)
       : ListEmpty<T>()   # unreachable: seal always succeeds; keeps the call live
     (nil: ChainEnd)  => ListEmpty<T>()
 

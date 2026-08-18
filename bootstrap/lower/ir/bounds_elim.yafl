@@ -297,14 +297,18 @@ class [final] BeLabelAt(blName: String, blIndex: Int)
 fun beLabelIndex(ops: List<Op>): List<BeLabelAt>
   ret beLabelLoop(chain(ops), 0, List<BeLabelAt>())
 
-fun [tail] beLabelLoop(ops: Chain<Op>, i: Int,
+fun beLabelLoop(ops: Chain<Op>, i: Int,
                        acc: List<BeLabelAt>): List<BeLabelAt>
+  ret build<BeLabelAt >(beLabelLoopB(ops, i, _pushChain<BeLabelAt >(builder<BeLabelAt >(), chain<BeLabelAt >(acc))))
+
+fun [tail] beLabelLoopB(ops: Chain<Op>, i: Int,
+                       [terminal] acc: ListBuilder<BeLabelAt >): ListBuilder<BeLabelAt >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => beLabelLoop(l.next, i + 1,
-                                   append(acc, BeLabelAt(lb.labelName, i)))
-      (o: Op)       => beLabelLoop(l.next, i + 1, acc)
+      (lb: OpLabel) => beLabelLoopB(l.next, i + 1,
+                                   push<BeLabelAt >(acc, BeLabelAt(lb.labelName, i)))
+      (o: Op)       => beLabelLoopB(l.next, i + 1, acc)
 
 fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String): Int|None
   ret match(ls)
@@ -316,18 +320,22 @@ fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String): Int|None
 fun beLoopRegions(ops: List<Op>, labels: List<BeLabelAt>): List<BeRegion>
   ret beRegionLoop(chain(ops), 0, labels, List<BeRegion>())
 
-fun [tail] beRegionLoop(ops: Chain<Op>, i: Int, labels: List<BeLabelAt>,
+fun beRegionLoop(ops: Chain<Op>, i: Int, labels: List<BeLabelAt>,
                         acc: List<BeRegion>): List<BeRegion>
+  ret build<BeRegion >(beRegionLoopB(ops, i, labels, _pushChain<BeRegion >(builder<BeRegion >(), chain<BeRegion >(acc))))
+
+fun [tail] beRegionLoopB(ops: Chain<Op>, i: Int, labels: List<BeLabelAt>,
+                        [terminal] acc: ListBuilder<BeRegion >): ListBuilder<BeRegion >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (j: OpJump) => match(beLabelAt(chain(labels), j.jumpName))
         (at: Int) => at < i
-          ? beRegionLoop(l.next, i + 1, labels,
-                         append(acc, BeRegion(at, i)))
-          : beRegionLoop(l.next, i + 1, labels, acc)
-        ()        => beRegionLoop(l.next, i + 1, labels, acc)
-      (o: Op)     => beRegionLoop(l.next, i + 1, labels, acc)
+          ? beRegionLoopB(l.next, i + 1, labels,
+                         push<BeRegion >(acc, BeRegion(at, i)))
+          : beRegionLoopB(l.next, i + 1, labels, acc)
+        ()        => beRegionLoopB(l.next, i + 1, labels, acc)
+      (o: Op)     => beRegionLoopB(l.next, i + 1, labels, acc)
 
 # (induction_id, bound_id) pairs proven `induction < bound` inside the
 # region's body. The key question per guard is which truth value of its
@@ -464,14 +472,19 @@ fun beApplyRegion(f: CgFunction, region: BeRegion, defs: List<BeDefEntry>,
                                      defs, stores, List<Op>()),
                      f.fnStackVars)
 
-fun [tail] beRewriteOps(ops: Chain<Op>, i: Int, region: BeRegion,
+fun beRewriteOps(ops: Chain<Op>, i: Int, region: BeRegion,
                         proven: List<BeProof>, defs: List<BeDefEntry>,
                         stores: List<BeStore>, acc: List<Op>): List<Op>
+  ret build<Op >(beRewriteOpsB(ops, i, region, proven, defs, stores, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+
+fun [tail] beRewriteOpsB(ops: Chain<Op>, i: Int, region: BeRegion,
+                        proven: List<BeProof>, defs: List<BeDefEntry>,
+                        stores: List<BeStore>, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(ops)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => beRewriteOps(l.next, i + 1, region, proven, defs,
+    (l: ChainLink)  => beRewriteOpsB(l.next, i + 1, region, proven, defs,
                                     stores,
-                                    append(acc, i >= region.brLo
+                                    push<Op >(acc, i >= region.brLo
                                                 && i <= region.brHi
                                       ? beRewriteOp(l.value, proven, defs,
                                                     stores)

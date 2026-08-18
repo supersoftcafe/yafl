@@ -28,9 +28,9 @@ import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
-fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: List<PErr>, lhChanged: Bool)
+fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PErr>, lhChanged: Bool)
   let out = lhStmtsLoop(chain(statements), List<String>(),
-                        (List<PStmt>(), List<PErr>(), false))
+                        (List<PStmt>(), Set<PErr>(), false))
   ret (out.stmts, out.errs, out.changed)
 
 # ANY enum type: every boxed enum now carries the slot by default, and the
@@ -45,13 +45,13 @@ fun lhIsHashedType(sp: Spec|None, roots: List<String>): Bool
     ()         => false
 
 fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
-                       acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+                       acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
 
 fun lhOne(st: PStmt, roots: List<String>,
-          acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+          acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
   ret match(st)
     (f: PsFun) => hasAttr(f.fAttrs, "refeq")
       ? lhRefeqFun(f, roots, acc)
@@ -61,17 +61,17 @@ fun lhOne(st: PStmt, roots: List<String>,
     (o: PStmt) => (append(acc.stmts, st), acc.errs, acc.changed)
 
 fun lhFun(f: PsFun, roots: List<String>,
-          acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+          acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
   let params = flattenParams(f.fParams)
   if !exactly(chain(params), 1) || !lhFirstParamHashed(params, roots)
     ret (append<PStmt>(acc.stmts, f),
-         append(acc.errs, PErr(f.psfLine,
+         add(acc.errs, PErr(f.psfLine,
            "a [hashed] function must take exactly one parameter of an "
            + "enum type — the cache lives in that value when it is boxed")),
          acc.changed)
   if !lhReturnsInt32(f.fRet)
     ret (append<PStmt>(acc.stmts, f),
-         append(acc.errs, PErr(f.psfLine,
+         add(acc.errs, PErr(f.psfLine,
            "a [hashed] function must return Int32 — the cache slot is "
            + "one machine word")),
          acc.changed)
@@ -138,18 +138,18 @@ fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
 # deep compare short-circuits at SHARED SUBSTRUCTURE.
 
 fun lhRefeqFun(f: PsFun, roots: List<String>,
-               acc: (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: List<PErr>, changed: Bool)
+               acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
   let params = flattenParams(f.fParams)
   if !exactly(chain(params), 2) || !lhRefeqParamsOk(params, roots)
     ret (append<PStmt>(acc.stmts, f),
-         append(acc.errs, PErr(f.psfLine,
+         add(acc.errs, PErr(f.psfLine,
            "a [refeq] function must take two parameters of one enum "
            + "type — the shortcut is an identity compare, meaningful "
            + "when the representation is boxed")),
          acc.changed)
   if !lhReturnsBool(f.fRet)
     ret (append<PStmt>(acc.stmts, f),
-         append(acc.errs, PErr(f.psfLine,
+         add(acc.errs, PErr(f.psfLine,
            "a [refeq] function must return Bool")),
          acc.changed)
   let split = lhSplitRefeq(f, lhFirstParamName(params),

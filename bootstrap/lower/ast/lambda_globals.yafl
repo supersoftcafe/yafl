@@ -13,10 +13,13 @@ import Bootstrap::Ast
 fun lowerLambdaGlobals(statements: List<PStmt>): List<PStmt>
   ret llgLoop(chain(statements), List<PStmt>())
 
-fun [tail] llgLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun llgLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(llgLoopB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] llgLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => llgLoop(l.next, append(acc, llgOne(l.value)))
+    (l: ChainLink)  => llgLoopB(l.next, push<PStmt >(acc, llgOne(l.value)))
 
 fun llgOne(st: PStmt): PStmt
   ret match(st)

@@ -318,13 +318,17 @@ fun narrowedEnumField(r: Resolver, e2: SEnum, bare: String): Narrowed
     # Root not resolved yet: retry next pass.
     ()         => NfMiss()
 
-fun [tail] fieldsMatching(fs: Chain<SField>, bare: String,
+fun fieldsMatching(fs: Chain<SField>, bare: String,
                           acc: List<SField>): List<SField>
+  ret build<SField >(fieldsMatchingB(fs, bare, _pushChain<SField >(builder<SField >(), chain<SField >(acc))))
+
+fun [tail] fieldsMatchingB(fs: Chain<SField>, bare: String,
+                          [terminal] acc: ListBuilder<SField >): ListBuilder<SField >
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => matchName(l.value.sfName, bare)
-      ? fieldsMatching(l.next, bare, append(acc, l.value))
-      : fieldsMatching(l.next, bare, acc)
+      ? fieldsMatchingB(l.next, bare, push<SField >(acc, l.value))
+      : fieldsMatchingB(l.next, bare, acc)
 
 fun hitOf(cands: List<SField>): Narrowed
   ret match(head(cands))
@@ -335,13 +339,17 @@ fun ownedHit(cands: List<SField>, covering: List<SField>): Narrowed
   let owned = fieldsCovered(chain(cands), covering, List<SField>())
   ret exactly(chain(owned), 1) ? hitOf(owned) : NfAmbiguous()
 
-fun [tail] fieldsCovered(cs: Chain<SField>, covering: List<SField>,
+fun fieldsCovered(cs: Chain<SField>, covering: List<SField>,
                          acc: List<SField>): List<SField>
+  ret build<SField >(fieldsCoveredB(cs, covering, _pushChain<SField >(builder<SField >(), chain<SField >(acc))))
+
+fun [tail] fieldsCoveredB(cs: Chain<SField>, covering: List<SField>,
+                         [terminal] acc: ListBuilder<SField >): ListBuilder<SField >
   ret match(cs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hasFieldNamed(chain(covering), l.value.sfName)
-      ? fieldsCovered(l.next, covering, append(acc, l.value))
-      : fieldsCovered(l.next, covering, acc)
+      ? fieldsCoveredB(l.next, covering, push<SField >(acc, l.value))
+      : fieldsCoveredB(l.next, covering, acc)
 
 # covering_fields: the typed fields a value narrowed to `valid` is GUARANTEED
 # to carry — fields declared at nodes whose OWN leaf set covers every valid
@@ -363,14 +371,17 @@ fun [tail] coverVariants(vs: Chain<PStmt>, valid: List<String>,
       (v: PsEnum) => coverVariants(l.next, valid, coverNode(v, valid, acc))
       (o: PStmt)  => coverVariants(l.next, valid, acc)
 
-fun [tail] typedFieldsOf(ls: Chain<PStmt>, acc: List<SField>): List<SField>
+fun typedFieldsOf(ls: Chain<PStmt>, acc: List<SField>): List<SField>
+  ret build<SField >(typedFieldsOfB(ls, _pushChain<SField >(builder<SField >(), chain<SField >(acc))))
+
+fun [tail] typedFieldsOfB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<SField >): ListBuilder<SField >
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => match(let2.lType)
-        (ty: Spec) => typedFieldsOf(l.next, append(acc, SField(let2.lName, ty)))
-        ()         => typedFieldsOf(l.next, acc)
-      (o: PStmt)    => typedFieldsOf(l.next, acc)
+        (ty: Spec) => typedFieldsOfB(l.next, push<SField >(acc, SField(let2.lName, ty)))
+        ()         => typedFieldsOfB(l.next, acc)
+      (o: PStmt)    => typedFieldsOfB(l.next, acc)
 
 # _substitute_enum_type_params: a generic enum's fields are stored against the
 # declaration's placeholders (`value: T`); a read off a concrete instantiation
@@ -518,10 +529,13 @@ fun boundSlots(st: STuple, tp: PeTuple): List<SEntry>
 fun tupNames(tp: PeTuple): List<String>
   ret nameOfEnts(chain(tp.exprs), List<String>())
 
-fun [tail] nameOfEnts(es: Chain<PTupEnt>, acc: List<String>): List<String>
+fun nameOfEnts(es: Chain<PTupEnt>, acc: List<String>): List<String>
+  ret build<String >(nameOfEntsB(es, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] nameOfEntsB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => nameOfEnts(l.next, append(acc, l.value.tupName))
+    (l: ChainLink)  => nameOfEntsB(l.next, push<String >(acc, l.value.tupName))
 
 # bindTupleEntries answers "which SUPPLIED entry fills declared slot i" — this
 # inverts it into "which declared slot does supplied entry j fill", which is
@@ -532,10 +546,13 @@ fun slotsFor(declared: List<SEntry>, binding: List<Int>,
                  emptySlots(chain(tp.exprs), List<SEntry>()))
 
 # One blank slot per supplied entry — sized by the walk, never by a count.
-fun [tail] emptySlots(es: Chain<PTupEnt>, acc: List<SEntry>): List<SEntry>
+fun emptySlots(es: Chain<PTupEnt>, acc: List<SEntry>): List<SEntry>
+  ret build<SEntry >(emptySlotsB(es, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+
+fun [tail] emptySlotsB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => emptySlots(l.next, append(acc, SEntry("", None, None)))
+    (l: ChainLink)  => emptySlotsB(l.next, push<SEntry >(acc, SEntry("", None, None)))
 
 # setAt walks structurally, so an out-of-range index rebuilds unchanged —
 # the old `< n` guard is subsumed.
@@ -553,12 +570,16 @@ fun [tail] invertLoop(ds: Chain<SEntry>, bs: Chain<Int>,
 fun setAt(es: List<SEntry>, i: Int, v: SEntry): List<SEntry>
   ret setLoop(chain(es), i, v, 0, List<SEntry>())
 
-fun [tail] setLoop(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
+fun setLoop(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
                    acc: List<SEntry>): List<SEntry>
+  ret build<SEntry >(setLoopB(es, i, v, at, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+
+fun [tail] setLoopB(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
+                   [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => setLoop(l.next, i, v, at + 1,
-                               append(acc, at == i ? v : l.value))
+    (l: ChainLink)  => setLoopB(l.next, i, v, at + 1,
+                               push<SEntry >(acc, at == i ? v : l.value))
 
 # A branch threads the receiver's type into BOTH sides — each arm owns its own
 # conversion — while the branch's own type stays the honest JOIN of its arms.
@@ -738,10 +759,13 @@ fun compileBlock(bk: PeBlock, r0: Resolver, expected: Spec|None): ExprOut
   ret ExprOut(PeBlock(ss.slStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
               concat(ss.slGlobals, v.eoGlobals))
 
-fun [tail] markInner(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun markInner(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(markInnerB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] markInnerB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => markInner(l.next, append(acc, markOne(l.value)))
+    (l: ChainLink)  => markInnerB(l.next, push<PStmt >(acc, markOne(l.value)))
 
 fun markOne(st: PStmt): PStmt
   ret match(st)
@@ -955,17 +979,22 @@ fun withConstruct(ctorName: String, fields: List<PStmt>, repls: List<PTupEnt>,
              PeTuple(withCtorArgs(chain(fields), repls, carrier, lr,
                                   List<PTupEnt>()), lr), lr)
 
-fun [tail] withCtorArgs(fs: Chain<PStmt>, repls: List<PTupEnt>,
+fun withCtorArgs(fs: Chain<PStmt>, repls: List<PTupEnt>,
                         carrier: String, lr: PLine,
                         acc: List<PTupEnt>): List<PTupEnt>
+  ret build<PTupEnt >(withCtorArgsB(fs, repls, carrier, lr, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+
+fun [tail] withCtorArgsB(fs: Chain<PStmt>, repls: List<PTupEnt>,
+                        carrier: String, lr: PLine,
+                        [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (p: PsLet) => withCtorArgs(l.next, repls, carrier, lr,
-          append(acc, PTupEnt("", false,
+      (p: PsLet) => withCtorArgsB(l.next, repls, carrier, lr,
+          push<PTupEnt >(acc, PTupEnt("", false,
                               withCtorArg(bareName(p.lName), repls, carrier,
                                           lr))))
-      (o: PStmt) => withCtorArgs(l.next, repls, carrier, lr, acc)
+      (o: PStmt) => withCtorArgsB(l.next, repls, carrier, lr, acc)
 
 fun withCtorArg(bare: String, repls: List<PTupEnt>, carrier: String,
                 lr: PLine): PExpr
@@ -1028,13 +1057,17 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum): PExpr|None
 fun withValidLeaves(ns: Chain<String>, valid: List<String>): List<String>
   ret withValidLoop(ns, valid, List<String>())
 
-fun [tail] withValidLoop(ns: Chain<String>, valid: List<String>,
+fun withValidLoop(ns: Chain<String>, valid: List<String>,
                          acc: List<String>): List<String>
+  ret build<String >(withValidLoopB(ns, valid, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] withValidLoopB(ns: Chain<String>, valid: List<String>,
+                         [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains2(valid, l.value)
-      ? withValidLoop(l.next, valid, append(acc, l.value))
-      : withValidLoop(l.next, valid, acc)
+      ? withValidLoopB(l.next, valid, push<String >(acc, l.value))
+      : withValidLoopB(l.next, valid, acc)
 
 fun [tail] withSingleLeaf(ns: Chain<String>, sets: Chain<List<PStmt>>,
                           wx: PeWith, e2: SEnum, lr: PLine): PExpr
@@ -1046,17 +1079,22 @@ fun [tail] withSingleLeaf(ns: Chain<String>, sets: Chain<List<PStmt>>,
         ? withConstruct(n.value, l.value, withEntryList(wx), "$ws", lr)
         : withSingleLeaf(n.next, l.next, wx, e2, lr)
 
-fun [tail] withArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+fun withArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                     tag: String, wx: PeWith, e2: SEnum,
                     acc: List<PArm>): List<PArm>
+  ret build<PArm >(withArmsB(ns, sets, i, tag, wx, e2, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+
+fun [tail] withArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+                    tag: String, wx: PeWith, e2: SEnum,
+                    [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(sets)
       (nil2: ChainEnd) => acc
       (l: ChainLink)   => !contains2(e2.seValidLeaves, n.value)
-        ? withArms(n.next, l.next, i + 1, tag, wx, e2, acc)
-        : withArms(n.next, l.next, i + 1, tag, wx, e2,
-            append(acc, PArm("$wx" + String(i) + "@" + tag,
+        ? withArmsB(n.next, l.next, i + 1, tag, wx, e2, acc)
+        : withArmsB(n.next, l.next, i + 1, tag, wx, e2,
+            push<PArm >(acc, PArm("$wx" + String(i) + "@" + tag,
                              SNamed(n.value, List<Spec>(), wx.pewLine),
                              withConstruct(n.value, l.value, withEntryList(wx),
                                            "$wx" + String(i), wx.pewLine),

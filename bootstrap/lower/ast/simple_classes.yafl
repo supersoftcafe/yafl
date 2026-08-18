@@ -51,14 +51,18 @@ fun [tail] scCountLoop(ns: Chain<String>, vs: Chain<Int>, name: String): Int
       (nil2: ChainEnd) => 0
       (v: ChainLink)   => n.value == name ? v.value : scCountLoop(n.next, v.next, name)
 
-fun [tail] scBumpAt(ns: Chain<String>, vs: Chain<Int>, name: String,
+fun scBumpAt(ns: Chain<String>, vs: Chain<Int>, name: String,
                     acc: List<Int>): List<Int>
+  ret build<Int >(scBumpAtB(ns, vs, name, _pushChain<Int >(builder<Int >(), chain<Int >(acc))))
+
+fun [tail] scBumpAtB(ns: Chain<String>, vs: Chain<Int>, name: String,
+                    [terminal] acc: ListBuilder<Int >): ListBuilder<Int >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(vs)
       (nil2: ChainEnd) => acc
-      (v: ChainLink)   => scBumpAt(n.next, v.next, name,
-                                   append(acc, n.value == name ? v.value + 1 : v.value))
+      (v: ChainLink)   => scBumpAtB(n.next, v.next, name,
+                                   push<Int >(acc, n.value == name ? v.value + 1 : v.value))
 
 # ── generic candidate/spec filtering by predicate on name ───────────────────
 
@@ -119,12 +123,15 @@ fun scClassFor(cands: ScCands, name: String): PsClass|None
 fun scMethodNames(cls: PsClass): List<String>
   ret scMnLoop(chain(cls.cMembers), List<String>())
 
-fun [tail] scMnLoop(ms: Chain<PStmt>, acc: List<String>): List<String>
+fun scMnLoop(ms: Chain<PStmt>, acc: List<String>): List<String>
+  ret build<String >(scMnLoopB(ms, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] scMnLoopB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => scMnLoop(l.next, append(acc, f.fName))
-      (o: PStmt) => scMnLoop(l.next, acc)
+      (f: PsFun) => scMnLoopB(l.next, push<String >(acc, f.fName))
+      (o: PStmt) => scMnLoopB(l.next, acc)
 
 fun scHasMethod(cands: ScCands, clsName: String, methodName: String): Bool
   ret match(scClassFor(cands, clsName))
@@ -295,12 +302,15 @@ fun [tail] scPruneLoop(ns: Chain<String>, cs: Chain<PsClass>, edges: EEdges,
 fun scTupleSpecOf(cls: PsClass): Spec
   ret STuple(scEntriesOf(chain(flattenParams(cls.cParams)), List<SEntry>()), cls.pscLine)
 
-fun [tail] scEntriesOf(fs: Chain<PStmt>, acc: List<SEntry>): List<SEntry>
+fun scEntriesOf(fs: Chain<PStmt>, acc: List<SEntry>): List<SEntry>
+  ret build<SEntry >(scEntriesOfB(fs, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+
+fun [tail] scEntriesOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => scEntriesOf(l.next, append(acc, SEntry(let2.lName, let2.lType, None)))
-      (o: PStmt)    => scEntriesOf(l.next, acc)
+      (let2: PsLet) => scEntriesOfB(l.next, push<SEntry >(acc, SEntry(let2.lName, let2.lType, None)))
+      (o: PStmt)    => scEntriesOfB(l.next, acc)
 
 fun scBuildTupleSpecs(cands: ScCands): ScSpecs
   ret scBtsLoop(chain(cands.scNames), chain(cands.scClasses), scSpecsEmpty())
@@ -658,14 +668,18 @@ fun scLiftMethod(clsName: String, tupleSpec: Spec, method: PsFun): PStmt
             scRenameBody(method.fBody), method.fRet, method.fWheres, method.psfLine,
             method.fRetInferred, method.fNested, method.fImports)
 
-fun [tail] scLiftMembers(ms: Chain<PStmt>, clsName: String, tupleSpec: Spec,
+fun scLiftMembers(ms: Chain<PStmt>, clsName: String, tupleSpec: Spec,
                          acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(scLiftMembersB(ms, clsName, tupleSpec, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] scLiftMembersB(ms: Chain<PStmt>, clsName: String, tupleSpec: Spec,
+                         [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => scLiftMembers(l.next, clsName, tupleSpec,
-                                  append(acc, scLiftMethod(clsName, tupleSpec, f)))
-      (o: PStmt) => scLiftMembers(l.next, clsName, tupleSpec, acc)
+      (f: PsFun) => scLiftMembersB(l.next, clsName, tupleSpec,
+                                  push<PStmt >(acc, scLiftMethod(clsName, tupleSpec, f)))
+      (o: PStmt) => scLiftMembersB(l.next, clsName, tupleSpec, acc)
 
 fun scLiftClassMethods(clsName: String, cls: PsClass, specs: ScSpecs, acc: List<PStmt>): List<PStmt>
   ret match(scLookupSpec(specs, clsName))
@@ -688,16 +702,20 @@ fun scLiftAll(cands: ScCands, specs: ScSpecs): List<PStmt>
 
 # Co-walk the spec entries alongside the supplied ones — the positional
 # pairing is the structure itself, never an index bound.
-fun [tail] scNteLoop(es: Chain<PTupEnt>, ses: Chain<SEntry>,
+fun scNteLoop(es: Chain<PTupEnt>, ses: Chain<SEntry>,
                      acc: List<PTupEnt>): List<PTupEnt>
+  ret build<PTupEnt >(scNteLoopB(es, ses, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+
+fun [tail] scNteLoopB(es: Chain<PTupEnt>, ses: Chain<SEntry>,
+                     [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(ses)
-      (sl: ChainLink)  => scNteLoop(l.next, sl.next,
-          append(acc, l.value.tupName == ""
+      (sl: ChainLink)  => scNteLoopB(l.next, sl.next,
+          push<PTupEnt >(acc, l.value.tupName == ""
             ? PTupEnt(sl.value.seName, l.value.tupSpread, l.value.tupValue)
             : l.value))
-      (nil2: ChainEnd) => scNteLoop(l.next, ses, append(acc, l.value))
+      (nil2: ChainEnd) => scNteLoopB(l.next, ses, push<PTupEnt >(acc, l.value))
 
 fun scNameTupleEntries(param: PExpr, spec: Spec): PExpr
   ret match(param)
@@ -782,22 +800,28 @@ fun scReplaceFn(cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>, r: Re
 
 # ── 13. the driver ───────────────────────────────────────────────────────────
 
-fun [tail] scRewriteTop(ss: Chain<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>): List<PStmt>
+fun scRewriteTop(ss: Chain<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(scRewriteTopB(ss, cands, w, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] scRewriteTopB(ss: Chain<PStmt>, cands: ScCands, w: Rw, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => scIsDroppedClass(l.value, cands)
-      ? scRewriteTop(l.next, cands, w, acc)
-      : scRewriteTop(l.next, cands, w, append(acc, rwStmt(l.value, w)))
+      ? scRewriteTopB(l.next, cands, w, acc)
+      : scRewriteTopB(l.next, cands, w, push<PStmt >(acc, rwStmt(l.value, w)))
 
 fun scIsDroppedClass(st: PStmt, cands: ScCands): Bool
   ret match(st)
     (c: PsClass) => contains2(cands.scNames, c.cName)
     (o: PStmt)   => false
 
-fun [tail] scRewriteLifted(ls: Chain<PStmt>, w: Rw, acc: List<PStmt>): List<PStmt>
+fun scRewriteLifted(ls: Chain<PStmt>, w: Rw, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(scRewriteLiftedB(ls, w, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] scRewriteLiftedB(ls: Chain<PStmt>, w: Rw, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ls)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scRewriteLifted(l.next, w, append(acc, rwStmt(l.value, w)))
+    (l: ChainLink)  => scRewriteLiftedB(l.next, w, push<PStmt >(acc, rwStmt(l.value, w)))
 
 fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
   let r = rootResolver(statements)
@@ -851,10 +875,13 @@ fun scTSpecOpt(sp: Spec|None, c: ScCtx): Spec|None
 fun scTSpecs(ts: List<Spec>, c: ScCtx): List<Spec>
   ret scTSpecLoop(chain(ts), c, List<Spec>())
 
-fun [tail] scTSpecLoop(ts: Chain<Spec>, c: ScCtx, acc: List<Spec>): List<Spec>
+fun scTSpecLoop(ts: Chain<Spec>, c: ScCtx, acc: List<Spec>): List<Spec>
+  ret build<Spec >(scTSpecLoopB(ts, c, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+
+fun [tail] scTSpecLoopB(ts: Chain<Spec>, c: ScCtx, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(ts)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scTSpecLoop(l.next, c, append(acc, scTSpec(l.value,
+    (l: ChainLink)  => scTSpecLoopB(l.next, c, push<Spec >(acc, scTSpec(l.value,
                                                                   c)))
 
 fun scTSpecsOpt(ss: List<Spec>|None, c: ScCtx): List<Spec>|None
@@ -865,12 +892,16 @@ fun scTSpecsOpt(ss: List<Spec>|None, c: ScCtx): List<Spec>|None
 fun scTStmts(ss: List<PStmt>, c: ScCtx, r: Resolver): List<PStmt>
   ret scTStmtLoop(chain(ss), c, r, List<PStmt>())
 
-fun [tail] scTStmtLoop(ss: Chain<PStmt>, c: ScCtx, r: Resolver,
+fun scTStmtLoop(ss: Chain<PStmt>, c: ScCtx, r: Resolver,
                        acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(scTStmtLoopB(ss, c, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] scTStmtLoopB(ss: Chain<PStmt>, c: ScCtx, r: Resolver,
+                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scTStmtLoop(l.next, c, r,
-                                   append(acc, scTStmt(l.value, c, r)))
+    (l: ChainLink)  => scTStmtLoopB(l.next, c, r,
+                                   push<PStmt >(acc, scTStmt(l.value, c, r)))
 
 fun scTStmt(st: PStmt, c: ScCtx, r: Resolver): PStmt
   ret match(st)
@@ -979,27 +1010,39 @@ fun scTBlock(bk: PeBlock, c: ScCtx, blockR: Resolver): PExpr
   ret PeBlock(scTStmts(bk.blockStmts, c, blockR),
               scTExpr(bk.blockValue, c, blockR), bk.blockTag, bk.pebkLine)
 
-fun [tail] scTExprs(es: Chain<PExpr>, c: ScCtx, r: Resolver,
+fun scTExprs(es: Chain<PExpr>, c: ScCtx, r: Resolver,
                     acc: List<PExpr>): List<PExpr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => scTExprs(l.next, c, r,
-                                append(acc, scTExpr(l.value, c, r)))
+  ret build<PExpr >(scTExprsB(es, c, r, _pushChain<PExpr >(builder<PExpr >(), chain<PExpr >(acc))))
 
-fun [tail] scTEnts(es: Chain<PTupEnt>, c: ScCtx, r: Resolver,
-                   acc: List<PTupEnt>): List<PTupEnt>
+fun [tail] scTExprsB(es: Chain<PExpr>, c: ScCtx, r: Resolver,
+                    [terminal] acc: ListBuilder<PExpr >): ListBuilder<PExpr >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scTEnts(l.next, c, r,
-        append(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
+    (l: ChainLink)  => scTExprsB(l.next, c, r,
+                                push<PExpr >(acc, scTExpr(l.value, c, r)))
+
+fun scTEnts(es: Chain<PTupEnt>, c: ScCtx, r: Resolver,
+                   acc: List<PTupEnt>): List<PTupEnt>
+  ret build<PTupEnt >(scTEntsB(es, c, r, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+
+fun [tail] scTEntsB(es: Chain<PTupEnt>, c: ScCtx, r: Resolver,
+                   [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => scTEntsB(l.next, c, r,
+        push<PTupEnt >(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                             scTExpr(l.value.tupValue, c, r))))
 
-fun [tail] scTArms(as2: Chain<PArm>, c: ScCtx, r: Resolver,
+fun scTArms(as2: Chain<PArm>, c: ScCtx, r: Resolver,
                    acc: List<PArm>): List<PArm>
+  ret build<PArm >(scTArmsB(as2, c, r, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+
+fun [tail] scTArmsB(as2: Chain<PArm>, c: ScCtx, r: Resolver,
+                   [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
   ret match(as2)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scTArms(l.next, c, r,
-        append(acc, scTArmOne(l.value, c, r)))
+    (l: ChainLink)  => scTArmsB(l.next, c, r,
+        push<PArm >(acc, scTArmOne(l.value, c, r)))
 
 fun scTArmOne(a: PArm, c: ScCtx, r: Resolver): PArm
   let bodyR = bindingScope(a, a.armType, r)
@@ -1008,22 +1051,30 @@ fun scTArmOne(a: PArm, c: ScCtx, r: Resolver): PArm
            scTLits(chain(a.armLiterals), c, r, List<PLit>()),
            scTExprOpt(a.armGuard, c, bodyR), a.parmLine)
 
-fun [tail] scTLits(ls: Chain<PLit>, c: ScCtx, r: Resolver,
+fun scTLits(ls: Chain<PLit>, c: ScCtx, r: Resolver,
                    acc: List<PLit>): List<PLit>
+  ret build<PLit >(scTLitsB(ls, c, r, _pushChain<PLit >(builder<PLit >(), chain<PLit >(acc))))
+
+fun [tail] scTLitsB(ls: Chain<PLit>, c: ScCtx, r: Resolver,
+                   [terminal] acc: ListBuilder<PLit >): ListBuilder<PLit >
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (le: PlExpr)  => scTLits(l.next, c, r,
-                               append(acc, PlExpr(scTExpr(le.litExpr, c,
+      (le: PlExpr)  => scTLitsB(l.next, c, r,
+                               push<PLit >(acc, PlExpr(scTExpr(le.litExpr, c,
                                                           r))))
-      (lr2: PlRange) => scTLits(l.next, c, r,
-          append(acc, PlRange(scTExpr(lr2.rangeLo, c, r),
+      (lr2: PlRange) => scTLitsB(l.next, c, r,
+          push<PLit >(acc, PlRange(scTExpr(lr2.rangeLo, c, r),
                               scTExpr(lr2.rangeHi, c, r), lr2.plrLine)))
 
-fun [tail] scTTop(ss: Chain<PStmt>, cands: ScCands, c: ScCtx, r: Resolver,
+fun scTTop(ss: Chain<PStmt>, cands: ScCands, c: ScCtx, r: Resolver,
                   acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(scTTopB(ss, cands, c, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] scTTopB(ss: Chain<PStmt>, cands: ScCands, c: ScCtx, r: Resolver,
+                  [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => scIsDroppedClass(l.value, cands)
-      ? scTTop(l.next, cands, c, r, acc)
-      : scTTop(l.next, cands, c, r, append(acc, scTStmt(l.value, c, r)))
+      ? scTTopB(l.next, cands, c, r, acc)
+      : scTTopB(l.next, cands, c, r, push<PStmt >(acc, scTStmt(l.value, c, r)))

@@ -138,15 +138,19 @@ fun inlSplice(t2: InlTarget, uniqueId: String, acc: InlAcc): InlAcc
   ret InlAcc(inlEndBookkeeping(ops3, endLabel),
              concat(acc.inlVars, newVars))
 
-fun [tail] inlLabelRenames(ops: Chain<Op>, uniqueId: String,
+fun inlLabelRenames(ops: Chain<Op>, uniqueId: String,
                            acc: List<RpRename>): List<RpRename>
+  ret build<RpRename >(inlLabelRenamesB(ops, uniqueId, _pushChain<RpRename >(builder<RpRename >(), chain<RpRename >(acc))))
+
+fun [tail] inlLabelRenamesB(ops: Chain<Op>, uniqueId: String,
+                           [terminal] acc: ListBuilder<RpRename >): ListBuilder<RpRename >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => inlLabelRenames(l.next, uniqueId,
-          append(acc, RpRename(lb.labelName,
+      (lb: OpLabel) => inlLabelRenamesB(l.next, uniqueId,
+          push<RpRename >(acc, RpRename(lb.labelName,
                                "inl" + uniqueId + "$" + lb.labelName)))
-      (o: Op)       => inlLabelRenames(l.next, uniqueId, acc)
+      (o: Op)       => inlLabelRenamesB(l.next, uniqueId, acc)
 
 # The renamed StackVar for a callee param/local (its declared type + the
 # fresh inl<id>$ name) — the Move targets Python builds via variable_mapping.
@@ -229,12 +233,15 @@ fun [tail] inlFirstEndJumpIsLast(ops: Chain<Op>, endLabel: String): Bool|None
         : inlFirstEndJumpIsLast(l.next, endLabel)
       (o: Op)     => inlFirstEndJumpIsLast(l.next, endLabel)
 
-fun [tail] inlDropLast(ops: Chain<Op>, acc: List<Op>): List<Op>
+fun inlDropLast(ops: Chain<Op>, acc: List<Op>): List<Op>
+  ret build<Op >(inlDropLastB(ops, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+
+fun [tail] inlDropLastB(ops: Chain<Op>, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.next)
       (nil2: ChainEnd) => acc
-      (o: ChainLink)   => inlDropLast(l.next, append(acc, l.value))
+      (o: ChainLink)   => inlDropLastB(l.next, push<Op >(acc, l.value))
 
 # ── functionReferenceCounts (trim.py:176) ────────────────────────────────────
 # Multiplicity, on the same scan model as the dead-code pass: direct call

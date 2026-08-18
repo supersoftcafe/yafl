@@ -16,7 +16,12 @@ import Bootstrap::Parse
 
 # ── LineRef ──────────────────────────────────────────────────────────────────
 
-class [final] PLine(plFile: String, plLine: Int, plCol: Int)
+# A record: one variant, no outer type. Being an enum is what earns the
+# DERIVED BasicEquality instance (derive_eq covers enums), and PLine sits at
+# the bottom of nearly every AST node — without an instance here, nothing
+# containing a source location can derive equality either. Python's LineRef is
+# a frozen dataclass, so structural equality matches on both sides.
+enum PLine(plFile: String, plLine: Int, plCol: Int)
 
 # One enum-constructor argument: the DECLARED field name and the argument
 # EXPRESSION (Python: NewEnumExpression.field_args dict entry). Never a bare

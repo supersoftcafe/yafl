@@ -154,10 +154,13 @@ fun recordTyped(name: String, ptype: Spec|None, acc: Hints): Hints
       (o: Spec)    => acc
     ()         => acc
 
-fun [tail] entryTypes(es: Chain<SEntry>, acc: List<Meet>): List<Meet>
+fun entryTypes(es: Chain<SEntry>, acc: List<Meet>): List<Meet>
+  ret build<Meet >(entryTypesB(es, _pushChain<Meet >(builder<Meet >(), chain<Meet >(acc))))
+
+fun [tail] entryTypesB(es: Chain<SEntry>, [terminal] acc: ListBuilder<Meet >): ListBuilder<Meet >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => entryTypes(l.next, append(acc, optMeet(l.value.seType)))
+    (l: ChainLink)  => entryTypesB(l.next, push<Meet >(acc, optMeet(l.value.seType)))
 
 fun addHint(name: String, args: List<Meet>, acc: Hints): Hints
   ret match(get(acc.hSlots, name))
@@ -188,19 +191,26 @@ fun addDetail(name: String, tp: STuple, acc: Hints): Hints
                                                           List<List<String> >())))
 
 # One blank per tuple entry — sized by the walk, never by a count.
-fun [tail] blankDetail(es: Chain<SEntry>, acc: List<List<String> >): List<List<String> >
+fun blankDetail(es: Chain<SEntry>, acc: List<List<String> >): List<List<String> >
+  ret build<List<String> >(blankDetailB(es, _pushChain<List<String> >(builder<List<String> >(), chain<List<String> >(acc))))
+
+fun [tail] blankDetailB(es: Chain<SEntry>, [terminal] acc: ListBuilder<List<String> >): ListBuilder<List<String> >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => blankDetail(l.next, append(acc, List<String>()))
+    (l: ChainLink)  => blankDetailB(l.next, push<List<String> >(acc, List<String>()))
 
-fun [tail] mergeDetail(slots: Chain<List<String> >, es: Chain<SEntry>,
+fun mergeDetail(slots: Chain<List<String> >, es: Chain<SEntry>,
                        acc: List<List<String> >): List<List<String> >
+  ret build<List<String> >(mergeDetailB(slots, es, _pushChain<List<String> >(builder<List<String> >(), chain<List<String> >(acc))))
+
+fun [tail] mergeDetailB(slots: Chain<List<String> >, es: Chain<SEntry>,
+                       [terminal] acc: ListBuilder<List<String> >): ListBuilder<List<String> >
   ret match(slots)
     (nil: ChainEnd) => acc
     (s2: ChainLink) => match(es)
       (nil2: ChainEnd) => acc
-      (e2: ChainLink)  => mergeDetail(s2.next, e2.next,
-                                      append(acc, addDetailId(s2.value,
+      (e2: ChainLink)  => mergeDetailB(s2.next, e2.next,
+                                      push<List<String> >(acc, addDetailId(s2.value,
                                                               e2.value.seType)))
 
 fun addDetailId(seen: List<String>, ty: Spec|None): List<String>
@@ -210,14 +220,18 @@ fun addDetailId(seen: List<String>, ty: Spec|None): List<String>
 
 # CONFLICT is sticky: once two call sites disagree on a position, no later
 # agreeing site revives the suggestion for it.
-fun [tail] meetSlots(xs: Chain<Meet>, ys: Chain<Meet>,
+fun meetSlots(xs: Chain<Meet>, ys: Chain<Meet>,
                      acc: List<Meet>): List<Meet>
+  ret build<Meet >(meetSlotsB(xs, ys, _pushChain<Meet >(builder<Meet >(), chain<Meet >(acc))))
+
+fun [tail] meetSlotsB(xs: Chain<Meet>, ys: Chain<Meet>,
+                     [terminal] acc: ListBuilder<Meet >): ListBuilder<Meet >
   ret match(xs)
     (nil: ChainEnd) => acc
     (x: ChainLink)  => match(ys)
       (nil2: ChainEnd) => acc
-      (y: ChainLink)   => meetSlots(x.next, y.next,
-                                    append(acc, meetHint(x.value, y.value)))
+      (y: ChainLink)   => meetSlotsB(x.next, y.next,
+                                    push<Meet >(acc, meetHint(x.value, y.value)))
 
 fun meetHint(a: Meet, b: Meet): Meet
   ret match(a)
@@ -252,11 +266,14 @@ fun suggestionTuple(ms: List<Meet>): Spec
   ret STuple(hintEntriesOf(chain(ms), List<SEntry>()),
              PLine("suggestion", 0, 0))
 
-fun [tail] hintEntriesOf(ms: Chain<Meet>, acc: List<SEntry>): List<SEntry>
+fun hintEntriesOf(ms: Chain<Meet>, acc: List<SEntry>): List<SEntry>
+  ret build<SEntry >(hintEntriesOfB(ms, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+
+fun [tail] hintEntriesOfB(ms: Chain<Meet>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ms)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => hintEntriesOf(l.next,
-                                     append(acc, SEntry("", specOfMeet(l.value),
+    (l: ChainLink)  => hintEntriesOfB(l.next,
+                                     push<SEntry >(acc, SEntry("", specOfMeet(l.value),
                                                         None)))
 
 # ── __with_param_suggestion (FunctionStatement) ─────────────────────────────
@@ -283,14 +300,18 @@ fun fillParams(params: PStmt, tp: STuple, r: Resolver): PStmt
       : params
     (o: PStmt)         => params
 
-fun [tail] fillTargets(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
+fun fillTargets(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                        acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(fillTargetsB(ts, es, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] fillTargetsB(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
+                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ts)
     (nil: ChainEnd) => acc
     (t2: ChainLink) => match(es)
       (nil2: ChainEnd) => acc
-      (e2: ChainLink)  => fillTargets(t2.next, e2.next, r,
-                                      append(acc, fillTarget(t2.value,
+      (e2: ChainLink)  => fillTargetsB(t2.next, e2.next, r,
+                                      push<PStmt >(acc, fillTarget(t2.value,
                                                              e2.value.seType,
                                                              r)))
 

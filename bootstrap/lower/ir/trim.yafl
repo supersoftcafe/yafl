@@ -188,9 +188,9 @@ fun scanAppFunction(a: CgApp, name: String): ScanSets
 # deterministic emission order the C contract pins.
 fun trimRebuild(a: CgApp, toApp: ScanSets): CgApp
   ret appOf(
-    trimPick(sortNamesAsc(chain(toApp.ssFunctions.setNames), List<String>()), (n: String) => appFunction(a, n)),
-    trimPickObjects(sortNamesAsc(chain(toApp.ssObjects.setNames), List<String>()), a),
-    trimPickGlobals(sortNamesAsc(chain(toApp.ssGlobals.setNames), List<String>()), a))
+    trimPick(sort<String>(toApp.ssFunctions.setNames), (n: String) => appFunction(a, n)),
+    trimPickObjects(sort<String>(toApp.ssObjects.setNames), a),
+    trimPickGlobals(sort<String>(toApp.ssGlobals.setNames), a))
 
 fun trimPick(names: List<String>, get: (:String): CgFunction|None): List<CgFunction>
   ret fold(names, List<CgFunction>(), (acc: List<CgFunction>, n: String) => trimPickOne(acc, get(n)))

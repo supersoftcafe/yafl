@@ -75,15 +75,19 @@ fun icRestamp(v: PExpr, line: PLine): PExpr
     (o: PExpr)   => v
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.
-fun [tail] icDropDecls(ss: Chain<PStmt>, c: IcConsts,
+fun icDropDecls(ss: Chain<PStmt>, c: IcConsts,
                        acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(icDropDeclsB(ss, c, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
+                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => contains2(c.icNames, let2.lName)
-        ? icDropDecls(l.next, c, acc)
-        : icDropDecls(l.next, c, append(acc, l.value))
-      (o: PStmt)    => icDropDecls(l.next, c, append(acc, l.value))
+        ? icDropDeclsB(l.next, c, acc)
+        : icDropDeclsB(l.next, c, push<PStmt >(acc, l.value))
+      (o: PStmt)    => icDropDeclsB(l.next, c, push<PStmt >(acc, l.value))
 
 # The walker callback: a bare name that aliases a const becomes the literal.
 fun icReplace(x: PExpr, c: IcConsts): PExpr|None

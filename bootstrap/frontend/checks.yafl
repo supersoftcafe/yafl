@@ -24,7 +24,7 @@ import Bootstrap::Types
 
 
 
-class [final] Diag(dFails: List<PErr>, dWarns: List<PErr>)
+class [final] Diag(dFails: Set<PErr>, dWarns: Set<PErr>)
 
 fun collectDiagnostics(statements: List<PStmt>, r: Resolver): Diag
   ret collectDiagnostics2(statements, r, true)
@@ -47,28 +47,32 @@ fun collectDiagnostics2(statements: List<PStmt>, r: Resolver,
     ret Diag(future, noErrs())
   let checks = stmtChecks(chain(statements), r, noErrs())
   let diagnostics = requireMain ? withMainCount(statements, checks) : checks
-  let warnings = onlyWarnings(chain(diagnostics), noErrs())
-  if !sameLen(chain(warnings), chain(diagnostics))
+  let warnings = filter<PErr>(diagnostics, (e2: PErr) => e2.errWarn)
+  # "not every diagnostic is a warning" — i.e. at least one real error. This
+  # used to build the warning subset and compare LENGTHS, which needed a walk
+  # of an unordered collection; asking the question directly says what it
+  # means and stops at the first counter-example.
+  if !all<PErr>(diagnostics, (e2: PErr) => e2.errWarn)
     ret Diag(diagnostics, warnings)          # some real error: fail with all
   let named = namedSpecErrors(statements)
   ret isEmpty(named) ? Diag(noErrs(), warnings) : Diag(named, warnings)
 
 fun [tail] stmtChecks(ss: Chain<PStmt>, r: Resolver,
-                      acc: List<PErr>): List<PErr>
+                      acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => stmtChecks(l.next, r,
-                                  concat(acc, checkStmt2(l.value,
+                                  union(acc, checkStmt2(l.value,
                                                          scopeResolver(l.value,
                                                                        r),
                                                          None)))
 
-fun withMainCount(statements: List<PStmt>, acc: List<PErr>): List<PErr>
+fun withMainCount(statements: List<PStmt>, acc: Set<PErr>): Set<PErr>
   let mains = countMains(chain(statements), 0)
   if mains == 0
-    ret append(acc, PErr(PLine("none", 0, 0), "No main function found"))
+    ret add(acc, PErr(PLine("none", 0, 0), "No main function found"))
   if mains > 1
-    ret append(acc, PErr(PLine("none", 0, 0), "Too many main functions defined"))
+    ret add(acc, PErr(PLine("none", 0, 0), "Too many main functions defined"))
   ret acc
 
 fun [tail] countMains(ss: Chain<PStmt>, n: Int): Int
@@ -90,17 +94,8 @@ fun retIsBigint(sp: Spec|None): Bool
       (o: Spec)     => false
     ()         => false
 
-fun [tail] onlyWarnings(es: Chain<PErr>, acc: List<PErr>): List<PErr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => onlyWarnings(l.next,
-                                    l.value.errWarn ? append(acc, l.value) : acc)
 
-# ── phase 1: uninferable untyped parameters ─────────────────────────────────
-# A non-generic parameter left untyped after convergence — reported with the
-# call-site evidence the inference itself used (path 3's detail).
-
-fun untypedParamErrors(statements: List<PStmt>): List<PErr>
+fun untypedParamErrors(statements: List<PStmt>): Set<PErr>
   ret hasAnyUntyped(chain(statements))
     ? untypedLoop(chain(statements), collectSuggestionDetail(statements),
                   noErrs())
@@ -125,7 +120,7 @@ fun [tail] anyUntypedTarget(ts: Chain<PStmt>): Bool
       (o: PStmt)    => anyUntypedTarget(l.next)
 
 fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String> > >,
-                       acc: List<PErr>): List<PErr>
+                       acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -134,16 +129,17 @@ fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String> 
                                            detail, acc))
       (o: PStmt) => untypedLoop(l.next, detail, acc)
 
+
 fun [tail] funUntyped(f: PsFun, ts: Chain<PStmt>, idx: Int,
                       detail: Dict<String, List<List<String> > >,
-                      acc: List<PErr>): List<PErr>
+                      acc: Set<PErr>): Set<PErr>
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => match(let2.lType)
         (t2: Spec) => funUntyped(f, l.next, idx + 1, detail, acc)
         ()         => funUntyped(f, l.next, idx + 1, detail,
-                                 append(acc, untypedError(f, let2, idx, detail)))
+                                 add(acc, untypedError(f, let2, idx, detail)))
       (o: PStmt)    => funUntyped(f, l.next, idx + 1, detail, acc)
 
 fun untypedError(f: PsFun, tgt: PsLet, idx: Int,
@@ -174,13 +170,14 @@ fun nthOf<T>(l: List<T>, idx: Int): T|None
 
 # ── phase 2: [future] on a global let ───────────────────────────────────────
 
-fun [tail] futureGlobalErrors(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
+
+fun [tail] futureGlobalErrors(ss: Chain<PStmt>, acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => hasAttr(let2.lAttrs, "future")
         ? futureGlobalErrors(l.next,
-            append(acc, PErr(let2.pslLine,
+            add(acc, PErr(let2.pslLine,
                              "[future] is not supported on a global let — "
                              + "it initialises at startup; use [lazy]")))
         : futureGlobalErrors(l.next, acc)
@@ -188,10 +185,10 @@ fun [tail] futureGlobalErrors(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
 
 # ── phase 3 dispatch ────────────────────────────────────────────────────────
 
-fun checkStmt2(st: PStmt, r: Resolver, retTy: Spec|None): List<PErr>
+fun checkStmt2(st: PStmt, r: Resolver, retTy: Spec|None): Set<PErr>
   ret checkStmtKind(st, r, retTy)
 
-fun checkExprOpt(x: PExpr|None, r: Resolver, expected: Spec|None): List<PErr>
+fun checkExprOpt(x: PExpr|None, r: Resolver, expected: Spec|None): Set<PErr>
   ret match(x)
     (e2: PExpr) => checkExpr(e2, r, expected)
     ()          => noErrs()
@@ -200,15 +197,15 @@ fun checkExprOpt(x: PExpr|None, r: Resolver, expected: Spec|None): List<PErr>
 # Mirrors search_and_replace's reach: every compound spec recurses, a NamedSpec
 # is a LEAF (its own type args are not walked — the outer name IS the error).
 
-fun namedSpecErrors(statements: List<PStmt>): List<PErr>
+fun namedSpecErrors(statements: List<PStmt>): Set<PErr>
   ret nsStmts(chain(statements), noErrs())
 
-fun [tail] nsStmts(ss: Chain<PStmt>, acc: List<PErr>): List<PErr>
+fun [tail] nsStmts(ss: Chain<PStmt>, acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsStmts(l.next, nsStmt(l.value, acc))
 
-fun nsStmt(st: PStmt, acc: List<PErr>): List<PErr>
+fun nsStmt(st: PStmt, acc: Set<PErr>): Set<PErr>
   ret match(st)
     (f: PsFun)         => nsExprOpt(f.fBody,
                             nsSpecs(chain(f.fWheres),
@@ -231,7 +228,7 @@ fun nsStmt(st: PStmt, acc: List<PErr>): List<PErr>
     (el: PsElse)       => nsStmts(chain(el.elStmts), acc)
     (o: PStmt)         => acc
 
-fun nsExpr(x: PExpr, acc: List<PErr>): List<PErr>
+fun nsExpr(x: PExpr, acc: Set<PErr>): Set<PErr>
   ret match(x)
     (nm: PeName)   => nsSpecOpt(nm.penTrait, nsSpecs(chain(nm.refTypeParams), acc))
     (d: PeDot)     => nsExpr(d.base, acc)
@@ -249,16 +246,16 @@ fun nsExpr(x: PExpr, acc: List<PErr>): List<PErr>
     (cv: PeConvert) => nsSpec(cv.convTarget, nsExpr(cv.convInner, acc))
     (wx: PeWith)   => nsExpr(wx.withRepls, nsExpr(wx.withSubject, acc))
     (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams),
-                                fold(ne.fieldArgs, acc, (a2: List<PErr>, fa: PFieldArg) =>
+                                fold(ne.fieldArgs, acc, (a2: Set<PErr>, fa: PFieldArg) =>
                                   nsExpr(fa.faValue, a2)))
     (o: PExpr)     => acc
 
-fun [tail] nsEntries(es: Chain<PTupEnt>, acc: List<PErr>): List<PErr>
+fun [tail] nsEntries(es: Chain<PTupEnt>, acc: Set<PErr>): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsEntries(l.next, nsExpr(l.value.tupValue, acc))
 
-fun [tail] nsArms(as2: Chain<PArm>, acc: List<PErr>): List<PErr>
+fun [tail] nsArms(as2: Chain<PArm>, acc: Set<PErr>): Set<PErr>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsArms(l.next,
@@ -266,14 +263,14 @@ fun [tail] nsArms(as2: Chain<PArm>, acc: List<PErr>): List<PErr>
                                 nsExpr(l.value.armBody,
                                   nsSpecOpt(l.value.armType, acc))))
 
-fun nsExprOpt(x: PExpr|None, acc: List<PErr>): List<PErr>
+fun nsExprOpt(x: PExpr|None, acc: Set<PErr>): Set<PErr>
   ret match(x)
     (e2: PExpr) => nsExpr(e2, acc)
     ()          => acc
 
-fun nsSpec(sp: Spec, acc: List<PErr>): List<PErr>
+fun nsSpec(sp: Spec, acc: Set<PErr>): Set<PErr>
   ret match(sp)
-    (n: SNamed)        => append(acc, PErr(n.snLine,
+    (n: SNamed)        => add(acc, PErr(n.snLine,
                                            "Failed to resolve type '"
                                            + n.snName + "'"))
     (c: SClass)        => nsSpecList(chain(c.scParams), acc)
@@ -285,35 +282,39 @@ fun nsSpec(sp: Spec, acc: List<PErr>): List<PErr>
     (ls: SLazyStub)    => nsSpecOpt(ls.slsTarget, acc)
     (o: Spec)          => acc
 
-fun [tail] nsSpecList(ss: Chain<Spec>, acc: List<PErr>): List<PErr>
+fun [tail] nsSpecList(ss: Chain<Spec>, acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsSpecList(l.next, nsSpec(l.value, acc))
 
-fun [tail] nsSpecEntries(es: Chain<SEntry>, acc: List<PErr>): List<PErr>
+fun [tail] nsSpecEntries(es: Chain<SEntry>, acc: Set<PErr>): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsSpecEntries(l.next,
                                      nsExprOpt(l.value.seDefault,
                                                nsSpecOpt(l.value.seType, acc)))
 
-fun nsSpecOpt(sp: Spec|None, acc: List<PErr>): List<PErr>
+fun nsSpecOpt(sp: Spec|None, acc: Set<PErr>): Set<PErr>
   ret match(sp)
     (s2: Spec) => nsSpec(s2, acc)
     ()         => acc
 
-fun nsSpecs(ss: Chain<Spec>, acc: List<PErr>): List<PErr>
+fun nsSpecs(ss: Chain<Spec>, acc: Set<PErr>): Set<PErr>
   ret nsSpecList(ss, acc)
 
-fun nsSpecsOpt(ss: List<Spec>|None, acc: List<PErr>): List<PErr>
+fun nsSpecsOpt(ss: List<Spec>|None, acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (l: List<Spec>) => nsSpecList(chain(l), acc)
     ()              => acc
 
 # ── printing: sorted(set(errors)) ───────────────────────────────────────────
 
-fun printedDiagnostics(es: List<PErr>): String
-  ret printLoop(chain(sortErrors(dedupeErrors(es))), "")
+# A Set is deduped BY CONSTRUCTION, so there is no dedupe stage to run — the
+# only step left is naming an ordering, exactly as Python's
+# `sorted(set(errors))` does. errLess matches Python's dataclass field order
+# (file, line, col, message, severity).
+fun printedDiagnostics(es: Set<PErr>): String
+  ret printLoop(chain(sortBy<PErr>(es, errLess)), "")
 
 fun [tail] printLoop(es: Chain<PErr>, acc: String): String
   ret match(es)
@@ -324,45 +325,6 @@ fun errStr(e2: PErr): String
   ret e2.errLine.plFile + "[" + String(e2.errLine.plLine) + ":"
       + String(e2.errLine.plCol) + "] - "
       + (e2.errWarn ? "warning: " : "") + e2.errMsg
-
-fun dedupeErrors(es: List<PErr>): List<PErr>
-  ret dedupeLoop(chain(es), List<PErr>())
-
-fun [tail] dedupeLoop(es: Chain<PErr>, acc: List<PErr>): List<PErr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => hasErr(chain(acc), l.value)
-      ? dedupeLoop(l.next, acc)
-      : dedupeLoop(l.next, append(acc, l.value))
-
-fun [tail] hasErr(es: Chain<PErr>, e2: PErr): Bool
-  ret match(es)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => sameErr(l.value, e2) ? true : hasErr(l.next, e2)
-
-fun sameErr(a: PErr, b: PErr): Bool
-  ret a.errMsg == b.errMsg && eqBool(a.errWarn, b.errWarn)
-      && a.errLine.plFile == b.errLine.plFile
-      && a.errLine.plLine == b.errLine.plLine
-      && a.errLine.plCol == b.errLine.plCol
-
-# Stable insertion sort by ((filename, line, col), message, severity) — the
-# order=True dataclass key.
-fun sortErrors(es: List<PErr>): List<PErr>
-  ret esortLoop(chain(es), List<PErr>())
-
-fun [tail] esortLoop(es: Chain<PErr>, acc: List<PErr>): List<PErr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => esortLoop(l.next, insertErr(chain(acc), l.value,
-                                                   List<PErr>()))
-
-fun [tail] insertErr(as2: Chain<PErr>, x: PErr, acc: List<PErr>): List<PErr>
-  ret match(as2)
-    (nil: ChainEnd) => append(acc, x)
-    (l: ChainLink)  => errLess(x, l.value)
-      ? concat(append(acc, x), List<PErr>(as2))
-      : insertErr(l.next, x, append(acc, l.value))
 
 fun errLess(a: PErr, b: PErr): Bool
   if a.errLine.plFile != b.errLine.plFile

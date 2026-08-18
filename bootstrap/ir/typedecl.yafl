@@ -544,9 +544,12 @@ fun [tail] cgFindSlotIndex(slots: List<CgSlot>, idx: Int, prim: CgType, vi: Int)
     (s: CgSlot) => (s.active && eqCgType(s.slotType, prim) && !memberInt(s.users, vi)) ? idx : cgFindSlotIndex(tail<CgSlot>(slots), idx + 1, prim, vi)
     ()          => -1
 
-fun [tail] cgUpdateSlotUsersLoop(slots: List<CgSlot>, idx: Int, vi: Int, i: Int, acc: List<CgSlot>): List<CgSlot>
+fun cgUpdateSlotUsersLoop(slots: List<CgSlot>, idx: Int, vi: Int, i: Int, acc: List<CgSlot>): List<CgSlot>
+  ret build<CgSlot >(cgUpdateSlotUsersLoopB(slots, idx, vi, i, _pushChain<CgSlot >(builder<CgSlot >(), chain<CgSlot >(acc))))
+
+fun [tail] cgUpdateSlotUsersLoopB(slots: List<CgSlot>, idx: Int, vi: Int, i: Int, [terminal] acc: ListBuilder<CgSlot >): ListBuilder<CgSlot >
   ret match(head<CgSlot>(slots))
-    (s: CgSlot) => cgUpdateSlotUsersLoop(tail<CgSlot>(slots), idx, vi, i + 1, append(acc, i == idx ? CgSlot(s.slotType, append(s.users, vi), s.active, s.sIdx) : s))
+    (s: CgSlot) => cgUpdateSlotUsersLoopB(tail<CgSlot>(slots), idx, vi, i + 1, push<CgSlot >(acc, i == idx ? CgSlot(s.slotType, append(s.users, vi), s.active, s.sIdx) : s))
     ()          => acc
 
 fun cgUpdateSlotUsers(slots: List<CgSlot>, idx: Int, vi: Int): List<CgSlot>
@@ -607,10 +610,13 @@ fun cgFindMergeOuterActive(slots: List<CgSlot>, si: Int, s: CgSlot): (si: Int, l
     (li: Int) => (si, li)
     ()        => cgFindMergeOuter(slots, si + 1)
 
-fun [tail] cgMergeApplyLoop(slots: List<CgSlot>, si: Int, li: Int, newL: CgSlot, i: Int, acc: List<CgSlot>): List<CgSlot>
+fun cgMergeApplyLoop(slots: List<CgSlot>, si: Int, li: Int, newL: CgSlot, i: Int, acc: List<CgSlot>): List<CgSlot>
+  ret build<CgSlot >(cgMergeApplyLoopB(slots, si, li, newL, i, _pushChain<CgSlot >(builder<CgSlot >(), chain<CgSlot >(acc))))
+
+fun [tail] cgMergeApplyLoopB(slots: List<CgSlot>, si: Int, li: Int, newL: CgSlot, i: Int, [terminal] acc: ListBuilder<CgSlot >): ListBuilder<CgSlot >
   ret match(head<CgSlot>(slots))
-    (s: CgSlot) => cgMergeApplyLoop(tail<CgSlot>(slots), si, li, newL, i + 1,
-        append(acc, i == si ? CgSlot(s.slotType, s.users, false, s.sIdx) : i == li ? newL : s))
+    (s: CgSlot) => cgMergeApplyLoopB(tail<CgSlot>(slots), si, li, newL, i + 1,
+        push<CgSlot >(acc, i == si ? CgSlot(s.slotType, s.users, false, s.sIdx) : i == li ? newL : s))
     () => acc
 
 fun cgMergeApply(slots: List<CgSlot>, si: Int, li: Int, s: CgSlot, l: CgSlot): List<CgSlot>

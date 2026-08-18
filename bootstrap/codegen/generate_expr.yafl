@@ -156,12 +156,15 @@ fun stackVarName(sv: RParam): String
     (s2: RpStackVar) => s2.name
     (o: RParam)      => ""   # unreachable: gbStackVars only ever holds RpStackVar
 
-fun [tail] opLabelRenames(ops: Chain<Op>, prefix: String, acc: List<RpRename>): List<RpRename>
+fun opLabelRenames(ops: Chain<Op>, prefix: String, acc: List<RpRename>): List<RpRename>
+  ret build<RpRename >(opLabelRenamesB(ops, prefix, _pushChain<RpRename >(builder<RpRename >(), chain<RpRename >(acc))))
+
+fun [tail] opLabelRenamesB(ops: Chain<Op>, prefix: String, [terminal] acc: ListBuilder<RpRename >): ListBuilder<RpRename >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => opLabelRenames(l.next, prefix, append(acc, RpRename(lb.labelName, attachPrefix(prefix, lb.labelName))))
-      (o: Op)       => opLabelRenames(l.next, prefix, acc)
+      (lb: OpLabel) => opLabelRenamesB(l.next, prefix, push<RpRename >(acc, RpRename(lb.labelName, attachPrefix(prefix, lb.labelName))))
+      (o: Op)       => opLabelRenamesB(l.next, prefix, acc)
 
 # Mirrors ternary.py/block.py's local `_bottom`/match.py's control-transfer
 # test: does this bundle's OWN op sequence end by transferring control
@@ -288,11 +291,14 @@ fun builtinCType(name: String): CgType
     ("float64") => CgFloat(64)
     ()          => CgVoid()   # unreachable: check() rejects an unknown builtin name earlier
 
-fun [tail] tupleFieldsOf(es: Chain<SEntry>, idx: Int, r: Resolver, acc: List<CgField>): List<CgField>
+fun tupleFieldsOf(es: Chain<SEntry>, idx: Int, r: Resolver, acc: List<CgField>): List<CgField>
+  ret build<CgField >(tupleFieldsOfB(es, idx, r, _pushChain<CgField >(builder<CgField >(), chain<CgField >(acc))))
+
+fun [tail] tupleFieldsOfB(es: Chain<SEntry>, idx: Int, r: Resolver, [terminal] acc: ListBuilder<CgField >): ListBuilder<CgField >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => tupleFieldsOf(l.next, idx + 1, r,
-                        append(acc, CgField("_" + String(idx), specGenerateOpt(l.value.seType, r))))
+    (l: ChainLink)  => tupleFieldsOfB(l.next, idx + 1, r,
+                        push<CgField >(acc, CgField("_" + String(idx), specGenerateOpt(l.value.seType, r))))
 
 fun specGenerateOpt(sp: Spec|None, r: Resolver): CgType
   ret match(sp)
@@ -917,12 +923,16 @@ fun bundleSwap(xs: List<GBundle>, i: Int, j: Int): List<GBundle>
     : swapLoop(chain(xs), 0, i, j, forceNth<GBundle>(xs, i),
                forceNth<GBundle>(xs, j), List<GBundle>())
 
-fun [tail] swapLoop(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
+fun swapLoop(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
                     vj: GBundle, acc: List<GBundle>): List<GBundle>
+  ret build<GBundle >(swapLoopB(cs, at, i, j, vi, vj, _pushChain<GBundle >(builder<GBundle >(), chain<GBundle >(acc))))
+
+fun [tail] swapLoopB(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
+                    vj: GBundle, [terminal] acc: ListBuilder<GBundle >): ListBuilder<GBundle >
   ret match(cs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => swapLoop(l.next, at + 1, i, j, vi, vj,
-                                append(acc, at == i ? vj
+    (l: ChainLink)  => swapLoopB(l.next, at + 1, i, j, vi, vj,
+                                push<GBundle >(acc, at == i ? vj
                                             : at == j ? vi
                                             : l.value))
 
@@ -937,10 +947,13 @@ fun [tail] genTupleEntryBundles(es: Chain<PTupEnt>, r: Resolver, idx: Int, acc: 
 fun namedValuesOf(bundles: List<GBundle>): List<RpNamedValue>
   ret namedValuesLoop(chain(bundles), 0, List<RpNamedValue>())
 
-fun [tail] namedValuesLoop(bs: Chain<GBundle>, idx: Int, acc: List<RpNamedValue>): List<RpNamedValue>
+fun namedValuesLoop(bs: Chain<GBundle>, idx: Int, acc: List<RpNamedValue>): List<RpNamedValue>
+  ret build<RpNamedValue >(namedValuesLoopB(bs, idx, _pushChain<RpNamedValue >(builder<RpNamedValue >(), chain<RpNamedValue >(acc))))
+
+fun [tail] namedValuesLoopB(bs: Chain<GBundle>, idx: Int, [terminal] acc: ListBuilder<RpNamedValue >): ListBuilder<RpNamedValue >
   ret match(bs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => namedValuesLoop(l.next, idx + 1, append(acc, RpNamedValue("_" + String(idx), mustResult(l.value))))
+    (l: ChainLink)  => namedValuesLoopB(l.next, idx + 1, push<RpNamedValue >(acc, RpNamedValue("_" + String(idx), mustResult(l.value))))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 9: NewExpression / NewEnumExpression (pyast/expression/new.py).
@@ -979,12 +992,16 @@ fun genNewPlain(cs: PsClass, cname: String, paramsBundle: GBundle, paramsVar: RP
   let ctorBundle = GBundle(list2(paramsVar, resultVar), ops, resultVar, List<RecurSource>(), List<ExitSource>())
   ret bundleJoin(paramsBundle, ctorBundle)
 
-fun [tail] fieldMoveOps(fs: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
+fun fieldMoveOps(fs: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
                         index: Int, r: Resolver, acc: List<Op>): List<Op>
+  ret build<Op >(fieldMoveOpsB(fs, cname, resultVar, paramsVar, index, r, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+
+fun [tail] fieldMoveOpsB(fs: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
+                        index: Int, r: Resolver, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => fieldMoveOps(l.next, cname, resultVar, paramsVar, index + 1, r,
-                        append(acc, fieldMoveOp(l.value, cname, resultVar, paramsVar, index, r)))
+    (l: ChainLink)  => fieldMoveOpsB(l.next, cname, resultVar, paramsVar, index + 1, r,
+                        push<Op >(acc, fieldMoveOp(l.value, cname, resultVar, paramsVar, index, r)))
 
 fun fieldMoveOp(field: PStmt, cname: String, resultVar: RParam, paramsVar: RParam, index: Int, r: Resolver): Op
   let ftype = specGenerateOpt(stmtType(field), r)
@@ -1405,10 +1422,13 @@ fun genParallelExprs(pl: PeParallel, exprs: List<PExpr>, r: Resolver): GBundle
   let parallelBundle = GBundle(concat(list1(register), resultVars), list1(parallelOp), register, List<RecurSource>(), List<ExitSource>())
   ret bundleJoin(bundleJoinAll(fnBundles), parallelBundle)
 
-fun [tail] genParallelFnBundles(es: Chain<PExpr>, r: Resolver, i: Int, acc: List<GBundle>): List<GBundle>
+fun genParallelFnBundles(es: Chain<PExpr>, r: Resolver, i: Int, acc: List<GBundle>): List<GBundle>
+  ret build<GBundle >(genParallelFnBundlesB(es, r, i, _pushChain<GBundle >(builder<GBundle >(), chain<GBundle >(acc))))
+
+fun [tail] genParallelFnBundlesB(es: Chain<PExpr>, r: Resolver, i: Int, [terminal] acc: ListBuilder<GBundle >): ListBuilder<GBundle >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => genParallelFnBundles(l.next, r, i + 1, append(acc, withPrefix(genExpr(l.value, r), "par" + String(i))))
+    (l: ChainLink)  => genParallelFnBundlesB(l.next, r, i + 1, push<GBundle >(acc, withPrefix(genExpr(l.value, r), "par" + String(i))))
 
 fun callableResultSpec(e2: PExpr, r: Resolver): Spec
   ret match(exprType(e2, r))

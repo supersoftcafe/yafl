@@ -296,10 +296,13 @@ fun tupleFromTuple(r: Resolver, left: STuple, right: STuple): Tri
 fun entryNames(es: List<SEntry>): List<String>
   ret nameLoop(chain(es), List<String>())
 
-fun [tail] nameLoop(es: Chain<SEntry>, acc: List<String>): List<String>
+fun nameLoop(es: Chain<SEntry>, acc: List<String>): List<String>
+  ret build<String >(nameLoopB(es, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => nameLoop(l.next, append(acc, l.value.seName))
+    (l: ChainLink)  => nameLoopB(l.next, push<String >(acc, l.value.seName))
 
 # The subtlety, transcribed rather than paraphrased: a false from a
 # PLACEHOLDER left is not structural — it may fit once bound — so it is

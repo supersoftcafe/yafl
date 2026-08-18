@@ -70,14 +70,24 @@ fun importsOr(grp: List<PStmt>|None): List<PStmt>
     (g2: List<PStmt>) => g2
     ()                => List<PStmt>()
 
-fun [tail] importPaths(ss: Chain<PStmt>, acc: List<String>): List<String>
+# Same shape as mergeNames: Set for "seen", builder for order.
+fun importPaths(ss: Chain<PStmt>, acc: List<String>): List<String>
+  ret build<String >(importPathsB(ss,
+                                  _pushChain<String >(builder<String >(),
+                                                      chain<String >(acc)),
+                                  _chainToSet<String >(chain<String >(acc),
+                                                       Set<String >())))
+
+fun [tail] importPathsB(ss: Chain<PStmt>, [terminal] out: ListBuilder<String >,
+                        seen: Set<String >): ListBuilder<String >
   ret match(ss)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => out
     (l: ChainLink)  => match(l.value)
-      (im: PsImport) => contains2(acc, im.importPath)
-        ? importPaths(l.next, acc)
-        : importPaths(l.next, append(acc, im.importPath))
-      (o: PStmt)     => importPaths(l.next, acc)
+      (im: PsImport) => contains<String >(seen, im.importPath)
+        ? importPathsB(l.next, out, seen)
+        : importPathsB(l.next, push<String >(out, im.importPath),
+                       add<String >(seen, im.importPath))
+      (o: PStmt)     => importPathsB(l.next, out, seen)
 
 # "Main" from "Main::main@JnNy0L".
 fun ownNamespace(name: String): String
@@ -110,10 +120,13 @@ fun typealiasScope(ta: PsTypealias, r: Resolver): Resolver
 fun genScope(gens: List<PGen>, r: Resolver): Resolver
   ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List<Found>()), r)
 
-fun [tail] genFounds(gs: Chain<PGen>, acc: List<Found>): List<Found>
+fun genFounds(gs: Chain<PGen>, acc: List<Found>): List<Found>
+  ret build<Found >(genFoundsB(gs, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] genFoundsB(gs: Chain<PGen>, [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(gs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => genFounds(l.next, append(acc, genFound(l.value)))
+    (l: ChainLink)  => genFoundsB(l.next, push<Found >(acc, genFound(l.value)))
 
 fun genFound(g: PGen): Found
   ret Found(g.genName, genAlias(g), ScLocal())
@@ -303,16 +316,21 @@ fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
     ? parentMembers(cs, c, own, query, r)
     : Findings(direct, true)
 
-fun [tail] memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
+fun memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
                          owner: PsClass, own: List<String>,
                          acc: List<Found>): List<Found>
+  ret build<Found >(memberMatchesB(ms, query, tp, owner, own, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] memberMatchesB(ms: Chain<PStmt>, query: String, tp: SClass,
+                         owner: PsClass, own: List<String>,
+                         [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(stmtName(l.value), query)
-      ? memberMatches(l.next, query, tp, owner, own,
-                      append(acc, Found(stmtName(l.value), l.value,
+      ? memberMatchesB(l.next, query, tp, owner, own,
+                      push<Found >(acc, Found(stmtName(l.value), l.value,
                                         ScTrait(), tp, owner, own)))
-      : memberMatches(l.next, query, tp, owner, own, acc)
+      : memberMatchesB(l.next, query, tp, owner, own, acc)
 
 # Recurse into each parent interface with this instance's type args substituted
 # (Math<TVal> : Plus<TVal>, asked as Math<Int> ⇒ Plus<Int>). A parent that has
@@ -344,11 +362,15 @@ fun parentFindings(p: Spec, own: List<String>, query: String, r: Resolver): Find
 fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
   ret mapLoop(chain(gens), chain(args), List<Binding>())
 
-fun [tail] mapLoop(gs: Chain<PGen>, as2: Chain<Spec>,
+fun mapLoop(gs: Chain<PGen>, as2: Chain<Spec>,
                    acc: List<Binding>): List<Binding>
+  ret build<Binding >(mapLoopB(gs, as2, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+
+fun [tail] mapLoopB(gs: Chain<PGen>, as2: Chain<Spec>,
+                   [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
   ret match(gs)
     (nil: ChainEnd) => acc
     (g: ChainLink)  => match(as2)
       (nil2: ChainEnd) => acc
-      (a: ChainLink)   => mapLoop(g.next, a.next,
-                                  append(acc, Binding(g.value.genName, a.value)))
+      (a: ChainLink)   => mapLoopB(g.next, a.next,
+                                  push<Binding >(acc, Binding(g.value.genName, a.value)))

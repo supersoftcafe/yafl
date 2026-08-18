@@ -215,5 +215,5 @@ fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname: String,
   ret isEmpty(missing) && isEmpty(extra)
     ? List<String>()
     : list1(fname + ": Phi @ " + current + " has mismatched sources; missing: ["
-            + join(sortNamesAsc(chain(missing), List<String>()), ", ") + "]; extra: ["
-            + join(sortNamesAsc(chain(extra), List<String>()), ", ") + "]")
+            + join(sort<String>(missing), ", ") + "]; extra: ["
+            + join(sort<String>(extra), ", ") + "]")

@@ -66,7 +66,7 @@ fun ucComputeEntrySets(f: CgFunction): Dict<Int, InitSet>
   let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
   let ix = ucIndexOps(f.fnOps)
   let entry0 = put(Dict<Int, InitSet>(), 0,
-                   IsSet(sortNamesAsc(chain(params), List<String>())))
+                   IsSet(sort<String>(params)))
   ret ucFixpoint(ix, labels, entry0, list1(0))
 
 fun ucCheckFunction(f: CgFunction): List<String>
@@ -240,7 +240,7 @@ fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: List<String>): List<String>
   ret isEmpty(missing)
     ? List<String>()
     : list1(f.fnName + ": uninitialised StackVar read at op #" + String(i)
-            + "; missing: [" + join(sortNamesAsc(chain(missing), List<String>()), ", ")
+            + "; missing: [" + join(sort<String>(missing), ", ")
             + "] — codegen bug: read-before-write, or the variable should be in the task-heap state object")
 
 # ── per-edge Phi verification ────────────────────────────────────────────────
@@ -372,4 +372,4 @@ fun ucCheckSource(f: CgFunction, ed: PhiEdge, s2: OpPhiSource): List<String>
     ? List<String>()
     : list1(f.fnName + ": Phi at block " + ed.pheTo + ", source from predecessor "
             + ed.pheFrom + " reads uninitialised: ["
-            + join(sortNamesAsc(chain(missing), List<String>()), ", ") + "]")
+            + join(sort<String>(missing), ", ") + "]")

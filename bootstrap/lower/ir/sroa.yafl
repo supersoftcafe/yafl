@@ -42,7 +42,7 @@ fun sroaFindSplittable(f: CgFunction, done: List<String>): List<Sroa>
   let svReads = sroaSvReads(f.fnOps)
   let projReads = sroaProjReads(f.fnOps)
   let defs = sroaDefs(f.fnOps)
-  ret fold(sortNamesAsc(chain(map(defs.sdEntries, (e2: SroaDef) => e2.sdName)), List<String>()),
+  ret fold(sort<String>(map(defs.sdEntries, (e2: SroaDef) => e2.sdName)),
            List<Sroa>(),
            (acc: List<Sroa>, n: String) => sroaConsider(acc, n, done, svReads, projReads, defs))
 
@@ -120,9 +120,8 @@ fun sroaConsiderDef(acc: List<Sroa>, name: String, d: SroaDef,
     ret acc
   if !sroaDefOpOk(d.sdOp)
     ret acc
-  let used = sortNamesAsc(chain(fold(projReads, List<String>(),
-               (u: List<String>, e2: ProjCount) => e2.pjVar == name ? strListAdd(u, e2.pjField) : u)),
-               List<String>())
+  let used = sort<String>(fold(projReads, List<String>(),
+               (u: List<String>, e2: ProjCount) => e2.pjVar == name ? strListAdd(u, e2.pjField) : u))
   ret append(acc, Sroa(name, d.sdVar, d.sdIndex,
                        map(used, (fld: String) => SroaField(fld,
                              RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))

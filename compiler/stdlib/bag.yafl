@@ -128,10 +128,9 @@ fun [tail] _chainMaxOr<T>(c: Chain<T>, best: T): T where BasicCompare<T>
 fun sort<T>(b: Bag<T>): List<T> where BasicCompare<T>
   ret sort<T>(_bagDrain<T>(b))
 
-# sortBy (the same, taking a comparison function, for types with no natural
-# order) lands with the sort rework: the merge machinery currently bakes
-# BasicCompare into _mergeRuns/_seedRuns, so the comparator has to be threaded
-# through those before a Bag can offer it.
+# The same, for element types with no natural order.
+fun sortBy<T>(b: Bag<T>, less: (:T, :T): Bool): List<T>
+  ret sortBy<T>(_bagDrain<T>(b), less)
 
 # Private: the elements as a List in unspecified order. NOT public — handing
 # this out would be iteration on an unordered container by another name.

@@ -63,13 +63,17 @@ fun sgOptNamed(sp: Spec|None): Bool
 fun promoteNonTrivialGlobals(statements: List<PStmt>, r: Resolver): List<PStmt>
   ret pngLoop(chain(statements), r, List<PStmt>())
 
-fun [tail] pngLoop(ss: Chain<PStmt>, r: Resolver,
+fun pngLoop(ss: Chain<PStmt>, r: Resolver,
                    acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(pngLoopB(ss, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] pngLoopB(ss: Chain<PStmt>, r: Resolver,
+                   [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => pngLoop(l.next, r, append(acc, pngOne(let2, r)))
-      (o: PStmt)    => pngLoop(l.next, r, append(acc, l.value))
+      (let2: PsLet) => pngLoopB(l.next, r, push<PStmt >(acc, pngOne(let2, r)))
+      (o: PStmt)    => pngLoopB(l.next, r, push<PStmt >(acc, l.value))
 
 fun pngOne(let2: PsLet, r: Resolver): PStmt
   if isDeferredInit(let2)
@@ -90,13 +94,13 @@ fun pngOne(let2: PsLet, r: Resolver): PStmt
 # capture an uninitialised slot. Error order differs from Python's post-order
 # block walk, but the driver prints sorted(set(errors)).
 
-fun checkLazyForwardRefs(statements: List<PStmt>): List<PErr>
-  ret foldStmts<List<PErr>>(statements, clfIdStmt, clfBlockCb, List<PErr>())
+fun checkLazyForwardRefs(statements: List<PStmt>): Set<PErr>
+  ret foldStmts<Set<PErr>>(statements, clfIdStmt, clfBlockCb, Set<PErr>())
 
-fun clfIdStmt(acc: List<PErr>, st: PStmt): List<PErr>
+fun clfIdStmt(acc: Set<PErr>, st: PStmt): Set<PErr>
   ret acc
 
-fun clfBlockCb(acc: List<PErr>, x: PExpr): List<PErr>
+fun clfBlockCb(acc: Set<PErr>, x: PExpr): Set<PErr>
   ret match(x)
     (bk: PeBlock) => clfBlock(bk.blockStmts, acc)
     (o: PExpr)    => acc
@@ -104,7 +108,7 @@ fun clfBlockCb(acc: List<PErr>, x: PExpr): List<PErr>
 class [final] ClfDecls(cdNames: List<String>, cdIdx: List<Int>,
                        cdLazy: List<Bool>)
 
-fun clfBlock(stmts: List<PStmt>, acc: List<PErr>): List<PErr>
+fun clfBlock(stmts: List<PStmt>, acc: Set<PErr>): Set<PErr>
   let decls = clfDecls(chain(stmts), 0,
                        ClfDecls(List<String>(), List<Int>(), List<Bool>()))
   ret clfScan(chain(stmts), 0, decls, acc)
@@ -132,7 +136,7 @@ fun [tail] clfSubDecls(ts: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
       (o: PStmt)    => clfSubDecls(l.next, i, acc)
 
 fun [tail] clfScan(ss: Chain<PStmt>, i: Int, decls: ClfDecls,
-                   acc: List<PErr>): List<PErr>
+                   acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -142,20 +146,23 @@ fun [tail] clfScan(ss: Chain<PStmt>, i: Int, decls: ClfDecls,
       (o: PStmt)    => clfScan(l.next, i + 1, decls, acc)
 
 fun clfLet(let2: PsLet, i: Int, decls: ClfDecls,
-           acc: List<PErr>): List<PErr>
+           acc: Set<PErr>): Set<PErr>
   ret match(let2.lDefault)
-    (dv: PExpr) => foldExpr<List<PErr>>(dv, clfIdStmt,
-                     (a: List<PErr>, x: PExpr) =>
+    (dv: PExpr) => foldExpr<Set<PErr>>(dv, clfIdStmt,
+                     (a: Set<PErr>, x: PExpr) =>
                        clfRef(a, x, let2, i, decls),
                      acc)
     ()          => acc
 
-fun clfRef(acc: List<PErr>, x: PExpr, let2: PsLet, i: Int,
-           decls: ClfDecls): List<PErr>
+fun clfRef(acc: Set<PErr>, x: PExpr, let2: PsLet, i: Int,
+           decls: ClfDecls): Set<PErr>
   ret match(x)
+    # No "have I reported this already" scan: the same (let, ref) pair yields
+    # an IDENTICAL PErr — same line, same message — so adding it twice is a
+    # no-op in a Set. That replaced an O(n) walk doing a SUBSTRING match on
+    # every accumulated error.
     (nm: PeName) => clfBad(nm.refName, i, decls)
-                    && !clfAlready(chain(acc), let2, nm.refName)
-      ? append(acc, PErr(let2.pslLine,
+      ? add(acc, PErr(let2.pslLine,
           "[lazy] let '" + let2.lName + "' forward-references non-lazy let '"
             + nm.refName + "'. Mark '" + nm.refName
             + "' as [lazy], or move its declaration before '" + let2.lName
@@ -180,15 +187,6 @@ fun [tail] clfBadLoop(ns: Chain<String>, is2: Chain<Int>, ls: Chain<Bool>,
           : clfBadLoop(n.next, ix.next, lz.next, name, i)
 
 # Python's per-let `seen` set: one error per referenced name per lazy let.
-fun [tail] clfAlready(es: Chain<PErr>, let2: PsLet, ref: String): Bool
-  ret match(es)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => containsSub(l.value.errMsg,
-                                   "'" + let2.lName
-                                     + "' forward-references non-lazy let '"
-                                     + ref + "'")
-      ? true
-      : clfAlready(l.next, let2, ref)
 
 fun containsSub(s: String, needle: String): Bool
   ret find(s, needle) >= 0

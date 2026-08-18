@@ -72,22 +72,30 @@ fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
     : List<Binding>()
   ret mergeLoop(chain(gens), prior, mapping, List<Spec>())
 
-fun [tail] priorBindings(gs: Chain<PGen>, ss: Chain<Spec>,
+fun priorBindings(gs: Chain<PGen>, ss: Chain<Spec>,
                          acc: List<Binding>): List<Binding>
+  ret build<Binding >(priorBindingsB(gs, ss, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+
+fun [tail] priorBindingsB(gs: Chain<PGen>, ss: Chain<Spec>,
+                         [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
   ret match(gs)
     (nil: ChainEnd) => acc
     (g2: ChainLink) => match(ss)
       (nil2: ChainEnd) => acc
-      (s2: ChainLink)  => priorBindings(g2.next, s2.next,
-                                        append(acc, Binding(g2.value.genName,
+      (s2: ChainLink)  => priorBindingsB(g2.next, s2.next,
+                                        push<Binding >(acc, Binding(g2.value.genName,
                                                             s2.value)))
 
-fun [tail] mergeLoop(gs: Chain<PGen>, prior: List<Binding>,
+fun mergeLoop(gs: Chain<PGen>, prior: List<Binding>,
                      mapping: List<Binding>, acc: List<Spec>): List<Spec>
+  ret build<Spec >(mergeLoopB(gs, prior, mapping, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+
+fun [tail] mergeLoopB(gs: Chain<PGen>, prior: List<Binding>,
+                     mapping: List<Binding>, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(gs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => mergeLoop(l.next, prior, mapping,
-                                 append(acc, boundParam(l.value, prior,
+    (l: ChainLink)  => mergeLoopB(l.next, prior, mapping,
+                                 push<Spec >(acc, boundParam(l.value, prior,
                                                         mapping)))
 
 fun boundParam(g2: PGen, prior: List<Binding>, mapping: List<Binding>): Spec
@@ -129,10 +137,13 @@ fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
       ()         => mapping
     ()         => mapping
 
-fun [tail] genNames(gs: Chain<PGen>, acc: List<String>): List<String>
+fun genNames(gs: Chain<PGen>, acc: List<String>): List<String>
+  ret build<String >(genNamesB(gs, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(gs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => genNames(l.next, append(acc, l.value.genName))
+    (l: ChainLink)  => genNamesB(l.next, push<String >(acc, l.value.genName))
 
 # ── _infer_type_params_via_where ─────────────────────────────────────────────
 # Bind type params argument inference CANNOT determine — those appearing in no
@@ -151,15 +162,20 @@ fun viaWhere(stmt: PStmt, gens: List<PGen>, mapping: List<Binding>,
   ret whereLoop(chain(stmtWheres(stmt)), gens, mapping, argInferrable,
                 traitInstances(r), r)
 
-fun [tail] whereTargets(gs: Chain<PGen>, mapping: List<Binding>,
+fun whereTargets(gs: Chain<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
                         acc: List<String>): List<String>
+  ret build<String >(whereTargetsB(gs, mapping, argInferrable, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] whereTargetsB(gs: Chain<PGen>, mapping: List<Binding>,
+                        argInferrable: List<String>,
+                        [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isWhereTarget(l.value.genName, mapping, argInferrable)
-      ? whereTargets(l.next, mapping, argInferrable,
-                     append(acc, l.value.genName))
-      : whereTargets(l.next, mapping, argInferrable, acc)
+      ? whereTargetsB(l.next, mapping, argInferrable,
+                     push<String >(acc, l.value.genName))
+      : whereTargetsB(l.next, mapping, argInferrable, acc)
 
 fun isWhereTarget(name: String, mapping: List<Binding>,
                   argInferrable: List<String>): Bool
@@ -209,17 +225,20 @@ fun traitInstances(r: Resolver): List<TraitInst>
 
 # PRE-LOWERING first-class instances: the pattern IS the interface — no
 # witness lookup, no parent substitution (_trait_instances).
-fun [tail] tiStmtLoop(ts: Chain<PStmt>, acc: List<TraitInst>): List<TraitInst>
+fun tiStmtLoop(ts: Chain<PStmt>, acc: List<TraitInst>): List<TraitInst>
+  ret build<TraitInst >(tiStmtLoopB(ts, _pushChain<TraitInst >(builder<TraitInst >(), chain<TraitInst >(acc))))
+
+fun [tail] tiStmtLoopB(ts: Chain<PStmt>, [terminal] acc: ListBuilder<TraitInst >): ListBuilder<TraitInst >
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (ti: PsTraitInstance) => match(ti.tiPattern)
-        (c: SClass) => tiStmtLoop(l.next,
-                                  append(acc, TraitInst(genNames(chain(ti.tiGens),
+        (c: SClass) => tiStmtLoopB(l.next,
+                                  push<TraitInst >(acc, TraitInst(genNames(chain(ti.tiGens),
                                                                  builder<String>()),
                                                         c)))
-        (o: Spec)   => tiStmtLoop(l.next, acc)
-      (o2: PStmt)           => tiStmtLoop(l.next, acc)
+        (o: Spec)   => tiStmtLoopB(l.next, acc)
+      (o2: PStmt)           => tiStmtLoopB(l.next, acc)
 
 fun [tail] instLoop(ts: Chain<PStmt>, r: Resolver,
                     acc: List<TraitInst>): List<TraitInst>

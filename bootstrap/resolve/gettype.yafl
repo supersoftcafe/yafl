@@ -148,13 +148,17 @@ fun scopeMatches(datas: List<Found>, c: Spec): List<Found>
     ? exact
     : filterByPattern(chain(datas), c, List<Found>())
 
-fun [tail] filterByPattern(ds: Chain<Found>, cache: Spec,
+fun filterByPattern(ds: Chain<Found>, cache: Spec,
                            acc: List<Found>): List<Found>
+  ret build<Found >(filterByPatternB(ds, cache, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] filterByPatternB(ds: Chain<Found>, cache: Spec,
+                           [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(ds)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => patternMatches(l.value, cache)
-      ? filterByPattern(l.next, cache, append(acc, l.value))
-      : filterByPattern(l.next, cache, acc)
+      ? filterByPatternB(l.next, cache, push<Found >(acc, l.value))
+      : filterByPatternB(l.next, cache, acc)
 
 fun patternMatches(f: Found, cache: Spec): Bool
   ret match(f.fInstanceParams)
@@ -168,13 +172,17 @@ fun patternMatches(f: Found, cache: Spec): Bool
 fun preferScoped(scoped: List<Found>, datas: List<Found>): List<Found>
   ret exactly(chain(scoped), 1) ? scoped : datas
 
-fun [tail] filterByScope(ds: Chain<Found>, cache: Spec,
+fun filterByScope(ds: Chain<Found>, cache: Spec,
                          acc: List<Found>): List<Found>
+  ret build<Found >(filterByScopeB(ds, cache, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] filterByScopeB(ds: Chain<Found>, cache: Spec,
+                         [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(ds)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => sameTraitScope(l.value.fTraitScope, cache)
-      ? filterByScope(l.next, cache, append(acc, l.value))
-      : filterByScope(l.next, cache, acc)
+      ? filterByScopeB(l.next, cache, push<Found >(acc, l.value))
+      : filterByScopeB(l.next, cache, acc)
 
 fun sameTraitScope(ts: Spec|None, cache: Spec): Bool
   ret match(ts)
@@ -253,12 +261,16 @@ fun callType(c: PeCall, r: Resolver): Spec|None
 fun tupleType(tp: PeTuple, r: Resolver): Spec|None
   ret STuple(tupEntries(chain(tp.exprs), r, List<SEntry>()), tp.petLine)
 
-fun [tail] tupEntries(es: Chain<PTupEnt>, r: Resolver,
+fun tupEntries(es: Chain<PTupEnt>, r: Resolver,
                       acc: List<SEntry>): List<SEntry>
+  ret build<SEntry >(tupEntriesB(es, r, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+
+fun [tail] tupEntriesB(es: Chain<PTupEnt>, r: Resolver,
+                      [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => tupEntries(l.next, r,
-                                  append(acc, SEntry(l.value.tupName,
+    (l: ChainLink)  => tupEntriesB(l.next, r,
+                                  push<SEntry >(acc, SEntry(l.value.tupName,
                                                      exprType(l.value.tupValue, r),
                                                      None)))
 

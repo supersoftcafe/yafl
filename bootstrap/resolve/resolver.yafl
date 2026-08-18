@@ -427,13 +427,25 @@ fun [tail] traitLets(r: Resolver): List<PStmt>
     (cb: RClassBody) => traitLets(cb.rcbParent)
     (rg: RGen)       => traitLets(rg.rgParent)
 
-fun [tail] mergeNames(acc: List<String>, ns: Chain<String>): List<String>
+# Dedupe preserving FIRST-SEEN order: a Set answers "have I seen this" in
+# O(log n) where scanning the accumulator was O(n) per element, and a builder
+# keeps the order the Set cannot. Reading a half-built list was the only
+# reason this loop could not simply push.
+fun mergeNames(acc: List<String>, ns: Chain<String>): List<String>
+  ret build<String >(mergeNamesB(_pushChain<String >(builder<String >(),
+                                                     chain<String >(acc)),
+                                 _chainToSet<String >(chain<String >(acc),
+                                                      Set<String >()),
+                                 ns))
+
+fun [tail] mergeNamesB([terminal] out: ListBuilder<String >, seen: Set<String >,
+                       ns: Chain<String>): ListBuilder<String >
   ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => mergeNames(contains2(acc, l.value)
-                                    ? acc
-                                    : append(acc, l.value),
-                                  l.next)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => contains<String >(seen, l.value)
+      ? mergeNamesB(out, seen, l.next)
+      : mergeNamesB(push<String >(out, l.value), add<String >(seen, l.value),
+                    l.next)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
 # for a name that is still unqualified (no `::`) and unhashed (no `@`).
@@ -462,15 +474,19 @@ fun qualifiedIn(parent: Resolver, ns: String, query: String,
 fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
   ret Findings(globalLoop(chain(lookup(idx, query)), wantType, List<Found>()), true)
 
-fun [tail] globalLoop(ss: Chain<PStmt>, wantType: Bool,
+fun globalLoop(ss: Chain<PStmt>, wantType: Bool,
                       acc: List<Found>): List<Found>
+  ret build<Found >(globalLoopB(ss, wantType, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] globalLoopB(ss: Chain<PStmt>, wantType: Bool,
+                      [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => !isNeitherStmt(l.value)
                        && wantsThis(isTypeStmt(l.value), wantType)
-      ? globalLoop(l.next, wantType,
-                   append(acc, Found(stmtName(l.value), l.value, ScGlobal())))
-      : globalLoop(l.next, wantType, acc)
+      ? globalLoopB(l.next, wantType,
+                   push<Found >(acc, Found(stmtName(l.value), l.value, ScGlobal())))
+      : globalLoopB(l.next, wantType, acc)
 
 fun wantsThis(isType: Bool, wantType: Bool): Bool
   ret isType ? wantType : !wantType
@@ -505,13 +521,17 @@ fun classBodyFindings(cb: RClassBody, query: String): Findings
 fun matchingFound(names: List<Found>, query: String): Findings
   ret Findings(matchLoop(chain(names), query, List<Found>()), true)
 
-fun [tail] matchLoop(fs: Chain<Found>, query: String,
+fun matchLoop(fs: Chain<Found>, query: String,
                      acc: List<Found>): List<Found>
+  ret build<Found >(matchLoopB(fs, query, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] matchLoopB(fs: Chain<Found>, query: String,
+                     [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(l.value.fName, query)
-      ? matchLoop(l.next, query, append(acc, l.value))
-      : matchLoop(l.next, query, acc)
+      ? matchLoopB(l.next, query, push<Found >(acc, l.value))
+      : matchLoopB(l.next, query, acc)
 
 fun stmtName(st: PStmt): String
   ret match(st)

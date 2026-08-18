@@ -47,12 +47,15 @@ fun collectLeafFieldSets(st: PsEnum, inherited: List<PStmt>): List<List<PStmt>>
     ? (st.eHasParams ? list1(combined) : List<List<PStmt>>())
     : collectLeafFieldSetsVariants(chain(st.eVariants), combined, List<List<PStmt>>())
 
-fun [tail] filterDeclaredFields(ps: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun filterDeclaredFields(ps: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(filterDeclaredFieldsB(ps, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] filterDeclaredFieldsB(ps: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => isSome(let2.lType) ? filterDeclaredFields(l.next, append(acc, l.value)) : filterDeclaredFields(l.next, acc)
-      (o: PStmt)    => filterDeclaredFields(l.next, acc)
+      (let2: PsLet) => isSome(let2.lType) ? filterDeclaredFieldsB(l.next, push<PStmt >(acc, l.value)) : filterDeclaredFieldsB(l.next, acc)
+      (o: PStmt)    => filterDeclaredFieldsB(l.next, acc)
 
 fun [tail] collectLeafFieldSetsVariants(vs: Chain<PStmt>, combined: List<PStmt>, acc: List<List<PStmt>>): List<List<PStmt>>
   ret match(vs)
@@ -571,14 +574,18 @@ fun zipSlotFields(narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>, 
                   wideSlotFields: List<CgField>, sv: RParam): List<RpNamedValue>
   ret zipSlotFieldsLoop(chain(narrowSlots), chain(wideSlots), narrowFields, wideSlotFields, sv, List<RpNamedValue>())
 
-fun [tail] zipSlotFieldsLoop(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
+fun zipSlotFieldsLoop(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
                              wideSlotFields: List<CgField>, sv: RParam, acc: List<RpNamedValue>): List<RpNamedValue>
+  ret build<RpNamedValue >(zipSlotFieldsLoopB(ns, ws, narrowFields, wideSlotFields, sv, _pushChain<RpNamedValue >(builder<RpNamedValue >(), chain<RpNamedValue >(acc))))
+
+fun [tail] zipSlotFieldsLoopB(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
+                             wideSlotFields: List<CgField>, sv: RParam, [terminal] acc: ListBuilder<RpNamedValue >): ListBuilder<RpNamedValue >
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(ws)
       (nil2: ChainEnd) => acc
-      (w: ChainLink)   => zipSlotFieldsLoop(l.next, w.next, narrowFields, wideSlotFields, sv,
-                            append(acc, RpNamedValue(fieldNameAt(narrowFields, l.value.slotIndex),
+      (w: ChainLink)   => zipSlotFieldsLoopB(l.next, w.next, narrowFields, wideSlotFields, sv,
+                            push<RpNamedValue >(acc, RpNamedValue(fieldNameAt(narrowFields, l.value.slotIndex),
                                                      RpStructField(sv, fieldNameAt(wideSlotFields, w.value.slotIndex)))))
 
 fun [tail] indexWhereCgType(types2: List<CgType>, target: CgType, i: Int): Int|None
@@ -1059,13 +1066,16 @@ fun tagPrecision(t: CgType): Int
 
 class [final] PrimStart(psName: String, psOffset: Int)
 
-fun [tail] primStartsOf(fields: Chain<PStmt>, offset: Int, r: Resolver, acc: List<PrimStart>): List<PrimStart>
+fun primStartsOf(fields: Chain<PStmt>, offset: Int, r: Resolver, acc: List<PrimStart>): List<PrimStart>
+  ret build<PrimStart >(primStartsOfB(fields, offset, r, _pushChain<PrimStart >(builder<PrimStart >(), chain<PrimStart >(acc))))
+
+fun [tail] primStartsOfB(fields: Chain<PStmt>, offset: Int, r: Resolver, [terminal] acc: ListBuilder<PrimStart >): ListBuilder<PrimStart >
   ret match(fields)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => primStartsOf(l.next, offset + cgFlattenPrimitivesN(specGenerateOpt(let2.lType, r)).n, r,
-                                    append(acc, PrimStart(let2.lName, offset)))
-      (o: PStmt)    => primStartsOf(l.next, offset, r, acc)
+      (let2: PsLet) => primStartsOfB(l.next, offset + cgFlattenPrimitivesN(specGenerateOpt(let2.lType, r)).n, r,
+                                    push<PrimStart >(acc, PrimStart(let2.lName, offset)))
+      (o: PStmt)    => primStartsOfB(l.next, offset, r, acc)
 
 fun [tail] primStartFor(starts: List<PrimStart>, name: String): Int
   ret match(head(starts))

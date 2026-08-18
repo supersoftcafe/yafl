@@ -165,8 +165,16 @@ fun _evalApply(io: IO, genv: Env, env: Env, op: Value, args: Value): (io: IO, v:
     (e: EvalError) => (f.io, e)
     (fv: Value)    => _evalArgs(f.io, genv, env, fv, args, VNil())
 
-# Operands evaluate left to right; `acc` collects them REVERSED, and apply
-# walks the reversal back out when binding parameters.
+# Operands evaluate left to right and collect IN ORDER: `_snoc` puts each value
+# at the end as it is produced. Collecting them backwards and reversing later
+# would be cheaper per step, but then every consumer has to know about the
+# reversal — and a function whose job is "these elements, backwards" is exactly
+# what we do not want lying around. An argument list is a handful of elements.
+fun _snoc(list: Value, v: Value): Value
+  ret match(list)
+    (p: VPair) => VPair(p.head, _snoc(p.tail, v))
+    (other)    => VPair(v, VNil())
+
 fun _evalArgs(io: IO, genv: Env, env: Env, fv: Value, args: Value, acc: Value): (io: IO, v: Value | EvalError)
   ret match(args)
     (p: VPair) => _evalArgsStep(io, genv, env, fv, p.head, p.tail, acc)
@@ -176,43 +184,37 @@ fun _evalArgsStep(io: IO, genv: Env, env: Env, fv: Value, arg: Value, rest: Valu
   let r = eval(io, genv, env, arg)
   ret match(r.v)
     (e: EvalError) => (r.io, e)
-    (v: Value)     => _evalArgs(r.io, genv, env, fv, rest, VPair(v, acc))
+    (v: Value)     => _evalArgs(r.io, genv, env, fv, rest, _snoc(acc, v))
 
-fun apply(io: IO, genv: Env, f: Value, revArgs: Value): (io: IO, v: Value | EvalError)
+fun apply(io: IO, genv: Env, f: Value, args: Value): (io: IO, v: Value | EvalError)
   ret match(f)
-    (c: VClosure) => match(_bindParams(c.params, revArgs, c.captured))
+    (c: VClosure) => match(_bindParams(c.params, args, c.captured))
       (e: EvalError) => (io, e)
       (env2: Env)    => eval(io, genv, env2, c.body)
-    (b: VBuiltin) => _applyBuiltin(io, b.op, revArgs)
+    (b: VBuiltin) => _applyBuiltin(io, b.op, args)
     (other)       => (io, EvalError("not callable"))
 
-# params in order, revArgs reversed: bind params right-to-left against the
-# reversal by first counting, then peeling — simpler: reverse params too.
-fun _bindParams(params: Value, revArgs: Value, env: Env): Env | EvalError
-  fun [tail] reverse(v: Value, acc: Value): Value
-    ret match(v)
-      (p: VPair) => reverse(p.tail, VPair(p.head, acc))
-      (other)    => acc
-
-  fun [tail] bindLoop(revParams: Value, revArgs: Value, env: Env): Env | EvalError
-    ret match(revParams)
-      (pp: VPair) => match(revArgs)
+# Both lists run in the same direction, so binding is a single walk down the
+# two of them together.
+fun _bindParams(params: Value, args: Value, env: Env): Env | EvalError
+  fun [tail] bindLoop(params2: Value, args2: Value, env: Env): Env | EvalError
+    ret match(params2)
+      (pp: VPair) => match(args2)
         (ap: VPair) => match(pp.head)
           (s: VSym)   => bindLoop(pp.tail, ap.tail, EnvBind(s.name, ap.head, env))
           (other)     => EvalError("bad parameter")
         (other) => EvalError("too few arguments")
-      (other) => match(revArgs)
+      (other) => match(args2)
         (ap: VPair) => EvalError("too many arguments")
         (other)     => env
 
-  # revArgs is reversed; for the 2-arg builtins peel b then a.
-  ret bindLoop(reverse(params, VNil()), revArgs, env)
+  ret bindLoop(params, args, env)
 
-fun _applyBuiltin(io: IO, op: System::String, revArgs: Value): (io: IO, v: Value | EvalError)
+fun _applyBuiltin(io: IO, op: System::String, args: Value): (io: IO, v: Value | EvalError)
   if op == "print"
-    ret _printValue(io, _car(revArgs))
-  let b = _car(revArgs)
-  let a = _car(_cdr(revArgs))
+    ret _printValue(io, _car(args))
+  let a = _car(args)
+  let b = _car(_cdr(args))
   ret (io, _builtin2(op, a, b))
 
 fun _builtin2(op: System::String, a: Value, b: Value): Value | EvalError

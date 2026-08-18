@@ -218,18 +218,23 @@ fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
     ? ok2
     : deFixpoint2(ok2, names, leaves, info)
 
-fun [tail] deSurvivors(ns: Chain<String>, ls: Chain<DeLeaves>,
+fun deSurvivors(ns: Chain<String>, ls: Chain<DeLeaves>,
                        ok: List<String>, info: DeInfo,
                        acc: List<String>): List<String>
+  ret build<String >(deSurvivorsB(ns, ls, ok, info, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] deSurvivorsB(ns: Chain<String>, ls: Chain<DeLeaves>,
+                       ok: List<String>, info: DeInfo,
+                       [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(ls)
       (nil2: ChainEnd) => acc
       (l: ChainLink)   => !contains2(ok, n.value)
-        ? deSurvivors(n.next, l.next, ok, info, acc)
+        ? deSurvivorsB(n.next, l.next, ok, info, acc)
         : deAllFieldsSat(chain(l.value.dlSets), ok, info)
-          ? deSurvivors(n.next, l.next, ok, info, append(acc, n.value))
-          : deSurvivors(n.next, l.next, ok, info, acc)
+          ? deSurvivorsB(n.next, l.next, ok, info, push<String >(acc, n.value))
+          : deSurvivorsB(n.next, l.next, ok, info, acc)
 
 fun [tail] deAllFieldsSat(sets: Chain<List<PStmt>>, ok: List<String>,
                           info: DeInfo): Bool
@@ -276,20 +281,25 @@ fun [tail] deEntriesSat(es: Chain<SEntry>, ok: List<String>, info: DeInfo): Bool
 
 # ── emission ─────────────────────────────────────────────────────────────────
 
-fun [tail] deEmit(ss: Chain<PStmt>, names: List<String>,
+fun deEmit(ss: Chain<PStmt>, names: List<String>,
                   leaves: List<DeLeaves>, ok: List<String>,
                   acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(deEmitB(ss, names, leaves, ok, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] deEmitB(ss: Chain<PStmt>, names: List<String>,
+                  leaves: List<DeLeaves>, ok: List<String>,
+                  [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (e2: PsEnum) => contains2(ok, e2.eName)
-        ? deEmit(l.next, names, leaves, ok,
-                 append(append(acc, l.value),
+        ? deEmitB(l.next, names, leaves, ok,
+                 push<PStmt >(push<PStmt >(acc, l.value),
                         deSynthesise(e2, deLeavesFor(chain(names),
                                                      chain(leaves),
                                                      e2.eName))))
-        : deEmit(l.next, names, leaves, ok, append(acc, l.value))
-      (o: PStmt)   => deEmit(l.next, names, leaves, ok, append(acc, l.value))
+        : deEmitB(l.next, names, leaves, ok, push<PStmt >(acc, l.value))
+      (o: PStmt)   => deEmitB(l.next, names, leaves, ok, push<PStmt >(acc, l.value))
 
 fun [tail] deLeavesFor(ns: Chain<String>, ls: Chain<DeLeaves>,
                        name: String): DeLeaves
@@ -362,14 +372,18 @@ fun deEqMember(e2: PsEnum, dl: DeLeaves): PStmt
                                  deParam("right", e2.eName, lr)), lr),
             body, SBuiltin("bool", lr), List<Spec>(), lr)
 
-fun [tail] deEqArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+fun deEqArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                     many: Bool, e2: PsEnum, acc: List<PArm>): List<PArm>
+  ret build<PArm >(deEqArmsB(ns, sets, i, many, e2, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+
+fun [tail] deEqArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+                    many: Bool, e2: PsEnum, [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(sets)
       (nil2: ChainEnd) => acc
-      (l: ChainLink)   => deEqArms(n.next, l.next, i + 1, many, e2,
-                                   append(acc, deEqArm(n.value, l.value, i,
+      (l: ChainLink)   => deEqArmsB(n.next, l.next, i + 1, many, e2,
+                                   push<PArm >(acc, deEqArm(n.value, l.value, i,
                                                        many, e2)))
 
 fun deEqArm(leafName: String, fields: List<PStmt>, i: Int, many: Bool,
@@ -437,14 +451,18 @@ fun deHashMember(e2: PsEnum, dl: DeLeaves): PStmt
             funParamsStmt(list1(deParam("value", e2.eName, lr)), lr),
             body, SBuiltin("int32", lr), List<Spec>(), lr)
 
-fun [tail] deHashArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+fun deHashArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                       e2: PsEnum, acc: List<PArm>): List<PArm>
+  ret build<PArm >(deHashArmsB(ns, sets, i, e2, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+
+fun [tail] deHashArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
+                      e2: PsEnum, [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(sets)
       (nil2: ChainEnd) => acc
-      (l: ChainLink)   => deHashArms(n.next, l.next, i + 1, e2,
-                                     append(acc, deHashArm(n.value, l.value,
+      (l: ChainLink)   => deHashArmsB(n.next, l.next, i + 1, e2,
+                                     push<PArm >(acc, deHashArm(n.value, l.value,
                                                            i, e2)))
 
 fun deHashArm(leafName: String, fields: List<PStmt>, i: Int,

@@ -320,15 +320,19 @@ fun [tail] dcFilterLoop(ns: Chain<String>, ts: Chain<Spec|None>,
 fun clSelfRefNames(cpt: ClCaps, lamRet: Spec|None): List<String>
   ret clSrLoop(chain(cpt.ccNames), chain(cpt.ccTypes), lamRet, List<String>())
 
-fun [tail] clSrLoop(ns: Chain<String>, ts: Chain<Spec|None>, lamRet: Spec|None,
+fun clSrLoop(ns: Chain<String>, ts: Chain<Spec|None>, lamRet: Spec|None,
                     acc: List<String>): List<String>
+  ret build<String >(clSrLoopB(ns, ts, lamRet, _pushChain<String >(builder<String >(), chain<String >(acc))))
+
+fun [tail] clSrLoopB(ns: Chain<String>, ts: Chain<Spec|None>, lamRet: Spec|None,
+                    [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(ts)
       (nil2: ChainEnd) => acc
       (t2: ChainLink)  => eqSpecOpt(t2.value, lamRet)
-        ? clSrLoop(n.next, t2.next, lamRet, append(acc, n.value))
-        : clSrLoop(n.next, t2.next, lamRet, acc)
+        ? clSrLoopB(n.next, t2.next, lamRet, push<String >(acc, n.value))
+        : clSrLoopB(n.next, t2.next, lamRet, acc)
 
 fun clRemoveNames(cc: ClCaps, remove: List<String>): ClCaps
   ret clRnLoop(chain(cc.ccNames), chain(cc.ccTypes), remove, emptyClCaps())
@@ -399,23 +403,31 @@ fun classOf(lm: PeLambda, nme: String, cpt: ClCaps, fn: PStmt): PStmt
              List<Spec>(), List<Spec>(), prepend(fn, List<PStmt>()), false, lr,
              List<Spec>(), List<Slot>(), List<PStmt>())
 
-fun [tail] clEntries(ns: Chain<String>, ts: Chain<Spec|None>,
+fun clEntries(ns: Chain<String>, ts: Chain<Spec|None>,
                      acc: List<SEntry>): List<SEntry>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(ts)
-      (nil2: ChainEnd) => acc
-      (t2: ChainLink)  => clEntries(n.next, t2.next,
-                                    append(acc, SEntry(n.value, t2.value, None)))
+  ret build<SEntry >(clEntriesB(ns, ts, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
 
-fun [tail] clParamLets(ns: Chain<String>, ts: Chain<Spec|None>, lr: PLine,
-                       acc: List<PStmt>): List<PStmt>
+fun [tail] clEntriesB(ns: Chain<String>, ts: Chain<Spec|None>,
+                     [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(ts)
       (nil2: ChainEnd) => acc
-      (t2: ChainLink)  => clParamLets(n.next, t2.next, lr,
-          append(acc, PsLet(n.value, List<PAttr>(), List<PGen>(), t2.value,
+      (t2: ChainLink)  => clEntriesB(n.next, t2.next,
+                                    push<SEntry >(acc, SEntry(n.value, t2.value, None)))
+
+fun clParamLets(ns: Chain<String>, ts: Chain<Spec|None>, lr: PLine,
+                       acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(clParamLetsB(ns, ts, lr, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] clParamLetsB(ns: Chain<String>, ts: Chain<Spec|None>, lr: PLine,
+                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (n: ChainLink)  => match(ts)
+      (nil2: ChainEnd) => acc
+      (t2: ChainLink)  => clParamLetsB(n.next, t2.next, lr,
+          push<PStmt >(acc, PsLet(n.value, List<PAttr>(), List<PGen>(), t2.value,
                             None, "", List<Spec>(), lr, false, List<PStmt>())))
 
 fun captureRead(name: String, xtype: Spec|None, lr: PLine): PExpr
@@ -433,14 +445,18 @@ fun clStubRead(name: String, ls: SLazyStub, lr: PLine): PExpr
     (t2: Spec) => PeLazy(name, t2, None, true, lr)
     ()         => PeName(name, List<Spec>(), lr, None)
 
-fun [tail] captureArgs(ns: Chain<String>, ts: Chain<Spec|None>, lr: PLine,
+fun captureArgs(ns: Chain<String>, ts: Chain<Spec|None>, lr: PLine,
                        acc: List<PTupEnt>): List<PTupEnt>
+  ret build<PTupEnt >(captureArgsB(ns, ts, lr, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+
+fun [tail] captureArgsB(ns: Chain<String>, ts: Chain<Spec|None>, lr: PLine,
+                       [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(ts)
       (nil2: ChainEnd) => acc
-      (t2: ChainLink)  => captureArgs(n.next, t2.next, lr,
-          append(acc, PTupEnt(n.value, false, captureRead(n.value, t2.value, lr))))
+      (t2: ChainLink)  => captureArgsB(n.next, t2.next, lr,
+          push<PTupEnt >(acc, PTupEnt(n.value, false, captureRead(n.value, t2.value, lr))))
 
 fun replacementExprFor(nme: String, cpt: ClCaps, lr: PLine): PExpr
   ret PeDot(PeNew(SClass(nme, List<Spec>(), lr),

@@ -329,14 +329,18 @@ fun siRebuildOps(ops: List<Op>, promos: List<SiPromo>): List<Op>
                    (acc: List<Int>, p2: SiPromo) => concat(acc, p2.spDrop))
   ret siRebuildLoop(chain(ops), 0, promos, drops, List<Op>())
 
-fun [tail] siRebuildLoop(ops: Chain<Op>, i: Int, promos: List<SiPromo>,
+fun siRebuildLoop(ops: Chain<Op>, i: Int, promos: List<SiPromo>,
                          drops: List<Int>, acc: List<Op>): List<Op>
+  ret build<Op >(siRebuildLoopB(ops, i, promos, drops, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+
+fun [tail] siRebuildLoopB(ops: Chain<Op>, i: Int, promos: List<SiPromo>,
+                         drops: List<Int>, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains3(drops, i)
-      ? siRebuildLoop(l.next, i + 1, promos, drops, acc)
-      : siRebuildLoop(l.next, i + 1, promos, drops,
-                      append(acc, siMaybeReplace(l.value, i, promos)))
+      ? siRebuildLoopB(l.next, i + 1, promos, drops, acc)
+      : siRebuildLoopB(l.next, i + 1, promos, drops,
+                      push<Op >(acc, siMaybeReplace(l.value, i, promos)))
 
 fun siMaybeReplace(op: Op, i: Int, promos: List<SiPromo>): Op
   ret match(head(filter(promos, (p2: SiPromo) => p2.spNewIdx == i)))

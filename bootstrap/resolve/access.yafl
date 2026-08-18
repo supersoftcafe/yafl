@@ -87,12 +87,16 @@ fun instanceWildcarded(ty: Spec, x: Found): Spec
                                      List<Binding>()))
     ()                 => ty
 
-fun [tail] nameWildcards(ns: Chain<String>, lr: PLine,
+fun nameWildcards(ns: Chain<String>, lr: PLine,
                          acc: List<Binding>): List<Binding>
+  ret build<Binding >(nameWildcardsB(ns, lr, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+
+fun [tail] nameWildcardsB(ns: Chain<String>, lr: PLine,
+                         [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
   ret match(ns)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => nameWildcards(l.next, lr,
-                        append(acc, Binding(l.value,
+    (l: ChainLink)  => nameWildcardsB(l.next, lr,
+                        push<Binding >(acc, Binding(l.value,
                                             SNamed("$overload$wildcard",
                                                    List<Spec>(), lr))))
 
@@ -156,12 +160,16 @@ fun wildcarded(ty: Spec, x: Found): Spec
     : substitute(ty, wildcardBindings(chain(gens), stmtLine(x.fStmt),
                                       List<Binding>()))
 
-fun [tail] wildcardBindings(gs: Chain<PGen>, lr: PLine,
+fun wildcardBindings(gs: Chain<PGen>, lr: PLine,
                             acc: List<Binding>): List<Binding>
+  ret build<Binding >(wildcardBindingsB(gs, lr, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+
+fun [tail] wildcardBindingsB(gs: Chain<PGen>, lr: PLine,
+                            [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
   ret match(gs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => wildcardBindings(l.next, lr,
-                         append(acc,
+    (l: ChainLink)  => wildcardBindingsB(l.next, lr,
+                         push<Binding >(acc,
                                 Binding(l.value.genName,
                                         SNamed("$overload$wildcard",
                                                List<Spec>(), lr))))

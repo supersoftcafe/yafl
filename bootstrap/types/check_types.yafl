@@ -16,17 +16,17 @@ import Bootstrap::Resolve
 
 # One diagnostic. `errWarn` mirrors Error.severity ("warning" reports and
 # continues; anything else fails the build).
-class [final] PErr(errLine: PLine, errMsg: String, errWarn: Bool = false)
+enum PErr(errLine: PLine, errMsg: String, errWarn: Bool = false)
 
-fun noErrs(): List<PErr>
-  ret List<PErr>()
+fun noErrs(): Set<PErr>
+  ret Set<PErr>()
 
-fun oneErr(lr: PLine, msg: String): List<PErr>
-  ret prepend(PErr(lr, msg), List<PErr>())
+fun oneErr(lr: PLine, msg: String): Set<PErr>
+  ret add(Set<PErr>(), PErr(lr, msg))
 
 # ── TypeSpec.check ──────────────────────────────────────────────────────────
 
-fun checkSpec(sp: Spec, r: Resolver): List<PErr>
+fun checkSpec(sp: Spec, r: Resolver): Set<PErr>
   ret match(sp)
     (b: SBuiltin)      => isKnownBuiltin(b.sbName)
       ? noErrs()
@@ -37,37 +37,37 @@ fun checkSpec(sp: Spec, r: Resolver): List<PErr>
     # own check); a reference has nothing to recurse into.
     (e2: SEnum)        => noErrs()
     (g2: SGeneric)     => noErrs()
-    (cl: SCallable)    => concat(checkSpec(cl.scParams2, r),
+    (cl: SCallable)    => union(checkSpec(cl.scParams2, r),
                                  checkSpecOpt(cl.scResult, r))
     (cm: SCombination) => checkSpecs(chain(cm.scTypes), r, noErrs())
     (t2: STuple)       => checkTuple(t2, r)
     (af: SArrayField)  => checkSpec(af.safElem, r)
     (ls: SLazyStub)    => checkSpecOpt(ls.slsTarget, r)
 
-fun checkSpecOpt(sp: Spec|None, r: Resolver): List<PErr>
+fun checkSpecOpt(sp: Spec|None, r: Resolver): Set<PErr>
   ret match(sp)
     (s2: Spec) => checkSpec(s2, r)
     ()         => noErrs()
 
 fun [tail] checkSpecs(ss: Chain<Spec>, r: Resolver,
-                      acc: List<PErr>): List<PErr>
+                      acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => checkSpecs(l.next, r, concat(acc, checkSpec(l.value, r)))
+    (l: ChainLink)  => checkSpecs(l.next, r, union(acc, checkSpec(l.value, r)))
 
 fun [tail] checkFields(fs: Chain<SField>, r: Resolver,
-                       acc: List<PErr>): List<PErr>
+                       acc: Set<PErr>): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => checkFields(l.next, r,
-                                   concat(acc, checkSpec(l.value.sfType, r)))
+                                   union(acc, checkSpec(l.value.sfType, r)))
 
 fun isKnownBuiltin(name: String): Bool
   ret name == "str" || name == "bigint" || name == "bool"
       || name == "int8" || name == "int16" || name == "int32"
       || name == "int64" || name == "float32" || name == "float64"
 
-fun checkNamed(n: SNamed, r: Resolver): List<PErr>
+fun checkNamed(n: SNamed, r: Resolver): Set<PErr>
   let found = findType(r, n.snName)
   if atLeast(chain(found.bItems), 2)
     ret oneErr(n.snLine, "Ambiguous reference to '" + n.snName + "'")
@@ -75,24 +75,24 @@ fun checkNamed(n: SNamed, r: Resolver): List<PErr>
     ret noErrs()
   ret oneErr(n.snLine, "Unresolved reference to '" + n.snName + "'")
 
-fun checkClassSpec(c: SClass, r: Resolver): List<PErr>
+fun checkClassSpec(c: SClass, r: Resolver): Set<PErr>
   let tpErrs = checkSpecs(chain(c.scParams), r, noErrs())
   let found = findType(r, c.scName)
   if isEmpty(found.bItems)
-    ret concat(oneErr(c.scLine, "Failed to resolve class " + c.scName), tpErrs)
+    ret union(oneErr(c.scLine, "Failed to resolve class " + c.scName), tpErrs)
   if atLeast(chain(found.bItems), 2)
-    ret concat(oneErr(c.scLine, "Found too many classes named " + c.scName),
+    ret union(oneErr(c.scLine, "Found too many classes named " + c.scName),
                tpErrs)
   ret match(soleItem(found))
     (f: Found) => match(f.fStmt)
-      (cs: PsClass) => concat(checkCallerTypeParams(cs, c.scParams, c.scLine, r),
+      (cs: PsClass) => union(checkCallerTypeParams(cs, c.scParams, c.scLine, r),
                               tpErrs)
-      (o: PStmt)    => concat(oneErr(c.scLine, "Not a class " + c.scName),
+      (o: PStmt)    => union(oneErr(c.scLine, "Not a class " + c.scName),
                               tpErrs)
     ()         => tpErrs
 
 # A tuple: all named entries after all positional ones, then each entry.
-fun checkTuple(t2: STuple, r: Resolver): List<PErr>
+fun checkTuple(t2: STuple, r: Resolver): Set<PErr>
   if namedBeforePositional(t2.stEntries)
     ret oneErr(t2.stLine,
                "Named parameters are not allowed before positional parameters")
@@ -111,16 +111,16 @@ fun [tail] unnamedAfterNamed(es: Chain<SEntry>, seenNamed: Bool): Bool
       : unnamedAfterNamed(l.next, true)
 
 fun [tail] checkEntries(es: Chain<SEntry>, r: Resolver,
-                        acc: List<PErr>): List<PErr>
+                        acc: Set<PErr>): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => checkEntries(l.next, r, concat(acc, checkEntry(l.value, r)))
+    (l: ChainLink)  => checkEntries(l.next, r, union(acc, checkEntry(l.value, r)))
 
-fun checkEntry(en: SEntry, r: Resolver): List<PErr>
+fun checkEntry(en: SEntry, r: Resolver): Set<PErr>
   let err1 = checkSpecOpt(en.seType, r)
   let err2 = checkExprOpt(en.seDefault, r, en.seType)
-  ret concat(err1,
-             concat(err2, defaultValueErrors(en.seDefault, r,
+  ret union(err1,
+             union(err2, defaultValueErrors(en.seDefault, r,
                                              entryLine(en), "tuple field")))
 
 fun entryLine(en: SEntry): PLine
@@ -133,7 +133,7 @@ fun entryLine(en: SEntry): PLine
 # literal or a [const] value: no captures, no effects, no evaluation order.
 
 fun defaultValueErrors(default: PExpr|None, r: Resolver, lr: PLine,
-                       what: String): List<PErr>
+                       what: String): Set<PErr>
   ret match(default)
     (d: PExpr) => isLiteralValue(d)
       ? noErrs()
@@ -185,7 +185,7 @@ fun stmtAttrs(st: PStmt): List<PAttr>
 # args in scope, must match some in-scope [trait] instance's declared type.
 
 fun checkCallerTypeParams(st: PsClass, callerParams: List<Spec>, lr: PLine,
-                          r: Resolver): List<PErr>
+                          r: Resolver): Set<PErr>
   ret callerTypeParamErrs(narrowClassStmt(st), callerParams, lr, r)
 
 fun narrowClassStmt(st: PsClass): PStmt
@@ -194,7 +194,7 @@ fun narrowClassStmt(st: PsClass): PStmt
 # check_caller_type_params on ANY named statement (a function reference with
 # explicit type args checks the same arity + where-discharge rules).
 fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
-                        r: Resolver): List<PErr>
+                        r: Resolver): Set<PErr>
   let gens = stmtGens(st)
   if shorterThan(chain(gens), chain(callerParams))
     ret oneErr(lr, "Excess type parameters")
@@ -206,27 +206,31 @@ fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
                          r),
                   lr, noErrs())
 
-fun [tail] callerGenFounds(gs: Chain<PGen>, cs: Chain<Spec>,
+fun callerGenFounds(gs: Chain<PGen>, cs: Chain<Spec>,
                            acc: List<Found>): List<Found>
+  ret build<Found >(callerGenFoundsB(gs, cs, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] callerGenFoundsB(gs: Chain<PGen>, cs: Chain<Spec>,
+                           [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(gs)
     (nil: ChainEnd) => acc
     (g2: ChainLink) => match(cs)
       (nil2: ChainEnd) => acc
-      (c: ChainLink)   => callerGenFounds(g2.next, c.next,
-          append(acc, Found(g2.value.genName,
+      (c: ChainLink)   => callerGenFoundsB(g2.next, c.next,
+          push<Found >(acc, Found(g2.value.genName,
                             PsTypealias(g2.value.genName, List<PAttr>(),
                                         List<PGen>(), c.value, List<Spec>(),
                                         g2.value.pgLine),
                             ScLocal())))
 
 fun [tail] checkWheres(ws: Chain<Spec>, r: Resolver, lr: PLine,
-                       acc: List<PErr>): List<PErr>
+                       acc: Set<PErr>): Set<PErr>
   ret match(ws)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => checkWheres(l.next, r, lr,
-                                   concat(acc, checkOneWhere(l.value, r, lr)))
+                                   union(acc, checkOneWhere(l.value, r, lr)))
 
-fun checkOneWhere(w: Spec, r: Resolver, lr: PLine): List<PErr>
+fun checkOneWhere(w: Spec, r: Resolver, lr: PLine): Set<PErr>
   let compiled = compileSpec(w, r)
   if !isEmpty(compiled.soGlobals)
     ret oneErr(lr, "Compile steps incomplete for '" + ctWhereName(w)

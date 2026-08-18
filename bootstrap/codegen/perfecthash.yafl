@@ -186,7 +186,7 @@ fun phReassignOne(acc: (methodIds: List<MethodId>, nextId: Int), m: String): (me
 # Sorted to mirror Python's `for method in sorted(cover)` — see the
 # DETERMINISM note at the top of this file.
 fun phReassignCover(methodIds: List<MethodId>, cover: List<String>, nextId0: Int): (methodIds: List<MethodId>, nextId: Int)
-  ret fold(sortNamesAsc(chain(cover), List<String>()), (methodIds, nextId0),
+  ret fold(sort<String>(cover), (methodIds, nextId0),
            (acc: (methodIds: List<MethodId>, nextId: Int), m: String) => phReassignOne(acc, m))
 
 fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int, pairs: List<CollisionPair>): List<MethodId>

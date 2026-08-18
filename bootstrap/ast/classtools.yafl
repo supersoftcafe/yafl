@@ -46,12 +46,16 @@ class [final] FoundClass(fcSpec: Spec, fcClass: PsClass|None)
 fun findClassesOrError(types: List<Spec>, r: Resolver): List<FoundClass>
   ret fceLoop(chain(types), r, List<FoundClass>())
 
-fun [tail] fceLoop(ts: Chain<Spec>, r: Resolver,
+fun fceLoop(ts: Chain<Spec>, r: Resolver,
                    acc: List<FoundClass>): List<FoundClass>
+  ret build<FoundClass >(fceLoopB(ts, r, _pushChain<FoundClass >(builder<FoundClass >(), chain<FoundClass >(acc))))
+
+fun [tail] fceLoopB(ts: Chain<Spec>, r: Resolver,
+                   [terminal] acc: ListBuilder<FoundClass >): ListBuilder<FoundClass >
   ret match(ts)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => fceLoop(l.next, r,
-                               append(acc, findClassOrError(l.value, r)))
+    (l: ChainLink)  => fceLoopB(l.next, r,
+                               push<FoundClass >(acc, findClassOrError(l.value, r)))
 
 fun findClassOrError(xtype: Spec, r: Resolver): FoundClass
   ret match(xtype)
@@ -74,11 +78,14 @@ fun resolveClassSpec(xtype: Spec, name: String, params: List<Spec>,
 fun compileSpecsPlain(ps: List<Spec>, r: Resolver): List<Spec>
   ret cspLoop(chain(ps), r, List<Spec>())
 
-fun [tail] cspLoop(ps: Chain<Spec>, r: Resolver, acc: List<Spec>): List<Spec>
+fun cspLoop(ps: Chain<Spec>, r: Resolver, acc: List<Spec>): List<Spec>
+  ret build<Spec >(cspLoopB(ps, r, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+
+fun [tail] cspLoopB(ps: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(ps)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => cspLoop(l.next, r,
-                               append(acc, compileSpec(l.value, r).soSpec))
+    (l: ChainLink)  => cspLoopB(l.next, r,
+                               push<Spec >(acc, compileSpec(l.value, r).soSpec))
 
 # ── create_slots_from_members ────────────────────────────────────────────────
 # One slot per CALLABLE member (constructor params + body statements). A slot
@@ -89,12 +96,15 @@ fun createSlotsFromMembers(cs: PsClass): List<Slot>
   ret slotLoop(chain(concat(flattenParams(cs.cParams), cs.cMembers)),
                List<Slot>())
 
-fun [tail] slotLoop(ms: Chain<PStmt>, acc: List<Slot>): List<Slot>
+fun slotLoop(ms: Chain<PStmt>, acc: List<Slot>): List<Slot>
+  ret build<Slot >(slotLoopB(ms, _pushChain<Slot >(builder<Slot >(), chain<Slot >(acc))))
+
+fun [tail] slotLoopB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isCallableMember(l.value)
-      ? slotLoop(l.next, append(acc, toSlot(l.value)))
-      : slotLoop(l.next, acc)
+      ? slotLoopB(l.next, push<Slot >(acc, toSlot(l.value)))
+      : slotLoopB(l.next, acc)
 
 fun isCallableMember(st: PStmt): Bool
   ret match(stmtType(st))
@@ -126,12 +136,16 @@ fun overrideInheritedSlots(r: Resolver, base: List<Slot>,
   let exclusion = allProvides(chain(enhanced), List<String>())
   ret concat(enhanced, keepUnabsorbed(chain(parents), exclusion, List<Slot>()))
 
-fun [tail] enhanceLoop(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
+fun enhanceLoop(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
                        acc: List<Slot>): List<Slot>
+  ret build<Slot >(enhanceLoopB(bs, r, parents, _pushChain<Slot >(builder<Slot >(), chain<Slot >(acc))))
+
+fun [tail] enhanceLoopB(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
+                       [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
   ret match(bs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => enhanceLoop(l.next, r, parents,
-                                   append(acc, absorbMatches(l.value, r,
+    (l: ChainLink)  => enhanceLoopB(l.next, r, parents,
+                                   push<Slot >(acc, absorbMatches(l.value, r,
                                                              parents)))
 
 fun absorbMatches(slot: Slot, r: Resolver, parents: List<Slot>): Slot
@@ -158,13 +172,17 @@ fun [tail] allProvides(ss: Chain<Slot>, acc: List<String>): List<String>
                                    addNamesOnce(acc,
                                                 chain(l.value.slotProvides)))
 
-fun [tail] keepUnabsorbed(ps: Chain<Slot>, exclusion: List<String>,
+fun keepUnabsorbed(ps: Chain<Slot>, exclusion: List<String>,
                           acc: List<Slot>): List<Slot>
+  ret build<Slot >(keepUnabsorbedB(ps, exclusion, _pushChain<Slot >(builder<Slot >(), chain<Slot >(acc))))
+
+fun [tail] keepUnabsorbedB(ps: Chain<Slot>, exclusion: List<String>,
+                          [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains2(exclusion, l.value.slotName)
-      ? keepUnabsorbed(l.next, exclusion, acc)
-      : keepUnabsorbed(l.next, exclusion, append(acc, l.value))
+      ? keepUnabsorbedB(l.next, exclusion, acc)
+      : keepUnabsorbedB(l.next, exclusion, push<Slot >(acc, l.value))
 
 # ── set helpers (List with set semantics) ────────────────────────────────────
 
@@ -202,12 +220,15 @@ fun classFindData(cs: PsClass, r: Resolver, query: String): List<Found>
 fun nonArrayFields(cs: PsClass): List<PStmt>
   ret dropArrayField(chain(flattenParams(cs.cParams)), List<PStmt>())
 
-fun [tail] dropArrayField(ls: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun dropArrayField(ls: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(dropArrayFieldB(ls, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] dropArrayFieldB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isArrayStorage(l.value)
-      ? dropArrayField(l.next, acc)
-      : dropArrayField(l.next, append(acc, l.value))
+      ? dropArrayFieldB(l.next, acc)
+      : dropArrayFieldB(l.next, push<PStmt >(acc, l.value))
 
 fun isArrayStorage(st: PStmt): Bool
   ret match(st)
@@ -216,14 +237,18 @@ fun isArrayStorage(st: PStmt): Bool
       ()         => false
     (o: PStmt) => false
 
-fun [tail] memberFinds(ms: Chain<PStmt>, query: String,
+fun memberFinds(ms: Chain<PStmt>, query: String,
                        acc: List<Found>): List<Found>
+  ret build<Found >(memberFindsB(ms, query, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+
+fun [tail] memberFindsB(ms: Chain<PStmt>, query: String,
+                       [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(stmtName(l.value), query)
-      ? memberFinds(l.next, query, append(acc, Found(stmtName(l.value),
+      ? memberFindsB(l.next, query, push<Found >(acc, Found(stmtName(l.value),
                                                      l.value, ScMember())))
-      : memberFinds(l.next, query, acc)
+      : memberFindsB(l.next, query, acc)
 
 fun [tail] parentFinds(fs: Chain<FoundClass>, r: Resolver, query: String,
                        acc: List<Found>): List<Found>

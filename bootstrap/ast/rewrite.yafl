@@ -65,8 +65,7 @@ fun rwOnStmt(f: (:PStmt): PStmt|None): Rw
 fun rwStmts(ss: List<PStmt>, w: Rw): List<PStmt>
   ret match(ss)
     (le: ListEmpty) => ss
-    (lf: ListFull)  => with lf(front = rwStmtChain(lf.front, w),
-                               rear  = rwStmtChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwStmtChain(lf.front, w))
 
 fun rwStmtChain(ss: Chain<PStmt>, w: Rw): Chain<PStmt>
   ret match(ss)
@@ -123,8 +122,7 @@ fun rwExprOpt(x: PExpr|None, w: Rw): PExpr|None
 fun rwExprs(es: List<PExpr>, w: Rw): List<PExpr>
   ret match(es)
     (le: ListEmpty) => es
-    (lf: ListFull)  => with lf(front = rwExprChain(lf.front, w),
-                               rear  = rwExprChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwExprChain(lf.front, w))
 
 fun rwExprChain(es: Chain<PExpr>, w: Rw): Chain<PExpr>
   ret match(es)
@@ -183,8 +181,7 @@ fun rwTrait(sp: Spec|None, w: Rw): Spec|None
 fun rwTupEnts(es: List<PTupEnt>, w: Rw): List<PTupEnt>
   ret match(es)
     (le: ListEmpty) => es
-    (lf: ListFull)  => with lf(front = rwTupEntChain(lf.front, w),
-                               rear  = rwTupEntChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwTupEntChain(lf.front, w))
 
 fun rwTupEntChain(es: Chain<PTupEnt>, w: Rw): Chain<PTupEnt>
   ret match(es)
@@ -198,8 +195,7 @@ fun rwTupEnt(te2: PTupEnt, w: Rw): PTupEnt
 fun rwArms(as2: List<PArm>, w: Rw): List<PArm>
   ret match(as2)
     (le: ListEmpty) => as2
-    (lf: ListFull)  => with lf(front = rwArmChain(lf.front, w),
-                               rear  = rwArmChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwArmChain(lf.front, w))
 
 fun rwArmChain(as2: Chain<PArm>, w: Rw): Chain<PArm>
   ret match(as2)
@@ -220,8 +216,7 @@ fun rwArm(a: PArm, w: Rw): PArm
 fun rwLits(ls: List<PLit>, w: Rw): List<PLit>
   ret match(ls)
     (le: ListEmpty) => ls
-    (lf: ListFull)  => with lf(front = rwLitChain(lf.front, w),
-                               rear  = rwLitChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwLitChain(lf.front, w))
 
 fun rwLitChain(ls: Chain<PLit>, w: Rw): Chain<PLit>
   ret match(ls)
@@ -238,8 +233,7 @@ fun rwLit(lt: PLit, w: Rw): PLit
 fun rwFieldArgs(fas: List<PFieldArg>, w: Rw): List<PFieldArg>
   ret match(fas)
     (le: ListEmpty) => fas
-    (lf: ListFull)  => with lf(front = rwFieldArgChain(lf.front, w),
-                               rear  = rwFieldArgChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwFieldArgChain(lf.front, w))
 
 fun rwFieldArgChain(fas: Chain<PFieldArg>, w: Rw): Chain<PFieldArg>
   ret match(fas)
@@ -266,8 +260,7 @@ fun rwSpecOpt(sp: Spec|None, w: Rw): Spec|None
 fun rwSpecs(ts: List<Spec>, w: Rw): List<Spec>
   ret match(ts)
     (le: ListEmpty) => ts
-    (lf: ListFull)  => with lf(front = rwSpecChain(lf.front, w),
-                               rear  = rwSpecChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwSpecChain(lf.front, w))
 
 fun rwSpecChain(ts: Chain<Spec>, w: Rw): Chain<Spec>
   ret match(ts)
@@ -296,8 +289,7 @@ fun rwSpecKids(sp: Spec, w: Rw): Spec
 fun rwEntries(es: List<SEntry>, w: Rw): List<SEntry>
   ret match(es)
     (le: ListEmpty) => es
-    (lf: ListFull)  => with lf(front = rwEntryChain(lf.front, w),
-                               rear  = rwEntryChain(lf.rear, w))
+    (lf: ListFull)  => with lf(front = rwEntryChain(lf.front, w))
 
 fun rwEntryChain(es: Chain<SEntry>, w: Rw): Chain<SEntry>
   ret match(es)

@@ -139,14 +139,18 @@ fun propagate(parentTy: Spec|None, targets: List<PStmt>,
       (o: Spec)    => targets
     ()        => targets
 
-fun [tail] propagateLoop(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
+fun propagateLoop(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                          acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(propagateLoopB(ts, es, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] propagateLoopB(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
+                         [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ts)
     (nil: ChainEnd) => acc
     (t2: ChainLink) => match(es)
       (nil2: ChainEnd) => acc
-      (e: ChainLink)   => propagateLoop(t2.next, e.next, r,
-                                        append(acc, adopt(t2.value,
+      (e: ChainLink)   => propagateLoopB(t2.next, e.next, r,
+                                        push<PStmt >(acc, adopt(t2.value,
                                                           e.value.seType, r)))
 
 fun adopt(target: PStmt, entryTy: Spec|None, r: Resolver): PStmt
@@ -293,10 +297,13 @@ fun strippedWhereFn(m: PStmt): PStmt
                         f.fNested, f.fImports)
     (o: PStmt) => m
 
-fun [tail] resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>): List<Spec>
+fun resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>): List<Spec>
+  ret build<Spec >(resolvedImplementsB(fs, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+
+fun [tail] resolvedImplementsB(fs: Chain<FoundClass>, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => resolvedImplements(l.next, append(acc, l.value.fcSpec))
+    (l: ChainLink)  => resolvedImplementsB(l.next, push<Spec >(acc, l.value.fcSpec))
 
 fun [tail] parentSlotsOf(fs: Chain<FoundClass>, acc: List<Slot>): List<Slot>
   ret match(fs)
@@ -480,17 +487,22 @@ fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>): PStmt
                    e.pseLine),
              e.eImports)
 
-fun [tail] assignAllSpecs(vs: Chain<PStmt>, root: String,
+fun assignAllSpecs(vs: Chain<PStmt>, root: String,
                           allLeaves: List<String>,
                           acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(assignAllSpecsB(vs, root, allLeaves, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] assignAllSpecsB(vs: Chain<PStmt>, root: String,
+                          allLeaves: List<String>,
+                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (v: PsEnum) => assignAllSpecs(l.next, root, allLeaves,
-                                    append(acc, assignSpecs(v, root,
+      (v: PsEnum) => assignAllSpecsB(l.next, root, allLeaves,
+                                    push<PStmt >(acc, assignSpecs(v, root,
                                                             allLeaves)))
-      (o: PStmt)  => assignAllSpecs(l.next, root, allLeaves,
-                                    append(acc, l.value))
+      (o: PStmt)  => assignAllSpecsB(l.next, root, allLeaves,
+                                    push<PStmt >(acc, l.value))
 
 # ── control ─────────────────────────────────────────────────────────────────
 
@@ -528,13 +540,16 @@ fun compileIf(i: PsIf, r: Resolver, retType: Spec|None): StmtOut
 fun collapseElseIf(stmts: List<PStmt>): List<PStmt>
   ret ceiLoop(chain(stmts), List<PStmt>())
 
-fun [tail] ceiLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun ceiLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(ceiLoopB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] ceiLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (i: PsIf)  => foldChain(i, l.next)
-        |> (fc) => ceiLoop(fc.fcRest, append(acc, fc.fcIf))
-      (o: PStmt) => ceiLoop(l.next, append(acc, l.value))
+        |> (fc) => ceiLoopB(fc.fcRest, push<PStmt >(acc, fc.fcIf))
+      (o: PStmt) => ceiLoopB(l.next, push<PStmt >(acc, l.value))
 
 class [final] FoldedChain(fcIf: PStmt, fcRest: Chain<PStmt>)
 
