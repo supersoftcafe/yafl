@@ -26,16 +26,17 @@ fun letType(l: PsLet): Spec|None
 # A destructure IS a tuple type — and this is where a parameter's `= literal`
 # default surfaces, into the CallableSpec that every call site sees.
 fun destructureType(d: PsDestructure): Spec
-  ret STuple(targetEntries(chain(d.dTargets), List<SEntry>()), d.psdLine)
+  ret STuple(build<SEntry >(targetEntries(chain(d.dTargets),
+                                          builder<SEntry >())), d.psdLine)
 
-fun [tail] targetEntries(ts: Chain<PStmt>, acc: List<SEntry>): List<SEntry>
+fun [tail] targetEntries(ts: Chain<PStmt>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => targetEntries(l.next, addTarget(acc, l.value))
 
-fun addTarget(acc: List<SEntry>, st: PStmt): List<SEntry>
+fun addTarget([terminal] acc: ListBuilder<SEntry >, st: PStmt): ListBuilder<SEntry >
   ret match(st)
-    (l: PsLet) => append(acc, SEntry(l.lName, l.lType, l.lDefault))
+    (l: PsLet) => push<SEntry >(acc, SEntry(l.lName, l.lType, l.lDefault))
     (o: PStmt) => acc
 
 # A function is a callable over its parameter tuple.
@@ -126,7 +127,7 @@ fun nameType(nm: PeName, r: Resolver): Spec|None
   let bag = findData(r, nm.refName)
   if !bag.bComplete
     ret None
-  ret match(soleOf(traitFiltered(bag.bItems, nm.penTrait)))
+  ret match(soleOf(Bag<Found>(traitFiltered(bag.bItems, nm.penTrait))))
     (f: Found) => nameTypeOf(nm, f, r)
     ()         => None
 
@@ -278,17 +279,19 @@ fun [tail] tupEntriesB(es: Chain<PTupEnt>, r: Resolver,
 # any callee has not resolved to a callable with a result yet
 # (ParallelExpression.get_type, parallel.py:32-39).
 fun parallelType(pl: PeParallel, r: Resolver): Spec|None
-  ret parTypeLoop(chain(exprsOfParallel(pl)), r, List<SEntry>(), pl.pepLine)
+  ret parTypeLoop(chain(exprsOfParallel(pl)), r, builder<SEntry >(),
+                  pl.pepLine)
 
-fun [tail] parTypeLoop(es: Chain<PExpr>, r: Resolver, acc: List<SEntry>,
+fun [tail] parTypeLoop(es: Chain<PExpr>, r: Resolver, [terminal] acc: ListBuilder<SEntry >,
                        lr: PLine): Spec|None
   ret match(es)
-    (nil: ChainEnd) => STuple(acc, lr)
+    (nil: ChainEnd) => STuple(build<SEntry >(acc), lr)
     (l: ChainLink)  => match(exprType(l.value, r))
       (ft: Spec) => match(ft)
         (cl: SCallable) => match(cl.scResult)
           (res: Spec) => parTypeLoop(l.next, r,
-                                     append(acc, SEntry("", res, None)), lr)
+                                     push<SEntry >(acc,
+                                         SEntry("", res, None)), lr)
           ()           => None
         (o: Spec)       => None
       ()          => None
@@ -329,7 +332,7 @@ fun [tail] entryNamed(es: Chain<SEntry>, name: String): Spec|None
 fun classMemberType(c: SClass, name: String, r: Resolver): Spec|None
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
-      (cs: PsClass) => match(soleOf(classFindData(cs, r, name)))
+      (cs: PsClass) => match(soleOf(Bag<Found>(classFindData(cs, r, name))))
         (m: Found) => substituteClassTypeParams(r, c, cs, stmtType(m.fStmt))
         ()         => None
       (o: PStmt)    => None

@@ -58,16 +58,34 @@ fun alCompletedParam(): RParam
 
 # SM: Return → [store value into my_task's subtype result field] +
 # task_complete + ReturnVoid; ReturnVoid → task_complete + ReturnVoid.
+# Instruction order, so the ops go into a builder: each one either passes
+# through or expands to a short sequence, and the concat this replaces copied
+# everything emitted so far for every op in the function.
 fun alConvertReturnsSm(ops: List<Op>, myTaskField: RParam, fnResult: CgType,
                        subtype: String|None): List<Op>
-  ret fold(ops, List<Op>(), (acc: List<Op>, op: Op) => alConvertReturnSmOne(acc, op, myTaskField, fnResult, subtype))
+  ret build<Op >(alConvertReturnsSmB(chain(ops), myTaskField, fnResult,
+                                     subtype, builder<Op >()))
 
-fun alConvertReturnSmOne(acc: List<Op>, op: Op, myTaskField: RParam,
-                         fnResult: CgType, subtype: String|None): List<Op>
+fun [tail] alConvertReturnsSmB(ops: Chain<Op>, myTaskField: RParam,
+                               fnResult: CgType, subtype: String|None,
+                               [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alConvertReturnsSmB(l.next, myTaskField, fnResult,
+                           subtype,
+                           alConvertReturnSmOne(acc, l.value, myTaskField,
+                                                fnResult, subtype))
+
+fun alConvertReturnSmOne([terminal] acc: ListBuilder<Op >, op: Op,
+                         myTaskField: RParam, fnResult: CgType,
+                         subtype: String|None): ListBuilder<Op >
   ret match(op)
-    (r: OpReturn)      => concat(acc, alSmReturn(r, myTaskField, fnResult, subtype))
-    (rv: OpReturnVoid) => concat(acc, alSmComplete(myTaskField))
-    (o: Op)            => append(acc, op)
+    (r: OpReturn)      => _pushChain<Op >(acc,
+                              chain<Op>(alSmReturn(r, myTaskField, fnResult,
+                                                   subtype)))
+    (rv: OpReturnVoid) => _pushChain<Op >(acc,
+                              chain<Op>(alSmComplete(myTaskField)))
+    (o: Op)            => push<Op >(acc, op)
 
 fun alSmReturn(r: OpReturn, myTaskField: RParam, fnResult: CgType,
                subtype: String|None): List<Op>
@@ -247,8 +265,13 @@ fun alResultTypeVoidish(t2: CgType|None): Bool
 
 # ── StackVar sets (keyed by name; SSA names are unique per function) ─────────
 
+# A new member goes on the FRONT. The order of one of these sets is never
+# observed: every consumer that turns one into output runs it through
+# svSortedByName first, and the others ask only membership, union, difference
+# or equality — none of which can see the order. The ONE consumer that did
+# observe it, alAllStateVars, now keeps its own ordered builder.
 fun svSetAdd(acc: List<RParam>, v: RParam): List<RParam>
-  ret alSvMember(acc, v) ? acc : append(acc, v)
+  ret alSvMember(acc, v) ? acc : prepend(v, acc)
 
 fun alSvMember(acc: List<RParam>, v: RParam): Bool
   ret any(acc, (x: RParam) => stackVarName(x) == stackVarName(v))
@@ -461,13 +484,36 @@ fun alCreateBasicBlocksN(f: CgFunction): (bs: List<ABlock>, n: Int)
 
 # `n` is the count of blocks already in `acc` — carried, not re-measured;
 # the final tuple's n is the TOTAL block count (last block is n, so n+1).
-fun [tail] alPartition(os: Chain<Op>, n: Int, cur: List<Op>, acc: List<ABlock>): (bs: List<ABlock>, n: Int)
+#
+# Two ordered accumulators, so they travel together in one linear record: the
+# ops of the block being filled, and the blocks finished so far. Both orders
+# are instruction order. The current block's builder is BUILT at each splitter
+# — that is what closes the block — and a fresh one starts the next.
+class [linear, final] PartAcc(paCur: ListBuilder<Op >,
+                              paBlocks: ListBuilder<ABlock >)
+
+fun alPartition(os: Chain<Op>, n: Int, cur: List<Op>,
+                acc: List<ABlock>): (bs: List<ABlock>, n: Int)
+  ret alPartitionB(os, n,
+                   PartAcc(_pushChain<Op >(builder<Op >(), chain<Op>(cur)),
+                           _pushChain<ABlock >(builder<ABlock >(),
+                                               chain<ABlock>(acc))))
+
+fun [tail] alPartitionB(os: Chain<Op>, n: Int,
+                        [terminal] acc: PartAcc): (bs: List<ABlock>, n: Int)
   ret match(os)
-    (nil: ChainEnd) => (append(acc, alMakeBlock(n, cur)), n + 1)
+    (nil: ChainEnd) =>
+      (build<ABlock >(push<ABlock >(acc.paBlocks,
+                                    alMakeBlock(n, build<Op >(acc.paCur)))),
+       n + 1)
     (l: ChainLink)  => alIsSplitter(l.value)
-      ? alPartition(l.next, n + 1, List<Op>(),
-                    append(acc, alMakeBlock(n, append(cur, l.value))))
-      : alPartition(l.next, n, append(cur, l.value), acc)
+      ? alPartitionB(l.next, n + 1,
+            PartAcc(builder<Op >(),
+                    push<ABlock >(acc.paBlocks,
+                        alMakeBlock(n, build<Op >(push<Op >(acc.paCur,
+                                                            l.value))))))
+      : alPartitionB(l.next, n, PartAcc(push<Op >(acc.paCur, l.value),
+                                        acc.paBlocks))
 
 fun alIsSplitter(op: Op): Bool
   ret match(op)
@@ -507,52 +553,89 @@ fun nsLookup(l: List<NameStr>, name: String): String|None
 # Frame-resident locals: saved live vars (SORTED by name — reproducibility)
 # + call-result registers over bbs[:-1]; first-seen order, last-seen type.
 fun alFrameFieldTypes(bbs: List<ABlock>): List<CgField>
-  ret alFftLoop(chain(alNonTerminal(bbs)), List<CgField>())
+  ret ffFields(alFftLoop(chain(alNonTerminal(bbs)), ffEmpty()))
 
 fun alNonTerminal(bbs: List<ABlock>): List<ABlock>
   ret alDropLast(bbs)
 
 # Non-terminal blocks AND their count from one walk (no-length ruling).
 fun alNonTerminalN(bbs: List<ABlock>): (bs: List<ABlock>, n: Int)
-  ret alNtLoop(chain(bbs), 0, List<ABlock>())
+  ret alNtLoop(chain(bbs), 0, builder<ABlock >())
 
-fun [tail] alNtLoop(c: Chain<ABlock>, n: Int, acc: List<ABlock>): (bs: List<ABlock>, n: Int)
+fun [tail] alNtLoop(c: Chain<ABlock>, n: Int,
+                    [terminal] acc: ListBuilder<ABlock >): (bs: List<ABlock>, n: Int)
   ret match(c)
-    (nil: ChainEnd) => (acc, n)
+    (nil: ChainEnd) => (build<ABlock >(acc), n)
     (l: ChainLink)  => l.next is ChainEnd
-      ? (acc, n)
-      : alNtLoop(l.next, n + 1, append(acc, l.value))
+      ? (build<ABlock >(acc), n)
+      : alNtLoop(l.next, n + 1, push<ABlock >(acc, l.value))
 
+# Everything but the last element, in order.
 fun alDropLast<T>(l: List<T>): List<T>
-  ret alDropLastLoop(chain(l), List<T>())
+  ret build<T>(alDropLastLoop<T>(chain(l), builder<T>()))
 
-fun [tail] alDropLastLoop<T>(c: Chain<T>, acc: List<T>): List<T>
+fun [tail] alDropLastLoop<T>(c: Chain<T>, [terminal] acc: ListBuilder<T>): ListBuilder<T>
   ret match(c)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.next)
       (nil2: ChainEnd) => acc
-      (l2: ChainLink)  => alDropLastLoop<T>(l.next, append<T>(acc, l.value))
+      (l2: ChainLink)  => alDropLastLoop<T>(l.next, push<T>(acc, l.value))
 
-fun [tail] alFftLoop(bbs: Chain<ABlock>, acc: List<CgField>): List<CgField>
+# The frame's fields as Python builds them: a DICT, where assigning a key that
+# is already present replaces its value and leaves it in its original position.
+# The port modelled that with a List, an `any` scan to find a repeat and a
+# `map` rewrite to update it — two passes over every field already collected,
+# for every variable of every block. Frames here run to hundreds of variables.
+#
+# The position is recorded instead of maintained: a name takes the next
+# sequence number the first time it is seen, and ffFields recovers the order
+# with one sort at the end.
+class [final] FrameFields(ffTypes: Dict<String, CgType>,
+                          ffOrder: Dict<String, Int>, ffNext: Int)
+
+fun ffEmpty(): FrameFields
+  ret FrameFields(Dict<String, CgType>(), Dict<String, Int>(), 0)
+
+fun _ffOrd(d: Dict<String, Int>, n: String): Int
+  ret match(get(d, n))
+    (i: Int) => i
+    ()       => 0
+
+fun _ffType(d: Dict<String, CgType>, n: String): CgType
+  ret match(get(d, n))
+    (t2: CgType) => t2
+    ()           => CgVoid()
+
+fun ffFields(acc: FrameFields): List<CgField>
+  ret map<String, CgField>(
+        sortBy<String>(keys(acc.ffTypes),
+                       (x: String, y: String) =>
+                         _ffOrd(acc.ffOrder, x) < _ffOrd(acc.ffOrder, y)),
+        (n: String) => CgField(n, _ffType(acc.ffTypes, n)))
+
+fun [tail] alFftLoop(bbs: Chain<ABlock>, acc: FrameFields): FrameFields
   ret match(bbs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alFftLoop(l.next, alFftBlock(l.value, acc))
 
-fun alFftBlock(bb: ABlock, acc: List<CgField>): List<CgField>
+fun alFftBlock(bb: ABlock, acc: FrameFields): FrameFields
   let withLive = fold(svSortedByName(bb.abLive), acc, alFftPut)
   ret match(bb.abResult)
     (r: RParam) => alFftPutR(withLive, r)
     ()           => withLive
 
-fun alFftPut(acc: List<CgField>, v: RParam): List<CgField>
+fun alFftPut(acc: FrameFields, v: RParam): FrameFields
   ret alFftPutR(acc, v)
 
 # first-seen ORDER, last-seen TYPE (Python dict assignment semantics).
-fun alFftPutR(acc: List<CgField>, v: RParam): List<CgField>
+fun alFftPutR(acc: FrameFields, v: RParam): FrameFields
   ret match(v)
-    (sv: RpStackVar) => any(acc, (f2: CgField) => f2.fieldName == sv.name)
-      ? map(acc, (f2: CgField) => f2.fieldName == sv.name ? CgField(sv.name, rpGetType(v)) : f2)
-      : append(acc, CgField(sv.name, rpGetType(v)))
+    (sv: RpStackVar) => match(get(acc.ffOrder, sv.name))
+      (i: Int) => FrameFields(put(acc.ffTypes, sv.name, rpGetType(v)),
+                              acc.ffOrder, acc.ffNext)
+      ()       => FrameFields(put(acc.ffTypes, sv.name, rpGetType(v)),
+                              put(acc.ffOrder, sv.name, acc.ffNext),
+                              acc.ffNext + 1)
     (o: RParam)       => acc
 
 # Interference: pairs simultaneously live over BOTH op sequences (SM view is
@@ -607,10 +690,14 @@ fun alLink(acc: IGraph, a: String, b: String): IGraph
                  b + "\u{a7}" + a, true),
              alAdjAdd(alAdjAdd(acc.igAdj, a, b), b, a))
 
+# The neighbour goes on the FRONT of the adjacency list. The only reader is
+# the colouring, which folds the neighbours into the SET of colours already
+# taken and then picks the lowest free one — the set is the same whichever
+# order its members arrive in, so no colour assignment can change.
 fun alAdjAdd(adj: Dict<String, List<String>>, from2: String,
              to2: String): Dict<String, List<String>>
   ret match(get(adj, from2))
-    (prev: List<String>) => put(adj, from2, append(prev, to2))
+    (prev: List<String>) => put(adj, from2, prepend(to2, prev))
     ()                   => put(adj, from2, list1(to2))
 
 fun alLinkAllPairs(acc: IGraph, names: List<String>): IGraph
@@ -635,18 +722,22 @@ fun alNeighbours(graph: IGraph, name: String): List<String>
 fun alColour(names: List<String>, graph: IGraph): List<NameIdx>
   ret fold(names, List<NameIdx>(), (acc: List<NameIdx>, n: String) => alColourOne(acc, n, graph))
 
+# The colours already taken by this name's neighbours form a SET — alFirstFree
+# asks nothing of it but membership. The new entry goes on the FRONT of the
+# accumulator, which is a name→colour map read by niLookup: each name is
+# coloured exactly once, so no lookup can find a different entry.
 fun alColourOne(acc: List<NameIdx>, name: String, graph: IGraph): List<NameIdx>
-  let used = fold(alNeighbours(graph, name), List<Int>(), (u: List<Int>, nb: String) =>
-               alUsedColour(u, acc, nb))
-  ret append(acc, NameIdx(name, alFirstFree(used, 0)))
+  let used = fold(alNeighbours(graph, name), Set<Int>(),
+                  (u: Set<Int>, nb: String) => alUsedColour(u, acc, nb))
+  ret prepend(NameIdx(name, alFirstFree(used, 0)), acc)
 
-fun alUsedColour(u: List<Int>, acc: List<NameIdx>, nb: String): List<Int>
+fun alUsedColour(u: Set<Int>, acc: List<NameIdx>, nb: String): Set<Int>
   ret match(niLookup(acc, nb))
-    (c: Int) => append(u, c)
+    (c: Int) => add<Int>(u, c)
     ()        => u
 
-fun [tail] alFirstFree(used: List<Int>, c: Int): Int
-  ret any(used, (x: Int) => x == c) ? alFirstFree(used, c + 1) : c
+fun [tail] alFirstFree(used: Set<Int>, c: Int): Int
+  ret contains<Int>(used, c) ? alFirstFree(used, c + 1) : c
 
 # All-pointer struct leaf paths (nested), None otherwise.
 fun alPtrLeaves(t2: CgType): (ls: List<String>, n: Int)|None
@@ -657,26 +748,44 @@ fun alPtrLeaves(t2: CgType): (ls: List<String>, n: Int)|None
 
 # Paths encoded as "/"-joined field names (root-first); the leaf count
 # rides the same fold (no-length ruling).
+# The paths come out in FIELD order and are indexed positionally by the
+# decomposed layout, so they are built at the tail. `ok` clears as soon as a
+# field is neither a pointer nor an all-pointer struct, and the part-built list
+# is then dropped unbuilt.
+class [linear, final] PlfAcc(plPaths: ListBuilder<String >, plN: Int,
+                             plOk: Bool)
+
 fun alPtrLeavesFields(fields: List<CgField>): (ls: List<String>, n: Int)|None
-  let out = fold(fields, (List<String>(), 0, true),
-                 (acc: (paths: List<String>, n: Int, ok: Bool), f2: CgField) => alPlfOne(acc, f2))
-  ret out.ok && out.n > 0 ? (out.paths, out.n) : None
+  ret alPlfLoop(chain(fields), PlfAcc(builder<String >(), 0, true))
 
-fun alPlfOne(acc: (paths: List<String>, n: Int, ok: Bool), f2: CgField): (paths: List<String>, n: Int, ok: Bool)
-  if !acc.ok
-    ret acc
+fun [tail] alPlfLoop(fs: Chain<CgField>,
+                     [terminal] acc: PlfAcc): (ls: List<String>, n: Int)|None
+  ret match(fs)
+    (nil: ChainEnd) => acc.plOk && acc.plN > 0
+      ? (build<String >(acc.plPaths), acc.plN)
+      : None
+    (l: ChainLink)  => acc.plOk
+      ? alPlfLoop(l.next, alPlfOne(acc, l.value))
+      : None
+
+fun alPlfOne([terminal] acc: PlfAcc, f2: CgField): PlfAcc
   ret match(f2.fieldType)
-    (d: CgDataPointer) => (append(acc.paths, f2.fieldName), acc.n + 1, true)
+    (d: CgDataPointer) => PlfAcc(push<String >(acc.plPaths, f2.fieldName),
+                                 acc.plN + 1, true)
     (s2: CgStruct)     => alPlfNested(acc, f2, alPtrLeavesFields(s2.fields))
-    (im: CgImmediateStruct) => alPlfNested(acc, f2, alPtrLeavesFields(im.fields))
-    (o: CgType)        => (acc.paths, acc.n, false)
+    (im: CgImmediateStruct) => alPlfNested(acc, f2,
+                                           alPtrLeavesFields(im.fields))
+    (o: CgType)        => PlfAcc(acc.plPaths, acc.plN, false)
 
-fun alPlfNested(acc: (paths: List<String>, n: Int, ok: Bool), f2: CgField,
-                inner: (ls: List<String>, n: Int)|None): (paths: List<String>, n: Int, ok: Bool)
+fun alPlfNested([terminal] acc: PlfAcc, f2: CgField,
+                inner: (ls: List<String>, n: Int)|None): PlfAcc
   ret match(inner)
-    (ps: (ls: List<String>, n: Int)) => (concat(acc.paths, map(ps.ls, (p: String) => f2.fieldName + "/" + p)),
-                                         acc.n + ps.n, true)
-    ()                  => (acc.paths, acc.n, false)
+    (ps: (ls: List<String>, n: Int)) =>
+        PlfAcc(_pushChain<String >(acc.plPaths,
+                   chain<String>(map(ps.ls,
+                                     (p: String) => f2.fieldName + "/" + p))),
+               acc.plN + ps.n, true)
+    ()  => PlfAcc(acc.plPaths, acc.plN, false)
 
 # Frame layout: coalesce per exact-type class (by_type in FIRST-SEEN type
 # order — type_index numbers from it), then route slots: strict DataPointer →
@@ -694,14 +803,34 @@ fun alComputeFrameLayout(smBbs: List<ABlock>, hotBbs: List<ABlock>,
 
 class [final] TypeGroup(tgType: CgType, tgNames: List<String>)
 
+# Fields grouped by exact type: the groups in FIRST-SEEN type order, because
+# the type index numbers from it, and the names within a group in field order,
+# because the colouring walks them in that order.
+#
+# Each group SELECTS its fields rather than being accumulated into. The old
+# shape appended the name to the matching group for every field, and since a
+# group's names live inside the group list, that meant rebuilding the entire
+# list of groups once per field of the frame.
 fun alGroupByType(fieldTypes: List<CgField>): List<TypeGroup>
-  ret fold(fieldTypes, List<TypeGroup>(), (acc: List<TypeGroup>, f2: CgField) => alGbtPut(acc, f2))
+  ret map<CgType, TypeGroup>(
+        build<CgType >(alDistinctTypes(chain(fieldTypes), List<CgType>(),
+                                       builder<CgType >())),
+        (t2: CgType) => TypeGroup(t2,
+            map(filter(fieldTypes,
+                       (f2: CgField) => eqCgType(f2.fieldType, t2)),
+                (f2: CgField) => f2.fieldName)))
 
-fun alGbtPut(acc: List<TypeGroup>, f2: CgField): List<TypeGroup>
-  ret any(acc, (g2: TypeGroup) => eqCgType(g2.tgType, f2.fieldType))
-    ? map(acc, (g2: TypeGroup) => eqCgType(g2.tgType, f2.fieldType)
-                 ? TypeGroup(g2.tgType, append(g2.tgNames, f2.fieldName)) : g2)
-    : append(acc, TypeGroup(f2.fieldType, list1(f2.fieldName)))
+# The distinct field types in first-seen order. `seen` answers only "have I
+# had this type before", so its own order is free; the builder carries the
+# order that matters.
+fun [tail] alDistinctTypes(fs: Chain<CgField>, seen: List<CgType>,
+                           [terminal] out: ListBuilder<CgType >): ListBuilder<CgType >
+  ret match(fs)
+    (nil: ChainEnd) => out
+    (l: ChainLink)  => any(seen, (t2: CgType) => eqCgType(t2, l.value.fieldType))
+      ? alDistinctTypes(l.next, seen, out)
+      : alDistinctTypes(l.next, prepend(l.value.fieldType, seen),
+                        push<CgType >(out, l.value.fieldType))
 
 fun [tail] alLayoutLoop(gs: Chain<TypeGroup>, graph: IGraph, ti: Int, acc: AFrame): AFrame
   ret match(gs)
@@ -743,22 +872,16 @@ fun alLayoutInline(g2: TypeGroup, colour: List<NameIdx>, ti: Int, acc: AFrame): 
 fun alDistinctColourCount(colour: List<NameIdx>): Int
   ret alSortedColours(colour).n
 
+# The distinct colours in use, ascending, and how many there are.
+#
+# A Set says both things directly. What this replaces collected the distinct
+# values by scanning everything collected so far for each one, then sorted them
+# with a hand-written selection sort — a full scan of the remainder to find
+# each next smallest, and an append to put it at the end.
 fun alSortedColours(colour: List<NameIdx>): (cs: List<Int>, n: Int)
-  let dd = fold(colour, (List<Int>(), 0),
-                (acc: (cs: List<Int>, n: Int), e2: NameIdx) =>
-                  any(acc.cs, (x: Int) => x == e2.niIdx)
-                    ? acc
-                    : (append(acc.cs, e2.niIdx), acc.n + 1))
-  ret (alSortInts(dd.cs), dd.n)
-
-fun alSortInts(l: List<Int>): List<Int>
-  ret alSortIntsLoop(l, List<Int>())
-
-fun [tail] alSortIntsLoop(l: List<Int>, acc: List<Int>): List<Int>
-  if isEmpty(l)
-    ret acc
-  let m = fold(l, forceNth(l, 0), (a: Int, x: Int) => x < a ? x : a)
-  ret alSortIntsLoop(filter(l, (x: Int) => x != m), append(acc, m))
+  let distinct = fold<NameIdx, Set<Int> >(colour, Set<Int>(),
+                     (acc: Set<Int>, e2: NameIdx) => add<Int>(acc, e2.niIdx))
+  ret (sort<Int>(distinct), size<Int>(distinct))
 
 fun alIndexOfInt(l: List<Int>, x: Int): Int
   ret alIoiLoop(chain(l), x, 0)
@@ -837,38 +960,47 @@ fun alLoadVar(v: RParam, sp: RParam, stateName: String, layout: AFrame): List<Op
 
 class [final] Rebuilt(rbValue: RParam, rbNext: Int)
 
+# The values go into the struct in FIELD order, matching the index walk that
+# reads them out of the array, so they are built at the tail.
 fun alRebuild(t2: CgType, sp: RParam, stateName: String, idx: Int): Rebuilt
-  ret alRebuildFields(cgFieldsOfOrEmpty(t2), sp, stateName, idx, List<RpNamedValue>())
+  ret alRebuildFields(cgFieldsOfOrEmpty(t2), sp, stateName, idx,
+                      builder<RpNamedValue >())
 
 fun [tail] alRebuildFields(fields: List<CgField>, sp: RParam, stateName: String, idx: Int,
-                           acc: List<RpNamedValue>): Rebuilt
+                           [terminal] acc: ListBuilder<RpNamedValue >): Rebuilt
   if isEmpty(fields)
-    ret Rebuilt(RpNewStruct(acc), idx)
+    ret Rebuilt(RpNewStruct(build<RpNamedValue >(acc)), idx)
   let f2 = forceNth(fields, 0)
   let rest = tail(fields)
   ret match(f2.fieldType)
     (s2: CgStruct) => alRebuildNested(f2, rest, sp, stateName, idx, acc)
     (im: CgImmediateStruct) => alRebuildNested(f2, rest, sp, stateName, idx, acc)
     (o: CgType)    => alRebuildFields(rest, sp, stateName, idx + 1,
-                        append(acc, RpNamedValue(f2.fieldName, alArrayElem(sp, stateName, idx))))
+                        push<RpNamedValue >(acc,
+                            RpNamedValue(f2.fieldName,
+                                         alArrayElem(sp, stateName, idx))))
 
 fun alRebuildNested(f2: CgField, rest: List<CgField>, sp: RParam, stateName: String, idx: Int,
-                    acc: List<RpNamedValue>): Rebuilt
+                    [terminal] acc: ListBuilder<RpNamedValue >): Rebuilt
   let inner = alRebuild(f2.fieldType, sp, stateName, idx)
   ret alRebuildFields(rest, sp, stateName, inner.rbNext,
-                      append(acc, RpNamedValue(f2.fieldName, inner.rbValue)))
+                      push<RpNamedValue >(acc,
+                          RpNamedValue(f2.fieldName, inner.rbValue)))
 
 # ── musttail unroll (SM view) + state object ────────────────────────────────
 
 fun alUnrollMusttail(f: CgFunction): CgFunction
-  ret cgFunctionWith(f, alUmLoop(chain(f.fnOps), 0, List<Op>()), f.fnStackVars)
+  ret cgFunctionWith(f, build<Op >(alUmLoop(chain(f.fnOps), 0, builder<Op >())),
+                     f.fnStackVars)
 
-fun [tail] alUmLoop(os: Chain<Op>, counter: Int, acc: List<Op>): List<Op>
+fun [tail] alUmLoop(os: Chain<Op>, counter: Int,
+                    [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(alUmOne(l.value, counter))
-      (u: UmOut) => alUmLoop(l.next, u.umCounter, concat(acc, u.umOps))
-      ()          => alUmLoop(l.next, counter, append(acc, l.value))
+      (u: UmOut) => alUmLoop(l.next, u.umCounter,
+                             _pushChain<Op >(acc, chain<Op>(u.umOps)))
+      ()          => alUmLoop(l.next, counter, push<Op >(acc, l.value))
 
 class [final] UmOut(umOps: List<Op>, umCounter: Int)
 
@@ -900,12 +1032,19 @@ fun alForceResultType(t2: CgType|None): CgType
 fun alCreateStateObject(f: CgFunction, stateName: String, layout: AFrame): CgObject
   let inlinePtr = filter(layout.afSlotFields, (f2: CgField) => cgHasPointers(f2.fieldType))
   let nonPtr = filter(layout.afSlotFields, (f2: CgField) => !cgHasPointers(f2.fieldType))
-  let fields = concat(concat(concat(list2(CgField("type", CgDataPointer()),
-                                          CgField("my_task", CgDataPointer())),
-                                    inlinePtr),
-                             list2(CgField("idx", CgInt(32)),
-                                   CgField("$ptr_count", CgInt(32)))),
-                      append(nonPtr, CgField("array", CgArray(CgDataPointer(), 0))))
+  # The layout is fixed: header, pointer-bearing inline slots, index and
+  # pointer count, non-pointer slots, and the GC array LAST — it is a trailing
+  # flexible array, so nothing may follow it. One builder, in that order.
+  let fl0 = _pushChain<CgField >(builder<CgField >(),
+                chain<CgField>(list2(CgField("type", CgDataPointer()),
+                                     CgField("my_task", CgDataPointer()))))
+  let fl1 = _pushChain<CgField >(fl0, chain<CgField>(inlinePtr))
+  let fl2 = _pushChain<CgField >(fl1,
+                chain<CgField>(list2(CgField("idx", CgInt(32)),
+                                     CgField("$ptr_count", CgInt(32)))))
+  let fl3 = _pushChain<CgField >(fl2, chain<CgField>(nonPtr))
+  let fields = build<CgField >(push<CgField >(fl3,
+                   CgField("array", CgArray(CgDataPointer(), 0))))
   ret CgObject(stateName, List<String>(), List<CgFuncSlot>(),
                CgImmediateStruct(fields), "$ptr_count", f.fnComment,
                false, true, 0)   # is_mutable: idx + live vars rewritten at every suspension
@@ -915,14 +1054,41 @@ fun alCreateStateObject(f: CgFunction, stateName: String, layout: AFrame): CgObj
 # All state-resident vars over bbs[:-1]: sorted live per block + result reg,
 # first-seen dedup — the prologue zero-inits every NON-PARAM one (GC safety
 # for cold blocks firing before later sites' vars are assigned).
-fun alAllStateVars(bbs: List<ABlock>): List<RParam>
-  ret fold(alNonTerminal(bbs), List<RParam>(), alAsvBlock)
+# DISCOVERY ORDER IS OBSERVED HERE — this is the one place a StackVar set's
+# order reaches the output. The list becomes the hot path's zero-init
+# prologue, and Python builds it with all_state_vars.append(var) in exactly
+# this order (per block: live-sorted, then the block's result register). So it
+# is a builder with a separate membership set, not svSetAdd — svSetAdd puts
+# new members on the FRONT, which reversed the whole prologue.
+class [linear, final] AsvAcc(asOrder: ListBuilder<RParam >, asSeen: Set<String>)
 
-fun alAsvBlock(acc: List<RParam>, bb: ABlock): List<RParam>
-  let withLive = fold(svSortedByName(bb.abLive), acc, svSetAdd)
+fun alAllStateVars(bbs: List<ABlock>): List<RParam>
+  ret asvBuild(alAsvLoop(chain(alNonTerminal(bbs)),
+                         AsvAcc(builder<RParam >(), Set<String>())))
+
+fun asvBuild(acc: AsvAcc): List<RParam>
+  ret build<RParam >(acc.asOrder)
+
+fun [tail] alAsvLoop(bs: Chain<ABlock>, [terminal] acc: AsvAcc): AsvAcc
+  ret match(bs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alAsvLoop(l.next, alAsvBlock(acc, l.value))
+
+fun alAsvBlock([terminal] acc: AsvAcc, bb: ABlock): AsvAcc
   ret match(bb.abResult)
-    (r: RParam) => svSetAdd(withLive, r)
-    ()           => withLive
+    (r: RParam) => asvAdd(alAsvLive(chain(svSortedByName(bb.abLive)), acc), r)
+    ()          => alAsvLive(chain(svSortedByName(bb.abLive)), acc)
+
+fun [tail] alAsvLive(vs: Chain<RParam>, [terminal] acc: AsvAcc): AsvAcc
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alAsvLive(l.next, asvAdd(acc, l.value))
+
+fun asvAdd([terminal] acc: AsvAcc, v: RParam): AsvAcc
+  ret contains<String>(acc.asSeen, stackVarName(v))
+    ? acc
+    : AsvAcc(push<RParam >(acc.asOrder, v),
+             add<String>(acc.asSeen, stackVarName(v)))
 
 fun alZeroVal(t2: CgType): RParam
   ret match(t2)
@@ -932,17 +1098,46 @@ fun alZeroVal(t2: CgType): RParam
 
 class [final] HotOut(hoOps: List<Op>, hoWrapFields: List<CgField>)
 
+# The same two lists while they are being BUILT. Both are ordered — the ops are
+# instruction order, the wrap fields are frame-field order — and every hot site
+# used to concat its ops onto everything emitted so far, so assembling a
+# function was quadratic in its own instruction count. HotOut stays a plain
+# record because the assembler reads it several times; only the walk is linear.
+class [linear, final] HotAcc(haOps: ListBuilder<Op >,
+                             haWrapFields: ListBuilder<CgField >)
+
+fun hotBuild(acc: HotAcc): HotOut
+  ret HotOut(build<Op >(acc.haOps), build<CgField >(acc.haWrapFields))
+
+# Zero-init every state-resident var that is not already a parameter, in the
+# order alAllStateVars settled on.
+fun [tail] alHotPrologue(vs: Chain<RParam>, paramNames: List<String>,
+                         [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => strListMember(paramNames, stackVarName(l.value))
+      ? alHotPrologue(l.next, paramNames, acc)
+      : alHotPrologue(l.next, paramNames,
+                      push<Op >(acc, OpMove(l.value,
+                                            alZeroVal(rpGetType(l.value)),
+                                            false, List<RParam>())))
+
 fun alCreateHotPathFunc(f: CgFunction, stateName: String, subtype: String|None,
                         bbs: List<ABlock>, layout: AFrame): CgFunction
   let wrappedResult = wrapReturnType(f.fnResult)
   let paramNames = map(cgFieldsOfOrEmpty(f.fnParams), (fld: CgField) => fld.fieldName)
-  let prologue = fold(alAllStateVars(bbs), List<Op>(), (acc: List<Op>, v: RParam) =>
-                   strListMember(paramNames, stackVarName(v))
-                     ? acc
-                     : append(acc, OpMove(v, alZeroVal(rpGetType(v)), false, List<RParam>())))
-  let body = alHotSites(chain(alNonTerminal(bbs)), f, wrappedResult, 0, HotOut(prologue, List<CgField>()))
-  let withTerminal = HotOut(concat(body.hoOps, alConvertReturnsHot(alLastBlock(bbs).abOps, wrappedResult)),
-                            body.hoWrapFields)
+  # The prologue's zero-inits open the op stream, so the builder starts with
+  # them and the hot sites push onto the same one; the terminal block's ops
+  # close it.
+  let prologue = alHotPrologue(chain(alAllStateVars(bbs)), paramNames,
+                               builder<Op >())
+  let body = alHotSites(chain(alNonTerminal(bbs)), f, wrappedResult, 0,
+                        HotAcc(prologue, builder<CgField >()))
+  let withTerminal = hotBuild(
+      HotAcc(_pushChain<Op >(body.haOps,
+                 chain<Op>(alConvertReturnsHot(alLastBlock(bbs).abOps,
+                                               wrappedResult))),
+             body.haWrapFields))
   let hasPar = any(alNonTerminal(bbs), (bb: ABlock) => alBlockIsPar(bb))
   ret f.fnSync
     ? alHotAssembleSync(f, wrappedResult, withTerminal, hasPar)
@@ -968,13 +1163,14 @@ fun alBlockIsPar(bb: ABlock): Bool
     ()        => false
 
 fun [tail] alHotSites(bs: Chain<ABlock>, f: CgFunction, wrappedResult: CgType,
-                      i: Int, acc: HotOut): HotOut
+                      i: Int, [terminal] acc: HotAcc): HotAcc
   ret match(bs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alHotSites(l.next, f, wrappedResult, i + 1,
                                   alHotSite(l.value, f, wrappedResult, i, acc))
 
-fun alHotSite(bb: ABlock, f: CgFunction, wrappedResult: CgType, i: Int, acc: HotOut): HotOut
+fun alHotSite(bb: ABlock, f: CgFunction, wrappedResult: CgType, i: Int,
+              [terminal] acc: HotAcc): HotAcc
   ret match(lastOp(chain(bb.abOps)))
     (op: Op) => match(op)
       (pc: OpParallelCall) => alHotPar(bb, pc, f, wrappedResult, i, acc)
@@ -983,16 +1179,21 @@ fun alHotSite(bb: ABlock, f: CgFunction, wrappedResult: CgType, i: Int, acc: Hot
     ()        => acc
 
 fun alHotPar(bb: ABlock, pc: OpParallelCall, f: CgFunction, wrappedResult: CgType,
-             i: Int, acc: HotOut): HotOut
+             i: Int, [terminal] acc: HotAcc): HotAcc
   let parTaskName = "task$par$" + String(i) + "$" + f.fnName
-  let closures = alClosuresCounted(chain(pc.parCalls), 0, List<RParam>())
-  let ops1 = concat(acc.hoOps, alConvertReturnsHot(alDropLast(bb.abOps), wrappedResult))
-  let ops2 = concat(ops1, alEmitParTaskSetup(alSvParTask(), parTaskName, closures.cs, closures.n))
+  let closures = alClosuresCounted(chain(pc.parCalls), 0, builder<RParam >())
+  let ops1 = _pushChain<Op >(acc.haOps,
+                 chain<Op>(alConvertReturnsHot(alDropLast(bb.abOps),
+                                               wrappedResult)))
+  let ops2 = _pushChain<Op >(ops1,
+                 chain<Op>(alEmitParTaskSetup(alSvParTask(), parTaskName,
+                                              closures.cs, closures.n)))
   let ops3 = alHotParLaunchers(ops2, f.fnName, i, chain(pc.parCalls), 0)
-  ret HotOut(concat(ops3, list3(OpMove(alSvAsyncTask(), alSvParTask(), false, List<RParam>()),
-                                OpMove(alSvCallId(), RpInteger(i + 1, 32), false, List<RParam>()),
-                                OpJump("$asynccommon", List<RParam>()))),
-             acc.hoWrapFields)
+  ret HotAcc(_pushChain<Op >(ops3,
+                 chain<Op>(list3(OpMove(alSvAsyncTask(), alSvParTask(), false, List<RParam>()),
+                                 OpMove(alSvCallId(), RpInteger(i + 1, 32), false, List<RParam>()),
+                                 OpJump("$asynccommon", List<RParam>())))),
+             acc.haWrapFields)
 
 fun alClosureOf(callRef: RParam): RParam
   ret match(callRef)
@@ -1001,43 +1202,56 @@ fun alClosureOf(callRef: RParam): RParam
       ()             => RpNullPointer()
     (o: RParam)             => RpNullPointer()
 
-fun [tail] alHotParLaunchers(acc: List<Op>, fnName: String, site: Int,
-                             calls: Chain<RParam>, k: Int): List<Op>
+fun [tail] alHotParLaunchers([terminal] acc: ListBuilder<Op >, fnName: String,
+                             site: Int, calls: Chain<RParam>,
+                             k: Int): ListBuilder<Op >
   ret match(calls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alHotParLaunchers(
-        concat(acc, alEmitPostLauncher(alSvLauncher(), alSvParTask(), fnName, site, k)),
+        _pushChain<Op >(acc,
+            chain<Op>(alEmitPostLauncher(alSvLauncher(), alSvParTask(),
+                                         fnName, site, k))),
         fnName, site, l.next, k + 1)
 
 # One closure per parallel call, its count riding the walk (no-length ruling).
 fun [tail] alClosuresCounted(ps: Chain<RParam>, n: Int,
-                             acc: List<RParam>): (cs: List<RParam>, n: Int)
+                             [terminal] acc: ListBuilder<RParam >): (cs: List<RParam>, n: Int)
   ret match(ps)
-    (nil: ChainEnd) => (acc, n)
-    (l: ChainLink)  => alClosuresCounted(l.next, n + 1, append(acc, alClosureOf(l.value)))
+    (nil: ChainEnd) => (build<RParam >(acc), n)
+    (l: ChainLink)  => alClosuresCounted(l.next, n + 1,
+                                         push<RParam >(acc,
+                                                       alClosureOf(l.value)))
 
-fun alHotCall(bb: ABlock, c: OpCall, wrappedResult: CgType, i: Int, acc: HotOut): HotOut
+fun alHotCall(bb: ABlock, c: OpCall, wrappedResult: CgType, i: Int,
+              [terminal] acc: HotAcc): HotAcc
   ret match(c.callRegister)
     (reg: RParam) => alHotValued(bb, c, reg, wrappedResult, i, acc)
     ()             => alHotDiscarded(bb, c, wrappedResult, i, acc)
 
 # register None + result_type None → pure void: emit unchanged. Non-void
 # discarded → $wrap$<i> temp + IfTask, no unwrap Move.
-fun alHotDiscarded(bb: ABlock, c: OpCall, wrappedResult: CgType, i: Int, acc: HotOut): HotOut
+fun alHotDiscarded(bb: ABlock, c: OpCall, wrappedResult: CgType, i: Int,
+                   [terminal] acc: HotAcc): HotAcc
   ret match(c.callResultType)
     (dt: CgType) => alHotDiscardedTyped(bb, c, dt, wrappedResult, i, acc)
-    ()            => HotOut(concat(acc.hoOps, alConvertReturnsHot(bb.abOps, wrappedResult)),
-                            acc.hoWrapFields)
+    ()            => HotAcc(_pushChain<Op >(acc.haOps,
+                                chain<Op>(alConvertReturnsHot(bb.abOps,
+                                                              wrappedResult))),
+                            acc.haWrapFields)
 
 fun alHotDiscardedTyped(bb: ABlock, c: OpCall, dt: CgType, wrappedResult: CgType,
-                        i: Int, acc: HotOut): HotOut
+                        i: Int, [terminal] acc: HotAcc): HotAcc
   let dw = wrapReturnType(dt)
   let svWrap = RpStackVar(dw, "$wrap$" + String(i))
-  let ops1 = concat(acc.hoOps, alConvertReturnsHot(alDropLast(bb.abOps), wrappedResult))
-  let ops2 = append(ops1, OpCall(c.callFunction, c.callParameters, svWrap, c.callMusttail,
-                                 c.callImpure, c.callResultType, c.callSavedVars))
-  ret HotOut(append(ops2, alIfTaskOp(svWrap, dw, i)),
-             append(acc.hoWrapFields, CgField("$wrap$" + String(i), dw)))
+  let ops1 = _pushChain<Op >(acc.haOps,
+                 chain<Op>(alConvertReturnsHot(alDropLast(bb.abOps),
+                                               wrappedResult)))
+  let ops2 = push<Op >(ops1, OpCall(c.callFunction, c.callParameters, svWrap,
+                                    c.callMusttail, c.callImpure,
+                                    c.callResultType, c.callSavedVars))
+  ret HotAcc(push<Op >(ops2, alIfTaskOp(svWrap, dw, i)),
+             push<CgField >(acc.haWrapFields,
+                            CgField("$wrap$" + String(i), dw)))
 
 fun alIfTaskOp(sv: RParam, wrapped: CgType, i: Int): Op
   ret OpIfTask(isTaskParam(sv, wrapped), taskPtrFrom(sv, wrapped),
@@ -1047,7 +1261,7 @@ fun alIfTaskOp(sv: RParam, wrapped: CgType, i: Int): Op
 # returns its input unchanged for pass-through shapes, so structural
 # inequality is the faithful port.
 fun alHotValued(bb: ABlock, c: OpCall, reg: RParam, wrappedResult: CgType,
-                i: Int, acc: HotOut): HotOut
+                i: Int, [terminal] acc: HotAcc): HotAcc
   let resultType = rpGetType(reg)
   let wrappedType = wrapReturnType(resultType)
   ret eqCgType(wrappedType, resultType)
@@ -1055,19 +1269,28 @@ fun alHotValued(bb: ABlock, c: OpCall, reg: RParam, wrappedResult: CgType,
     : alHotValuedTemp(bb, c, reg, wrappedType, wrappedResult, i, acc)
 
 fun alHotValuedDirect(bb: ABlock, c: OpCall, reg: RParam, wrappedType: CgType,
-                      wrappedResult: CgType, i: Int, acc: HotOut): HotOut
-  let ops1 = concat(acc.hoOps, alConvertReturnsHot(bb.abOps, wrappedResult))
-  ret HotOut(append(ops1, alIfTaskOp(reg, wrappedType, i)), acc.hoWrapFields)
+                      wrappedResult: CgType, i: Int,
+                      [terminal] acc: HotAcc): HotAcc
+  let ops1 = _pushChain<Op >(acc.haOps,
+                 chain<Op>(alConvertReturnsHot(bb.abOps, wrappedResult)))
+  ret HotAcc(push<Op >(ops1, alIfTaskOp(reg, wrappedType, i)),
+             acc.haWrapFields)
 
 fun alHotValuedTemp(bb: ABlock, c: OpCall, reg: RParam, wrappedType: CgType,
-                    wrappedResult: CgType, i: Int, acc: HotOut): HotOut
+                    wrappedResult: CgType, i: Int,
+                    [terminal] acc: HotAcc): HotAcc
   let svWrap = RpStackVar(wrappedType, "$wrap$" + String(i))
-  let ops1 = concat(acc.hoOps, alConvertReturnsHot(alDropLast(bb.abOps), wrappedResult))
-  let ops2 = append(ops1, OpCall(c.callFunction, c.callParameters, svWrap, c.callMusttail,
-                                 c.callImpure, c.callResultType, c.callSavedVars))
-  let ops3 = append(ops2, alIfTaskOp(svWrap, wrappedType, i))
-  ret HotOut(append(ops3, OpMove(reg, RpStructField(svWrap, "value"), false, List<RParam>())),
-             append(acc.hoWrapFields, CgField("$wrap$" + String(i), wrappedType)))
+  let ops1 = _pushChain<Op >(acc.haOps,
+                 chain<Op>(alConvertReturnsHot(alDropLast(bb.abOps),
+                                               wrappedResult)))
+  let ops2 = push<Op >(ops1, OpCall(c.callFunction, c.callParameters, svWrap,
+                                    c.callMusttail, c.callImpure,
+                                    c.callResultType, c.callSavedVars))
+  let ops3 = push<Op >(ops2, alIfTaskOp(svWrap, wrappedType, i))
+  ret HotAcc(push<Op >(ops3, OpMove(reg, RpStructField(svWrap, "value"),
+                                    false, List<RParam>())),
+             push<CgField >(acc.haWrapFields,
+                            CgField("$wrap$" + String(i), wrappedType)))
 
 # sync: $asynccommon aborts (a proven-sync fn reached it = broken contract).
 fun alHotAssembleSync(f: CgFunction, wrappedResult: CgType, body: HotOut, hasPar: Bool): CgFunction
@@ -1091,31 +1314,39 @@ fun alHotAssembleAsync(f: CgFunction, stateName: String, subtype: String|None,
                        bbs: List<ABlock>, layout: AFrame, wrappedResult: CgType,
                        body: HotOut, hasPar: Bool): CgFunction
   let nonTerminal = alNonTerminal(bbs)
-  let common0 = list2(OpLabel("$asynccommon", List<RParam>()),
-                      OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List<RParam>()))
+  # One builder for the whole function body: the hot-path ops it was handed,
+  # then the async-common epilogue pushed on in emission order. Every step
+  # here used to copy everything emitted before it.
+  let common0 = _pushChain<Op >(
+      _pushChain<Op >(builder<Op >(), chain<Op>(body.hoOps)),
+      chain<Op>(list2(OpLabel("$asynccommon", List<RParam>()),
+                      OpNewObject(stateName, alSvState(),
+                                  RpInteger(layout.afNArray, 32),
+                                  List<RParam>()))))
   # Save only the suspending site's live set — shared slots must not be
   # clobbered by dead locals — dispatched on the recorded call id (1-based).
-  let common1 = append(common0,
+  let common1 = push<Op >(common0,
                        OpSwitchJump(alSvCallId(),
                                     alSaveCases(chain(nonTerminal), 0, List<OpCase>()),
                                     List<RParam>()))
-  let common2 = append(common1, OpJump("$save$done", List<RParam>()))
+  let common2 = push<Op >(common1, OpJump("$save$done", List<RParam>()))
   let common3 = alSaveBlocks(chain(nonTerminal), stateName, layout, 0, common2)
-  let common4 = append(common3, OpLabel("$save$done", List<RParam>()))
-  let common5 = concat(common4, list2(
+  let common4 = push<Op >(common3, OpLabel("$save$done", List<RParam>()))
+  let common5 = _pushChain<Op >(common4, chain<Op>(list2(
       OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
              RpNullPointer(), false, List<RParam>()),
       OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false),
-             alSvCallId(), false, List<RParam>())))
-  let common6 = concat(common5, alEmitTaskAlloc(alSvTask(), subtype))
+             alSvCallId(), false, List<RParam>()))))
+  let common6 = _pushChain<Op >(common5,
+                                chain<Op>(alEmitTaskAlloc(alSvTask(), subtype)))
   let callback = RpGlobalFunction(f.fnName + "$async", alSvState(), false, None, false, false)
-  let common7 = concat(common6, list3(
+  let common7 = _pushChain<Op >(common6, chain<Op>(list3(
       OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
              alSvTask(), false, List<RParam>()),
       alRuntimeDiscard(alSvDiscard(), "task_on_complete",
                        list2(RpNamedValue("task", alSvAsyncTask()),
                              RpNamedValue("cb", callback))),
-      OpReturn(RpTagTask(alSvTask(), wrappedResult), List<RParam>())))
+      OpReturn(RpTagTask(alSvTask(), wrappedResult), List<RParam>()))))
   let parFields = hasPar
     ? list2(CgField("$sv_par_task", CgDataPointer()), CgField("$sv_launcher", CgDataPointer()))
     : List<CgField>()
@@ -1128,7 +1359,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName: String, subtype: String|None,
                      body.hoWrapFields)
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
-                 concat(body.hoOps, common7), f.fnComment, f.fnForeignSymbol,
+                 build<Op >(common7), f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
 
 fun alSaveCases(bs: Chain<ABlock>, i: Int, acc: List<OpCase>): List<OpCase>
@@ -1141,19 +1372,30 @@ fun [tail] alSaveCasesB(bs: Chain<ABlock>, i: Int, [terminal] acc: ListBuilder<O
                                    push<OpCase >(acc, OpCase(i + 1, "$save$" + String(i))))
 
 fun [tail] alSaveBlocks(bs: Chain<ABlock>, stateName: String, layout: AFrame,
-                        i: Int, acc: List<Op>): List<Op>
+                        i: Int, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(bs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alSaveBlocks(l.next, stateName, layout, i + 1,
-                         concat(append(acc, OpLabel("$save$" + String(i), List<RParam>())),
-                                append(alSaveStores(l.value, stateName, layout),
-                                       OpJump("$save$done", List<RParam>()))))
+        push<Op >(
+            alSaveStores(l.value, stateName, layout,
+                push<Op >(acc, OpLabel("$save$" + String(i), List<RParam>()))),
+            OpJump("$save$done", List<RParam>())))
 
 # Hot-path $asynccommon save: the base is the freshly-allocated $sv_state
 # (Python 948: __store_var(var, __sv_state, ...)).
-fun alSaveStores(bb: ABlock, stateName: String, layout: AFrame): List<Op>
-  ret fold(svSortedByName(bb.abLive), List<Op>(),
-           (a: List<Op>, v: RParam) => concat(a, alStoreVar(v, alSvState(), stateName, layout)))
+fun alSaveStores(bb: ABlock, stateName: String, layout: AFrame,
+                 [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret alSaveStoresLoop(chain(svSortedByName(bb.abLive)), stateName, layout,
+                       acc)
+
+fun [tail] alSaveStoresLoop(vs: Chain<RParam>, stateName: String,
+                            layout: AFrame,
+                            [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSaveStoresLoop(l.next, stateName, layout,
+        _pushChain<Op >(acc, chain<Op>(alStoreVar(l.value, alSvState(),
+                                                  stateName, layout))))
 
 # ── stub launch (oversized looping bodies) ───────────────────────────────────
 
@@ -1162,25 +1404,49 @@ fun alStubThresholdOps(): Int
 
 # Stub mode: every UNPLACED param gains a state field (stub stores, entry
 # case reloads).
+# Of the four lists in a frame layout, only afSlotFields is ORDER-bearing — it
+# becomes struct fields. The other three are name-keyed lookups (niLookup,
+# nsLookup, alPlaced) whose entries carry their own array index, so a new one
+# goes on the front. The slot fields are SELECTED from the parameters in
+# parameter order rather than appended one at a time.
+#
+# alPlaced is asked of the ORIGINAL layout throughout: parameter names are
+# distinct, and every entry added here is named after the parameter that added
+# it, so no parameter can be blocked by another parameter's entry.
 fun alAugmentLayoutWithParams(layout: AFrame, params: List<CgField>): AFrame
-  ret fold(params, layout, alAugOne)
+  let slotted = filter(params, (p: CgField) => alAugIsSlotField(layout, p))
+  ret fold(params, AFrame(layout.afPtrSlots, layout.afInlineSlots,
+                          concat(layout.afSlotFields, slotted),
+                          layout.afNArray, layout.afDecomposed),
+           (acc: AFrame, p: CgField) => alAugOne(layout, acc, p))
 
-fun alAugOne(acc: AFrame, p: CgField): AFrame
-  if alPlaced(acc, p.fieldName)
+fun alAugIsSlotField(layout: AFrame, p: CgField): Bool
+  ret alPlaced(layout, p.fieldName)
+    ? false
+    : match(p.fieldType)
+      (d: CgDataPointer) => false
+      (o: CgType)        => alPtrLeaves(p.fieldType) is None
+
+fun alAugOne(layout: AFrame, acc: AFrame, p: CgField): AFrame
+  if alPlaced(layout, p.fieldName)
     ret acc
   ret match(p.fieldType)
-    (d: CgDataPointer) => AFrame(append(acc.afPtrSlots, NameIdx(p.fieldName, acc.afNArray)),
-                                 acc.afInlineSlots, acc.afSlotFields, acc.afNArray + 1, acc.afDecomposed)
+    (d: CgDataPointer) => AFrame(prepend(NameIdx(p.fieldName, acc.afNArray),
+                                         acc.afPtrSlots),
+                                 acc.afInlineSlots, acc.afSlotFields,
+                                 acc.afNArray + 1, acc.afDecomposed)
     (o: CgType)        => alAugNonPtr(acc, p)
 
 fun alAugNonPtr(acc: AFrame, p: CgField): AFrame
   ret match(alPtrLeaves(p.fieldType))
-    (leaves: (ls: List<String>, n: Int)) => AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
-                                     acc.afNArray + leaves.n,
-                                     append(acc.afDecomposed, NameIdx(p.fieldName, acc.afNArray)))
-    ()                      => AFrame(acc.afPtrSlots,
-                                     append(acc.afInlineSlots, NameStr(p.fieldName, p.fieldName)),
-                                     append(acc.afSlotFields, p), acc.afNArray, acc.afDecomposed)
+    (leaves: (ls: List<String>, n: Int)) =>
+        AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
+               acc.afNArray + leaves.n,
+               prepend(NameIdx(p.fieldName, acc.afNArray), acc.afDecomposed))
+    ()  => AFrame(acc.afPtrSlots,
+                  prepend(NameStr(p.fieldName, p.fieldName),
+                          acc.afInlineSlots),
+                  acc.afSlotFields, acc.afNArray, acc.afDecomposed)
 
 fun alPlaced(acc: AFrame, name: String): Bool
   ret any(acc.afPtrSlots, (e2: NameIdx) => e2.niName == name)
@@ -1243,40 +1509,66 @@ fun alCreateStateMachineFunc(f: CgFunction, stateName: String, subtype: String|N
   let n = nt.n
   # Park stores skip loaded-only vars (loop invariants — their field is
   # already current; the only way in is a dispatch load).
-  let bodyDefs = fold(bbs, List<String>(), (acc: List<String>, bb: ABlock) =>
-                   fold(bb.abOps, acc, (a: List<String>, op: Op) =>
-                     fold(alWritesOf(op), a, (a2: List<String>, w: RParam) =>
-                       strListAdd(a2, stackVarName(w)))))
+  let bodyDefs = fold(bbs, Set<String>(), (acc: Set<String>, bb: ABlock) =>
+                   fold(bb.abOps, acc, (a: Set<String>, op: Op) =>
+                     fold(alWritesOf(op), a, (a2: Set<String>, w: RParam) =>
+                       add<String>(a2, stackVarName(w)))))
   let idxField = RpObjectField(CgInt(32), alStateParam(), stateName, "idx", None, false)
   let myTaskField = RpObjectField(CgDataPointer(), alStateParam(), stateName, "my_task", None, false)
   let dispatch0 = alSmDispatchSwitch(n, withEntryCase, idxField)
   let body = alSmSites(chain(nonTerminal), f, stateName, subtype, layout, bodyDefs,
                        idxField, myTaskField, 0,
-                       SmOut(dispatch0, List<Op>(), List<CgField>()))
-  let withTerminal = SmOut(concat(body.smOps,
-                                  alConvertReturnsSm(alLastBlock(bbs).abOps, myTaskField,
-                                                     f.fnResult, subtype)),
-                           body.smCold, body.smWrapFields)
+                       SmAcc(_pushChain<Op >(builder<Op >(),
+                                             chain<Op>(dispatch0)),
+                             builder<Op >(), builder<CgField >()))
+  let withTerminal = smBuild(
+      SmAcc(_pushChain<Op >(body.saOps,
+                chain<Op>(alConvertReturnsSm(alLastBlock(bbs).abOps,
+                                             myTaskField, f.fnResult,
+                                             subtype))),
+            body.saCold, body.saWrapFields))
   let dispatchTail = alSmDispatchTail(nonTerminal, f, stateName, layout, withEntryCase, bbs)
   let allOps = alPrunePhiSources(concat(concat(withTerminal.smOps, withTerminal.smCold), dispatchTail))
   ret alSmAssemble(f, allOps, bbs, withTerminal.smWrapFields)
 
 class [final] SmOut(smOps: List<Op>, smCold: List<Op>, smWrapFields: List<CgField>)
 
-fun alSmDispatchSwitch(n: Int, withEntryCase: Bool, idxField: RParam): List<Op>
-  let cases = alSmCases(n, 0, List<OpCase>())
-  let cases2 = withEntryCase ? append(cases, OpCase(n + 1, "$case$entry")) : cases
-  let sw = list1(OpSwitchJump(idxField, cases2, List<RParam>()))
-  ret withEntryCase ? append(sw, OpLabel("$sm$body", List<RParam>())) : sw
+# The same three lists while they are being BUILT. All three are ordered — the
+# body ops, the cold park blocks and the frame's wrap fields — and every
+# suspension site used to concat its ops onto everything emitted before it, so
+# lowering a state machine was quadratic in its own instruction count. SmOut
+# stays plain because the assembler reads it repeatedly; only the walk is
+# linear.
+class [linear, final] SmAcc(saOps: ListBuilder<Op >, saCold: ListBuilder<Op >,
+                            saWrapFields: ListBuilder<CgField >)
 
-fun [tail] alSmCases(n: Int, i: Int, acc: List<OpCase>): List<OpCase>
+fun smBuild(acc: SmAcc): SmOut
+  ret SmOut(build<Op >(acc.saOps), build<Op >(acc.saCold),
+            build<CgField >(acc.saWrapFields))
+
+# Case 0 is unused; cases 1..n are the suspension sites in index order, and
+# the entry case — when there is one — comes after them.
+fun alSmDispatchSwitch(n: Int, withEntryCase: Bool, idxField: RParam): List<Op>
+  let cases = alSmCases(n, 0, builder<OpCase >())
+  let cases2 = build<OpCase >(withEntryCase
+    ? push<OpCase >(cases, OpCase(n + 1, "$case$entry"))
+    : cases)
+  ret withEntryCase
+    ? list2(OpSwitchJump(idxField, cases2, List<RParam>()),
+            OpLabel("$sm$body", List<RParam>()))
+    : list1(OpSwitchJump(idxField, cases2, List<RParam>()))
+
+fun [tail] alSmCases(n: Int, i: Int,
+                     [terminal] acc: ListBuilder<OpCase >): ListBuilder<OpCase >
   if i >= n
     ret acc
-  ret alSmCases(n, i + 1, append(acc, OpCase(i + 1, "$case$" + String(i + 1))))
+  ret alSmCases(n, i + 1,
+                push<OpCase >(acc, OpCase(i + 1, "$case$" + String(i + 1))))
 
 fun [tail] alSmSites(bs: Chain<ABlock>, f: CgFunction, stateName: String,
-                     subtype: String|None, layout: AFrame, bodyDefs: List<String>,
-                     idxField: RParam, myTaskField: RParam, i: Int, acc: SmOut): SmOut
+                     subtype: String|None, layout: AFrame, bodyDefs: Set<String>,
+                     idxField: RParam, myTaskField: RParam, i: Int,
+                     [terminal] acc: SmAcc): SmAcc
   ret match(bs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alSmSites(l.next, f, stateName, subtype, layout, bodyDefs,
@@ -1285,68 +1577,79 @@ fun [tail] alSmSites(bs: Chain<ABlock>, f: CgFunction, stateName: String,
                                           idxField, myTaskField, i, acc))
 
 fun alSmSite(bb: ABlock, f: CgFunction, stateName: String, subtype: String|None,
-             layout: AFrame, bodyDefs: List<String>, idxField: RParam,
-             myTaskField: RParam, i: Int, acc: SmOut): SmOut
+             layout: AFrame, bodyDefs: Set<String>, idxField: RParam,
+             myTaskField: RParam, i: Int, [terminal] acc: SmAcc): SmAcc
   let bodyOps = alConvertReturnsSm(alDropLast(bb.abOps), myTaskField, f.fnResult, subtype)
   # SM saves address the $state parameter (Python 1179).
   let saveStores = fold(svSortedByName(bb.abLive), List<Op>(), (a: List<Op>, v: RParam) =>
-                     strListMember(bodyDefs, stackVarName(v))
+                     contains<String>(bodyDefs, stackVarName(v))
                        ? concat(a, alStoreVar(v, alStateParam(), stateName, layout))
                        : a)
   ret match(lastOp(chain(bb.abOps)))
     (op: Op) => match(op)
       (pc: OpParallelCall) => alSmPar(pc, f, stateName, layout, idxField, i,
-                                      SmOut(concat(acc.smOps, bodyOps), acc.smCold, acc.smWrapFields),
-                                      saveStores)
+                          SmAcc(_pushChain<Op >(acc.saOps,
+                                                chain<Op>(bodyOps)),
+                                acc.saCold, acc.saWrapFields),
+                          saveStores)
       (c: OpCall)          => alSmCall(c, f, idxField, i,
-                                      SmOut(concat(acc.smOps, bodyOps), acc.smCold, acc.smWrapFields),
-                                      saveStores)
+                          SmAcc(_pushChain<Op >(acc.saOps,
+                                                chain<Op>(bodyOps)),
+                                acc.saCold, acc.saWrapFields),
+                          saveStores)
       (o: Op)               => acc   # unreachable
     ()        => acc
 
 # A ParallelCall always parks.
 fun alSmPar(pc: OpParallelCall, f: CgFunction, stateName: String, layout: AFrame,
-            idxField: RParam, i: Int, acc: SmOut, saveStores: List<Op>): SmOut
+            idxField: RParam, i: Int, [terminal] acc: SmAcc,
+            saveStores: List<Op>): SmAcc
   let parTaskName = "task$par$" + String(i) + "$" + f.fnName
   let svParSm = RpStackVar(CgDataPointer(), "$sv_par_sm$" + String(i))
   let svLauncherSm = RpStackVar(CgDataPointer(), "$sv_launcher_sm$" + String(i))
-  let closures = alClosuresCounted(chain(pc.parCalls), 0, List<RParam>())
-  let ops1 = concat(acc.smOps, alEmitParTaskSetup(svParSm, parTaskName, closures.cs, closures.n))
+  let closures = alClosuresCounted(chain(pc.parCalls), 0, builder<RParam >())
+  let ops1 = _pushChain<Op >(acc.saOps,
+                 chain<Op>(alEmitParTaskSetup(svParSm, parTaskName,
+                                              closures.cs, closures.n)))
   let ops2 = alSmParLaunchers(ops1, svLauncherSm, svParSm, f.fnName, i, chain(pc.parCalls), 0)
-  let ops3 = concat(concat(ops2, saveStores),
-                    alEmitSuspendToAsync(idxField, i + 1, svParSm, f.fnName))
-  ret SmOut(append(ops3, OpLabel("$resume$" + String(i), List<RParam>())),
-            acc.smCold,
-            concat(acc.smWrapFields, list2(CgField("$sv_par_sm$" + String(i), CgDataPointer()),
-                                           CgField("$sv_launcher_sm$" + String(i), CgDataPointer()))))
+  let ops3 = _pushChain<Op >(_pushChain<Op >(ops2, chain<Op>(saveStores)),
+                 chain<Op>(alEmitSuspendToAsync(idxField, i + 1, svParSm,
+                                                f.fnName)))
+  ret SmAcc(push<Op >(ops3, OpLabel("$resume$" + String(i), List<RParam>())),
+            acc.saCold,
+            _pushChain<CgField >(acc.saWrapFields,
+                chain<CgField>(list2(CgField("$sv_par_sm$" + String(i), CgDataPointer()),
+                                     CgField("$sv_launcher_sm$" + String(i), CgDataPointer())))))
 
-fun [tail] alSmParLaunchers(acc: List<Op>, launcherVar: RParam, parVar: RParam,
-                            fnName: String, site: Int, calls: Chain<RParam>, k: Int): List<Op>
+fun [tail] alSmParLaunchers([terminal] acc: ListBuilder<Op >, launcherVar: RParam,
+                            parVar: RParam, fnName: String, site: Int,
+                            calls: Chain<RParam>, k: Int): ListBuilder<Op >
   ret match(calls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alSmParLaunchers(
-        concat(acc, alEmitPostLauncher(launcherVar, parVar, fnName, site, k)),
+        _pushChain<Op >(acc, chain<Op>(alEmitPostLauncher(launcherVar, parVar,
+                                                          fnName, site, k))),
         launcherVar, parVar, fnName, site, l.next, k + 1)
 
 fun alSmCall(c: OpCall, f: CgFunction, idxField: RParam, i: Int,
-             acc: SmOut, saveStores: List<Op>): SmOut
+             [terminal] acc: SmAcc, saveStores: List<Op>): SmAcc
   ret match(c.callRegister)
     (reg: RParam) => alSmValued(c, reg, f, idxField, i, acc, saveStores)
     ()             => alSmNoReg(c, f, idxField, i, acc, saveStores)
 
 fun alSmNoReg(c: OpCall, f: CgFunction, idxField: RParam, i: Int,
-              acc: SmOut, saveStores: List<Op>): SmOut
+              [terminal] acc: SmAcc, saveStores: List<Op>): SmAcc
   ret match(c.callResultType)
     # Discarded non-void: $sm_wrap$<i> register, IS_TASK, no unwrap.
     (dt: CgType) => alSmChecked(c, RpStackVar(wrapReturnType(dt), "$sm_wrap$" + String(i)),
                                 wrapReturnType(dt), None, true, f, idxField, i, acc, saveStores)
     # Pure void: no check; resume label directly after the call.
-    ()            => SmOut(concat(append<Op>(acc.smOps, c),
-                                  list1(OpLabel("$resume$" + String(i), List<RParam>()))),
-                           acc.smCold, acc.smWrapFields)
+    ()            => SmAcc(push<Op >(push<Op >(acc.saOps, c),
+                               OpLabel("$resume$" + String(i), List<RParam>())),
+                           acc.saCold, acc.saWrapFields)
 
 fun alSmValued(c: OpCall, reg: RParam, f: CgFunction, idxField: RParam, i: Int,
-               acc: SmOut, saveStores: List<Op>): SmOut
+               [terminal] acc: SmAcc, saveStores: List<Op>): SmAcc
   let resultType = rpGetType(reg)
   let wrappedType = wrapReturnType(resultType)
   ret eqCgType(wrappedType, resultType)
@@ -1360,7 +1663,7 @@ fun alSmValued(c: OpCall, reg: RParam, f: CgFunction, idxField: RParam, i: Int,
 # park path is the ONLY place block i's locals reach the state object.
 fun alSmChecked(c: OpCall, svCheck: RParam, checkType: CgType, unwrapOp: Op|None,
                 retarget: Bool, f: CgFunction, idxField: RParam, i: Int,
-                acc: SmOut, saveStores: List<Op>): SmOut
+                [terminal] acc: SmAcc, saveStores: List<Op>): SmAcc
   let callOp = retarget
     ? OpCall(c.callFunction, c.callParameters, svCheck, c.callMusttail, c.callImpure,
              c.callResultType, c.callSavedVars)
@@ -1369,43 +1672,63 @@ fun alSmChecked(c: OpCall, svCheck: RParam, checkType: CgType, unwrapOp: Op|None
                               RpNewStruct(list1(RpNamedValue("x", isTaskParam(svCheck, checkType)))),
                               CgInt(32))
   let asyncLabel = "$async_sm$" + String(i)
-  let ops1 = concat(append(acc.smOps, callOp),
-                    list1(OpJumpIf(asyncLabel, check, false, List<RParam>())))
+  let ops1 = push<Op >(push<Op >(acc.saOps, callOp),
+                       OpJumpIf(asyncLabel, check, false, List<RParam>()))
   let ops2 = match(unwrapOp)
-    (u: Op) => append(ops1, u)
+    (u: Op) => push<Op >(ops1, u)
     ()       => ops1
-  let ops3 = append(ops2, OpLabel("$resume$" + String(i), List<RParam>()))
+  let ops3 = push<Op >(ops2, OpLabel("$resume$" + String(i), List<RParam>()))
   let untagged = RpRuntimeInvoke("TASK_UNTAG",
                                  RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(svCheck, checkType)))),
                                  CgDataPointer())
-  let cold1 = concat(append(acc.smCold, OpLabel(asyncLabel, List<RParam>())), saveStores)
-  let cold2 = concat(cold1, alEmitSuspendToAsync(idxField, i + 1, untagged, f.fnName))
+  let cold1 = _pushChain<Op >(push<Op >(acc.saCold,
+                                        OpLabel(asyncLabel, List<RParam>())),
+                              chain<Op>(saveStores))
+  let cold2 = _pushChain<Op >(cold1,
+                  chain<Op>(alEmitSuspendToAsync(idxField, i + 1, untagged,
+                                                 f.fnName)))
   let wraps = retarget
-    ? append(acc.smWrapFields, CgField(stackVarName(svCheck), checkType))
-    : acc.smWrapFields
-  ret SmOut(ops3, cold2, wraps)
+    ? push<CgField >(acc.saWrapFields,
+                     CgField(stackVarName(svCheck), checkType))
+    : acc.saWrapFields
+  ret SmAcc(ops3, cold2, wraps)
 
 # Dispatch cases at the tail: reload the site's live set, extract the
 # completed call's result, jump to the resume point.
 fun alSmDispatchTail(nonTerminal: List<ABlock>, f: CgFunction, stateName: String,
                      layout: AFrame, withEntryCase: Bool, bbs: List<ABlock>): List<Op>
-  let cases = alSmDtLoop(chain(nonTerminal), f, stateName, layout, 0, List<Op>())
-  ret withEntryCase ? concat(cases, alSmEntryCase(f, stateName, layout, nonTerminal)) : cases
+  let cases = alSmDtLoop(chain(nonTerminal), f, stateName, layout, 0,
+                         builder<Op >())
+  ret build<Op >(withEntryCase
+    ? _pushChain<Op >(cases,
+          chain<Op>(alSmEntryCase(f, stateName, layout, nonTerminal)))
+    : cases)
 
 fun [tail] alSmDtLoop(bs: Chain<ABlock>, f: CgFunction, stateName: String,
-                      layout: AFrame, i: Int, acc: List<Op>): List<Op>
+                      layout: AFrame, i: Int,
+                      [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(bs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alSmDtLoop(l.next, f, stateName, layout, i + 1,
                                   alSmDtCase(l.value, f, stateName, layout, i, acc))
 
+# One dispatch case: its label, the site's live set reloaded, the completed
+# call's result extracted, then the jump to the resume point — in that order.
 fun alSmDtCase(bb: ABlock, f: CgFunction, stateName: String, layout: AFrame,
-               i: Int, acc: List<Op>): List<Op>
-  let loads = fold(svSortedByName(bb.abLive), List<Op>(), (a: List<Op>, v: RParam) =>
-                concat(a, alLoadVar(v, alStateParam(), stateName, layout)))
-  let ops1 = concat(append(acc, OpLabel("$case$" + String(i + 1), List<RParam>())), loads)
-  let ops2 = concat(ops1, alSmDtExtract(bb, f, i))
-  ret append(ops2, OpJump("$resume$" + String(i), List<RParam>()))
+               i: Int, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  let ops1 = alSmDtLoads(chain(svSortedByName(bb.abLive)), stateName, layout,
+                 push<Op >(acc, OpLabel("$case$" + String(i + 1),
+                                        List<RParam>())))
+  let ops2 = _pushChain<Op >(ops1, chain<Op>(alSmDtExtract(bb, f, i)))
+  ret push<Op >(ops2, OpJump("$resume$" + String(i), List<RParam>()))
+
+fun [tail] alSmDtLoads(vs: Chain<RParam>, stateName: String, layout: AFrame,
+                       [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSmDtLoads(l.next, stateName, layout,
+        _pushChain<Op >(acc, chain<Op>(alLoadVar(l.value, alStateParam(),
+                                                 stateName, layout))))
 
 fun alSmDtExtract(bb: ABlock, f: CgFunction, i: Int): List<Op>
   ret match(lastOp(chain(bb.abOps)))
@@ -1448,64 +1771,125 @@ fun alSmDtResult(bb: ABlock): List<Op>
 # (the zero-filled field equals the old field-addressed semantics).
 fun alSmEntryCase(f: CgFunction, stateName: String, layout: AFrame,
                   nonTerminal: List<ABlock>): List<Op>
-  let ops0 = list1(OpLabel("$case$entry", List<RParam>()))
-  let paramLoads = fold(cgFieldsOfOrEmpty(f.fnParams), (ops0, List<String>()),
-                        (acc: (ops: List<Op>, seen: List<String>), p: CgField) =>
-                          (concat(acc.ops, alLoadVar(RpStackVar(p.fieldType, p.fieldName), alStateParam(), stateName, layout)),
-                           strListAdd(acc.seen, p.fieldName)))
-  let liveLoads = fold(nonTerminal, paramLoads, (acc: (ops: List<Op>, seen: List<String>), bb: ABlock) =>
-                    fold(svSortedByName(bb.abLive), acc,
-                         (a: (ops: List<Op>, seen: List<String>), v: RParam) =>
-                           strListMember(a.seen, stackVarName(v))
-                             ? a
-                             : (concat(a.ops, alLoadVar(v, alStateParam(), stateName, layout)),
-                                strListAdd(a.seen, stackVarName(v)))))
-  ret append(liveLoads.ops, OpJump("$sm$body", List<RParam>()))
+  let afterParams = alSmEntryParams(chain(cgFieldsOfOrEmpty(f.fnParams)),
+                        stateName, layout,
+                        EntryAcc(push<Op >(builder<Op >(),
+                                     OpLabel("$case$entry", List<RParam>())),
+                                 Set<String >()))
+  let afterLive = alSmEntryBlocks(chain(nonTerminal), stateName, layout,
+                                  afterParams)
+  ret build<Op >(push<Op >(afterLive.eaOps,
+                           OpJump("$sm$body", List<RParam>())))
+
+# Every parameter, then every block's live set, each loaded ONCE — first
+# occurrence wins and the loads come out in that order. `seen` is asked only
+# whether a name has been loaded, so it is a Set; the loads are ordered, so
+# they go into a builder, and the two travel together.
+class [linear, final] EntryAcc(eaOps: ListBuilder<Op >, eaSeen: Set<String >)
+
+fun [tail] alSmEntryParams(ps: Chain<CgField>, stateName: String,
+                           layout: AFrame,
+                           [terminal] acc: EntryAcc): EntryAcc
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSmEntryParams(l.next, stateName, layout,
+        EntryAcc(_pushChain<Op >(acc.eaOps,
+                     chain<Op>(alLoadVar(RpStackVar(l.value.fieldType,
+                                                    l.value.fieldName),
+                                         alStateParam(), stateName, layout))),
+                 add<String >(acc.eaSeen, l.value.fieldName)))
+
+fun [tail] alSmEntryBlocks(bs: Chain<ABlock>, stateName: String,
+                           layout: AFrame,
+                           [terminal] acc: EntryAcc): EntryAcc
+  ret match(bs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSmEntryBlocks(l.next, stateName, layout,
+        alSmEntryLive(chain(svSortedByName(l.value.abLive)), stateName,
+                      layout, acc))
+
+fun [tail] alSmEntryLive(vs: Chain<RParam>, stateName: String, layout: AFrame,
+                         [terminal] acc: EntryAcc): EntryAcc
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => contains<String >(acc.eaSeen, stackVarName(l.value))
+      ? alSmEntryLive(l.next, stateName, layout, acc)
+      : alSmEntryLive(l.next, stateName, layout,
+          EntryAcc(_pushChain<Op >(acc.eaOps,
+                       chain<Op>(alLoadVar(l.value, alStateParam(), stateName,
+                                           layout))),
+                   add<String >(acc.eaSeen, stackVarName(l.value))))
 
 fun alSmAssemble(f: CgFunction, allOps: List<Op>, bbs: List<ABlock>,
                  wrapFields: List<CgField>): CgFunction
   # Params become plain locals (the SM's own signature is $state/$completed);
   # block result registers not otherwise declared ($musttail$ret$N) too.
-  let declared = map(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => fld.fieldName)
-  let withParams = fold(cgFieldsOfOrEmpty(f.fnParams), (List<CgField>(), declared),
-                        (acc: (fs: List<CgField>, seen: List<String>), p: CgField) =>
-                          strListMember(acc.seen, p.fieldName)
-                            ? acc
-                            : (append(acc.fs, p), strListAdd(acc.seen, p.fieldName)))
-  let withResults = fold(bbs, withParams, (acc: (fs: List<CgField>, seen: List<String>), bb: ABlock) =>
-                      alSmDeclareResult(acc, bb))
+  # Parameters become locals, then any block result register not already
+  # declared. Both are ordered — these are struct fields — and `seen` answers
+  # only membership, so the pair travels as a builder and a Set.
+  let declared = Set<String >(map(cgFieldsOfOrEmpty(f.fnStackVars),
+                                  (fld: CgField) => fld.fieldName))
+  let withParams = alSmDeclareParams(chain(cgFieldsOfOrEmpty(f.fnParams)),
+                                     DeclAcc(builder<CgField >(), declared))
+  let withResults = alSmDeclareResults(chain(bbs), withParams)
   ret CgFunction(f.fnName + "$async",
                  CgStruct(list2(CgField("$state", CgDataPointer()),
                                 CgField("$completed_task", CgDataPointer()))),
                  CgVoid(),
                  # extra_stack = ($sv_discard,) + sm_wrap_fields — discard FIRST
                  # (Python async_lower.py:1343; declaration order is C order).
-                 CgStruct(concat(concat(cgFieldsOfOrEmpty(f.fnStackVars), withResults.fs),
+                 CgStruct(concat(concat(cgFieldsOfOrEmpty(f.fnStackVars),
+                                        build<CgField >(withResults.daFields)),
                                  prepend<CgField>(CgField("$sv_discard", CgDataPointer()), wrapFields))),
                  allOps, f.fnComment, None, false, false, false, false)
 
-fun alSmDeclareResult(acc: (fs: List<CgField>, seen: List<String>), bb: ABlock): (fs: List<CgField>, seen: List<String>)
+class [linear, final] DeclAcc(daFields: ListBuilder<CgField >,
+                             daSeen: Set<String >)
+
+fun [tail] alSmDeclareParams(ps: Chain<CgField>,
+                             [terminal] acc: DeclAcc): DeclAcc
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => contains<String >(acc.daSeen, l.value.fieldName)
+      ? alSmDeclareParams(l.next, acc)
+      : alSmDeclareParams(l.next,
+            DeclAcc(push<CgField >(acc.daFields, l.value),
+                    add<String >(acc.daSeen, l.value.fieldName)))
+
+fun [tail] alSmDeclareResults(bs: Chain<ABlock>,
+                              [terminal] acc: DeclAcc): DeclAcc
+  ret match(bs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alSmDeclareResults(l.next,
+                                          alSmDeclareResult(acc, l.value))
+
+fun alSmDeclareResult([terminal] acc: DeclAcc, bb: ABlock): DeclAcc
   ret match(bb.abResult)
-    (reg: RParam) => strListMember(acc.seen, stackVarName(reg))
+    (reg: RParam) => contains<String >(acc.daSeen, stackVarName(reg))
       ? acc
-      : (append(acc.fs, CgField(stackVarName(reg), rpGetType(reg))), strListAdd(acc.seen, stackVarName(reg)))
+      : DeclAcc(push<CgField >(acc.daFields,
+                    CgField(stackVarName(reg), rpGetType(reg))),
+                add<String >(acc.daSeen, stackVarName(reg)))
     ()             => acc
 
 # Drop Phi sources whose predecessor labels now live in the OTHER function;
 # an all-pruned Phi disappears (its target is written elsewhere).
 fun alPrunePhiSources(ops: List<Op>): List<Op>
   let preds = ucPhiEdgesPreds(ops)
-  ret alPpsLoop(chain(ops), preds, "", List<Op>())
+  ret build<Op >(alPpsLoop(chain(ops), preds, "", builder<Op >()))
 
-class [final] BlockPreds(bpLabel: String, bpPreds: List<String>)
-
-fun ucPhiEdgesPreds(ops: List<Op>): List<BlockPreds>
-  ret alBpLoop(chain(ops), None, "", List<BlockPreds>())
+# Label → the labels that can reach it. A Dict of Sets: the only question ever
+# asked of it is "is this phi source one of this block's predecessors", which
+# is membership on both levels. The list-of-pairs it replaces answered a lookup
+# by allocating a filtered copy of itself, and inserting rebuilt the entire
+# list once per edge.
+fun ucPhiEdgesPreds(ops: List<Op>): Dict<String, Set<String > >
+  ret alBpLoop(chain(ops), None, "", Dict<String, Set<String > >())
 
 # The preceding op is CARRIED rather than re-indexed: alBpFall only ever needs
 # ops[i-1], and `prev` is None exactly where the index form tested i == 0.
 fun [tail] alBpLoop(os: Chain<Op>, prev: Op|None, cur: String,
-                    acc: List<BlockPreds>): List<BlockPreds>
+                    acc: Dict<String, Set<String > >): Dict<String, Set<String > >
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -1513,14 +1897,16 @@ fun [tail] alBpLoop(os: Chain<Op>, prev: Op|None, cur: String,
                                 alBpFall(prev, cur, lb.labelName, acc))
       (o: Op)       => alBpLoop(l.next, o, cur, alBpJumps(o, cur, acc))
 
-fun alBpFall(prev: Op|None, cur: String, label: String, acc: List<BlockPreds>): List<BlockPreds>
+fun alBpFall(prev: Op|None, cur: String, label: String,
+             acc: Dict<String, Set<String > >): Dict<String, Set<String > >
   if length(cur) == 0
     ret acc
   ret match(prev)
     (p: Op) => ucPrevFallsIntoLabel(p) ? alBpAdd(acc, label, cur) : acc
     ()      => acc
 
-fun alBpJumps(op: Op, cur: String, acc: List<BlockPreds>): List<BlockPreds>
+fun alBpJumps(op: Op, cur: String,
+              acc: Dict<String, Set<String > >): Dict<String, Set<String > >
   if length(cur) == 0
     ret acc
   ret match(op)
@@ -1528,41 +1914,69 @@ fun alBpJumps(op: Op, cur: String, acc: List<BlockPreds>): List<BlockPreds>
     (ji: OpJumpIf)     => alBpAdd(acc, ji.jumpIfLabel, cur)
     (t2: OpIfTask)     => alBpAdd(acc, t2.taskTarget, cur)
     (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                               (a: List<BlockPreds>, cs: OpCase) => alBpAdd(a, cs.caseLabel, cur))
+                               (a: Dict<String, Set<String > >, cs: OpCase) =>
+                                 alBpAdd(a, cs.caseLabel, cur))
     (o: Op)            => acc
 
-fun alBpAdd(acc: List<BlockPreds>, label: String, pred: String): List<BlockPreds>
-  ret any(acc, (e2: BlockPreds) => e2.bpLabel == label)
-    ? map(acc, (e2: BlockPreds) => e2.bpLabel == label
-                 ? BlockPreds(label, strListAdd(e2.bpPreds, pred)) : e2)
-    : append(acc, BlockPreds(label, list1(pred)))
+fun alBpAdd(acc: Dict<String, Set<String > >, label: String,
+            pred: String): Dict<String, Set<String > >
+  ret put<String, Set<String > >(acc, label,
+          add<String >(alBpOf(acc, label), pred))
 
-fun alBpOf(acc: List<BlockPreds>, label: String): List<String>
-  ret match(head(filter(acc, (e2: BlockPreds) => e2.bpLabel == label)))
-    (e2: BlockPreds) => e2.bpPreds
-    ()                => List<String>()
+fun alBpOf(acc: Dict<String, Set<String > >, label: String): Set<String >
+  ret match(get<String, Set<String > >(acc, label))
+    (ps: Set<String >) => ps
+    ()                 => Set<String >()
 
-fun [tail] alPpsLoop(os: Chain<Op>, preds: List<BlockPreds>, cur: String,
-                     acc: List<Op>): List<Op>
+fun [tail] alPpsLoop(os: Chain<Op>, preds: Dict<String, Set<String > >,
+                     cur: String,
+                     [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => alPpsLoop(l.next, preds, lb.labelName, append(acc, l.value))
-      (ph: OpPhi)   => alPpsLoop(l.next, preds, cur, alPpsPhi(acc, ph, preds, cur))
-      (o: Op)       => alPpsLoop(l.next, preds, cur, append(acc, o))
+      (lb: OpLabel) => alPpsLoop(l.next, preds, lb.labelName,
+                                 push<Op >(acc, l.value))
+      (ph: OpPhi)   => alPpsLoop(l.next, preds, cur,
+                                 alPpsPhi(acc, ph, preds, cur))
+      (o: Op)       => alPpsLoop(l.next, preds, cur, push<Op >(acc, o))
 
-fun alPpsPhi(acc: List<Op>, ph: OpPhi, preds: List<BlockPreds>, cur: String): List<Op>
+fun alPpsPhi([terminal] acc: ListBuilder<Op >, ph: OpPhi,
+             preds: Dict<String, Set<String > >, cur: String): ListBuilder<Op >
   if length(cur) == 0
-    ret append<Op>(acc, ph)
+    ret push<Op >(acc, ph)
   let blockPreds = alBpOf(preds, cur)
-  let kept = filter(ph.phiSources, (s2: OpPhiSource) => strListMember(blockPreds, s2.sourceLabel))
+  let kept = filter(ph.phiSources,
+                    (s2: OpPhiSource) => contains<String >(blockPreds,
+                                                           s2.sourceLabel))
   ret sameLen(chain(kept), chain(ph.phiSources))
-    ? append<Op>(acc, ph)
-    : (isEmpty(kept) ? acc : append(acc, OpPhi(ph.phiTarget, kept, ph.phiSavedVars)))
+    ? push<Op >(acc, ph)
+    : (isEmpty(kept)
+        ? acc
+        : push<Op >(acc, OpPhi(ph.phiTarget, kept, ph.phiSavedVars)))
 
 # ── per-function orchestrator ────────────────────────────────────────────────
 
 class [final] AlOut(aloFunctions: List<CgFunction>, aloObjects: List<CgObject>)
+
+# The same two lists while they are being ACCUMULATED across every function in
+# the program. Both are ordered — they become the app's emission order — and
+# merging used to concat the whole collection so far onto each function's small
+# contribution, once per function of the program.
+class [linear, final] AlAcc(aaFunctions: ListBuilder<CgFunction >,
+                            aaObjects: ListBuilder<CgObject >)
+
+fun alAccEmpty(): AlAcc
+  ret AlAcc(builder<CgFunction >(), builder<CgObject >())
+
+fun alAccBuild(acc: AlAcc): AlOut
+  ret AlOut(build<CgFunction >(acc.aaFunctions),
+            build<CgObject >(acc.aaObjects))
+
+fun alMergeOne([terminal] acc: AlAcc, out: AlOut): AlAcc
+  ret AlAcc(_pushChain<CgFunction >(acc.aaFunctions,
+                                    chain<CgFunction>(out.aloFunctions)),
+            _pushChain<CgObject >(acc.aaObjects,
+                                  chain<CgObject>(out.aloObjects)))
 
 fun alConvertFunction(f: CgFunction): AlOut
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
@@ -1652,32 +2066,35 @@ fun alHplHit(labelParks: Dict<String, Int>, name: String, parks: Int): Bool
 # ── parallel machinery ───────────────────────────────────────────────────────
 
 fun alParMachinery(f: CgFunction, bbs: List<ABlock>): AlOut
-  ret alPmLoop(chain(alNonTerminal(bbs)), f, 0, AlOut(List<CgFunction>(), List<CgObject>()))
+  ret alAccBuild(alPmLoop(chain(alNonTerminal(bbs)), f, 0, alAccEmpty()))
 
-fun [tail] alPmLoop(bs: Chain<ABlock>, f: CgFunction, i: Int, acc: AlOut): AlOut
+fun [tail] alPmLoop(bs: Chain<ABlock>, f: CgFunction, i: Int,
+                    [terminal] acc: AlAcc): AlAcc
   ret match(bs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alPmLoop(l.next, f, i + 1, alPmOne(l.value, f, i, acc))
 
-fun alPmOne(bb: ABlock, f: CgFunction, i: Int, acc: AlOut): AlOut
+fun alPmOne(bb: ABlock, f: CgFunction, i: Int, [terminal] acc: AlAcc): AlAcc
   ret match(lastOp(chain(bb.abOps)))
     (op: Op) => match(op)
       (pc: OpParallelCall) => alPmSite(pc, f, i, acc)
       (o: Op)               => acc
     ()        => acc
 
-fun alPmSite(pc: OpParallelCall, f: CgFunction, i: Int, acc: AlOut): AlOut
+fun alPmSite(pc: OpParallelCall, f: CgFunction, i: Int,
+             [terminal] acc: AlAcc): AlAcc
   let parTaskName = "task$par$" + String(i) + "$" + f.fnName
   let resTypes = map(pc.parResults, rpGetType)
   let obj = alParTaskObject(parTaskName, resTypes)
   ret alPmSlots(chain(resTypes), chain(pc.parCalls), f, i, parTaskName, 0,
-                AlOut(acc.aloFunctions, append(acc.aloObjects, obj)))
+                AlAcc(acc.aaFunctions, push<CgObject >(acc.aaObjects, obj)))
 
 # The result types and the call refs are walked in lockstep — one slot per
 # pair, as many slots as the ParallelCall has (the two are equal by
 # construction: resTypes IS map(pc.parResults, rpGetType)).
 fun [tail] alPmSlots(ts: Chain<CgType>, cs: Chain<RParam>, f: CgFunction, site: Int,
-                     parTaskName: String, k: Int, acc: AlOut): AlOut
+                     parTaskName: String, k: Int,
+                     [terminal] acc: AlAcc): AlAcc
   ret match(ts)
     (nil: ChainEnd) => acc
     (lt: ChainLink) => match(cs)
@@ -1686,11 +2103,12 @@ fun [tail] alPmSlots(ts: Chain<CgType>, cs: Chain<RParam>, f: CgFunction, site: 
       (nil2: ChainEnd) => acc
 
 fun alPmSlot(rt: CgType, callRef: RParam, f: CgFunction, site: Int,
-             parTaskName: String, k: Int, acc: AlOut): AlOut
+             parTaskName: String, k: Int, [terminal] acc: AlAcc): AlAcc
   let cb = alSlotCallback(f.fnName, site, k, parTaskName, rt)
   let launcher = alLauncherCallback(f.fnName, site, k, parTaskName,
                                     alLambdaNameOf(callRef, k), rt)
-  ret AlOut(concat(acc.aloFunctions, list2(cb, launcher)), acc.aloObjects)
+  ret AlAcc(push<CgFunction >(push<CgFunction >(acc.aaFunctions, cb), launcher),
+            acc.aaObjects)
 
 fun alLambdaNameOf(callRef: RParam, k: Int): String
   ret match(callRef)
@@ -1699,27 +2117,31 @@ fun alLambdaNameOf(callRef: RParam, k: Int): String
 
 # par_task: task_t prefix + remaining + closure_k + result_k.
 fun alParTaskObject(parTaskName: String, resultTypes: List<CgType>): CgObject
-  let fields0 = append(taskFields(), CgField("remaining", CgInt(32)))
-  let fields1 = alPtoClosures(fields0, chain(resultTypes), 0)
+  # Field order IS struct layout: the task_t prefix, `remaining`, one closure
+  # slot per parallel call, then one result slot per call — one builder end to
+  # end, so no stage rebuilds what the previous one produced.
+  let fields0 = push<CgField >(
+      _pushChain<CgField >(builder<CgField >(), chain<CgField>(taskFields())),
+      CgField("remaining", CgInt(32)))
+  let fields1 = alPtoClosuresB(fields0, chain(resultTypes), 0)
   let fields2 = alPtoResults(fields1, chain(resultTypes), 0, 0)
   ret CgObject(parTaskName, list1("task"), List<CgFuncSlot>(),
                CgImmediateStruct(fields2.fs),
                None, "parallel join task with " + String(fields2.n) + " slots",
                false, true, 0)
 
-fun alPtoClosures(acc: List<CgField>, ts: Chain<CgType>, k: Int): List<CgField>
-  ret build<CgField >(alPtoClosuresB(_pushChain<CgField >(builder<CgField >(), chain<CgField >(acc)), ts, k))
-
 fun [tail] alPtoClosuresB([terminal] acc: ListBuilder<CgField >, ts: Chain<CgType>, k: Int): ListBuilder<CgField >
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => alPtoClosuresB(push<CgField >(acc, CgField("closure_" + String(k), CgDataPointer())), l.next, k + 1)
 
-fun [tail] alPtoResults(acc: List<CgField>, ts: Chain<CgType>, k: Int,
-                        n: Int): (fs: List<CgField>, n: Int)
+fun [tail] alPtoResults([terminal] acc: ListBuilder<CgField >, ts: Chain<CgType>,
+                        k: Int, n: Int): (fs: List<CgField>, n: Int)
   ret match(ts)
-    (nil: ChainEnd) => (acc, n)
-    (l: ChainLink)  => alPtoResults(append(acc, CgField("result_" + String(k), l.value)),
+    (nil: ChainEnd) => (build<CgField >(acc), n)
+    (l: ChainLink)  => alPtoResults(push<CgField >(acc,
+                                        CgField("result_" + String(k),
+                                                l.value)),
                                     l.next, k + 1, n + 1)
 
 # Slot callback: result_k = extract(completed sub-task) + task_par_decrement.
@@ -1794,17 +2216,33 @@ fun alLauncherCallback(fnName: String, site: Int, slot: Int, parTaskName: String
 # One subtype per distinct non-Void return type + the foreign task object.
 # The DRIVER unions these with app objects LETTING APP WIN — lazy_thunks
 # pre-registers subtypes under the same names; never flip the union.
-fun collectTaskSubtypes(a: CgApp): List<CgObject>
-  let subs = fold(a.appFunctions, List<CgObject>(), alCtsOne)
-  ret append(subs, makeTaskForeignObject())
+# One subtype per distinct name, in first-seen order, with the foreign task
+# object last. The names are tracked in a Set: the old shape asked "have I
+# made this one already" by scanning every subtype collected so far, once per
+# function of the whole program.
+class [linear, final] CtsAcc(ctObjs: ListBuilder<CgObject >,
+                             ctSeen: Set<String >)
 
-fun alCtsOne(acc: List<CgObject>, f: CgFunction): List<CgObject>
+fun collectTaskSubtypes(a: CgApp): List<CgObject>
+  let subs = alCtsLoop(chain(appFunctions(a)),
+                       CtsAcc(builder<CgObject >(), Set<String >()))
+  ret build<CgObject >(push<CgObject >(subs.ctObjs, makeTaskForeignObject()))
+
+fun [tail] alCtsLoop(fs: Chain<CgFunction>,
+                     [terminal] acc: CtsAcc): CtsAcc
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alCtsLoop(l.next, alCtsOne(acc, l.value))
+
+fun alCtsOne([terminal] acc: CtsAcc, f: CgFunction): CtsAcc
   if alIsVoid(f.fnResult)
     ret acc
   ret match(taskSubtypeName(f.fnResult))
-    (name: String) => any(acc, (o: CgObject) => o.objName == name)
+    (name: String) => contains<String >(acc.ctSeen, name)
       ? acc
-      : append(acc, makeTaskSubtypeObject(name, alCtsInner(f.fnResult)))
+      : CtsAcc(push<CgObject >(acc.ctObjs,
+                   makeTaskSubtypeObject(name, alCtsInner(f.fnResult))),
+               add<String >(acc.ctSeen, name))
     ()              => acc
 
 fun alCtsInner(t2: CgType): CgType
@@ -1821,7 +2259,8 @@ fun alCtsInner(t2: CgType): CgType
 fun alOutlineParallelSites(f: CgFunction): AlOut2
   if !any(f.fnOps, alOpIsParallel)
     ret AlOut2(f, List<CgFunction>())
-  ret alOpsLoop(chain(f.fnOps), f, 0, List<Op>(), List<CgFunction>())
+  ret alOpsLoop(chain(f.fnOps), f, 0,
+                OpsAcc(builder<Op >(), builder<CgFunction >()))
 
 class [final] AlOut2(alo2Fn: CgFunction, alo2Helpers: List<CgFunction>)
 
@@ -1830,14 +2269,25 @@ fun alOpIsParallel(op: Op): Bool
     (pc: OpParallelCall) => true
     (o: Op)               => false
 
-fun [tail] alOpsLoop(os: Chain<Op>, f: CgFunction, i: Int, acc: List<Op>,
-                     helpers: List<CgFunction>): AlOut2
+# Two ordered outputs: the rewritten op stream, and the outlined helper
+# functions in the order their sites appear.
+class [linear, final] OpsAcc(oaOps: ListBuilder<Op >,
+                             oaHelpers: ListBuilder<CgFunction >)
+
+fun [tail] alOpsLoop(os: Chain<Op>, f: CgFunction, i: Int,
+                     [terminal] acc: OpsAcc): AlOut2
   ret match(os)
-    (nil: ChainEnd) => AlOut2(cgFunctionWith(f, acc, f.fnStackVars), helpers)
+    (nil: ChainEnd) => AlOut2(cgFunctionWith(f, build<Op >(acc.oaOps),
+                                             f.fnStackVars),
+                              build<CgFunction >(acc.oaHelpers))
     (l: ChainLink)  => match(alOutlineOne(l.value, f, i))
-      (o2: OutlineOne) => alOpsLoop(l.next, f, i + 1, append(acc, o2.ooSiteCall),
-                                    append(helpers, o2.ooHelper))
-      ()                => alOpsLoop(l.next, f, i + 1, append(acc, l.value), helpers)
+      (o2: OutlineOne) => alOpsLoop(l.next, f, i + 1,
+                              OpsAcc(push<Op >(acc.oaOps, o2.ooSiteCall),
+                                     push<CgFunction >(acc.oaHelpers,
+                                                       o2.ooHelper)))
+      ()                => alOpsLoop(l.next, f, i + 1,
+                              OpsAcc(push<Op >(acc.oaOps, l.value),
+                                     acc.oaHelpers))
 
 class [final] OutlineOne(ooSiteCall: Op, ooHelper: CgFunction)
 
@@ -1866,23 +2316,31 @@ fun alBuildOutline(pc: OpParallelCall, f: CgFunction, opIndex: Int): OutlineOne
   let svAccepting = RpStackVar(CgInt(32), "$accepting")
   let register = alForceRegister(pc.parRegister)
   let seqCalls = alSeqCalls(chain(helperCalls), chain(pc.parResults), List<Op>())
-  let helperOps = concat(concat(list2(
+  # The helper's body in emission order: the backpressure test, the sequential
+  # fallback calls, the tuple build, then the fork path.
+  let ho0 = _pushChain<Op >(builder<Op >(), chain<Op>(list2(
       OpMove(svAccepting, RpRuntimeInvoke("thread_work_accepting",
                                           RpNewStruct(List<RpNamedValue>()), CgInt(32)),
              false, List<RParam>()),
-      OpJumpIf("$fork", svAccepting, false, List<RParam>())),
-    append(seqCalls,
+      OpJumpIf("$fork", svAccepting, false, List<RParam>()))))
+  let ho1 = push<Op >(_pushChain<Op >(ho0, chain<Op>(seqCalls)),
       OpMove(register, RpNewStruct(alTupleFields(chain(pc.parResults), 0, List<RpNamedValue>())),
-             false, List<RParam>()))),
-    list4(OpReturn(register, List<RParam>()),
-          OpLabel("$fork", List<RParam>()),
-          OpParallelCall(helperCalls, pc.parResults, pc.parRegister, List<RParam>()),
-          OpReturn(register, List<RParam>())))
+             false, List<RParam>()))
+  let helperOps = build<Op >(_pushChain<Op >(ho1, chain<Op>(
+      list4(OpReturn(register, List<RParam>()),
+            OpLabel("$fork", List<RParam>()),
+            OpParallelCall(helperCalls, pc.parResults, pc.parRegister, List<RParam>()),
+            OpReturn(register, List<RParam>())))))
   let helperParams = concat(list1(CgField("$unused_self", CgDataPointer())),
                             map(closureParams, (p: RParam) => CgField(stackVarName(p), CgDataPointer())))
-  let helperStack = append(append(map(pc.parResults, (r: RParam) => CgField(stackVarName(r), rpGetType(r))),
-                                  CgField(stackVarName(register), rpGetType(register))),
-                           CgField("$accepting", CgInt(32)))
+  # Stack layout: the per-call results, the tuple register, then $accepting.
+  let helperStack = build<CgField >(push<CgField >(push<CgField >(
+      _pushChain<CgField >(builder<CgField >(),
+          chain<CgField>(map(pc.parResults,
+                             (r: RParam) => CgField(stackVarName(r),
+                                                    rpGetType(r))))),
+      CgField(stackVarName(register), rpGetType(register))),
+      CgField("$accepting", CgInt(32))))
   let helper = CgFunction(helperName, CgStruct(helperParams), rpGetType(register),
                           CgStruct(helperStack), helperOps,
                           "__parallel__ backpressure dispatch for " + f.fnName + " site " + String(opIndex),
@@ -1987,7 +2445,7 @@ fun alZiusStep(op: Op, e: InitSet, acc: List<RParam>): List<RParam>
 
 # The Python guard chain: Move target is ObjectField on the `$state` StackVar,
 # source is a StackVar missing from the entry set.
-fun alZiusMove(m: OpMove, names: List<String>, acc: List<RParam>): List<RParam>
+fun alZiusMove(m: OpMove, names: Set<String>, acc: List<RParam>): List<RParam>
   ret match(m.moveTarget)
     (tf: RpObjectField) => alZiusStateField(tf) ? alZiusSource(m.moveSource, names, acc) : acc
     (o: RParam)          => acc
@@ -1998,38 +2456,53 @@ fun alZiusStateField(tf: RpObjectField): Bool
     (o: RParam)     => false
 
 # Entry sets key by name|type (ucKey) — membership must use the same key.
-fun alZiusSource(src: RParam, names: List<String>, acc: List<RParam>): List<RParam>
+fun alZiusSource(src: RParam, names: Set<String>, acc: List<RParam>): List<RParam>
   ret match(src)
-    (v: RpStackVar) => strListMember(names, ucKey(src)) ? acc : svSetAdd(acc, src)
+    (v: RpStackVar) => contains<String>(names, ucKey(src)) ? acc : svSetAdd(acc, src)
     (o: RParam)     => acc
 
 # ── the driver ───────────────────────────────────────────────────────────────
 
 fun lowerAsync(a: CgApp): CgApp
   # Outline first, so the helpers are converted by the same pass below.
-  let outlined = fold(a.appFunctions, (List<CgFunction>(), List<CgFunction>()),
-                      (acc: (fns: List<CgFunction>, helpers: List<CgFunction>), f: CgFunction) =>
-                        alOutlineStep(acc, f))
-  let all = concat(outlined.fns, outlined.helpers)
-  let converted = fold(all, AlOut(List<CgFunction>(), List<CgObject>()),
-                       (acc: AlOut, f: CgFunction) => alMergeOut(acc, alConvertFunction(f)))
+  let outlined = alOutlineAll(chain(appFunctions(a)),
+                              OutAcc(builder<CgFunction >(),
+                                     builder<CgFunction >()))
+  let all = concat(build<CgFunction >(outlined.otFns),
+                   build<CgFunction >(outlined.otHelpers))
+  let converted = alAccBuild(alConvertAll(chain(all), alAccEmpty()))
   let repaired = map(converted.aloFunctions, alZeroInitUnwrittenSaves)
   let withObjs = fold(converted.aloObjects,
-                      appOf(repaired, a.appObjects, a.appGlobals),
+                      appOf(repaired, appObjects(a), appGlobals(a)),
                       appPutObject)
   # Subtypes union: APP WINS on collisions (lazy_thunks pre-registrations).
   ret fold(collectTaskSubtypes(withObjs), withObjs, alPutIfAbsent)
 
-fun alOutlineStep(acc: (fns: List<CgFunction>, helpers: List<CgFunction>),
-                  f: CgFunction): (fns: List<CgFunction>, helpers: List<CgFunction>)
-  if f.fnBypassAsync || f.fnName == "__entrypoint__"
-    ret (append(acc.fns, f), acc.helpers)
-  let out = alOutlineParallelSites(f)
-  ret (append(acc.fns, out.alo2Fn), concat(acc.helpers, out.alo2Helpers))
+# The functions in app order, and every outlined helper after them — both
+# ordered, because they become the app's emission order.
+class [linear, final] OutAcc(otFns: ListBuilder<CgFunction >,
+                             otHelpers: ListBuilder<CgFunction >)
 
-fun alMergeOut(acc: AlOut, out: AlOut): AlOut
-  ret AlOut(concat(acc.aloFunctions, out.aloFunctions),
-            concat(acc.aloObjects, out.aloObjects))
+fun [tail] alOutlineAll(fs: Chain<CgFunction>,
+                        [terminal] acc: OutAcc): OutAcc
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alOutlineAll(l.next, alOutlineStep(acc, l.value))
+
+fun alOutlineStep([terminal] acc: OutAcc, f: CgFunction): OutAcc
+  if f.fnBypassAsync || f.fnName == "__entrypoint__"
+    ret OutAcc(push<CgFunction >(acc.otFns, f), acc.otHelpers)
+  let out = alOutlineParallelSites(f)
+  ret OutAcc(push<CgFunction >(acc.otFns, out.alo2Fn),
+             _pushChain<CgFunction >(acc.otHelpers,
+                                     chain<CgFunction>(out.alo2Helpers)))
+
+fun [tail] alConvertAll(fs: Chain<CgFunction>,
+                        [terminal] acc: AlAcc): AlAcc
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => alConvertAll(l.next,
+                                    alMergeOne(acc, alConvertFunction(l.value)))
 
 fun alPutIfAbsent(a: CgApp, o: CgObject): CgApp
   ret appHasObject(a, o.objName) ? a : appPutObject(a, o)

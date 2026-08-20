@@ -16,6 +16,14 @@ fun Set<T>(): Set<T>
   ret Set<T>(Dict<T,()>())
 
 
+# From a List, dropping its order and any duplicates. This direction is free
+# and needs no decision from the caller — forgetting an ordering always makes
+# sense, where RECOVERING one does not, which is why the way back is `sort` and
+# the caller has to say which order they mean.
+fun Set<T>(l: List<T>): Set<T> where BasicEquality<T>
+  ret fold<T, Set<T> >(l, Set<T>(), (s: Set<T>, x: T) => add<T>(s, x))
+
+
 # Insert `value` if absent; if already present the returned set is
 # observationally identical to the input. Cost is one Dict.put.
 fun add<T>(s: Set<T>, value: T): Set<T> where BasicEquality<T>
@@ -108,3 +116,25 @@ fun sortBy<T>(s: Set<T>, less: (:T, :T): Bool): List<T>
 # out would be iteration on an unordered container by another name.
 fun _setDrain<T>(s: Set<T>): List<T>
   ret build<T>(_pushChain<T>(builder<T>(), _dictKeyChain<T,()>(s._d)))
+
+
+# fold — a REDUCTION, not a walk. `f` must be COMMUTATIVE and ASSOCIATIVE in
+# the elements: the container has no order, so the sequence in which they reach
+# `f` is unspecified, and a fold that cares would silently depend on the
+# container's internal shape. That is the one thing this design exists to stop.
+#
+# Legitimate: union, intersection, sum, max, "any error seen", counting.
+# NOT legitimate: string concatenation, building a list, first-wins lookup,
+# anything whose result differs when two elements swap places.
+#
+# It is offered because the alternative is worse: without it, callers reach for
+# sort() purely to get a walk, imposing an ordering they do not need and paying
+# O(n log n) to do it. Nothing enforces commutativity — this comment is the
+# contract.
+fun fold<T,U>(s: Set<T>, init: U, f: (:U, :T): U): U
+  ret _chainFold<T,U>(_dictKeyChain<T,()>(s._d), init, f)
+
+fun [tail] _chainFold<T,U>(c: Chain<T>, acc: U, f: (:U, :T): U): U
+  ret match(c)
+    (l: ChainLink) => _chainFold<T,U>(l.next, f(acc, l.value), f)
+    (e: ChainEnd)  => acc

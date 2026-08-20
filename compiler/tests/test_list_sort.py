@@ -16,7 +16,12 @@ namespace Main
 import System
 
 fun fromTo(i: Int, n: Int, step: Int, acc: List<Int>): List<Int>
-  ret i == n ? acc : fromTo(i + step, n, step, append<Int>(acc, i))
+  ret build<Int>(fromToB(i, n, step,
+                         _pushChain<Int>(builder<Int>(), chain<Int>(acc))))
+
+fun [tail] fromToB(i: Int, n: Int, step: Int,
+                   [terminal] b: ListBuilder<Int>): ListBuilder<Int>
+  ret i == n ? b : fromToB(i + step, n, step, push<Int>(b, i))
 
 fun joinInts(l: List<Int>): String
   ret fold<Int, String>(l, "", (acc: String, x: Int) => acc + String(x) + ".")
@@ -51,19 +56,19 @@ fun joinRecs(l: List<Rec>): String
 
 fun main(): System::Int
   let empty  = sort<Int>(List<Int>())
-  let single = sort<Int>(append<Int>(List<Int>(), 5))
-  let two    = sort<Int>(append<Int>(append<Int>(List<Int>(), 2), 1))
-  let equal  = sort<Int>(append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 7), 7), 7), 7))
+  let single = sort<Int>(prepend<Int>(5, List<Int>()))
+  let two    = sort<Int>(prepend<Int>(2, prepend<Int>(1, List<Int>())))
+  let equal  = sort<Int>(prepend<Int>(7, prepend<Int>(7, prepend<Int>(7, prepend<Int>(7, List<Int>())))))
   let sorted = sort<Int>(fromTo(0, 8, 1, List<Int>()))
   let revs   = sort<Int>(fromTo(8, 0, -1, List<Int>()))
-  let l0 = append<Int>(append<Int>(append<Int>(List<Int>(), 3), 1), 4)
-  let l1 = append<Int>(append<Int>(append<Int>(l0, 1), 5), 9)
-  let l2 = append<Int>(append<Int>(append<Int>(l1, 2), 6), 5)
+  let l0 = prepend<Int>(3, prepend<Int>(1, prepend<Int>(4, List<Int>())))
+  let l1 = build<Int>(push<Int>(push<Int>(push<Int>(
+      _pushChain<Int>(builder<Int>(), chain<Int>(l0)), 1), 5), 9))
+  let l2 = build<Int>(push<Int>(push<Int>(push<Int>(
+      _pushChain<Int>(builder<Int>(), chain<Int>(l1)), 2), 6), 5))
   let mixed = sort<Int>(l2)
-  let strs = sort<String>(append<String>(append<String>(append<String>(append<String>(
-      List<String>(), "pear"), "apple"), "fig"), "banana"))
-  let r0 = append<Rec>(append<Rec>(append<Rec>(append<Rec>(append<Rec>(
-      List<Rec>(), Rec(2, "a")), Rec(1, "b")), Rec(2, "c")), Rec(1, "d")), Rec(2, "e"))
+  let strs = sort<String>(prepend<String>("pear", prepend<String>("apple", prepend<String>("fig", prepend<String>("banana", List<String>())))))
+  let r0 = prepend<Rec>(Rec(2, "a"), prepend<Rec>(Rec(1, "b"), prepend<Rec>(Rec(2, "c"), prepend<Rec>(Rec(1, "d"), prepend<Rec>(Rec(2, "e"), List<Rec>())))))
   let recs = sort<Rec>(r0)
   System::print("empty=[" + joinInts(empty) + "]\\n")
   System::print("single=[" + joinInts(single) + "]\\n")

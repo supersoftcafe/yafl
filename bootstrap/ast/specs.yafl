@@ -76,16 +76,19 @@ fun uidCallable(cl: SCallable): String
   ret p == "" ? "" : "f" + p
 
 fun uidTuple(t2: STuple): String
-  ret match(entryUidList(chain(t2.stEntries), List<String>()))
+  ret match(entryUidList(chain(t2.stEntries), builder<String >()))
     (ids: List<String>) => "(" + join(ids, ",") + ")"
     ()                  => ""
 
-fun [tail] entryUidList(es: Chain<SEntry>, acc: List<String>): List<String>|None
+# POSITIONAL: a tuple's identity is its entry uids IN ORDER.
+fun [tail] entryUidList(es: Chain<SEntry>,
+                        [terminal] acc: ListBuilder<String >): List<String>|None
   ret match(es)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => build<String >(acc)
     (l: ChainLink)  => match(l.value.seType)
       (t2: Spec) => uid(t2)
-        |> (u) => u == "" ? None : entryUidList(l.next, append(acc, u))
+        |> (u) => u == "" ? None
+                          : entryUidList(l.next, push<String >(acc, u))
       ()         => None
 
 # A union's identity is its SORTED member ids — set semantics, so `A|B` and
@@ -96,11 +99,13 @@ fun uidUnion(cm: SCombination): String
     (l: List<String>) => "union(" + join(sort(l), ",") + ")"
     ()                => ""
 
+# uidUnion SORTS these before joining them — set semantics — so the order they
+# are gathered in is not observable.
 fun [tail] memberUids(ms: Chain<Spec>, acc: List<String>): List<String>|None
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => uid(l.value)
-      |> (u) => u == "" ? None : memberUids(l.next, append(acc, u))
+      |> (u) => u == "" ? None : memberUids(l.next, prepend(u, acc))
 
 fun uidArray(af: SArrayField): String
   let inner = uid(af.safElem)
@@ -177,9 +182,11 @@ fun [tail] flattenMembers(ts: Chain<Spec>, acc: List<Spec>): List<Spec>
 fun addMember(acc: List<Spec>, sp: Spec): List<Spec>
   ret match(sp)
     (cm: SCombination) => flattenMembers(chain(cm.scTypes), acc)
+    # A member's POSITION is its variant index, so this grows at the end;
+    # `acc` is read just above for the dedup, so it cannot be a builder.
     (o)                => uid(sp) != "" && hasUid(acc, uid(sp))
       ? acc
-      : append(acc, sp)
+      : build<Spec >(push<Spec >(_pushChain<Spec >(builder<Spec >(), chain<Spec>(acc)), sp))
 
 fun [tail] hasUidIn(ts: Chain<Spec>, u: String): Bool
   ret match(ts)
@@ -306,7 +313,8 @@ fun [tail] blankSlotsB(ds: Chain<SEntry>, [terminal] acc: ListBuilder<Int >): Li
 fun bindLoop(ss: Chain<String>, i: Int, declared: List<SEntry>,
              bare: List<String>, slots: List<Int>, seenName: Bool): List<Int>|None
   ret match(ss)
-    (nil: ChainEnd) => fillDefaults(chain(declared), chain(slots), 0, List<Int>())
+    (nil: ChainEnd) => fillDefaults(chain(declared), chain(slots), 0,
+                                    builder<Int >())
     (l: ChainLink)  => bindOne(l, i, declared, bare, slots, seenName)
 
 fun bindOne(l: ChainLink<String>, i: Int, declared: List<SEntry>,
@@ -331,13 +339,13 @@ fun [tail] slotAt(ss: Chain<Int>, i: Int): Int|None
 
 # An unbound field is filled by its default, or the binding fails.
 fun [tail] fillDefaults(ds: Chain<SEntry>, ss: Chain<Int>, i: Int,
-                 acc: List<Int>): List<Int>|None
+                 [terminal] acc: ListBuilder<Int >): List<Int>|None
   ret match(ds)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => build<Int >(acc)
     (ld: ChainLink) => match(ss)
       (ls: ChainLink) => ls.value < 0 && !hasDefault(ld.value)
         ? None
-        : fillDefaults(ld.next, ls.next, i + 1, append(acc, ls.value))
+        : fillDefaults(ld.next, ls.next, i + 1, push<Int >(acc, ls.value))
       ()              => None
 
 fun hasDefault(e: SEntry): Bool
@@ -424,20 +432,20 @@ fun parseEnumText(body: String): Spec
   ret SEnum(root, leaves, leaves, List<Spec>(), noLine())
 
 fun parseUnionText(body: String): Spec|None
-  ret unionParts(chain(topLevelParts(body)), List<Spec>())
+  ret unionParts(chain(topLevelParts(body)), builder<Spec >())
 
 # `_=spec,name=spec` — a tuple spelling; `_` is an unnamed entry.
 fun parseTupleText(body: String): Spec|None
-  ret tupleParts(chain(topLevelParts(body)), List<SEntry>())
+  ret tupleParts(chain(topLevelParts(body)), builder<SEntry >())
 
-fun [tail] tupleParts(ps: Chain<String>, acc: List<SEntry>): Spec|None
+fun [tail] tupleParts(ps: Chain<String>, [terminal] acc: ListBuilder<SEntry >): Spec|None
   ret match(ps)
-    (nil: ChainEnd) => STuple(acc, noLine())
+    (nil: ChainEnd) => STuple(build<SEntry >(acc), noLine())
     (l: ChainLink)  => trim(l.value) == ""
       ? tupleParts(l.next, acc)
       : tupleEntryText(l.value)
         |> (en) => match(en)
-          (e: SEntry) => tupleParts(l.next, append(acc, e))
+          (e: SEntry) => tupleParts(l.next, push<SEntry >(acc, e))
           ()          => None
 
 fun tupleEntryText(part: String): SEntry|None
@@ -469,11 +477,11 @@ fun [tail] partLoopB(body: String, at: Int, start: Int, depth: Int,
                  push<String >(acc, slice(body, start, at)))
       : partLoopB(body, at + 1, start, depth, acc)
 
-fun [tail] unionParts(ps: Chain<String>, acc: List<Spec>): Spec|None
+fun [tail] unionParts(ps: Chain<String>, [terminal] acc: ListBuilder<Spec >): Spec|None
   ret match(ps)
-    (nil: ChainEnd) => SCombination(acc, noLine())
+    (nil: ChainEnd) => SCombination(build<Spec >(acc), noLine())
     (l: ChainLink)  => match(parseSpecText(l.value))
-      (s2: Spec) => unionParts(l.next, append(acc, s2))
+      (s2: Spec) => unionParts(l.next, push<Spec >(acc, s2))
       ()         => None
 
 # `name=spec;name=spec` — declared tuple entries (a trailing `!` marks a

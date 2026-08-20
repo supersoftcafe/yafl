@@ -19,14 +19,14 @@ import Bootstrap::Parse
 
 
 fun trimUnusedVtableSlots(a: CgApp): CgApp
-  let fromFns = fold(a.appFunctions, setEmpty(), vtuFunction)
-  let used = fold(a.appGlobals, fromFns, vtuGlobal)
-  let out = fold(a.appObjects,
+  let fromFns = fold(appFunctions(a), setEmpty(), vtuFunction)
+  let used = fold(appGlobals(a), fromFns, vtuGlobal)
+  let out = fold(appObjects(a),
                  (List<CgObject>(), false),
                  (acc: (objs: List<CgObject>, changed: Bool), o: CgObject) =>
                    vtuObject(acc, o, used))
   ret out.changed
-    ? appOf(a.appFunctions, out.objs, a.appGlobals)
+    ? appOf(appFunctions(a), out.objs, appGlobals(a))
     : a
 
 fun vtuFunction(acc: StrSet, f: CgFunction): StrSet
@@ -49,9 +49,9 @@ fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
   let kept = filter(o.objFunctions,
                     (s2: CgFuncSlot) => setHas(used, s2.slotVirtualName))
   ret !sameLen(chain(kept), chain(o.objFunctions))
-    ? (append(acc.objs,
-              CgObject(o.objName, o.objExtends, kept, o.objFields,
-                       o.objLengthField, o.objComment, o.objIsForeign,
-                       o.objIsMutable, o.objDiscriminator, o.objIsPinnable)),
+    # Objects keep their app order — it is their emission order.
+    ? (build<CgObject >(push<CgObject >(_pushChain<CgObject >(builder<CgObject >(), chain<CgObject>(acc.objs)), CgObject(o.objName, o.objExtends, kept, o.objFields,
+                        o.objLengthField, o.objComment, o.objIsForeign,
+                        o.objIsMutable, o.objDiscriminator, o.objIsPinnable))),
        true)
-    : (append(acc.objs, o), acc.changed)
+    : (build<CgObject >(push<CgObject >(_pushChain<CgObject >(builder<CgObject >(), chain<CgObject>(acc.objs)), o)), acc.changed)

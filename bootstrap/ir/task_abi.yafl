@@ -16,12 +16,17 @@ import Bootstrap::Types
 # for byte so a `(task_t*)` cast of any subtype hits each field at the right
 # offset.
 fun taskFields(): List<CgField>
-  ret append(append(append(append(append(List<CgField>(),
-      CgField("type", CgDataPointer())),        # object_t.vtable
+  ret build<CgField>(
+    push<CgField>(
+    push<CgField>(
+    push<CgField>(
+    push<CgField>(
+    push<CgField>(builder<CgField>(),
+      CgField("type", CgDataPointer())),        # object_t vtable
       CgField("state", CgInt(32))),             # _Atomic(int32_t)
       CgField("thread_id", CgInt(32))),         # originating worker thread index
       CgField("callback", CgFuncPointer())),    # fun_t
-      CgField("next", CgDataPointer()))         # _Atomic(task_t*) — intrusive queue link
+      CgField("next", CgDataPointer())))        # _Atomic(task_t*) — queue link
 
 # Adjust a function's return type so it can carry the task-pending signal: a
 # pointer-shaped type carries the tag in-band; anything else wraps in
@@ -84,7 +89,8 @@ fun makeTaskForeignObject(): CgObject
 # compiler-emitted. is_mutable: state/result/next written after construction.
 fun makeTaskSubtypeObject(subtypeName: String, resultType: CgType): CgObject
   ret CgObject(subtypeName, list1("task"), List<CgFuncSlot>(),
-               CgImmediateStruct(append(taskFields(), CgField("result", resultType))),
+               # The task_t prefix, then the result field LAST.
+               CgImmediateStruct(build<CgField >(push<CgField >(_pushChain<CgField >(builder<CgField >(), chain<CgField>(taskFields())), CgField("result", resultType)))),
                None, "task subtype for result type " + taskTypeSig(resultType),
                subtypeName == "task_obj", true, 0)
 

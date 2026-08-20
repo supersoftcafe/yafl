@@ -25,7 +25,7 @@ _BAD = """
 import System
 
 fun helper(): List<String>|None
-  ret append(List<String>(), "x")
+  ret prepend("x", List<String>())
 
 fun bad(): (ls: List<String>, n: Int)|None
   ret helper()
@@ -40,7 +40,7 @@ _GOOD_WIDENING = """
 import System
 
 fun helper(): List<String>|None
-  ret append(List<String>(), "x")
+  ret prepend("x", List<String>())
 
 fun widened(): List<String>|None|Bool
   ret helper()

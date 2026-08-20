@@ -16,7 +16,7 @@ import Bootstrap::Ir
 
 
 fun foldStructReads(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, sfoFunction))
+  ret appWithFunctions(a, map(appFunctions(a), sfoFunction))
 
 fun sfoFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)

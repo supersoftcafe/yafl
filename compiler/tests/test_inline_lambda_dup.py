@@ -34,10 +34,10 @@ fun outer(flag: Bool, l: List<Int>): List<Int>
 
 fun main(): Int
   # withLam(l,1) then withLam(.,2): 7+1+2 = 10; the else path skips both.
-  let a = match(head(outer(true, append(List<Int>(), 7))))
+  let a = match(head(outer(true, prepend(7, List<Int>()))))
     (x: Int) => x
     ()        => 0 - 1
-  let b = match(head(outer(false, append(List<Int>(), 7))))
+  let b = match(head(outer(false, prepend(7, List<Int>()))))
     (x: Int) => x
     ()        => 0 - 1
   ret (a == 10 && b == 9) ? 0 : 1

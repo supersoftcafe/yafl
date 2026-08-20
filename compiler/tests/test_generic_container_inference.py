@@ -20,7 +20,7 @@ fun sumRanks(l: List<Thing>, acc: System::Int): System::Int
     ()         => acc
 
 fun main(): System::Int
-  let l: List<Thing> = append(append(List<Thing>(), Thing(4)), Thing(5))
+  let l: List<Thing> = prepend(Thing(4), prepend(Thing(5), List<Thing>()))
   let e = isEmpty(l) ? 100 : 0
   let n = chainLength(chain(l))
   # 4+5 ranks, +0 for non-empty, +2 elements = 11
@@ -43,7 +43,7 @@ fun peek(l: List<String>): System::Int
     ()          => 0
 
 fun main(): System::Int
-  ret peek(append(List<String>(), "x"))
+  ret peek(prepend("x", List<String>()))
 """))
 
 

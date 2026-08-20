@@ -40,7 +40,7 @@ fun takesA(xs: System::List<A2>): System::Int
   ret 0
 
 fun main(): System::Int
-  ret takesA(System::append(System::List<B2>(), B2(1)))
+  ret takesA(System::prepend(B2(1), System::List<B2>()))
 """
         diag = _diagnostics(src)
         self.assertNotEqual("", diag, "COMPILED CLEAN — the invariance gap is back")
@@ -48,7 +48,7 @@ fun main(): System::Int
     def test_wrong_type_argument_via_enum_constructor(self):
         src = _PRELUDE + """\
 fun main(): System::Int
-  let e = L2(System::append(System::List<B2>(), B2(1)))
+  let e = L2(System::prepend(B2(1), System::List<B2>()))
   ret 0
 """
         diag = _diagnostics(src)
@@ -57,7 +57,7 @@ fun main(): System::Int
     def test_right_type_argument_still_accepted(self):
         src = _PRELUDE + """\
 fun main(): System::Int
-  let e = L2(System::append(System::List<A2>(), A2(1)))
+  let e = L2(System::prepend(A2(1), System::List<A2>()))
   ret 0
 """
         self.assertEqual("", _diagnostics(src))

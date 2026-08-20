@@ -21,25 +21,32 @@ import Bootstrap::Types
 
 # The counter carries its key list (Dict has no key enumeration): addition
 # unions keys and keeps POSITIVE sums only — Python Counter semantics.
-class [final] LinCnt(lcKeys: List<String>, lcCounts: Dict<String, Int>)
+# Just the counts. The key list beside them was exactly keys(lcCounts), kept
+# only to iterate — and its order is never observed: the walks over it either
+# sum counts or raise errors, which the driver prints sorted.
+class [final] LinCnt(lcCounts: Dict<String, Int>)
+
+fun lcKeys(c: LinCnt): List<String>
+  ret sort<String>(keys<String, Int>(c.lcCounts))
 class [final] LinOut(loCnt: LinCnt, loErrs: Set<PErr>)
 # The env likewise: binding names (insertion order — discharge order matches
 # Python's dict iteration) plus their types.
-class [final] LinEnv(leNames: List<String>, leTypes: Dict<String, Spec>)
+class [final] LinEnv(leTypes: Dict<String, Spec>)
+
+fun leNames(env: LinEnv): List<String>
+  ret sort<String>(keys<String, Spec>(env.leTypes))
 
 fun emptyCnt(): LinCnt
-  ret LinCnt(List<String>(), Dict<String, Int>())
+  ret LinCnt(Dict<String, Int>())
 
 fun linZero(errs: Set<PErr>): LinOut
   ret LinOut(emptyCnt(), errs)
 
 fun emptyEnv(): LinEnv
-  ret LinEnv(List<String>(), Dict<String, Spec>())
+  ret LinEnv(Dict<String, Spec>())
 
 fun envPut(env: LinEnv, name: String, ty: Spec): LinEnv
-  ret LinEnv(contains2(env.leNames, name) ? env.leNames
-                                          : append(env.leNames, name),
-             put(env.leTypes, name, ty))
+  ret LinEnv(put(env.leTypes, name, ty))
 
 fun envType(env: LinEnv, name: String): Spec|None
   ret get(env.leTypes, name)
@@ -48,7 +55,7 @@ fun envHas(env: LinEnv, name: String): Bool
   ret contains(env.leTypes, name)
 
 fun cntAdd(a: LinCnt, b: LinCnt): LinCnt
-  ret addKeys2(chain(b.lcKeys), b.lcCounts, a)
+  ret addKeys2(chain(lcKeys(b)), b.lcCounts, a)
 
 fun [tail] addKeys2(ks: Chain<String>, bc: Dict<String, Int>,
                     acc: LinCnt): LinCnt
@@ -60,33 +67,17 @@ fun [tail] addKeys2(ks: Chain<String>, bc: Dict<String, Int>,
 
 fun cntBump(c: LinCnt, key: String, by: Int): LinCnt
   let now = countOf(c.lcCounts, key) + by
-  ret now <= 0
-    ? c
-    : LinCnt(contains2(c.lcKeys, key) ? c.lcKeys : append(c.lcKeys, key),
-             put(c.lcCounts, key, now))
+  ret now <= 0 ? c : LinCnt(put(c.lcCounts, key, now))
 
 fun cntDrop(c: LinCnt, key: String): LinCnt
-  ret LinCnt(dropName(chain(c.lcKeys), key, List<String>()),
-             remove(c.lcCounts, key))
-
-fun dropName(ks: Chain<String>, key: String,
-                    acc: List<String>): List<String>
-  ret build<String >(dropNameB(ks, key, _pushChain<String >(builder<String >(), chain<String >(acc))))
-
-fun [tail] dropNameB(ks: Chain<String>, key: String,
-                    [terminal] acc: ListBuilder<String >): ListBuilder<String >
-  ret match(ks)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => l.value == key
-      ? dropNameB(l.next, key, acc)
-      : dropNameB(l.next, key, push<String >(acc, l.value))
+  ret LinCnt(remove(c.lcCounts, key))
 
 # Per-branch merge: counts must AGREE per obligation; result is c1 unless
 # empty (Python: `c1 if c1 else c2`).
 fun cntMerge(c1: LinCnt, c2: LinCnt, lr: PLine, acc: Set<PErr>): LinOut
-  let errs = mergeErrs(chain(addNamesOnce(c1.lcKeys, chain(c2.lcKeys))),
+  let errs = mergeErrs(chain(addNamesOnce(lcKeys(c1), chain(lcKeys(c2)))),
                        c1, c2, lr, acc)
-  ret LinOut(isEmpty(c1.lcKeys) ? c2 : c1, errs)
+  ret LinOut(isEmpty(c1.lcCounts) ? c2 : c1, errs)
 
 
 fun [tail] mergeErrs(ks: Chain<String>, c1: LinCnt, c2: LinCnt, lr: PLine,
@@ -165,7 +156,8 @@ fun classLeaves(c: SClass, r: Resolver, seen: List<String>): List<String>
     ret prepend("", List<String>())          # recursive linear type: one leaf
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
-      (cs: PsClass) => classFieldLeaves(cs, c, r, append(seen, c.scName))
+      # `seen` is the recursion guard — a membership set.
+      (cs: PsClass) => classFieldLeaves(cs, c, r, prepend(c.scName, seen))
       (o: PStmt)    => prepend("", List<String>())
     ()         => prepend("", List<String>())
 
@@ -401,7 +393,7 @@ fun linearParam(let2: PsLet, r: Resolver): Bool
 fun analyzeScope(b: PExpr, env: LinEnv, lr: PLine,
                  bodyR: Resolver, r: Resolver, acc: Set<PErr>): Set<PErr>
   let out = linCount(b, env, bodyR, acc)
-  ret dischargeEnv(chain(env.leNames), env, out.loCnt.lcCounts, lr, r, true,
+  ret dischargeEnv(chain(leNames(env)), env, out.loCnt.lcCounts, lr, r, true,
                    out.loErrs)
 
 fun [tail] dischargeEnv(ns: Chain<String>, env: LinEnv,
@@ -672,7 +664,10 @@ fun [tail] growEnv(ts: Chain<PStmt>, r: Resolver, env: LinEnv,
     (nil: ChainEnd) => GrownEnv(env, bindings)
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => carriesLinearity(let2.lType, r)
-        ? growEnv(l.next, r, putEnv(env, let2), append(bindings, l.value))
+        # Bindings keep declaration order: the drops they own are emitted in
+        # it at scope exit.
+        ? growEnv(l.next, r, putEnv(env, let2),
+                  build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(bindings)), l.value)))
         : growEnv(l.next, r, env, bindings)
       (o: PStmt)    => growEnv(l.next, r, env, bindings)
 
@@ -686,7 +681,8 @@ fun suffixLet(let2: PsLet, stmts: List<PStmt>, i: Int, env: LinEnv,
   let isLin = carriesLinearity(let2.lType, r0)
   ret countSuffix(stmts, i + 1, isLin ? putEnv(env, let2) : env, r, r0,
                   trailing,
-                  isLin ? append(bindings, narrowLet(let2)) : bindings,
+                  isLin ? build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(bindings)), narrowLet(let2)))
+                        : bindings,
                   o.loErrs)
     |> (rest) => ScopeOut(cntAdd(o.loCnt, rest.soCnt), rest.soErrs,
                           rest.soBindings)

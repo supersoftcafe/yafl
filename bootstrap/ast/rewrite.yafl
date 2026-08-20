@@ -509,14 +509,14 @@ fun rwnNoStmt(n: Int, st: PStmt): (n2: Int, r: PStmt|None)
   ret (n, None)
 
 fun rwnStmts(ss: List<PStmt>, w: RwN, n: Int): RwNSs
-  ret rwnStmtLoop(chain(ss), w, n, List<PStmt>())
+  ret rwnStmtLoop(chain(ss), w, n, builder<PStmt >())
 
 fun [tail] rwnStmtLoop(ss: Chain<PStmt>, w: RwN, n: Int,
-                       acc: List<PStmt>): RwNSs
+                       [terminal] acc: ListBuilder<PStmt >): RwNSs
   ret match(ss)
-    (nil: ChainEnd) => RwNSs(n, acc)
+    (nil: ChainEnd) => RwNSs(n, build<PStmt >(acc))
     (l: ChainLink)  => rwnStmt(l.value, w, n)
-      |> (o) => rwnStmtLoop(l.next, w, o.rnsN, append(acc, o.rnsStmt))
+      |> (o) => rwnStmtLoop(l.next, w, o.rnsN, push<PStmt >(acc, o.rnsStmt))
 
 fun rwnStmt(st: PStmt, w: RwN, n: Int): RwNS
   let kids = rwnStmtKids(st, w, n)
@@ -596,7 +596,7 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
     (c: PeCall)    => rwnExpr(c.function, w, n)
       |> (f) => (f, rwnExpr(c.parameter, w, f.rneN))
       |> (f, p) => RwNE(p.rneN, PeCall(f.rneExpr, p.rneExpr, c.pecLine))
-    (tp: PeTuple)  => rwnTupEnts(chain(tp.exprs), w, n, List<PTupEnt>())
+    (tp: PeTuple)  => rwnTupEnts(chain(tp.exprs), w, n, builder<PTupEnt >())
       |> (es) => RwNE(es.rntsN, PeTuple(es.rntsEnts, tp.petLine))
     (te: PeTernary) => rwnExpr(te.condition, w, n)
       |> (cd) => (cd, rwnExpr(te.trueResult, w, cd.rneN))
@@ -613,7 +613,7 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
       |> (ss, v) => RwNE(v.rneN, PeBlock(ss.rnssStmts, v.rneExpr,
                                          bk.blockTag, bk.pebkLine))
     (mt: PeMatch)  => rwnExpr(mt.subject, w, n)
-      |> (sj) => (sj, rwnArms(chain(mt.arms), w, sj.rneN, List<PArm>()))
+      |> (sj) => (sj, rwnArms(chain(mt.arms), w, sj.rneN, builder<PArm >()))
       |> (sj, as3) => RwNE(as3.rnasN, PeMatch(sj.rneExpr, as3.rnasArms,
                                               mt.pemLine))
     (op: PeBuiltinOp) => rwnExpr(op.opParams, w, n)
@@ -634,15 +634,15 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
                                           wx.pewLine))
     (pl: PeParallel) => rwnExpr(pl.parParams, w, n)
       |> (p) => RwNE(p.rneN, PeParallel(p.rneExpr, pl.pepLine))
-    (ne: PeNewEnum) => rwnFieldArgs(chain(ne.fieldArgs), w, n, List<PFieldArg>())
+    (ne: PeNewEnum) => rwnFieldArgs(chain(ne.fieldArgs), w, n, builder<PFieldArg >())
       |> (fas) => RwNE(fas.rnfN, PeNewEnum(ne.rootName, ne.leafName,
                                            fas.rnfArgs, ne.neTypeParams,
                                            ne.penewLine))
-    (lp: PeLoop)   => rwnExprs(chain(lp.loopParams), w, n, List<PExpr>())
+    (lp: PeLoop)   => rwnExprs(chain(lp.loopParams), w, n, builder<PExpr >())
       |> (ps) => (ps, rwnExpr(lp.loopBody, w, ps.rnesN))
       |> (ps, b) => RwNE(b.rneN, PeLoop(b.rneExpr, ps.rnesExprs,
                                         lp.pelpLine))
-    (rc: PeRecur)  => rwnExprs(chain(rc.recArgs), w, n, List<PExpr>())
+    (rc: PeRecur)  => rwnExprs(chain(rc.recArgs), w, n, builder<PExpr >())
       |> (as3) => RwNE(as3.rnesN, PeRecur(as3.rnesExprs, rc.recIndex,
                                           rc.percLine))
     (lz: PeLazy)   => RwNE(n, x)   # target type carries no counter work
@@ -651,60 +651,61 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
 class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
 
 fun [tail] rwnFieldArgs(fas: Chain<PFieldArg>, w: RwN, n: Int,
-                        acc: List<PFieldArg>): RwNFas
+                        [terminal] acc: ListBuilder<PFieldArg >): RwNFas
   ret match(fas)
-    (nil: ChainEnd) => RwNFas(n, acc)
+    (nil: ChainEnd) => RwNFas(n, build<PFieldArg >(acc))
     (l: ChainLink)  => rwnExpr(l.value.faValue, w, n)
       |> (v) => rwnFieldArgs(l.next, w, v.rneN,
-                             append(acc, PFieldArg(l.value.faName, v.rneExpr)))
+                             push<PFieldArg >(acc,
+                                 PFieldArg(l.value.faName, v.rneExpr)))
 
 fun [tail] rwnExprs(es: Chain<PExpr>, w: RwN, n: Int,
-                    acc: List<PExpr>): RwNEs
+                    [terminal] acc: ListBuilder<PExpr >): RwNEs
   ret match(es)
-    (nil: ChainEnd) => RwNEs(n, acc)
+    (nil: ChainEnd) => RwNEs(n, build<PExpr >(acc))
     (l: ChainLink)  => rwnExpr(l.value, w, n)
-      |> (o) => rwnExprs(l.next, w, o.rneN, append(acc, o.rneExpr))
+      |> (o) => rwnExprs(l.next, w, o.rneN, push<PExpr >(acc, o.rneExpr))
 
 fun [tail] rwnTupEnts(es: Chain<PTupEnt>, w: RwN, n: Int,
-                      acc: List<PTupEnt>): RwNTs
+                      [terminal] acc: ListBuilder<PTupEnt >): RwNTs
   ret match(es)
-    (nil: ChainEnd) => RwNTs(n, acc)
+    (nil: ChainEnd) => RwNTs(n, build<PTupEnt >(acc))
     (l: ChainLink)  => rwnExpr(l.value.tupValue, w, n)
       |> (o) => rwnTupEnts(l.next, w, o.rneN,
-                           append(acc, PTupEnt(l.value.tupName,
-                                               l.value.tupSpread,
-                                               o.rneExpr)))
+                           push<PTupEnt >(acc,
+                               PTupEnt(l.value.tupName, l.value.tupSpread,
+                                       o.rneExpr)))
 
 fun [tail] rwnArms(as2: Chain<PArm>, w: RwN, n: Int,
-                   acc: List<PArm>): RwNAs
+                   [terminal] acc: ListBuilder<PArm >): RwNAs
   ret match(as2)
-    (nil: ChainEnd) => RwNAs(n, acc)
+    (nil: ChainEnd) => RwNAs(n, build<PArm >(acc))
     (l: ChainLink)  => rwnExpr(l.value.armBody, w, n)
       |> (b) => (b, rwnLits(chain(l.value.armLiterals), w, b.rneN,
-                            List<PLit>()))
+                            builder<PLit >()))
       |> (b, ls) => (b, ls, rwnExprOpt(l.value.armGuard, w, ls.rnlsN))
       |> (b, ls, gd) => rwnArms(l.next, w, gd.rneN2,
-                                append(acc, PArm(l.value.armName,
-                                                 l.value.armType, b.rneExpr,
-                                                 ls.rnlsLits,
-                                                 gd.rneExpr2,
-                                                 l.value.parmLine)))
+                                push<PArm >(acc,
+                                    PArm(l.value.armName, l.value.armType,
+                                         b.rneExpr, ls.rnlsLits,
+                                         gd.rneExpr2, l.value.parmLine)))
 
 class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
 
 fun [tail] rwnLits(ls: Chain<PLit>, w: RwN, n: Int,
-                   acc: List<PLit>): RwNLs
+                   [terminal] acc: ListBuilder<PLit >): RwNLs
   ret match(ls)
-    (nil: ChainEnd) => RwNLs(n, acc)
+    (nil: ChainEnd) => RwNLs(n, build<PLit >(acc))
     (l: ChainLink)  => match(l.value)
       (le: PlExpr)  => rwnExpr(le.litExpr, w, n)
         |> (o) => rwnLits(l.next, w, o.rneN,
-                          append(acc, PlExpr(o.rneExpr)))
+                          push<PLit >(acc, PlExpr(o.rneExpr)))
       (lr: PlRange) => rwnExpr(lr.rangeLo, w, n)
         |> (lo) => (lo, rwnExpr(lr.rangeHi, w, lo.rneN))
         |> (lo, hi) => rwnLits(l.next, w, hi.rneN,
-                               append(acc, PlRange(lo.rneExpr, hi.rneExpr,
-                                                   lr.plrLine)))
+                               push<PLit >(acc,
+                                   PlRange(lo.rneExpr, hi.rneExpr,
+                                           lr.plrLine)))
 
 # ── foldAllSpecs: a BOTTOM-UP spec fold over the whole tree ──────────────────
 # Mirrors rwStmt/rwExprKids/rwSpecKids' traversal and visit sets EXACTLY, but

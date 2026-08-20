@@ -127,7 +127,7 @@ fun ssavIsTerminator(op: Op): Bool
 
 # For each labelled block: the set of predecessor labels ("" = the implicit
 # entry block) reachable via Jump/JumpIf/IfTask/SwitchJump/fall-through.
-class [final] PredEntry(peLabel: String, pePreds: List<String>)
+class [final] PredEntry(peLabel: String, pePreds: Set<String>)
 
 fun ssavPredecessors(f: CgFunction): List<PredEntry>
   ret ssavPredLoop(chain(f.fnOps), None, "", List<PredEntry>())
@@ -174,19 +174,21 @@ fun ssavPrevFallsThrough(p: Op): Bool
 fun predEnsure(acc: List<PredEntry>, label: String): List<PredEntry>
   ret any(acc, (e2: PredEntry) => e2.peLabel == label)
     ? acc
-    : append(acc, PredEntry(label, List<String>()))
+    # A label -> predecessors map, looked up by label; its own order is not
+    # observed, and the predecessor lists are membership sets.
+    : prepend(PredEntry(label, Set<String>()), acc)
 
 fun predAdd(acc: List<PredEntry>, label: String, src: String): List<PredEntry>
   ret any(acc, (e2: PredEntry) => e2.peLabel == label)
     ? map(acc, (e2: PredEntry) => e2.peLabel == label
-                 ? PredEntry(label, strListAdd(e2.pePreds, src))
+                 ? PredEntry(label, add<String>(e2.pePreds, src))
                  : e2)
-    : append(acc, PredEntry(label, list1(src)))
+    : prepend(PredEntry(label, add<String>(Set<String>(), src)), acc)
 
-fun predsOf(acc: List<PredEntry>, label: String): List<String>
+fun predsOf(acc: List<PredEntry>, label: String): Set<String>
   ret match(head(filter(acc, (e2: PredEntry) => e2.peLabel == label)))
     (e2: PredEntry) => e2.pePreds
-    ()               => List<String>()
+    ()               => Set<String>()
 
 # Walk ops tracking the current label and whether we are still in its Phi
 # region (Labels open one; any non-Phi op closes it).
@@ -208,10 +210,10 @@ fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname: String,
                  current: String, inRegion: Bool): List<String>
   if !inRegion || length(current) == 0
     ret list1(fname + ": Phi appears outside the Phi region of any block")
-  let expected = filter(predsOf(preds, current), (s2: String) => length(s2) > 0)
+  let expected = filter<String>(predsOf(preds, current), (s2: String) => length(s2) > 0)
   let sources = map(ph.phiSources, (s2: OpPhiSource) => s2.sourceLabel)
-  let missing = filter(expected, (s2: String) => !strListMember(sources, s2))
-  let extra = filter(sources, (s2: String) => !strListMember(expected, s2))
+  let missing = filter<String>(expected, (s2: String) => !strListMember(sources, s2))
+  let extra = filter(sources, (s2: String) => !contains<String>(expected, s2))
   ret isEmpty(missing) && isEmpty(extra)
     ? List<String>()
     : list1(fname + ": Phi @ " + current + " has mismatched sources; missing: ["

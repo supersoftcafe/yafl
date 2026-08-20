@@ -228,8 +228,10 @@ fun emBody(st0: GEmit, resolver: Resolver, resultType: Spec|None, arm: PArm,
 fun emArmResult(st: GEmit, prefix: String, rv: RParam): GEmit
   let exitLabel = prefix + "_exit"
   let withLabel = emOp1(st, OpLabel(exitLabel, List<RParam>()))
-  ret GEmit(withLabel.geBundle, append(withLabel.geArmResults, ArmResult(exitLabel, rv)),
-           withLabel.geCounter, withLabel.geFallbackLabel)
+  # Arm order: these become the join Phi's sources, one per arm.
+  ret GEmit(withLabel.geBundle,
+            build<ArmResult >(push<ArmResult >(_pushChain<ArmResult >(builder<ArmResult >(), chain<ArmResult>(withLabel.geArmResults)), ArmResult(exitLabel, rv))),
+            withLabel.geCounter, withLabel.geFallbackLabel)
 
 # ── binding constructors (used by union_repr's generate_match implementations) ──
 
@@ -318,22 +320,25 @@ fun fieldNameAt(fields: List<CgField>, idx: Int): String
 
 fun reconstructStruct(ctype: CgType, fields: List<CgField>, slotAssignments: List<CgSlotEntry>,
                       slotFields: List<CgField>, sv: RParam, offset0: Int): ReconstructOut
-  let r = reconstructFields(chain(fields), slotAssignments, slotFields, sv, offset0, List<RpNamedValue>())
+  let r = reconstructFields(chain(fields), slotAssignments, slotFields, sv,
+                            offset0, builder<RpNamedValue >())
   ret ReconstructOut(unionStruct(ctype, r.rfsValues), r.rfsOffset)
 
 class [final] ReconstructFieldsOut(rfsValues: List<RpNamedValue>, rfsOffset: Int)
 
 fun reconstructFields(fs: Chain<CgField>, slotAssignments: List<CgSlotEntry>,
                              slotFields: List<CgField>, sv: RParam, offset: Int,
-                             acc: List<RpNamedValue>): ReconstructFieldsOut
+                             [terminal] acc: ListBuilder<RpNamedValue >): ReconstructFieldsOut
   ret match(fs)
-    (nil: ChainEnd) => ReconstructFieldsOut(acc, offset)
+    (nil: ChainEnd) => ReconstructFieldsOut(build<RpNamedValue >(acc), offset)
     (l: ChainLink)  => reconstructFieldsStep(l, slotAssignments, slotFields, sv, offset, acc)
 
 fun reconstructFieldsStep(l: ChainLink<CgField>, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>,
-                          sv: RParam, offset: Int, acc: List<RpNamedValue>): ReconstructFieldsOut
+                          sv: RParam, offset: Int, [terminal] acc: ListBuilder<RpNamedValue >): ReconstructFieldsOut
   let sub = reconstructFromSlots(l.value.fieldType, slotAssignments, slotFields, sv, offset)
-  ret reconstructFields(l.next, slotAssignments, slotFields, sv, sub.rfOffset, append(acc, RpNamedValue(l.value.fieldName, sub.rfValue)))
+  ret reconstructFields(l.next, slotAssignments, slotFields, sv, sub.rfOffset,
+          push<RpNamedValue >(acc,
+              RpNamedValue(l.value.fieldName, sub.rfValue)))
 
 # `finish(result_var)`: the join — a Phi collecting one source per arm, or a
 # bare label if the match has no value, or an Abort if it SHOULD have one but
@@ -391,28 +396,35 @@ class [final] LitTestsOut(ltoBundles: List<GBundle>, ltoTests: List<RParam>)
 # become equality tests, ranges become bounds tests. `items` is the arm's
 # `armLiterals: List<PLit>`.
 fun literalAlternativeTests(items: List<PLit>, typeName: String, value: RParam, r: Resolver, prefix: String): LitTestsOut
-  ret litAltLoop(chain(items), typeName, value, r, prefix, 0, List<GBundle>(), List<RParam>())
+  ret litAltLoop(chain(items), typeName, value, r, prefix, 0,
+                 builder<GBundle >(), builder<RParam >())
 
 fun litAltLoop(items: Chain<PLit>, typeName: String, value: RParam, r: Resolver, prefix: String,
-                      k: Int, bundles: List<GBundle>, tests: List<RParam>): LitTestsOut
+                      k: Int, [terminal] bundles: ListBuilder<GBundle >, tests: ListBuilder<RParam >): LitTestsOut
   ret match(items)
-    (nil: ChainEnd) => LitTestsOut(bundles, tests)
+    (nil: ChainEnd) => LitTestsOut(build<GBundle >(bundles),
+                                   build<RParam >(tests))
     (l: ChainLink)  => match(l.value)
       (rg: PlRange) => litAltRange(items, l, rg, typeName, value, r, prefix, k, bundles, tests)
       (le2: PlExpr) => litAltLit(items, l, le2, typeName, value, r, prefix, k, bundles, tests)
 
 fun litAltRange(items: Chain<PLit>, l: ChainLink<PLit>, rg: PlRange, typeName: String, value: RParam,
-               r: Resolver, prefix: String, k: Int, bundles: List<GBundle>, tests: List<RParam>): LitTestsOut
+               r: Resolver, prefix: String, k: Int, [terminal] bundles: ListBuilder<GBundle >, tests: ListBuilder<RParam >): LitTestsOut
   let loB = withPrefix(genExpr(rg.rangeLo, r), prefix + "_" + String(k) + "lo")
   let hiB = withPrefix(genExpr(rg.rangeHi, r), prefix + "_" + String(k) + "hi")
-  ret litAltLoop(l.next, typeName, value, r, prefix, k + 1, concat(bundles, list2(loB, hiB)),
-            append(tests, literalRangeTest(typeName, value, mustResult(loB), mustResult(hiB))))
+  ret litAltLoop(l.next, typeName, value, r, prefix, k + 1,
+          _pushChain<GBundle >(bundles, chain<GBundle>(list2(loB, hiB))),
+          push<RParam >(tests,
+              literalRangeTest(typeName, value, mustResult(loB),
+                               mustResult(hiB))))
 
 fun litAltLit(items: Chain<PLit>, l: ChainLink<PLit>, le2: PlExpr, typeName: String, value: RParam,
-             r: Resolver, prefix: String, k: Int, bundles: List<GBundle>, tests: List<RParam>): LitTestsOut
+             r: Resolver, prefix: String, k: Int, [terminal] bundles: ListBuilder<GBundle >, tests: ListBuilder<RParam >): LitTestsOut
   let b = withPrefix(genExpr(le2.litExpr, r), prefix + "_" + String(k))
-  ret litAltLoop(l.next, typeName, value, r, prefix, k + 1, append(bundles, b),
-            append(tests, literalEqTest(typeName, value, mustResult(b))))
+  ret litAltLoop(l.next, typeName, value, r, prefix, k + 1,
+          push<GBundle >(bundles, b),
+          push<RParam >(tests,
+              literalEqTest(typeName, value, mustResult(b))))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 2: MatchExpression.generate/generate_to.

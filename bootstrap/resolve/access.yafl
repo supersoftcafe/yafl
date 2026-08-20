@@ -14,8 +14,10 @@ import Bootstrap::Types
 
 
 
-fun soleOf(datas: List<Found>): Found|None
-  ret exactly(chain(datas), 1) ? head(datas) : None
+# The sole candidate, or None. This is exactly Bag.singleOrNone — kept as a
+# named function because the call sites read better with it.
+fun soleOf(datas: Bag<Found>): Found|None
+  ret singleOrNone<Found>(datas)
 
 # ── _resolve_overloads ───────────────────────────────────────────────────────
 # Partition by verdict against the expected type: definite matches (True) win
@@ -27,9 +29,9 @@ fun soleOf(datas: List<Found>): Found|None
 # candidate returning a MEMBER of the expected union is still the winner.
 
 fun resolveOverloads(r: Resolver, expected: Spec|None,
-                     candidates: List<Found>): List<Found>
+                     candidates: List<Found>): Bag<Found>
   if atMost(chain(candidates), 1)
-    ret candidates
+    ret Bag<Found>(candidates)
   let survivors = partitionByVerdict(candidates, expected, r)
   if !isEmpty(survivors)
     ret survivors
@@ -44,24 +46,28 @@ fun resolveOverloads(r: Resolver, expected: Spec|None,
       (o: Spec)      => survivors
     ()         => survivors
 
-class [final] Verdicts(pvTrue: List<Found>, pvMaybe: List<Found>)
+# Bags, not Lists: the survivors are either narrowed to a sole candidate or
+# rendered by check_expr's ambiguity message, which does
+# join(sort(dedupeStrs(...))) — so the order they were collected in is never
+# observable. add() is O(1) where append rebuilt the list every candidate.
+class [final] Verdicts(pvTrue: Bag<Found>, pvMaybe: Bag<Found>)
 
 fun partitionByVerdict(cands: List<Found>, expected: Spec|None,
-                       r: Resolver): List<Found>
-  let v = verdictLoop(chain(cands), expected, r, List<Found>(), List<Found>())
+                       r: Resolver): Bag<Found>
+  let v = verdictLoop(chain(cands), expected, r, Bag<Found>(), Bag<Found>())
   ret isEmpty(v.pvTrue) ? v.pvMaybe : v.pvTrue
 
 fun [tail] verdictLoop(cs: Chain<Found>, expected: Spec|None, r: Resolver,
-                       yes: List<Found>, maybe: List<Found>): Verdicts
+                       yes: Bag<Found>, maybe: Bag<Found>): Verdicts
   ret match(cs)
     (nil: ChainEnd) => Verdicts(yes, maybe)
     (l: ChainLink)  => match(assignableEq(r, expected,
                                           candidateType(l.value, r)))
       (b: Bool) => b
-        ? verdictLoop(l.next, expected, r, append(yes, l.value), maybe)
+        ? verdictLoop(l.next, expected, r, add(yes, l.value), maybe)
         : verdictLoop(l.next, expected, r, yes, maybe)
       ()        => verdictLoop(l.next, expected, r, yes,
-                               append(maybe, l.value))
+                               add(maybe, l.value))
 
 # The candidate's EFFECTIVE type: its declaration's, with a TRAIT find's
 # interface instantiation substituted through (Plus<Int>.+ compares as

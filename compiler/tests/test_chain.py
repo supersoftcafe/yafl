@@ -24,9 +24,11 @@ fun render(c: Chain<String>, acc: String): String
   ret step(chainNext<String>(c), acc)
 
 fun main(): System::Int
-  # Mixed building: prepend then appends — front=[b] rear=[d,c] internally.
+  # A one-element list extended behind its head. There is no rear chain any
+  # more, so this is simply a builder seeded from l0.
   let l0 = prepend<String>(b0(), List<String>())
-  let l1 = append<String>(append<String>(l0, "c"), "d")
+  let l1 = build<String>(push<String>(push<String>(
+      _pushChain<String>(builder<String>(), chain<String>(l0)), "c"), "d"))
   let c1 = chain<String>(l1)
   System::print("mixed=[" + render(c1, "") + "] len=" + String(chainLength<String>(c1)) + "\\n")
 

@@ -49,8 +49,12 @@ fun refKey(g2: GRef): String
 # identities differ — the redirect must match whichever spelling a node
 # carries. Creation stays single per mangled name via existingKeys.
 # First one in wins, as Python's setdefault.
+# On the FRONT: every consumer of this collection runs it through sortRefs
+# first (createSpecializedStatements), so the order it is gathered in is never
+# read. The dedup still keeps the first STRUCTURE seen, which is what decides
+# membership — a later equal ref is dropped either way round.
 fun addRef(refs: List<GRef>, g2: GRef): List<GRef>
-  ret hasRefStruct(chain(refs), g2) ? refs : append(refs, g2)
+  ret hasRefStruct(chain(refs), g2) ? refs : prepend(g2, refs)
 
 fun [tail] hasRefStruct(rs: Chain<GRef>, g2: GRef): Bool
   ret match(rs)
@@ -315,10 +319,13 @@ fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub
     (nil: ChainEnd) => acc
     (g2: ChainLink) => match(as2)
       (nil2: ChainEnd) => acc
+      # Two independent name -> spec maps, each read by first-match lookup.
+      # A generic parameter list has no repeated names, so which end an entry
+      # goes on cannot change any lookup.
       (a: ChainLink)   => gsubLoop(g2.next, a.next,
-          GSub(append(acc.gsExact, Binding(g2.value.genName, a.value)),
-               append(acc.gsBare, Binding(bareGenName(g2.value.genName),
-                                          a.value)),
+          GSub(prepend(Binding(g2.value.genName, a.value), acc.gsExact),
+               prepend(Binding(bareGenName(g2.value.genName), a.value),
+                       acc.gsBare),
                acc.gsFormals))
 
 fun bareGenName(name: String): String
@@ -380,20 +387,23 @@ fun gsubCompleted(e2: SEnum, params2: List<Spec>, sub: GSub): List<Spec>
   if !isEmpty(params2)
     ret params2
   ret match(get(sub.gsFormals, e2.seRoot))
-    (names: List<String>) => gsubFormalArgs(chain(names), e2, sub,
-                                            List<Spec>())
+    (names: List<String>) => build<Spec >(gsubFormalArgs(chain(names), e2,
+                                              sub, builder<Spec >()))
     ()                    => params2
 
+# POSITIONAL: these are the enum's type arguments, so the order they come out
+# in is the argument list.
 fun [tail] gsubFormalArgs(ns: Chain<String>, e2: SEnum, sub: GSub,
-                          acc: List<Spec>): List<Spec>
+                          [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(resolveGp(l.value, sub))
-      (b: Spec) => gsubFormalArgs(l.next, e2, sub, append(acc, b))
+      (b: Spec) => gsubFormalArgs(l.next, e2, sub, push<Spec >(acc, b))
       ()        => gsubFormalArgs(l.next, e2, sub,
-                                  append<Spec>(acc,
-                                               SGeneric(l.value, false,
-                                                        e2.seLine)))
+                                  push<Spec >(acc,
+                                              SGeneric(l.value, false,
+                                                       e2.seLine)))
+
 fun gsubInField(ft: Spec, sub: GSub, visited: List<String>): Spec
   ret match(ft)
     (g2: SGeneric) => match(resolveGp(g2.sgName, sub))
@@ -771,7 +781,7 @@ fun createSpecializedStatements(statements: List<PStmt>,
   let formals = gsFormalsOf(chain(statements),
                             Dict<String, List<String>>())
   ret cssLoop(chain(statements), allRefs, formals,
-              existingKeys(chain(statements), List<String>()),
+              existingKeys(chain(statements), Set<String >()),
               List<PStmt>())
 
 # Template formals for identity completion: root -> the declaration's formal
@@ -798,31 +808,20 @@ fun stmtKind(st: PStmt): String
     (ta: PsTypealias) => "typealias"
     (o: PStmt)   => "other"
 
-fun existingKeys(ss: Chain<PStmt>, acc: List<String>): List<String>
-  ret build<String >(existingKeysB(ss, _pushChain<String >(builder<String >(), chain<String >(acc))))
-
-fun [tail] existingKeysB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+# The name+kind keys already present. A SET: its one consumer asks only
+# whether a key is taken, so the order it was collected in is not read.
+fun [tail] existingKeys(ss: Chain<PStmt>, acc: Set<String >): Set<String >
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => existingKeysB(l.next,
-                                    push<String >(acc, stmtName(l.value) + "\t"
-                                                + stmtKind(l.value)))
+    (l: ChainLink)  => existingKeys(l.next,
+                           add<String >(acc, stmtName(l.value) + "\t"
+                                             + stmtKind(l.value)))
 
+# Sorted by refLess. This was an INSERTION SORT — each ref walked the sorted
+# prefix rebuilding it as it went, so ordering n refs cost O(n^2) copies. The
+# stdlib sort is a stable mergesort and takes the same comparator.
 fun sortRefs(refs: List<GRef>): List<GRef>
-  ret srLoop(chain(refs), List<GRef>())
-
-fun [tail] srLoop(rs: Chain<GRef>, acc: List<GRef>): List<GRef>
-  ret match(rs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => srLoop(l.next, insertRef(chain(acc), l.value,
-                                                List<GRef>()))
-
-fun [tail] insertRef(as2: Chain<GRef>, x: GRef, acc: List<GRef>): List<GRef>
-  ret match(as2)
-    (nil: ChainEnd) => append(acc, x)
-    (l: ChainLink)  => refLess(x, l.value)
-      ? concat(append(acc, x), List<GRef>(as2))
-      : insertRef(l.next, x, append(acc, l.value))
+  ret sortBy<GRef>(refs, refLess)
 
 # Order: name, then the uid spellings ELEMENT-WISE (Python compares the
 # tuple, not a joined string), then the DEEP structural spelling — uid
@@ -857,11 +856,13 @@ fun [tail] strsLess(a: Chain<String>, b: Chain<String>): Bool
 fun deepId(sp: Spec): String
   ret tiSerialise(spellingOf(sp))
 
-class [final] CssState(csOut: List<PStmt>, csKeys: List<String>)
+# The specialisations emitted, in order, and the keys already emitted. The
+# keys answer membership only, so they are a Set.
+class [final] CssState(csOut: List<PStmt>, csKeys: Set<String >)
 
 fun [tail] cssLoop(ss: Chain<PStmt>, allRefs: List<GRef>,
                    formals: Dict<String, List<String>>,
-                   keys: List<String>, acc: List<PStmt>): List<PStmt>
+                   keys: Set<String >, acc: List<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isEmpty(stmtGens(l.value))
@@ -871,7 +872,7 @@ fun [tail] cssLoop(ss: Chain<PStmt>, allRefs: List<GRef>,
 
 fun [tail] cssForStmt(rs: Chain<GRef>, st: PStmt,
                       formals: Dict<String, List<String>>,
-                      keys: List<String>,
+                      keys: Set<String >,
                       acc: List<PStmt>): CssState
   ret match(rs)
     (nil: ChainEnd) => CssState(acc, keys)
@@ -881,16 +882,19 @@ fun [tail] cssForStmt(rs: Chain<GRef>, st: PStmt,
         |> (st2) => cssForStmt(l.next, st, formals, st2.csKeys, st2.csOut)
 
 fun cssOne(ref: GRef, st: PStmt,
-           formals: Dict<String, List<String>>, keys: List<String>,
+           formals: Dict<String, List<String>>, keys: Set<String >,
            acc: List<PStmt>): CssState
   let key = mangledName(ref.grName, ref.grArgs) + "\t" + stmtKind(st)
-  if contains2(keys, key)
+  if contains<String >(keys, key)
     ret CssState(acc, keys)
   let sp = createSpecializedVersion(st, ref.grArgs, formals)
   let sp2 = match(sp)
     (e2: PsEnum) => layoutEnum(e2)      # rebuild _enum_spec post-substitution
     (o: PStmt)   => sp
-  ret CssState(append(acc, sp2), append(keys, key))
+  ret CssState(build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(),
+                                                            chain<PStmt>(acc)),
+                                          sp2)),
+               add<String >(keys, key))
 
 # ── the redirect ────────────────────────────────────────────────────────────
 # Five node kinds carry type params; each redirects to the mangled name and
@@ -932,7 +936,8 @@ fun indexRefs(refs: GRefs): GRefsIx
 
 fun ixAdd(acc: Dict<String, List<GRef>>, g2: GRef): Dict<String, List<GRef>>
   ret match(get(acc, refKey(g2)))
-    (bucket: List<GRef>) => put(acc, refKey(g2), append(bucket, g2))
+    # A hash bucket, scanned by inBucket for a match — order not observable.
+    (bucket: List<GRef>) => put(acc, refKey(g2), prepend(g2, bucket))
     ()                    => put(acc, refKey(g2), list1(g2))
 
 fun inRefs(ix: Dict<String, List<GRef>>, name: String,
@@ -1292,8 +1297,12 @@ fun [tail] patternLoopB(ps: Chain<Spec>, remap: List<Binding>, let2: PsLet,
 # spelling_of): is_concrete deliberately admits a bare placeholder, so the
 # spelling — not a completeness-gated identity — is the honest dedup key.
 # First one in wins, as Python's setdefault.
+# On the FRONT: this collection is consumed by genericInstanceRefs, whose
+# output is gathered into the ref set and SORTED before anything is generated
+# from it, so the order constraints are discovered in is not observable. The
+# first spelling still wins, which is what the dedup decides.
 fun addConstraintOnce(acc: List<Spec>, sp: Spec): List<Spec>
-  ret hasConstraint(chain(acc), spellingOf(sp)) ? acc : append(acc, sp)
+  ret hasConstraint(chain(acc), spellingOf(sp)) ? acc : prepend(sp, acc)
 
 fun [tail] hasConstraint(cs: Chain<Spec>, id2: TypeId): Bool
   ret match(cs)
@@ -1465,10 +1474,13 @@ fun [tail] mfsListB(ss: Chain<Spec>, [terminal] acc: ListBuilder<Spec >): ListBu
 # The concrete interfaces implemented by NON-generic [trait] instances.
 fun concreteInstanceInterfaces(statements: List<PStmt>,
                                r: Resolver): List<Spec>
-  ret ciiLoop(chain(statements), r, List<Spec>())
+  ret build<Spec >(ciiLoop(chain(statements), r, builder<Spec >()))
 
+# One builder threaded through all three levels: the statement walk, the
+# per-instance step and the parent walk only ever WRITE to it, and the order
+# they write in is the declaration order Python's comprehension produces.
 fun [tail] ciiLoop(ss: Chain<PStmt>, r: Resolver,
-                   acc: List<Spec>): List<Spec>
+                   [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -1477,7 +1489,8 @@ fun [tail] ciiLoop(ss: Chain<PStmt>, r: Resolver,
         : ciiLoop(l.next, r, acc)
       (o: PStmt)    => ciiLoop(l.next, r, acc)
 
-fun instanceIfaces(let2: PsLet, r: Resolver, acc: List<Spec>): List<Spec>
+fun instanceIfaces(let2: PsLet, r: Resolver,
+                   [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(let2.lType)
     (dt: Spec) => match(dt)
       (dc: SClass) => match(soleItem(findType(r, dc.scName)))
@@ -1494,13 +1507,13 @@ fun instanceIfaces(let2: PsLet, r: Resolver, acc: List<Spec>): List<Spec>
     ()         => acc
 
 fun [tail] ifaceLoop(ps: Chain<Spec>, remap: List<Binding>,
-                     acc: List<Spec>): List<Spec>
+                     [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (pc: SClass) => match(substitute(l.value, remap))
         (sub: SClass) => isConcrete(sub)
-          ? ifaceLoop(l.next, remap, append<Spec>(acc, sub))
+          ? ifaceLoop(l.next, remap, push<Spec >(acc, sub))
           : ifaceLoop(l.next, remap, acc)
         (o: Spec)     => ifaceLoop(l.next, remap, acc)
       (o2: Spec)   => ifaceLoop(l.next, remap, acc)
@@ -1768,42 +1781,27 @@ fun monoErrors(statements: List<PStmt>, seenMono: List<GRef>): GIter
     : GIter(statements, offenderErrs(chain(offenders), statements, seenMono,
                                      Set<PErr>()))
 
-fun offenderNames(seenMono: List<GRef>): List<String>
-  ret offNamesLoop(chain(seenMono), seenMono, List<String>())
+fun offenderNames(seenMono: List<GRef>): Set<String >
+  ret offNamesLoop(chain(seenMono), seenMono, Set<String >())
 
-fun offNamesLoop(rs: Chain<GRef>, all: List<GRef>,
-                 acc: List<String>): List<String>
-  ret build<String >(offNamesLoopB(rs, all,
-                                   _pushChain<String >(builder<String >(),
-                                                       chain<String >(acc)),
-                                   _chainToSet<String >(chain<String >(acc),
-                                                        Set<String >())))
-
-fun [tail] offNamesLoopB(rs: Chain<GRef>, all: List<GRef>,
-                         [terminal] out: ListBuilder<String >,
-                         seen: Set<String >): ListBuilder<String >
+# A Set, not a deduped list: monoErrors sorts this immediately, so any order
+# built here is discarded one call later. Keeping a builder as well would be
+# three orderings imposed on data that has none — first-seen, thrown away,
+# then re-imposed by sort.
+fun [tail] offNamesLoop(rs: Chain<GRef>, all: List<GRef>,
+                        out: Set<String >): Set<String >
   ret match(rs)
     (nil: ChainEnd) => out
-    (l: ChainLink)  => contains<String >(seen, l.value.grName)
+    (l: ChainLink)  => contains<String >(out, l.value.grName)
                        || countRefsFor(chain(all), l.value.grName, 0) < 32
-      ? offNamesLoopB(l.next, all, out, seen)   # _MAX_MONO_ROUNDS // 2
-      : offNamesLoopB(l.next, all, push<String >(out, l.value.grName),
-                      add<String >(seen, l.value.grName))
+      ? offNamesLoop(l.next, all, out)          # _MAX_MONO_ROUNDS // 2
+      : offNamesLoop(l.next, all, add<String >(out, l.value.grName))
 
 fun [tail] countRefsFor(rs: Chain<GRef>, name: String, n: Int): Int
   ret match(rs)
     (nil: ChainEnd) => n
     (l: ChainLink)  => countRefsFor(l.next, name,
                                     l.value.grName == name ? n + 1 : n)
-
-fun [tail] insertNameAsc(ns: Chain<String>, v: String,
-                         acc: List<String>): List<String>
-  ret match(ns)
-    (nil: ChainEnd) => append(acc, v)
-    (l: ChainLink)  => v < l.value
-      ? concat(append(acc, v), List<String>(ns))
-      : insertNameAsc(l.next, v, append(acc, l.value))
-
 
 fun [tail] offenderErrs(ns: Chain<String>, statements: List<PStmt>,
                         seenMono: List<GRef>, acc: Set<PErr>): Set<PErr>
@@ -2145,14 +2143,17 @@ fun [tail] matchingByTypeB(ms: Chain<Found>, ifaceType: Spec, r: Resolver,
 # propagates one extra level through the canonical dependency graph, exactly
 # as Python's identity walk does, capped at 16 passes.
 
-class [final] Canon(cnRoots: List<String>, cnSpecs: List<SEnum>)
+# Root name -> its canonical enum spec. A Dict: the only question asked is
+# canonLookup, which walked both lists in lockstep, and the "already have this
+# root" test was a second scan of the same data.
+class [final] Canon(cnMap: Dict<String, SEnum>)
 class [final] CanonPass(cpCanon: Canon, cpChanged: Bool)
 class [final] FieldsFix(ffFields: List<SField>, ffChanged: Bool)
 
 fun refreshEnumSpecAllFields(statements: List<PStmt>): List<PStmt>
   let canon0 = collectCanonical(chain(statements),
-                                Canon(List<String>(), List<SEnum>()))
-  if isEmpty(canon0.cnRoots)
+                                Canon(Dict<String, SEnum>()))
+  if isEmpty(canon0.cnMap)
     ret statements
   let canon = canon0   # fields-sync fixpoint deleted: no stored fields to sync
   ret rfrStmts(chain(statements), canon, List<PStmt>())
@@ -2170,25 +2171,15 @@ fun [tail] collectCanonical(ss: Chain<PStmt>, acc: Canon): Canon
 fun canonAdd(acc: Canon, e2: PsEnum): Canon
   ret match(e2.eSpec)
     (sp: Spec) => match(sp)
-      (es: SEnum) => contains2(acc.cnRoots, es.seRoot)
+      # FIRST spec for a root wins, as the scan-then-append did.
+      (es: SEnum) => contains<String, SEnum>(acc.cnMap, es.seRoot)
         ? acc
-        : Canon(append(acc.cnRoots, es.seRoot),
-                append(acc.cnSpecs, es))
+        : Canon(put<String, SEnum>(acc.cnMap, es.seRoot, es))
       (o: Spec)   => acc
     ()         => acc
 
 fun canonLookup(c: Canon, root: String): SEnum|None
-  ret canonLookLoop(chain(c.cnRoots), chain(c.cnSpecs), root)
-
-fun [tail] canonLookLoop(ns: Chain<String>, sps: Chain<SEnum>,
-                         root: String): SEnum|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(sps)
-      (nil2: ChainEnd) => None
-      (s2: ChainLink)  => n.value == root
-        ? s2.value
-        : canonLookLoop(n.next, s2.next, root)
+  ret get<String, SEnum>(c.cnMap, root)
 
 fun fieldsStale(fe: SEnum, spec: SEnum): Bool
   ret !eqStrs(fe.seAllLeaves, spec.seAllLeaves)
@@ -2410,12 +2401,12 @@ fun rfrEnum(e2: SEnum, c: Canon): Spec
 # and what remains is exactly what would have crashed. Surviving generic
 # templates are skipped, as reportUnresolvedGenericCalls already does.
 
-class [final] UtAcc(utSeen: List<String>, utErrs: Set<PErr>)
+class [final] UtAcc(utSeen: Set<String >, utErrs: Set<PErr>)
 
 fun reportUndischargedTraits(statements: List<PStmt>): Set<PErr>
   let r = rootResolver(statements)
   ret utTop(chain(statements), r, traitLets(r),
-            UtAcc(List<String>(), Set<PErr>())).utErrs
+            UtAcc(Set<String >(), Set<PErr>())).utErrs
 
 fun [tail] utTop(ss: Chain<PStmt>, r: Resolver, traits: List<PStmt>,
                  acc: UtAcc): UtAcc
@@ -2448,9 +2439,9 @@ fun utCheck(a: UtAcc, nm: PeName, ts: SClass, r: Resolver,
   if n == 1
     ret a
   let shown = traitDisplay(ts)
-  if contains2(a.utSeen, shown)
+  if contains<String >(a.utSeen, shown)
     ret a
-  ret UtAcc(append(a.utSeen, shown),
+  ret UtAcc(add<String >(a.utSeen, shown),
             add(a.utErrs, PErr(nm.penLine, utMessage(shown, nm, n))))
 
 fun utMessage(shown: String, nm: PeName, n: Int): String

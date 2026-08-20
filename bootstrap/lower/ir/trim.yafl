@@ -17,13 +17,18 @@ import Bootstrap::StdlibCandidates
 # Name SETS with dict membership (user ruling 2026-07-22) — the ordered
 # lists feed trim's sorted rebuild; the dicts make union/difference linear
 # (the old list-membership algebra was quadratic in the reachable set).
-class [final] StrSet(setNames: List<String>, setIx: Dict<String, Bool>)
+# Just the index. The name list beside it was exactly its keys, kept only to
+# iterate — and every walk over it either folds (order-free) or sorts first.
+class [final] StrSet(setIx: Dict<String, Bool>)
+
+fun setNames(s2: StrSet): List<String>
+  ret sort<String>(keys<String, Bool>(s2.setIx))
 
 fun setEmpty(): StrSet
-  ret StrSet(List<String>(), Dict<String, Bool>())
+  ret StrSet(Dict<String, Bool>())
 
 fun set1(name: String): StrSet
-  ret StrSet(list1(name), put(Dict<String, Bool>(), name, true))
+  ret StrSet(put(Dict<String, Bool>(), name, true))
 
 fun setHas(s2: StrSet, name: String): Bool
   ret !(get(s2.setIx, name) is None)
@@ -31,19 +36,19 @@ fun setHas(s2: StrSet, name: String): Bool
 fun setAdd(s2: StrSet, name: String): StrSet
   ret setHas(s2, name)
     ? s2
-    : StrSet(append(s2.setNames, name), put(s2.setIx, name, true))
+    : StrSet(put(s2.setIx, name, true))
 
 fun setOfList(names: List<String>): StrSet
   ret fold(names, setEmpty(), setAdd)
 
 fun setUnion(a: StrSet, b: StrSet): StrSet
-  ret fold(b.setNames, a, setAdd)
+  ret fold(setNames(b), a, setAdd)
 
 fun setSub(a: StrSet, b: StrSet): StrSet
-  ret setOfList(filter(a.setNames, (x: String) => !setHas(b, x)))
+  ret setOfList(filter(setNames(a), (x: String) => !setHas(b, x)))
 
 fun setIsEmpty(s2: StrSet): Bool
-  ret isEmpty(s2.setNames)
+  ret isEmpty(s2.setIx)
 
 class [final] ScanSets(ssGlobals: StrSet, ssObjects: StrSet,
                        ssFunctions: StrSet)
@@ -158,11 +163,11 @@ fun removedUnusedStuff(a: CgApp): CgApp
   ret trimLoop(a, ssFunction1("__entrypoint__"), ssEmpty())
 
 fun [tail] trimLoop(a: CgApp, scanSets: ScanSets, toApp: ScanSets): CgApp
-  let fromGlobals = fold(scanSets.ssGlobals.setNames, ssEmpty(),
+  let fromGlobals = fold(setNames(scanSets.ssGlobals), ssEmpty(),
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppGlobal(a, n)))
-  let fromObjects = fold(scanSets.ssObjects.setNames, fromGlobals,
+  let fromObjects = fold(setNames(scanSets.ssObjects), fromGlobals,
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppObject(a, n)))
-  let seenSets = ssUnion(scanSets, fold(scanSets.ssFunctions.setNames, fromObjects,
+  let seenSets = ssUnion(scanSets, fold(setNames(scanSets.ssFunctions), fromObjects,
                          (acc: ScanSets, n: String) => ssUnion(acc, scanAppFunction(a, n))))
   let newScanSets = ssSub(seenSets, toApp)
   ret ssIsEmpty(newScanSets)
@@ -188,30 +193,43 @@ fun scanAppFunction(a: CgApp, name: String): ScanSets
 # deterministic emission order the C contract pins.
 fun trimRebuild(a: CgApp, toApp: ScanSets): CgApp
   ret appOf(
-    trimPick(sort<String>(toApp.ssFunctions.setNames), (n: String) => appFunction(a, n)),
-    trimPickObjects(sort<String>(toApp.ssObjects.setNames), a),
-    trimPickGlobals(sort<String>(toApp.ssGlobals.setNames), a))
+    trimPick(setNames(toApp.ssFunctions), (n: String) => appFunction(a, n)),
+    trimPickObjects(setNames(toApp.ssObjects), a),
+    trimPickGlobals(setNames(toApp.ssGlobals), a))
 
+# The picked entities keep the (sorted) name order they were asked for — it
+# becomes their emission order.
 fun trimPick(names: List<String>, get: (:String): CgFunction|None): List<CgFunction>
-  ret fold(names, List<CgFunction>(), (acc: List<CgFunction>, n: String) => trimPickOne(acc, get(n)))
+  ret build<CgFunction >(trimPickLoop(chain(names), get,
+                                      builder<CgFunction >()))
 
-fun trimPickOne(acc: List<CgFunction>, f: CgFunction|None): List<CgFunction>
-  ret match(f)
-    (f2: CgFunction) => append(acc, f2)
-    ()                => acc
+fun [tail] trimPickLoop(ns: Chain<String>, get: (:String): CgFunction|None,
+                        [terminal] acc: ListBuilder<CgFunction >): ListBuilder<CgFunction >
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(get(l.value))
+      (f2: CgFunction) => trimPickLoop(l.next, get,
+                                       push<CgFunction >(acc, f2))
+      ()                => trimPickLoop(l.next, get, acc)
 
 fun trimPickObjects(names: List<String>, a: CgApp): List<CgObject>
-  ret fold(names, List<CgObject>(), (acc: List<CgObject>, n: String) => trimPickObj(acc, appObject(a, n)))
+  ret build<CgObject >(trimPickObjLoop(chain(names), a, builder<CgObject >()))
 
-fun trimPickObj(acc: List<CgObject>, o: CgObject|None): List<CgObject>
-  ret match(o)
-    (o2: CgObject) => append(acc, o2)
-    ()              => acc
+fun [tail] trimPickObjLoop(ns: Chain<String>, a: CgApp,
+                           [terminal] acc: ListBuilder<CgObject >): ListBuilder<CgObject >
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(appObject(a, l.value))
+      (o2: CgObject) => trimPickObjLoop(l.next, a, push<CgObject >(acc, o2))
+      ()              => trimPickObjLoop(l.next, a, acc)
 
 fun trimPickGlobals(names: List<String>, a: CgApp): List<CgGlobal>
-  ret fold(names, List<CgGlobal>(), (acc: List<CgGlobal>, n: String) => trimPickGlb(acc, appGlobal(a, n)))
+  ret build<CgGlobal >(trimPickGlbLoop(chain(names), a, builder<CgGlobal >()))
 
-fun trimPickGlb(acc: List<CgGlobal>, g2: CgGlobal|None): List<CgGlobal>
-  ret match(g2)
-    (g3: CgGlobal) => append(acc, g3)
-    ()              => acc
+fun [tail] trimPickGlbLoop(ns: Chain<String>, a: CgApp,
+                           [terminal] acc: ListBuilder<CgGlobal >): ListBuilder<CgGlobal >
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(appGlobal(a, l.value))
+      (g3: CgGlobal) => trimPickGlbLoop(l.next, a, push<CgGlobal >(acc, g3))
+      ()              => trimPickGlbLoop(l.next, a, acc)

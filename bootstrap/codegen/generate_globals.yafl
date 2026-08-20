@@ -232,8 +232,9 @@ fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r: Resolver): ClassOb
   let scalarFields = map(scalars, (p: PStmt) => letCgField(p, r))
   let arrayField = CgField("array", CgArray(specGenerateOpt(arrayElem(ap.lType), r), 0))
   ret ClassObjFields(
+        # Header, the scalar fields, then the trailing array LAST.
         CgImmediateStruct(concat(list1(CgField("type", CgDataPointer())),
-                                 append(scalarFields, arrayField))),
+                                 build<CgField >(push<CgField >(_pushChain<CgField >(builder<CgField >(), chain<CgField>(scalarFields)), arrayField)))),
         arrayLengthFieldName(ap))
 
 fun isSameLet(p: PStmt, ap: PsLet): Bool
@@ -274,8 +275,8 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
   # scalar: absent from pointer masks, no barrier, and deliberately NOT
   # [mutable] — a store lost to a compaction move is a benign recompute, as
   # string_t's lazy hash.
-  let prefix = append(list1(CgField("type", CgDataPointer())),
-                      CgField("$hash", CgInt(32)))
+  let prefix = list2(CgField("type", CgDataPointer()),
+                     CgField("$hash", CgInt(32)))
   let marker = CgObject(st.eName, List<String>(), List<CgFuncSlot>(),
                         CgImmediateStruct(prefix),
                         None, st.eName + " — enum root marker (never instantiated)",
@@ -367,14 +368,17 @@ fun staticGlobalPlan(l: PsLet, r: Resolver, chasing: List<String>): List<CgGloba
       # a static (Python: get_type().generate raises; the plan falls to lazy).
       (t2: Spec) => specHasNamed(t2)
         ? None
-        : sgpFinish(l, r, sgpEmit(dv, r, append(chasing, l.lName), l.lName + "$static"))
+        # `chasing` is the cycle guard — a membership set.
+        : sgpFinish(l, r, sgpEmit(dv, r, prepend(l.lName, chasing),
+                                  l.lName + "$static"))
       ()         => None
     ()          => None
 
 fun sgpFinish(l: PsLet, r: Resolver, out: SgpOut): List<CgGlobal>|None
   ret match(out.sgpRp)
     (rp: RParam) => sgpLeafOk(rp)
-      ? append(out.sgpGlobals, CgGlobal(l.lName, specGenerateOpt(l.lType, r), rp, None, None, None))
+      # The let's own global comes after the ones its initialiser needed.
+      ? build<CgGlobal >(push<CgGlobal >(_pushChain<CgGlobal >(builder<CgGlobal >(), chain<CgGlobal>(out.sgpGlobals)), CgGlobal(l.lName, specGenerateOpt(l.lType, r), rp, None, None, None)))
       : None
     ()            => None
 
@@ -479,7 +483,7 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
   ret match(sub.sgpRp)
     (rp: RParam) => sgpLeafOk(rp)
       ? sgpEmitFields(l.next, lf.next, cls, r, chasing, hint, i + 1,
-                      append(pairs, RpNamedValue(stmtName2(lf.value), rp)),
+                      build<RpNamedValue >(push<RpNamedValue >(_pushChain<RpNamedValue >(builder<RpNamedValue >(), chain<RpNamedValue>(pairs)), RpNamedValue(stmtName2(lf.value), rp))),
                       concat(globals, sub.sgpGlobals))
       : sgpNo()
     ()            => sgpNo()
@@ -487,7 +491,7 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
 fun sgpInstanceDone(cls: PsClass, hint: String, pairs: List<RpNamedValue>,
                     globals: List<CgGlobal>): SgpOut
   ret SgpOut(RpStaticObjectRef(hint),
-             append(globals, CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None)))
+             build<CgGlobal >(push<CgGlobal >(_pushChain<CgGlobal >(builder<CgGlobal >(), chain<CgGlobal>(globals)), CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
 
 # A reference to another global let: chase its own plan. An integer/float
 # constant inlines its constant; a static class instance is referenced by

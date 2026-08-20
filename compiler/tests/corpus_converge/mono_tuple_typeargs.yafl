@@ -13,14 +13,14 @@ class [final] F(v: System::Int)
 
 fun addPairS(acc: (a: List<System::String>, b: List<System::Int>),
              f: F): (a: List<System::String>, b: List<System::Int>)
-  ret (append(acc.a, "x"), acc.b)
+  ret (prepend("x", acc.a), acc.b)
 
 fun addPairI(acc: (a: List<System::Int>, b: List<System::String>),
              f: F): (a: List<System::Int>, b: List<System::String>)
-  ret (append(acc.a, f.v), acc.b)
+  ret (prepend(f.v, acc.a), acc.b)
 
 fun main(): System::Int
-  let fs = append(List<F>(), F(3))
+  let fs = prepend(F(3), List<F>())
   let p1 = fold(fs, (List<System::String>(), List<System::Int>()), addPairS)
   let p2 = fold(fs, (List<System::Int>(), List<System::String>()), addPairI)
   ret chainLength(chain(p1.a)) + chainLength(chain(p2.a))

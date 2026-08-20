@@ -619,9 +619,11 @@ fun parseIsTail(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
 
 fun isDesugar(lhs: PExpr, neg: Bool, ty: Spec): PExpr
   let lr = exprLine(lhs)
-  let arms = append(append(List<PArm>(),
-      PArm("", ty, PeBool(!neg, lr), List<PLit>(), None, lr)),
-      PArm("", None, PeBool(neg, lr), List<PLit>(), None, lr))
+  # Two arms: the typed one, then the catch-all — match order is semantics.
+  let arms = prepend(PArm("", ty, PeBool(!neg, lr), List<PLit>(), None, lr),
+                     prepend(PArm("", None, PeBool(neg, lr), List<PLit>(),
+                                  None, lr),
+                             List<PArm>()))
   ret PeMatch(lhs, arms, lr)
 
 # One left-associative binary level over an op set: builds the `` `op` ``

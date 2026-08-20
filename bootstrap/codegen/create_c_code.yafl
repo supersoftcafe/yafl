@@ -121,8 +121,12 @@ fun isNoneSpec2(sp: Spec|None): Bool
     (s2: Spec) => false
     ()          => true
 
+# Distinct lazy value types, in first-seen order — the machinery they get is
+# emitted in it. `acc` is read by the dedup, so it cannot be a builder.
 fun lazyTypeAdd(acc: List<CgType>, t2: CgType): List<CgType>
-  ret any(acc, (x: CgType) => irMangle(x) == irMangle(t2)) ? acc : append(acc, t2)
+  ret any(acc, (x: CgType) => irMangle(x) == irMangle(t2))
+    ? acc
+    : build<CgType >(push<CgType >(_pushChain<CgType >(builder<CgType >(), chain<CgType>(acc)), t2))
 
 fun ensureLazyMachinery(a: CgApp, types2: List<CgType>): CgApp
   if isEmpty(types2)
@@ -155,7 +159,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # SSA + control-flow + Phi validation right after AST lowering.
   let _ir = spanEnd(spIr)
   let spV1 = spanBegin("codegen", "ssa_validate.1")
-  let v1 = ssaValidate(a2.appFunctions, true)
+  let v1 = ssaValidate(appFunctions(a2), true)
   let _v1 = spanEnd(spV1)
   if !isEmpty(v1)
     ret CreateCOut(List<String>(), v1)
@@ -206,7 +210,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   if !isEmpty(v2)
     ret CreateCOut(List<String>(), v2)
   let spV3 = spanBegin("codegen", "ssa_validate.2")
-  let v3 = ssaValidate(a9.appFunctions, false)
+  let v3 = ssaValidate(appFunctions(a9), false)
   let _v3 = spanEnd(spV3)
   if !isEmpty(v3)
     ret CreateCOut(List<String>(), v3)
@@ -303,10 +307,10 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
 # are unique, so Python's (name, count) sort order IS name order).
 fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects: Bool): Bool
   ret match(prev)
-    (p: CgApp) => ccFnsSame(chain(p.appFunctions), chain(cur.appFunctions))
+    (p: CgApp) => ccFnsSame(chain(appFunctions(p)), chain(appFunctions(cur)))
                   && (!withObjects
-                      || ccObjsSame(chain(ccSortObjs(p.appObjects)),
-                                    chain(ccSortObjs(cur.appObjects))))
+                      || ccObjsSame(chain(ccSortObjs(appObjects(p))),
+                                    chain(ccSortObjs(appObjects(cur)))))
     ()         => false
 
 fun [tail] ccFnsSame(a: Chain<CgFunction>, b: Chain<CgFunction>): Bool
@@ -332,19 +336,9 @@ fun [tail] ccObjsSame(a: Chain<CgObject>, b: Chain<CgObject>): Bool
         : false
 
 fun ccSortObjs(os: List<CgObject>): List<CgObject>
-  ret ccSortObjsLoop(chain(os), List<CgObject>())
-
-fun [tail] ccSortObjsLoop(os: Chain<CgObject>, acc: List<CgObject>): List<CgObject>
-  ret match(os)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ccSortObjsLoop(l.next, ccInsertObj(chain(acc), l.value, List<CgObject>()))
-
-fun [tail] ccInsertObj(as2: Chain<CgObject>, x: CgObject, acc: List<CgObject>): List<CgObject>
-  ret match(as2)
-    (nil: ChainEnd) => append(acc, x)
-    (l: ChainLink)  => x.objName < l.value.objName
-      ? concat(append(acc, x), List<CgObject>(as2))
-      : ccInsertObj(l.next, x, append(acc, l.value))
+  # By name. This was an INSERTION SORT — each object walking the sorted
+  # prefix and rebuilding it as it went.
+  ret sortBy<CgObject>(os, (a: CgObject, b: CgObject) => a.objName < b.objName)
 
 fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
   let r2 = scopeResolver(st, r)

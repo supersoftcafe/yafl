@@ -21,7 +21,7 @@ import Bootstrap::Ir
 class [final] DfoNewObj(dfoVar: String, dfoClass: String)
 
 fun resolveKnownDiscriminators(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions,
+  ret appWithFunctions(a, map(appFunctions(a),
                               (f: CgFunction) => dfoFunction(f, a)))
 
 fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
@@ -37,7 +37,8 @@ fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
 fun dfoCollect(acc: List<DfoNewObj>, op: Op): List<DfoNewObj>
   ret match(op)
     (no: OpNewObject) => match(no.newObjRegister)
-      (sv: RpStackVar) => append(acc, DfoNewObj(sv.name, no.newObjName))
+      # Looked up by register name — the table's own order is not observed.
+      (sv: RpStackVar) => prepend(DfoNewObj(sv.name, no.newObjName), acc)
       (o: RParam)      => acc
     (o: Op)           => acc
 

@@ -166,11 +166,14 @@ fun isValidUtf8(s: System::String): System::Bool
 # All codepoints of `s`, front to back. Built purely on the strict decoder;
 # stops at the end of `s` (or, for invalid input, the first malformed byte).
 fun codepoints(s: System::String): List<System::Int32>
-  fun [tail] loop(off: System::Int, acc: List<System::Int32>): List<System::Int32>
+  # Front to back, and that order is the whole point of the function, so the
+  # codepoints go into a builder as they are decoded.
+  fun [tail] loop(off: System::Int,
+                  [terminal] acc: ListBuilder<System::Int32 >): ListBuilder<System::Int32 >
     ret match(codepointAt(s, off))
-      (cp: System::Int32) => loop(off + _utf8Width(cp), append(acc, cp))
+      (cp: System::Int32) => loop(off + _utf8Width(cp), push<System::Int32 >(acc, cp))
       (n: System::None)   => acc
-  ret loop(0, List<System::Int32>())
+  ret build<System::Int32 >(loop(0, builder<System::Int32 >()))
 
 
 # Split a string into lines on '\n', dropping a trailing '\r' from each so both
@@ -183,13 +186,16 @@ fun splitLines(s: System::String): List<System::String>
     ret nl > from
       ? (byteAt(s, nl - 1) == '\r' ? nl - 1 : nl)
       : nl
-  fun [tail] loop(from: System::Int, acc: List<System::String>): List<System::String>
+  # Segments are produced left to right and that order IS the result, so the
+  # accumulator is a builder: each line lands at the tail in O(1).
+  fun [tail] loop(from: System::Int,
+                  [terminal] acc: ListBuilder<System::String >): ListBuilder<System::String >
     let len: System::Int = length(s)
     let nl: System::Int = findByte(s, '\n', from)
     ret nl < 0
-      ? append(acc, slice(s, from, lineEnd(from, len)))
-      : loop(nl + 1, append(acc, slice(s, from, lineEnd(from, nl))))
-  ret loop(0, List<System::String>())
+      ? push<System::String >(acc, slice(s, from, lineEnd(from, len)))
+      : loop(nl + 1, push<System::String >(acc, slice(s, from, lineEnd(from, nl))))
+  ret build<System::String >(loop(0, builder<System::String >()))
 
 
 # ── substring search & manipulation ───────────────────────────────────────
@@ -229,12 +235,15 @@ fun endsWith(s: System::String, suffix: System::String): System::Bool
 # string without `sep` yields a single-element list. An empty separator is
 # degenerate and returns the whole string unsplit.
 fun split(s: System::String, sep: System::String): List<System::String>
-  fun [tail] loop(from: System::Int, acc: List<System::String>): List<System::String>
+  fun [tail] loop(from: System::Int,
+                  [terminal] acc: ListBuilder<System::String >): ListBuilder<System::String >
     let at = indexOf(s, sep, from)
     ret at < 0
-      ? append(acc, slice(s, from, length(s)))
-      : loop(at + length(sep), append(acc, slice(s, from, at)))
-  ret length(sep) == 0 ? append(List<System::String>(), s) : loop(0, List<System::String>())
+      ? push<System::String >(acc, slice(s, from, length(s)))
+      : loop(at + length(sep), push<System::String >(acc, slice(s, from, at)))
+  ret length(sep) == 0
+    ? prepend(s, List<System::String>())
+    : build<System::String >(loop(0, builder<System::String >()))
 
 # Join `parts` into one string with `sep` between adjacent elements. Builds
 # through a StringBuilder, so the cost is linear in the total size. The builder

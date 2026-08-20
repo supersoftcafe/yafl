@@ -829,19 +829,20 @@ def _coalesce_mutual_scc(scc_fns: list[s.FunctionStatement],
     scc_names = {fn.name for fn in scc_fns}
     lr = scc_fns[0].line_ref
 
-    # Union captures: every outer var referenced by any SCC member, in a
-    # stable order (first encounter wins).
-    seen_captures: set[str] = set()
-    union_captures: list[tuple[str, t.TypeSpec]] = []
-    for fn in scc_fns:
-        # Sorted: set iteration order would make the synthesised class's field
-        # order depend on string hashing (unportable to the bootstrap).
-        for ref in sorted(_free_refs(fn, sibling_fn_names)):
-            if ref in outer_var_types and ref not in seen_captures:
-                seen_captures.add(ref)
-                union_captures.append((ref, outer_var_types[ref]))
-
-    capture_names = {n for n, _ in union_captures}
+    # Union captures: every outer var referenced by any SCC member.
+    #
+    # Ordered by NAME, not by encounter. This order becomes the field order of
+    # the synthesised class and the argument order of its construction, so it
+    # has to be deterministic — set iteration order would make it depend on
+    # string hashing, which is unportable to the bootstrap. Sorting the union
+    # once gives that guarantee directly, and makes the generated class a
+    # function of which names are captured rather than of the order the SCC
+    # members happened to be visited in. The bootstrap does the same.
+    capture_names = {ref
+                     for fn in scc_fns
+                     for ref in _free_refs(fn, sibling_fn_names)
+                     if ref in outer_var_types}
+    union_captures = [(n, outer_var_types[n]) for n in sorted(capture_names)]
 
     # Give each method a class-unique name distinct from the original
     # nested-fn name.  The let-binding in the parent body keeps the

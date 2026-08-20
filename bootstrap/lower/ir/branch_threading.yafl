@@ -13,7 +13,7 @@ import Bootstrap::Ir
 
 
 fun threadBranches(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, btFunction))
+  ret appWithFunctions(a, map(appFunctions(a), btFunction))
 
 fun [tail] btFunction(f: CgFunction): CgFunction
   let out = btOnce(f.fnOps)
@@ -23,18 +23,26 @@ fun [tail] btFunction(f: CgFunction): CgFunction
 
 class [final] BtOut(btOps: List<Op>, btChanged: Bool)
 
-fun btOnce(ops: List<Op>): BtOut
-  ret fold(ops, BtOut(List<Op>(), false),
-           (acc: BtOut, op: Op) => btStep(acc, op, ops))
+# Instruction order out; `changed` rides alongside as a plain value.
+class [linear, final] BtAcc(baOps: ListBuilder<Op >, baChanged: Bool)
 
-fun btStep(acc: BtOut, op: Op, ops: List<Op>): BtOut
+fun btOnce(ops: List<Op>): BtOut
+  ret btLoop(chain(ops), ops, BtAcc(builder<Op >(), false))
+
+fun [tail] btLoop(os: Chain<Op>, ops: List<Op>,
+                  [terminal] acc: BtAcc): BtOut
+  ret match(os)
+    (nil: ChainEnd) => BtOut(build<Op >(acc.baOps), acc.baChanged)
+    (l: ChainLink)  => btLoop(l.next, ops, btStep(acc, l.value, ops))
+
+fun btStep([terminal] acc: BtAcc, op: Op, ops: List<Op>): BtAcc
   ret match(op)
     (j: OpJump) => match(btTerminatorAfter(chain(ops), j.jumpName))
       (t2: Op) => btSameJump(t2, j)
-        ? BtOut(append(acc.btOps, op), acc.btChanged)
-        : BtOut(append(acc.btOps, t2), true)
-      ()        => BtOut(append(acc.btOps, op), acc.btChanged)
-    (o: Op)     => BtOut(append(acc.btOps, op), acc.btChanged)
+        ? BtAcc(push<Op >(acc.baOps, op), acc.baChanged)
+        : BtAcc(push<Op >(acc.baOps, t2), true)
+      ()        => BtAcc(push<Op >(acc.baOps, op), acc.baChanged)
+    (o: Op)     => BtAcc(push<Op >(acc.baOps, op), acc.baChanged)
 
 fun btSameJump(t2: Op, j: OpJump): Bool
   ret match(t2)

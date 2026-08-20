@@ -56,11 +56,13 @@ import Bootstrap::Types
 # ── small list-building helpers (used pervasively below to keep RParam/Op
 # list literals readable — Python's tuple literals have no YAFL equivalent) ──
 
+# Built from the front: the head is prepended onto the shorter literal, which
+# is O(1) per element and needs no builder for so few of them.
 fun list4<T>(a: T, b: T, c: T, d: T): List<T>
-  ret append(list3(a, b, c), d)
+  ret prepend(a, list3(b, c, d))
 
 fun list5<T>(a: T, b: T, c: T, d: T, e: T): List<T>
-  ret append(list4(a, b, c, d), e)
+  ret prepend(a, list4(b, c, d, e))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 0: GBundle — OperationBundle, ported from pyast/resolver.py.
@@ -461,22 +463,24 @@ fun convertTupleBound(value: RParam, source: Spec, target: Spec, binding: List<I
   ret (isIdentityBinding(binding) && uid(source) == uid(target))
     ? bundleValue(value)
     : convertTupleFields(value, source, chain(tupleEntries(target)), chain(binding), 0,
-                         emptyBundle(), List<RpNamedValue>(), r)
+                         emptyBundle(), builder<RpNamedValue >(), r)
 
 fun convertTupleFields(value: RParam, source: Spec, tEntries: Chain<SEntry>,
                               binding: Chain<Int>, i: Int, bundle: GBundle,
-                              fieldValues: List<RpNamedValue>, r: Resolver): GBundle
+                              [terminal] fieldValues: ListBuilder<RpNamedValue >, r: Resolver): GBundle
   ret match(tEntries)
-    (nil: ChainEnd) => bundleJoin(bundle, bundleValue(RpNewStruct(fieldValues)))
+    (nil: ChainEnd) => bundleJoin(bundle,
+                          bundleValue(RpNewStruct(build<RpNamedValue >(fieldValues))))
     (l: ChainLink)  => match(binding)
-      (nil2: ChainEnd) => bundleJoin(bundle, bundleValue(RpNewStruct(fieldValues)))  # unreachable: same length
+      (nil2: ChainEnd) => bundleJoin(bundle, bundleValue(RpNewStruct(build<RpNamedValue >(fieldValues))))  # unreachable: same length
       (b: ChainLink)   => convertTupleFieldsStep(value, source, l, b, i, bundle, fieldValues, r)
 
 fun convertTupleFieldsStep(value: RParam, source: Spec, l: ChainLink<SEntry>, b: ChainLink<Int>, i: Int,
-                          bundle: GBundle, fieldValues: List<RpNamedValue>, r: Resolver): GBundle
+                          bundle: GBundle, [terminal] fieldValues: ListBuilder<RpNamedValue >, r: Resolver): GBundle
   let cb = withPrefix(convertTupleField(value, source, l.value, b.value, r), "f" + String(i))
   ret convertTupleFields(value, source, l.next, b.next, i + 1, bundleJoin(bundle, cb),
-                        append(fieldValues, RpNamedValue("_" + String(i), mustResult(cb))), r)
+                        push<RpNamedValue >(fieldValues,
+                            RpNamedValue("_" + String(i), mustResult(cb))), r)
 
 fun convertTupleField(value: RParam, source: Spec, tEntry: SEntry, b: Int, r: Resolver): GBundle
   ret b >= 0
@@ -879,7 +883,8 @@ fun isImpureCall(funRef: RParam): Bool
 # natural (declaration) order.
 
 fun genTuple(tp: PeTuple, r: Resolver): GBundle
-  let built = genTupleEntryBundles(chain(tp.exprs), r, 0, List<GBundle>())
+  let built = genTupleEntryBundles(chain(tp.exprs), r, 0,
+                                   builder<GBundle >())
   let paramBundles = built.bs
   # NewStruct field-name → result mapping is pinned to DECLARED positions, so
   # the tuple value is unaffected by any reordering of evaluation below.
@@ -938,11 +943,14 @@ fun [tail] swapLoopB(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
 
 # Returns the bundles AND their count — idx already rides the walk, so the
 # count is free at the end (no-length ruling: counts are carried, not taken).
-fun [tail] genTupleEntryBundles(es: Chain<PTupEnt>, r: Resolver, idx: Int, acc: List<GBundle>): (bs: List<GBundle>, n: Int)
+fun [tail] genTupleEntryBundles(es: Chain<PTupEnt>, r: Resolver, idx: Int,
+                                [terminal] acc: ListBuilder<GBundle >): (bs: List<GBundle>, n: Int)
   ret match(es)
-    (nil: ChainEnd) => (acc, idx)
+    (nil: ChainEnd) => (build<GBundle >(acc), idx)
     (l: ChainLink)  => genTupleEntryBundles(l.next, r, idx + 1,
-                        append(acc, withPrefix(genExpr(l.value.tupValue, r), "e" + String(idx))))
+                        push<GBundle >(acc,
+                            withPrefix(genExpr(l.value.tupValue, r),
+                                       "e" + String(idx))))
 
 fun namedValuesOf(bundles: List<GBundle>): List<RpNamedValue>
   ret namedValuesLoop(chain(bundles), 0, List<RpNamedValue>())
@@ -1024,7 +1032,9 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname: String, param
   let lenIdx = indexWhereNamed(chain(params), afSpec.safLenField, 0)
   let length2 = RpStructField(paramsVar, "_" + String(lenIdx))
   let initFn = RpStructField(paramsVar, "_" + String(arrIdx))
-  let scalarOps = scalarFieldMoveOps(chain(params), cname, resultVar, paramsVar, arrIdx, 0, r, List<Op>())
+  let scalarOps = build<Op >(scalarFieldMoveOps(chain(params), cname,
+                                 resultVar, paramsVar, arrIdx, 0, r,
+                                 builder<Op >()))
   let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, List<RParam>()),
                              OpNewObject(cname, resultVar, length2, List<RParam>())),
                        scalarOps)
@@ -1065,11 +1075,15 @@ fun [tail] indexWhereNamed(ps: Chain<PStmt>, name: String, i: Int): Int
     (l: ChainLink)  => nameMatches(stmtName(l.value), name) ? i : indexWhereNamed(l.next, name, i + 1)
 
 fun [tail] scalarFieldMoveOps(ps: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
-                              arrIdx: Int, i: Int, r: Resolver, acc: List<Op>): List<Op>
+                              arrIdx: Int, i: Int, r: Resolver,
+                              [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => scalarFieldMoveOps(l.next, cname, resultVar, paramsVar, arrIdx, i + 1, r,
-                        i == arrIdx ? acc : append(acc, fieldMoveOp(l.value, cname, resultVar, paramsVar, i, r)))
+                        i == arrIdx
+                          ? acc
+                          : push<Op >(acc, fieldMoveOp(l.value, cname,
+                                               resultVar, paramsVar, i, r)))
 
 # ── NewEnumExpression ────────────────────────────────────────────────────────
 # `fieldArgs` in this port's AST is just the field NAMES (see the port report:
@@ -1219,7 +1233,9 @@ fun genBlockReturnsFallThrough(bk: PeBlock, stmtsBundle: GBundle, r: Resolver, s
     : genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stackVars0, recur0, sources0, vbun.gbResult, true)
 
 fun genBlockReturnsDead(stmtsBundle: GBundle, slotType: Spec|None, r: Resolver, tag: String, endLabel: String, ftExit: String): GBundle
-  let ops0 = append(stmtsBundle.gbOps, OpAbort("unreachable: every path through the block returned", List<RParam>()))
+  let ops0 = build<Op >(push<Op >(_pushChain<Op >(builder<Op >(),
+                                      chain<Op>(stmtsBundle.gbOps)),
+                        OpAbort("unreachable: every path through the block returned", List<RParam>())))
   ret genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stmtsBundle.gbStackVars, stmtsBundle.gbRecurSources,
                       stmtsBundle.gbExitSources, None, false)
 
@@ -1230,11 +1246,19 @@ fun genBlockAssemble(slotType: Spec|None, r: Resolver, tag: String, endLabel: St
     (st2: Spec) => genBlockAssembleValued(st2, r, tag, ops0, stackVars0, recur0, sources0, endLabel, ftExit, ftValue, reachesEnd)
     ()          => genBlockAssembleUnit(ops0, stackVars0, recur0, endLabel, ftExit, reachesEnd)
 
+# The fall-through label, when the block can reach its end, then the end
+# label — both after everything the block emitted.
+fun genBlockFtLabel([terminal] b: ListBuilder<Op >, ftExit: String,
+                    reachesEnd: Bool): ListBuilder<Op >
+  ret reachesEnd ? push<Op >(b, OpLabel(ftExit, List<RParam>())) : b
+
 fun genBlockAssembleUnit(ops0: List<Op>, stackVars0: List<RParam>, recur0: List<RecurSource>,
                          endLabel: String, ftExit: String, reachesEnd: Bool): GBundle
-  let ops1 = reachesEnd ? append(ops0, OpLabel(ftExit, List<RParam>())) : ops0
-  let ops2 = append(ops1, OpLabel(endLabel, List<RParam>()))
-  ret GBundle(stackVars0, ops2, None, recur0, List<ExitSource>())
+  let ops1 = genBlockFtLabel(_pushChain<Op >(builder<Op >(), chain<Op>(ops0)),
+                             ftExit, reachesEnd)
+  ret GBundle(stackVars0,
+              build<Op >(push<Op >(ops1, OpLabel(endLabel, List<RParam>()))),
+              None, recur0, List<ExitSource>())
 
 fun genBlockAssembleValued(slotType: Spec, r: Resolver, tag: String, ops0: List<Op>, stackVars0: List<RParam>,
                           recur0: List<RecurSource>, sources0: List<ExitSource>, endLabel: String, ftExit: String,
@@ -1243,10 +1267,24 @@ fun genBlockAssembleValued(slotType: Spec, r: Resolver, tag: String, ops0: List<
   let fv = match(ftValue)
     (v: RParam) => v
     ()           => RpZeroOf(rpGetType(resultVar))
-  let ops1 = reachesEnd ? append(ops0, OpLabel(ftExit, List<RParam>())) : ops0
-  let sources1 = reachesEnd ? append(sources0, ExitSource(ftExit, fv)) : sources0
-  let ops2 = concat(ops1, list2(OpLabel(endLabel, List<RParam>()), OpPhi(resultVar, exitSourcesToPhi(sources1), List<RParam>())))
-  ret GBundle(append(stackVars0, resultVar), ops2, resultVar, recur0, List<ExitSource>())
+  let ops1 = genBlockFtLabel(_pushChain<Op >(builder<Op >(), chain<Op>(ops0)),
+                             ftExit, reachesEnd)
+  # The fall-through edge is the LAST phi source, matching the label order.
+  let sources1 = reachesEnd
+    ? build<ExitSource >(push<ExitSource >(
+          _pushChain<ExitSource >(builder<ExitSource >(),
+                                  chain<ExitSource>(sources0)),
+          ExitSource(ftExit, fv)))
+    : sources0
+  let ops2 = build<Op >(_pushChain<Op >(ops1,
+                 chain<Op>(list2(OpLabel(endLabel, List<RParam>()),
+                                 OpPhi(resultVar, exitSourcesToPhi(sources1),
+                                       List<RParam>())))))
+  ret GBundle(build<RParam >(push<RParam >(
+                  _pushChain<RParam >(builder<RParam >(),
+                                      chain<RParam>(stackVars0)),
+                  resultVar)),
+              ops2, resultVar, recur0, List<ExitSource>())
 
 fun exitSourcesToPhi(es: List<ExitSource>): List<OpPhiSource>
   ret map(es, (e2: ExitSource) => OpPhiSource(e2.esLabel, exitValueOr(e2.esValue)))
@@ -1317,16 +1355,17 @@ fun loopParamName(p: PExpr): String
     (o: PExpr)   => ""   # unreachable: LoopExpression.params are always NamedExpression references
 
 fun map3<A, B, C, D>(as2: List<A>, bs: List<B>, cs: List<C>, f: (:A, :B, :C): D): List<D>
-  ret map3Loop(chain<A>(as2), chain<B>(bs), chain<C>(cs), f, List<D>())
+  ret build<D >(map3Loop<A, B, C, D>(chain<A>(as2), chain<B>(bs), chain<C>(cs),
+                                     f, builder<D >()))
 
-fun [tail] map3Loop<A, B, C, D>(as2: Chain<A>, bs: Chain<B>, cs: Chain<C>, f: (:A, :B, :C): D, acc: List<D>): List<D>
+fun [tail] map3Loop<A, B, C, D>(as2: Chain<A>, bs: Chain<B>, cs: Chain<C>, f: (:A, :B, :C): D, [terminal] acc: ListBuilder<D >): ListBuilder<D >
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(bs)
       (nil2: ChainEnd) => acc
       (lb: ChainLink)  => match(cs)
         (nil3: ChainEnd) => acc
-        (lc: ChainLink)  => map3Loop(l.next, lb.next, lc.next, f, append<D>(acc, f(l.value, lb.value, lc.value)))
+        (lc: ChainLink)  => map3Loop<A, B, C, D>(l.next, lb.next, lc.next, f, push<D >(acc, f(l.value, lb.value, lc.value)))
 
 fun buildLoopPhis(params: Chain<PExpr>, ctypes: List<CgType>, refs: List<RParam>,
                          lv: List<LoopRename>, entry: String,
@@ -1373,7 +1412,8 @@ fun genRecurOn(rc: PeRecur, fl: FrLoop, r: Resolver): GBundle
   let ctypes = fl.flParamCTypes
   let specs = fl.flParamSpecs
   let tag = fl.flTag
-  let step = genRecurArgs(chain(rc.recArgs), r, ctypes, specs, tag, k, 0, emptyBundle(), List<RParam>())
+  let step = genRecurArgs(chain(rc.recArgs), r, ctypes, specs, tag, k, 0,
+                          emptyBundle(), builder<RParam >())
   let exitLabel = "recurexit" + String(k) + "$" + tag
   # Python's return here omits exit_sources (OperationBundle default: empty),
   # even though generating an arg could in principle carry one forward —
@@ -1382,23 +1422,30 @@ fun genRecurOn(rc: PeRecur, fl: FrLoop, r: Resolver): GBundle
   ret GBundle(step.grBundle.gbStackVars,
              concat(step.grBundle.gbOps, list2(OpLabel(exitLabel, List<RParam>()), OpJump("loophead$" + tag, List<RParam>()))),
              None,
-             append(step.grBundle.gbRecurSources, RecurSource(exitLabel, step.grPhiIns)),
+             build<RecurSource >(push<RecurSource >(
+                 _pushChain<RecurSource >(builder<RecurSource >(),
+                     chain<RecurSource>(step.grBundle.gbRecurSources)),
+                 RecurSource(exitLabel, step.grPhiIns))),
              List<ExitSource>())
 
 class [final] RecurArgsOut(grBundle: GBundle, grPhiIns: List<RParam>)
 
+# The phi inputs are POSITIONAL — one per recur argument, in argument order.
 fun genRecurArgs(args: Chain<PExpr>, r: Resolver, ctypes: List<CgType>, specs: List<Spec>,
-                 tag: String, k: Int, i: Int, bundle: GBundle, phiIns: List<RParam>): RecurArgsOut
+                 tag: String, k: Int, i: Int, bundle: GBundle,
+                 [terminal] phiIns: ListBuilder<RParam >): RecurArgsOut
   ret match(args)
-    (nil: ChainEnd) => RecurArgsOut(bundle, phiIns)
+    (nil: ChainEnd) => RecurArgsOut(bundle, build<RParam >(phiIns))
     (l: ChainLink)  => genRecurArgsStep(l, r, ctypes, specs, tag, k, i, bundle, phiIns)
 
 fun genRecurArgsStep(l: ChainLink<PExpr>, r: Resolver, ctypes: List<CgType>, specs: List<Spec>,
-                     tag: String, k: Int, i: Int, bundle: GBundle, phiIns: List<RParam>): RecurArgsOut
+                     tag: String, k: Int, i: Int, bundle: GBundle,
+                     [terminal] phiIns: ListBuilder<RParam >): RecurArgsOut
   let ab = withPrefix(genExprTo(l.value, r, forceNth<Spec>(specs, i)), "recur" + String(i))
   let phiin = RpStackVar(forceNth<CgType>(ctypes, i), "phiin$" + tag + "$" + String(k) + "$" + String(i))
   let withMove = bundleJoin(bundle, bundleJoin(ab, bundleFull(list1(phiin), list1(OpMove(phiin, mustResult(ab), false, List<RParam>())), None)))
-  ret genRecurArgs(l.next, r, ctypes, specs, tag, k, i + 1, withMove, append(phiIns, phiin))
+  ret genRecurArgs(l.next, r, ctypes, specs, tag, k, i + 1, withMove,
+                   push<RParam >(phiIns, phiin))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 13: ParallelExpression (pyast/expression/parallel.py).

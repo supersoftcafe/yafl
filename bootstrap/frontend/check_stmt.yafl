@@ -543,7 +543,7 @@ fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r: Resolver,
                        && triTrue(assignableEq(r, l.value.slotType,
                                                slot.slotType))
                        && !contains2(seen, l.value.slotName)
-      ? capturedCount(l.next, slot, r, append(seen, l.value.slotName), n + 1)
+      ? capturedCount(l.next, slot, r, prepend(l.value.slotName, seen), n + 1)
       : capturedCount(l.next, slot, r, seen, n)
 
 fun checkEnum2(e2: PsEnum, r: Resolver): Set<PErr>

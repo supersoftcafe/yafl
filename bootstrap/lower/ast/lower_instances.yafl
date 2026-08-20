@@ -41,8 +41,7 @@ fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   let value = PeCall(PeName(wbare, ownArgs, lr),
                      PeTuple(List<PTupEnt>(), lr), lr)
   let attrs = ti.tiAmbient
-    ? append(prepend(PAttr("trait", None), List<PAttr>()),
-             PAttr("ambient", None))
+    ? build<PAttr>(push<PAttr>(push<PAttr>(builder<PAttr>(), PAttr("trait", None)), PAttr("ambient", None)))
     : prepend(PAttr("trait", None), List<PAttr>())
   let record = PsLet(prefix + "_instance$" + tag + "@" + tag, attrs,
                      ti.tiGens, SNamed(wbare, ownArgs, lr), value, "",

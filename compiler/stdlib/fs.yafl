@@ -81,18 +81,24 @@ fun openDir(path: String): Dir|IOError
     (c: Int)  => _error_from_code(c)
 
 
-# Drain a Dir into a List<String>, then close it.  On a read error the
+# Drain a Dir into a Set<String>, then close it.  On a read error the
 # accumulated entries are discarded and the error is returned (the handle
 # is still closed).
-fun listDir(path: String): List<String>|IOError
-  fun [tail] loop(d: Dir, acc: List<String>): (dir: Dir, entries: List<String>|IOError)
+#
+# A Set, not a List: the order readdir hands entries back in is the file
+# system's business — it is neither sorted nor stable across runs — and the
+# names in one directory are unique. Returning a List would dress that
+# arbitrary order up as meaning, and callers would come to rely on it. A
+# caller that wants a definite order says which one, with sort.
+fun listDir(path: String): Set<String>|IOError
+  fun [tail] loop(d: Dir, acc: Set<String>): (dir: Dir, entries: Set<String>|IOError)
     let r = d.next()
     ret match(r.entry)
-      (s: String)  => loop(r.dir, append<String>(acc, s))
+      (s: String)  => loop(r.dir, add<String>(acc, s))
       (n: None)    => (r.dir, acc)
       (e: IOError) => (r.dir, e)
-  fun drainAndClose(d: Dir): List<String>|IOError
-    let r = loop(d, List<String>())
+  fun drainAndClose(d: Dir): Set<String>|IOError
+    let r = loop(d, Set<String>())
     ret match(r.dir.close())
       (closeErr: IOError) => closeErr
       (n: System::None)   => r.entries

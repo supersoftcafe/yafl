@@ -22,20 +22,23 @@ import Bootstrap::Types
 
 
 # ── canonical roots + name map ───────────────────────────────────────────────
-# Parallel lists everywhere (Dict has no key iteration); insertion order is
-# load-bearing — the NamedSpec suffix fallback takes the FIRST map hit.
+# Just Dicts. The parallel lists beside them existed to preserve INSERTION
+# ORDER, because the suffix fallback used to take the first map hit — but
+# RULING A replaced that with "collect every match and error if more than one
+# survives", so insertion order no longer decides anything. The walks that
+# need an order take the keys SORTED.
+class [final] ERoots(erIndex: Dict<String, SEnum>)
+class [final] NameMap(nmIndex: Dict<String, String>)
 
-# Lists carry ITERATION ORDER (edge walk, table build, the suffix
-# fallback); the Dict carries LOOKUP (user ruling 2026-07-22).
-class [final] ERoots(erNames: List<String>, erSpecs: List<SEnum>,
-                     erIndex: Dict<String, SEnum>)
-class [final] NameMap(nmNames: List<String>, nmRoots: List<String>,
-                      nmIndex: Dict<String, String>)
+fun erNames(r: ERoots): List<String>
+  ret sort<String>(keys<String, SEnum>(r.erIndex))
+
+fun nmNames(m: NameMap): List<String>
+  ret sort<String>(keys<String, String>(m.nmIndex))
 
 fun ceCollectRoots(statements: List<PStmt>): ERoots
   ret ceRootsLoop(chain(statements),
-                  ERoots(List<String>(), List<SEnum>(),
-                         Dict<String, SEnum>()))
+                  ERoots(Dict<String, SEnum>()))
 
 fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc: ERoots): ERoots
   ret match(ss)
@@ -47,10 +50,10 @@ fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc: ERoots): ERoots
 fun ceRootAdd(acc: ERoots, e2: PsEnum): ERoots
   ret match(e2.eSpec)
     (sp: Spec) => match(sp)
-      (es: SEnum) => contains2(acc.erNames, es.seRoot)
+      # FIRST declaration of a root wins.
+      (es: SEnum) => contains<String, SEnum>(acc.erIndex, es.seRoot)
         ? acc
-        : ERoots(append(acc.erNames, es.seRoot), append(acc.erSpecs, es),
-                 put(acc.erIndex, es.seRoot, es))
+        : ERoots(put(acc.erIndex, es.seRoot, es))
       (o: Spec)   => acc
     ()         => acc
 
@@ -61,9 +64,7 @@ fun ceRootSpecOf(roots: ERoots, root: String): SEnum|None
 # no-hash namespaced form and the bare name (Name@hash itself is NOT a key —
 # NamedSpec.name typically lacks the hash). First form wins (setdefault).
 fun ceNameMap(roots: ERoots): NameMap
-  ret ceMapLoop(chain(roots.erNames),
-                NameMap(List<String>(), List<String>(),
-                        Dict<String, String>()))
+  ret ceMapLoop(chain(erNames(roots)), NameMap(Dict<String, String>()))
 
 fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
   ret match(ns)
@@ -75,19 +76,19 @@ fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
 
 fun ceMapAdd(acc: NameMap, key: String, root: String): NameMap
   ret get(acc.nmIndex, key) is None
-    ? NameMap(append(acc.nmNames, key), append(acc.nmRoots, root),
-              put(acc.nmIndex, key, root))
+    ? NameMap(put(acc.nmIndex, key, root))
     : acc
 
 # Direct hit first (dict get), then the suffix fallback: "Foo::Bar" matches
-# "AnyNs::Foo::Bar" in either direction — FIRST map entry (insertion order)
-# wins, exactly like Python's two-step lookup.
+# "AnyNs::Foo::Bar" in either direction. EVERY match is collected and the
+# answer stands only if exactly one survives (RULING A), so the order the
+# keys are walked in cannot affect it.
 fun ceLookup2(map: NameMap, name: String): String|None
   ret match(get(map.nmIndex, name))
     (hit: String) => hit
-    ()            => singleOrNone<String>(ceSuffixMatches(chain(map.nmNames),
-                                                          chain(map.nmRoots),
-                                                          name, Set<String>()))
+    ()            => singleOrNone<String>(ceSuffixMatches(chain(nmNames(map)),
+                                                          map, name,
+                                                          Set<String>()))
 
 # EVERY candidate, not just the first. Stopping at the first made the answer
 # depend on NameMap INSERTION ORDER: two roots that both suffix-match resolved
@@ -97,16 +98,19 @@ fun ceLookup2(map: NameMap, name: String): String|None
 # deciding anything. A Set collects the distinct matches, so singleOrNone above
 # yields the answer only when it is UNAMBIGUOUS, and ceAmbiguous below reports
 # the rest (USER RULING).
-fun [tail] ceSuffixMatches(ks: Chain<String>, rs: Chain<String>, name: String,
+fun [tail] ceSuffixMatches(ks: Chain<String>, map: NameMap, name: String,
                            acc: Set<String>): Set<String>
   ret match(ks)
     (nil: ChainEnd) => acc
-    (k: ChainLink)  => match(rs)
-      (nil2: ChainEnd) => acc
-      (r: ChainLink)   => ceSuffixMatches(k.next, r.next, name,
+    (k: ChainLink)  => ceSuffixMatches(k.next, map, name,
         endsWith(k.value, "::" + name) || endsWith(name, "::" + k.value)
-          ? add<String>(acc, r.value)
+          ? add<String>(acc, ceRootFor(map, k.value))
           : acc)
+
+fun ceRootFor(map: NameMap, key: String): String
+  ret match(get(map.nmIndex, key))
+    (r: String) => r
+    ()          => key
 
 # ── reachability ─────────────────────────────────────────────────────────────
 # Collect every enum root directly referenced in a spec, stopping at SEnum
@@ -114,92 +118,96 @@ fun [tail] ceSuffixMatches(ks: Chain<String>, rs: Chain<String>, name: String,
 # at SClass (the class boundary IS the indirection). No SArrayField descent —
 # Python has no case for it.
 
-fun ceReachOpt(sp: Spec|None, out: List<String>,
-               map: NameMap): List<String>
+# The reached roots are a SET — the walk deduped by scanning what it had
+# already collected, and the one consumer sorts them into the edge list.
+fun ceReachOpt(sp: Spec|None, out: Set<String >,
+               map: NameMap): Set<String >
   ret match(sp)
     (s2: Spec) => ceReach(s2, out, map)
     ()         => out
 
-fun ceReach(sp: Spec, out: List<String>, map: NameMap): List<String>
+fun ceReach(sp: Spec, out: Set<String >, map: NameMap): Set<String >
   ret match(sp)
-    (e2: SEnum)        => contains2(out, e2.seRoot)
-      ? out
-      : append(out, e2.seRoot)
+    # `add` is idempotent, so the "already reached" test went with the Set.
+    (e2: SEnum)        => add<String>(out, e2.seRoot)
     (t2: STuple)       => ceReachEntries(chain(t2.stEntries), out, map)
     (cm: SCombination) => ceReachList(chain(cm.scTypes), out, map)
     (cl: SCallable)    => ceReachOpt(cl.scResult,
                                      ceReach(cl.scParams2, out, map), map)
     (n: SNamed)        => match(ceLookup2(map, n.snName))
-      (root: String) => contains2(out, root) ? out : append(out, root)
+      (root: String) => add<String>(out, root)
       ()             => out
     (o: Spec)          => out
 
-fun [tail] ceReachEntries(es: Chain<SEntry>, out: List<String>,
-                          map: NameMap): List<String>
+fun [tail] ceReachEntries(es: Chain<SEntry>, out: Set<String >,
+                          map: NameMap): Set<String >
   ret match(es)
     (nil: ChainEnd) => out
     (l: ChainLink)  => ceReachEntries(l.next,
                                       ceReachOpt(l.value.seType, out, map),
                                       map)
 
-fun [tail] ceReachList(ss: Chain<Spec>, out: List<String>,
-                       map: NameMap): List<String>
+fun [tail] ceReachList(ss: Chain<Spec>, out: Set<String >,
+                       map: NameMap): Set<String >
   ret match(ss)
     (nil: ChainEnd) => out
     (l: ChainLink)  => ceReachList(l.next, ceReach(l.value, out, map), map)
 
-# The directed graph between root names.
-class [final] EEdges(eeNames: List<String>, eeChildren: List<List<String>>)
+# The directed graph between root names: each name to the names it reaches.
+#
+# A Dict, not two parallel lists. Every consumer asks this graph exactly one
+# question — "what are v's children?" — and the parallel-list shape answered it
+# by walking both chains in lockstep, an O(V) scan. Tarjan's DFS asks it once
+# per node visit, so the SCC pass was quadratic in the number of roots; the
+# breaker search re-asks it inside its own loop, so that was worse. Nothing
+# about the graph is ordered: the node order Tarjan needs is imposed by sorting
+# the keys where it is needed, not carried around in the representation.
+class [final] EEdges(eeMap: Dict<String, List<String>>)
+
+# The nodes, in a deterministic order. Sorted, because the SCC decomposition
+# has to visit roots in the same order the Python compiler does.
+fun eeNodes(work: EEdges): List<String>
+  ret sort<String>(keys<String, List<String>>(work.eeMap))
 
 fun ceEdges(roots: ERoots, map: NameMap,
             fieldsOf: (:String): List<SField>): EEdges
-  ret ceEdgeLoop(chain(roots.erNames), chain(roots.erSpecs), map, fieldsOf,
-                 EEdges(List<String>(), List<List<String>>()))
+  ret ceEdgeLoop(chain(erNames(roots)), roots, map, fieldsOf,
+                 EEdges(Dict<String, List<String>>()))
 
-fun [tail] ceEdgeLoop(ns: Chain<String>, sps: Chain<SEnum>, map: NameMap,
+fun [tail] ceEdgeLoop(ns: Chain<String>, roots: ERoots, map: NameMap,
                       fieldsOf: (:String): List<SField>,
                       acc: EEdges): EEdges
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(sps)
-      (nil2: ChainEnd) => acc
-      (s2: ChainLink)  => ceEdgeLoop(n.next, s2.next, map, fieldsOf,
-          EEdges(append(acc.eeNames, n.value),
-                 append(acc.eeChildren,
-                        ceFieldsReach(chain(fieldsOf(n.value)),
-                                      List<String>(), map))))
+    (n: ChainLink)  => ceEdgeLoop(n.next, roots, map, fieldsOf,
+        EEdges(put<String, List<String>>(acc.eeMap, n.value,
+                   sort<String>(ceFieldsReach(chain(fieldsOf(n.value)),
+                                              Set<String>(), map)))))
 
-fun [tail] ceFieldsReach(fs: Chain<SField>, out: List<String>,
-                         map: NameMap): List<String>
+fun [tail] ceFieldsReach(fs: Chain<SField>, out: Set<String >,
+                         map: NameMap): Set<String >
   ret match(fs)
     (nil: ChainEnd) => out
     (l: ChainLink)  => ceFieldsReach(l.next,
                                      ceReach(l.value.sfType, out, map), map)
 
 fun ceChildrenOf(work: EEdges, v: String): List<String>
-  ret ceChildLoop(chain(work.eeNames), chain(work.eeChildren), v)
-
-fun [tail] ceChildLoop(ns: Chain<String>, cs: Chain<List<String>>,
-                       v: String): List<String>
-  ret match(ns)
-    (nil: ChainEnd) => List<String>()
-    (n: ChainLink)  => match(cs)
-      (nil2: ChainEnd) => List<String>()
-      (c: ChainLink)   => n.value == v ? c.value
-                                       : ceChildLoop(n.next, c.next, v)
+  ret match(get<String, List<String>>(work.eeMap, v))
+    (cs: List<String>) => cs
+    ()                 => List<String>()
 
 # ── Tarjan's SCC algorithm ───────────────────────────────────────────────────
 # Deterministic: roots and neighbours visited in sorted order, like Python.
 
 class [final] Tj(tjIndex: Dict<String, Int>, tjLow: Dict<String, Int>,
-                 tjStack: List<String>, tjOn: List<String>,
+                 tjStack: List<String>, tjOn: Set<String >,
                  tjSccs: List<List<String>>, tjN: Int)
 
 fun ceSccs(work: EEdges): List<List<String>>
-  let order = sort<String>(work.eeNames)
+  let order = eeNodes(work)
   ret tjRoots(chain(order), work,
               Tj(Dict<String, Int>(), Dict<String, Int>(), List<String>(),
-                 List<String>(), List<List<String>>(), 0)).tjSccs
+                 Set<String >(), List<List<String>>(), 0)).tjSccs
 
 fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj): Tj
   ret match(ns)
@@ -210,7 +218,7 @@ fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj): Tj
 
 fun tjVisit(v: String, work: EEdges, st0: Tj): Tj
   let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
-               prepend(v, st0.tjStack), append(st0.tjOn, v),
+               prepend(v, st0.tjStack), add<String>(st0.tjOn, v),
                st0.tjSccs, st0.tjN + 1)
   let st2 = tjNeighbours(chain(sort<String>(ceChildrenOf(work, v))),
                          v, work, st1)
@@ -221,7 +229,7 @@ fun [tail] tjNeighbours(ws: Chain<String>, v: String, work: EEdges,
   ret match(ws)
     (nil: ChainEnd) => st
     (l: ChainLink)  => match(get(st.tjIndex, l.value))
-      (i: Int) => contains2(st.tjOn, l.value)
+      (i: Int) => contains<String >(st.tjOn, l.value)
         ? tjNeighbours(l.next, v, work,
                        tjSetLow(st, v, minInt(tjLowOf(st, v), i)))
         : tjNeighbours(l.next, v, work, st)
@@ -258,12 +266,29 @@ fun minInt(a: Int, b: Int): Int
 # meant taking the tail and REVERSING it to get the same answer — the last
 # list reversal in the port, deleted by choosing the representation that
 # matches how the value is consumed.
+# Remove an SCC's members from the on-stack set.
+fun [tail] tjOnDrop(ns: Chain<String>, acc: Set<String >): Set<String >
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => tjOnDrop(l.next, remove<String >(acc, l.value))
+
 fun tjPop(st: Tj, v: String): Tj
   let at = tjFirstIndex(chain(st.tjStack), v, 0)
   let scc = take(st.tjStack, at + 1)
+  # tjOn is a membership set, so the SCC's members are simply removed from it.
+  # The SCC list keeps its order: Tarjan emits SCCs in a deterministic order
+  # (sorted roots, sorted neighbours) and the breaker search consumes them in
+  # that order, removing nodes as it goes.
   ret Tj(st.tjIndex, st.tjLow, drop(st.tjStack, at + 1),
-         tjRemoveAll(chain(st.tjOn), scc, List<String>()),
-         append(st.tjSccs, scc), st.tjN)
+         # A named walk, not `fold`: fold is overloaded over List and Set with
+         # the same shape (container, init, fn), so a fold whose container is
+         # a List and whose accumulator is a Set can match either overload.
+         tjOnDrop(chain(scc), st.tjOn),
+         build<List<String> >(push<List<String> >(
+             _pushChain<List<String> >(builder<List<String> >(),
+                 chain<List<String> >(st.tjSccs)),
+             scc)),
+         st.tjN)
 
 # The stack is newest-first, so the MOST RECENT v is the FIRST match.
 fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at: Int): Int
@@ -334,8 +359,9 @@ fun [tail] ceBreakSccs(ss: Chain<List<String>>, work: EEdges, roots: ERoots,
   ret match(ss)
     (nil: ChainEnd) => PickOut(work, acc)
     (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, fieldsOf, "")
+      # The chosen breakers are a set of names to mark — order not observed.
       |> (chosen) => ceBreakSccs(l.next, ceRemoveNode(work, chosen), roots,
-                                 fieldsOf, append(acc, chosen))
+                                 fieldsOf, prepend(chosen, acc))
 
 fun [tail] ceMinBy(ss: Chain<String>, work: EEdges, roots: ERoots,
                    fieldsOf: (:String): List<SField>,
@@ -368,24 +394,23 @@ fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots,
 fun ceIsSystem(name: String): Bool
   ret startsWith(simpleName(name), "System::")
 
+# Drop the node AND every edge into it. The node itself goes with `remove`; the
+# incoming edges still have to be swept out of the remaining child lists, which
+# is a walk of the whole graph either way.
 fun ceRemoveNode(work: EEdges, v: String): EEdges
-  ret ceRemoveLoop(chain(work.eeNames), chain(work.eeChildren), v,
-                   EEdges(List<String>(), List<List<String>>()))
+  ret ceRemoveLoop(chain(eeNodes(work)), work, v, EEdges(Dict<String, List<String>>()))
 
-fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
-                        v: String, acc: EEdges): EEdges
+fun [tail] ceRemoveLoop(ns: Chain<String>, work: EEdges, v: String,
+                        acc: EEdges): EEdges
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(cs)
-      (nil2: ChainEnd) => acc
-      (c: ChainLink)   => n.value == v
-        ? ceRemoveLoop(n.next, c.next, v, acc)
-        : ceRemoveLoop(n.next, c.next, v,
-                       EEdges(append(acc.eeNames, n.value),
-                              append(acc.eeChildren,
-                                     tjRemoveAll(chain(c.value),
-                                                 prepend(v, List<String>()),
-                                                 List<String>()))))
+    (n: ChainLink)  => n.value == v
+      ? ceRemoveLoop(n.next, work, v, acc)
+      : ceRemoveLoop(n.next, work, v,
+                     EEdges(put<String, List<String>>(acc.eeMap, n.value,
+                                tjRemoveAll(chain(ceChildrenOf(work, n.value)),
+                                            prepend(v, List<String>()),
+                                            List<String>()))))
 
 # ── the rewrite ──────────────────────────────────────────────────────────────
 # Every EnumSpec anywhere: is_complex set by membership, and NamedSpec
@@ -411,9 +436,9 @@ fun [tail] ceRemoveLoop(ns: Chain<String>, cs: Chain<List<String>>,
 fun markComplexEnums(statements: List<PStmt>): (stmts: List<PStmt>, errs: Set<PErr>)
   let roots = ceCollectRoots(statements)
   ret (stmts = statements,
-       errs = isEmpty(roots.erNames)
+       errs = isEmpty(roots.erIndex)
          ? Set<PErr>()
-         : ceAmbiguities(chain(roots.erNames), ceNameMap(roots),
+         : ceAmbiguities(chain(erNames(roots)), ceNameMap(roots),
                          enumFieldsProvider(statements), Set<PErr>()))
 
 fun [tail] ceAmbiguities(ns: Chain<String>, map: NameMap,
@@ -436,8 +461,7 @@ fun [tail] ceFieldAmbig(fs: Chain<SField>, map: NameMap,
 fun ceSpecAmbig(sp: Spec, map: NameMap, acc: Set<PErr>): Set<PErr>
   ret match(sp)
     (n: SNamed)        => get(map.nmIndex, n.snName) is None
-      ? ceReportAmbig(n, ceSuffixMatches(chain(map.nmNames),
-                                         chain(map.nmRoots), n.snName,
+      ? ceReportAmbig(n, ceSuffixMatches(chain(nmNames(map)), map, n.snName,
                                          Set<String>()), acc)
       : acc
     (t2: STuple)       => ceEntryAmbig(chain(t2.stEntries), map, acc)
@@ -489,7 +513,7 @@ fun rootResolver(statements: List<PStmt>,
 
 fun computeBreakers(statements: List<PStmt>): List<String>
   let roots = ceCollectRoots(statements)
-  if isEmpty(roots.erNames)
+  if isEmpty(roots.erIndex)
     ret List<String>()
   let fieldsOf = enumFieldsProvider(statements)
   let map = ceNameMap(roots)

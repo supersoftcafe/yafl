@@ -415,7 +415,7 @@ fun mapEnumField(r: Resolver, receiver: SEnum, ft: Spec): Spec|None
 # toward it; the constructed value owns its conversion to the receiver.
 fun compileNewEnum(ne: PeNewEnum, r: Resolver, expected: Spec|None): ExprOut
   let leafFields = cneLeafFields(ne, r)
-  let out = cneArgs(chain(ne.fieldArgs), leafFields, r, List<PFieldArg>(),
+  let out = cneArgs(chain(ne.fieldArgs), leafFields, r, builder<PFieldArg >(),
                     List<PStmt>())
   let e2 = PeNewEnum(ne.rootName, ne.leafName, out.cneFas, ne.neTypeParams,
                      ne.penewLine)
@@ -439,14 +439,15 @@ fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt>
 class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>)
 
 fun [tail] cneArgs(fas: Chain<PFieldArg>, leafFields: List<PStmt>, r: Resolver,
-                   acc: List<PFieldArg>, globals2: List<PStmt>): CneOut
+                   [terminal] acc: ListBuilder<PFieldArg >, globals2: List<PStmt>): CneOut
   ret match(fas)
-    (nil: ChainEnd) => CneOut(acc, globals2)
+    (nil: ChainEnd) => CneOut(build<PFieldArg >(acc), globals2)
     (l: ChainLink)  => compileExpr(l.value.faValue, r,
                                    letTypeOf(letNamed(leafFields,
                                                       l.value.faName)))
       |> (o) => cneArgs(l.next, leafFields, r,
-                        append(acc, PFieldArg(l.value.faName, o.eoExpr)),
+                        push<PFieldArg >(acc,
+                            PFieldArg(l.value.faName, o.eoExpr)),
                         concat(globals2, o.eoGlobals))
 
 fun compileCall(c: PeCall, r: Resolver, expected: Spec|None): ExprOut
@@ -479,7 +480,7 @@ fun paramShapeOf(ft: Spec|None): Spec|None
 # tuple then owns any box into a union.
 fun compileTuple(tp: PeTuple, r: Resolver, expected: Spec|None): ExprOut
   let slots = entrySlots(tp, r, expected)
-  let es = compileTupEnts(chain(tp.exprs), r, slots, 0, List<PTupEnt>(),
+  let es = compileTupEnts(chain(tp.exprs), r, slots, 0, builder<PTupEnt >(),
                           List<PStmt>())
   let out = PeTuple(es.teEntries, tp.petLine)
   ret ExprOut(converted(out, expected, r), es.teGlobals)
@@ -487,15 +488,15 @@ fun compileTuple(tp: PeTuple, r: Resolver, expected: Spec|None): ExprOut
 class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>)
 
 fun [tail] compileTupEnts(es: Chain<PTupEnt>, r: Resolver, slots: List<SEntry>,
-                          i: Int, acc: List<PTupEnt>,
+                          i: Int, [terminal] acc: ListBuilder<PTupEnt >,
                           glb: List<PStmt>): TupEntsOut
   ret match(es)
-    (nil: ChainEnd) => TupEntsOut(acc, glb)
+    (nil: ChainEnd) => TupEntsOut(build<PTupEnt >(acc), glb)
     (l: ChainLink)  => compileExpr(l.value.tupValue, r, entryAt(slots, i))
       |> (v) => compileTupEnts(l.next, r, slots, i + 1,
-                               append(acc, PTupEnt(l.value.tupName,
-                                                   l.value.tupSpread,
-                                                   v.eoExpr)),
+                               push<PTupEnt >(acc,
+                                   PTupEnt(l.value.tupName,
+                                           l.value.tupSpread, v.eoExpr)),
                                concat(glb, v.eoGlobals))
 
 # The receiver's entries, ORDERED to match this tuple's entries via the shared
@@ -607,19 +608,20 @@ fun compileMatch(mt: PeMatch, r: Resolver, expected: Spec|None): ExprOut
   let subj = compileExpr(mt.subject, r, None)
   let subjTy = exprType(subj.eoExpr, r)
   let arms = compileArms(chain(mt.arms), r, subjTy, expected,
-                         List<PArm>(), List<PStmt>())
+                         builder<PArm >(), List<PStmt>())
   ret ExprOut(PeMatch(subj.eoExpr, arms.aoArms, mt.pemLine),
               concat(subj.eoGlobals, arms.aoGlobals))
 
 class [final] ArmsOut(aoArms: List<PArm>, aoGlobals: List<PStmt>)
 
 fun [tail] compileArms(as2: Chain<PArm>, r: Resolver, subjTy: Spec|None,
-                       expected: Spec|None, acc: List<PArm>,
+                       expected: Spec|None, [terminal] acc: ListBuilder<PArm >,
                        glb: List<PStmt>): ArmsOut
   ret match(as2)
-    (nil: ChainEnd) => ArmsOut(acc, glb)
+    (nil: ChainEnd) => ArmsOut(build<PArm >(acc), glb)
     (l: ChainLink)  => compileArm(l.value, r, subjTy, expected)
-      |> (a) => compileArms(l.next, r, subjTy, expected, append(acc, a.a1Arm),
+      |> (a) => compileArms(l.next, r, subjTy, expected,
+                            push<PArm >(acc, a.a1Arm),
                             concat(glb, a.a1Globals))
 
 class [final] ArmOut(a1Arm: PArm, a1Globals: List<PStmt>)
@@ -635,7 +637,7 @@ fun compileArm(a0: PArm, r: Resolver, subjTy: Spec|None,
   let bodyR = bindingScope(a, armBindType(a, subjTy), r)
   let body = compileExpr(a.armBody, bodyR, expected)
   let ty = compileSpecOpt(a.armType, r)
-  let lits = compileLits(chain(a.armLiterals), r, List<PLit>(), List<PStmt>())
+  let lits = compileLits(chain(a.armLiterals), r, builder<PLit >(), List<PStmt>())
   let guard = compileExprOpt(a.armGuard, bodyR, None)
   ret ArmOut(PArm(armUniqueName(a), specOf(ty), body.eoExpr, lits.loLits,
                   exprOf(guard), a.parmLine),
@@ -661,9 +663,10 @@ fun bindingScope(a: PArm, ty: Spec|None, r: Resolver): Resolver
   ret a.armName == "" || a.armName == "_"
     ? r
     : match(ty)
-      (t2: Spec) => RData(append(List<Found>(),
-                                 Found(armUniqueName(a), armBinderLet(a, t2),
-                                       ScLocal())),
+      # One binder in a fresh scope.
+      (t2: Spec) => RData(prepend(Found(armUniqueName(a), armBinderLet(a, t2),
+                                        ScLocal()),
+                                  List<Found>()),
                           r)
       ()         => r
 
@@ -720,12 +723,12 @@ fun [tail] anyHoleParam(ps: Chain<Spec>, r: Resolver): Bool
 class [final] LitsOut(loLits: List<PLit>, loGlobals: List<PStmt>)
 class [final] LitOut(l1Lit: PLit, l1Globals: List<PStmt>)
 
-fun [tail] compileLits(ls: Chain<PLit>, r: Resolver, acc: List<PLit>,
+fun [tail] compileLits(ls: Chain<PLit>, r: Resolver, [terminal] acc: ListBuilder<PLit >,
                        glb: List<PStmt>): LitsOut
   ret match(ls)
-    (nil: ChainEnd) => LitsOut(acc, glb)
+    (nil: ChainEnd) => LitsOut(build<PLit >(acc), glb)
     (l: ChainLink)  => compileLit(l.value, r)
-      |> (o) => compileLits(l.next, r, append(acc, o.l1Lit),
+      |> (o) => compileLits(l.next, r, push<PLit >(acc, o.l1Lit),
                             concat(glb, o.l1Globals))
 
 fun compileLit(l: PLit, r: Resolver): LitOut
@@ -749,18 +752,19 @@ fun compileBlock(bk: PeBlock, r0: Resolver, expected: Spec|None): ExprOut
   # function: mark it (idempotent), so it establishes no trait scope of its
   # own. Then fold any else-if chains among the statements (the first of the
   # two fold sites; each if's branches fold their own).
-  let stmts = collapseElseIf(markInner(chain(bk.blockStmts), List<PStmt>()))
+  let stmts = collapseElseIf(markInner(chain(bk.blockStmts)))
   let r = blockScope(stmts, r0)
   # Every statement receives the block's EXPECTED type (Python threads
   # expected_type to each) — that is how a `ret` inside an if branch sees the
   # function's return type and its value converges toward it.
-  let ss = compileStmts(chain(stmts), r, expected, List<PStmt>(), List<PStmt>())
+  let ss = compileStmts(chain(stmts), r, expected, builder<PStmt >(),
+                        List<PStmt>())
   let v = compileExpr(bk.blockValue, r, expected)
   ret ExprOut(PeBlock(ss.slStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
               concat(ss.slGlobals, v.eoGlobals))
 
-fun markInner(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(markInnerB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+fun markInner(ss: Chain<PStmt>): List<PStmt>
+  ret build<PStmt >(markInnerB(ss, builder<PStmt >()))
 
 fun [tail] markInnerB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
@@ -921,16 +925,19 @@ fun withEntryList(wx: PeWith): List<PTupEnt>
 # their $w{i} names thereafter.
 fun withLets(wx: PeWith, tag: String): List<PStmt>
   let lr = wx.pewLine
-  let base = list1<PStmt>(PsLet("$ws@" + tag, List<PAttr>(), List<PGen>(),
+  # The subject let comes first and the per-entry lets follow in tuple order:
+  # these are STATEMENTS, so the order is the program.
+  let base = push<PStmt >(builder<PStmt >(),
+                          PsLet("$ws@" + tag, List<PAttr>(), List<PGen>(),
                                 None, wx.withSubject, "", List<Spec>(), lr))
-  ret withReplLets(chain(withEntryList(wx)), 0, tag, lr, base)
+  ret build<PStmt >(withReplLets(chain(withEntryList(wx)), 0, tag, lr, base))
 
 fun [tail] withReplLets(es: Chain<PTupEnt>, i: Int, tag: String, lr: PLine,
-                        acc: List<PStmt>): List<PStmt>
+                        [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => withReplLets(l.next, i + 1, tag, lr,
-                        append<PStmt>(acc,
+                        push<PStmt >(acc,
                           PsLet("$w" + String(i) + "@" + tag, List<PAttr>(),
                                 List<PGen>(), None, l.value.tupValue, "",
                                 List<Spec>(), lr)))
@@ -959,8 +966,8 @@ fun [tail] withGuardLoop(es: Chain<PTupEnt>, i: Int, acc: PExpr|None,
     (l: ChainLink)  => withGuardLoop(l.next, i + 1,
         withAnd(acc,
                 PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_same", lr),
-                            PeTuple(append(list1(PTupEnt("", false,
-                                     PeName("$w" + String(i), List<Spec>(), lr))),
+                            PeTuple(list2(PTupEnt("", false,
+                                     PeName("$w" + String(i), List<Spec>(), lr)),
                                     PTupEnt("", false,
                                      PeDot(PeName("$ws", List<Spec>(), lr),
                                            l.value.tupName, lr))), lr), lr),
@@ -1112,8 +1119,10 @@ fun withLeaves(st: PsEnum, inherited: List<PStmt>,
                acc: (names: List<String>, sets: List<List<PStmt>>)): (names: List<String>, sets: List<List<PStmt>>)
   let own = concat(inherited, flattenParams(st.eParams))
   if isEmpty(st.eVariants)
+    # Leaf name and its field set, POSITIONALLY paired.
     ret st.eHasParams
-      ? (append(acc.names, st.eName), append(acc.sets, own))
+      ? (build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(acc.names)), st.eName)),
+         build<List<PStmt> >(push<List<PStmt> >(_pushChain<List<PStmt> >(builder<List<PStmt> >(), chain<List<PStmt>>(acc.sets)), own)))
       : acc
   ret withLeavesLoop(chain(st.eVariants), own, acc)
 

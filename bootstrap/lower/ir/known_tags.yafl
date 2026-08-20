@@ -18,28 +18,29 @@ import Bootstrap::Ir
 
 
 fun resolveKnownTags(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, ktFunction))
+  ret appWithFunctions(a, map(appFunctions(a), ktFunction))
 
 fun ktFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
-  let walked = ktWalk(chain(f.fnOps), defs, List<Op>(), false)
+  let walked = ktWalk(chain(f.fnOps), defs, builder<Op >(), false)
   if !walked.folded
     ret f
   ret cgFunctionStripUnusedOperations(cgFunctionWith(f, walked.ops,
                                                      f.fnStackVars))
 
 fun [tail] ktWalk(ops: Chain<Op>, defs: SsaDefs,
-                  acc: List<Op>, folded: Bool): (ops: List<Op>, folded: Bool)
+                  [terminal] acc: ListBuilder<Op >, folded: Bool): (ops: List<Op>, folded: Bool)
   ret match(ops)
-    (nil: ChainEnd) => (acc, folded)
+    (nil: ChainEnd) => (build<Op >(acc), folded)
     (l: ChainLink)  => match(l.value)
       (ji: OpJumpIf) => match(staticInt(ji.jumpIfCondition, defs))
         (cond: Int) => ktWalk(l.next, defs, ktHarden(acc, ji, cond), true)
-        ()          => ktWalk(l.next, defs, append(acc, l.value), folded)
-      (o: Op)        => ktWalk(l.next, defs, append(acc, l.value), folded)
+        ()          => ktWalk(l.next, defs, push<Op >(acc, l.value), folded)
+      (o: Op)        => ktWalk(l.next, defs, push<Op >(acc, l.value), folded)
 
 # Taken: `Jump(label)`; never taken: the guard evaporates.
-fun ktHarden(acc: List<Op>, ji: OpJumpIf, cond: Int): List<Op>
+fun ktHarden([terminal] acc: ListBuilder<Op >, ji: OpJumpIf,
+             cond: Int): ListBuilder<Op >
   ret (cond != 0) != ji.jumpIfInvert
-    ? append(acc, OpJump(ji.jumpIfLabel, List<RParam>()))
+    ? push<Op >(acc, OpJump(ji.jumpIfLabel, List<RParam>()))
     : acc

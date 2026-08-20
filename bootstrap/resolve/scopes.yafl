@@ -53,7 +53,11 @@ fun scopeResolver(st: PStmt, r: Resolver): Resolver
 fun stmtScopes(st: PStmt): List<String>
   let grp = importPaths(chain(stmtImports(st)), List<String>())
   let own = ownNamespace(stmtName2(st))
-  ret own == "" || contains2(grp, own) ? grp : append(grp, own)
+  # The statement's OWN namespace comes after its imports: the search order
+  # is the list's order.
+  ret own == "" || contains2(grp, own)
+    ? grp
+    : build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(grp)), own))
 
 fun stmtImports(st: PStmt): List<PStmt>
   ret match(st)
@@ -143,20 +147,23 @@ fun isLinearGen(g: PGen): Bool
 # A function's parameters, and a block's own lets.
 
 fun localScope(lets: List<PStmt>, r: Resolver): Resolver
-  ret isEmpty(lets) ? r : RData(letFounds(chain(lets), List<Found>()), r)
+  ret isEmpty(lets)
+    ? r
+    : RData(build<Found >(letFounds(chain(lets), builder<Found >())), r)
 
-fun [tail] letFounds(ls: Chain<PStmt>, acc: List<Found>): List<Found>
+fun [tail] letFounds(ls: Chain<PStmt>,
+                     [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => letFounds(l.next, addLetFound(acc, l.value))
 
-fun addLetFound(acc: List<Found>, st: PStmt): List<Found>
+fun addLetFound([terminal] acc: ListBuilder<Found >, st: PStmt): ListBuilder<Found >
   ret match(st)
-    (l: PsLet) => append(acc, Found(l.lName, st, ScLocal()))
+    (l: PsLet) => push<Found >(acc, Found(l.lName, st, ScLocal()))
     # A NESTED FUNCTION binds a name in its block, exactly as a let does — a
     # `[tail] loop` helper must be visible to its siblings and to the body.
-    (f: PsFun) => append(acc, Found(f.fName, st, ScLocal()))
-    (d: PsDestructure) => concat(acc, letFounds(chain(d.dTargets), List<Found>()))
+    (f: PsFun) => push<Found >(acc, Found(f.fName, st, ScLocal()))
+    (d: PsDestructure) => letFounds(chain(d.dTargets), acc)
     (o: PStmt) => acc
 
 # The lets a parameter list introduces: a destructure's targets ARE the

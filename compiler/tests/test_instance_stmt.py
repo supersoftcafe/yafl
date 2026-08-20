@@ -60,7 +60,7 @@ instance [ambient]<T> Sized<List<T>>
     ret chainLength(chain(v))
 
 fun main(): Int
-  let l = append(append(List<Int>(), 4), 5)
+  let l = prepend(4, prepend(5, List<Int>()))
   ret sizeOf(l) == 2 ? 0 : 1
 """
 
@@ -111,7 +111,7 @@ instance [ambient]<T> Show<List<T>> where Show<T>
     ret fold(value, "", (acc: String, x: T) => acc + show(x))
 
 fun main(): Int
-  let l = append(append(List<Int>(), 1), 2)
+  let l = prepend(1, prepend(2, List<Int>()))
   ret show(l) == "12" ? 0 : 1
 """
 
@@ -157,7 +157,7 @@ fun measure<T>(l: List<T>): Int
   ret sizeOf(l)
 
 fun main(): Int
-  ret measure(append(List<Int>(), 1))
+  ret measure(prepend(1, List<Int>()))
 """
 
 _GENERIC_VIA_WHERE = """namespace Test
@@ -174,7 +174,7 @@ fun measure<T>(l: List<T>): Int where Sized<List<T>>
   ret sizeOf(l)
 
 fun main(): Int
-  ret measure(append(List<Int>(), 1)) == 1 ? 0 : 1
+  ret measure(prepend(1, List<Int>())) == 1 ? 0 : 1
 """
 
 

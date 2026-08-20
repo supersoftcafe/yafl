@@ -85,7 +85,8 @@ fun pngOne(let2: PsLet, r: Resolver): PStmt
     ()          => false
   if !promotable
     ret let2
-  ret PsLet(let2.lName, append(let2.lAttrs, PAttr("lazy", None)),
+  # Attributes are asked only whether they are present, so order is free.
+  ret PsLet(let2.lName, prepend(PAttr("lazy", None), let2.lAttrs),
             let2.lGens, let2.lType, let2.lDefault, let2.lArrayLen,
             let2.lWheres, let2.pslLine, let2.lTypeInferred, let2.lImports)
 
@@ -105,12 +106,15 @@ fun clfBlockCb(acc: Set<PErr>, x: PExpr): Set<PErr>
     (bk: PeBlock) => clfBlock(bk.blockStmts, acc)
     (o: PExpr)    => acc
 
-class [final] ClfDecls(cdNames: List<String>, cdIdx: List<Int>,
-                       cdLazy: List<Bool>)
+# Declared name -> where it was declared and whether it is [lazy]. A Dict:
+# the only reader asks about ONE name, and the three parallel lists it
+# replaces were walked in lockstep to answer that.
+class [final] ClfDecl(cdIdx: Int, cdLazy: Bool)
+class [final] ClfDecls(cdMap: Dict<String, ClfDecl>)
 
 fun clfBlock(stmts: List<PStmt>, acc: Set<PErr>): Set<PErr>
   let decls = clfDecls(chain(stmts), 0,
-                       ClfDecls(List<String>(), List<Int>(), List<Bool>()))
+                       ClfDecls(Dict<String, ClfDecl>()))
   ret clfScan(chain(stmts), 0, decls, acc)
 
 fun [tail] clfDecls(ss: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
@@ -118,9 +122,7 @@ fun [tail] clfDecls(ss: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => clfDecls(l.next, i + 1,
-          ClfDecls(append(acc.cdNames, let2.lName),
-                   append(acc.cdIdx, i),
-                   append(acc.cdLazy, isDeferredInit(let2))))
+          clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
       (d: PsDestructure) => clfDecls(l.next, i + 1,
           clfSubDecls(chain(d.dTargets), i, acc))
       (o: PStmt)    => clfDecls(l.next, i + 1, acc)
@@ -130,9 +132,7 @@ fun [tail] clfSubDecls(ts: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => clfSubDecls(l.next, i,
-          ClfDecls(append(acc.cdNames, let2.lName),
-                   append(acc.cdIdx, i),
-                   append(acc.cdLazy, isDeferredInit(let2))))
+          clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
       (o: PStmt)    => clfSubDecls(l.next, i, acc)
 
 fun [tail] clfScan(ss: Chain<PStmt>, i: Int, decls: ClfDecls,
@@ -170,21 +170,16 @@ fun clfRef(acc: Set<PErr>, x: PExpr, let2: PsLet, i: Int,
       : acc
     (o: PExpr)   => acc
 
-fun clfBad(name: String, i: Int, decls: ClfDecls): Bool
-  ret clfBadLoop(chain(decls.cdNames), chain(decls.cdIdx),
-                 chain(decls.cdLazy), name, i)
+# FIRST declaration of a name wins, as the head-first chain walk did.
+fun clfDeclAdd(acc: ClfDecls, name: String, i: Int, lazy: Bool): ClfDecls
+  ret contains<String, ClfDecl>(acc.cdMap, name)
+    ? acc
+    : ClfDecls(put<String, ClfDecl>(acc.cdMap, name, ClfDecl(i, lazy)))
 
-fun [tail] clfBadLoop(ns: Chain<String>, is2: Chain<Int>, ls: Chain<Bool>,
-                      name: String, i: Int): Bool
-  ret match(ns)
-    (nil: ChainEnd) => false
-    (n: ChainLink)  => match(is2)
-      (nil2: ChainEnd) => false
-      (ix: ChainLink)  => match(ls)
-        (nil3: ChainEnd) => false
-        (lz: ChainLink)  => n.value == name
-          ? ix.value > i && !lz.value
-          : clfBadLoop(n.next, ix.next, lz.next, name, i)
+fun clfBad(name: String, i: Int, decls: ClfDecls): Bool
+  ret match(get<String, ClfDecl>(decls.cdMap, name))
+    (d: ClfDecl) => d.cdIdx > i && !d.cdLazy
+    ()           => false
 
 # Python's per-let `seen` set: one error per referenced name per lazy let.
 
@@ -197,9 +192,8 @@ fun lowerLazyLets(statements: List<PStmt>): List<PStmt>
   let r = rootResolver(statements)
   let promoted = promoteNonTrivialGlobals(statements, r)
   let lazies = foldStmts<OuterTypes>(promoted, lllCollect, lllIdExpr,
-                                     OuterTypes(List<String>(),
-                                                List<Spec>()))
-  if isEmpty(lazies.otNames)
+                                     OuterTypes(Dict<String, Spec>()))
+  if isEmpty(lazies.otMap)
     ret promoted
   ret rwStmts(promoted, Rw((x: PExpr) => lllRefCb(x, lazies), rwNoSpec,
                            lllWrapCb))
@@ -212,16 +206,20 @@ fun lllCollect(acc: OuterTypes, st: PStmt): OuterTypes
     (let2: PsLet) => isDeferredInit(let2) ? lllAdd(acc, let2) : acc
     (o: PStmt)    => acc
 
+# FIRST binding of a name wins, as it did when this was a chain searched from
+# the head: these lets are gathered from the whole statement tree, so two
+# scopes may declare the same name, and a later one must not retype an earlier
+# one's references.
 fun lllAdd(acc: OuterTypes, let2: PsLet): OuterTypes
   ret match(let2.lType)
-    (t2: Spec) => OuterTypes(append(acc.otNames, let2.lName),
-                             append(acc.otTypes, t2))
+    (t2: Spec) => contains<String, Spec>(acc.otMap, let2.lName)
+      ? acc
+      : OuterTypes(put<String, Spec>(acc.otMap, let2.lName, t2))
     ()         => acc
 
 fun lllRefCb(x: PExpr, lazies: OuterTypes): PExpr|None
   ret match(x)
-    (nm: PeName) => match(otLookup(chain(lazies.otNames),
-                                   chain(lazies.otTypes), nm.refName))
+    (nm: PeName) => match(get<String, Spec>(lazies.otMap, nm.refName))
       (t2: Spec) => PeLazy(nm.refName, t2, None, false, nm.penLine)
       ()         => None
     (o: PExpr)   => None

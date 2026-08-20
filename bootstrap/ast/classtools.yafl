@@ -19,19 +19,23 @@ import Bootstrap::Types
 
 fun flattenParams(params: PStmt): List<PStmt>
   ret match(params)
-    (d: PsDestructure) => flattenTargets(chain(d.dTargets), List<PStmt>())
+    (d: PsDestructure) => build<PStmt >(flattenTargets(chain(d.dTargets),
+                                                      builder<PStmt >()))
     (l: PsLet)         => prepend(params, List<PStmt>())
     (o: PStmt)         => List<PStmt>()
 
-fun flattenTargets(ts: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+# Parameter order: a nested destructure contributes its own targets in place.
+# (Not [tail]: the nested-destructure arm recurses into the inner targets
+# before it can step on, so that self-call is not in tail position.)
+fun flattenTargets(ts: Chain<PStmt>,
+                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (d: PsDestructure) => flattenTargets(l.next,
-                                           concat(acc,
-                                                  flattenTargets(chain(d.dTargets),
-                                                                 List<PStmt>())))
-      (o: PStmt)         => flattenTargets(l.next, append(acc, l.value))
+                                flattenTargets(chain(d.dTargets), acc))
+      (o: PStmt)         => flattenTargets(l.next,
+                                           push<PStmt >(acc, l.value))
 
 # ── find_classes_or_error ────────────────────────────────────────────────────
 # Resolve each inherited type to (resolved spec, class statement). A spec that
@@ -186,8 +190,11 @@ fun [tail] keepUnabsorbedB(ps: Chain<Slot>, exclusion: List<String>,
 
 # ── set helpers (List with set semantics) ────────────────────────────────────
 
+# Set semantics, but the ORDER is kept: these lists become parent and slot
+# orders that reach generated code. `acc` is read by the dedup just above, so
+# it cannot be a builder — this is the copy the old append did, written out.
 fun addNameOnce(acc: List<String>, n: String): List<String>
-  ret contains2(acc, n) ? acc : append(acc, n)
+  ret contains2(acc, n) ? acc : build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(acc)), n))
 
 fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
   ret match(ns)
@@ -195,7 +202,7 @@ fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
     (l: ChainLink)  => addNamesOnce(addNameOnce(acc, l.value), l.next)
 
 fun addSpecOnce(acc: List<Spec>, sp: Spec): List<Spec>
-  ret containsSpec(acc, sp) ? acc : append(acc, sp)
+  ret containsSpec(acc, sp) ? acc : build<Spec >(push<Spec >(_pushChain<Spec >(builder<Spec >(), chain<Spec>(acc)), sp))
 
 fun [tail] addSpecsOnce(acc: List<Spec>, ss: Chain<Spec>): List<Spec>
   ret match(ss)
@@ -333,9 +340,12 @@ fun [tail] shorterThan<T, U>(a: Chain<T>, b: Chain<U>): Bool
 
 # All but the last element, structurally.
 fun initOf<T>(l: List<T>): List<T>
-  ret initLoop<T>(chain(l), List<T>())
+  ret build<T>(initLoop<T>(chain(l), builder<T>()))
 
-fun [tail] initLoop<T>(c: Chain<T>, acc: List<T>): List<T>
+# Everything but the last element, in order.
+fun [tail] initLoop<T>(c: Chain<T>, [terminal] acc: ListBuilder<T>): ListBuilder<T>
   ret match(c)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => l.next is ChainEnd ? acc : initLoop(l.next, append(acc, l.value))
+    (l: ChainLink)  => l.next is ChainEnd
+      ? acc
+      : initLoop<T>(l.next, push<T>(acc, l.value))

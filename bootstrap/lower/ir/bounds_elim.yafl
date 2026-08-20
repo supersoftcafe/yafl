@@ -23,6 +23,8 @@ namespace Bootstrap::Lower::Ir
 
 import System
 
+import Bootstrap::StdlibCandidates
+
 import Bootstrap::Ast
 import Bootstrap::Frontend
 import Bootstrap::Ir
@@ -126,7 +128,9 @@ fun beSeen(acc: List<BeDefEntry>, name: String, d: BeDef): List<BeDefEntry>
     ? map(acc, (e: BeDefEntry) => e.bdName == name
                  ? BeDefEntry(name, d, e.bdCount + 1)
                  : e)
-    : append(acc, BeDefEntry(name, d, 1))
+    # A name->definition table read by first match; the branch above means a
+    # name appears at most once, so which end it goes on is not observable.
+    : prepend(BeDefEntry(name, d, 1), acc)
 
 fun [tail] beDefOf(es: Chain<BeDefEntry>, name: String): BeDef|None
   ret match(es)
@@ -184,10 +188,11 @@ fun beResolveVar(name: String, defs: List<BeDefEntry>,
     ret BeCycle(name)
   ret match(beDefOf(chain(defs), name))
     (d: BeDef) => match(d)
+      # `visiting` is the cycle-detection SET on the path down.
       (src: BdSource) => beResolve(src.bdSource, defs,
-                                   append(visiting, name))
+                                   prepend(name, visiting))
       (ph: BdPhi)     => beResolvePhi(name, ph.bdPhi, defs,
-                                      append(visiting, name))
+                                      prepend(name, visiting))
       (op: BdOpaque)  => BeVar(name)   # call result: unknown but fixed
     ()         => BeVar(name)          # parameter or multi-def: stable identity
 
@@ -241,7 +246,7 @@ fun beEntryFromPhi(name: String, phi: OpPhi,
                    defs: List<BeDefEntry>): BeVal|None
   if !exactly(chain(phi.phiSources), 2)
     ret None
-  let visiting = append<String>(List<String>(), name)
+  let visiting = list1<String>(name)
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
   let id1 = bePhiSourceId(phi, 1, defs, visiting)
   if beIsIncrement(id0, name)
@@ -279,7 +284,9 @@ fun beStoreAdd(acc: List<BeStore>, ptr: BeVal, field: String,
     ? map(acc, (s2: BeStore) => s2.bsField == field && beEq(s2.bsPtr, ptr)
                  ? BeStore(ptr, field, value, s2.bsCount + 1)
                  : s2)
-    : append(acc, BeStore(ptr, field, value, 1))
+    # A (pointer, field) -> value table read by lookup; the merge branch above
+    # keeps keys unique, so the order is not observable.
+    : prepend(BeStore(ptr, field, value, 1), acc)
 
 fun beStoreLookup(stores: List<BeStore>, ptr: BeVal,
                   field: String): BeVal|None
@@ -424,7 +431,8 @@ fun beGuardPair(fnName: String, x: BeVal, y: BeVal, asWritten: Bool,
   ret match(x)
     (ind: BeInduction) => beGuardKind(fnName, ind, asWritten, bodyTruth,
                                       defs)
-      ? append(acc, BeProof(x, y))
+      # A proof set, scanned for a match.
+      ? prepend(BeProof(x, y), acc)
       : acc
     (o: BeVal)         => acc
 
@@ -443,7 +451,7 @@ fun beEntryIsZero(name: String, defs: List<BeDefEntry>): Bool
 # ── the flip + rewrite ──────────────────────────────────────────────────────
 
 fun eliminateProvableBoundsChecks(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, beFunction))
+  ret appWithFunctions(a, map(appFunctions(a), beFunction))
 
 fun beFunction(f: CgFunction): CgFunction
   let defs = beSingleDefs(f.fnOps)
@@ -534,15 +542,15 @@ fun beFlipElement(ae: RpArrayElement, proven: List<BeProof>,
     ret ae
   # This array's length, as a value id: the load form, or — when the array
   # was created here — the value its length was stored from.
-  let lengthIds = beWithStored(append<BeVal>(List<BeVal>(),
-                                      BeField(ptr, ae.lengthField)),
+  let lengthIds = beWithStored(list1<BeVal>(BeField(ptr, ae.lengthField)),
                                stores, ptr, ae.lengthField)
   ret beProofLoop(chain(proven), ae, idx, lengthIds, stores)
 
 fun beWithStored(acc: List<BeVal>, stores: List<BeStore>, ptr: BeVal,
                  field: String): List<BeVal>
   ret match(beStoreLookup(stores, ptr, field))
-    (v: BeVal) => append(acc, v)
+    # Candidate values, scanned for a proof — order not observed.
+    (v: BeVal) => prepend(v, acc)
     ()         => acc
 
 fun [tail] beProofLoop(ps: Chain<BeProof>, ae: RpArrayElement, idx: BeVal,
@@ -566,7 +574,7 @@ fun beProofMatches(proof: BeProof, idx: BeVal, lengthIds: List<BeVal>,
 # The guard's bound, plus — when the bound is itself a length load whose
 # store is visible — the value that length was stored from.
 fun beBoundIds(bound: BeVal, stores: List<BeStore>): List<BeVal>
-  let base = append<BeVal>(List<BeVal>(), bound)
+  let base = list1<BeVal>(bound)
   ret match(bound)
     (bf: BeField) => beWithStored(base, stores, bf.beFieldPtr,
                                   bf.beFieldName)

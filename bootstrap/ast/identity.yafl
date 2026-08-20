@@ -69,19 +69,10 @@ fun spellList(ps: List<Spec>): List<TypeId>
 # are EQUAL VALUES (set semantics by construction). Stable insertion sort,
 # mirroring Python's sorted(..., key=serialise).
 fun tiSortBySpelling(ids: List<TypeId>): List<TypeId>
-  ret tiSortLoop(chain(ids), List<TypeId>())
-
-fun [tail] tiSortLoop(ids: Chain<TypeId>, acc: List<TypeId>): List<TypeId>
-  ret match(ids)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => tiSortLoop(l.next, tiInsert(chain(acc), l.value, List<TypeId>()))
-
-fun [tail] tiInsert(as2: Chain<TypeId>, x: TypeId, acc: List<TypeId>): List<TypeId>
-  ret match(as2)
-    (nil: ChainEnd) => append(acc, x)
-    (l: ChainLink)  => tiSerialise(x) < tiSerialise(l.value)
-      ? concat(append(acc, x), List<TypeId>(as2))
-      : tiInsert(l.next, x, append(acc, l.value))
+  # By serialised form. This was an INSERTION SORT — every id walking the
+  # sorted prefix and rebuilding it as it went.
+  ret sortBy<TypeId>(ids,
+          (a: TypeId, b: TypeId) => tiSerialise(a) < tiSerialise(b))
 
 
 # ── the canonical spelling ───────────────────────────────────────────────────

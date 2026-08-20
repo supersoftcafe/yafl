@@ -16,7 +16,7 @@ import Bootstrap::StdlibCandidates
 
 
 fun removePhis(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions,
+  ret appWithFunctions(a, map(appFunctions(a),
         (f: CgFunction) => prCoalesceCopies(cgFunctionLowerPhis(f))))
 
 # ── def/read counts (saved_vars are reads) ──────────────────────────────────
@@ -66,8 +66,10 @@ fun [tail] prScan(os: Chain<Op>, back: List<Op>, counts: PrCounts, i: Int,
     (nil: ChainEnd) => PrOut(removed, renames)
     (l: ChainLink)  => match(prCandidate(l.value))
       (c: PrCand) => c.pcSelf
+        # `removed` is turned into a Dict set by its consumer, and each rename
+        # is applied by matching its op index — neither order is observed.
         ? prScan(l.next, prepend(l.value, back), counts, i + 1,
-                 append(removed, i), renames, defs)
+                 prepend(i, removed), renames, defs)
         : prTryCoalesce(l, back, counts, i, c, removed, renames, defs)
       ()           => prScan(l.next, prepend(l.value, back), counts, i + 1,
                              removed, renames, defs)
@@ -95,8 +97,8 @@ fun prTryCoalesce(l: ChainLink<Op>, back: List<Op>, counts: PrCounts, i: Int,
   if strCountGet(defs, c.pcS) != 1 || strCountGet(counts.prReads, c.pcS) != 1
     ret prScan(l.next, onwards, counts, i + 1, removed, renames, defs)
   ret match(prFindDef(chain(back), i - 1, c))
-    (di: Int) => prScan(l.next, onwards, counts, i + 1, append(removed, i),
-                        append(renames, PrRename(di, c.pcS, c.pcTVar)),
+    (di: Int) => prScan(l.next, onwards, counts, i + 1, prepend(i, removed),
+                        prepend(PrRename(di, c.pcS, c.pcTVar), renames),
                         strCountIncr(defs, c.pcT))
     ()         => prScan(l.next, onwards, counts, i + 1, removed, renames, defs)
 
@@ -142,10 +144,10 @@ fun prTouches(op: Op, name: String): Bool
 fun prRebuild(f: CgFunction, out: PrOut): CgFunction
   let removedSet = prRemovedSet(chain(out.proRemoved), Dict<Int, Bool>())
   let newOps = prRebuildOps(f.fnOps, out, removedSet)
-  let dead = prDeadSources(chain(f.fnOps), 0, removedSet, List<String>())
+  let dead = prDeadSources(chain(f.fnOps), 0, removedSet, Set<String>())
   ret cgFunctionWith(f, newOps,
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
-                        (fld: CgField) => !strListMember(dead, fld.fieldName))))
+                        (fld: CgField) => !contains<String>(dead, fld.fieldName))))
 
 fun prRebuildOps(ops: List<Op>, out: PrOut, removedSet: Dict<Int, Bool>): List<Op>
   ret prRebuildLoop(chain(ops), out, removedSet, 0, List<Op>())
@@ -182,13 +184,13 @@ fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
 
 # Dead = each removed non-self copy's SOURCE name.
 fun [tail] prDeadSources(os: Chain<Op>, i: Int, removedSet: Dict<Int, Bool>,
-                         acc: List<String>): List<String>
+                         acc: Set<String>): Set<String>
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => prDeadSources(l.next, i + 1, removedSet,
                          prIsRemoved(removedSet, i) ? prDeadOne(acc, l.value) : acc)
 
-fun prDeadOne(acc: List<String>, op: Op): List<String>
+fun prDeadOne(acc: Set<String>, op: Op): Set<String>
   ret match(prCandidate(op))
-    (c: PrCand) => c.pcSelf ? acc : strListAdd(acc, c.pcS)
+    (c: PrCand) => c.pcSelf ? acc : add<String>(acc, c.pcS)
     ()           => acc

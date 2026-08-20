@@ -27,8 +27,7 @@ fun total(t: Tree<System::Int>): System::Int
     (nd: Node) => fold(nd.kids, 0, (acc: System::Int, k: Tree<System::Int>) => acc + total(k))
 
 fun main(): System::Int
-  let t = Node(append(append(List<Tree<System::Int> >(), Leaf(3)),
-                      Node(append(List<Tree<System::Int> >(), Leaf(4)))))
+  let t = Node(prepend(Leaf(3), prepend(Node(prepend(Leaf(4), List<Tree<System::Int> >())), List<Tree<System::Int> >())))
   ret total(t)
 """))
 
@@ -90,5 +89,5 @@ fun count<T>(l: List<T>): System::Int
     ()     => 0
 
 fun main(): System::Int
-  ret count(append(append(List<System::Int>(), 5), 6))
+  ret count(prepend(5, prepend(6, List<System::Int>())))
 """))

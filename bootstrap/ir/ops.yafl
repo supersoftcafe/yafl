@@ -3,6 +3,7 @@ namespace Bootstrap::Ir
 import System
 
 import Bootstrap::Codegen
+import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
@@ -206,13 +207,13 @@ fun opGetLiveVars(op: Op): (reads: List<RParam>, writes: List<RParam>)
 fun opGetLiveVarsMove(x: OpMove): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVars(x.moveSource)
   ret match(x.moveTarget)
-    (sv: RpStackVar) => (live, append<RParam>(List<RParam>(), x.moveTarget))
+    (sv: RpStackVar) => (live, list1(x.moveTarget))
     (o: RParam)      => (rpStackVarUnion(live, rpGetLiveVars(x.moveTarget)), List<RParam>())
 
 fun opGetLiveVarsNewObject(x: OpNewObject): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVarsOpt(x.newObjSize)
   ret match(x.newObjRegister)
-    (sv: RpStackVar) => (live, append<RParam>(List<RParam>(), x.newObjRegister))
+    (sv: RpStackVar) => (live, list1(x.newObjRegister))
     (o: RParam)      => (rpStackVarUnion(live, rpGetLiveVars(x.newObjRegister)), List<RParam>())
 
 fun opGetLiveVarsCall(x: OpCall): (reads: List<RParam>, writes: List<RParam>)
@@ -229,15 +230,15 @@ fun opGetLiveVarsCallRegister(live: List<RParam>, r: RParam): (reads: List<RPara
 
 fun opGetLiveVarsParallel(x: OpParallelCall): (reads: List<RParam>, writes: List<RParam>)
   let reads = fold(x.parCalls, List<RParam>(), (acc: List<RParam>, c: RParam) => rpStackVarUnion(acc, rpGetLiveVars(c)))
-  let writes = fold(x.parResults, List<RParam>(), (acc: List<RParam>, r: RParam) => rpStackVarUnion(acc, append<RParam>(List<RParam>(), r)))
+  let writes = fold(x.parResults, List<RParam>(), (acc: List<RParam>, r: RParam) => rpStackVarUnion(acc, list1(r)))
   ret match(x.parRegister)
-    (r: RParam) => (reads, rpStackVarUnion(writes, append<RParam>(List<RParam>(), r)))
+    (r: RParam) => (reads, rpStackVarUnion(writes, list1(r)))
     ()           => (reads, writes)
 
 fun opGetLiveVarsPhi(x: OpPhi): (reads: List<RParam>, writes: List<RParam>)
   let reads = fold(x.phiSources, List<RParam>(), (acc: List<RParam>, s: OpPhiSource) => rpStackVarUnion(acc, rpGetLiveVars(s.sourceValue)))
   ret match(x.phiTarget)
-    (sv: RpStackVar) => (reads, append<RParam>(List<RParam>(), x.phiTarget))
+    (sv: RpStackVar) => (reads, list1(x.phiTarget))
     (o: RParam)      => (rpStackVarUnion(reads, rpGetLiveVars(x.phiTarget)), List<RParam>())
 
 # ── is_direct_call() (Call only) ────────────────────────────────────────────
@@ -341,33 +342,37 @@ fun opToCCallBody(x: OpCall, returnType: String, tailreturn: String, ptype: CgTy
 fun opToCCallPrefixJoin(list: List<String>): String
   ret fold(list, "", (acc: String, s: String) => acc + ", " + s)
 
-fun opToCCallTypesFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (list: List<String>, cache: List<CgCacheEntry>)
-  ret fold(values, (List<String>(), cache0), (acc: (list: List<String>, cache: List<CgCacheEntry>), v: RpNamedValue) => opToCCallTypesStep(acc, v))
+# The three accumulators below built a List<String> whose ONLY consumer was
+# opToCCallPrefixJoin. Since the join prefixes every element with ", " and never
+# looks between them, the same string comes out of appending as we go — so the
+# intermediate list is gone and the fold carries the text itself. The order is
+# very much observed: these are C call arguments.
 
-fun opToCCallTypesStep(acc: (list: List<String>, cache: List<CgCacheEntry>), v: RpNamedValue): (list: List<String>, cache: List<CgCacheEntry>)
+fun opToCCallTypesFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret fold(values, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => opToCCallTypesStep(acc, v))
+
+fun opToCCallTypesStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let sub = cgDeclare(rpGetType(v.value), acc.cache)
-  ret (append<String>(acc.list, sub.text), sub.cache)
+  ret (acc.text + ", " + sub.text, sub.cache)
 
-fun opToCCallParamsFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (list: List<String>, cache: List<CgCacheEntry>)
-  ret fold(values, (List<String>(), cache0), (acc: (list: List<String>, cache: List<CgCacheEntry>), v: RpNamedValue) => opToCCallParamsStep(acc, v))
+fun opToCCallParamsFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret fold(values, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => opToCCallParamsStep(acc, v))
 
-fun opToCCallParamsStep(acc: (list: List<String>, cache: List<CgCacheEntry>), v: RpNamedValue): (list: List<String>, cache: List<CgCacheEntry>)
+fun opToCCallParamsStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(v.value, acc.cache)
-  ret (append<String>(acc.list, sub.text), sub.cache)
+  ret (acc.text + ", " + sub.text, sub.cache)
 
 fun opToCCallNewStruct(x: OpCall, returnType: String, tailreturn: String, prms: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let typesR = opToCCallTypesFromValues(prms.values, cache0)
   let paramsR = opToCCallParamsFromValues(prms.values, typesR.cache)
-  let typesStr = opToCCallPrefixJoin(typesR.list)
-  let paramsStr = opToCCallPrefixJoin(paramsR.list)
-  ret opToCCallFinish(x, returnType, tailreturn, typesStr, paramsStr, "", paramsR.cache)
+  ret opToCCallFinish(x, returnType, tailreturn, typesR.text, paramsR.text, "", paramsR.cache)
 
-fun opToCCallTypesFromFields(fields: List<CgField>, cache0: List<CgCacheEntry>): (list: List<String>, cache: List<CgCacheEntry>)
-  ret fold(fields, (List<String>(), cache0), (acc: (list: List<String>, cache: List<CgCacheEntry>), f: CgField) => opToCCallTypesFieldStep(acc, f))
+fun opToCCallTypesFromFields(fields: List<CgField>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret fold(fields, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), f: CgField) => opToCCallTypesFieldStep(acc, f))
 
-fun opToCCallTypesFieldStep(acc: (list: List<String>, cache: List<CgCacheEntry>), f: CgField): (list: List<String>, cache: List<CgCacheEntry>)
+fun opToCCallTypesFieldStep(acc: (text: String, cache: List<CgCacheEntry>), f: CgField): (text: String, cache: List<CgCacheEntry>)
   let sub = cgDeclare(f.fieldType, acc.cache)
-  ret (append<String>(acc.list, sub.text), sub.cache)
+  ret (acc.text + ", " + sub.text, sub.cache)
 
 # NOTE: Python builds each unpacked param as `f"prm.{name}"` using the RAW
 # (unmangled) field name, not `mangle_name(name)` — inconsistent with every
@@ -375,7 +380,7 @@ fun opToCCallTypesFieldStep(acc: (list: List<String>, cache: List<CgCacheEntry>)
 # the port report for this being flagged as a suspected upstream bug.
 fun opToCCallGenericParams(x: OpCall, returnType: String, tailreturn: String, ptype: CgType, fields: List<CgField>, prms: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let typesR = opToCCallTypesFromFields(fields, cache0)
-  let typesStr = opToCCallPrefixJoin(typesR.list)
+  let typesStr = typesR.text
   let paramsStr = opToCCallPrefixJoin(map(fields, (f: CgField) => "prm." + f.fieldName))
   ret isEmpty<CgField>(fields)
     ? opToCCallFinish(x, returnType, tailreturn, typesStr, paramsStr, "", typesR.cache)
@@ -427,9 +432,11 @@ fun opToCCallIndirectFinish(funDecl: String, unpack: String, assignR: (text: Str
 fun rpReadVarNames(r: RParam): List<String>
   ret fold(rpFlatten(r, true), List<String>(), rpTakeStackVarName)
 
+# The stack-var names a param reads. Every consumer treats these as a set —
+# liveness unions and membership tests — so the order is not observed.
 fun rpTakeStackVarName(acc: List<String>, x: RParam): List<String>
   ret match(x)
-    (sv: RpStackVar) => append(acc, sv.name)
+    (sv: RpStackVar) => prepend(sv.name, acc)
     (o: RParam)       => acc
 
 fun rpTargetReadNames(target: RParam): List<String>
@@ -486,7 +493,7 @@ fun rpReadStackVars(r: RParam): List<RParam>
 
 fun rpTakeStackVar(acc: List<RParam>, x: RParam): List<RParam>
   ret match(x)
-    (sv: RpStackVar) => append(acc, x)
+    (sv: RpStackVar) => prepend(x, acc)
     (o: RParam)       => acc
 
 fun rpTargetReadStackVars(target: RParam): List<RParam>

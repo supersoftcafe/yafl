@@ -24,21 +24,21 @@ import Bootstrap::StdlibCandidates
 # every suspension in the merged body saves the combined frame; the gate
 # keeps suspending helpers outboard where their own small frame is all they
 # save.
-fun computeSyncNames(a: CgApp): List<String>
+fun computeSyncNames(a: CgApp): Set<String>
   let virtualImpls = gfSlotFuncs(a)   # slot → implementing functions (all objects, foreign incl.)
-  let seed = fold(a.appFunctions, List<String>(),
-                  (acc: List<String>, f: CgFunction) => siSeedable(f) ? strListAdd(acc, f.fnName) : acc)
+  let seed = fold(appFunctions(a), Set<String>(),
+                  (acc: Set<String>, f: CgFunction) => siSeedable(f) ? add<String>(acc, f.fnName) : acc)
   ret siFixpoint(a, virtualImpls, seed)
 
 fun inferSync(a: CgApp): CgApp
   let syncSet = computeSyncNames(a)
-  ret appWithFunctions(a, map(a.appFunctions,
+  ret appWithFunctions(a, map(appFunctions(a),
         (f: CgFunction) => siMaterialise(f, syncSet)))
 
-fun siMaterialise(f: CgFunction, syncSet: List<String>): CgFunction
+fun siMaterialise(f: CgFunction, syncSet: Set<String>): CgFunction
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars, f.fnOps,
                  f.fnComment, f.fnForeignSymbol,
-                 strListMember(syncSet, f.fnName),
+                 contains<String>(syncSet, f.fnName),
                  f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
 
 # A body returning TagTask(...) produces a tagged task pointer — its callers'
@@ -75,35 +75,38 @@ fun isNoneStr(s2: String|None): Bool
 
 # ── the fixed point ──────────────────────────────────────────────────────────
 
-fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: List<String>): List<String>
-  let grown = fold(a.appFunctions, syncSet,
-                   (acc: List<String>, f: CgFunction) => siTryAdd(acc, f, impls))
-  ret sameLen(chain(grown), chain(syncSet)) ? grown : siFixpoint(a, impls, grown)
+# The sync names are a membership set — every reader asks "is this name in
+# it" — so it is a Set, and the fixpoint's "did anything get added" is its
+# size rather than a co-walk over two chains.
+fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: Set<String>): Set<String>
+  let grown = fold(appFunctions(a), syncSet,
+                   (acc: Set<String>, f: CgFunction) => siTryAdd(acc, f, impls))
+  ret size<String>(grown) == size<String>(syncSet) ? grown : siFixpoint(a, impls, grown)
 
 # Foreign functions have empty bodies (all([]) would falsely qualify) — their
 # sync-ness comes only from the programmer seed.
-fun siTryAdd(acc: List<String>, f: CgFunction, impls: List<SlotFuncs>): List<String>
-  if strListMember(acc, f.fnName)
+fun siTryAdd(acc: Set<String>, f: CgFunction, impls: List<SlotFuncs>): Set<String>
+  if contains<String>(acc, f.fnName)
     ret acc
   if !isNoneStr(f.fnForeignSymbol) || siReturnsTaggedTask(f)
     ret acc
-  ret siBodyIsSync(f, acc, impls) ? strListAdd(acc, f.fnName) : acc
+  ret siBodyIsSync(f, acc, impls) ? add<String>(acc, f.fnName) : acc
 
-fun siBodyIsSync(f: CgFunction, syncSet: List<String>, impls: List<SlotFuncs>): Bool
+fun siBodyIsSync(f: CgFunction, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   ret !any(f.fnOps, (op: Op) => siOpBlocksSync(op, syncSet, impls))
 
-fun siOpBlocksSync(op: Op, syncSet: List<String>, impls: List<SlotFuncs>): Bool
+fun siOpBlocksSync(op: Op, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   ret match(op)
     (pc: OpParallelCall) => true
     (c: OpCall)          => !c.callMusttail && !siCallIsSync(c, syncSet, impls)
     (o: Op)              => false
 
-fun siCallIsSync(c: OpCall, syncSet: List<String>, impls: List<SlotFuncs>): Bool
+fun siCallIsSync(c: OpCall, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   ret match(c.callFunction)
-    (gf: RpGlobalFunction)  => strListMember(syncSet, gf.name)
+    (gf: RpGlobalFunction)  => contains<String>(syncSet, gf.name)
     (vf: RpVirtualFunction) => siVirtualIsSync(vf.name, syncSet, impls)
     (o: RParam)             => false
 
-fun siVirtualIsSync(name: String, syncSet: List<String>, impls: List<SlotFuncs>): Bool
+fun siVirtualIsSync(name: String, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   let names = gfSlotLookup(impls, name)
-  ret !isEmpty(names) && !any(names, (n: String) => !strListMember(syncSet, n))
+  ret !isEmpty(names) && !any(names, (n: String) => !contains<String>(syncSet, n))

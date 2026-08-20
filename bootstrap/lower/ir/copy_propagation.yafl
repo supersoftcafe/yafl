@@ -17,7 +17,7 @@ import Bootstrap::StdlibCandidates
 
 
 fun propagateCopies(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, cpFunction))
+  ret appWithFunctions(a, map(appFunctions(a), cpFunction))
 
 fun [tail] cpFunction(f: CgFunction): CgFunction
   let out = cpOnce(f)
@@ -27,7 +27,7 @@ class [final] CpOut(cpFn: CgFunction, cpChanged: Bool)
 
 fun cpOnce(f: CgFunction): CpOut
   let readCounts = cpCountReads(f.fnOps)
-  let walked = cpWalk(chain(f.fnOps), readCounts, List<Op>(), false)
+  let walked = cpWalk(chain(f.fnOps), readCounts, builder<Op >(), false)
   ret walked.cpwChanged
     ? CpOut(cpPruneStackVars(f, walked.cpwOps), true)
     : CpOut(f, false)
@@ -35,21 +35,25 @@ fun cpOnce(f: CgFunction): CpOut
 # Python's get_live_vars returns a frozenset PER OP: an op reading the same
 # var twice (done.io, done.v in one call) counts ONCE. Counting occurrences
 # instead keeps the Move on the multi-reader path where Python drops it.
+fun cpAddName(acc: Set<String>, n: String): Set<String>
+  ret add<String>(acc, n)
+
 fun cpCountReads(ops: List<Op>): Dict<String, Int>
   ret fold(ops, Dict<String, Int>(),
            (acc: Dict<String, Int>, op: Op) =>
-             fold(fold(opReadVarNames(op), List<String>(), strListAdd),
-                  acc, sdBump))
+             fold(fold(opReadVarNames(op), Set<String>(), cpAddName), acc, sdBump))
 
 class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
 
 fun [tail] cpWalk(ops: Chain<Op>, readCounts: Dict<String, Int>,
-                  acc: List<Op>, changed: Bool): CpWalkOut
+                  [terminal] acc: ListBuilder<Op >, changed: Bool): CpWalkOut
   ret match(ops)
-    (nil: ChainEnd) => CpWalkOut(acc, changed)
+    (nil: ChainEnd) => CpWalkOut(build<Op >(acc), changed)
     (l: ChainLink)  => match(cpTryPropagate(l, readCounts))
-      (s2: CpStep) => cpWalk(s2.cpsRest, readCounts, concat(acc, s2.cpsEmit), true)
-      ()            => cpWalk(l.next, readCounts, append(acc, l.value), changed)
+      (s2: CpStep) => cpWalk(s2.cpsRest, readCounts,
+                             _pushChain<Op >(acc, chain<Op>(s2.cpsEmit)), true)
+      ()            => cpWalk(l.next, readCounts, push<Op >(acc, l.value),
+                              changed)
 
 class [final] CpStep(cpsEmit: List<Op>, cpsRest: Chain<Op>)
 
@@ -101,11 +105,13 @@ fun cpSubstVar(p: RParam, m: String, s: RpStackVar): RParam
 
 # Drop stack_var declarations no longer referenced anywhere (reads OR writes).
 fun cpPruneStackVars(f: CgFunction, newOps: List<Op>): CgFunction
-  let mentioned = fold(newOps, List<String>(),
-                       (acc: List<String>, op: Op) => fold(concat(opReadVarNames(op), cpWriteNames(op)), acc, strListAdd))
+  let mentioned = fold(newOps, Set<String>(),
+                       (acc: Set<String>, op: Op) =>
+                         fold(concat(opReadVarNames(op), cpWriteNames(op)), acc,
+                              (s2: Set<String>, n: String) => add<String>(s2, n)))
   ret cgFunctionWith(f, newOps,
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
-                        (fld: CgField) => strListMember(mentioned, fld.fieldName))))
+                        (fld: CgField) => contains<String>(mentioned, fld.fieldName))))
 
 fun cpWriteNames(op: Op): List<String>
   ret fold(ssavOpWrites(op), List<String>(), rpTakeStackVarName)

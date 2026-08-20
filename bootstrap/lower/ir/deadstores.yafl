@@ -13,11 +13,12 @@ namespace Bootstrap::Lower::Ir
 import System
 
 import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
 
 
 
 fun eliminateDeadStores(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, dsFunction))
+  ret appWithFunctions(a, map(appFunctions(a), dsFunction))
 
 fun [tail] dsFunction(f: CgFunction): CgFunction
   let out = dsOnce(f)
@@ -44,18 +45,19 @@ fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
-  let walked = dsWalk(chain(f.fnOps), reads, List<Op>(), false)
+  let walked = dsWalk(chain(f.fnOps), reads, builder<Op >(), false)
   ret walked.changed
     ? (cpPruneStackVars(f, walked.ops), true)
     : (f, false)
 
 fun [tail] dsWalk(ops: Chain<Op>, reads: Dict<String, Bool>,
-                  acc: List<Op>, changed: Bool): (ops: List<Op>, changed: Bool)
+                  [terminal] acc: ListBuilder<Op >,
+                  changed: Bool): (ops: List<Op>, changed: Bool)
   ret match(ops)
-    (nil: ChainEnd) => (acc, changed)
+    (nil: ChainEnd) => (build<Op >(acc), changed)
     (l: ChainLink)  => dsStep(l.value, reads)
       |> (step) => match(step.op)
-        (kept: Op) => dsWalk(l.next, reads, append(acc, kept),
+        (kept: Op) => dsWalk(l.next, reads, push<Op >(acc, kept),
                              changed || step.changed)
         ()         => dsWalk(l.next, reads, acc, true)
 
@@ -94,7 +96,7 @@ fun dsStepParallel(p: OpParallelCall,
 
 fun dsOptList(r: RParam|None): List<RParam>
   ret match(r)
-    (x: RParam) => append<RParam>(List<RParam>(), x)
+    (x: RParam) => list1<RParam>(x)
     ()          => List<RParam>()
 
 fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>): Bool

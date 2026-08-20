@@ -87,7 +87,7 @@ fun llAnalyse(f: PsFun, nested: List<PsFun>): PStmt
   let captures = llCapturesOf(chain(nested), siblingNames, paramNames,
                               List<List<String>>())
   let callEdges = hoCallEdges(chain(nested), siblingNames,
-                              EEdges(List<String>(), List<List<String>>()))
+                              EEdges(Dict<String, List<String>>()))
   let sccs = aiSccs(siblingNames, callEdges)
   let solved = llSolve(chain(sccs), f, nested, siblingNames, captures,
                        callEdges, paramLets,
@@ -109,9 +109,16 @@ fun [tail] llCapturesOfB(fs: Chain<PsFun>, siblingNames: List<String>,
                         [terminal] acc: ListBuilder<List<String> >): ListBuilder<List<String> >
   ret match(fs)
     (nil: ChainEnd) => acc
+    # The free references that name an enclosing parameter — a set
+    # intersection, and the Python compiler holds it as one. Sorted on the way
+    # out only because the slot it lands in is a List: the order carries no
+    # meaning, since every consumer unions these together and llLiftSets sorts
+    # the result before it reaches generated code.
     (l: ChainLink)  => llCapturesOfB(l.next, siblingNames, paramNames,
-        push<List<String> >(acc, hoIntersect(chain(freeRefs(l.value, siblingNames)),
-                                paramNames, List<String>())))
+        push<List<String> >(acc,
+            sort<String>(filter<String>(freeRefs(l.value, siblingNames),
+                                        (n: String) => contains2(paramNames,
+                                                                 n)))))
 
 # Per-SCC solve, in reverse-topo order: the threaded set is the members'
 # captures plus whatever already-solved callee SCCs thread; liftability
@@ -140,8 +147,10 @@ fun llSolveOne(scc: List<String>, f: PsFun, nested: List<PsFun>,
   let ok0 = llCalleesOk(chain(scc), scc, edges, acc)
             && llRefsOk(chain(scc), f)
   let ok = ok0 && !llAnyLinear(chain(want0), paramLets)
-  ret LlSolved(append(acc.lsSccs, scc), append(acc.lsLiftable, ok),
-               append(acc.lsThreaded, want0))
+  # Three POSITIONALLY paired lists — one entry per SCC, looked up by index.
+  ret LlSolved(build<List<String> >(push<List<String> >(_pushChain<List<String> >(builder<List<String> >(), chain<List<String>>(acc.lsSccs)), scc)),
+               build<Bool >(push<Bool >(_pushChain<Bool >(builder<Bool >(), chain<Bool>(acc.lsLiftable)), ok)),
+               build<List<String> >(push<List<String> >(_pushChain<List<String> >(builder<List<String> >(), chain<List<String>>(acc.lsThreaded)), want0)))
 
 fun [tail] llWant(ns: Chain<String>, own: List<String>,
                   siblingNames: List<String>, captures: List<List<String>>,
@@ -280,9 +289,8 @@ fun [tail] llLiftScc(ns: Chain<String>, scc: List<String>, solved: LlSolved,
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => llLiftScc(l.next, scc, solved,
-        LiftCtx(append(acc.lcNames, l.value),
-                append(acc.lcExtras,
-                       sort<String>(threaded))))
+        LiftCtx(build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(acc.lcNames)), l.value)),
+                build<List<String> >(push<List<String> >(_pushChain<List<String> >(builder<List<String> >(), chain<List<String>>(acc.lcExtras)), sort<String>(threaded)))))
 
 fun llFirstOf(scc: List<String>): String
   ret match(chain(scc))

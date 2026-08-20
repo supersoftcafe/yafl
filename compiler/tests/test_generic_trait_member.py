@@ -36,7 +36,7 @@ instance [ambient]<T> Sized<List<T>>
     ret chainLength(chain(v))
 
 fun main(): Int
-  let l = append(append(List<Int>(), 4), 5)
+  let l = prepend(4, prepend(5, List<Int>()))
   ret sizeOf(l) == 2 ? 0 : 1
 """
 

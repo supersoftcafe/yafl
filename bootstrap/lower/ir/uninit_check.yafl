@@ -22,7 +22,7 @@ import Bootstrap::Types
 
 
 fun checkApplication(a: CgApp): List<String>
-  ret fold(a.appFunctions, List<String>(), ucCheckOne)
+  ret fold(appFunctions(a), List<String>(), ucCheckOne)
 
 fun ucCheckOne(acc: List<String>, f: CgFunction): List<String>
   ret isNoneStr(f.fnForeignSymbol) ? concat(acc, ucCheckFunction(f)) : acc
@@ -30,7 +30,7 @@ fun ucCheckOne(acc: List<String>, f: CgFunction): List<String>
 # entry[i]: Unreached until the fixpoint first reaches ops[i].
 enum InitSet
   enum IsUnreached()
-  enum IsSet(isNames: List<String>)
+  enum IsSet(isNames: Set<String>)
 
 # The dataflow state is DICT-backed (user ruling 2026-07-22): entry[i]
 # updates were whole-list rebuilds and reads O(i) walks — quadratic per
@@ -66,7 +66,7 @@ fun ucComputeEntrySets(f: CgFunction): Dict<Int, InitSet>
   let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
   let ix = ucIndexOps(f.fnOps)
   let entry0 = put(Dict<Int, InitSet>(), 0,
-                   IsSet(sort<String>(params)))
+                   IsSet(fold(params, Set<String>(), ucAddName)))
   ret ucFixpoint(ix, labels, entry0, list1(0))
 
 fun ucCheckFunction(f: CgFunction): List<String>
@@ -138,9 +138,10 @@ fun ucKey(sv: RParam): String
 fun ucKeyField(fld: CgField): String
   ret fld.fieldName + "|" + irMangle(fld.fieldType)
 
+# A key set, asked only for membership.
 fun ucTakeKey(acc: List<String>, sv: RParam): List<String>
   ret match(sv)
-    (s2: RpStackVar) => append(acc, ucKey(sv))
+    (s2: RpStackVar) => prepend(ucKey(sv), acc)
     (o: RParam)       => acc
 
 fun ucReads(op: Op): List<String>
@@ -177,8 +178,8 @@ fun [tail] ucFixpoint(ix: UcIx, labels: Dict<String, Int>,
   let branchOnly = ucBranchOnlyWrites(op)
   let exitFall = fold(filter(writes,
                              (w: String) => !strListMember(branchOnly, w)),
-                      e2, strListAdd)
-  let exitBranch = fold(writes, e2, strListAdd)
+                      e2, ucAddName)
+  let exitBranch = fold(writes, e2, ucAddName)
   let out = fold(ucSuccessors(ix, labels, i), (entry, rest),
                  (acc: (e: Dict<Int, InitSet>, w: List<Int>), succ: Int) =>
                    ucJoinInto(acc.e, acc.w, succ,
@@ -190,10 +191,15 @@ fun headIntOr(l: List<Int>, dflt: Int): Int
     (i: Int) => i
     ()        => dflt
 
-fun ucNamesOf(s2: InitSet): List<String>
+# An initialised-name set: every reader asks whether ONE name is in it, and
+# the fixpoint's join is an intersection. Nothing walks it in order.
+fun ucAddName(acc: Set<String>, n: String): Set<String>
+  ret add<String>(acc, n)
+
+fun ucNamesOf(s2: InitSet): Set<String>
   ret match(s2)
     (i: IsSet)       => i.isNames
-    (u: IsUnreached) => List<String>()   # unreachable: caller tested
+    (u: IsUnreached) => Set<String>()   # unreachable: caller tested
 
 fun ucIsBranchTarget(op: Op, labels: Dict<String, Int>, succ: Int): Bool
   ret match(op)
@@ -209,17 +215,22 @@ fun ucLabelIs(labels: Dict<String, Int>, name: String, succ: Int): Bool
 
 # meet = intersection; a change re-queues the successor.
 fun ucJoinInto(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
-               incoming: List<String>): (e: Dict<Int, InitSet>, w: List<Int>)
+               incoming: Set<String>): (e: Dict<Int, InitSet>, w: List<Int>)
   ret match(ucEntryAt(entry, succ))
-    (u: IsUnreached) => (put(entry, succ, IsSet(incoming)), append(worklist, succ))
+    # The worklist is a SET of blocks still to visit, not a queue: the meet is
+    # intersection and a block is only re-queued when its set SHRANK, so the
+    # analysis is monotone and reaches the same fixpoint whichever end blocks
+    # are taken from. Only the number of iterations can differ.
+    (u: IsUnreached) => (put(entry, succ, IsSet(incoming)),
+                         prepend(succ, worklist))
     (s2: IsSet)      => ucJoinExisting(entry, worklist, succ, s2.isNames, incoming)
 
 fun ucJoinExisting(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
-                   old: List<String>, incoming: List<String>): (e: Dict<Int, InitSet>, w: List<Int>)
-  let met = filter(old, (n: String) => strListMember(incoming, n))
-  ret sameLen(chain(met), chain(old))
+                   old: Set<String>, incoming: Set<String>): (e: Dict<Int, InitSet>, w: List<Int>)
+  let met = filter<String>(old, (n: String) => contains<String>(incoming, n))
+  ret size<String>(met) == size<String>(old)
     ? (entry, worklist)
-    : (put(entry, succ, IsSet(met)), append(worklist, succ))
+    : (put(entry, succ, IsSet(met)), prepend(succ, worklist))
 
 # ── verification ─────────────────────────────────────────────────────────────
 
@@ -235,8 +246,8 @@ fun [tail] ucVerifyLoop(f: CgFunction, os: Chain<Op>, entry: Dict<Int, InitSet>,
       (e2: IsSet)      => ucVerifyLoop(f, l.next, entry, i + 1,
                             concat(acc, ucVerifyOp(f, l.value, i, e2.isNames)))
 
-fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: List<String>): List<String>
-  let missing = filter(ucReads(op), (n: String) => !strListMember(e2, n))
+fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: Set<String>): List<String>
+  let missing = filter(ucReads(op), (n: String) => !contains<String>(e2, n))
   ret isEmpty(missing)
     ? List<String>()
     : list1(f.fnName + ": uninitialised StackVar read at op #" + String(i)
@@ -245,7 +256,7 @@ fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: List<String>): List<String>
 
 # ── per-edge Phi verification ────────────────────────────────────────────────
 
-class [final] PhiEdge(pheFrom: String, pheTo: String, pheExit: List<String>)
+class [final] PhiEdge(pheFrom: String, pheTo: String, pheExit: Set<String>)
 
 fun ucCheckPhiSources(f: CgFunction, labels: Dict<String, Int>, entry: Dict<Int, InitSet>): List<String>
   let phiBlocks = ucPhiBlocks(f.fnOps)
@@ -271,10 +282,15 @@ fun [tail] ucPhiBlocksLoop(ops: Chain<Op>, current: String, acc: List<PhiBlock>)
         : ucPhiBlocksLoop(l.next, current, acc)
       (o: Op)       => ucPhiBlocksLoop(l.next, current, acc)
 
+# The blocks are looked up by label, so their own order is not observed; the
+# phis WITHIN a block keep theirs, because the errors they raise are reported
+# in that order.
 fun ucPhiBlockAdd(acc: List<PhiBlock>, label: String, ph: Op): List<PhiBlock>
   ret any(acc, (b: PhiBlock) => b.phbLabel == label)
-    ? map(acc, (b: PhiBlock) => b.phbLabel == label ? PhiBlock(label, append(b.phbPhis, ph)) : b)
-    : append(acc, PhiBlock(label, list1(ph)))
+    ? map(acc, (b: PhiBlock) => b.phbLabel == label
+            ? PhiBlock(label, build<Op >(push<Op >(_pushChain<Op >(builder<Op >(), chain<Op>(b.phbPhis)), ph)))
+            : b)
+    : prepend(PhiBlock(label, list1(ph)), acc)
 
 fun ucIsPhiBlock(phiBlocks: List<PhiBlock>, name: String): Bool
   ret any(phiBlocks, (b: PhiBlock) => b.phbLabel == name)
@@ -314,8 +330,9 @@ fun ucFallEdgeOn(entry: Dict<Int, InitSet>, i: Int, current: String,
                  prev: Op, lb: OpLabel, acc: List<PhiEdge>): List<PhiEdge>
   ret match(ucEntryAt(entry, i - 1))
     (u: IsUnreached) => acc
-    (pe: IsSet)      => append(acc, PhiEdge(current, lb.labelName,
-                                            fold(ucWrites(prev), pe.isNames, strListAdd)))
+    # Edge order is message order.
+    (pe: IsSet)      => build<PhiEdge >(push<PhiEdge >(_pushChain<PhiEdge >(builder<PhiEdge >(), chain<PhiEdge>(acc)), PhiEdge(current, lb.labelName,
+                            fold(ucWrites(prev), pe.isNames, ucAddName))))
 
 fun ucPrevFallsIntoLabel(prev: Op): Bool
   ret match(prev)
@@ -333,10 +350,10 @@ fun ucJumpEdges(op: Op, entry: Dict<Int, InitSet>, phiBlocks: List<PhiBlock>,
   ret match(ucEntryAt(entry, i))
     (u: IsUnreached) => acc
     (e2: IsSet)      => ucJumpEdgesOn(op, phiBlocks, current,
-                                      fold(ucWrites(op), e2.isNames, strListAdd), acc)
+                                      fold(ucWrites(op), e2.isNames, ucAddName), acc)
 
 fun ucJumpEdgesOn(op: Op, phiBlocks: List<PhiBlock>, current: String,
-                  exitHere: List<String>, acc: List<PhiEdge>): List<PhiEdge>
+                  exitHere: Set<String>, acc: List<PhiEdge>): List<PhiEdge>
   ret match(op)
     (j: OpJump)        => ucAddEdgeIf(acc, phiBlocks, current, j.jumpName, exitHere)
     (ji: OpJumpIf)     => ucAddEdgeIf(acc, phiBlocks, current, ji.jumpIfLabel, exitHere)
@@ -346,9 +363,9 @@ fun ucJumpEdgesOn(op: Op, phiBlocks: List<PhiBlock>, current: String,
     (o: Op)            => acc
 
 fun ucAddEdgeIf(acc: List<PhiEdge>, phiBlocks: List<PhiBlock>, current: String,
-                target: String, exitHere: List<String>): List<PhiEdge>
+                target: String, exitHere: Set<String>): List<PhiEdge>
   ret ucIsPhiBlock(phiBlocks, target)
-    ? append(acc, PhiEdge(current, target, exitHere))
+    ? build<PhiEdge >(push<PhiEdge >(_pushChain<PhiEdge >(builder<PhiEdge >(), chain<PhiEdge>(acc)), PhiEdge(current, target, exitHere)))
     : acc
 
 fun ucCheckEdge(f: CgFunction, phiBlocks: List<PhiBlock>, ed: PhiEdge): List<String>
@@ -367,7 +384,7 @@ fun ucCheckPhiEdge(f: CgFunction, ph: Op, ed: PhiEdge): List<String>
 
 fun ucCheckSource(f: CgFunction, ed: PhiEdge, s2: OpPhiSource): List<String>
   let missing = filter(fold(rpReadStackVars(s2.sourceValue), List<String>(), ucTakeKey),
-                       (n: String) => !strListMember(ed.pheExit, n))
+                       (n: String) => !contains<String>(ed.pheExit, n))
   ret isEmpty(missing)
     ? List<String>()
     : list1(f.fnName + ": Phi at block " + ed.pheTo + ", source from predecessor "

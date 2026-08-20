@@ -92,12 +92,26 @@ fun prepend<T>(x: T, l: List<T>): List<T>
   ret ListFull<T>(ChainLink<T>(x, chain<T>(l)))
 
 
-# Add element to the back: O(n), because it rebuilds. A list is stored in the
-# order it is walked, so there is nowhere cheap to put a new last element.
-# Appending in a loop is therefore O(n^2) — use a ListBuilder, which pushes in
-# order for O(1), or prepend if the order suits.
-fun append<T>(l: List<T>, x: T): List<T>
-  ret build<T>(push<T>(_pushChain<T>(builder<T>(), chain<T>(l)), x))
+# There is no `append`. This List is a CONS CHAIN, stored in the order it is
+# walked, so putting an element at the BACK means the last cell must point at
+# the new one — and mutating it would be visible to every sharer, so the spine
+# is copied. O(n) per call, O(n^2) in a loop.
+#
+# That is a property of THIS REPRESENTATION, not of immutability. A tree-backed
+# sequence (finger tree, 2-3 tree) gives O(1) amortised append AND prepend,
+# fully persistent, no mutation and no linearity proof. It is the standard
+# answer, and it is not the answer here: the compiler's dominant access pattern
+# is the sequential walk, where a cons chain is one pointer per step and a tree
+# is a descent plus per-node overhead on every element. We would be paying the
+# walk to speed up the build.
+#
+# ListBuilder escapes the copy a different way: [linear] PROVES there are no
+# sharers, so it writes the tail cell in place — O(1) push, and the result is
+# an ordinary immutable chain the moment build() hands it over.
+#
+# So: build with a ListBuilder (in order, O(1) per push), or prepend (the cons),
+# or ask whether the thing wants to be a List at all — a Bag or a Set has no
+# order to maintain and no end to append to.
 
 
 fun head<T>(l: List<T>): T|None
@@ -175,15 +189,17 @@ fun [tail] drop<T>(l: List<T>, n: Int): List<T>
 # [tail]: the walk advances one element per step, so on a long list it MUST
 # lower to a loop — plain recursion here overflows the C stack via the async
 # hot path (found by sorting a half-million-word dictionary).
-fun [tail] _splitWalk<T>(slow: List<T>, fast: List<T>, acc: List<T>): (left: List<T>, right: List<T>)
+fun [tail] _splitWalk<T>([terminal] acc: ListBuilder<T>, slow: List<T>,
+                         fast: List<T>): (left: ListBuilder<T>, right: List<T>)
   ret match(head<T>(slow))
     (s: T) => isEmpty<T>(fast) || isEmpty<T>(tail<T>(fast))
         ? (left=acc, right=slow)
-        : _splitWalk<T>(tail<T>(slow), tail<T>(tail<T>(fast)), append<T>(acc, s))
+        : _splitWalk<T>(push<T>(acc, s), tail<T>(slow), tail<T>(tail<T>(fast)))
     (e: None) => (left=acc, right=slow)
 
 fun splitHalf<T>(l: List<T>): (left: List<T>, right: List<T>)
-  ret _splitWalk<T>(l, l, List<T>())
+  ret _splitWalk<T>(builder<T>(), l, l)
+    |> (left, right) => (left = build<T>(left), right = right)
 
 
 # True if any / every element satisfies `pred`. Both fold the whole list, but the
@@ -262,23 +278,24 @@ fun findIndex<T>(l: List<T>, pred: (:T): Bool): Int|None
 # Split `l` into `(yes, no)` by `pred`.  Order is preserved within each
 # output list.
 fun partition<T>(l: List<T>, pred: (:T): Bool): (yes: List<T>, no: List<T>)
-  fun step(acc: (yes: List<T>, no: List<T>), x: T): (yes: List<T>, no: List<T>)
-    ret pred(x)
-      ? (yes=append<T>(acc.yes, x), no=acc.no)
-      : (yes=acc.yes, no=append<T>(acc.no, x))
-  ret fold<T, (yes: List<T>, no: List<T>)>(l, (yes=List<T>(), no=List<T>()), step)
+  ret (yes = filter<T>(l, pred), no = filter<T>(l, (x: T) => !pred(x)))
 
 
 # Group elements by `key(x)`.  Entries appear in original list order
 # within each group.
-fun _appendToGroup<K,T>(d: Dict<K,List<T> >, k: K, v: T): Dict<K,List<T> > where BasicEquality<K>
-  ret match(get<K,List<T> >(d, k))
-    (existing: List<T>) => put<K,List<T> >(d, k, append<T>(existing, v))
-    (n: None)           => put<K,List<T> >(d, k, append<T>(List<T>(), v))
+# Each group is `filter`ed straight out of the original list, so it is in list
+# order BY CONSTRUCTION — no per-group accumulator to append to. A ListBuilder
+# cannot live in a Dict (it is [linear]) and prepending would need a reversal
+# at the end, which is precisely what this design removes.
+fun _groupFor<K,T>(l: List<T>, key: (:T): K, k: K): List<T> where BasicEquality<K>
+  ret filter<T>(l, (x: T) => key(x) == k)
 
 fun groupBy<T,K>(l: List<T>, key: (:T): K): Dict<K,List<T> > where BasicEquality<K>
-  ret fold<T,Dict<K,List<T> > >(l, Dict<K,List<T> >(),
-    (acc: Dict<K,List<T> >, x: T) => _appendToGroup<K,T>(acc, key(x), x))
+  ret fold<K, Dict<K,List<T> > >(
+        _chainToSet<K>(chain<K>(map<T,K>(l, key)), Set<K>()),
+        Dict<K,List<T> >(),
+        (acc: Dict<K,List<T> >, k: K) =>
+          put<K,List<T> >(acc, k, _groupFor<K,T>(l, key, k)))
 
 
 # ─── Sort ───────────────────────────────────────────────────────────────────

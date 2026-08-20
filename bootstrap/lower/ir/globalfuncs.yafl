@@ -19,22 +19,25 @@ import Bootstrap::StdlibCandidates
 
 fun discoverGlobalFunctionCalls(a: CgApp): CgApp
   let slots = gfSlotFuncs(a)
-  ret appWithFunctions(a, map(a.appFunctions,
+  ret appWithFunctions(a, map(appFunctions(a),
         (f: CgFunction) => gfOptimizeFunctionCalls(f, slots)))
 
 # slot name → implementing function names, across every object.
 class [final] SlotFuncs(sfSlot: String, sfFuncs: List<String>)
 
 fun gfSlotFuncs(a: CgApp): List<SlotFuncs>
-  ret fold(a.appObjects, List<SlotFuncs>(),
+  ret fold(appObjects(a), List<SlotFuncs>(),
            (acc: List<SlotFuncs>, o: CgObject) => fold(o.objFunctions, acc, gfSlotAdd))
 
 fun gfSlotAdd(acc: List<SlotFuncs>, s2: CgFuncSlot): List<SlotFuncs>
   ret any(acc, (e2: SlotFuncs) => e2.sfSlot == s2.slotVirtualName)
     ? map(acc, (e2: SlotFuncs) => e2.sfSlot == s2.slotVirtualName
-                 ? SlotFuncs(e2.sfSlot, append(e2.sfFuncs, s2.slotGlobalName))
+                 ? SlotFuncs(e2.sfSlot,
+                             build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(e2.sfFuncs)), s2.slotGlobalName)))
                  : e2)
-    : append(acc, SlotFuncs(s2.slotVirtualName, list1(s2.slotGlobalName)))
+    # A slot -> functions map, looked up by slot name: the entry order is not
+    # observed, but the functions WITHIN a slot keep theirs.
+    : prepend(SlotFuncs(s2.slotVirtualName, list1(s2.slotGlobalName)), acc)
 
 fun gfSlotLookup(slots: List<SlotFuncs>, name: String): List<String>
   ret match(head(filter(slots, (e2: SlotFuncs) => e2.sfSlot == name)))

@@ -27,7 +27,7 @@ fun inlCutoffComplexity(): Int
 # ── the two passes ───────────────────────────────────────────────────────────
 
 fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool, epoch: Int): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
+  ret appWithFunctions(a, map(appFunctions(a), (f: CgFunction) =>
         doInlining(f, "s" + String(epoch), a, (target: CgFunction) =>
           !atLeast(chain(target.fnOps), inlCutoffComplexity())
           || (inlineAlways && target.fnAlwaysInline))))
@@ -38,17 +38,24 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool, epoch: Int): CgApp
 # state object (unrestricted, a 7-field frame became 137 fields and doubled
 # wall time). A suspending helper keeps its call: its own small frame is all
 # a suspension inside it ever saves.
-fun inlineSingleCallerFunctions(a: CgApp, syncNames: List<String>,
+fun inlineSingleCallerFunctions(a: CgApp, syncNames: Set<String>,
                                 epoch: Int): CgApp
   let refcounts = functionReferenceCounts(a)
-  ret appWithFunctions(a, map(a.appFunctions, (f: CgFunction) =>
+  ret appWithFunctions(a, map(appFunctions(a), (f: CgFunction) =>
         doInlining(f, "c" + String(epoch), a, (target: CgFunction) =>
           sdCountOf(refcounts, target.fnName) == 1
-          && strListMember(syncNames, target.fnName))))
+          && contains<String>(syncNames, target.fnName))))
 
 # ── the engine ───────────────────────────────────────────────────────────────
 
-class [final] InlAcc(inlOps: List<Op>, inlVars: List<CgField>)
+# The rewritten op stream and the extra stack slots the inlined bodies need.
+# The ops are a builder: an op that is NOT a call site — the overwhelming
+# majority — now costs O(1) to keep, where it used to copy every op emitted so
+# far. A splice still materialises the stream, because the end-label
+# bookkeeping inspects it, but that is once per inlined call rather than once
+# per instruction.
+class [linear, final] InlAcc(inlOps: ListBuilder<Op >,
+                             inlVars: List<CgField>)
 
 # The inlined-name uniquifier is the fixpoint EPOCH, not the op count:
 # distinct per round by construction (the count merely happened to change
@@ -58,13 +65,13 @@ fun doInlining(f: CgFunction, tag: String, a: CgApp,
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret f
   let out = inlLoop(chain(f.fnOps), 0, tag, f, a, shouldInline,
-                    InlAcc(List<Op>(), List<CgField>()))
-  ret cgFunctionWith(f, out.inlOps,
+                    InlAcc(builder<Op >(), List<CgField>()))
+  ret cgFunctionWith(f, build<Op >(out.inlOps),
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
 
 fun [tail] inlLoop(ops: Chain<Op>, index: Int, tag: String, f: CgFunction,
                    a: CgApp, shouldInline: (:CgFunction): Bool,
-                   acc: InlAcc): InlAcc
+                   [terminal] acc: InlAcc): InlAcc
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => inlLoop(l.next, index + 1, tag, f, a, shouldInline,
@@ -73,10 +80,11 @@ fun [tail] inlLoop(ops: Chain<Op>, index: Int, tag: String, f: CgFunction,
 
 # One op: splice the callee in when every guard passes, else keep the op.
 fun inlStep(op: Op, uniqueId: String, f: CgFunction, a: CgApp,
-            shouldInline: (:CgFunction): Bool, acc: InlAcc): InlAcc
+            shouldInline: (:CgFunction): Bool,
+            [terminal] acc: InlAcc): InlAcc
   ret match(inlCandidate(op, f, a, shouldInline))
     (t2: InlTarget) => inlSplice(t2, uniqueId, acc)
-    ()               => InlAcc(append(acc.inlOps, op), acc.inlVars)
+    ()               => InlAcc(push<Op >(acc.inlOps, op), acc.inlVars)
 
 class [final] InlTarget(itCall: OpCall, itGf: RpGlobalFunction,
                         itArgs: RpNewStruct, itTarget: CgFunction)
@@ -120,7 +128,8 @@ fun [tail] inlAnyParallel(ops: Chain<Op>): Bool
 # first-index semantics — the label is unique per splice, so the global test
 # reduces to this segment).
 
-fun inlSplice(t2: InlTarget, uniqueId: String, acc: InlAcc): InlAcc
+fun inlSplice(t2: InlTarget, uniqueId: String,
+              [terminal] acc: InlAcc): InlAcc
   let target = t2.itTarget
   let pFields = cgFieldsOfOrEmpty(target.fnParams)
   let allFields = concat(pFields, cgFieldsOfOrEmpty(target.fnStackVars))
@@ -131,11 +140,14 @@ fun inlSplice(t2: InlTarget, uniqueId: String, acc: InlAcc): InlAcc
   let newVars = map(allFields, (f2: CgField) =>
         CgField("inl" + uniqueId + "$" + f2.fieldName, f2.fieldType))
   let endLabel = "inl" + uniqueId + "end"
+  # One builder from the call site's ops through to the inlined body; the
+  # end bookkeeping READS the result, so it is built there and not before.
   let ops1 = inlThisCapture(t2, uniqueId, allFields, acc.inlOps)
-  let ops2 = inlParamMoves(chain(t2.itArgs.values), chain(tail(pFields)),
-                           uniqueId, allFields, ops1)
+  let ops2 = inlParamMovesB(chain(t2.itArgs.values), chain(tail(pFields)),
+                            uniqueId, allFields, ops1)
   let ops3 = inlBody(chain(target.fnOps), t2.itCall, renames, endLabel, ops2)
-  ret InlAcc(inlEndBookkeeping(ops3, endLabel),
+  ret InlAcc(_pushChain<Op >(builder<Op >(),
+                 chain<Op>(inlEndBookkeeping(build<Op >(ops3), endLabel))),
              concat(acc.inlVars, newVars))
 
 fun inlLabelRenames(ops: Chain<Op>, uniqueId: String,
@@ -162,53 +174,59 @@ fun inlMappedVar(fields: List<CgField>, name: String,
                       # unreachable: every param name is a field
 
 fun inlThisCapture(t2: InlTarget, uniqueId: String, allFields: List<CgField>,
-                   ops: List<Op>): List<Op>
+                   [terminal] ops: ListBuilder<Op >): ListBuilder<Op >
   ret match(t2.itGf.object)
     (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
-      (f2: CgField) => append(ops,
+      (f2: CgField) => push<Op >(ops,
           OpMove(inlMappedVar(allFields, f2.fieldName, uniqueId), obj,
                  false, List<RParam>()))
       ()             => ops   # unreachable: object implies a this param
     ()             => ops
 
-fun [tail] inlParamMoves(args: Chain<RpNamedValue>, params: Chain<CgField>,
+fun inlParamMoves(args: Chain<RpNamedValue>, params: Chain<CgField>,
                          uniqueId: String, allFields: List<CgField>,
                          ops: List<Op>): List<Op>
+  ret build<Op >(inlParamMovesB(args, params, uniqueId, allFields, _pushChain<Op >(builder<Op >(), chain<Op >(ops))))
+
+fun [tail] inlParamMovesB(args: Chain<RpNamedValue>, params: Chain<CgField>,
+                         uniqueId: String, allFields: List<CgField>,
+                         [terminal] ops: ListBuilder<Op >): ListBuilder<Op >
   ret match(args)
     (nil: ChainEnd) => ops
     (av: ChainLink) => match(params)
       (nil2: ChainEnd) => ops
-      (pf: ChainLink)  => inlParamMoves(av.next, pf.next, uniqueId, allFields,
-          append(ops, OpMove(inlMappedVar(allFields, pf.value.fieldName,
+      (pf: ChainLink)  => inlParamMovesB(av.next, pf.next, uniqueId, allFields,
+          push<Op >(ops, OpMove(inlMappedVar(allFields, pf.value.fieldName,
                                           uniqueId),
                              av.value.value, false, List<RParam>())))
 
 fun [tail] inlBody(ops: Chain<Op>, c: OpCall, renames: List<RpRename>,
-                   endLabel: String, acc: List<Op>): List<Op>
+                   endLabel: String,
+                   [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(ops)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => inlBody(l.next, c, renames, endLabel,
                                inlBodyOp(l.value, c, renames, endLabel, acc))
 
 fun inlBodyOp(op: Op, c: OpCall, renames: List<RpRename>, endLabel: String,
-              acc: List<Op>): List<Op>
+              [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(op)
-    (r: OpReturn)  => append(inlReturnMove(r, c, renames, acc),
-                             OpJump(endLabel, List<RParam>()))
+    (r: OpReturn)  => push<Op >(inlReturnMove(r, c, renames, acc),
+                                OpJump(endLabel, List<RParam>()))
     (cl: OpCall)   => cl.callMusttail
-      ? append(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
-                                        cl.callRegister, false, cl.callImpure,
-                                        cl.callResultType, cl.callSavedVars),
-                                 renames))
-      : append(acc, opRenameVars(op, renames))
-    (o: Op)        => append(acc, opRenameVars(op, renames))
+      ? push<Op >(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
+                                           cl.callRegister, false, cl.callImpure,
+                                           cl.callResultType, cl.callSavedVars),
+                                    renames))
+      : push<Op >(acc, opRenameVars(op, renames))
+    (o: Op)        => push<Op >(acc, opRenameVars(op, renames))
 
 fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
-                  acc: List<Op>): List<Op>
+                  [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
   ret match(c.callRegister)
-    (reg: RParam) => append(acc, OpMove(reg,
-                                        rpRenameVars(r.returnValue, renames),
-                                        false, List<RParam>()))
+    (reg: RParam) => push<Op >(acc, OpMove(reg,
+                                   rpRenameVars(r.returnValue, renames),
+                                   false, List<RParam>()))
     ()             => acc
 
 # Python: `if end_jump in new_ops` (any Return was seen), then FIRST index —
@@ -218,7 +236,9 @@ fun inlEndBookkeeping(ops: List<Op>, endLabel: String): List<Op>
   ret match(inlFirstEndJumpIsLast(chain(ops), endLabel))
     (isLast: Bool) => isLast
       ? inlDropLast(chain(ops), List<Op>())
-      : append(ops, OpLabel(endLabel, List<RParam>()))
+      : build<Op >(push<Op >(_pushChain<Op >(builder<Op >(),
+                                             chain<Op>(ops)),
+                             OpLabel(endLabel, List<RParam>())))
     ()             => ops
 
 # None: no end-jump. true: the FIRST end-jump is the very last op (pop it).
@@ -252,11 +272,11 @@ fun [tail] inlDropLastB(ops: Chain<Op>, [terminal] acc: ListBuilder<Op >): ListB
 # always lives in a separate op or table entry.
 
 fun functionReferenceCounts(a: CgApp): Dict<String, Int>
-  let c1 = fold(a.appFunctions, Dict<String, Int>(), frcFunction)
-  let c2 = fold(a.appObjects, c1, (acc: Dict<String, Int>, o: CgObject) =>
+  let c1 = fold(appFunctions(a), Dict<String, Int>(), frcFunction)
+  let c2 = fold(appObjects(a), c1, (acc: Dict<String, Int>, o: CgObject) =>
         fold(o.objFunctions, acc, (a2: Dict<String, Int>, s2: CgFuncSlot) =>
           sdBump(a2, s2.slotGlobalName)))
-  ret fold(a.appGlobals, c2, frcGlobal)
+  ret fold(appGlobals(a), c2, frcGlobal)
 
 fun frcFunction(acc: Dict<String, Int>, f: CgFunction): Dict<String, Int>
   ret fold(f.fnOps, acc, frcOp)
@@ -290,4 +310,4 @@ fun frcGlobal(acc: Dict<String, Int>, g2: CgGlobal): Dict<String, Int>
     ()              => c1
 
 fun frcBumpSet(acc: Dict<String, Int>, names: StrSet): Dict<String, Int>
-  ret fold(names.setNames, acc, sdBump)
+  ret fold(setNames(names), acc, sdBump)

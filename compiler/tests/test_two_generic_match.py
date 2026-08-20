@@ -31,8 +31,8 @@ fun [tail] sameLen2<T, U>(a: Chain<T>, b: Chain<U>): Bool
       (lb: ChainLink)  => sameLen2(la.next, lb.next)
 
 fun main(): Int
-  let xs = append(append(List<Int>(), 1), 2)
-  let ys = append(append(List<String>(), "a"), "b")
+  let xs = prepend(1, prepend(2, List<Int>()))
+  let ys = prepend("a", prepend("b", List<String>()))
   ret sameLen2(chain(xs), chain(ys)) ? 0 : 1
 """
 

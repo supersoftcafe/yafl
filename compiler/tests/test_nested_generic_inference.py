@@ -67,9 +67,9 @@ class TestNestedGenericInference(TestCase):
         src = (
             "namespace Main\nimport System\n"
             "fun single<T>(a: T): List<T>\n"
-            "  ret append(List<T>(), a)\n"
+            "  ret prepend(a, List<T>())\n"
             "fun outer<T>(a: T): List<T>\n"
-            "  ret append(List<T>(), a)\n"
+            "  ret prepend(a, List<T>())\n"
             "fun main(): System::Int\n"
             "  let xs = outer(single(42))\n"
             "  ret isEmpty(xs) ? 0 : 9\n")
@@ -80,7 +80,7 @@ class TestNestedGenericInference(TestCase):
         src = (
             "namespace Main\nimport System\n"
             "fun list1<T>(a: T): List<T>\n"
-            "  ret append(List<T>(), a)\n"
+            "  ret prepend(a, List<T>())\n"
             "fun main(): System::Int\n"
             "  let xs = list1(list1(42))\n"
             "  ret isEmpty(xs) ? 0 : 9\n")

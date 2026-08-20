@@ -21,8 +21,7 @@ fun oneEntryTuple(x: PExpr, lr: PLine): PExpr
   ret PeTuple(prepend(PTupEnt("", false, x), List<PTupEnt>()), lr)
 
 fun twoEntryTuple(a: PExpr, b: PExpr, lr: PLine): PExpr
-  ret PeTuple(append(prepend(PTupEnt("", false, a), List<PTupEnt>()),
-                     PTupEnt("", false, b)), lr)
+  ret PeTuple(build<PTupEnt>(push<PTupEnt>(push<PTupEnt>(builder<PTupEnt>(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
 
 fun callNamed(name: String, args: PExpr, lr: PLine): PExpr
   ret PeCall(PeName(name, List<Spec>(), lr), args, lr)
@@ -173,11 +172,16 @@ fun classConstructor(c: PsClass): PStmt
 fun ctorParam(f: PStmt): PStmt
   ret match(f)
     (l: PsLet) => match(arrayElem(l.lType))
+      # The initialiser's signature: one Int32 index parameter, element result.
       (el: Spec) => PsLet(l.lName, l.lAttrs, l.lGens,
-                         SCallable(STuple(append(List<SEntry>(),
-                                     SEntry("", SBuiltin("int32", l.pslLine), None)),
-                                    l.pslLine), el, l.pslLine),
-                         l.lDefault, l.lArrayLen, l.lWheres, l.pslLine)
+                          SCallable(STuple(prepend(SEntry("",
+                                                          SBuiltin("int32", l.pslLine),
+                                                          None),
+                                                   List<SEntry>()),
+                                           l.pslLine),
+                                    el, l.pslLine),
+                          l.lDefault, l.lArrayLen, l.lWheres, l.pslLine)
+
       ()        => l
     (o: PStmt) => o
 
@@ -210,7 +214,9 @@ fun stmtLine(st: PStmt): PLine
 fun withArrayAccessor(c: PsClass): PStmt
   ret match(accessorFor(chain(paramsOf(c.cParams))))
     (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
-                            c.cWheres, append(c.cMembers, acc), c.cIsInterface,
+                            c.cWheres,
+                            build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(c.cMembers)), acc)),
+                            c.cIsInterface,
                             c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
     ()           => c
 
@@ -257,26 +263,28 @@ fun bareName(name: String): String
 # ROOT enum type, its body a NewEnum expression.
 
 fun enumLeafConstructors(root: PsEnum, grp: List<PStmt>): List<PStmt>
-  ret leafWalk(root, root, List<PStmt>(), grp, List<PStmt>())
+  ret build<PStmt >(leafWalk(root, root, List<PStmt>(), grp,
+                             builder<PStmt >()))
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited: List<PStmt>,
-             grp: List<PStmt>, acc: List<PStmt>): List<PStmt>
+             grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   let params = concat(inherited, paramsOf(node.eParams))
   if isEmpty(node.eVariants)
+    # Leaf constructors come out in variant declaration order.
     ret node.eHasParams
-      ? append(acc, leafConstructor(root, node, params, grp))
+      ? push<PStmt >(acc, leafConstructor(root, node, params, grp))
       : acc
   ret variantsWalk(root, chain(node.eVariants), params, grp, acc)
 
 fun [tail] variantsWalk(root: PsEnum, vs: Chain<PStmt>, params: List<PStmt>,
-                        grp: List<PStmt>, acc: List<PStmt>): List<PStmt>
+                        grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => variantsWalk(root, l.next, params, grp,
                                     leafWalkOf(root, l.value, params, grp, acc))
 
 fun leafWalkOf(root: PsEnum, v: PStmt, params: List<PStmt>,
-               grp: List<PStmt>, acc: List<PStmt>): List<PStmt>
+               grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(v)
     (e: PsEnum) => leafWalk(root, e, params, grp, acc)
     (o: PStmt)  => acc

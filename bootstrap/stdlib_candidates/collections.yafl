@@ -24,17 +24,17 @@ fun list1<T>(a: T): List<T>
   ret prepend(a, List<T>())
 
 fun list2<T>(a: T, b: T): List<T>
-  ret append(prepend(a, List<T>()), b)
+  ret build<T>(push<T>(push<T>(builder<T>(), a), b))
 
 fun list3<T>(a: T, b: T, c: T): List<T>
-  ret append(append(prepend(a, List<T>()), b), c)
+  ret build<T>(push<T>(push<T>(push<T>(builder<T>(), a), b), c))
 
 
+# Membership in a genuine List — a name among an op's reads, a label among a
+# Phi's sources. The set-shaped accumulators that used to pair this with a
+# `strListAdd` are Set<String> now and use `contains`.
 fun strListMember(l: List<String>, x: String): Bool
   ret any<String>(l, (y: String) => y == x)
-
-fun strListAdd(l: List<String>, x: String): List<String>
-  ret strListMember(l, x) ? l : append<String>(l, x)
 
 
 fun dedent4(s: String): String
@@ -49,5 +49,8 @@ fun disjointInt(a: List<Int>, b: List<Int>): Bool
   ret !any<Int>(a, (x: Int) => memberInt(b, x))
 
 fun unionInt(a: List<Int>, b: List<Int>): List<Int>
-  ret fold(b, a, (acc: List<Int>, x: Int) => memberInt(acc, x) ? acc : append(acc, x))
+  # A set union — every reader asks membership or disjointness.
+  ret fold(b, a, (acc: List<Int>, x: Int) => memberInt(acc, x)
+                   ? acc
+                   : prepend(x, acc))
 

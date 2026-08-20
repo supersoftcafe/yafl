@@ -73,16 +73,21 @@ fun genRetJump(rt: PsRet, frame: FrBlock, vb: GBundle): GBundle
   let tail = list2(OpLabel(exitLabel, List<RParam>()), OpJump(blockEndLabel(frame), List<RParam>()))
   ret match(vb.gbResult)
     (rv: RParam) => genRetValued(rt, frame, vb, exitLabel, tail, rv)
-    ()            => GBundle(vb.gbStackVars, concat(vb.gbOps, tail), None, vb.gbRecurSources,
-                             append(vb.gbExitSources, ExitSource(exitLabel, None)))
+    # This exit edge is the LAST phi source added so far, matching the label.
+    ()            => GBundle(vb.gbStackVars, concat(vb.gbOps, tail), None,
+                             vb.gbRecurSources,
+                             build<ExitSource >(push<ExitSource >(_pushChain<ExitSource >(builder<ExitSource >(), chain<ExitSource>(vb.gbExitSources)), ExitSource(exitLabel, None))))
 
 fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel: String,
                  tail: List<Op>, rv: RParam): GBundle
   let valvar = RpStackVar(rpGetType(rv), "blockval$" + frame.fbTag + "$" + String(rt.retIndex))
-  ret GBundle(append(vb.gbStackVars, valvar),
-              concat(append(vb.gbOps, OpMove(valvar, rv, false, List<RParam>())), tail),
+  ret GBundle(build<RParam >(push<RParam >(_pushChain<RParam >(builder<RParam >(), chain<RParam>(vb.gbStackVars)), valvar)),
+              build<Op >(_pushChain<Op >(push<Op >(
+                  _pushChain<Op >(builder<Op >(), chain<Op>(vb.gbOps)),
+                  OpMove(valvar, rv, false, List<RParam>())),
+                  chain<Op>(tail))),
               None, vb.gbRecurSources,
-              append(vb.gbExitSources, ExitSource(exitLabel, valvar)))
+              build<ExitSource >(push<ExitSource >(_pushChain<ExitSource >(builder<ExitSource >(), chain<ExitSource>(vb.gbExitSources)), ExitSource(exitLabel, valvar))))
 
 # ── IfStatement (control.py) ────────────────────────────────────────────────
 

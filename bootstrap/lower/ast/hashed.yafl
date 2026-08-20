@@ -28,10 +28,19 @@ import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
+# The rewritten statements in program order, the errors as a set, and whether
+# anything changed. The statements are built: every statement that passes
+# through untouched used to copy the whole program so far.
+class [linear, final] LhAcc(lhStmts: ListBuilder<PStmt >, lhErrs: Set<PErr>,
+                            lhChanged: Bool)
+
+fun lhKeep([terminal] acc: LhAcc, st: PStmt): LhAcc
+  ret LhAcc(push<PStmt >(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
+
 fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PErr>, lhChanged: Bool)
   let out = lhStmtsLoop(chain(statements), List<String>(),
-                        (List<PStmt>(), Set<PErr>(), false))
-  ret (out.stmts, out.errs, out.changed)
+                        LhAcc(builder<PStmt >(), Set<PErr>(), false))
+  ret (build<PStmt >(out.lhStmts), out.lhErrs, out.lhChanged)
 
 # ANY enum type: every boxed enum now carries the slot by default, and the
 # three internals are representation-aware at codegen, so a value-repr enum
@@ -45,38 +54,40 @@ fun lhIsHashedType(sp: Spec|None, roots: List<String>): Bool
     ()         => false
 
 fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
-                       acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
+                       [terminal] acc: LhAcc): LhAcc
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
 
 fun lhOne(st: PStmt, roots: List<String>,
-          acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
+          [terminal] acc: LhAcc): LhAcc
   ret match(st)
     (f: PsFun) => hasAttr(f.fAttrs, "refeq")
       ? lhRefeqFun(f, roots, acc)
       : hasAttr(f.fAttrs, "hashed")
         ? lhFun(f, roots, acc)
-        : (append(acc.stmts, st), acc.errs, acc.changed)
-    (o: PStmt) => (append(acc.stmts, st), acc.errs, acc.changed)
+        : lhKeep(acc, st)
+    (o: PStmt) => lhKeep(acc, st)
 
 fun lhFun(f: PsFun, roots: List<String>,
-          acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
+          [terminal] acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
   if !exactly(chain(params), 1) || !lhFirstParamHashed(params, roots)
-    ret (append<PStmt>(acc.stmts, f),
-         add(acc.errs, PErr(f.psfLine,
+    ret LhAcc(push<PStmt >(acc.lhStmts, f),
+               add(acc.lhErrs, PErr(f.psfLine,
            "a [hashed] function must take exactly one parameter of an "
            + "enum type — the cache lives in that value when it is boxed")),
-         acc.changed)
+              acc.lhChanged)
   if !lhReturnsInt32(f.fRet)
-    ret (append<PStmt>(acc.stmts, f),
-         add(acc.errs, PErr(f.psfLine,
+    ret LhAcc(push<PStmt >(acc.lhStmts, f),
+               add(acc.lhErrs, PErr(f.psfLine,
            "a [hashed] function must return Int32 — the cache slot is "
            + "one machine word")),
-         acc.changed)
+              acc.lhChanged)
   let split = lhSplit(f, lhFirstParamName(params))
-  ret (append(append(acc.stmts, split.wrap), split.raw), acc.errs, true)
+  # The wrapper precedes the raw body it delegates to.
+  ret LhAcc(push<PStmt >(push<PStmt >(acc.lhStmts, split.wrap), split.raw),
+            acc.lhErrs, true)
 
 fun lhFirstParamHashed(params: List<PStmt>, roots: List<String>): Bool
   ret match(head<PStmt>(params))
@@ -114,12 +125,10 @@ fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
   let rawCall = PeCall(PeName(bareOfUnique(f.fName) + "$hraw", List<Spec>(), lr),
                        PeTuple(list1(PTupEnt("", false, vRef)), lr), lr)
   let store = PeBuiltinOp(int32Spec, PeStr("yafl_hash_store", lr),
-                          PeTuple(append(list1(PTupEnt("", false, vRef)),
-                                         PTupEnt("", false, rawCall)), lr), lr)
+                          PeTuple(list2(PTupEnt("", false, vRef), PTupEnt("", false, rawCall)), lr), lr)
   let isEmptySlot = PeBuiltinOp(SBuiltin("bool", lr), PeStr("int32_test_eq", lr),
-                                PeTuple(append(list1(PTupEnt("", false,
-                                                             PeName("$hcache", List<Spec>(), lr))),
-                                               PTupEnt("", false, PeInt(0, 32, lr))), lr), lr)
+                                PeTuple(list2(PTupEnt("", false,
+                                                             PeName("$hcache", List<Spec>(), lr)), PTupEnt("", false, PeInt(0, 32, lr))), lr), lr)
   let cacheLet = PsLet(hashName("$hcache", lr), List<PAttr>(), List<PGen>(),
                        int32Spec, peek, "", List<Spec>(), lr)
   let body = PeBlock(list1<PStmt>(cacheLet),
@@ -138,23 +147,25 @@ fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
 # deep compare short-circuits at SHARED SUBSTRUCTURE.
 
 fun lhRefeqFun(f: PsFun, roots: List<String>,
-               acc: (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)): (stmts: List<PStmt>, errs: Set<PErr>, changed: Bool)
+               [terminal] acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
   if !exactly(chain(params), 2) || !lhRefeqParamsOk(params, roots)
-    ret (append<PStmt>(acc.stmts, f),
-         add(acc.errs, PErr(f.psfLine,
+    ret LhAcc(push<PStmt >(acc.lhStmts, f),
+               add(acc.lhErrs, PErr(f.psfLine,
            "a [refeq] function must take two parameters of one enum "
            + "type — the shortcut is an identity compare, meaningful "
            + "when the representation is boxed")),
-         acc.changed)
+              acc.lhChanged)
   if !lhReturnsBool(f.fRet)
-    ret (append<PStmt>(acc.stmts, f),
-         add(acc.errs, PErr(f.psfLine,
+    ret LhAcc(push<PStmt >(acc.lhStmts, f),
+               add(acc.lhErrs, PErr(f.psfLine,
            "a [refeq] function must return Bool")),
-         acc.changed)
+              acc.lhChanged)
   let split = lhSplitRefeq(f, lhFirstParamName(params),
                            lhFirstParamName(tail<PStmt>(params)))
-  ret (append(append(acc.stmts, split.wrap), split.raw), acc.errs, true)
+  # The wrapper precedes the raw body it delegates to.
+  ret LhAcc(push<PStmt >(push<PStmt >(acc.lhStmts, split.wrap), split.raw),
+            acc.lhErrs, true)
 
 fun lhRefeqParamsOk(params: List<PStmt>, roots: List<String>): Bool
   ret lhFirstParamHashed(params, roots)
@@ -196,11 +207,9 @@ fun lhSplitRefeq(f: PsFun, lName: String, rName: String): (wrap: PStmt, raw: PSt
   let lRef = PeName(lName, List<Spec>(), lr)
   let rRef = PeName(rName, List<Spec>(), lr)
   let same = PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_ref_eq", lr),
-                         PeTuple(append(list1(PTupEnt("", false, lRef)),
-                                        PTupEnt("", false, rRef)), lr), lr)
+                         PeTuple(list2(PTupEnt("", false, lRef), PTupEnt("", false, rRef)), lr), lr)
   let rawCall = PeCall(PeName(bareOfUnique(f.fName) + "$reraw", List<Spec>(), lr),
-                       PeTuple(append(list1(PTupEnt("", false, lRef)),
-                                      PTupEnt("", false, rRef)), lr), lr)
+                       PeTuple(list2(PTupEnt("", false, lRef), PTupEnt("", false, rRef)), lr), lr)
   let body = PeBlock(List<PStmt>(),
                      PeTernary(same, PeBool(true, lr), rawCall, lr), "", lr)
   ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,

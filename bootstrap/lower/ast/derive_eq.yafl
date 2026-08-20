@@ -35,14 +35,18 @@ import Bootstrap::Types
 class [final] DeLeaves(dlNames: List<String>, dlSets: List<List<PStmt>>)
 # diArities holds REPRESENTATIVE entry lists; arity membership is a
 # sameLen co-walk against them (the no-length ruling: never a count).
-class [final] DeInfo(diKeys: List<String>, diArities: List<List<SEntry> >)
+# diKeys answers membership only, so it is a Set. diArities is scanned for a
+# matching arity, so its own order is not read either.
+class [final] DeInfo(diKeys: Set<String >, diArities: List<List<SEntry> >)
 
 fun deriveEquality(statements: List<PStmt>): (deStmts: List<PStmt>, deChanged: Bool)
   let r = rootResolver(statements)
   let info = deCollectInstanced(chain(statements), r,
-                                DeInfo(List<String>(), List<List<SEntry> >()))
+                                DeInfo(Set<String >(),
+                                       List<List<SEntry> >()))
   let cands = deCandidates(chain(statements), info,
-                           (List<String>(), List<DeLeaves>()))
+                           DeCands(builder<String >(),
+                                   builder<DeLeaves >()))
   let ok = deFixpoint(cands.names, cands.leaves, info)
   if isEmpty(ok)
     ret (statements, false)
@@ -131,14 +135,14 @@ fun deRecordArg(arg: Spec|None, r: Resolver, acc: DeInfo): DeInfo
   ret match(arg)
     (sp: Spec) => match(sp)
       (t2: STuple) => DeInfo(acc.diKeys,
-                             append(acc.diArities, t2.stEntries))
+                             prepend(t2.stEntries, acc.diArities))
       (o: Spec)    => deAddKey(deKeyOf(o, r, 0), acc)
     ()         => acc
 
 fun deAddKey(k: String, acc: DeInfo): DeInfo
-  ret k == "" || contains2(acc.diKeys, k)
+  ret k == "" || contains<String >(acc.diKeys, k)
     ? acc
-    : DeInfo(append(acc.diKeys, k), acc.diArities)
+    : DeInfo(add<String >(acc.diKeys, k), acc.diArities)
 
 # Instance PATTERNS keep their typealias spellings, so the key comes from the
 # RESOLVED statement, following alias chains.
@@ -161,18 +165,25 @@ fun deKeyOfNamed(n: SNamed, r: Resolver, depth: Int): String
 
 # ── candidates and their leaves ──────────────────────────────────────────────
 
+# The candidate enums and their leaves, positionally paired. Both are built:
+# the consumers walk them in lockstep.
+class [linear, final] DeCands(dcNames: ListBuilder<String >,
+                              dcLeaves: ListBuilder<DeLeaves >)
+
 fun [tail] deCandidates(ss: Chain<PStmt>, info: DeInfo,
-                        acc: (names: List<String>, leaves: List<DeLeaves>)): (names: List<String>, leaves: List<DeLeaves>)
+                        [terminal] acc: DeCands): (names: List<String>, leaves: List<DeLeaves>)
   ret match(ss)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => (build<String >(acc.dcNames),
+                        build<DeLeaves >(acc.dcLeaves))
     (l: ChainLink)  => match(l.value)
-      (e2: PsEnum) => isEmpty(e2.eGens) && !contains2(info.diKeys, "e:" + e2.eName)
+      (e2: PsEnum) => isEmpty(e2.eGens)
+                      && !contains<String >(info.diKeys, "e:" + e2.eName)
         ? match(deLeaves(e2, List<PStmt>()))
           (dl: DeLeaves) => isEmpty(dl.dlNames)
             ? deCandidates(l.next, info, acc)
             : deCandidates(l.next, info,
-                           (append(acc.names, e2.eName),
-                            append(acc.leaves, dl)))
+                           DeCands(push<String >(acc.dcNames, e2.eName),
+                                   push<DeLeaves >(acc.dcLeaves, dl)))
           ()             => deCandidates(l.next, info, acc)
         : deCandidates(l.next, info, acc)
       (o: PStmt)   => deCandidates(l.next, info, acc)
@@ -256,10 +267,10 @@ fun [tail] deFieldsSat(fs: Chain<PStmt>, ok: List<String>, info: DeInfo): Bool
 
 fun deSatisfies(sp: Spec, ok: List<String>, info: DeInfo): Bool
   ret match(sp)
-    (b: SBuiltin) => contains2(info.diKeys, "b:" + b.sbName)
+    (b: SBuiltin) => contains<String >(info.diKeys, "b:" + b.sbName)
     (e2: SEnum)   => contains2(ok, e2.seRoot)
-                     || contains2(info.diKeys, "e:" + e2.seRoot)
-    (c: SClass)   => contains2(info.diKeys, "c:" + c.scName)
+                     || contains<String >(info.diKeys, "e:" + e2.seRoot)
+    (c: SClass)   => contains<String >(info.diKeys, "c:" + c.scName)
     (t2: STuple)  => deArityOk(chain(info.diArities), t2.stEntries)
                      && deEntriesSat(chain(t2.stEntries), ok, info)
     (o: Spec)     => false
@@ -318,8 +329,7 @@ fun deSynthesise(e2: PsEnum, dl: DeLeaves): PStmt
   let pattern = SNamed("System::BasicEquality",
                        list1<Spec>(SNamed(e2.eName, List<Spec>(), lr)), lr)
   ret PsTraitInstance(iname, true, List<PGen>(), pattern, List<Spec>(),
-                      append(list1<PStmt>(deEqMember(e2, dl)),
-                             deHashMember(e2, dl)),
+                      list2(deEqMember(e2, dl), deHashMember(e2, dl)),
                       lr, e2.eImports)
 
 fun deTag(lr: PLine): String
@@ -347,7 +357,7 @@ fun deEnt(x: PExpr): PTupEnt
   ret PTupEnt("", false, x)
 
 fun deCall2(fn: String, a: PExpr, b: PExpr, lr: PLine): PExpr
-  ret PeCall(deRef(fn, lr), PeTuple(append(list1(deEnt(a)), deEnt(b)), lr), lr)
+  ret PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr)
 
 fun deCall1(fn: String, a: PExpr, lr: PLine): PExpr
   ret PeCall(deRef(fn, lr), PeTuple(list1(deEnt(a)), lr), lr)
@@ -362,14 +372,12 @@ fun deEqMember(e2: PsEnum, dl: DeLeaves): PStmt
                       atLeast(chain(dl.dlNames), 2), e2, List<PArm>())
   let body = PeBlock(List<PStmt>(),
                      PeTernary(deOp("bool", "yafl_ref_eq",
-                                    append(list1(deEnt(deRef("left", lr))),
-                                           deEnt(deRef("right", lr))), lr),
+                                    list2(deEnt(deRef("left", lr)), deEnt(deRef("right", lr))), lr),
                                PeBool(true, lr),
                                PeMatch(deRef("left", lr), arms, lr), lr),
                      "", lr)
   ret PsFun(hashName("`==`", lr), List<PAttr>(), List<PGen>(),
-            funParamsStmt(append(list1(deParam("left", e2.eName, lr)),
-                                 deParam("right", e2.eName, lr)), lr),
+            funParamsStmt(list2(deParam("left", e2.eName, lr), deParam("right", e2.eName, lr)), lr),
             body, SBuiltin("bool", lr), List<Spec>(), lr)
 
 fun deEqArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
@@ -393,9 +401,8 @@ fun deEqArm(leafName: String, fields: List<PStmt>, i: Int, many: Bool,
   let yn = "y" + String(i)
   let cmp = deFieldsCmp(chain(fields), xn, yn, None, lr)
   let innerArms = many
-    ? append(list1(PArm(hashName(yn, lr), SNamed(leafName, List<Spec>(), lr),
-                        cmp, List<PLit>(), None, lr)),
-             PArm(hashName("o" + String(i), lr),
+    ? list2(PArm(hashName(yn, lr), SNamed(leafName, List<Spec>(), lr),
+                        cmp, List<PLit>(), None, lr), PArm(hashName("o" + String(i), lr),
                   SNamed(e2.eName, List<Spec>(), lr),
                   PeBool(false, lr), List<PLit>(), None, lr))
     : list1(PArm(hashName(yn, lr), SNamed(leafName, List<Spec>(), lr),
@@ -439,11 +446,9 @@ fun deHashMember(e2: PsEnum, dl: DeLeaves): PStmt
                        "", List<Spec>(), lr)
   let body = PeBlock(list1<PStmt>(cacheLet),
                      PeTernary(deOp("bool", "int32_test_eq",
-                                    append(list1(deEnt(deRef("$dhc", lr))),
-                                           deEnt(PeInt(0, 32, lr))), lr),
+                                    list2(deEnt(deRef("$dhc", lr)), deEnt(PeInt(0, 32, lr))), lr),
                                deOp("int32", "yafl_hash_store",
-                                    append(list1(deEnt(deRef("value", lr))),
-                                           deEnt(PeMatch(deRef("value", lr),
+                                    list2(deEnt(deRef("value", lr)), deEnt(PeMatch(deRef("value", lr),
                                                          arms, lr))), lr),
                                deRef("$dhc", lr), lr),
                      "", lr)
@@ -491,12 +496,9 @@ fun [tail] deHashFold(fs: Chain<PStmt>, xn: String, acc: PExpr,
 
 fun deMix(acc: PExpr, h: PExpr, lr: PLine): PExpr
   ret deOp("int32", "int32_and",
-           append(list1(deEnt(deOp("int32", "int32_add",
-                                   append(list1(deEnt(deOp("int32", "int32_mul",
-                                                           append(list1(deEnt(acc)),
-                                                                  deEnt(PeInt(31, 32, lr))),
-                                                           lr))),
-                                          deEnt(h)),
-                                   lr))),
-                  deEnt(PeInt(2147483647, 32, lr))),
+           list2(deEnt(deOp("int32", "int32_add",
+                                   list2(deEnt(deOp("int32", "int32_mul",
+                                                           list2(deEnt(acc), deEnt(PeInt(31, 32, lr))),
+                                                           lr)), deEnt(h)),
+                                   lr)), deEnt(PeInt(2147483647, 32, lr))),
            lr)

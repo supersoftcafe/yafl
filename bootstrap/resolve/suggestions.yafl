@@ -29,13 +29,15 @@ import Bootstrap::Types
 # hDetail: per function, per position, the DISTINCT type ids its call sites
 # supplied (simple names) — only consumed by the untyped-parameter diagnostic
 # (__collect_param_suggestion_detail); gathered by the SAME walk.
-class [final] Hints(hNames: List<String>, hSlots: Dict<String, List<Meet> >,
+# The name list beside hSlots was exactly its keys, kept only to iterate; the
+# suggestions it feeds are keyed by name, so the walk order is not observed.
+class [final] Hints(hSlots: Dict<String, List<Meet> >,
                     hDetail: Dict<String, List<List<String> > >)
 
 fun collectHints(statements: List<PStmt>): Hints
   let r = rootResolver(statements)
   ret hintStmts(chain(statements), r,
-                Hints(List<String>(), Dict<String, List<Meet> >(),
+                Hints(Dict<String, List<Meet> >(),
                       Dict<String, List<List<String> > >()))
 
 fun collectParamSuggestions(statements: List<PStmt>): Dict<String, Spec>
@@ -165,25 +167,24 @@ fun [tail] entryTypesB(es: Chain<SEntry>, [terminal] acc: ListBuilder<Meet >): L
 fun addHint(name: String, args: List<Meet>, acc: Hints): Hints
   ret match(get(acc.hSlots, name))
     (existing: List<Meet>) => sameLen(chain(existing), chain(args))
-      ? Hints(acc.hNames, put(acc.hSlots, name,
+      ? Hints(put(acc.hSlots, name,
                               meetSlots(chain(existing), chain(args),
                                         List<Meet>())),
               acc.hDetail)
       : acc
-    ()                     => Hints(append(acc.hNames, name),
-                                    put(acc.hSlots, name, args), acc.hDetail)
+    ()                     => Hints(put(acc.hSlots, name, args), acc.hDetail)
 
 # The detail sets: each position accumulates the DISTINCT simple names of the
 # ground ids call sites supplied (a not-yet-ground entry contributes nothing).
 fun addDetail(name: String, tp: STuple, acc: Hints): Hints
   ret match(get(acc.hDetail, name))
     (slots: List<List<String> >) => sameLen(chain(slots), chain(tp.stEntries))
-      ? Hints(acc.hNames, acc.hSlots,
+      ? Hints(acc.hSlots,
               put(acc.hDetail, name,
                   mergeDetail(chain(slots), chain(tp.stEntries),
                               List<List<String> >())))
       : acc
-    ()                           => Hints(acc.hNames, acc.hSlots,
+    ()                           => Hints(acc.hSlots,
                                           put(acc.hDetail, name,
                                               mergeDetail(chain(blankDetail(chain(tp.stEntries),
                                                                            List<List<String> >())),
@@ -250,7 +251,8 @@ fun specOfMeet(m: Meet): Spec|None
 # conflicted or empty position a hole.
 
 fun suggestionsOf(acc: Hints): Dict<String, Spec>
-  ret buildSuggestions(chain(acc.hNames), acc.hSlots, Dict<String, Spec>())
+  ret buildSuggestions(chain(sort<String>(keys<String, List<Meet> >(acc.hSlots))),
+                       acc.hSlots, Dict<String, Spec>())
 
 fun [tail] buildSuggestions(ns: Chain<String>, slots: Dict<String, List<Meet> >,
                             out: Dict<String, Spec>): Dict<String, Spec>

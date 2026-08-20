@@ -22,26 +22,29 @@ fun unwrap(v: Int|None): Int
     (x: Int)  => x
     (n: None) => -1
 
+# Built front-to-back with a ListBuilder — the in-order, O(1)-per-push path
+# that replaced append. Yields the same [1,2,3,4,5].
 fun buildAppend(): List<Int>
-  let l0 = List<Int>()
-  let l1 = append<Int>(l0, 1)
-  let l2 = append<Int>(l1, 2)
-  let l3 = append<Int>(l2, 3)
-  let l4 = append<Int>(l3, 4)
-  ret append<Int>(l4, 5)
+  ret build<Int>(push<Int>(push<Int>(push<Int>(push<Int>(push<Int>(
+        builder<Int>(), 1), 2), 3), 4), 5))
 
 fun buildPrepend(): List<Int>
   ret prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, List<Int>())))
 
+# A prepended head, then the rest pushed on behind it. There is no longer a
+# rear chain for this to be "mixed" with — the builder simply seeds from the
+# one-element list. Yields [0,1,2,3].
 fun buildMixed(): List<Int>
-  let l0 = List<Int>()
-  let l1 = prepend<Int>(0, l0)
-  let l2 = append<Int>(l1, 1)
-  let l3 = append<Int>(l2, 2)
-  ret append<Int>(l3, 3)
+  ret build<Int>(push<Int>(push<Int>(push<Int>(
+        _pushChain<Int>(builder<Int>(),
+                        chain<Int>(prepend<Int>(0, List<Int>()))),
+        1), 2), 3))
 
 fun build50(l: List<Int>, i: Int): List<Int>
-  ret i > 50 ? l : build50(append<Int>(l, i), i + 1)
+  ret build<Int>(build50B(_pushChain<Int>(builder<Int>(), chain<Int>(l)), i))
+
+fun [tail] build50B([terminal] b: ListBuilder<Int>, i: Int): ListBuilder<Int>
+  ret i > 50 ? b : build50B(push<Int>(b, i), i + 1)
 
 fun main(): Int
   # ─── empty (count via fold; List has no length by design) ──────────────

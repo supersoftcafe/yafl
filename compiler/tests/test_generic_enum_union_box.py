@@ -22,7 +22,7 @@ class [final] Thing(tName: System::String)
 
 fun probe(x: Thing|System::None, acc: List<Thing>): (ops: List<Thing>, moves: List<System::String>)|None
   ret match(x)
-    (t: Thing)        => (append<Thing>(acc, t), List<System::String>())
+    (t: Thing)        => (prepend<Thing>(t, acc), List<System::String>())
     (n: System::None) => None
 
 fun main(): System::Int

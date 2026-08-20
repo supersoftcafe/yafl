@@ -6,6 +6,7 @@ import Bootstrap::Ast
 
 import Bootstrap::Codegen
 import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
@@ -145,14 +146,14 @@ fun rpFlatten(r: RParam, isReader: Bool): List<RParam>
     (x: RpGlobalFunction) => prepend<RParam>(r, rpFlattenOpt(x.object, true))
     (x: RpVirtualFunction) => prepend<RParam>(r, rpFlatten(x.object, true))
     (x: RpPointerTo) => prepend<RParam>(r, rpFlatten(x.value, true))
-    (x: RpStackVar) => isReader ? append<RParam>(List<RParam>(), r) : List<RParam>()
-    (x: RpGlobalVar) => isReader ? append<RParam>(List<RParam>(), r) : List<RParam>()
+    (x: RpStackVar) => isReader ? list1(r) : List<RParam>()
+    (x: RpGlobalVar) => isReader ? list1(r) : List<RParam>()
     (x: RpObjectField) => rpFlattenObjectField(r, x, isReader)
     (x: RpArrayElement) => concat<RParam>(prepend<RParam>(r, rpFlatten(x.pointer, true)), rpFlatten(x.index, true))
-    (o: RParam) => append<RParam>(List<RParam>(), r)   # base default: [self]
+    (o: RParam) => list1(r)   # base default: [self]
 
 fun rpFlattenObjectField(r: RParam, x: RpObjectField, isReader: Bool): List<RParam>
-  let head2 = isReader ? append<RParam>(List<RParam>(), r) : List<RParam>()
+  let head2 = isReader ? list1(r) : List<RParam>()
   let withPointer = concat<RParam>(head2, rpFlatten(x.pointer, true))
   ret match(x.index)
     (idx: RParam) => concat<RParam>(withPointer, rpFlatten(idx, true))
@@ -274,8 +275,19 @@ fun eqRpStackVar(a: RParam, b: RParam): Bool
 fun rpStackVarMember(l: List<RParam>, x: RParam): Bool
   ret any<RParam>(l, (y: RParam) => eqRpStackVar(x, y))
 
+# A SET UNION. Python's get_live_vars returns a frozenset, and every consumer
+# here treats the result the same way — membership (stack_promotion), a count
+# (ssa_defs), an `any` (string_accumulation), or a fold into another set
+# (deadstores). So the order elements land in is not observed and new members
+# go on the front.
+#
+# Not a stdlib Set<RParam> because the identity is a CUSTOM one: two live vars
+# are the same var when their name and C type match, and every non-StackVar
+# RParam is outside the set entirely. Derived equality on the RParam enum would
+# compare the whole tree instead.
 fun rpStackVarUnion(a: List<RParam>, b: List<RParam>): List<RParam>
-  ret fold(b, a, (acc: List<RParam>, x: RParam) => rpStackVarMember(acc, x) ? acc : append<RParam>(acc, x))
+  ret fold(b, a, (acc: List<RParam>, x: RParam) =>
+        rpStackVarMember(acc, x) ? acc : prepend<RParam>(x, acc))
 
 fun rpGetLiveVars(r: RParam): List<RParam>
   ret match(r)
@@ -292,7 +304,7 @@ fun rpGetLiveVars(r: RParam): List<RParam>
     (x: RpGlobalFunction) => rpGetLiveVarsOpt(x.object)
     (x: RpVirtualFunction) => rpGetLiveVars(x.object)
     (x: RpPointerTo) => rpGetLiveVars(x.value)
-    (x: RpStackVar) => append<RParam>(List<RParam>(), r)
+    (x: RpStackVar) => list1(r)
     (x: RpGlobalVar) => List<RParam>()
     (x: RpObjectField) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVarsOpt(x.index))
     (x: RpArrayElement) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVars(x.index))

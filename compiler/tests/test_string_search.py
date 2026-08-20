@@ -60,8 +60,8 @@ fun main(): Int
   emitStr("split_multichar", firstOr(split("a::b", "::"), "?"))
 
   # ─── join (and split/join round-trip) ──────────────────────────────────
-  emitStr("join_basic",  join(append<String>(append<String>(append<String>(List<String>(), "a"), "b"), "c"), "-"))
-  emitStr("join_single", join(append<String>(List<String>(), "solo"), "-"))
+  emitStr("join_basic",  join(prepend<String>("a", prepend<String>("b", prepend<String>("c", List<String>()))), "-"))
+  emitStr("join_single", join(prepend<String>("solo", List<String>()), "-"))
   emitStr("join_empty",  join(List<String>(), "-"))
   emitStr("roundtrip",   join(split("a,b,c", ","), ","))
 

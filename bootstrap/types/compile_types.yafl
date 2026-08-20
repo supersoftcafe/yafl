@@ -140,17 +140,17 @@ fun compileArray(af: SArrayField, r: Resolver): SpecOut
   ret SpecOut(SArrayField(el.soSpec, af.safLenField, af.safLine), el.soGlobals)
 
 fun compileTuple(t2: STuple, r: Resolver): SpecOut
-  let es = compileEntries(chain(t2.stEntries), r, List<SEntry>(), List<PStmt>())
+  let es = compileEntries(chain(t2.stEntries), r, builder<SEntry >(), List<PStmt>())
   ret SpecOut(STuple(es.esEntries, t2.stLine), es.esGlobals)
 
 class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
 
-fun [tail] compileEntries(es: Chain<SEntry>, r: Resolver, acc: List<SEntry>,
+fun [tail] compileEntries(es: Chain<SEntry>, r: Resolver, [terminal] acc: ListBuilder<SEntry >,
                           glb: List<PStmt>): EntriesOut
   ret match(es)
-    (nil: ChainEnd) => EntriesOut(acc, glb)
+    (nil: ChainEnd) => EntriesOut(build<SEntry >(acc), glb)
     (l: ChainLink)  => compileEntry(l.value, r)
-      |> (one) => compileEntries(l.next, r, append(acc, one.eoEntry),
+      |> (one) => compileEntries(l.next, r, push<SEntry >(acc, one.eoEntry),
                                  concat(glb, one.eoGlobals))
 
 class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
@@ -174,12 +174,12 @@ fun compileEntry(en: SEntry, r: Resolver): EntryOut
 class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
 
 fun compileParams(ts: List<Spec>, r: Resolver): ParamsOut
-  ret compileParamLoop(chain(ts), r, List<Spec>(), List<PStmt>())
+  ret compileParamLoop(chain(ts), r, builder<Spec >(), List<PStmt>())
 
-fun [tail] compileParamLoop(ts: Chain<Spec>, r: Resolver, acc: List<Spec>,
+fun [tail] compileParamLoop(ts: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec >,
                             glb: List<PStmt>): ParamsOut
   ret match(ts)
-    (nil: ChainEnd) => ParamsOut(acc, glb)
+    (nil: ChainEnd) => ParamsOut(build<Spec >(acc), glb)
     (l: ChainLink)  => compileSpec(l.value, r)
-      |> (one) => compileParamLoop(l.next, r, append(acc, one.soSpec),
+      |> (one) => compileParamLoop(l.next, r, push<Spec >(acc, one.soSpec),
                                    concat(glb, one.soGlobals))

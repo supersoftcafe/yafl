@@ -26,8 +26,11 @@ fun gatherFiles(path: String): List<String>
     ret length(name) == 0 || byteAt(name, 0) == '.'
   fun gatherDir(): List<String>
     ret match(listDir(path))
-      (names: List<String>) =>
-          fold<String, List<String> >(names, List<String>(),
+      # Sorted, so a search over a directory tree reports its hits in the same
+      # order every run — readdir order is not stable and this fold is not
+      # order-independent, since it concatenates each subtree's files in turn.
+      (names: Set<String>) =>
+          fold<String, List<String> >(sort<String>(names), List<String>(),
             (acc: List<String>, name: String) =>
               skipEntry(name) ? acc : concat<String>(acc, gatherFiles(path + "/" + name)))
       (e: IOError) => List<String>()

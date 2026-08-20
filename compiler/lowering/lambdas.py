@@ -109,7 +109,16 @@ def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[t
         return thing
     lmd.search_and_replace(resolver, check_if_capture)
     params = set(p.name for p in lmd.parameters.flatten())
-    captures = [(name, xtype) for name, xtype in references.items() if name not in params]
+    # SORTED BY NAME, not by discovery order. This order becomes the closure
+    # class's field order and the order of its construction arguments, so it
+    # has to be deterministic — but the order the walk happens to meet the
+    # references in means nothing, and pinning the output to it made the
+    # generated class depend on the shape of the traversal. The bootstrap
+    # accumulates these into an unordered map and sorts here too.
+    captures = sorted(((name, xtype)
+                       for name, xtype in references.items()
+                       if name not in params),
+                      key=lambda name_type: name_type[0])
     return captures
 
 

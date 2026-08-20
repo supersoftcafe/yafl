@@ -746,37 +746,37 @@ fun unwrap(v: Int|None, fallback: Int): Int
       (n: None) => fallback
 
 fun s_findIndex_hit(): Int
-    let l = append<Int>(append<Int>(append<Int>(List<Int>(), 10), 20), 30)
+    let l = prepend<Int>(10, prepend<Int>(20, prepend<Int>(30, List<Int>())))
     ret unwrap(findIndex<Int>(l, (x: Int) => x == 20), -1)
 
 fun s_findIndex_miss(): Int
-    let l = append<Int>(append<Int>(List<Int>(), 1), 2)
+    let l = prepend<Int>(1, prepend<Int>(2, List<Int>()))
     ret unwrap(findIndex<Int>(l, (x: Int) => x == 99), 9)
 
 fun s_findIndex_empty(): Int
     ret unwrap(findIndex<Int>(List<Int>(), (x: Int) => x == 0), 7)
 
 fun s_partition_split(): Int
-    let l = append<Int>(append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4), 5)
+    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, prepend<Int>(4, prepend<Int>(5, List<Int>())))))
     let (yes, no) = partition<Int>(l, (x: Int) => x > 2)
     ret fold<Int,Int>(yes, 0, (a: Int, x: Int) => a + 1)
 
 fun s_partition_all_yes(): Int
-    let l = append<Int>(append<Int>(List<Int>(), 5), 6)
+    let l = prepend<Int>(5, prepend<Int>(6, List<Int>()))
     let (yes, no) = partition<Int>(l, (x: Int) => x > 0)
     ret fold<Int,Int>(no, 0, (a: Int, x: Int) => a + 1)
 
 fun s_partition_order(): Int
-    let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 5), 2), 6)
+    let l = prepend<Int>(1, prepend<Int>(5, prepend<Int>(2, prepend<Int>(6, List<Int>()))))
     let (yes, no) = partition<Int>(l, (x: Int) => x > 3)
     ret unwrap(head<Int>(yes), -1)
 
 fun s_groupBy_two(): Int
-    let l = append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4)
+    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, prepend<Int>(4, List<Int>()))))
     ret size<Int,List<Int> >(groupBy<Int,Int>(l, (x: Int) => x % 2))
 
 fun s_groupBy_single(): Int
-    let l = append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3)
+    let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, List<Int>())))
     let g = groupBy<Int,Int>(l, (x: Int) => 0)
     ret match(get<Int,List<Int> >(g, 0))
       (b: List<Int>) => fold<Int,Int>(b, 0, (a: Int, x: Int) => a + 1)

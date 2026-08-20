@@ -171,8 +171,8 @@ fun keep(s: String): Bool
 
 fun main(): System::Int
   ret match(listDir("{tmp}"))
-    (l: List<String>) => fold<String,Int>(filter<String>(l, keep), 0, (a: Int, x: String) => a + 1)
-    (e: IOError)      => -1
+    (l: Set<String>) => size<String>(filter<String>(l, keep))
+    (e: IOError)     => -1
 """
             self.assertEqual(3, compile_and_run_stdlib(src))
 
@@ -183,7 +183,7 @@ import System::IO
 
 fun main(): System::Int
   ret match(listDir("/nonexistent_yafl_fs_test_xyz_999"))
-    (l: List<String>)         => 9
+    (l: Set<String>)          => 9
     (e: IOError)              => match(e)
       (n: FileNotFoundError)  => 0
       ()                      => 7

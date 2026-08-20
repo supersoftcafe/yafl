@@ -65,7 +65,7 @@ instance [ambient]<T> Sized<List<T>> where Show<T>
     ret length(fold(v, "", (acc: String, x: T) => acc + show(x)))
 
 fun main(): Int
-  let l = append(append(List<Int>(), 4), 25)
+  let l = prepend(4, prepend(25, List<Int>()))
   ret sizeOf(l) == 3 ? 0 : 1
 """
 

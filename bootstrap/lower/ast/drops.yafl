@@ -30,14 +30,17 @@ class [final] DrS(dsStmt: PStmt, dsChanged2: Bool)
 
 fun insertDrops(statements: List<PStmt>, r: Resolver): DropsOut
   let ids = droppableIds(r)
-  ret drTop(chain(statements), r, ids, List<PStmt>(), false)
+  ret drTop(chain(statements), r, ids, builder<PStmt >(), false)
 
+# Program order throughout this pass: statements come out where they went in,
+# with drop calls spliced in. The `changed` flag rides alongside as a plain
+# value — only the statement list is accumulated.
 fun [tail] drTop(ss: Chain<PStmt>, r: Resolver, ids: List<String>,
-                 acc: List<PStmt>, changed: Bool): DropsOut
+                 [terminal] acc: ListBuilder<PStmt >, changed: Bool): DropsOut
   ret match(ss)
-    (nil: ChainEnd) => DropsOut(acc, changed)
+    (nil: ChainEnd) => DropsOut(build<PStmt >(acc), changed)
     (l: ChainLink)  => drToplevel(l.value, r, ids)
-      |> (o) => drTop(l.next, r, ids, append(acc, o.dsStmt),
+      |> (o) => drTop(l.next, r, ids, push<PStmt >(acc, o.dsStmt),
                       changed || o.dsChanged2)
 
 fun drToplevel(st: PStmt, r: Resolver, ids: List<String>): DrS
@@ -49,7 +52,7 @@ fun drToplevel(st: PStmt, r: Resolver, ids: List<String>): DrS
 
 fun drInstanceMembers(ti: PsTraitInstance, r: Resolver,
                       ids: List<String>): DrS
-  let out = drMembers(chain(ti.tiMembers), r, ids, List<PStmt>(), false)
+  let out = drMembers(chain(ti.tiMembers), r, ids, builder<PStmt >(), false)
   ret out.dmChanged
     ? DrS(PsTraitInstance(ti.tiName, ti.tiAmbient, ti.tiGens, ti.tiPattern,
                           ti.tiWheres, out.dmStmts, ti.pstiLine,
@@ -62,7 +65,7 @@ fun drInstanceMembers(ti: PsTraitInstance, r: Resolver,
 class [final] DrMembers(dmStmts: List<PStmt>, dmChanged: Bool)
 
 fun drClassMembers(c: PsClass, r: Resolver, ids: List<String>): DrS
-  let out = drMembers(chain(c.cMembers), r, ids, List<PStmt>(), false)
+  let out = drMembers(chain(c.cMembers), r, ids, builder<PStmt >(), false)
   ret out.dmChanged
     ? DrS(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                   c.cWheres, out.dmStmts, c.cIsInterface,
@@ -71,14 +74,16 @@ fun drClassMembers(c: PsClass, r: Resolver, ids: List<String>): DrS
     : DrS(c, false)
 
 fun [tail] drMembers(ms: Chain<PStmt>, r: Resolver, ids: List<String>,
-                     acc: List<PStmt>, changed: Bool): DrMembers
+                     [terminal] acc: ListBuilder<PStmt >,
+                     changed: Bool): DrMembers
   ret match(ms)
-    (nil: ChainEnd) => DrMembers(acc, changed)
+    (nil: ChainEnd) => DrMembers(build<PStmt >(acc), changed)
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => drFn(f, r, ids)
-        |> (o) => drMembers(l.next, r, ids, append(acc, o.dsStmt),
+        |> (o) => drMembers(l.next, r, ids, push<PStmt >(acc, o.dsStmt),
                             changed || o.dsChanged2)
-      (o2: PStmt) => drMembers(l.next, r, ids, append(acc, l.value), changed)
+      (o2: PStmt) => drMembers(l.next, r, ids, push<PStmt >(acc, l.value),
+                               changed)
 
 fun drFn(f: PsFun, r: Resolver, ids: List<String>): DrS
   if hasAttr(f.fAttrs, "foreign")
@@ -259,7 +264,7 @@ fun drExpr(x: PExpr, wheres: List<Spec>, r: Resolver,
 
 fun drFieldArgs(ne: PeNewEnum, wheres: List<Spec>, r: Resolver,
                 ids: List<String>): DrE
-  let out = drFaLoop(chain(ne.fieldArgs), wheres, r, ids, List<PFieldArg>(),
+  let out = drFaLoop(chain(ne.fieldArgs), wheres, r, ids, builder<PFieldArg >(),
                      false)
   ret DrE(out.dfChanged
             ? PeNewEnum(ne.rootName, ne.leafName, out.dfArgs,
@@ -270,13 +275,15 @@ fun drFieldArgs(ne: PeNewEnum, wheres: List<Spec>, r: Resolver,
 class [final] DrFa(dfArgs: List<PFieldArg>, dfChanged: Bool)
 
 fun [tail] drFaLoop(fas: Chain<PFieldArg>, wheres: List<Spec>, r: Resolver,
-                    ids: List<String>, acc: List<PFieldArg>,
+                    ids: List<String>,
+                    [terminal] acc: ListBuilder<PFieldArg >,
                     changed: Bool): DrFa
   ret match(fas)
-    (nil: ChainEnd) => DrFa(acc, changed)
+    (nil: ChainEnd) => DrFa(build<PFieldArg >(acc), changed)
     (l: ChainLink)  => drExpr(l.value.faValue, wheres, r, ids)
       |> (o) => drFaLoop(l.next, wheres, r, ids,
-                         append(acc, PFieldArg(l.value.faName, o.deExpr)),
+                         push<PFieldArg >(acc,
+                             PFieldArg(l.value.faName, o.deExpr)),
                          changed || o.deChanged)
 
 # A two-child rebuild packs the pair into a synthetic tuple to ride the DrE
@@ -285,9 +292,9 @@ fun drPair(a: PExpr, b: PExpr, wheres: List<Spec>, r: Resolver,
            ids: List<String>): DrE
   let oa = drExpr(a, wheres, r, ids)
   let ob = drExpr(b, wheres, r, ids)
-  ret DrE(PeTuple(append(append(List<PTupEnt>(),
-                                PTupEnt("", false, oa.deExpr)),
-                         PTupEnt("", false, ob.deExpr)),
+  ret DrE(PeTuple(prepend(PTupEnt("", false, oa.deExpr),
+                          prepend(PTupEnt("", false, ob.deExpr),
+                                  List<PTupEnt>())),
                   exprLine(a)),
           oa.deChanged || ob.deChanged)
 
@@ -309,7 +316,7 @@ fun [tail] entryAt(es: Chain<PTupEnt>, i: Int, fallback: PExpr): PExpr
 
 fun drEntries(tp: PeTuple, wheres: List<Spec>, r: Resolver,
               ids: List<String>): DrE
-  let out = drEntryLoop(chain(tp.exprs), wheres, r, ids, List<PTupEnt>(),
+  let out = drEntryLoop(chain(tp.exprs), wheres, r, ids, builder<PTupEnt >(),
                         false)
   ret DrE(out.deChanged
             ? PeTuple(entriesOf3(out.deExpr, tp.exprs), tp.petLine)
@@ -322,14 +329,17 @@ fun entriesOf3(x: PExpr, orig: List<PTupEnt>): List<PTupEnt>
     (o: PExpr)    => orig
 
 fun [tail] drEntryLoop(es: Chain<PTupEnt>, wheres: List<Spec>, r: Resolver,
-                       ids: List<String>, acc: List<PTupEnt>,
+                       ids: List<String>,
+                       [terminal] acc: ListBuilder<PTupEnt >,
                        changed: Bool): DrE
   ret match(es)
-    (nil: ChainEnd) => DrE(PeTuple(acc, PLine("", 0, 0)), changed)
+    (nil: ChainEnd) => DrE(PeTuple(build<PTupEnt >(acc), PLine("", 0, 0)),
+                           changed)
     (l: ChainLink)  => drExpr(l.value.tupValue, wheres, r, ids)
       |> (o) => drEntryLoop(l.next, wheres, r, ids,
-                            append(acc, PTupEnt(l.value.tupName,
-                                                l.value.tupSpread, o.deExpr)),
+                            push<PTupEnt >(acc,
+                                PTupEnt(l.value.tupName, l.value.tupSpread,
+                                        o.deExpr)),
                             changed || o.deChanged)
 
 fun drTernary(te: PeTernary, wheres: List<Spec>, r: Resolver,
@@ -346,7 +356,7 @@ fun drTernary(te: PeTernary, wheres: List<Spec>, r: Resolver,
 fun drMatch(mt: PeMatch, wheres: List<Spec>, r: Resolver,
             ids: List<String>): DrE
   let os = drExpr(mt.subject, wheres, r, ids)
-  let arms = drArms(chain(mt.arms), wheres, r, ids, List<PArm>(), false)
+  let arms = drArms(chain(mt.arms), wheres, r, ids, builder<PArm >(), false)
   let changed = os.deChanged || arms.daChanged
   ret DrE(changed
             ? PeMatch(os.deExpr, arms.daArms, mt.pemLine)
@@ -356,26 +366,29 @@ fun drMatch(mt: PeMatch, wheres: List<Spec>, r: Resolver,
 class [final] DrArms(daArms: List<PArm>, daChanged: Bool)
 
 fun [tail] drArms(as2: Chain<PArm>, wheres: List<Spec>, r: Resolver,
-                  ids: List<String>, acc: List<PArm>, changed: Bool): DrArms
+                  ids: List<String>, [terminal] acc: ListBuilder<PArm >,
+                  changed: Bool): DrArms
   ret match(as2)
-    (nil: ChainEnd) => DrArms(acc, changed)
+    (nil: ChainEnd) => DrArms(build<PArm >(acc), changed)
     (l: ChainLink)  => drExpr(l.value.armBody, wheres, r, ids)
       |> (o) => drArms(l.next, wheres, r, ids,
-                       append(acc, PArm(l.value.armName, l.value.armType,
-                                        o.deExpr, l.value.armLiterals,
-                                        l.value.armGuard, l.value.parmLine)),
+                       push<PArm >(acc,
+                           PArm(l.value.armName, l.value.armType, o.deExpr,
+                                l.value.armLiterals, l.value.armGuard,
+                                l.value.parmLine)),
                        changed || o.deChanged)
 
 fun drBlock(bk: PeBlock, wheres: List<Spec>, r: Resolver,
             ids: List<String>): DrE
-  let ss = drBlockStmts(chain(bk.blockStmts), wheres, r, ids, List<PStmt>(),
+  let ss = drBlockStmts(chain(bk.blockStmts), wheres, r, ids, builder<PStmt >(),
                         false)
   let ov = drExpr(bk.blockValue, wheres, r, ids)
   let rebuilt = ss.dmChanged || ov.deChanged
     ? PeBlock(ss.dmStmts, ov.deExpr, bk.blockTag, bk.pebkLine)
     : bk
   # The block's OWN unused droppable lets drop at its exit.
-  let lets = bindingLets(chain(blockStmtsOf(rebuilt)), List<PStmt>())
+  let lets = build<PStmt >(bindingLets(chain(blockStmtsOf(rebuilt)),
+                                      builder<PStmt >()))
   let referenced = blockReferenced(rebuilt)
   let drops = unusedDroppable(lets, referenced, wheres, r, ids)
   let dropped = isEmpty(drops) ? rebuilt : withDrops(rebuilt, drops)
@@ -394,12 +407,14 @@ fun blockReferenced(x: PExpr): List<String>
   ret referencedNames(x, List<String>())
 
 fun [tail] drBlockStmts(ss: Chain<PStmt>, wheres: List<Spec>, r: Resolver,
-                        ids: List<String>, acc: List<PStmt>,
+                        ids: List<String>,
+                        [terminal] acc: ListBuilder<PStmt >,
                         changed: Bool): DrMembers
   ret match(ss)
-    (nil: ChainEnd) => DrMembers(acc, changed)
+    (nil: ChainEnd) => DrMembers(build<PStmt >(acc), changed)
     (l: ChainLink)  => drStmt(l.value, wheres, r, ids)
-      |> (o) => drBlockStmts(l.next, wheres, r, ids, append(acc, o.dsStmt),
+      |> (o) => drBlockStmts(l.next, wheres, r, ids,
+                             push<PStmt >(acc, o.dsStmt),
                              changed || o.dsChanged2)
 
 fun drStmt(st: PStmt, wheres: List<Spec>, r: Resolver,
@@ -435,8 +450,8 @@ fun drStmt(st: PStmt, wheres: List<Spec>, r: Resolver,
 
 fun drIf(i: PsIf, wheres: List<Spec>, r: Resolver, ids: List<String>): DrS
   let oc = drExpr(i.ifCond, wheres, r, ids)
-  let ot = drBlockStmts(chain(i.ifTrue), wheres, r, ids, List<PStmt>(), false)
-  let of2 = drBlockStmts(chain(i.ifFalse), wheres, r, ids, List<PStmt>(),
+  let ot = drBlockStmts(chain(i.ifTrue), wheres, r, ids, builder<PStmt >(), false)
+  let of2 = drBlockStmts(chain(i.ifFalse), wheres, r, ids, builder<PStmt >(),
                          false)
   let changed = oc.deChanged || ot.dmChanged || of2.dmChanged
   ret DrS(changed
@@ -528,10 +543,14 @@ fun withDrops(body: PExpr, drops: List<PStmt>): PExpr
   let keep = "$drop_keep@" + hash6(lr.plFile, lr.plLine, lr.plCol)
   let stmts0 = blockStmtsOf2(body)
   let value0 = blockValueOf(body)
-  let stmts = concat(append(stmts0,
-                            PsLet(keep, List<PAttr>(), List<PGen>(), None,
-                                  value0, "", List<Spec>(), lr)),
-                     dropCalls(chain(drops), List<PStmt>()))
+  # Order is the whole point here: the body's own statements, then the let
+  # that saves its value, then the drop calls.
+  let stmts = build<PStmt >(_pushChain<PStmt >(
+      push<PStmt >(_pushChain<PStmt >(builder<PStmt >(),
+                                      chain<PStmt>(stmts0)),
+                   PsLet(keep, List<PAttr>(), List<PGen>(), None,
+                         value0, "", List<Spec>(), lr)),
+      chain<PStmt>(dropCalls(chain(drops), List<PStmt>()))))
   ret PeBlock(stmts, PeName(keep, List<Spec>(), lr), "", lr)
 
 fun blockStmtsOf2(body: PExpr): List<PStmt>
@@ -575,7 +594,7 @@ fun [tail] drBalLoop(ls: Chain<PStmt>, body: PExpr, changed: Bool): DrE
 
 fun drBalance(body: PExpr, let2: PsLet): DrE
   let out = drEnsureStmts(chain(blockStmtsOf2(body)), blockValueOf(body),
-                          false, false, let2, List<PStmt>(), false)
+                          false, false, let2, builder<PStmt >(), false)
   if !out.bsOk || !out.bsDid
     ret DrE(body, false)
   ret match(out.bsValue)
@@ -604,13 +623,13 @@ fun [tail] drRefsAny(ss: Chain<PStmt>, name: String): Bool
       : drRefsAny(l.next, name)
 
 fun oneDrop(let2: PsLet): List<PStmt>
-  ret append<PStmt>(List<PStmt>(), let2)
+  ret prepend<PStmt>(let2, List<PStmt>())
 
 # Path accounting through a statement list. `tail2` says the caller's
 # continuation consumes on fall-through; every path must total exactly one.
 fun drEnsureStmts(ss: Chain<PStmt>, value: PExpr|None, tail2: Bool,
-                  consumed: Bool, let2: PsLet, acc: List<PStmt>,
-                  did: Bool): DrBs
+                  consumed: Bool, let2: PsLet,
+                  [terminal] acc: ListBuilder<PStmt >, did: Bool): DrBs
   ret match(ss)
     (nil: ChainEnd) => drEnsureEnd(value, tail2, consumed, let2, acc, did)
     (l: ChainLink)  => match(l.value)
@@ -621,23 +640,24 @@ fun drEnsureStmts(ss: Chain<PStmt>, value: PExpr|None, tail2: Bool,
                                    let2, acc, did)
 
 fun drEnsurePlain(st: PStmt, rest: Chain<PStmt>, value: PExpr|None,
-                  tail2: Bool, consumed: Bool, let2: PsLet, acc: List<PStmt>,
-                  did: Bool): DrBs
+                  tail2: Bool, consumed: Bool, let2: PsLet,
+                  [terminal] acc: ListBuilder<PStmt >, did: Bool): DrBs
   if !drRefsStmt(st, let2.lName)
-    ret drEnsureStmts(rest, value, tail2, consumed, let2, append(acc, st), did)
+    ret drEnsureStmts(rest, value, tail2, consumed, let2,
+                      push<PStmt >(acc, st), did)
   if consumed
     ret drBail()
   let fs = drFixStmt(st, let2)
   if !fs.biOk
     ret drBail()
-  ret drEnsureStmts(rest, value, tail2, true, let2, append(acc, fs.biStmt),
-                    did || fs.biDid)
+  ret drEnsureStmts(rest, value, tail2, true, let2,
+                    push<PStmt >(acc, fs.biStmt), did || fs.biDid)
 
 # This path exits the function here; the tail never runs. Anything after the
 # `ret` is unreachable and kept as-is.
 fun drEnsureRet(rt: PsRet, rest: Chain<PStmt>, value: PExpr|None,
-                consumed: Bool, let2: PsLet, acc: List<PStmt>,
-                did: Bool): DrBs
+                consumed: Bool, let2: PsLet,
+                [terminal] acc: ListBuilder<PStmt >, did: Bool): DrBs
   let r2 = drRefs(rt.retValue, let2.lName)
   let need = 1 - (consumed ? 1 : 0) - (r2 ? 1 : 0)
   if need < 0
@@ -646,11 +666,9 @@ fun drEnsureRet(rt: PsRet, rest: Chain<PStmt>, value: PExpr|None,
   if !fx.bxOk
     ret drBail()
   let nv = need == 1 ? withDrops(fx.bxExpr, oneDrop(let2)) : fx.bxExpr
-  ret DrBs(drCopyRest(rest, append(acc, PsRet(nv, rt.psrLine))), value,
-           did || fx.bxDid || need == 1, true)
-
-fun drCopyRest(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(drCopyRestB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret DrBs(build<PStmt >(drCopyRestB(rest, push<PStmt >(acc,
+                                        PsRet(nv, rt.psrLine)))),
+           value, did || fx.bxDid || need == 1, true)
 
 fun [tail] drCopyRestB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)
@@ -659,7 +677,7 @@ fun [tail] drCopyRestB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): L
 
 fun drEnsureIfStep(i2: PsIf, rest: Chain<PStmt>, value: PExpr|None,
                    tail2: Bool, consumed: Bool, let2: PsLet,
-                   acc: List<PStmt>, did: Bool): DrBs
+                   [terminal] acc: ListBuilder<PStmt >, did: Bool): DrBs
   let later = drRefsAny(rest, let2.lName) || drRefsOpt(value, let2.lName)
               || tail2
   let fi = drEnsureIf(i2, consumed, later, let2)
@@ -670,7 +688,7 @@ fun drEnsureIfStep(i2: PsIf, rest: Chain<PStmt>, value: PExpr|None,
   let bothTerm = blockTerminates(i2.ifTrue) && blockTerminates(i2.ifFalse)
   let consumed2 = bothTerm ? consumed : (consumed || !later)
   ret drEnsureStmts(rest, value, tail2, consumed2, let2,
-                    append(acc, fi.biStmt), did || fi.biDid)
+                    push<PStmt >(acc, fi.biStmt), did || fi.biDid)
 
 fun drEnsureIf(i2: PsIf, consumed: Bool, later: Bool, let2: PsLet): DrBi
   let name = let2.lName
@@ -708,11 +726,11 @@ fun drEnsureBranch(blk: List<PStmt>, consumed: Bool, later: Bool,
     ret drRefsAny(chain(blk), let2.lName)
       ? drBail()
       : DrBs(blk, None, false, true)
-  ret drEnsureStmts(chain(blk), None, false, false, let2, List<PStmt>(),
+  ret drEnsureStmts(chain(blk), None, false, false, let2, builder<PStmt >(),
                     false)
 
 fun drEnsureEnd(value: PExpr|None, tail2: Bool, consumed: Bool, let2: PsLet,
-                acc: List<PStmt>, did: Bool): DrBs
+                [terminal] acc: ListBuilder<PStmt >, did: Bool): DrBs
   let vr = drRefsOpt(value, let2.lName)
   let need = 1 - (consumed ? 1 : 0) - (vr ? 1 : 0) - (tail2 ? 1 : 0)
   if need < 0
@@ -720,17 +738,17 @@ fun drEnsureEnd(value: PExpr|None, tail2: Bool, consumed: Bool, let2: PsLet,
   ret match(value)
     (v: PExpr) => drEnsureEndValue(v, vr, need, let2, acc, did)
     ()         => need == 1
-      ? DrBs(append(acc, dropCall(let2)), None, true, true)
-      : DrBs(acc, None, did, true)
+      ? DrBs(build<PStmt >(push<PStmt >(acc, dropCall(let2))), None, true, true)
+      : DrBs(build<PStmt >(acc), None, did, true)
 
 fun drEnsureEndValue(v: PExpr, vr: Bool, need: Int, let2: PsLet,
-                     acc: List<PStmt>, did: Bool): DrBs
+                     [terminal] acc: ListBuilder<PStmt >, did: Bool): DrBs
   let fx = vr ? drFixExpr(v, let2) : DrBx(v, false, true)
   if !fx.bxOk
     ret drBail()
   # Scope-exit timing: the value is computed FIRST, then the drop.
   let nv = need == 1 ? withDrops(fx.bxExpr, oneDrop(let2)) : fx.bxExpr
-  ret DrBs(acc, nv, did || fx.bxDid || need == 1, true)
+  ret DrBs(build<PStmt >(acc), nv, did || fx.bxDid || need == 1, true)
 
 # ── divergence inside an expression ─────────────────────────────────────────
 # Bottom-up: a fixed inner branch counts as consumption for its parent.
@@ -779,33 +797,35 @@ fun drFixPair(a: PExpr, b: PExpr, let2: PsLet): DrBx
   let ob = drFixExpr(b, let2)
   if !ob.bxOk
     ret DrBx(a, false, false)
-  ret DrBx(PeTuple(append(append(List<PTupEnt>(),
-                                 PTupEnt("", false, oa.bxExpr)),
-                          PTupEnt("", false, ob.bxExpr)),
+  ret DrBx(PeTuple(prepend(PTupEnt("", false, oa.bxExpr),
+                           prepend(PTupEnt("", false, ob.bxExpr),
+                                   List<PTupEnt>())),
                    exprLine(a)),
            oa.bxDid || ob.bxDid, true)
 
 fun drFixEntries(tp: PeTuple, let2: PsLet): DrBx
-  let out = drFixEntryLoop(chain(tp.exprs), let2, List<PTupEnt>(), false)
+  let out = drFixEntryLoop(chain(tp.exprs), let2, builder<PTupEnt >(), false)
   if !out.bxOk
     ret DrBx(tp, false, false)
   ret DrBx(PeTuple(entriesOf3(out.bxExpr, tp.exprs), tp.petLine), out.bxDid,
            true)
 
-fun [tail] drFixEntryLoop(es: Chain<PTupEnt>, let2: PsLet, acc: List<PTupEnt>,
+fun [tail] drFixEntryLoop(es: Chain<PTupEnt>, let2: PsLet,
+                          [terminal] acc: ListBuilder<PTupEnt >,
                           did: Bool): DrBx
   ret match(es)
-    (nil: ChainEnd) => DrBx(PeTuple(acc, PLine("", 0, 0)), did, true)
+    (nil: ChainEnd) => DrBx(PeTuple(build<PTupEnt >(acc), PLine("", 0, 0)),
+                            did, true)
     (l: ChainLink)  => drFixExpr(l.value.tupValue, let2)
       |> (o) => o.bxOk
         ? drFixEntryLoop(l.next, let2,
-                         append(acc, PTupEnt(l.value.tupName,
+                         push<PTupEnt >(acc, PTupEnt(l.value.tupName,
                                              l.value.tupSpread, o.bxExpr)),
                          did || o.bxDid)
-        : DrBx(PeTuple(acc, PLine("", 0, 0)), false, false)
+        : DrBx(PeTuple(build<PTupEnt >(acc), PLine("", 0, 0)), false, false)
 
 fun drFixFieldArgs(ne: PeNewEnum, let2: PsLet): DrBx
-  let out = drFixFaLoop(chain(ne.fieldArgs), let2, List<PFieldArg>(), false)
+  let out = drFixFaLoop(chain(ne.fieldArgs), let2, builder<PFieldArg >(), false)
   if !out.faOk
     ret DrBx(ne, false, false)
   ret DrBx(PeNewEnum(ne.rootName, ne.leafName, out.faArgs, ne.neTypeParams,
@@ -815,15 +835,17 @@ fun drFixFieldArgs(ne: PeNewEnum, let2: PsLet): DrBx
 class [final] DrFaB(faArgs: List<PFieldArg>, faDid: Bool, faOk: Bool)
 
 fun [tail] drFixFaLoop(fas: Chain<PFieldArg>, let2: PsLet,
-                       acc: List<PFieldArg>, did: Bool): DrFaB
+                       [terminal] acc: ListBuilder<PFieldArg >,
+                       did: Bool): DrFaB
   ret match(fas)
-    (nil: ChainEnd) => DrFaB(acc, did, true)
+    (nil: ChainEnd) => DrFaB(build<PFieldArg >(acc), did, true)
     (l: ChainLink)  => drFixExpr(l.value.faValue, let2)
       |> (o) => o.bxOk
         ? drFixFaLoop(l.next, let2,
-                      append(acc, PFieldArg(l.value.faName, o.bxExpr)),
+                      push<PFieldArg >(acc,
+                          PFieldArg(l.value.faName, o.bxExpr)),
                       did || o.bxDid)
-        : DrFaB(acc, false, false)
+        : DrFaB(build<PFieldArg >(acc), false, false)
 
 fun drFixTernary(te: PeTernary, let2: PsLet): DrBx
   let name = let2.lName
@@ -862,7 +884,7 @@ fun drFixMatch(mt: PeMatch, let2: PsLet): DrBx
     ret DrBx(mt, false, false)
   if drRefs(mt.subject, name)
     ret drFixMatchSubject(mt, let2)
-  let fixed = drFixArmLoop(chain(mt.arms), let2, List<PArm>(), false)
+  let fixed = drFixArmLoop(chain(mt.arms), let2, builder<PArm >(), false)
   if !fixed.abOk
     ret DrBx(mt, false, false)
   let anyR = drArmRefsAny(chain(fixed.abArms), name)
@@ -907,18 +929,19 @@ fun [tail] drArmRefsAll(as2: Chain<PArm>, name: String): Bool
 
 class [final] DrArmB(abArms: List<PArm>, abDid: Bool, abOk: Bool)
 
-fun [tail] drFixArmLoop(as2: Chain<PArm>, let2: PsLet, acc: List<PArm>,
+fun [tail] drFixArmLoop(as2: Chain<PArm>, let2: PsLet,
+                        [terminal] acc: ListBuilder<PArm >,
                         did: Bool): DrArmB
   ret match(as2)
-    (nil: ChainEnd) => DrArmB(acc, did, true)
+    (nil: ChainEnd) => DrArmB(build<PArm >(acc), did, true)
     (l: ChainLink)  => drFixExpr(l.value.armBody, let2)
       |> (o) => o.bxOk
         ? drFixArmLoop(l.next, let2,
-                       append(acc, PArm(l.value.armName, l.value.armType,
+                       push<PArm >(acc, PArm(l.value.armName, l.value.armType,
                                         o.bxExpr, l.value.armLiterals,
                                         l.value.armGuard, l.value.parmLine)),
                        did || o.bxDid)
-        : DrArmB(acc, false, false)
+        : DrArmB(build<PArm >(acc), false, false)
 
 fun drWrapArms(as2: Chain<PArm>, name: String, let2: PsLet,
                       acc: List<PArm>): List<PArm>
@@ -938,7 +961,7 @@ fun [tail] drWrapArmsB(as2: Chain<PArm>, name: String, let2: PsLet,
                                     l.value.parmLine)))
 
 fun drFixBlock(bk: PeBlock, let2: PsLet): DrBx
-  let ss = drFixStmtLoop(chain(bk.blockStmts), let2, List<PStmt>(), false)
+  let ss = drFixStmtLoop(chain(bk.blockStmts), let2, builder<PStmt >(), false)
   if !ss.bsOk
     ret DrBx(bk, false, false)
   let ov = drFixExpr(bk.blockValue, let2)
@@ -947,14 +970,16 @@ fun drFixBlock(bk: PeBlock, let2: PsLet): DrBx
   ret DrBx(PeBlock(ss.bsStmts, ov.bxExpr, bk.blockTag, bk.pebkLine),
            ss.bsDid || ov.bxDid, true)
 
-fun [tail] drFixStmtLoop(ss: Chain<PStmt>, let2: PsLet, acc: List<PStmt>,
+fun [tail] drFixStmtLoop(ss: Chain<PStmt>, let2: PsLet,
+                         [terminal] acc: ListBuilder<PStmt >,
                          did: Bool): DrBs
   ret match(ss)
-    (nil: ChainEnd) => DrBs(acc, None, did, true)
+    (nil: ChainEnd) => DrBs(build<PStmt >(acc), None, did, true)
     (l: ChainLink)  => drFixStmt(l.value, let2)
       |> (o) => o.biOk
-        ? drFixStmtLoop(l.next, let2, append(acc, o.biStmt), did || o.biDid)
-        : DrBs(acc, None, false, false)
+        ? drFixStmtLoop(l.next, let2, push<PStmt >(acc, o.biStmt),
+                        did || o.biDid)
+        : DrBs(build<PStmt >(acc), None, false, false)
 
 fun drFixStmt(st: PStmt, let2: PsLet): DrBi
   if !drRefsStmt(st, let2.lName)
@@ -986,10 +1011,10 @@ fun drFixIf(i: PsIf, let2: PsLet): DrBi
   let oc = drFixExpr(i.ifCond, let2)
   if !oc.bxOk
     ret DrBi(i, false, false)
-  let ot = drFixStmtLoop(chain(i.ifTrue), let2, List<PStmt>(), false)
+  let ot = drFixStmtLoop(chain(i.ifTrue), let2, builder<PStmt >(), false)
   if !ot.bsOk
     ret DrBi(i, false, false)
-  let of2 = drFixStmtLoop(chain(i.ifFalse), let2, List<PStmt>(), false)
+  let of2 = drFixStmtLoop(chain(i.ifFalse), let2, builder<PStmt >(), false)
   if !of2.bsOk
     ret DrBi(i, false, false)
   ret DrBi(PsIf(oc.bxExpr, ot.bsStmts, of2.bsStmts, i.psifLine),
@@ -1000,10 +1025,9 @@ fun drFixIf(i: PsIf, let2: PsLet): DrBi
 # `where Drop<T>`.
 fun dropCall(let2: PsLet): PStmt
   ret PsAction(PeCall(PeName("drop", List<Spec>(), let2.pslLine),
-                      PeTuple(append(List<PTupEnt>(),
-                                     PTupEnt("", false,
+                      PeTuple(prepend(PTupEnt("", false,
                                              PeName(let2.lName, List<Spec>(),
-                                                    let2.pslLine))),
+                                                    let2.pslLine)), List<PTupEnt>()),
                               let2.pslLine),
                       let2.pslLine),
                let2.pslLine)

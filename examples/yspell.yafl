@@ -128,42 +128,49 @@ fun isKnown(dict: WordTree, word: String): Bool
 # the list at five. This is the deliberately allocation-heavy part: every
 # candidate is a fresh short-lived string that dies as soon as it is tested.
 
+# The candidate accumulator. `sgFound` is ORDERED — the caller takes the first
+# five, so the order the edit classes are tried in (deletions, transposes,
+# substitutions, insertions) is the ranking — which makes it a builder.
+# `sgSeen` is pure membership, so it is a Set.
+class [linear, final] Sugg(sgFound: ListBuilder<String >, sgSeen: Set<String>)
+
 fun suggest(dict: WordTree, word: String): List<String>
   let w = toLower(word)
   let n = length(w)
   let alphabet = "abcdefghijklmnopqrstuvwxyz"
 
-  fun consider(acc: (found: List<String>, seen: Set<String>), cand: String): (found: List<String>, seen: Set<String>)
+  fun consider([terminal] acc: Sugg, cand: String): Sugg
     ret hasWord(dict, cand)
-      ? (contains<String>(acc.seen, cand)
+      ? (contains<String>(acc.sgSeen, cand)
           ? acc
-          : (append<String>(acc.found, cand), add<String>(acc.seen, cand)))
+          : Sugg(push<String >(acc.sgFound, cand),
+                 add<String>(acc.sgSeen, cand)))
       : acc
 
-  fun [tail] deletions(i: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+  fun [tail] deletions(i: Int, [terminal] acc: Sugg): Sugg
     ret i >= n ? acc
       : deletions(i + 1, consider(acc, slice(w, 0, i) + slice(w, i + 1, n)))
 
-  fun [tail] transposes(i: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+  fun [tail] transposes(i: Int, [terminal] acc: Sugg): Sugg
     ret i + 1 >= n ? acc
       : transposes(i + 1, consider(acc,
           slice(w, 0, i) + asciiToString(byteAt(w, i + 1)) + asciiToString(byteAt(w, i)) + slice(w, i + 2, n)))
 
-  fun [tail] substitutions(i: Int, j: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+  fun [tail] substitutions(i: Int, j: Int, [terminal] acc: Sugg): Sugg
     ret i >= n ? acc
       : j >= 26 ? substitutions(i + 1, 0, acc)
       : substitutions(i, j + 1, consider(acc,
           slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i + 1, n)))
 
-  fun [tail] insertions(i: Int, j: Int, acc: (found: List<String>, seen: Set<String>)): (found: List<String>, seen: Set<String>)
+  fun [tail] insertions(i: Int, j: Int, [terminal] acc: Sugg): Sugg
     ret i > n ? acc
       : j >= 26 ? insertions(i + 1, 0, acc)
       : insertions(i, j + 1, consider(acc,
           slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i, n)))
 
-  let start = (List<String>(), Set<String>())
+  let start = Sugg(builder<String >(), Set<String>())
   let result = insertions(0, 0, substitutions(0, 0, transposes(0, deletions(0, start))))
-  ret take<String>(result.found, 5)
+  ret take<String>(build<String >(result.sgFound), 5)
 
 
 # ── checking one file ─────────────────────────────────────────────────────────
@@ -181,6 +188,11 @@ fun [tail] anyLetter(word: String, i: Int): Bool
     : isLetter(byteAt(word, i)) ? true
     : anyLetter(word, i + 1)
 
+# Per-file report state. rpReports is ORDERED — the reports print in the order
+# the words were met — so it is a builder; rpReported is pure membership.
+class [linear, final] Rep(rpReports: ListBuilder<String >,
+                          rpReported: Set<String>, rpCount: Int)
+
 fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: Int)
   # All helpers sit at this level so closures only ever capture one enclosing
   # scope (dict/path); per-line state travels as explicit parameters.
@@ -190,16 +202,13 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: I
       ? path + ":" + String(lineNo) + ": '" + word + "' (no suggestions)"
       : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
 
-  fun report(lineNo: Int, word: String,
-             a: (reports: List<String>, reported: Set<String>, count: Int))
-      : (reports: List<String>, reported: Set<String>, count: Int)
-    ret (append<String>(a.reports, reportLine(lineNo, word, suggest(dict, word))),
-         add<String>(a.reported, word), a.count + 1)
+  fun report(lineNo: Int, word: String, [terminal] a: Rep): Rep
+    ret Rep(push<String >(a.rpReports,
+                          reportLine(lineNo, word, suggest(dict, word))),
+            add<String>(a.rpReported, word), a.rpCount + 1)
 
-  fun checkWord(lineNo: Int, word: String,
-                a: (reports: List<String>, reported: Set<String>, count: Int))
-      : (reports: List<String>, reported: Set<String>, count: Int)
-    ret length(word) < 2 || contains<String>(a.reported, word) || isKnown(dict, word)
+  fun checkWord(lineNo: Int, word: String, [terminal] a: Rep): Rep
+    ret length(word) < 2 || contains<String>(a.rpReported, word) || isKnown(dict, word)
       ? a
       : report(lineNo, word, a)
 
@@ -207,8 +216,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: I
     ret j < length(line) && isWordByte(byteAt(line, j)) ? wordEnd(line, j + 1) : j
 
   fun [tail] scanLine(lineNo: Int, line: String, i: Int,
-                      a: (reports: List<String>, reported: Set<String>, count: Int))
-      : (reports: List<String>, reported: Set<String>, count: Int)
+                      [terminal] a: Rep): Rep
     ret i >= length(line) ? a
       : isWordByte(byteAt(line, i))
         ? scanLine(lineNo, line, wordEnd(line, i + 1),
@@ -217,18 +225,16 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: I
                  : a)
         : scanLine(lineNo, line, i + 1, a)
 
-  fun [tail] perLine(io: IO, lineNo: Int,
-                     acc: (reports: List<String>, reported: Set<String>, count: Int))
-      : (io: IO, acc: (reports: List<String>, reported: Set<String>, count: Int))
+  fun [tail] perLine(io: IO, lineNo: Int, [terminal] acc: Rep): (io: IO, acc: Rep)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => perLine(r.io, lineNo + 1, scanLine(lineNo, chomp(line), 0, acc))
       (e: IOError)   => (r.io, acc)
 
   fun checkOpen(io: IO): (reports: List<String>, misspelt: Int)
-    let r = perLine(io, 1, (List<String>(), Set<String>(), 0))
+    let r = perLine(io, 1, Rep(builder<String >(), Set<String>(), 0))
     let closed = r.io.close()
-    ret (r.acc.reports, r.acc.count)
+    ret (build<String >(r.acc.rpReports), r.acc.rpCount)
 
   ret match(open_read(path))
     (io: IO)     => checkOpen(io)

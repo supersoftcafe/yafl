@@ -59,14 +59,18 @@ fun [tail] lastIndexLoop(s: String, at: Int, best: Int, c: Int32): Int
 fun namePrefixes(name: String): List<String>
   ret prefixLoop(chain(split(name, "@")), "", List<String>())
 
-fun [tail] prefixLoop(ps: Chain<String>, acc: String,
+fun prefixLoop(ps: Chain<String>, acc: String,
                       out: List<String>): List<String>
+  ret build<String >(prefixLoopB(ps, acc, _pushChain<String >(builder<String >(), chain<String >(out))))
+
+fun [tail] prefixLoopB(ps: Chain<String>, acc: String,
+                      [terminal] out: ListBuilder<String >): ListBuilder<String >
   ret match(ps)
     (nil: ChainEnd) => out
     (l: ChainLink)  => acc == ""
-      ? prefixLoop(l.next, l.value, append(out, l.value))
-      : prefixLoop(l.next, acc + "@" + l.value,
-                   append(out, acc + "@" + l.value))
+      ? prefixLoopB(l.next, l.value, push<String >(out, l.value))
+      : prefixLoopB(l.next, acc + "@" + l.value,
+                   push<String >(out, acc + "@" + l.value))
 
 # ── bags ────────────────────────────────────────────────────────────────────
 
@@ -144,20 +148,26 @@ fun [tail] dedupeAmb(es: Chain<AmbEntry>, acc: List<AmbEntry>): List<AmbEntry>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => dedupeAmb(l.next, mergeAmb(chain(acc), l.value,
-                                                 List<AmbEntry>(), false))
+                                                 builder<AmbEntry >(), false))
 
-fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry, out: List<AmbEntry>,
+# Entries keep their order: it is the order the "Candidates:" message lists
+# them in. An unmerged entry goes on the end.
+fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry,
+                    [terminal] out: ListBuilder<AmbEntry >,
                     merged: Bool): List<AmbEntry>
   ret match(es)
-    (nil: ChainEnd) => merged ? out : append(out, x)
+    (nil: ChainEnd) => build<AmbEntry >(merged
+      ? out
+      : push<AmbEntry >(out, x))
     (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
                        && eqNameList(chain(l.value.amOwn), chain(x.amOwn))
       ? mergeAmb(l.next, x,
-                 append(out, AmbEntry(mergeNames(l.value.amNs,
-                                                 chain(x.amNs)),
-                                      l.value.amSpec, l.value.amOwn)),
+                 push<AmbEntry >(out, AmbEntry(mergeNames(l.value.amNs,
+                                                          chain(x.amNs)),
+                                               l.value.amSpec,
+                                               l.value.amOwn)),
                  true)
-      : mergeAmb(l.next, x, append(out, l.value), merged)
+      : mergeAmb(l.next, x, push<AmbEntry >(out, l.value), merged)
 
 class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
 
@@ -180,8 +190,8 @@ fun buildAmbientOne(ti: PsTraitInstance, rest: Chain<PStmt>,
     (c: SClass) => anyNamed(chain(c.scParams))
       ? buildAmbient(rest, acc, true)
       : buildAmbient(rest,
-                     push(acc, AmbEntry(append(List<String>(),
-                                               namespacePart(ti.tiName)),
+                     push(acc, AmbEntry(prepend(namespacePart(ti.tiName),
+                                                List<String>()),
                                         ti.tiPattern,
                                         genNames(chain(ti.tiGens),
                                                  builder<String>()))),
@@ -215,7 +225,9 @@ fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
 fun putUnder(d: Dict<String, List<PStmt> >, key: String,
              st: PStmt): Dict<String, List<PStmt> >
   ret match(get(d, key))
-    (prev: List<PStmt>) => put(d, key, append(prev, st))
+    # Declaration order within a bucket: it is the candidate order overload
+    # resolution and the "Candidates:" message both see.
+    (prev: List<PStmt>) => put(d, key, build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(prev)), st)))
     ()                  => put(d, key, prepend(st, List<PStmt>()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
@@ -224,12 +236,13 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
   ret match(st)
     (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
-      ? Statements(acc.stOrdered, acc.stIndex, append(acc.stTraits, st),
+      ? Statements(acc.stOrdered, acc.stIndex,
+                   build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stTraits)), st)),
                    acc.stInstances, acc.stAmbient, acc.stAmbientBlocked)
       : acc
     (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                         acc.stTraits,
-                                        append(acc.stInstances, st),
+                                        build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stInstances)), st)),
                                         acc.stAmbient, acc.stAmbientBlocked)
     (o: PStmt)  => acc
 

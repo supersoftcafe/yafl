@@ -31,6 +31,14 @@ fun Bag<T>(): Bag<T>
   ret Bag<T>(ChainEnd<T>(), ChainEnd<T>())
 
 
+# From a List, forgetting its order but KEEPING its duplicates — that is what
+# distinguishes this from Set<T>(List<T>), and it is why this one needs no
+# equality on T. Like that one, it is the free direction: dropping an ordering
+# asks nothing of the caller, where recovering one makes them name it.
+fun Bag<T>(l: List<T>): Bag<T>
+  ret Bag<T>(chain<T>(l), ChainEnd<T>())
+
+
 # Add an element. O(1), and duplicates are kept — that is what distinguishes a
 # Bag from a Set.
 fun add<T>(b: Bag<T>, x: T): Bag<T>
@@ -39,6 +47,19 @@ fun add<T>(b: Bag<T>, x: T): Bag<T>
 
 fun isEmpty<T>(b: Bag<T>): Bool
   ret b._front is ChainEnd && b._rear is ChainEnd
+
+
+# How many elements. A count says nothing about order, so it is a fair
+# question to ask an unordered container — but it walks both chains, so it
+# costs O(n). Where the real question is "any?" or "more than one?", isEmpty
+# and isMoreThanOne answer it without the walk.
+fun size<T>(b: Bag<T>): Int
+  ret _chainCount<T>(b._front, _chainCount<T>(b._rear, 0))
+
+fun [tail] _chainCount<T>(c: Chain<T>, acc: Int): Int
+  ret match(c)
+    (l: ChainLink) => _chainCount<T>(l.next, acc + 1)
+    (e: ChainEnd)  => acc
 
 
 # The element of a one-element bag, else None — for the common shape where a
@@ -136,3 +157,20 @@ fun sortBy<T>(b: Bag<T>, less: (:T, :T): Bool): List<T>
 # this out would be iteration on an unordered container by another name.
 fun _bagDrain<T>(b: Bag<T>): List<T>
   ret build<T>(_pushChain<T>(_pushChain<T>(builder<T>(), b._front), b._rear))
+
+
+# fold — a REDUCTION, not a walk. `f` must be COMMUTATIVE and ASSOCIATIVE in
+# the elements: the container has no order, so the sequence in which they reach
+# `f` is unspecified, and a fold that cares would silently depend on the
+# container's internal shape. That is the one thing this design exists to stop.
+#
+# Legitimate: union, intersection, sum, max, "any error seen", counting.
+# NOT legitimate: string concatenation, building a list, first-wins lookup,
+# anything whose result differs when two elements swap places.
+#
+# It is offered because the alternative is worse: without it, callers reach for
+# sort() purely to get a walk, imposing an ordering they do not need and paying
+# O(n log n) to do it. Nothing enforces commutativity — this comment is the
+# contract.
+fun fold<T,U>(b: Bag<T>, init: U, f: (:U, :T): U): U
+  ret _chainFold<T,U>(b._rear, _chainFold<T,U>(b._front, init, f), f)

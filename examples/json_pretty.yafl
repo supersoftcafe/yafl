@@ -37,8 +37,11 @@ fun gatherJson(path: String): List<String>
     ret length(name) == 0 || byteAt(name, 0) == '.'
   fun gatherDir(): List<String>
     ret match(listDir(path))
-      (names: List<String>) =>
-          fold<String, List<String> >(names, List<String>(),
+      # Sorted: the fold concatenates each subtree in turn, so the order the
+      # names arrive in decides the order files are visited, and readdir order
+      # is not stable from one run to the next.
+      (names: Set<String>) =>
+          fold<String, List<String> >(sort<String>(names), List<String>(),
             (acc: List<String>, name: String) =>
               skipEntry(name) ? acc : concat<String>(acc, gatherJson(path + "/" + name)))
       (e: IOError) => List<String>()

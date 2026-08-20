@@ -117,7 +117,7 @@ fun compileDestructure(d: PsDestructure, r: Resolver): StmtOut
   # THEN propagate the parent tuple's entry types onto the RAW targets, and
   # only then compile them — Python refines first (lets.py:518-534).
   let refined = propagate(finalTy, d.dTargets, r)
-  let compiled = compileStmts(chain(refined), r, None, List<PStmt>(),
+  let compiled = compileStmts(chain(refined), r, None, builder<PStmt >(),
                               List<PStmt>())
   ret StmtOut(PsDestructure(d.dName, d.dAttrs, finalTy, compiled.slStmts,
                             exprOf(init), d.psdLine, inferredNow),
@@ -245,7 +245,7 @@ fun compileClass(c: PsClass, r0: Resolver): StmtOut
   # fixed signatures); the stored statement keeps none.
   let members = compileStmts(chain(withOwnerWheres(c.cMembers, c.cWheres)),
                              genScope(c.cGens, RClassBody(c, r0)), None,
-                             List<PStmt>(), List<PStmt>())
+                             builder<PStmt >(), List<PStmt>())
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
                       resolvedImplements(chain(inh), List<Spec>()),
                       wheres.psSpecs, stripOwnerWheres(members.slStmts, c.cWheres),
@@ -263,7 +263,7 @@ fun compileTraitInstance(inst: PsTraitInstance, r0: Resolver): StmtOut
   let wheres = compileParams(inst.tiWheres, r)
   let members = compileStmts(chain(withOwnerWheres(inst.tiMembers,
                                                    inst.tiWheres)),
-                             r, None, List<PStmt>(), List<PStmt>())
+                             r, None, builder<PStmt >(), List<PStmt>())
   ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAmbient, inst.tiGens,
                               specOr(pat, inst.tiPattern), wheres.psSpecs,
                               stripOwnerWheres(members.slStmts,
@@ -364,7 +364,7 @@ fun [tail] addSubstituted(ps: Chain<Spec>, mapping: List<Binding>,
 fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
   let r = enumScope(e, r0)
   let params = compileStmt(e.eParams, r, None)
-  let variants = compileStmts(chain(e.eVariants), r, None, List<PStmt>(),
+  let variants = compileStmts(chain(e.eVariants), r, None, builder<PStmt >(),
                               List<PStmt>())
   let glb = concat(params.soExtra, variants.slGlobals)
   # The constructor returns the ROOT statement type — narrow back to the
@@ -467,8 +467,12 @@ fun [tail] dfParams(ls: Chain<PStmt>, acc: List<SField>): List<SField>
         ()         => dfParams(l.next, acc)
       (o: PStmt)    => dfParams(l.next, acc)
 
+# Field DECLARATION order — it becomes the struct's layout. `acc` is read by
+# the dedup, so it cannot be a builder.
 fun addFieldOnce(acc: List<SField>, name: String, ty: Spec): List<SField>
-  ret hasFieldNamed(chain(acc), name) ? acc : append(acc, SField(name, ty))
+  ret hasFieldNamed(chain(acc), name)
+    ? acc
+    : build<SField >(push<SField >(_pushChain<SField >(builder<SField >(), chain<SField>(acc)), SField(name, ty)))
 
 fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
   ret match(fs)
@@ -523,9 +527,9 @@ fun compileIf(i: PsIf, r: Resolver, retType: Spec|None): StmtOut
   let t0 = collapseElseIf(i.ifTrue)
   let f0 = collapseElseIf(i.ifFalse)
   let t2 = compileStmts(chain(t0), blockScope(t0, r), retType,
-                        List<PStmt>(), List<PStmt>())
+                        builder<PStmt >(), List<PStmt>())
   let f = compileStmts(chain(f0), blockScope(f0, r), retType,
-                       List<PStmt>(), List<PStmt>())
+                       builder<PStmt >(), List<PStmt>())
   ret StmtOut(PsIf(cond.eoExpr, t2.slStmts, f.slStmts, i.psifLine),
               concat(cond.eoGlobals, concat(t2.slGlobals, f.slGlobals)))
 
@@ -594,9 +598,8 @@ fun [tail] nestArms(armsRev: Chain<PStmt>, tail2: List<PStmt>): List<PStmt>
     (nil: ChainEnd) => tail2
     (l: ChainLink)  => match(l.value)
       (ei: PsElseIf) => nestArms(l.next,
-                                 append(List<PStmt>(),
-                                        PsIf(ei.eiCond, ei.eiStmts, tail2,
-                                             ei.pseiLine)))
+                                 prepend(PsIf(ei.eiCond, ei.eiStmts, tail2,
+                                             ei.pseiLine), List<PStmt>()))
       (o: PStmt)     => nestArms(l.next, tail2)
 
 # ── lists ───────────────────────────────────────────────────────────────────
@@ -604,16 +607,17 @@ fun [tail] nestArms(armsRev: Chain<PStmt>, tail2: List<PStmt>): List<PStmt>
 class [final] StmtsOut(slStmts: List<PStmt>, slGlobals: List<PStmt>)
 
 fun [tail] compileStmts(ss: Chain<PStmt>, r: Resolver, retType: Spec|None,
-                        acc: List<PStmt>, glb: List<PStmt>): StmtsOut
+                        [terminal] acc: ListBuilder<PStmt >,
+                        glb: List<PStmt>): StmtsOut
   ret match(ss)
-    (nil: ChainEnd) => StmtsOut(acc, glb)
+    (nil: ChainEnd) => StmtsOut(build<PStmt >(acc), glb)
     (l: ChainLink)  => compileStmt(l.value, r, retType)
       |> (one) => compileStmts(l.next, r, retType, addStmt(acc, one.soStmt),
                                concat(glb, one.soExtra))
 
-fun addStmt(acc: List<PStmt>, st: PStmt|None): List<PStmt>
+fun addStmt([terminal] acc: ListBuilder<PStmt >, st: PStmt|None): ListBuilder<PStmt >
   ret match(st)
-    (x: PStmt) => append(acc, x)
+    (x: PStmt) => push<PStmt >(acc, x)
     ()         => acc
 
 # ── small helpers ───────────────────────────────────────────────────────────

@@ -33,14 +33,14 @@ fun scConcatName(): String   ret "string_concat_n"
 fun scRuntimeCap(): Int      ret 16   # string_concat_n's fixed operand arrays
 
 fun flattenStringAppends(a: CgApp): CgApp
-  ret appWithFunctions(a, map(a.appFunctions, scFunction))
+  ret appWithFunctions(a, map(appFunctions(a), scFunction))
 
 fun scFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
   let reads = sdReadCounts(f)
   let anchored = fold(f.fnOps, List<String>(), scAnchoredNames)
-  let absorbed = fold(f.fnOps, List<String>(),
-                      (acc: List<String>, op: Op) =>
+  let absorbed = fold(f.fnOps, Set<String>(),
+                      (acc: Set<String>, op: Op) =>
                         scCollectAbsorbed(acc, op, defs, reads, anchored))
   let newOps = map(f.fnOps,
                    (op: Op) => opReplaceParams(op,
@@ -59,9 +59,10 @@ fun scAnchoredNames(acc: List<String>, op: Op): List<String>
     (m: OpMove) => m.moveKeep ? scAnchTarget(acc, m.moveTarget) : acc
     (o: Op)     => acc
 
+# An anchored-name SET, membership-tested by scReplace.
 fun scAnchTarget(acc: List<String>, target: RParam): List<String>
   ret match(target)
-    (sv: RpStackVar) => append(acc, sv.name)
+    (sv: RpStackVar) => prepend(sv.name, acc)
     (o: RParam)      => acc
 
 # The (left, right) operands of a string_append invoke, when visible.
@@ -111,7 +112,7 @@ fun scConcatOperands(inv: RpRuntimeInvoke): (ops: List<RParam>, taking: List<Str
                                      (v: RpNamedValue) => v.name != "count"),
                               (v: RpNamedValue) => v.value),
                           List<String>())
-    (o: RParam)       => (append<RParam>(List<RParam>(), inv), List<String>())
+    (o: RParam)       => (list1<RParam>(inv), List<String>())
 
 # Chase through single-read locals: an append chain in a fused body is
 # threaded through plain copies (`sv2 = sv1`) that copy-propagation's
@@ -124,8 +125,8 @@ fun scSpineVar(param: RParam, defs: SsaDefs, reads: Dict<String, Int>,
     (sv: RpStackVar) => scReadOnce(reads, sv.name)
                         && !strListMember(anchored, sv.name)
       ? scSpineChase(sv, defs, reads, anchored)
-      : (append<RParam>(List<RParam>(), param), List<String>())
-    (o: RParam)      => (append<RParam>(List<RParam>(), param), List<String>())
+      : (list1<RParam>(param), List<String>())
+    (o: RParam)      => (list1<RParam>(param), List<String>())
 
 fun scSpineChase(sv: RpStackVar, defs: SsaDefs, reads: Dict<String, Int>,
                  anchored: List<String>): (ops: List<RParam>, taking: List<String>)
@@ -133,8 +134,8 @@ fun scSpineChase(sv: RpStackVar, defs: SsaDefs, reads: Dict<String, Int>,
     (src: RParam) => scAbsorbableDef(src)
       ? scSpine(src, defs, reads, anchored)
         |> (inner) => (inner.ops, prepend(sv.name, inner.taking))
-      : (append<RParam>(List<RParam>(), sv), List<String>())
-    ()            => (append<RParam>(List<RParam>(), sv), List<String>())
+      : (list1<RParam>(sv), List<String>())
+    ()            => (list1<RParam>(sv), List<String>())
 
 fun scIsAppend(inv: RpRuntimeInvoke): Bool
   ret match(scAppendArgs(inv))
@@ -164,19 +165,20 @@ fun scConcatOf(operands: List<RParam>): RParam
     ()             => RpNullPointer()   # unreachable: spine yields >= 1
 
 fun scConcatBuild(operands: List<RParam>): RParam
-  let numbered = scNumbered(chain(operands), 0, List<RpNamedValue>())
+  let numbered = scNumbered(chain(operands), 0, builder<RpNamedValue >())
   let fields = prepend(RpNamedValue("count", RpInteger(numbered.n, 32)),
                        numbered.vals)
   ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgDataPointer())
 
 # The operand count rides the numbering walk (no-length ruling).
 fun [tail] scNumbered(os: Chain<RParam>, i: Int,
-                      acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
+                      [terminal] acc: ListBuilder<RpNamedValue >): (vals: List<RpNamedValue>, n: Int)
   ret match(os)
-    (nil: ChainEnd) => (acc, i)
+    (nil: ChainEnd) => (build<RpNamedValue >(acc), i)
     (l: ChainLink)  => scNumbered(l.next, i + 1,
-                                  append(acc, RpNamedValue("s" + String(i),
-                                                           l.value)))
+                                  push<RpNamedValue >(acc,
+                                      RpNamedValue("s" + String(i),
+                                                   l.value)))
 
 fun scReplace(p: RParam, defs: SsaDefs, reads: Dict<String, Int>,
               anchored: List<String>): RParam
@@ -187,27 +189,27 @@ fun scReplace(p: RParam, defs: SsaDefs, reads: Dict<String, Int>,
       : p
     (o: RParam)            => p
 
-fun scCollectAbsorbed(acc: List<String>, op: Op, defs: SsaDefs,
+fun scCollectAbsorbed(acc: Set<String>, op: Op, defs: SsaDefs,
                       reads: Dict<String, Int>,
-                      anchored: List<String>): List<String>
+                      anchored: List<String>): Set<String>
   ret fold(opAllParams(op), acc,
-           (a2: List<String>, p: RParam) =>
+           (a2: Set<String>, p: RParam) =>
              scCollectRoot(a2, p, defs, reads, anchored))
 
-fun scCollectRoot(acc: List<String>, p: RParam, defs: SsaDefs,
-                  reads: Dict<String, Int>, anchored: List<String>): List<String>
+fun scCollectRoot(acc: Set<String>, p: RParam, defs: SsaDefs,
+                  reads: Dict<String, Int>, anchored: List<String>): Set<String>
   ret match(p)
     (inv: RpRuntimeInvoke) => scIsAppend(inv)
       ? scSpine(p, defs, reads, anchored)
         |> (sp) => atLeast(chain(sp.ops), 3)
-          ? fold(sp.taking, acc, strListAdd)
+          ? fold(sp.taking, acc, (s2: Set<String>, n: String) => add<String>(s2, n))
           : acc
       : acc
     (o: RParam)            => acc
 
-fun scIsAbsorbedMove(op: Op, absorbed: List<String>): Bool
+fun scIsAbsorbedMove(op: Op, absorbed: Set<String>): Bool
   ret match(op)
     (m: OpMove) => match(m.moveTarget)
-      (sv: RpStackVar) => strListMember(absorbed, sv.name)
+      (sv: RpStackVar) => contains<String>(absorbed, sv.name)
       (o: RParam)      => false
     (o: Op)     => false

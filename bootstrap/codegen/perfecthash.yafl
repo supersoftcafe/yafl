@@ -48,20 +48,33 @@ fun bitLength(n: Int): Int
 fun nextPowerOfTwo(n: Int): Int
   ret pow2(bitLength(n - 1))
 
+# Python: `sorted(set(name for sublist in vtables.values() for name in sublist))`.
+# A set, so nothing but the sort's order is ever observed — which is why the
+# gathering is a Set here and not a list that gets deduped afterwards.
 fun phAllMethodNames(vtables: List<VtableEntry>): List<String>
-  ret sort<String>(phDedupeNames(fold(vtables, List<String>(), (acc: List<String>, v: VtableEntry) => concat<String>(acc, v.methods))))
+  ret sort<String>(fold(vtables, Set<String>(), (acc: Set<String>, v: VtableEntry) =>
+        fold(v.methods, acc, (names: Set<String>, n: String) => add<String>(names, n))))
 
-fun phDedupeNames(names: List<String>): List<String>
-  ret fold(names, List<String>(), (acc: List<String>, n: String) => strListAdd(acc, n))
+# This list's ORDER IS OBSERVED: gen.yafl emits the __FUNCTION_ID__ enum by
+# walking it, mirroring Python's insertion-ordered method_ids dict (later
+# re-assignment overwrites a value, so it never moves a key). Ids are handed
+# out along the same walk, so the builder and the counter stay in step and the
+# next free id rides out with them.
+class [linear, final] IdAcc(iaIds: ListBuilder<MethodId >, iaNext: Int)
 
-fun [tail] phAssignIdsLoop(names: List<String>, nextId: Int, acc: List<MethodId>): (ids: List<MethodId>, next: Int)
-  ret match(head<String>(names))
-    (n: String) => phAssignIdsLoop(tail<String>(names), nextId + 1, append<MethodId>(acc, MethodId(n, nextId)))
-    ()           => (acc, nextId)
-
-# Returns the ids AND the next free id — the count rides the assigning walk.
 fun phAssignIds(names: List<String>): (ids: List<MethodId>, next: Int)
-  ret phAssignIdsLoop(names, 0, List<MethodId>())
+  ret phAssignIdsFinish(phAssignIdsLoop(chain(names),
+                                        IdAcc(builder<MethodId >(), 0)))
+
+fun phAssignIdsFinish(acc: IdAcc): (ids: List<MethodId>, next: Int)
+  ret (build<MethodId >(acc.iaIds), acc.iaNext)
+
+fun [tail] phAssignIdsLoop(names: Chain<String>, [terminal] acc: IdAcc): IdAcc
+  ret match(names)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => phAssignIdsLoop(l.next,
+        IdAcc(push<MethodId >(acc.iaIds, MethodId(l.value, acc.iaNext)),
+              acc.iaNext + 1))
 
 fun phVtableSizes(vtables: List<VtableEntry>): List<VtableSize>
   ret map(vtables, (v: VtableEntry) => VtableSize(v.className, nextPowerOfTwo(v.vtN * 2)))
@@ -78,63 +91,86 @@ fun [tail] vtableSizeGet(sizes: List<VtableSize>, className: String): Int
 
 # ── one collision-detection scan over all vtables (using the CURRENT ids) ──
 
-class [final] SlotEntry(slotIndex: Int, slotMethod: String)
 class [final] CollisionPair(pairA: String, pairB: String)
-
-fun [tail] slotEntryGet(slots: List<SlotEntry>, idx: Int): String|None
-  ret match(head<SlotEntry>(slots))
-    (s: SlotEntry) => s.slotIndex == idx ? s.slotMethod : slotEntryGet(tail<SlotEntry>(slots), idx)
-    ()              => None
 
 # Both scan loops are SINGLE self-recursive steppers ([tail] refuses mutual
 # pairs; the loop/step split left two C frames per element and the vtable
 # walk alone held 8,440 frames at self-host scale — the last 8MB overflow).
-# The per-element work rides inline; the class scan hands its tuple through
-# a pipe so the outer self-call stays direct.
-fun [tail] phScanClassSlots(methods: List<String>, methodIds: List<MethodId>, mask: Int, slots: List<SlotEntry>, pairs: List<CollisionPair>): (slots: List<SlotEntry>, pairs: List<CollisionPair>)
-  ret match(head<String>(methods))
-    (m: String) => match(slotEntryGet(slots, methodIdGet(methodIds, m) & mask))
-      (existing: String) => phScanClassSlots(tail<String>(methods), methodIds, mask, slots,
-                                             append<CollisionPair>(pairs, CollisionPair(m, existing)))
-      ()                   => phScanClassSlots(tail<String>(methods), methodIds, mask,
-                                               append<SlotEntry>(slots, SlotEntry(methodIdGet(methodIds, m) & mask, m)),
-                                               pairs)
-    ()           => (slots, pairs)
+# The per-element work rides inline.
+#
+# `slots` is Python's per-class `slots = {}`, asked only "is this index
+# taken, and by whom" — a Dict, which also retires the linear scan that
+# answered that question. `pairs` is a builder: it is written and never read,
+# and its order IS observed, because buildConflictGraph replays it to
+# reproduce Python's key insertion order.
+fun [tail] phScanClassSlots(methods: Chain<String>, methodIds: List<MethodId>,
+                            mask: Int, slots: Dict<Int, String>,
+                            [terminal] pairs: ListBuilder<CollisionPair >): ListBuilder<CollisionPair >
+  ret match(methods)
+    (nil: ChainEnd) => pairs
+    (l: ChainLink)  => match(get<Int, String>(slots, methodIdGet(methodIds, l.value) & mask))
+      (existing: String) => phScanClassSlots(l.next, methodIds, mask, slots,
+                              push<CollisionPair >(pairs, CollisionPair(l.value, existing)))
+      ()                 => phScanClassSlots(l.next, methodIds, mask,
+                              put<Int, String>(slots, methodIdGet(methodIds, l.value) & mask, l.value),
+                              pairs)
 
-fun [tail] phScanAllSlots(vtables: List<VtableEntry>, methodIds: List<MethodId>, vtableSizes: List<VtableSize>, pairs: List<CollisionPair>): List<CollisionPair>
-  ret match(head<VtableEntry>(vtables))
-    (v: VtableEntry) =>
-      phScanClassSlots(v.methods, methodIds, vtableSizeGet(vtableSizes, v.className) - 1,
-                       List<SlotEntry>(), pairs)
-      |> (slots2: List<SlotEntry>, pairs2: List<CollisionPair>) =>
-        phScanAllSlots(tail<VtableEntry>(vtables), methodIds, vtableSizes, pairs2)
-    ()                => pairs
+fun [tail] phScanAllSlots(vtables: Chain<VtableEntry>, methodIds: List<MethodId>,
+                          vtableSizes: List<VtableSize>,
+                          [terminal] pairs: ListBuilder<CollisionPair >): ListBuilder<CollisionPair >
+  ret match(vtables)
+    (nil: ChainEnd) => pairs
+    (l: ChainLink)  => phScanAllSlots(l.next, methodIds, vtableSizes,
+        phScanClassSlots(chain(l.value.methods), methodIds,
+                         vtableSizeGet(vtableSizes, l.value.className) - 1,
+                         Dict<Int, String>(), pairs))
 
 # ── conflict graph + greedy vertex cover ─────────────────────────────────────
 
-class [final] ConflictEntry(cfMethod: String, cfNeighbors: List<String>)
+# Python's conflict_graph is a defaultdict(set), and the two halves of that
+# are read very differently. The NEIGHBOUR collections are sets — asked for
+# their degree, their membership and one-at-a-time removal, never their order.
+# The GRAPH'S OWN key order, on the other hand, IS observed: max(degree_count,
+# key=...) breaks a degree tie by first insertion. So the keys keep their
+# discovery order in a list and the edges live in a Dict — which also retires
+# the whole-graph rewrite that removing a single edge used to cost.
+class [final] ConflictGraph(cgOrder: List<String>, cgEdges: Dict<String, List<String> >)
 
-fun [tail] conflictNeighborsGet(graph: List<ConflictEntry>, method: String): List<String>
-  ret match(head<ConflictEntry>(graph))
-    (e: ConflictEntry) => e.cfMethod == method ? e.cfNeighbors : conflictNeighborsGet(tail<ConflictEntry>(graph), method)
-    ()                   => List<String>()
+# cgOrder is only WRITTEN during the build — "have I met this method before"
+# is the Dict's question, not the list's — so it can be a builder.
+class [linear, final] CgAcc(caOrder: ListBuilder<String >,
+                            caEdges: Dict<String, List<String> >)
 
-fun conflictGraphHas(graph: List<ConflictEntry>, method: String): Bool
-  ret any<ConflictEntry>(graph, (e: ConflictEntry) => e.cfMethod == method)
+fun buildConflictGraph(pairs: List<CollisionPair>): ConflictGraph
+  ret cgFinish(bcgLoop(chain(pairs),
+                       CgAcc(builder<String >(), Dict<String, List<String> >())))
 
-fun conflictGraphAddDirected(graph: List<ConflictEntry>, from2: String, to: String): List<ConflictEntry>
-  ret conflictGraphHas(graph, from2)
-    ? map(graph, (e: ConflictEntry) => e.cfMethod == from2 ? ConflictEntry(e.cfMethod, strListAdd(e.cfNeighbors, to)) : e)
-    : append<ConflictEntry>(graph, ConflictEntry(from2, append<String>(List<String>(), to)))
+fun cgFinish(acc: CgAcc): ConflictGraph
+  ret ConflictGraph(build<String >(acc.caOrder), acc.caEdges)
 
-fun conflictGraphAddEdge(graph: List<ConflictEntry>, a: String, b: String): List<ConflictEntry>
-  ret conflictGraphAddDirected(conflictGraphAddDirected(graph, a, b), b, a)
+fun [tail] bcgLoop(ps: Chain<CollisionPair>, [terminal] acc: CgAcc): CgAcc
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => bcgLoop(l.next, cgAddEdge(acc, l.value.pairA, l.value.pairB))
 
-fun buildConflictGraph(pairs: List<CollisionPair>): List<ConflictEntry>
-  ret fold(pairs, List<ConflictEntry>(), (acc: List<ConflictEntry>, p: CollisionPair) => conflictGraphAddEdge(acc, p.pairA, p.pairB))
+fun cgAddEdge([terminal] acc: CgAcc, a: String, b: String): CgAcc
+  ret cgAddDirected(cgAddDirected(acc, a, b), b, a)
 
-fun conflictGraphHasAnyEdges(graph: List<ConflictEntry>): Bool
-  ret any<ConflictEntry>(graph, (e: ConflictEntry) => !isEmpty<String>(e.cfNeighbors))
+fun cgAddDirected([terminal] acc: CgAcc, from2: String, to: String): CgAcc
+  ret match(get<String, List<String> >(acc.caEdges, from2))
+    (ns: List<String>) => CgAcc(acc.caOrder,
+        put<String, List<String> >(acc.caEdges, from2,
+          strListMember(ns, to) ? ns : prepend<String>(to, ns)))
+    ()                 => CgAcc(push<String >(acc.caOrder, from2),
+        put<String, List<String> >(acc.caEdges, from2, list1(to)))
+
+fun cgNeighbors(g: ConflictGraph, method: String): List<String>
+  ret match(get<String, List<String> >(g.cgEdges, method))
+    (ns: List<String>) => ns
+    ()                 => List<String>()
+
+fun conflictGraphHasAnyEdges(g: ConflictGraph): Bool
+  ret any<String>(g.cgOrder, (m: String) => !isEmpty<String>(cgNeighbors(g, m)))
 
 # Ties broken by first occurrence — matches Python's max(dict, key=...) over
 # an insertion-ordered dict (this graph is built in the same discovery order
@@ -142,41 +178,43 @@ fun conflictGraphHasAnyEdges(graph: List<ConflictEntry>): Bool
 # Max-degree pick by CO-WALK: the previous best's neighbour list is the
 # yardstick (None = nothing picked yet); strictly-longer wins, exactly the
 # old `degree > bestDegree` with the -1 seed (no-length ruling).
-fun pickMaxDegreeLoop(graph: List<ConflictEntry>, bestMethod: String,
-                      bestNs: List<String>|None): String
-  ret match(head<ConflictEntry>(graph))
-    (e: ConflictEntry) => pickMaxDegreeNext(tail<ConflictEntry>(graph), e, bestMethod, bestNs)
-    ()                   => bestMethod
+fun [tail] pickMaxDegreeLoop(ms: Chain<String>, g: ConflictGraph,
+                             bestMethod: String, bestNs: List<String>|None): String
+  ret match(ms)
+    (nil: ChainEnd) => bestMethod
+    (l: ChainLink)  => match(bestNs)
+      (ns: List<String>) => shorterThan(chain(ns), chain(cgNeighbors(g, l.value)))
+        ? pickMaxDegreeLoop(l.next, g, l.value, cgNeighbors(g, l.value))
+        : pickMaxDegreeLoop(l.next, g, bestMethod, bestNs)
+      ()                 => pickMaxDegreeLoop(l.next, g, l.value,
+                                              cgNeighbors(g, l.value))
 
-fun pickMaxDegreeNext(rest: List<ConflictEntry>, e: ConflictEntry, bestMethod: String,
-                      bestNs: List<String>|None): String
-  ret match(bestNs)
-    (ns: List<String>) => shorterThan(chain(ns), chain(e.cfNeighbors))
-      ? pickMaxDegreeLoop(rest, e.cfMethod, e.cfNeighbors)
-      : pickMaxDegreeLoop(rest, bestMethod, bestNs)
-    ()                 => pickMaxDegreeLoop(rest, e.cfMethod, e.cfNeighbors)
+fun pickMaxDegree(g: ConflictGraph): String
+  ret pickMaxDegreeLoop(chain(g.cgOrder), g, "", None)
 
-fun pickMaxDegree(graph: List<ConflictEntry>): String
-  ret pickMaxDegreeLoop(graph, "", None)
+fun conflictGraphRemoveOne(g: ConflictGraph, from2: String, target: String): ConflictGraph
+  ret ConflictGraph(g.cgOrder,
+        put<String, List<String> >(g.cgEdges, from2,
+          filter<String>(cgNeighbors(g, from2), (x: String) => x != target)))
 
-fun conflictGraphRemoveOne(graph: List<ConflictEntry>, from2: String, target: String): List<ConflictEntry>
-  ret map(graph, (e: ConflictEntry) => e.cfMethod == from2 ? ConflictEntry(e.cfMethod, filter<String>(e.cfNeighbors, (x: String) => x != target)) : e)
+fun removeFromNeighbors(g: ConflictGraph, neighbors: List<String>, method: String): ConflictGraph
+  ret fold(neighbors, g, (acc: ConflictGraph, n: String) => conflictGraphRemoveOne(acc, n, method))
 
-fun removeFromNeighbors(graph: List<ConflictEntry>, neighbors: List<String>, method: String): List<ConflictEntry>
-  ret fold(neighbors, graph, (g: List<ConflictEntry>, n: String) => conflictGraphRemoveOne(g, n, method))
+fun conflictGraphClearMethod(g: ConflictGraph, method: String): ConflictGraph
+  ret ConflictGraph(g.cgOrder,
+        put<String, List<String> >(g.cgEdges, method, List<String>()))
 
-fun conflictGraphClearMethod(graph: List<ConflictEntry>, method: String): List<ConflictEntry>
-  ret map(graph, (e: ConflictEntry) => e.cfMethod == method ? ConflictEntry(e.cfMethod, List<String>()) : e)
+# `cover` is a Python set, sorted before its only use (phReassignCover), so
+# the order methods land in it is not observed.
+fun greedyVertexCoverStep(g: ConflictGraph, cover: List<String>): List<String>
+  let method = pickMaxDegree(g)
+  let neighbors = cgNeighbors(g, method)
+  let g2 = removeFromNeighbors(g, neighbors, method)
+  let g3 = conflictGraphClearMethod(g2, method)
+  ret greedyVertexCover(g3, prepend<String>(method, cover))
 
-fun greedyVertexCoverStep(graph: List<ConflictEntry>, cover: List<String>): List<String>
-  let method = pickMaxDegree(graph)
-  let neighbors = conflictNeighborsGet(graph, method)
-  let graph2 = removeFromNeighbors(graph, neighbors, method)
-  let graph3 = conflictGraphClearMethod(graph2, method)
-  ret greedyVertexCover(graph3, append<String>(cover, method))
-
-fun greedyVertexCover(graph: List<ConflictEntry>, cover: List<String>): List<String>
-  ret conflictGraphHasAnyEdges(graph) ? greedyVertexCoverStep(graph, cover) : cover
+fun greedyVertexCover(g: ConflictGraph, cover: List<String>): List<String>
+  ret conflictGraphHasAnyEdges(g) ? greedyVertexCoverStep(g, cover) : cover
 
 # ── re-assign fresh ids to every method in the cover, then re-iterate ──────
 
@@ -196,7 +234,9 @@ fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, 
   ret phFixpoint(vtables, reassigned.methodIds, vtableSizes, iteration + 1, reassigned.nextId)
 
 fun phFixpointStep(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int): List<MethodId>
-  let pairs = phScanAllSlots(vtables, methodIds0, vtableSizes, List<CollisionPair>())
+  let pairs = build<CollisionPair >(phScanAllSlots(chain(vtables), methodIds0,
+                                                  vtableSizes,
+                                                  builder<CollisionPair >()))
   ret isEmpty<CollisionPair>(pairs)
     ? methodIds0
     : phFixpointCollision(vtables, methodIds0, vtableSizes, iteration, nextId0, pairs)

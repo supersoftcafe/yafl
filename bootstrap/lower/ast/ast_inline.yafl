@@ -22,13 +22,16 @@ import Bootstrap::Types
 # deduped list — consumers that need a canonical order sort it, exactly as the
 # (determinism-fixed) Python now does.
 
-fun freeRefs(f: PsFun, alsoExclude: List<String>): List<String>
+# A Set of names, not a list: the two consumers are set operations —
+# coAddCaps sorts it before use, hoIntersect intersects it — so the order the
+# walk happened to meet them in is not observable.
+fun freeRefs(f: PsFun, alsoExclude: List<String>): Set<String >
   let own = frOwnNames(f, alsoExclude)
   ret match(f.fBody)
     (b: PExpr) => match(b)
-      (bk: PeBlock) => frExpr(b, own, List<String>())
-      (o: PExpr)    => List<String>()
-    ()         => List<String>()
+      (bk: PeBlock) => frExpr(b, own, Set<String >())
+      (o: PExpr)    => Set<String >()
+    ()         => Set<String >()
 
 fun frOwnNames(f: PsFun, alsoExclude: List<String>): List<String>
   let params = allStmtNames(chain(flattenParams(f.fParams)), alsoExclude)
@@ -49,12 +52,14 @@ fun [tail] frBlockNamesB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String >)
       (f: PsFun)    => frBlockNamesB(l.next, push<String >(acc, f.fName))
       (o: PStmt)    => frBlockNamesB(l.next, acc)
 
-fun frAdd(acc: List<String>, exclude: List<String>, name: String): List<String>
-  ret contains2(exclude, name) || contains2(acc, name)
-    ? acc
-    : append(acc, name)
+# The free-reference accumulator is a SET: both consumers of freeRefs are set
+# operations (coAddCaps sorts it, hoIntersect intersects it), so there is no
+# order to keep. `add` is idempotent, so the "already present" test goes with
+# it — the O(n) scan per name becomes one O(log n) insert.
+fun frAdd(acc: Set<String >, exclude: List<String>, name: String): Set<String >
+  ret contains2(exclude, name) ? acc : add<String >(acc, name)
 
-fun frExpr(x: PExpr, exclude: List<String>, acc: List<String>): List<String>
+fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String >): Set<String >
   ret match(x)
     (nm: PeName)   => frAdd(acc, exclude, nm.refName)
     (d: PeDot)     => frExpr(d.base, exclude, acc)
@@ -81,26 +86,26 @@ fun frExpr(x: PExpr, exclude: List<String>, acc: List<String>): List<String>
     (lp: PeLoop)   => frExpr(lp.loopBody, exclude,
                              frExprs(chain(lp.loopParams), exclude, acc))
     (rc: PeRecur)  => frExprs(chain(rc.recArgs), exclude, acc)
-    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: List<String>, fa: PFieldArg) =>
+    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: Set<String >, fa: PFieldArg) =>
                             frExpr(fa.faValue, exclude, a2))
     (o: PExpr)     => acc
 
 fun [tail] frExprs(es: Chain<PExpr>, exclude: List<String>,
-                   acc: List<String>): List<String>
+                   acc: Set<String >): Set<String >
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frExprs(l.next, exclude,
                                frExpr(l.value, exclude, acc))
 
 fun [tail] frEnts(es: Chain<PTupEnt>, exclude: List<String>,
-                  acc: List<String>): List<String>
+                  acc: Set<String >): Set<String >
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frEnts(l.next, exclude,
                               frExpr(l.value.tupValue, exclude, acc))
 
 fun [tail] frArms(as2: Chain<PArm>, exclude: List<String>,
-                  acc: List<String>): List<String>
+                  acc: Set<String >): Set<String >
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frArms(l.next, exclude,
@@ -108,19 +113,19 @@ fun [tail] frArms(as2: Chain<PArm>, exclude: List<String>,
               frExpr(l.value.armBody, exclude, acc)))
 
 fun frOpt(x: PExpr|None, exclude: List<String>,
-          acc: List<String>): List<String>
+          acc: Set<String >): Set<String >
   ret match(x)
     (e2: PExpr) => frExpr(e2, exclude, acc)
     ()          => acc
 
 fun [tail] frStmts(ss: Chain<PStmt>, exclude: List<String>,
-                   acc: List<String>): List<String>
+                   acc: Set<String >): Set<String >
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frStmts(l.next, exclude,
                                frStmt(l.value, exclude, acc))
 
-fun frStmt(st: PStmt, exclude: List<String>, acc: List<String>): List<String>
+fun frStmt(st: PStmt, exclude: List<String>, acc: Set<String >): Set<String >
   ret match(st)
     (f: PsFun)   => frOpt(f.fBody, exclude, frStmt(f.fParams, exclude, acc))
     (l: PsLet)   => frOpt(l.lDefault, exclude, acc)
@@ -142,7 +147,7 @@ fun frStmt(st: PStmt, exclude: List<String>, acc: List<String>): List<String>
 fun aiSccs(nodes: List<String>, work: EEdges): List<List<String>>
   ret tjRoots(chain(nodes), work,
               Tj(Dict<String, Int>(), Dict<String, Int>(), List<String>(),
-                 List<String>(), List<List<String>>(), 0)).tjSccs
+                 Set<String >(), List<List<String>>(), 0)).tjSccs
 
 # The '$generic$…' tail of a specialised parent's name, or "".
 fun specializationSuffix(name: String): String
@@ -167,11 +172,16 @@ fun toLetLambda(f: PsFun): PStmt
 # name → declared type for fn's params and top-level lets (fields of a
 # synthesised closure class).
 
-class [final] OuterTypes(otNames: List<String>, otTypes: List<Spec>)
+# A name -> type map, held as a Dict rather than two parallel Lists. Lookup was
+# a linear walk of both chains in lockstep; it is now O(log n) and the pairing
+# cannot drift. The CAPTURE order that coClassParam turns into generated class
+# fields is recovered by sorting the names — which reproduces it exactly,
+# because captures are collected from sort<String>(freeRefs(...)) already.
+class [final] OuterTypes(otMap: Dict<String, Spec>)
 
 fun gatherOuterVarTypes(f: PsFun): OuterTypes
   let fromParams = otAdd(chain(flattenParams(f.fParams)),
-                         OuterTypes(List<String>(), List<Spec>()))
+                         OuterTypes(Dict<String, Spec>()))
   ret match(f.fBody)
     (b: PExpr) => match(b)
       (bk: PeBlock) => otAdd(chain(bk.blockStmts), fromParams)
@@ -183,41 +193,35 @@ fun [tail] otAdd(ss: Chain<PStmt>, acc: OuterTypes): OuterTypes
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => match(let2.lType)
-        (sp: Spec) => otAdd(l.next,
-                            OuterTypes(append(acc.otNames, let2.lName),
-                                       append(acc.otTypes, sp)))
+        # FIRST binding of a name wins, not the last. The old shape appended to
+        # a chain that was searched head-first, so the earliest entry answered
+        # the lookup; parameters are gathered before body lets, so a body let
+        # that shadows a parameter must NOT displace it. A plain `put` would
+        # silently reverse that.
+        (sp: Spec) => otAdd(l.next, contains<String, Spec>(acc.otMap, let2.lName)
+                            ? acc
+                            : OuterTypes(put<String, Spec>(acc.otMap,
+                                                           let2.lName, sp)))
         ()         => otAdd(l.next, acc)
       (o: PStmt)    => otAdd(l.next, acc)
-
-fun [tail] otLookup(ns: Chain<String>, ts: Chain<Spec>,
-                    name: String): Spec|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(ts)
-      (nil2: ChainEnd) => None
-      (t2: ChainLink)  => n.value == name
-        ? t2.value
-        : otLookup(n.next, t2.next, name)
 
 # ── this-redirect for coalesced class methods ────────────────────────────────
 # NamedExpression(name) → this.<target[name]> for any name in the map.
 
-class [final] ThisMap(tmNames: List<String>, tmTargets: List<String>)
+# A Dict, not two parallel Lists. The only thing anyone ever asks it is "what
+# does this name redirect to", and it is asked once per name node of every
+# rewritten body — the parallel-list version answered that by walking both
+# chains in lockstep, so rewriting a body cost the size of the map times the
+# size of the body. It also could not fall out of step, which two lists
+# appended to independently can.
+class [final] ThisMap(tmMap: Dict<String, String>)
 
-fun [tail] tmLookup(ns: Chain<String>, ts: Chain<String>,
-                    name: String): String|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(ts)
-      (nil2: ChainEnd) => None
-      (t2: ChainLink)  => n.value == name
-        ? t2.value
-        : tmLookup(n.next, t2.next, name)
+fun tmLookup(m: ThisMap, name: String): String|None
+  ret get<String, String>(m.tmMap, name)
 
 fun rcmExpr(x: PExpr, m: ThisMap): PExpr
   ret match(x)
-    (nm: PeName)   => match(tmLookup(chain(m.tmNames), chain(m.tmTargets),
-                                     nm.refName))
+    (nm: PeName)   => match(tmLookup(m, nm.refName))
       (target: String) => PeDot(PeName("this", List<Spec>(), nm.penLine,
                                        None),
                                 target, nm.penLine)
@@ -339,16 +343,26 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
                       specSuffix: String): Coalesced
   let lr = coFirstLine(sccFns)
   let caps = coUnionCaptures(chain(sccFns), outer, siblingNames,
-                             OuterTypes(List<String>(), List<Spec>()))
+                             OuterTypes(Dict<String, Spec>()))
+  # Sorted once and shared by the three walks below: the class fields, the
+  # constructor arguments, and the this-map's identity entries all have to
+  # agree, and they agree because they are the same list.
+  let capNames = coCapNames(caps)
   let renames = coRenames(chain(sccFns), lr, specSuffix,
-                          ThisMap(List<String>(), List<String>()))
-  let thisMap = ThisMap(concat(caps.otNames, renames.tmNames),
-                        concat(caps.otNames, renames.tmTargets))
+                          ThisMap(Dict<String, String>()))
+  # Captured names redirect to themselves; method names redirect to their
+  # class-unique targets. The capture entries are put in LAST so that they win
+  # a collision, which is what the old shape did by placing them first in a
+  # chain searched from the head.
+  let thisMap = ThisMap(fold<String, Dict<String, String> >(capNames,
+                            renames.tmMap,
+                            (d: Dict<String, String>, n: String) =>
+                              put<String, String>(d, n, n)))
   let methods = coMethods(chain(sccFns), renames, thisMap, List<PStmt>())
   let clsName = "$mutual::class@" + hash6(lr.plFile, lr.plLine, lr.plCol)
                 + specSuffix
-  let cls = PsClass(clsName, append(List<PAttr>(),
-                                    PAttr("final", PeInt(1, 32, lr))),
+  let cls = PsClass(clsName, prepend(PAttr("final", PeInt(1, 32, lr)),
+                                     List<PAttr>()),
                     List<PGen>(), coClassParam(caps, lr), List<Spec>(),
                     List<Spec>(), methods, false, lr, List<Spec>(),
                     List<Slot>(), List<PStmt>())
@@ -357,7 +371,7 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
   let clsType = SClass(clsName, List<Spec>(), lr)
   let sharedLet = PsLet(sharedName, List<PAttr>(), List<PGen>(), clsType,
                         PeNew(clsType,
-                              PeTuple(coCaptureArgs(chain(caps.otNames), lr,
+                              PeTuple(coCaptureArgs(chain(capNames), lr,
                                                     List<PTupEnt>()),
                                       lr),
                               lr),
@@ -370,39 +384,59 @@ fun coFirstLine(sccFns: List<PsFun>): PLine
     (l: ChainLink)  => l.value.psfLine
     (nil: ChainEnd) => PLine("$mutual", 1, 1)
 
-# Union captures: every outer var referenced by any member, sorted per member
-# (the determinism-fixed Python), first encounter wins across members.
+# Union captures: every outer var referenced by any member of the SCC.
+#
+# The capture ORDER reaches generated code — it is the field order of the
+# shared class and the argument order of its construction — so it must be
+# stable, but it need not be the visit order. It is taken as SORTED BY NAME at
+# the point of use (coCapNames), which makes the generated class a function of
+# WHICH names are captured rather than of the order the members happened to be
+# walked in. The old shape was "sorted per member, first encounter wins across
+# members", which needed a per-member sort AND a dedupe scan to get a
+# deterministic answer; one sort at the end is both. The Python compiler makes
+# the same change, so the two stay byte-identical.
 fun [tail] coUnionCaptures(fs: Chain<PsFun>, outer: OuterTypes,
                            siblingNames: List<String>,
                            acc: OuterTypes): OuterTypes
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => coUnionCaptures(l.next, outer, siblingNames,
-        coAddCaps(chain(sort<String>(freeRefs(l.value, siblingNames))),
-                  outer, acc))
+        coAddCaps(freeRefs(l.value, siblingNames), outer, acc))
 
-fun [tail] coAddCaps(ns: Chain<String>, outer: OuterTypes,
-                     acc: OuterTypes): OuterTypes
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => contains2(acc.otNames, l.value)
-      ? coAddCaps(l.next, outer, acc)
-      : match(otLookup(chain(outer.otNames), chain(outer.otTypes), l.value))
-        (sp: Spec) => coAddCaps(l.next, outer,
-                                OuterTypes(append(acc.otNames, l.value),
-                                           append(acc.otTypes, sp)))
-        ()         => coAddCaps(l.next, outer, acc)
+# A REDUCTION over an unordered Set, which is the one thing a Set fold may be
+# used for: every name is resolved against the SAME `outer` map, so two members
+# capturing one name contribute an identical entry and the order in which they
+# arrive cannot change the result. The "already captured" test that guarded the
+# old append is gone with it — `put` of an equal entry is idempotent.
+fun coAddCaps(ns: Set<String >, outer: OuterTypes, acc: OuterTypes): OuterTypes
+  ret fold<String, OuterTypes>(ns, acc,
+          (a: OuterTypes, n: String) => coAddCap(a, n, outer))
+
+# A name that resolves to no outer type is not a capture — it is a reference to
+# something that is not in scope out here, and it is dropped, exactly as the
+# old lookup-then-append did by never appending.
+fun coAddCap(acc: OuterTypes, n: String, outer: OuterTypes): OuterTypes
+  ret match(get<String, Spec>(outer.otMap, n))
+    (sp: Spec) => OuterTypes(put<String, Spec>(acc.otMap, n, sp))
+    ()         => acc
+
+# The captured names in their canonical order. Every consumer that walks the
+# captures — class fields, constructor arguments, parameter lets — goes through
+# this, so they cannot disagree.
+fun coCapNames(caps: OuterTypes): List<String>
+  ret sort<String>(keys<String, Spec>(caps.otMap))
 
 fun [tail] coRenames(fs: Chain<PsFun>, lr: PLine, specSuffix: String,
                      acc: ThisMap): ThisMap
   ret match(fs)
     (nil: ChainEnd) => acc
+    # A later member with the same name (an overload) overwrites the earlier
+    # entry, where the chain lookup would have kept the first — same answer
+    # either way, because the target is a pure function of the name.
     (l: ChainLink)  => coRenames(l.next, lr, specSuffix,
-        ThisMap(append(acc.tmNames, l.value.fName),
-                append(acc.tmTargets,
-                       "$mut::" + l.value.fName + "@"
-                       + hash6(lr.plFile, lr.plLine, lr.plCol)
-                       + specSuffix)))
+        ThisMap(put<String, String>(acc.tmMap, l.value.fName,
+                    "$mut::" + l.value.fName + "@"
+                    + hash6(lr.plFile, lr.plLine, lr.plCol) + specSuffix)))
 
 fun coMethods(fs: Chain<PsFun>, renames: ThisMap, thisMap: ThisMap,
                      acc: List<PStmt>): List<PStmt>
@@ -417,8 +451,7 @@ fun [tail] coMethodsB(fs: Chain<PsFun>, renames: ThisMap, thisMap: ThisMap,
                                                       thisMap)))
 
 fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap): PStmt
-  let newName = match(tmLookup(chain(renames.tmNames),
-                               chain(renames.tmTargets), f.fName))
+  let newName = match(tmLookup(renames, f.fName))
     (n: String) => n
     ()          => f.fName
   ret PsFun(newName, f.fAttrs, f.fGens, f.fParams,
@@ -426,42 +459,43 @@ fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap): PStmt
             f.fRetInferred, f.fNested, f.fImports)
 
 fun coClassParam(caps: OuterTypes, lr: PLine): PStmt
+  let ns = coCapNames(caps)
   ret PsDestructure("_", List<PAttr>(),
-                    STuple(coEntries(chain(caps.otNames),
-                                     chain(caps.otTypes), List<SEntry>()),
-                           lr),
-                    coParamLets(chain(caps.otNames), chain(caps.otTypes),
-                                lr, List<PStmt>()),
+                    STuple(coEntries(chain(ns), caps, List<SEntry>()), lr),
+                    coParamLets(chain(ns), caps, lr, List<PStmt>()),
                     None, lr, false)
 
-fun coEntries(ns: Chain<String>, ts: Chain<Spec>,
+# The name chain drives the walk and the type comes from the map, so the two
+# cannot fall out of step — which the old pair of chains walked in lockstep
+# could, silently, by ending at different lengths. Names come from the map's
+# own keys, so the None arm is unreachable; it is there to make the match total.
+fun coEntries(ns: Chain<String>, caps: OuterTypes,
                      acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(coEntriesB(ns, ts, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(coEntriesB(ns, caps, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
 
-fun [tail] coEntriesB(ns: Chain<String>, ts: Chain<Spec>,
+fun [tail] coEntriesB(ns: Chain<String>, caps: OuterTypes,
                      [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(ts)
-      (nil2: ChainEnd) => acc
-      (t2: ChainLink)  => coEntriesB(n.next, t2.next,
-                                    push<SEntry >(acc, SEntry(n.value, t2.value,
-                                                       None)))
+    (n: ChainLink)  => match(get<String, Spec>(caps.otMap, n.value))
+      (sp: Spec) => coEntriesB(n.next, caps,
+                               push<SEntry >(acc, SEntry(n.value, sp, None)))
+      ()         => coEntriesB(n.next, caps, acc)
 
-fun coParamLets(ns: Chain<String>, ts: Chain<Spec>, lr: PLine,
+fun coParamLets(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                        acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(coParamLetsB(ns, ts, lr, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(coParamLetsB(ns, caps, lr, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
 
-fun [tail] coParamLetsB(ns: Chain<String>, ts: Chain<Spec>, lr: PLine,
+fun [tail] coParamLetsB(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                        [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(ts)
-      (nil2: ChainEnd) => acc
-      (t2: ChainLink)  => coParamLetsB(n.next, t2.next, lr,
-          push<PStmt >(acc, PsLet(n.value, List<PAttr>(), List<PGen>(), t2.value,
+    (n: ChainLink)  => match(get<String, Spec>(caps.otMap, n.value))
+      (sp: Spec) => coParamLetsB(n.next, caps, lr,
+          push<PStmt >(acc, PsLet(n.value, List<PAttr>(), List<PGen>(), sp,
                             None, "", List<Spec>(), lr, false,
                             List<PStmt>())))
+      ()         => coParamLetsB(n.next, caps, lr, acc)
 
 fun coCaptureArgs(ns: Chain<String>, lr: PLine,
                          acc: List<PTupEnt>): List<PTupEnt>
@@ -495,7 +529,7 @@ fun [tail] coMethodLetsB(fs: Chain<PsFun>, renames: ThisMap,
                           "", List<Spec>(), lr, false, List<PStmt>())))
 
 fun coRenameOf(renames: ThisMap, name: String): String
-  ret match(tmLookup(chain(renames.tmNames), chain(renames.tmTargets), name))
+  ret match(tmLookup(renames, name))
     (n: String) => n
     ()          => name
 
@@ -509,10 +543,10 @@ fun hoistFromBody(f: PsFun): Hoisted
     (b: PExpr) => match(b)
       (bk: PeBlock) => hoistFromBlock(f, bk)
       (o: PExpr)    => Hoisted(List<PStmt>(),
-                               ThisMap(List<String>(), List<String>()),
+                               ThisMap(Dict<String, String>()),
                                List<PStmt>())
     ()         => Hoisted(List<PStmt>(),
-                          ThisMap(List<String>(), List<String>()),
+                          ThisMap(Dict<String, String>()),
                           List<PStmt>())
 
 fun hoistFromBlock(f: PsFun, bk: PeBlock): Hoisted
@@ -521,25 +555,22 @@ fun hoistFromBlock(f: PsFun, bk: PeBlock): Hoisted
                                             List<String>()))
   let nested = hoNestedFns(chain(bk.blockStmts), List<PsFun>())
   if isEmpty(nested)
-    ret Hoisted(bk.blockStmts, ThisMap(List<String>(), List<String>()),
+    ret Hoisted(bk.blockStmts, ThisMap(Dict<String, String>()),
                 List<PStmt>())
   let siblingNames = hoFnNames(chain(nested), List<String>())
   let specSuffix = specializationSuffix(f.fName)
   let callEdges = hoCallEdges(chain(nested), siblingNames,
-                              EEdges(List<String>(), List<List<String>>()))
+                              EEdges(Dict<String, List<String>>()))
   let directCaptures = hoDirectCaptures(chain(nested), siblingNames,
                                         hoOuterOnly(outerVars, siblingNames),
                                         List<String>())
   let sccs = aiSccs(siblingNames, callEdges)
   let needsClosure = hoNeedsClosure(chain(sccs), sccs, callEdges,
-                                    directCaptures, List<List<String>>())
+                                    directCaptures, Set<String >())
   let outerTypes = gatherOuterVarTypes(f)
-  ret hoWalkBody(chain(bk.blockStmts), f, sccs, needsClosure, callEdges,
-                 nested, outerTypes, siblingNames, specSuffix,
-                 List<String>(),
-                 Hoisted(List<PStmt>(),
-                         ThisMap(List<String>(), List<String>()),
-                         List<PStmt>()))
+  ret hoBuild(hoWalkBody(chain(bk.blockStmts), f, sccs, needsClosure,
+                         callEdges, nested, outerTypes, siblingNames,
+                         specSuffix, Set<String >(), HoAcc(builder<PStmt >(), ThisMap(Dict<String, String>()), builder<PStmt >())))
 
 # `outer_var_names` excludes nothing in Python (params | lets, funs separate);
 # the frBlockNames above also collected nested FN names — drop those.
@@ -578,10 +609,10 @@ fun [tail] hoCallEdges(fs: Chain<PsFun>, siblingNames: List<String>,
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hoCallEdges(l.next, siblingNames,
-        EEdges(append(acc.eeNames, l.value.fName),
-               append(acc.eeChildren,
-                      hoIntersect(chain(freeRefs(l.value, List<String>())),
-                                  siblingNames, List<String>()))))
+        EEdges(put<String, List<String>>(acc.eeMap, l.value.fName,
+                   hoIntersect(chain(sort<String>(freeRefs(l.value,
+                                                           List<String>()))),
+                               siblingNames, List<String>()))))
 
 fun hoIntersect(ns: Chain<String>, keep: List<String>,
                        acc: List<String>): List<String>
@@ -605,28 +636,39 @@ fun [tail] hoDirectCapturesB(fs: Chain<PsFun>, siblingNames: List<String>,
                             [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => isEmpty(hoIntersect(chain(freeRefs(l.value,
-                                                          siblingNames)),
-                                           outerVars, List<String>()))
-      ? hoDirectCapturesB(l.next, siblingNames, outerVars, acc)
-      : hoDirectCapturesB(l.next, siblingNames, outerVars,
-                         push<String >(acc, l.value.fName))
+    # Does this function reference ANY outer var? That is a question about
+    # membership, not about order — so it is asked of the set directly rather
+    # than by materialising the intersection and measuring it.
+    (l: ChainLink)  => any<String>(freeRefs(l.value, siblingNames),
+                                   (n: String) => contains2(outerVars, n))
+      ? hoDirectCapturesB(l.next, siblingNames, outerVars,
+                          push<String >(acc, l.value.fName))
+      : hoDirectCapturesB(l.next, siblingNames, outerVars, acc)
 
 # Reverse-topo order (callees first): one pass settles closure-need
 # propagation along sibling-call edges.
+#
+# The accumulator is a SET OF NAMES, not a list of SCCs. Every reader — here
+# and at hoSccIsNeedy — asks it the same single question, "does some settled
+# SCC contain this name", and answering that from a list of lists meant a scan
+# of every name settled so far, nested inside the per-callee loop which is
+# itself nested inside the per-member loop. The SCC grouping was never read
+# back, so it is not stored.
 fun [tail] hoNeedsClosure(ss: Chain<List<String>>, all: List<List<String>>,
                           edges: EEdges, directCaptures: List<String>,
-                          done: List<List<String>>): List<List<String>>
+                          done: Set<String >): Set<String >
   ret match(ss)
     (nil: ChainEnd) => done
     (l: ChainLink)  => hoSccNeeds(l.value, edges, directCaptures, done)
       ? hoNeedsClosure(l.next, all, edges, directCaptures,
-                       append(done, l.value))
+                       fold<String, Set<String > >(l.value, done,
+                           (s: Set<String >, n: String) => add<String >(s, n)))
       : hoNeedsClosure(l.next, all, edges, directCaptures, done)
 
-# done = the closure-needing SCCs processed so far (callees precede callers).
+# done = the names of the closure-needing SCCs settled so far (callees precede
+# callers).
 fun hoSccNeeds(scc: List<String>, edges: EEdges, directCaptures: List<String>,
-               done: List<List<String>>): Bool
+               done: Set<String >): Bool
   if hoAnyIn(chain(scc), directCaptures)
     ret true
   ret hoCallsInto(chain(scc), scc, edges, done)
@@ -639,7 +681,7 @@ fun [tail] hoAnyIn(ns: Chain<String>, set2: List<String>): Bool
       : hoAnyIn(l.next, set2)
 
 fun [tail] hoCallsInto(ns: Chain<String>, own: List<String>, edges: EEdges,
-                       done: List<List<String>>): Bool
+                       done: Set<String >): Bool
   ret match(ns)
     (nil: ChainEnd) => false
     (l: ChainLink)  => hoCalleeNeedy(chain(ceChildrenOf(edges, l.value)),
@@ -648,20 +690,13 @@ fun [tail] hoCallsInto(ns: Chain<String>, own: List<String>, edges: EEdges,
       : hoCallsInto(l.next, own, edges, done)
 
 fun [tail] hoCalleeNeedy(cs: Chain<String>, own: List<String>,
-                         done: List<List<String>>): Bool
+                         done: Set<String >): Bool
   ret match(cs)
     (nil: ChainEnd) => false
     (l: ChainLink)  => !contains2(own, l.value)
-                       && hoInAnyScc(chain(done), l.value)
+                       && contains<String >(done, l.value)
       ? true
       : hoCalleeNeedy(l.next, own, done)
-
-fun [tail] hoInAnyScc(ss: Chain<List<String>>, name: String): Bool
-  ret match(ss)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => contains2(l.value, name)
-      ? true
-      : hoInAnyScc(l.next, name)
 
 fun [tail] hoSccOf(ss: Chain<List<String>>, name: String): List<String>
   ret match(ss)
@@ -672,13 +707,35 @@ fun [tail] hoSccOf(ss: Chain<List<String>>, name: String): List<String>
 
 # Walk the body in declaration order; a whole SCC is handled at its first
 # member's position.
-class [final] HoStep(wsProcessed: List<String>, wsAcc: Hoisted)
+#
+# The accumulator carries BUILDERS. Both of its lists are ordered — the
+# rewritten body is program order, and the statements hoisted out of it are
+# emitted in the order they were produced — so each step adds at the tail. That
+# is what makes the class [linear,final]: a ListBuilder's O(1) push is sound
+# only because linearity proves nothing else holds a reference to the cell it
+# mutates, and holding one in a field makes the holder linear too.
+#
+# The visible consequence is that `acc` must be consumed exactly ONCE on every
+# path. There is no longer a `keep` value prepared before the branch and
+# discarded by the branches that do not want it — hoKeep builds it where it is
+# used instead.
+class [linear, final] HoAcc(haBody: ListBuilder<PStmt >, haRenames: ThisMap,
+                            haOut: ListBuilder<PStmt >)
+
+# Out of the builders and into the plain result, once the walk is over. The
+# result is read many times by the caller, which a linear value could not be.
+fun hoBuild(acc: HoAcc): Hoisted
+  ret Hoisted(build<PStmt >(acc.haBody), acc.haRenames,
+              build<PStmt >(acc.haOut))
+
+class [linear, final] HoStep(wsProcessed: Set<String >, wsAcc: HoAcc)
 
 fun [tail] hoWalkBody(ss: Chain<PStmt>, f: PsFun, sccs: List<List<String>>,
-                      needy: List<List<String>>, edges: EEdges,
+                      needy: Set<String >, edges: EEdges,
                       nested: List<PsFun>, outerTypes: OuterTypes,
                       siblingNames: List<String>, specSuffix: String,
-                      processed: List<String>, acc: Hoisted): Hoisted
+                      processed: Set<String >,
+                      [terminal] acc: HoAcc): HoAcc
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hoStep(l.value, f, sccs, needy, nested, outerTypes,
@@ -688,52 +745,69 @@ fun [tail] hoWalkBody(ss: Chain<PStmt>, f: PsFun, sccs: List<List<String>>,
                              st2.wsProcessed, st2.wsAcc)
 
 fun hoStep(st: PStmt, f: PsFun, sccs: List<List<String>>,
-           needy: List<List<String>>, nested: List<PsFun>,
+           needy: Set<String >, nested: List<PsFun>,
            outerTypes: OuterTypes, siblingNames: List<String>,
-           specSuffix: String, processed: List<String>,
-           acc: Hoisted): HoStep
-  let keep = HoStep(processed,
-                    Hoisted(append(acc.hoBody, st), acc.hoRenames,
-                            acc.hoOut))
+           specSuffix: String, processed: Set<String >,
+           acc: HoAcc): HoStep
   ret match(st)
     (fn: PsFun) => hoStepFn(fn, f, sccs, needy, nested, outerTypes,
-                            siblingNames, specSuffix, processed, acc, keep)
-    (o: PStmt)  => keep
+                            siblingNames, specSuffix, processed, acc)
+    (o: PStmt)  => hoKeep(st, processed, acc)
+
+# This statement stays where it is: push it to the body and move on.
+fun hoKeep(st: PStmt, processed: Set<String >, acc: HoAcc): HoStep
+  ret HoStep(processed,
+             HoAcc(push<PStmt >(acc.haBody, st), acc.haRenames, acc.haOut))
 
 fun hoStepFn(fn: PsFun, f: PsFun, sccs: List<List<String>>,
-             needy: List<List<String>>, nested: List<PsFun>,
+             needy: Set<String >, nested: List<PsFun>,
              outerTypes: OuterTypes, siblingNames: List<String>,
-             specSuffix: String, processed: List<String>, acc: Hoisted,
-             keep: HoStep): HoStep
+             specSuffix: String, processed: Set<String >,
+             acc: HoAcc): HoStep
   if !hoHasBlockBody(fn) || !contains2(siblingNames, fn.fName)
-    ret keep
-  if contains2(processed, fn.fName)
+    ret hoKeep(fn, processed, acc)
+  # `processed` answers one question — has this SCC already been handled at an
+  # earlier member's position — so it is a set of names, and the SCC's members
+  # are folded into it rather than concatenated onto a list that is then
+  # scanned linearly on every subsequent statement.
+  if contains<String >(processed, fn.fName)
     ret HoStep(processed, acc)
   let scc = hoSccOf(chain(sccs), fn.fName)
-  ret HoStep(concat(processed, scc),
+  ret HoStep(fold<String, Set<String > >(scc, processed,
+                 (s: Set<String >, n: String) => add<String >(s, n)),
              hoScc(scc, f, needy, nested, outerTypes, siblingNames,
                    specSuffix, acc))
 
-fun hoScc(scc: List<String>, f: PsFun, needy: List<List<String>>,
+fun hoScc(scc: List<String>, f: PsFun, needy: Set<String >,
           nested: List<PsFun>, outerTypes: OuterTypes,
           siblingNames: List<String>, specSuffix: String,
-          acc: Hoisted): Hoisted
+          acc: HoAcc): HoAcc
   let members = hoMembersOf(chain(scc), nested, List<PsFun>())
   if !hoSccIsNeedy(scc, needy)
     ret hoGlobals(chain(members), f, specSuffix, acc)
   ret match(chain(members))
     (l: ChainLink) => match(l.next)
-      (nil: ChainEnd) => Hoisted(append(acc.hoBody, toLetLambda(l.value)),
-                                 acc.hoRenames, acc.hoOut)
-      (m: ChainLink)  => coalesceMutualScc(members, outerTypes, siblingNames,
-                                           specSuffix)
-        |> (co) => Hoisted(concat(acc.hoBody, co.coLets), acc.hoRenames,
-                           append(acc.hoOut, co.coClass))
+      (nil: ChainEnd) => HoAcc(push<PStmt >(acc.haBody, toLetLambda(l.value)),
+                               acc.haRenames, acc.haOut)
+      (m: ChainLink)  => hoCoalesce(members, outerTypes, siblingNames,
+                                    specSuffix, acc)
     (nil2: ChainEnd) => acc
 
-fun hoSccIsNeedy(scc: List<String>, needy: List<List<String>>): Bool
+# A mutually recursive group: the shared class is hoisted out, and the per-
+# method lets take the group's place in the body, in the order the coalescer
+# produced them.
+fun hoCoalesce(members: List<PsFun>, outerTypes: OuterTypes,
+               siblingNames: List<String>, specSuffix: String,
+               acc: HoAcc): HoAcc
+  let co = coalesceMutualScc(members, outerTypes, siblingNames, specSuffix)
+  ret HoAcc(_pushChain<PStmt >(acc.haBody, chain<PStmt >(co.coLets)),
+            acc.haRenames,
+            push<PStmt >(acc.haOut, co.coClass))
+
+# Every member of an SCC shares its neediness, so one member answers for all.
+fun hoSccIsNeedy(scc: List<String>, needy: Set<String >): Bool
   ret match(chain(scc))
-    (l: ChainLink)  => hoInAnyScc(chain(needy), l.value)
+    (l: ChainLink)  => contains<String >(needy, l.value)
     (nil: ChainEnd) => false
 
 fun hoMembersOf(ns: Chain<String>, nested: List<PsFun>,
@@ -758,7 +832,7 @@ fun [tail] hoFnByName(fs: Chain<PsFun>, name: String): PsFun|None
 # Direct hoist to global: the member loses is_nested, takes the owner's
 # wheres, and — for a generic specialisation host — the spec suffix.
 fun [tail] hoGlobals(fs: Chain<PsFun>, f: PsFun, specSuffix: String,
-                     acc: Hoisted): Hoisted
+                     [terminal] acc: HoAcc): HoAcc
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hoGlobals(l.next, f, specSuffix,
@@ -768,25 +842,24 @@ fun [tail] hoGlobals(fs: Chain<PsFun>, f: PsFun, specSuffix: String,
 # (an inner function has none of its own); a specialisation host's suffix is
 # appended to prevent cross-instantiation collisions.
 fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix: String,
-                acc: Hoisted): Hoisted
+                acc: HoAcc): HoAcc
   if specSuffix != "" && !endsWith(member0.fName, specSuffix)
-    ret Hoisted(acc.hoBody,
-                ThisMap(append(acc.hoRenames.tmNames, member0.fName),
-                        append(acc.hoRenames.tmTargets,
-                               member0.fName + specSuffix)),
-                append(acc.hoOut,
-                       PsFun(member0.fName + specSuffix, member0.fAttrs,
-                             member0.fGens, member0.fParams, member0.fBody,
-                             member0.fRet, f.fWheres, member0.psfLine,
-                             member0.fRetInferred, false,
-                             member0.fImports)))
-  ret Hoisted(acc.hoBody, acc.hoRenames,
-              append(acc.hoOut,
-                     PsFun(member0.fName, member0.fAttrs, member0.fGens,
-                           member0.fParams, member0.fBody, member0.fRet,
-                           f.fWheres, member0.psfLine,
+    ret HoAcc(acc.haBody,
+              ThisMap(put<String, String>(acc.haRenames.tmMap, member0.fName,
+                                          member0.fName + specSuffix)),
+              push<PStmt >(acc.haOut,
+                     PsFun(member0.fName + specSuffix, member0.fAttrs,
+                           member0.fGens, member0.fParams, member0.fBody,
+                           member0.fRet, f.fWheres, member0.psfLine,
                            member0.fRetInferred, false,
                            member0.fImports)))
+  ret HoAcc(acc.haBody, acc.haRenames,
+            push<PStmt >(acc.haOut,
+                   PsFun(member0.fName, member0.fAttrs, member0.fGens,
+                         member0.fParams, member0.fBody, member0.fRet,
+                         f.fWheres, member0.psfLine,
+                         member0.fRetInferred, false,
+                         member0.fImports)))
 
 # ── the recursive driver ─────────────────────────────────────────────────────
 # Applied recursively so nested-inside-nested functions are hoisted too.
@@ -795,12 +868,21 @@ fun hoistNestedFnsToLambdas(statements: List<PStmt>): List<PStmt>
   let out = hoDrive(chain(statements), List<PStmt>(), List<PStmt>())
   ret out
 
-fun [tail] hoDrive(ss: Chain<PStmt>, acc: List<PStmt>,
-                   extra: List<PStmt>): List<PStmt>
+# `acc` is the rewritten statement list in program order, so it is built at the
+# tail. `extra` stays a plain List: the base case asks whether it is empty, and
+# a builder cannot be read — only pushed to and, once, built.
+fun hoDrive(ss: Chain<PStmt>, acc: List<PStmt>,
+            extra: List<PStmt>): List<PStmt>
+  ret build<PStmt >(hoDriveB(ss, _pushChain<PStmt >(builder<PStmt >(),
+                                                    chain<PStmt >(acc)),
+                             extra))
+
+fun [tail] hoDriveB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >,
+                    extra: List<PStmt>): ListBuilder<PStmt >
   ret match(ss)
     (nil: ChainEnd) => isEmpty(extra)
       ? acc
-      : concat(acc, hoistNestedFnsToLambdas(extra))
+      : _pushChain<PStmt >(acc, chain<PStmt >(hoistNestedFnsToLambdas(extra)))
     # The per-fn step returns a VALUE and the loop stays [tail] (the pipe
     # beta-reduces before tail_loop, so the self-call is direct) — the old
     # hoDriveFn mutual hop left TWO C frames per function statement on the
@@ -808,13 +890,13 @@ fun [tail] hoDrive(ss: Chain<PStmt>, acc: List<PStmt>,
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => hoHasBlockBody(f)
         ? hoDriveFnStep(f) |> (st: PStmt, outs: List<PStmt>) =>
-            hoDrive(l.next, append(acc, st), concat(extra, outs))
-        : hoDrive(l.next, append(acc, l.value), extra)
-      (o: PStmt) => hoDrive(l.next, append(acc, l.value), extra)
+            hoDriveB(l.next, push<PStmt >(acc, st), concat(extra, outs))
+        : hoDriveB(l.next, push<PStmt >(acc, l.value), extra)
+      (o: PStmt) => hoDriveB(l.next, push<PStmt >(acc, l.value), extra)
 
 fun hoDriveFnStep(f: PsFun): (stmt: PStmt, outs: List<PStmt>)
   let ho = hoistFromBody(f)
-  let renamed = isEmpty(ho.hoRenames.tmNames)
+  let renamed = isEmpty(ho.hoRenames.tmMap)
     ? ho
     : Hoisted(rnmStmts(chain(ho.hoBody), ho.hoRenames, List<PStmt>()),
               ho.hoRenames,
@@ -826,7 +908,7 @@ fun hoRebuiltBody(f: PsFun, ho: Hoisted): PExpr
   ret match(f.fBody)
     (b: PExpr) => match(b)
       (bk: PeBlock) => PeBlock(ho.hoBody,
-                               isEmpty(ho.hoRenames.tmNames)
+                               isEmpty(ho.hoRenames.tmMap)
                                  ? bk.blockValue
                                  : rnmExpr(bk.blockValue, ho.hoRenames),
                                bk.blockTag, bk.pebkLine)
@@ -877,8 +959,7 @@ fun rnmOpt(x: PExpr|None, m: ThisMap): PExpr|None
 
 fun rnmExpr(x: PExpr, m: ThisMap): PExpr
   ret match(x)
-    (nm: PeName)   => match(tmLookup(chain(m.tmNames), chain(m.tmTargets),
-                                     nm.refName))
+    (nm: PeName)   => match(tmLookup(m, nm.refName))
       (target: String) => PeName(target, nm.refTypeParams, nm.penLine,
                                  nm.penTrait)
       ()               => x
@@ -975,18 +1056,24 @@ fun aiCountExpr(n: Int, x: PExpr): Int
 fun aiNodeCount(x: PExpr): Int
   ret foldExpr<Int>(x, aiCountStmt, aiCountExpr, 0)
 
-fun aiCalledNames(stmts: List<PStmt>): List<String>
-  ret foldStmts<List<String>>(stmts, aiIdStmtNames, aiCalledCb,
-                              List<String>())
+# The names of the functions called anywhere in these statements. A SET: its
+# one consumer intersects it against the candidate names to build call-graph
+# edges, and the graph is walked in sorted order. The "have I seen this name"
+# test that used to guard the append is gone — `add` is idempotent.
+fun aiCalledNames(stmts: List<PStmt>): Set<String >
+  ret foldStmts<Set<String > >(stmts, aiIdCalledName, aiCalledCb,
+                               Set<String >())
+
+fun aiIdCalledName(acc: Set<String >, st: PStmt): Set<String >
+  ret acc
 
 fun aiIdStmtNames(acc: List<String>, st: PStmt): List<String>
   ret acc
 
-fun aiCalledCb(acc: List<String>, x: PExpr): List<String>
+fun aiCalledCb(acc: Set<String >, x: PExpr): Set<String >
   ret match(x)
     (c: PeCall) => match(c.function)
-      (nm: PeName) => contains2(acc, nm.refName) ? acc
-                                                 : append(acc, nm.refName)
+      (nm: PeName) => add<String >(acc, nm.refName)
       (o: PExpr)   => acc
     (o2: PExpr) => acc
 
@@ -1004,19 +1091,14 @@ fun aiRefCb(n: Int, x: PExpr, name: String): Int
 
 # ── name substitution + alpha renaming ───────────────────────────────────────
 
-class [final] SubMap(smNames: List<String>, smExprs: List<PExpr>)
+# Name → replacement expression, consulted once per name node of every inlined
+# body. A Dict for the same reason as ThisMap: this is a lookup, and walking a
+# pair of chains to answer it made substitution cost the size of the map times
+# the size of the body.
+class [final] SubMap(smMap: Dict<String, PExpr>)
 
 fun aiSubLookup(m: SubMap, name: String): PExpr|None
-  ret aiSubLoop(chain(m.smNames), chain(m.smExprs), name)
-
-fun [tail] aiSubLoop(ns: Chain<String>, es: Chain<PExpr>,
-                     name: String): PExpr|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (n: ChainLink)  => match(es)
-      (nil2: ChainEnd) => None
-      (e2: ChainLink)  => n.value == name ? e2.value
-                                          : aiSubLoop(n.next, e2.next, name)
+  ret get<String, PExpr>(m.smMap, name)
 
 fun aiSubstituteStmts(ss: List<PStmt>, m: SubMap): List<PStmt>
   ret rwStmts(ss, rwOnExpr((x: PExpr) => aiSubCb(x, m)))
@@ -1106,9 +1188,8 @@ fun [tail] aiArmRenLoopB(as2: Chain<PArm>, bound: List<String>,
 class [final] Renamed(rnStmts: List<PStmt>, rnMap: ThisMap)
 
 fun aiRenameLetVars(ss: List<PStmt>, suffix: String): Renamed
-  let m = aiTopLets(chain(ss), suffix, ThisMap(List<String>(),
-                                               List<String>()))
-  if isEmpty(m.tmNames)
+  let m = aiTopLets(chain(ss), suffix, ThisMap(Dict<String, String>()))
+  if isEmpty(m.tmMap)
     ret Renamed(ss, m)
   ret Renamed(rwStmts(ss, Rw((x: PExpr) => aiLetRenExpr(x, m), rwNoSpec,
                              (st: PStmt) => aiLetRenStmt(st, m))),
@@ -1119,23 +1200,21 @@ fun [tail] aiTopLets(ss: Chain<PStmt>, suffix: String, acc: ThisMap): ThisMap
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => aiTopLets(l.next, suffix,
-                                 ThisMap(append(acc.tmNames, let2.lName),
-                                         append(acc.tmTargets,
-                                                let2.lName + suffix)))
+                                 ThisMap(put<String, String>(acc.tmMap,
+                                             let2.lName,
+                                             let2.lName + suffix)))
       (o: PStmt)    => aiTopLets(l.next, suffix, acc)
 
 fun aiLetRenExpr(x: PExpr, m: ThisMap): PExpr|None
   ret match(x)
-    (nm: PeName) => match(tmLookup(chain(m.tmNames), chain(m.tmTargets),
-                                   nm.refName))
+    (nm: PeName) => match(tmLookup(m, nm.refName))
       (t2: String) => PeName(t2, nm.refTypeParams, nm.penLine, nm.penTrait)
       ()           => None
     (o: PExpr)   => None
 
 fun aiLetRenStmt(st: PStmt, m: ThisMap): PStmt|None
   ret match(st)
-    (let2: PsLet) => match(tmLookup(chain(m.tmNames), chain(m.tmTargets),
-                                    let2.lName))
+    (let2: PsLet) => match(tmLookup(m, let2.lName))
       (t2: String) => PsLet(t2, let2.lAttrs, let2.lGens, let2.lType,
                             let2.lDefault, let2.lArrayLen, let2.lWheres,
                             let2.pslLine, let2.lTypeInferred, let2.lImports)
@@ -1202,25 +1281,43 @@ fun [tail] hoFnNames2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String >): 
       (f: PsFun) => hoFnNames2B(l.next, push<String >(acc, f.fName))
       (o: PStmt) => hoFnNames2B(l.next, acc)
 
-# Map of inlinable name → PsFun (statement order); functions on a call-graph
-# cycle (incl. self-recursion) are pruned.
-# caMap mirrors Python's `catalog: dict[str, FunctionStatement]` — the LOOKUP
-# side. The lists stay for iteration (edges, prune). The parallel-list scan
-# this replaces re-reversed the whole catalogue per beta candidate per round:
-# ~2/3 of the 08-06 storm's page allocation (storm_samples.txt).
-class [final] Catalog(caNames: List<String>, caFns: List<PsFun>,
-                      caMap: Dict<String, PsFun>)
+# Map of inlinable name → PsFun; functions on a call-graph cycle (incl.
+# self-recursion) are pruned.
+#
+# Just the Dict — this mirrors Python's `catalog: dict[str, FunctionStatement]`
+# exactly, and Python never observes that dict's ORDER: it is indexed by name,
+# tested for membership, and tested for emptiness, nothing more. The port used
+# to carry two parallel lists beside the Dict purely to iterate, which cost an
+# append per candidate to build an order nobody read. The two places that do
+# walk the catalogue take its names sorted, which is deterministic and is all
+# either of them needs.
+class [final] Catalog(caMap: Dict<String, PsFun>)
+
+fun caNames(c: Catalog): List<String>
+  ret sort<String>(keys<String, PsFun>(c.caMap))
+
+# The callees of one catalogue entry that are themselves catalogue entries —
+# the call-graph edges out of it. A name that is not in the map has no edges;
+# it cannot happen here, since the names come from the map's own keys, but
+# saying so costs nothing and beats inventing a placeholder function.
+fun aiCatCallees(cat: Catalog, name: String,
+                 candNames: List<String>): List<String>
+  ret match(get<String, PsFun>(cat.caMap, name))
+    (f: PsFun) => sort<String>(filter<String>(aiCalledNames(aiBodyStmts(f)),
+                                   (n: String) => contains2(candNames, n)))
+    ()         => List<String>()
+
+fun aiCatKeep(acc: Catalog, cat: Catalog, name: String): Catalog
+  ret match(get<String, PsFun>(cat.caMap, name))
+    (f: PsFun) => Catalog(put<String, PsFun>(acc.caMap, name, f))
+    ()         => acc
 
 fun aiBuildCatalog(statements: List<PStmt>): Catalog
   let classMembers = aiClassMemberNames(statements)
-  let cands = aiCandidates(chain(statements), classMembers,
-                           Catalog(List<String>(), List<PsFun>(),
-                                   Dict<String, PsFun>()))
-  let edges = aiCatEdges(chain(cands.caFns), cands.caNames,
-                         EEdges(List<String>(), List<List<String>>()))
-  ret aiPruneCycles(chain(cands.caNames), chain(cands.caFns), edges,
-                    Catalog(List<String>(), List<PsFun>(),
-                            Dict<String, PsFun>()))
+  let cands = aiCandidates(chain(statements), classMembers, Catalog(Dict<String, PsFun>()))
+  let names = caNames(cands)
+  let edges = aiCatEdges(chain(names), cands, names, EEdges(Dict<String, List<String>>()))
+  ret aiPruneCycles(chain(names), cands, edges, Catalog(Dict<String, PsFun>()))
 
 fun [tail] aiCandidates(ss: Chain<PStmt>, classMembers: List<String>,
                         acc: Catalog): Catalog
@@ -1229,21 +1326,17 @@ fun [tail] aiCandidates(ss: Chain<PStmt>, classMembers: List<String>,
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => aiIsInlinable(f, classMembers)
         ? aiCandidates(l.next, classMembers,
-                       Catalog(append(acc.caNames, f.fName),
-                               append(acc.caFns, f),
-                               put<String, PsFun>(acc.caMap, f.fName, f)))
+                       Catalog(put<String, PsFun>(acc.caMap, f.fName, f)))
         : aiCandidates(l.next, classMembers, acc)
       (o: PStmt) => aiCandidates(l.next, classMembers, acc)
 
-fun [tail] aiCatEdges(fs: Chain<PsFun>, candNames: List<String>,
-                      acc: EEdges): EEdges
-  ret match(fs)
+fun [tail] aiCatEdges(ns: Chain<String>, cat: Catalog,
+                      candNames: List<String>, acc: EEdges): EEdges
+  ret match(ns)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => aiCatEdges(l.next, candNames,
-        EEdges(append(acc.eeNames, l.value.fName),
-               append(acc.eeChildren,
-                      hoIntersect(chain(aiCalledNames(aiBodyStmts(l.value))),
-                                  candNames, List<String>()))))
+    (l: ChainLink)  => aiCatEdges(l.next, cat, candNames,
+        EEdges(put<String, List<String>>(acc.eeMap, l.value,
+                   aiCatCallees(cat, l.value, candNames))))
 
 fun aiBodyStmts(f: PsFun): List<PStmt>
   ret match(f.fBody)
@@ -1252,19 +1345,13 @@ fun aiBodyStmts(f: PsFun): List<PStmt>
       (o: PExpr)    => List<PStmt>()
     ()         => List<PStmt>()
 
-fun [tail] aiPruneCycles(ns: Chain<String>, fs: Chain<PsFun>, edges: EEdges,
+fun [tail] aiPruneCycles(ns: Chain<String>, cat: Catalog, edges: EEdges,
                          acc: Catalog): Catalog
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(fs)
-      (nil2: ChainEnd) => acc
-      (f: ChainLink)   => aiReachesSelf(n.value, edges)
-        ? aiPruneCycles(n.next, f.next, edges, acc)
-        : aiPruneCycles(n.next, f.next, edges,
-                        Catalog(append(acc.caNames, n.value),
-                                append(acc.caFns, f.value),
-                                put<String, PsFun>(acc.caMap, n.value,
-                                                   f.value)))
+    (n: ChainLink)  => aiReachesSelf(n.value, edges)
+      ? aiPruneCycles(n.next, cat, edges, acc)
+      : aiPruneCycles(n.next, cat, edges, aiCatKeep(acc, cat, n.value))
 
 fun aiReachesSelf(start: String, edges: EEdges): Bool
   ret aiDfs(ceChildrenOf(edges, start), start, edges, List<String>())
@@ -1326,7 +1413,7 @@ fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef: PLine,
   let renamed = aiRenameLetVars(bk.blockStmts, fresh.frSuffix)
   let bodyStmts0 = aiRenameArmsStmts(renamed.rnStmts, fresh.frSuffix)
   let letSubst = aiRenameAsSubst(renamed.rnMap, lineRef)
-  let subbedValue = isEmpty(renamed.rnMap.tmNames)
+  let subbedValue = isEmpty(renamed.rnMap.tmMap)
     ? bk.blockValue
     : aiSubstituteExpr(bk.blockValue, letSubst)
   let bodyValue0 = aiRenameArmsExpr(subbedValue, fresh.frSuffix)
@@ -1334,26 +1421,26 @@ fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef: PLine,
   let prologue = aiParamPrologue(chain(params), chain(args), lineRef,
                                  fresh.frSuffix, List<PStmt>())
   let paramSubst = aiParamSubst(chain(params), lineRef, fresh.frSuffix,
-                                SubMap(List<String>(), List<PExpr>()))
+                                SubMap(Dict<String, PExpr>()))
   ret InlOut(fresh.frN,
              concat(prologue, aiSubstituteStmts(bodyStmts0, paramSubst)),
              aiSubstituteExpr(bodyValue0, paramSubst))
 
+# One map into another: every renamed name becomes a substitution to a
+# reference to its new name. A fold over the source map's keys, unordered —
+# the result is itself keyed by those names, so no order of insertion can
+# change it.
 fun aiRenameAsSubst(m: ThisMap, lineRef: PLine): SubMap
-  ret aiRasLoop(chain(m.tmNames), chain(m.tmTargets), lineRef,
-                SubMap(List<String>(), List<PExpr>()))
+  ret SubMap(fold<String, Dict<String, PExpr> >(keys<String, String>(m.tmMap),
+                 Dict<String, PExpr>(),
+                 (d: Dict<String, PExpr>, n: String) =>
+                   put<String, PExpr>(d, n,
+                       PeName(aiRasTarget(m, n), List<Spec>(), lineRef, None))))
 
-fun [tail] aiRasLoop(ns: Chain<String>, ts: Chain<String>, lineRef: PLine,
-                     acc: SubMap): SubMap
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n2: ChainLink) => match(ts)
-      (nil2: ChainEnd) => acc
-      (t2: ChainLink)  => aiRasLoop(n2.next, t2.next, lineRef,
-          SubMap(append(acc.smNames, n2.value),
-                 append<PExpr>(acc.smExprs,
-                               PeName(t2.value, List<Spec>(), lineRef,
-                                      None))))
+fun aiRasTarget(m: ThisMap, n: String): String
+  ret match(tmLookup(m, n))
+    (t2: String) => t2
+    ()           => n
 
 fun aiParamPrologue(ps: Chain<PStmt>, as2: Chain<PExpr>,
                            lineRef: PLine, suffix: String,
@@ -1382,11 +1469,13 @@ fun [tail] aiParamSubst(ps: Chain<PStmt>, lineRef: PLine, suffix: String,
                         acc: SubMap): SubMap
   ret match(ps)
     (nil: ChainEnd) => acc
+    # A later parameter with a repeated name overwrites the earlier entry
+    # where the chain lookup kept the first — the substitution target is a
+    # pure function of the name, so both give the same answer.
     (p: ChainLink)  => aiParamSubst(p.next, lineRef, suffix,
-        SubMap(append(acc.smNames, stmtName(p.value)),
-               append<PExpr>(acc.smExprs,
-                             PeName(stmtName(p.value) + suffix,
-                                    List<Spec>(), lineRef, None))))
+        SubMap(put<String, PExpr>(acc.smMap, stmtName(p.value),
+                   PeName(stmtName(p.value) + suffix, List<Spec>(), lineRef,
+                          None))))
 
 # Inline when stmt's top-level expression is a direct call to a catalog
 # function (not the function being rewritten). A deferred-init let ([lazy]/
@@ -1427,13 +1516,13 @@ fun aiTis3(c: PeCall, targetName: String, st: PStmt, catalog: Catalog,
     (target: PsFun) => match(aiInlineFunctionCall(c, target, stmtLine(st),
                                                   n))
       (io: InlOut) => TisOut(io.ioN,
-                             append(List<PStmt>(),
-                                    aiWrap(st, kindSel,
-                                           isEmpty(io.ioStmts)
-                                             ? io.ioValue
-                                             : PeBlock(io.ioStmts,
-                                                       io.ioValue, "",
-                                                       stmtLine(st)))))
+                             prepend(aiWrap(st, kindSel,
+                                            isEmpty(io.ioStmts)
+                                              ? io.ioValue
+                                              : PeBlock(io.ioStmts,
+                                                        io.ioValue, "",
+                                                        stmtLine(st))),
+                                     List<PStmt>()))
       ()           => None
     ()              => None
 
@@ -1457,9 +1546,12 @@ fun aiInlineLetBound(body: PExpr, params: List<PStmt>, args: List<PExpr>,
     ret None
   let fresh = aiFresh(n)
   # Every name the body binds — params plus every let at ANY depth.
-  let bound = foldExpr<List<String>>(body, aiBoundCb, aiIdExprNames,
-                                     allStmtNames(chain(params),
-                                                  List<String>()))
+  # The names bound inside this body — a SET: both readers ask only whether a
+  # name is in it, and the "already collected" test that guarded the append
+  # goes with it, since add is idempotent.
+  let bound = foldExpr<Set<String > >(body, aiBoundCb, aiIdExprNames,
+                                      Set<String >(allStmtNames(chain(params),
+                                                       List<String>())))
   let renamed0 = rwExpr(body, Rw((x: PExpr) => aiBoundRenExpr(x, bound,
                                                               fresh.frSuffix),
                                  rwNoSpec,
@@ -1468,27 +1560,27 @@ fun aiInlineLetBound(body: PExpr, params: List<PStmt>, args: List<PExpr>,
   let renamed = aiRenameArmsExpr(renamed0, fresh.frSuffix)
   ret aiIlb2(renamed, params, args, returnType, r, fresh)
 
-fun aiIdExprNames(acc: List<String>, x: PExpr): List<String>
+fun aiIdExprNames(acc: Set<String >, x: PExpr): Set<String >
   ret acc
 
-fun aiBoundCb(acc: List<String>, st: PStmt): List<String>
+fun aiBoundCb(acc: Set<String >, st: PStmt): Set<String >
   ret match(st)
-    (l: PsLet) => contains2(acc, l.lName) ? acc : append(acc, l.lName)
+    (l: PsLet) => add<String >(acc, l.lName)
     (o: PStmt) => acc
 
-fun aiBoundRenExpr(x: PExpr, bound: List<String>,
+fun aiBoundRenExpr(x: PExpr, bound: Set<String >,
                    suffix: String): PExpr|None
   ret match(x)
-    (nm: PeName) => contains2(bound, nm.refName)
+    (nm: PeName) => contains<String >(bound, nm.refName)
       ? PeName(nm.refName + suffix, nm.refTypeParams, nm.penLine,
                nm.penTrait)
       : None
     (o: PExpr)   => None
 
-fun aiBoundRenStmt(st: PStmt, bound: List<String>,
+fun aiBoundRenStmt(st: PStmt, bound: Set<String >,
                    suffix: String): PStmt|None
   ret match(st)
-    (l: PsLet) => contains2(bound, l.lName)
+    (l: PsLet) => contains<String >(bound, l.lName)
       ? PsLet(l.lName + suffix, l.lAttrs, l.lGens, l.lType, l.lDefault,
               l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
               l.lImports)
@@ -1524,18 +1616,32 @@ fun aiIlbAssemble(stmts: List<PStmt>, value: PExpr, lr: PLine): PExpr
 # The binding let takes the parameter's declared type; when the parameter is
 # untyped fall back to the ARGUMENT's type — and give up (None) when neither
 # is known.
-fun [tail] aiIlbPrologue(ps: Chain<PStmt>, as2: Chain<PExpr>,
-                         r: Resolver|None, suffix: String,
-                         acc: List<PStmt>): List<PStmt>|None
+# The lets come out in parameter order and bind in that order, so this is an
+# ordered build. The whole prologue is abandoned when a parameter's type cannot
+# be settled, which drops the part-built list on the floor — hence the build
+# happens only on the way out of the successful case.
+fun aiIlbPrologue(ps: Chain<PStmt>, as2: Chain<PExpr>,
+                  r: Resolver|None, suffix: String,
+                  acc: List<PStmt>): List<PStmt>|None
+  ret match(aiIlbPrologueB(ps, as2, r, suffix,
+                           _pushChain<PStmt >(builder<PStmt >(),
+                                              chain<PStmt >(acc))))
+    (b: ListBuilder<PStmt >) => build<PStmt >(b)
+    ()                       => None
+
+fun [tail] aiIlbPrologueB(ps: Chain<PStmt>, as2: Chain<PExpr>,
+                          r: Resolver|None, suffix: String,
+                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >|None
   ret match(ps)
     (nil: ChainEnd) => acc
     (p: ChainLink)  => match(as2)
       (nil2: ChainEnd) => acc
       (a: ChainLink)   => match(aiBindType(p.value, a.value, r))
-        (bt: Spec) => aiIlbPrologue(p.next, a.next, r, suffix,
-            append(acc, PsLet(stmtName(p.value) + suffix, List<PAttr>(),
-                              List<PGen>(), bt, a.value, "", List<Spec>(),
-                              exprLine(a.value), false, None)))
+        (bt: Spec) => aiIlbPrologueB(p.next, a.next, r, suffix,
+            push<PStmt >(acc, PsLet(stmtName(p.value) + suffix, List<PAttr>(),
+                                    List<PGen>(), bt, a.value, "",
+                                    List<Spec>(), exprLine(a.value), false,
+                                    None)))
         ()         => None
 
 fun aiBindType(param: PStmt, arg: PExpr, r: Resolver|None): Spec|None
@@ -1600,16 +1706,15 @@ fun aiExprInlineFunction(target: PsFun, args: List<PExpr>, r: Resolver|None,
 # The single-use scan sees only THIS sequence; nested blocks re-reduce against
 # their own statements inside the callback (bottom-up, like Python).
 
-# sgMap is the lookup side (the parallel lists scanned per candidate before —
-# the storm's second face); sgNames stays for the dead-lambda contains scan.
-class [final] Singles(sgNames: List<String>, sgLams: List<PExpr>,
-                      sgMap: Dict<String, PExpr>)
+# Just the Dict. It answered every lookup already, and the two lists beside it
+# were an append per single: sgNames duplicated the Dict's own key membership
+# for the dead-lambda test, and sgLams was written on every insert and never
+# read by anyone.
+class [final] Singles(sgMap: Dict<String, PExpr>)
 
 fun aiBetaReduceExpressions(stmts: List<PStmt>, catalog: Catalog,
                             r: Resolver|None, n: Int): RwNSs
-  let singles = aiSingles(chain(stmts), stmts, 0,
-                          Singles(List<String>(), List<PExpr>(),
-                                  Dict<String, PExpr>()))
+  let singles = aiSingles(chain(stmts), stmts, 0, Singles(Dict<String, PExpr>()))
   let out = rwnStmts(stmts, RwN((n2: Int, x: PExpr) =>
                                   aiBetaCb(n2, x, singles, catalog, r),
                                 rwnNoStmt),
@@ -1630,9 +1735,7 @@ fun aiSingleAdd(st: PStmt, all: List<PStmt>, i: Int, acc: Singles): Singles
       (dv: PExpr) => match(dv)
         (lam: PeLambda) => aiUsesAfter(chain(drop(all, i + 1)), let2.lName,
                                        0) == 1
-          ? Singles(append(acc.sgNames, let2.lName),
-                    append<PExpr>(acc.sgLams, dv),
-                    put<String, PExpr>(acc.sgMap, let2.lName, dv))
+          ? Singles(put<String, PExpr>(acc.sgMap, let2.lName, dv))
           : acc
         (o: PExpr)      => acc
       ()          => acc
@@ -1670,10 +1773,17 @@ fun aiBetaCb(n: Int, x: PExpr, singles: Singles, catalog: Catalog,
     (c: PeCall)   => aiBetaCall(c, singles, catalog, r, n)
     (o: PExpr)    => aiNoRep(n)
 
+# A block flattened to statements: its value becomes a trailing `ret`, so the
+# whole body can be walked as a statement list and the value read back off the
+# end afterwards. Both of the passes that rewrite bodies start here.
+fun aiBlockAsStmts(bk: PeBlock): List<PStmt>
+  ret build<PStmt >(push<PStmt >(
+          _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(bk.blockStmts)),
+          PsRet(bk.blockValue, exprLine(bk.blockValue))))
+
 fun aiBetaBlock(bk: PeBlock, catalog: Catalog, r: Resolver|None,
                 n: Int): (n2: Int, rep: PExpr|None)
-  let inner = append(bk.blockStmts, PsRet(bk.blockValue,
-                                          exprLine(bk.blockValue)))
+  let inner = aiBlockAsStmts(bk)
   let out = aiBetaReduceExpressions(inner, catalog, r, n)
   ret match(last(out.rnssStmts))
     (lastStmt: PStmt) => match(lastStmt)
@@ -1739,7 +1849,7 @@ fun [tail] aiDdlLoopB(cs: Chain<PStmt>, all: List<PStmt>, i: Int,
 
 fun aiDdlDead(st: PStmt, all: List<PStmt>, i: Int, singles: Singles): Bool
   ret match(st)
-    (let2: PsLet) => contains2(singles.sgNames, let2.lName)
+    (let2: PsLet) => contains<String, PExpr>(singles.sgMap, let2.lName)
                      && aiRefsExceptAt(chain(all), let2.lName, i, 0, 0) == 0
     (o: PStmt)    => false
 
@@ -1796,8 +1906,7 @@ fun aiRewriteFunction(f: PsFun, catalog: Catalog, r: Resolver|None,
 
 fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r: Resolver|None,
            n: Int): RfOut
-  let stmts0 = append(bk.blockStmts, PsRet(bk.blockValue,
-                                           exprLine(bk.blockValue)))
+  let stmts0 = aiBlockAsStmts(bk)
   # Pass 1: statement-level function inlining.
   let p1 = aiPass1b(chain(stmts0), catalog, f.fName, n, List<PStmt>(), 0)
   # Pass 2: beta-reduction + expression-position inlining.
@@ -1825,16 +1934,30 @@ class [final] P1Out(tiN: Int, tiStmts: List<PStmt>, tiHits: Int)
 fun aiPass1Changed(p: P1Out): Bool
   ret p.tiHits != 0
 
-fun [tail] aiPass1b(ss: Chain<PStmt>, catalog: Catalog, selfName: String,
-                    n: Int, acc: List<PStmt>, hits: Int): P1Out
+# Program order: a statement either stays or is replaced by the statements its
+# inlined call expanded to, and the result is the new body. Built at the tail,
+# with the inlined group pushed as a chain.
+fun aiPass1b(ss: Chain<PStmt>, catalog: Catalog, selfName: String,
+             n: Int, acc: List<PStmt>, hits: Int): P1Out
+  ret aiPass1c(ss, catalog, selfName, n,
+               _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc)), hits)
+    |> (out) => P1Out(out.tiN, build<PStmt >(out.tiStmts), out.tiHits)
+
+class [linear, final] P1Acc(tiN: Int, tiStmts: ListBuilder<PStmt >,
+                            tiHits: Int)
+
+fun [tail] aiPass1c(ss: Chain<PStmt>, catalog: Catalog, selfName: String,
+                    n: Int, [terminal] acc: ListBuilder<PStmt >,
+                    hits: Int): P1Acc
   ret match(ss)
-    (nil: ChainEnd) => P1Out(n, acc, hits)
+    (nil: ChainEnd) => P1Acc(n, acc, hits)
     (l: ChainLink)  => match(aiTryInlineAtStmt(l.value, catalog, selfName,
                                                n))
-      (t2: TisOut) => aiPass1b(l.next, catalog, selfName, t2.tiN,
-                               concat(acc, t2.tiStmts), hits + 1)
-      ()           => aiPass1b(l.next, catalog, selfName, n,
-                               append(acc, l.value), hits)
+      (t2: TisOut) => aiPass1c(l.next, catalog, selfName, t2.tiN,
+                               _pushChain<PStmt >(acc, chain<PStmt >(t2.tiStmts)),
+                               hits + 1)
+      ()           => aiPass1c(l.next, catalog, selfName, n,
+                               push<PStmt >(acc, l.value), hits)
 
 # The fixpoint: counter reset per entry; catalog rebuilt per round; stop when
 # nothing is inlinable or a round changes nothing; then flatten.
@@ -1845,7 +1968,7 @@ fun [tail] aiRounds(current: List<PStmt>, round2: Int, n: Int): List<PStmt>
   if round2 >= 10                       # _MAX_ITERATIONS
     ret aiFlattenBlockValues(current)
   let catalog = aiBuildCatalog(current)
-  if isEmpty(catalog.caNames)
+  if isEmpty(catalog.caMap)
     ret aiFlattenBlockValues(current)
   let r = rootResolver(current)
   let out = aiRound(chain(current), catalog, r, n, List<PStmt>(), false)
@@ -1855,14 +1978,27 @@ fun [tail] aiRounds(current: List<PStmt>, round2: Int, n: Int): List<PStmt>
 
 class [final] ArOut(arN: Int, arStmts: List<PStmt>, arChanged: Bool)
 
-fun [tail] aiRound(ss: Chain<PStmt>, catalog: Catalog, r: Resolver, n: Int,
-                   acc: List<PStmt>, changed: Bool): ArOut
+class [linear, final] ArAcc(araN: Int, araStmts: ListBuilder<PStmt >,
+                            araChanged: Bool)
+
+# One round over the whole program: every statement comes out, in order, either
+# rewritten or as it was.
+fun aiRound(ss: Chain<PStmt>, catalog: Catalog, r: Resolver, n: Int,
+            acc: List<PStmt>, changed: Bool): ArOut
+  ret aiRoundB(ss, catalog, r, n,
+               _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc)),
+               changed)
+    |> (out) => ArOut(out.araN, build<PStmt >(out.araStmts), out.araChanged)
+
+fun [tail] aiRoundB(ss: Chain<PStmt>, catalog: Catalog, r: Resolver, n: Int,
+                    [terminal] acc: ListBuilder<PStmt >,
+                    changed: Bool): ArAcc
   ret match(ss)
-    (nil: ChainEnd) => ArOut(n, acc, changed)
+    (nil: ChainEnd) => ArAcc(n, acc, changed)
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => aiRewriteFunction(f, catalog, r, n)
-        |> (out) => aiRound(l.next, catalog, r, out.rfN,
-                            append(acc, out.rfStmt),
-                            changed || out.rfChanged)
-      (o: PStmt) => aiRound(l.next, catalog, r, n, append(acc, l.value),
-                            changed)
+        |> (out) => aiRoundB(l.next, catalog, r, out.rfN,
+                             push<PStmt >(acc, out.rfStmt),
+                             changed || out.rfChanged)
+      (o: PStmt) => aiRoundB(l.next, catalog, r, n, push<PStmt >(acc, l.value),
+                             changed)

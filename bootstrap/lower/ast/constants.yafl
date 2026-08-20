@@ -20,12 +20,15 @@ import Bootstrap::Resolve
 
 
 
-class [final] IcConsts(icNames: List<String>, icValues: List<PExpr>)
+# Const name -> its literal value. A Dict: both readers ask about ONE name —
+# "is this a const" and "what is its value" — and the two parallel lists were
+# walked in lockstep to answer the second.
+class [final] IcConsts(icMap: Dict<String, PExpr>)
 
 fun inlineConstants(statements: List<PStmt>): List<PStmt>
   let consts = icCollect(chain(statements),
-                         IcConsts(List<String>(), List<PExpr>()))
-  if isEmpty(consts.icNames)
+                         IcConsts(Dict<String, PExpr>()))
+  if isEmpty(consts.icMap)
     ret statements
   ret rwStmts(icDropDecls(chain(statements), consts, List<PStmt>()),
               Rw((x: PExpr) => icReplace(x, consts), rwNoSpec, rwNoStmt))
@@ -43,7 +46,10 @@ fun [tail] icCollect(ss: Chain<PStmt>, acc: IcConsts): IcConsts
 fun icCollectLet(let2: PsLet, acc: IcConsts): IcConsts
   ret match(let2.lDefault)
     (v: PExpr) => icIsLiteral(v)
-      ? IcConsts(append(acc.icNames, let2.lName), append(acc.icValues, v))
+      # FIRST declaration of a name wins, as the head-first walk did.
+      ? (contains<String, PExpr>(acc.icMap, let2.lName)
+           ? acc
+           : IcConsts(put<String, PExpr>(acc.icMap, let2.lName, v)))
       : acc
     ()         => acc
 
@@ -54,16 +60,6 @@ fun icIsLiteral(x: PExpr): Bool
     (s2: PeStr)  => true
     (b: PeBool)  => true
     (o: PExpr)   => false
-
-fun [tail] icValueOf(ks: Chain<String>, vs: Chain<PExpr>,
-                     name: String): PExpr|None
-  ret match(ks)
-    (nil: ChainEnd) => None
-    (k: ChainLink)  => match(vs)
-      (nil2: ChainEnd) => None
-      (v: ChainLink)   => k.value == name
-        ? v.value
-        : icValueOf(k.next, v.next, name)
 
 # The literal, re-stamped with the reference's line.
 fun icRestamp(v: PExpr, line: PLine): PExpr
@@ -84,7 +80,7 @@ fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => contains2(c.icNames, let2.lName)
+      (let2: PsLet) => contains<String, PExpr>(c.icMap, let2.lName)
         ? icDropDeclsB(l.next, c, acc)
         : icDropDeclsB(l.next, c, push<PStmt >(acc, l.value))
       (o: PStmt)    => icDropDeclsB(l.next, c, push<PStmt >(acc, l.value))
@@ -92,8 +88,7 @@ fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
 # The walker callback: a bare name that aliases a const becomes the literal.
 fun icReplace(x: PExpr, c: IcConsts): PExpr|None
   ret match(x)
-    (nm: PeName) => match(icValueOf(chain(c.icNames), chain(c.icValues),
-                                    nm.refName))
+    (nm: PeName) => match(get<String, PExpr>(c.icMap, nm.refName))
       (v: PExpr) => icRestamp(v, nm.penLine)
       ()         => None
     (o: PExpr)   => None

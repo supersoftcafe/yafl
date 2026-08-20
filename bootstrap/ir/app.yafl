@@ -12,24 +12,114 @@ import System
 # carry LOOKUP (user ruling 2026-07-22 — appFunction over ~10^4 functions was
 # a linear scan per call). appOf is the ONE wholesale constructor; the
 # appPut* helpers maintain the indexes incrementally.
-class [final] CgApp(appFunctions: List<CgFunction>, appObjects: List<CgObject>,
-                    appGlobals: List<CgGlobal>,
-                    appFnIx: Dict<String, CgFunction>,
+# The Lists are GONE. They existed only to remember INSERTION ORDER — the
+# comment used to say so: "Lists carry ITERATION ORDER (emission); the Dicts
+# carry LOOKUP". Appending to them cost O(n) per put, and ccStmt puts once per
+# statement, so building an app was quadratic in its own size.
+#
+# Insertion order is a NAMED ORDERING, so it is recorded rather than
+# maintained: each name gets a sequence number on FIRST insert (a replacement
+# keeps its original slot, exactly as the old in-place map did), and the
+# ordered views below recover emission order with one sort. put is O(log n),
+# and the sort is paid once per iteration instead of once per element.
+class [final] CgApp(appFnIx: Dict<String, CgFunction>,
                     appObjIx: Dict<String, CgObject>,
-                    appGlbIx: Dict<String, CgGlobal>)
+                    appGlbIx: Dict<String, CgGlobal>,
+                    appFnOrd: Dict<String, Int>,
+                    appObjOrd: Dict<String, Int>,
+                    appGlbOrd: Dict<String, Int>,
+                    appNext: Int)
 
 fun appOf(fns: List<CgFunction>, objs: List<CgObject>,
           globals: List<CgGlobal>): CgApp
-  ret CgApp(fns, objs, globals,
-            fold(fns, Dict<String, CgFunction>(),
-                 (ix: Dict<String, CgFunction>, f: CgFunction) => put(ix, f.fnName, f)),
-            fold(objs, Dict<String, CgObject>(),
-                 (ix: Dict<String, CgObject>, o: CgObject) => put(ix, o.objName, o)),
-            fold(globals, Dict<String, CgGlobal>(),
-                 (ix: Dict<String, CgGlobal>, g2: CgGlobal) => put(ix, g2.globalName, g2)))
+  ret fold(globals,
+        fold(objs,
+          fold(fns, emptyApp(),
+               (a: CgApp, f: CgFunction) => appPutFunction(a, f)),
+          (a: CgApp, o: CgObject) => appPutObject(a, o)),
+        (a: CgApp, g2: CgGlobal) => appPutGlobal(a, g2))
+
+# ── ordered views: the sequence numbers, sorted ──────────────────────────────
+
+fun _ordOf(d: Dict<String, Int>, n: String): Int
+  ret match(get(d, n))
+    (i: Int) => i
+    ()       => 0
+
+fun appFunctions(a: CgApp): List<CgFunction>
+  ret map<String, CgFunction>(
+        sortBy<String>(keys(a.appFnIx),
+                       (x: String, y: String) =>
+                         _ordOf(a.appFnOrd, x) < _ordOf(a.appFnOrd, y)),
+        (n: String) => forceFn(get(a.appFnIx, n)))
+
+fun appObjects(a: CgApp): List<CgObject>
+  ret map<String, CgObject>(
+        sortBy<String>(keys(a.appObjIx),
+                       (x: String, y: String) =>
+                         _ordOf(a.appObjOrd, x) < _ordOf(a.appObjOrd, y)),
+        (n: String) => forceObj(get(a.appObjIx, n)))
+
+fun appGlobals(a: CgApp): List<CgGlobal>
+  ret map<String, CgGlobal>(
+        sortBy<String>(keys(a.appGlbIx),
+                       (x: String, y: String) =>
+                         _ordOf(a.appGlbOrd, x) < _ordOf(a.appGlbOrd, y)),
+        (n: String) => forceGlb(get(a.appGlbIx, n)))
+
+# Strict: the name came from keys() of the same Dict, so a miss is a bug here,
+# not a runtime condition.
+fun forceFn(x: CgFunction|None): CgFunction
+  ret match(x)
+    (f: CgFunction) => f
+    ()              => CgFunction("", CgVoid(), CgVoid(), CgVoid(), List<Op>(),
+                                  "", None, false, false, false, false)
+
+fun forceObj(x: CgObject|None): CgObject
+  ret match(x)
+    (o: CgObject) => o
+    ()            => CgObject("", List<String>(), List<CgFuncSlot>(), CgVoid(),
+                              None, "", false, false, 0, false)
+
+fun forceGlb(x: CgGlobal|None): CgGlobal
+  ret match(x)
+    (g2: CgGlobal) => g2
+    ()             => CgGlobal("", CgVoid(), None, None, None, None)
 
 fun emptyApp(): CgApp
-  ret appOf(List<CgFunction>(), List<CgObject>(), List<CgGlobal>())
+  ret CgApp(Dict<String, CgFunction>(), Dict<String, CgObject>(),
+            Dict<String, CgGlobal>(), Dict<String, Int>(),
+            Dict<String, Int>(), Dict<String, Int>(), 0)
+
+# ── insertion ────────────────────────────────────────────────────────────────
+# A name keeps the sequence number it was FIRST given: replacing an entry
+# updates it in place in the emission order, which is what the old in-place
+# list-of-entries did and what the passes that rewrite functions rely on. Only
+# a genuinely new name consumes the next number.
+
+fun appPutFunction(a: CgApp, f: CgFunction): CgApp
+  ret match(get(a.appFnOrd, f.fnName))
+    (i: Int) => CgApp(put(a.appFnIx, f.fnName, f), a.appObjIx, a.appGlbIx,
+                      a.appFnOrd, a.appObjOrd, a.appGlbOrd, a.appNext)
+    ()       => CgApp(put(a.appFnIx, f.fnName, f), a.appObjIx, a.appGlbIx,
+                      put(a.appFnOrd, f.fnName, a.appNext), a.appObjOrd,
+                      a.appGlbOrd, a.appNext + 1)
+
+fun appPutObject(a: CgApp, o: CgObject): CgApp
+  ret match(get(a.appObjOrd, o.objName))
+    (i: Int) => CgApp(a.appFnIx, put(a.appObjIx, o.objName, o), a.appGlbIx,
+                      a.appFnOrd, a.appObjOrd, a.appGlbOrd, a.appNext)
+    ()       => CgApp(a.appFnIx, put(a.appObjIx, o.objName, o), a.appGlbIx,
+                      a.appFnOrd, put(a.appObjOrd, o.objName, a.appNext),
+                      a.appGlbOrd, a.appNext + 1)
+
+fun appPutGlobal(a: CgApp, g2: CgGlobal): CgApp
+  ret match(get(a.appGlbOrd, g2.globalName))
+    (i: Int) => CgApp(a.appFnIx, a.appObjIx, put(a.appGlbIx, g2.globalName, g2),
+                      a.appFnOrd, a.appObjOrd, a.appGlbOrd, a.appNext)
+    ()       => CgApp(a.appFnIx, a.appObjIx, put(a.appGlbIx, g2.globalName, g2),
+                      a.appFnOrd, a.appObjOrd,
+                      put(a.appGlbOrd, g2.globalName, a.appNext), a.appNext + 1)
 
 # ── name lookups ─────────────────────────────────────────────────────────────
 
@@ -48,35 +138,19 @@ fun appHasObject(a: CgApp, name: String): Bool
 fun appHasFunction(a: CgApp, name: String): Bool
   ret !(get(a.appFnIx, name) is None)
 
-# ── insertion (dict semantics: same name replaces in place) ──────────────────
-
-fun appPutFunction(a: CgApp, f: CgFunction): CgApp
-  ret appHasFunction(a, f.fnName)
-    ? CgApp(map(a.appFunctions, (x: CgFunction) => x.fnName == f.fnName ? f : x),
-            a.appObjects, a.appGlobals,
-            put(a.appFnIx, f.fnName, f), a.appObjIx, a.appGlbIx)
-    : CgApp(append(a.appFunctions, f), a.appObjects, a.appGlobals,
-            put(a.appFnIx, f.fnName, f), a.appObjIx, a.appGlbIx)
-
-fun appPutObject(a: CgApp, o: CgObject): CgApp
-  ret appHasObject(a, o.objName)
-    ? CgApp(a.appFunctions,
-            map(a.appObjects, (x: CgObject) => x.objName == o.objName ? o : x),
-            a.appGlobals, a.appFnIx, put(a.appObjIx, o.objName, o),
-            a.appGlbIx)
-    : CgApp(a.appFunctions, append(a.appObjects, o), a.appGlobals,
-            a.appFnIx, put(a.appObjIx, o.objName, o), a.appGlbIx)
-
-fun appPutGlobal(a: CgApp, g2: CgGlobal): CgApp
-  ret !(get(a.appGlbIx, g2.globalName) is None)
-    ? CgApp(a.appFunctions, a.appObjects,
-            map(a.appGlobals, (x: CgGlobal) => x.globalName == g2.globalName ? g2 : x),
-            a.appFnIx, a.appObjIx, put(a.appGlbIx, g2.globalName, g2))
-    : CgApp(a.appFunctions, a.appObjects, append(a.appGlobals, g2),
-            a.appFnIx, a.appObjIx, put(a.appGlbIx, g2.globalName, g2))
-
+# Wholesale replacement: the new list's order becomes the emission order, so
+# the sequence numbers are reassigned from it.
 fun appWithFunctions(a: CgApp, fns: List<CgFunction>): CgApp
-  ret CgApp(fns, a.appObjects, a.appGlobals,
-            fold(fns, Dict<String, CgFunction>(),
-                 (ix: Dict<String, CgFunction>, f: CgFunction) => put(ix, f.fnName, f)),
-            a.appObjIx, a.appGlbIx)
+  ret fold(fns, CgApp(Dict<String, CgFunction>(), a.appObjIx, a.appGlbIx,
+                      Dict<String, Int>(), a.appObjOrd, a.appGlbOrd, a.appNext),
+           (acc: CgApp, f: CgFunction) => appPutFunction(acc, f))
+
+fun appWithObjects(a: CgApp, objs: List<CgObject>): CgApp
+  ret fold(objs, CgApp(a.appFnIx, Dict<String, CgObject>(), a.appGlbIx,
+                       a.appFnOrd, Dict<String, Int>(), a.appGlbOrd, a.appNext),
+           (acc: CgApp, o: CgObject) => appPutObject(acc, o))
+
+fun appWithGlobals(a: CgApp, globals: List<CgGlobal>): CgApp
+  ret fold(globals, CgApp(a.appFnIx, a.appObjIx, Dict<String, CgGlobal>(),
+                          a.appFnOrd, a.appObjOrd, Dict<String, Int>(), a.appNext),
+           (acc: CgApp, g2: CgGlobal) => appPutGlobal(acc, g2))

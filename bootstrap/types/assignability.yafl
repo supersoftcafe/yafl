@@ -323,16 +323,19 @@ fun comparePairs(r: Resolver, left: STuple, right: STuple,
 class [final] Pair(prLeft: SEntry, prSlot: Int)
 
 fun zipBinding(es: List<SEntry>, binding: List<Int>): List<Pair>
-  ret zipLoop(chain(es), chain(binding), List<Pair>())
+  ret zipLoop(chain(es), chain(binding), builder<Pair>())
 
-fun [tail] zipLoop(es: Chain<SEntry>, bs: Chain<Int>, acc: List<Pair>): List<Pair>
+# Pairs an entry with the binding index it fills. Positional data — the pair
+# order mirrors the tuple's — so a threaded builder, O(1) per pair.
+fun [tail] zipLoop(es: Chain<SEntry>, bs: Chain<Int>,
+                   [terminal] acc: ListBuilder<Pair>): List<Pair>
   ret match(es)
-    (nil: ChainEnd) => acc
+    (nil: ChainEnd) => build<Pair>(acc)
     (l: ChainLink)  => match(bs)
-      (nil2: ChainEnd) => acc
+      (nil2: ChainEnd) => build<Pair>(acc)
       (b: ChainLink)   => zipLoop(l.next, b.next,
                                   b.value < 0 ? acc          # filled by default
-                                              : append(acc, Pair(l.value, b.value)))
+                                              : push<Pair>(acc, Pair(l.value, b.value)))
 
 fun [tail] pairLoop(ps: Chain<Pair>, r: Resolver, rights: List<SEntry>,
                     acc: PairTally): PairTally

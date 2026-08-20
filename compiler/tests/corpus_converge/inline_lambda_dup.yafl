@@ -17,6 +17,6 @@ fun outer(flag: Bool, l: List<Int>): List<Int>
   ret v
 
 fun main(): Int
-  ret match(head(outer(true, append(List<Int>(), 7))))
+  ret match(head(outer(true, prepend(7, List<Int>()))))
     (v: Int) => v - 7
     ()        => 1

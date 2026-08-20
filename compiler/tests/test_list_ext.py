@@ -34,7 +34,7 @@ fun sum(l: List<Int>): Int
 
 # [1,2,3,4,5]
 fun nums(): List<Int>
-  ret append<Int>(append<Int>(append<Int>(append<Int>(append<Int>(List<Int>(), 1), 2), 3), 4), 5)
+  ret prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, prepend<Int>(4, prepend<Int>(5, List<Int>())))))
 
 fun main(): Int
   let l = nums()
@@ -48,8 +48,8 @@ fun main(): Int
   emit("last_empty", unwrap(last<Int>(List<Int>())))
 
   # ─── concat ────────────────────────────────────────────────────────────
-  let a = append<Int>(List<Int>(), 1)
-  let b = append<Int>(append<Int>(List<Int>(), 2), 3)
+  let a = prepend<Int>(1, List<Int>())
+  let b = prepend<Int>(2, prepend<Int>(3, List<Int>()))
   let c = concat<Int>(a, b)
   emit("concat_count", count(c))
   emit("concat_head",  unwrap(head<Int>(c)))
@@ -74,7 +74,7 @@ fun main(): Int
   emit("split_left_last",   unwrap(last<Int>(sp.left)))
   emit("split_right_head",  unwrap(head<Int>(sp.right)))
   emit("split_right_last",  unwrap(last<Int>(sp.right)))
-  let s1 = splitHalf<Int>(append<Int>(List<Int>(), 7))
+  let s1 = splitHalf<Int>(prepend<Int>(7, List<Int>()))
   emitBool("split1_left_empty", isEmpty<Int>(s1.left))
   emit("split1_right_head", unwrap(head<Int>(s1.right)))
 
@@ -91,7 +91,7 @@ fun main(): Int
   emitBool("contains_no",  contains<Int>(l, 99))
 
   # ─── flatMap ───────────────────────────────────────────────────────────
-  let fm = flatMap<Int,Int>(b, (x: Int) => append<Int>(append<Int>(List<Int>(), x), x))
+  let fm = flatMap<Int,Int>(b, (x: Int) => prepend<Int>(x, prepend<Int>(x, List<Int>())))
   emit("flatmap_count", count(fm))
   emit("flatmap_sum",   sum(fm))
 
