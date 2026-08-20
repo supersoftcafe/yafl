@@ -168,12 +168,31 @@ fun checkEnumDot(d: PeDot, e2: SEnum, r: Resolver): Set<PErr>
 
 # ── CallExpression ──────────────────────────────────────────────────────────
 # The argument tuple checks against the RESOLVED parameter shape; sub-errors
-# short-circuit the call's own diagnostics.
+# short-circuit the call's own diagnostics — EXCEPT when the only sub-error is
+# the callee failing to narrow to one callable. The name on its own can say no
+# more than "Ambiguous — qualify it", which tells the author to disambiguate;
+# when NO overload accepts what they passed, qualifying is impossible and that
+# message sends them the wrong way. This node knows the argument types, so it
+# reports which arguments failed and what the candidates take. Only when
+# nothing accepts them: two candidates that both fit ARE ambiguous.
 
 fun checkCall(c: PeCall, r: Resolver): Set<PErr>
   let calleeParams = paramShapeOf(exprType(c.function, r))
-  let sub = union(checkExpr(c.function, r, None),
-                   checkExpr(c.parameter, r, calleeParams))
+  let fnErrs = checkExpr(c.function, r, None)
+  let argErrs = checkExpr(c.parameter, r, calleeParams)
+  # Only when the name HAS candidates. A name that resolves to nothing at all
+  # is a different situation with its own correct message; rerouting it here
+  # would change an established diagnostic for no gain.
+  if !isEmpty(fnErrs) && isEmpty(argErrs) && paramShapeMissing(calleeParams)
+       && !isEmpty(calleeCandidates(c, r))
+    ret match(exprType(c.parameter, r))
+      (pt: Spec) => match(pt)
+        (tp: STuple) => anyCandidateAccepts(c, tp, r)
+          ? union(fnErrs, argErrs)
+          : add(noErrs(), unresolvedCallError2(c, tp, r))
+        (o: Spec)    => union(fnErrs, argErrs)
+      ()         => union(fnErrs, argErrs)
+  let sub = union(fnErrs, argErrs)
   if !isEmpty(sub)
     ret sub
   ret match(exprType(c.parameter, r))
@@ -190,6 +209,33 @@ fun callShapeErrs(c: PeCall, ptype: STuple, r: Resolver): Set<PErr>
         : noErrs()
       (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
     ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
+
+fun calleeCandidates(c: PeCall, r: Resolver): List<Found>
+  ret match(c.function)
+    (nm: PeName) => findData(r, nm.refName).bItems
+    (o: PExpr)   => List<Found>()
+
+fun paramShapeMissing(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => false
+    ()         => true
+
+# Does at least one overload of the callee accept these arguments? True means
+# the call really IS ambiguous — several readings fit and the author must
+# qualify. False means none fit, a different error with a different fix.
+# Narrowing goes through the same resolveOverloads the compile path uses, so
+# both agree about what "fits" (in particular about a candidate's own generic
+# parameters, which are wildcards it may bind).
+fun anyCandidateAccepts(c: PeCall, ptype: STuple, r: Resolver): Bool
+  ret match(c.function)
+    (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
+    (o: PExpr)   => false
+
+fun candidatesAccept(cands: List<Found>, ptype: STuple, c: PeCall,
+                     r: Resolver): Bool
+  ret isEmpty(cands)
+    ? false
+    : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
 
 # The callee didn't resolve to a single callable. Say WHY in the author's
 # terms: the called name, the argument types, the candidate signatures.
@@ -260,15 +306,52 @@ fun typeStr2(ts: STuple): String
 fun typeStrOf(t2: Spec): String
   ret match(t2)
     (b: SBuiltin)      => builtinStr(b.sbName)
-    (n: SNamed)        => bareOfUnique(n.snName)
+    (n: SNamed)        => specName(n.snName, n.snParams)
     (tp: STuple)       => "(" + joinTypeStrs(chain(tp.stEntries), "") + ")"
     (cm: SCombination) => joinMemberStrs(chain(cm.scTypes), "")
     (cl: SCallable)    => typeStr(cl.scParams2) + ": " + typeStr(cl.scResult)
-    (c: SClass)        => bareOfUnique(c.scName)
+    (c: SClass)        => specName(c.scName, c.scParams)
     (g2: SGeneric)     => bareOfUnique(g2.sgName)
-    (e2: SEnum)        => "EnumSpec"
+    # Without the root name an enum rendered as the literal "EnumSpec" — the
+    # internal class name these strings exist to avoid. List, Option and
+    # Result are all enums, so it was the common case.
+    (e2: SEnum)        => specName(e2.seRoot, e2.seParams)
     (af: SArrayField)  => "ArrayFieldSpec"
     (ls: SLazyStub)    => "LazyStubSpec"
+
+# A declared type's name as the author would write it: no namespace, no
+# unique-name hash, and a monomorphised specialisation shown with its argument
+# list rather than the `$generic$` mangling it carries internally.
+fun specName(name: String, params: List<Spec>): String
+  let bare = bareOfUnique(name)
+  let gi = find(bare, "$generic$")
+  let head2 = beforeHash(gi < 0 ? bare : slice(bare, 0, gi))
+  let args = isEmpty(params)
+    ? (gi < 0 ? "" : joinMangledArgs(chain(split(slice(bare, gi + 9,
+                                                       length(bare)), "_")), ""))
+    : joinArgStrs(chain(params), "")
+  ret args == "" ? head2 : head2 + "<" + args + ">"
+
+fun beforeHash(s2: String): String
+  ret find(s2, "@") < 0 ? s2 : slice(s2, 0, find(s2, "@"))
+
+fun [tail] joinArgStrs(ps: Chain<Spec>, acc: String): String
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => joinArgStrs(l.next,
+                                   acc == ""
+                                     ? typeStrOf(l.value)
+                                     : acc + ", " + typeStrOf(l.value))
+
+fun [tail] joinMangledArgs(as2: Chain<String>, acc: String): String
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => l.value == ""
+      ? joinMangledArgs(l.next, acc)
+      : joinMangledArgs(l.next,
+                        acc == ""
+                          ? builtinStr(beforeHash(l.value))
+                          : acc + ", " + builtinStr(beforeHash(l.value)))
 
 fun builtinStr(name: String): String
   ret name == "bigint" ? "Int"

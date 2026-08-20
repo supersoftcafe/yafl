@@ -680,10 +680,10 @@ fun [tail] removeLoop(ms: Chain<Spec>, gm: Spec, [terminal] acc: ListBuilder<Spe
 # concrete union; a mismatch fails unless the concrete side still holds a
 # hole of its own. Otherwise `E | X` against bare `X` leaves nothing for E:
 # ambiguous, so defer.
-# WORKAROUND (task #18): `isMoreThanOne` and `singleOrNone` are overloaded over
-# List, Set and Bag, and overload resolution cannot discriminate them by the
-# argument's type — it reports an ambiguity whether or not a type argument is
-# spelled. These two ask the chain directly. Delete them once #18 is fixed.
+# `isMoreThanOne` and `singleOrNone` exist for Set and Bag but NOT for List, so
+# these ask the chain directly. (The resolver reports that as "Ambiguous —
+# Candidates: ..." rather than "nothing accepts a List", which is misleading;
+# that diagnostic is tracked separately. These helpers are correct either way.)
 fun holesMoreThanOne(holes: List<String>): Bool
   ret match(chain(holes))
     (l: ChainLink) => l.next is ChainLink

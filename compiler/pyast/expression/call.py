@@ -21,6 +21,26 @@ import pyast.utils as u
 from pyast.expression.base import Expression
 
 
+_BUILTIN_DISPLAY = {"bigint": "Int", "int8": "Int8", "int16": "Int16",
+                    "int32": "Int32", "int64": "Int64", "float32": "Float32",
+                    "float64": "Float64", "bool": "Bool", "str": "String"}
+
+
+def _spec_name(name: str, type_params: "tuple | None" = None) -> str:
+    """A declared type's name as the author would write it: no namespace, no
+    unique-name hash, and monomorphised specialisations shown with their
+    argument list rather than the `$generic$` mangling."""
+    bare = g.bare_name(name)
+    head, sep, tail = bare.partition("$generic$")
+    head = head.split("@", 1)[0]
+    args = [a for a in tail.split("_") if a] if sep else []
+    if type_params:
+        args = [_type_str(p) for p in type_params]
+    else:
+        args = [_BUILTIN_DISPLAY.get(a, a.split("@", 1)[0]) for a in args]
+    return f"{head}<{', '.join(args)}>" if args else head
+
+
 def _type_str(ts: t.TypeSpec | None) -> str:
     """A source-shaped rendering of a type for diagnostics (best-effort;
     never the internal class name)."""
@@ -32,7 +52,7 @@ def _type_str(ts: t.TypeSpec | None) -> str:
                 "float64": "Float64", "bool": "Bool", "str": "String"}.get(
                     ts.type_name, ts.type_name)
     if isinstance(ts, t.NamedSpec):
-        return g.bare_name(ts.name)
+        return _spec_name(ts.name)
     if isinstance(ts, t.TupleSpec):
         return "(" + ", ".join(_type_str(e.type) for e in ts.entries) + ")"
     if isinstance(ts, t.CombinationSpec):
@@ -40,7 +60,12 @@ def _type_str(ts: t.TypeSpec | None) -> str:
     if isinstance(ts, t.CallableSpec):
         return f"{_type_str(ts.parameters)}: {_type_str(ts.result)}"
     if isinstance(ts, t.ClassSpec):
-        return g.bare_name(ts.name)
+        return _spec_name(ts.name, ts.type_params)
+    if isinstance(ts, t.EnumSpec):
+        # Without this an enum rendered as "EnumSpec" — the internal class
+        # name this function exists to avoid. List/Option/Result are all
+        # enums, so it was the common case.
+        return _spec_name(ts.root_name, ts.type_params)
     if isinstance(ts, t.GenericPlaceholderSpec):
         return g.bare_name(ts.name)
     return type(ts).__name__
@@ -91,9 +116,29 @@ class CallExpression(Expression):
         # itself (the binding is otherwise lenient about incidental names).
         callee_type = self.function.get_type(resolver)
         callee_params = callee_type.parameters if isinstance(callee_type, t.CallableSpec) else None
-        err = self.function.check(resolver, None) + self.parameter.check(resolver, callee_params)
-        if err:
-            return err
+        fn_err = self.function.check(resolver, None)
+        arg_err = self.parameter.check(resolver, callee_params)
+        # A callee that never narrowed to ONE callable is explained best HERE.
+        # The name on its own can only say "Ambiguous — qualify it", which
+        # tells the author to disambiguate; when NO overload accepts what they
+        # passed, qualifying is impossible and that message sends them the
+        # wrong way. This node knows the argument types, so let it say which
+        # arguments failed and what the candidates actually take. Only when
+        # nothing accepts them — two candidates that both fit really are
+        # ambiguous, and that message stands.
+        # Only when the name HAS candidates. A name that resolves to nothing at
+        # all is a different situation with its own correct message ("Failed to
+        # resolve x"); rerouting that here would say "no function named x is in
+        # scope", which is no better and changes an established diagnostic.
+        if (fn_err and not arg_err
+                and not isinstance(callee_type, t.CallableSpec)
+                and self.__callee_candidates(resolver)):
+            ptype = self.parameter.get_type(resolver)
+            if (isinstance(ptype, t.TupleSpec)
+                    and not self.__any_candidate_accepts(resolver, ptype)):
+                return [self.__unresolved_call_error(resolver, ptype, callee_type)]
+        if fn_err or arg_err:
+            return fn_err + arg_err
 
         ptype = self.parameter.get_type(resolver)
         if not isinstance(ptype, t.TupleSpec):
@@ -107,6 +152,33 @@ class CallExpression(Expression):
             return [Error(self.line_ref, "Parameters are not assignment compatible")]
 
         return []
+
+    def __callee_candidates(self, resolver: g.Resolver) -> list:
+        """The named callee's resolutions, or [] when the callee is not a
+        plain name (a computed callable has no candidate list to report)."""
+        from pyast.expression.access import NamedExpression
+        if not isinstance(self.function, NamedExpression):
+            return []
+        return resolver.find_data(self.function.name)
+
+    def __any_candidate_accepts(self, resolver: g.Resolver,
+                                ptype: t.TupleSpec) -> bool:
+        """Does at least one overload of the callee accept these arguments?
+
+        True means the call really is AMBIGUOUS — several readings fit and the
+        author must qualify. False means none fit, which is a different error
+        with a different fix. Narrowing goes through the same
+        `_resolve_overloads` the compile path uses, so the two agree about what
+        "fits" (in particular about a candidate's own generic parameters, which
+        are wildcards it may bind)."""
+        from pyast.expression.access import NamedExpression, _resolve_overloads
+        if not isinstance(self.function, NamedExpression):
+            return False
+        candidates = resolver.find_data(self.function.name)
+        if not candidates:
+            return False
+        shape = t.CallableSpec(self.line_ref, ptype, None)
+        return bool(_resolve_overloads(resolver, shape, candidates))
 
     def __unresolved_call_error(self, resolver: g.Resolver,
                                 ptype: t.TupleSpec, ftype: t.TypeSpec | None) -> Error:
