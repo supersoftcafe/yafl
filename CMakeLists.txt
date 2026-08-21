@@ -49,21 +49,58 @@ find_program(UNITTEST_PARALLEL unittest-parallel)
 # Discovery is pinned to `-s tests -t .` (the suite lives in compiler/tests) so
 # it never depends on the runner's default start directory or the cwd.
 if(UNITTEST_PARALLEL)
-    set(YAFL_SUITE_CMD ${UNITTEST_PARALLEL} -j 3 -s tests -t .)
+    # -j 0 = all cores. Never a fixed number: it was -j 3 on a 5-core box,
+    # which under-subscribed here and would over-subscribe a smaller one.
+    set(YAFL_SUITE_CMD ${UNITTEST_PARALLEL} -j 0 -s tests -t .)
 else()
     set(YAFL_SUITE_CMD ${Python3_EXECUTABLE} -m unittest discover -s tests -t .)
 endif()
 
+# The port binary is an INPUT to the suite, not something the tests build: ~25
+# modules execute it, and having the first one to ask for it compile the port
+# (~10 minutes) while the rest blocked on a lock serialised the parallel run.
+# It is produced once here, as a fixture the suite depends on.
+set(YAFL_BOOTSTRAP_BIN ${CMAKE_BINARY_DIR}/ybootstrap)
+add_test(NAME bootstrap_binary
+    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
+            ${Python3_EXECUTABLE} build_bootstrap.py -o ${YAFL_BOOTSTRAP_BIN}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+set_tests_properties(bootstrap_binary PROPERTIES
+    TIMEOUT 3600
+    FIXTURES_SETUP bootstrap_bin)
+
 add_test(NAME compiler_suite
-    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static> ${YAFL_SUITE_CMD}
+    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
+            YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN} ${YAFL_SUITE_CMD}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
 # `unittest-parallel` exits 0 even when it discovers *zero* tests (printing
 # "(0 total tests)" / "Ran 0 test"), which would silently report success if the
 # suite ever failed to be found. Treat an empty run as a failure regardless of
 # exit code — this is what makes a misdiscovered suite show up as a failure.
 set_tests_properties(compiler_suite PROPERTIES
-    TIMEOUT 1800
+    # 4h. It was 1800s, which is LESS than the suite takes (~112 min at -j 3),
+    # so the gate reported a timeout rather than a result — a red run that says
+    # nothing about the code. Keep this comfortably above the real duration.
+    TIMEOUT 14400
     FAIL_REGULAR_EXPRESSION "Ran 0 test;NO TESTS RAN;\\(0 total tests\\)")
+
+set_tests_properties(compiler_suite PROPERTIES FIXTURES_REQUIRED bootstrap_bin)
+
+# THE SELF-COMPILE, LAST. The suite says the compiler is correct on small
+# programs; this says it survives the real one — its own sources, the hardest
+# input there is. It reaches codegen paths, GC behaviour under a compiler-sized
+# workload and any residual nondeterminism that small programs never touch, so
+# a failure here with a green suite means the problem only appears at scale.
+# RUN_SERIAL because it wants the machine (and a compiler-sized heap) to itself.
+add_test(NAME self_compile
+    COMMAND ${CMAKE_COMMAND} -E env YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN}
+            ${Python3_EXECUTABLE} selfcompile.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+set_tests_properties(self_compile PROPERTIES
+    TIMEOUT 14400
+    RUN_SERIAL TRUE
+    FIXTURES_REQUIRED bootstrap_bin
+    DEPENDS compiler_suite)
 
 # Convenience: `cmake --build build --target check` builds everything (so the
 # runtime archive and the C test executables exist) then runs the whole CTest set.

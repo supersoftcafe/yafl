@@ -13,7 +13,7 @@ generic-type scope, and that `where` is carried onto the synthesised constructor
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

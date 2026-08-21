@@ -10,7 +10,7 @@ import io
 
 import compiler as c
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

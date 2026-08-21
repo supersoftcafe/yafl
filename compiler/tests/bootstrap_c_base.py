@@ -1,4 +1,18 @@
-"""bootstrap C emission — mode `c` must produce BYTE-IDENTICAL C to Python's
+"""Shared fixture + corpus comparison for the bootstrap C-emission tests.
+
+NOT a test module — the filename deliberately does not match `test*.py`, so
+discovery skips it and the base class is not collected twice. The five
+test_bootstrap_c_*.py modules each subclass this and contribute ONE test.
+
+Split into separate MODULES rather than methods or classes because
+unittest-parallel shards by module: as one module this was 24-37 minutes in
+a single worker while the other four idled, and it set the floor for the
+whole suite. --level=test would split it but does not preserve setUpClass;
+--level=class cannot split a single-class module.
+
+Original description follows.
+
+bootstrap C emission — mode `c` must produce BYTE-IDENTICAL C to Python's
 __create_c_code at -O0 over the corpus: the full pipeline through codegen —
 per-statement global codegen, entry point, lazy machinery, ssa_validate,
 trim, globalfuncs, flat-init resolution, sync inference, branch threading +
@@ -61,7 +75,7 @@ _CREATE_C = c.__dict__["__create_c_code"]
 _IS_MAIN = c.__dict__["__is_main_function"]
 
 
-class TestBootstrapC(TestCase):
+class BootstrapCBase(TestCase):
     _TIMEOUT = 3600
 
     @classmethod
@@ -75,47 +89,6 @@ class TestBootstrapC(TestCase):
     @classmethod
     def tearDownClass(cls):
         pass  # the shared binary is cache-owned
-
-    def test_c_matches_python(self):
-        self._compare_corpus(0, "c")
-
-    def test_c_matches_python_O1(self):
-        # The same whole-program byte-compare at -O1: bounds_elim, dead
-        # stores, static-object promotion, and the pre-async collapse
-        # fixpoint (struct/tag/discriminator folds, string concat/
-        # accumulation) plus stack promotion all run on both sides.
-        self._compare_corpus(1, "c1")
-
-    def test_c_matches_python_O2(self):
-        # -O2 adds the bounded small-function inline fixpoint (IR inliner +
-        # trim to shape stability) on both sides.
-        self._compare_corpus(2, "c2")
-
-    def test_c_matches_python_O3(self):
-        # -O3 adds [inline(always)] fusion and the single-caller fold with
-        # vtable-slot trimming.
-        self._compare_corpus(3, "c3")
-
-    def test_input_order_does_not_matter(self):
-        """Statement order IS emission order, so the same files fed in a
-        different order used to emit different C — which made the byte
-        contract depend on every caller ordering its inputs by hand. Both
-        compilers now sort by file NAME (the only key the port has: it sees
-        `#FILE# <name>`, never a path). This guards that."""
-        import random
-        target = _CORPUS[0]
-        canonical = _run_port_c(self.binary, _port_stream(target), "c")
-        self.assertTrue(canonical, "port produced no C for the canonical order")
-        files = _STDLIB + [target]
-        for seed in (1, 2):
-            shuffled = list(files)
-            random.Random(seed).shuffle(shuffled)
-            stream = "".join(f"#FILE# {q.name}\n{_terminated(q)}" for q in shuffled)
-            self.assertEqual(canonical, _run_port_c(self.binary, stream, "c"),
-                             f"port C changed when inputs were shuffled (seed {seed})")
-        self.assertEqual(canonical.splitlines(),
-                         _python_c_text(target.name, 0).splitlines(),
-                         "port and Python disagree on the canonical order")
 
     def _compare_corpus(self, optimization_level: int, mode: str):
         # Every corpus file is independent, and per file the two compiles

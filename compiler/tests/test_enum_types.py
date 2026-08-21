@@ -4,7 +4,7 @@ from __future__ import annotations
 import contextlib
 import io
 import subprocess
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import _YAFLLIB_DIR
 
 import compiler as c

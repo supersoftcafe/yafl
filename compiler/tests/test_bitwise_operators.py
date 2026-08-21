@@ -9,7 +9,7 @@ spelling onto the single-pass method. Float and String have no Bitwise instance.
 from __future__ import annotations
 
 import pyast.expression as e
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

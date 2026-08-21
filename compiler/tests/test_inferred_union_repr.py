@@ -15,7 +15,7 @@ had exactly this shape and broke the -O2 build.
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib
 
 _SRC = """\

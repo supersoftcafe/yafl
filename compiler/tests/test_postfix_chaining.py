@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from parsing.tokenizer import tokenize
 from parsing.parser import parse_expression
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

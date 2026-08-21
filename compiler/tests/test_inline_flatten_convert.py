@@ -10,7 +10,7 @@ statement paths collide with the outer's (SSA: "body/s1/expr/result defined
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 _PROGRAM = """namespace Test

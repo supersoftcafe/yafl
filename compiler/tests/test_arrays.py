@@ -16,7 +16,7 @@ import pyast.statement as s
 import lowering.simple_classes as simple_classes
 
 import compiler as c
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

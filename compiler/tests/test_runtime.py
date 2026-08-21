@@ -11,7 +11,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import _CLANG_BUILD_FLAGS, _STATIC_LINK, _RUN_ENV
 
 import compiler as c

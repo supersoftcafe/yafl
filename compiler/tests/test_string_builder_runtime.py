@@ -9,7 +9,7 @@ compile-time *rejection*, so they can't share a compile with anything.
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

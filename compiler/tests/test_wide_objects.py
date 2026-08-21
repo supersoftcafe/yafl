@@ -13,7 +13,7 @@ A missed mask bit means unmarked children: collected, compacted over, or
 poisoned — any of which fails the equality sweep."""
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib
 
 N_FIELDS = 70

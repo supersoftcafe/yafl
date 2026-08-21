@@ -7,7 +7,7 @@ to 0.0 (`Complex(3.0)` is the real number 3 — the tuple-default machinery).
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 _RUNTIME = """namespace Test

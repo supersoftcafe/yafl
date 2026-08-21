@@ -9,7 +9,7 @@ deleted once the instance statement and ambient resolution landed.
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 # The stdlib shape that motivated the gap: an explicit drop of a builder,

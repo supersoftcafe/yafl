@@ -13,7 +13,7 @@ lazy path correct for callable values:
 """
 from __future__ import annotations
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 _LEN = "fun impl(s: System::String): System::Int\n  ret System::length(s)\n"

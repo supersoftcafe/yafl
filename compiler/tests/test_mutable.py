@@ -14,7 +14,7 @@ The second is not theoretical: MemoRoot was silently flattened to a
 from __future__ import annotations
 
 import compiler as c
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

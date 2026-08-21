@@ -12,7 +12,7 @@ from parsing.tokenizer import tokenize
 import parsing.parser as parser
 import pyast.expression as e
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

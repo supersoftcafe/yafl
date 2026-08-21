@@ -11,7 +11,7 @@ import io
 import os
 import tempfile
 import contextlib
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import BatchedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run_stdlib
