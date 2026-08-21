@@ -1,5 +1,7 @@
 """Shared helpers for compiler integration tests."""
 import os
+import contextlib
+import io
 import re
 import signal
 import subprocess
@@ -525,3 +527,126 @@ class BatchedTestCase(TimedTestCase):
     @classmethod
     def tearDownClass(cls):
         _BATCH_RESULTS.clear()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Batched COMPILE-ERROR checking.
+#
+# A program that must fail to compile cannot share a unit with programs that
+# must succeed — it takes them down with it. But such programs batch very well
+# with EACH OTHER: the compiler reports every diagnostic in one pass rather
+# than stopping at the first, so N bad programs need ONE compile, and each
+# one's messages are recovered by line range.
+#
+# Programs are concatenated with their line offsets recorded. No driver and no
+# `main` renaming: the unit is never meant to link, only to be diagnosed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DIAG_RE = re.compile(r"(?m)^(\S+?)\[(\d+):(\d+)\](.*)$")
+_TOP_DECL = re.compile(
+    r"(?m)^(?:fun|class|enum|interface|let|typealias)\s+(?:\[[^\]]*\]\s*)?(\w+)")
+
+
+def _declared(src: str) -> "set[str]":
+    # `main` is renamed per program by error_batch, so it never collides.
+    return set(_TOP_DECL.findall(src)) - {"main"}
+
+
+def collision_free_groups(sources: "list[str]") -> "list[list[int]]":
+    """Programs packed so that no group declares a name twice.
+
+    A separate `namespace` is NOT enough: an unqualified reference inside
+    namespace E1 to its own `helper` is reported ambiguous against E0::helper,
+    so two programs that both declare `helper` cannot share a unit without
+    inventing errors neither would produce alone.
+    """
+    groups, taken = [], []
+    for i, src in enumerate(sources):
+        names = _declared(src)
+        for g, used in zip(groups, taken):
+            if not (names & used):
+                g.append(i)
+                used |= names
+                break
+        else:
+            groups.append([i])
+            taken.append(set(names))
+    return groups
+
+
+def error_batch(sources: "list[str]") -> "tuple[str, list[int]]":
+    """One unit of `sources` plus each program's 1-based start line in it."""
+    head = ("namespace EntryPoint\nimport System\n"
+            "fun main(): System::Int\n  ret 0\n")
+    parts, offsets, line = [head], [], head.count("\n") + 1
+    for i, src in enumerate(sources):
+        body = src if src.endswith("\n") else src + "\n"
+        # Every program declares `main`. Left alone the unit trips "Too many
+        # main functions defined" — a position-less diagnostic that belongs to
+        # no program AND aborts the later phases, so checks like [tail] never
+        # run and their programs come back looking clean.
+        body = _MAIN_DEF.sub(rf"\1\2entry{i}(", body)
+        decls = _NS_DECL.findall(body)
+        if decls:
+            body = _NS_DECL.sub(f"namespace E{i}", body, count=1)
+            head = ""
+        else:
+            head = f"namespace E{i}\n"
+        chunk = head + body
+        offsets.append(line + (1 if head else 0))
+        parts.append(chunk)
+        line += chunk.count("\n")
+    return "".join(parts), offsets
+
+
+def split_diagnostics(diag: str, offsets: "list[int]", sources: "list[str]",
+                      name: str = "t.yafl") -> "list[str]":
+    """Diagnostics belonging to each program, with line numbers made
+    program-relative again so a test sees what it would have seen alone."""
+    out = [[] for _ in offsets]
+    ends = offsets[1:] + [10 ** 9]
+    for m in _DIAG_RE.finditer(diag):
+        ln = int(m.group(2))
+        for i, (start, end) in enumerate(zip(offsets, ends)):
+            if start <= ln < end:
+                # Undo the per-program `main` rename so a test that asserts on
+                # the function name sees the name it actually wrote.
+                text = m.group(4).replace(f"entry{i}", "main")
+                out[i].append(f"{name}[{ln - start + 1}:{m.group(3)}]{text}")
+                break
+    return ["\n".join(lines) for lines in out]
+
+
+def compile_error_batch(sources: "list[str]") -> "list[tuple[bool, str]]":
+    """(failed_to_compile, its diagnostics) for each program, from ONE compile.
+
+    A program with no diagnostics in its range compiled fine — the caller must
+    then fall back, because a batched unit yields no per-program C.
+    """
+    return [(False, "") if d is None else (bool(d.strip()), d)
+            for d in compile_diag_batch(sources, "t.yafl")]
+
+
+def compile_diag_batch(sources: "list[str]",
+                       name: str = "test.yafl") -> "list[str]":
+    """Each program's diagnostics from ONE compile — or None where the batch
+    could not tell, which the caller must resolve by compiling that program
+    alone. `just_testing=True`: these callers want check output, not C.
+    """
+    out = [None] * len(sources)
+    for group in collision_free_groups(sources):
+        picked = [sources[i] for i in group]
+        unit, offsets = error_batch(picked)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = c.compile([c.Input(unit, name)], use_stdlib=True,
+                             just_testing=True)
+        for i, diag in zip(group, split_diagnostics(buf.getvalue(), offsets,
+                                                    picked, name)):
+            # Nothing reported means "clean" ONLY if the unit itself compiled.
+            # If it failed, compiler.py:578 returned before linearity,
+            # tail_loop and the lazy checks ever ran, so an empty slice says
+            # nothing about this program — it is UNKNOWN, and None makes the
+            # caller find out for itself.
+            out[i] = diag if (diag or code) else None
+    return out
