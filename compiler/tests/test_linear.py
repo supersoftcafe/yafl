@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import contextlib
+import re
 
 from tests.testutil import TimedTestCase as TestCase
 
@@ -32,6 +33,11 @@ fun thread(h: H): H
 
 def _compile(body: str) -> tuple[str, str]:
     """Compile _PRELUDE + body; return (c_code, captured_diagnostics)."""
+    if _COLLECT is not None:
+        _COLLECT.append(body)
+        return "", ""
+    if body in _RESULTS:
+        return _RESULTS[body]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         result = c.compile([c.Input(_PRELUDE + body, "test.yafl")],
@@ -39,8 +45,89 @@ def _compile(body: str) -> tuple[str, str]:
     return result, buf.getvalue()
 
 
+# ── ONE compile per class ────────────────────────────────────────────────────
+# Each test compiled _PRELUDE + its body against the whole stdlib: 29 compiles
+# for 29 tiny programs. They stack into one unit per class instead — the
+# prelude ONCE (a namespace does not scope unqualified lookup, so one `mk`/
+# `sink`/`thread` serves every program), each body's functions suffixed with
+# its index, and a synthetic `main` so the unit HAS an entry point. Without one
+# the compiler reports "No main function found" and returns before linearity
+# ever runs, which would silently report every violation as clean.
+
+_FUN_DEF = re.compile(r"(?m)^fun\s+([A-Za-z_]\w*)")
+_DIAG = re.compile(r"(?m)^(\S+?)\[(\d+):(\d+)\](.*)$")
+_SYNTH_MAIN = "\nfun main(): System::Int\n  ret 0\n"
+
+_COLLECT: "list | None" = None
+_RESULTS: "dict[str, tuple[str, str]]" = {}
+
+
+def _suffix(body: str, i: int) -> str:
+    """Index every function this body defines, references included."""
+    for name in sorted(set(_FUN_DEF.findall(body)), key=len, reverse=True):
+        body = re.sub(rf"\b{name}\b", f"{name}_{i}", body)
+    return body
+
+
+def _batch_compile(bodies: "list[str]") -> None:
+    """Compile every collected body as ONE unit and split the diagnostics back
+    out by line range. A body the batch says nothing about is left unrecorded,
+    so it compiles alone rather than being reported clean on no evidence."""
+    if not bodies:
+        return
+    text, offsets = _PRELUDE + _SYNTH_MAIN, []
+    for i, body in enumerate(bodies):
+        offsets.append(text.count("\n") + 1)
+        text += _suffix(body, i)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = c.compile([c.Input(text, "test.yafl")], use_stdlib=True,
+                         just_testing=False)
+    per = [[] for _ in bodies]
+    ends = offsets[1:] + [10 ** 9]
+    for m in _DIAG.finditer(buf.getvalue()):
+        ln = int(m.group(2))
+        for i, (lo, hi) in enumerate(zip(offsets, ends)):
+            if lo <= ln < hi:
+                msg = m.group(4).replace(f"main_{i}", "main")
+                per[i].append(f"test.yafl[{ln - lo + 1}:{m.group(3)}]{msg}")
+                break
+    for body, lines in zip(bodies, per):
+        # Warnings do not make a program fail, and the checker does not always
+        # reach every violation in one pass. Only a real error is evidence that
+        # THIS body was rejected; a body with nothing but warnings against it
+        # stays unrecorded and compiles alone.
+        if any("warning:" not in ln for ln in lines):
+            _RESULTS[body] = ("", "\n".join(lines))
+        elif code:
+            _RESULTS[body] = (code, "\n".join(lines))
+
+
+def _collect_class(cls) -> None:
+    """Run the class's tests with _compile recording, then batch what it asked
+    for."""
+    global _COLLECT
+    _COLLECT = []
+    for name in sorted(n for n in dir(cls) if n.startswith("test")):
+        try:
+            getattr(cls(name), name)()
+        except Exception:
+            pass                  # collect mode: only the bodies matter
+    bodies, _COLLECT = _COLLECT, None
+    seen, uniq = set(), []
+    for b in bodies:
+        if b not in seen:
+            seen.add(b); uniq.append(b)
+    _batch_compile(uniq)
+
+
 class TestLinearPositive(TestCase):
     """Programs that thread linear values correctly must compile."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        _collect_class(cls)
 
     def test_use_once(self):
         code, _ = _compile("""
@@ -161,6 +248,11 @@ fun main(): System::Int
 
 class TestLinearNegative(TestCase):
     """Programs that misuse linear values must be rejected."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        _collect_class(cls)
 
     def _reject(self, body: str, needle: str):
         code, errors = _compile(body)

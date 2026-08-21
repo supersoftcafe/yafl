@@ -8,6 +8,7 @@ code or print the stringified result and capture stdout.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from tests.testutil import TimedTestCase as TestCase
@@ -47,6 +48,11 @@ def _build(binary_src: str) -> str:
 
 
 def _run_exit(test_source: str, timeout: int = 5) -> int:
+    if _COLLECT is not None:
+        _COLLECT.append(("exit", test_source))
+        return 0
+    if ("exit", test_source) in _RESULTS:
+        return _RESULTS[("exit", test_source)]
     binary = _build(test_source)
     try:
         return subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV).returncode
@@ -57,7 +63,13 @@ def _run_exit(test_source: str, timeout: int = 5) -> int:
             pass
 
 
-def _run_stdout(test_source: str, timeout: int = 5) -> str:
+def _run_stdout(test_source: str, timeout: int = 5, _batched: bool = True) -> str:
+    if _batched:
+        if _COLLECT is not None:
+            _COLLECT.append(("out", test_source))
+            return ""
+        if ("out", test_source) in _RESULTS:
+            return _RESULTS[("out", test_source)]
     binary = _build(test_source)
     try:
         run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
@@ -68,6 +80,77 @@ def _run_stdout(test_source: str, timeout: int = 5) -> str:
             os.unlink(binary)
         except OSError:
             pass
+
+
+# ── ONE compile for the whole module ─────────────────────────────────────────
+# Every test here builds `_HARNESS_PRELUDE + <its own functions>` and compiles
+# it, so the module paid 19 whole-stdlib compiles to run 19 tiny programs.
+# They stack into one unit instead: the prelude ONCE (a namespace does not
+# scope unqualified lookup, so one `onResult` serves every program), each
+# test's functions suffixed with its index so nothing collides, and a driver
+# that prints a marker around each. Python splits the markers back apart —
+# YAFL just prints lines.
+
+_FUN_DEF = re.compile(r"(?m)^fun\s+([A-Za-z_]\w*)")
+_MARK = re.compile(r"\n@@(\d+|end)@@\n")
+
+_COLLECT: "list | None" = None       # sources being gathered, or None to serve
+_RESULTS: "dict[tuple, int | str]" = {}
+
+
+def _suffix(tail: str, i: int) -> str:
+    """Index every function this program defines, references included, so two
+    programs' `classify`/`emit`/`main` cannot collide in a shared unit."""
+    for name in sorted(set(_FUN_DEF.findall(tail)), key=len, reverse=True):
+        tail = re.sub(rf"\b{name}\b", f"{name}_{i}", tail)
+    return tail
+
+
+def _batch(entries: "list[tuple[str, str]]") -> None:
+    """Compile+run every collected program as one unit; fill _RESULTS."""
+    if not entries:
+        return
+    parts = [_HARNESS_PRELUDE]
+    for i, (_kind, src) in enumerate(entries):
+        parts.append("\n" + _suffix(src[len(_HARNESS_PRELUDE):], i) + "\n")
+    parts.append("\nfun main(): System::Int\n")
+    for i, (kind, _src) in enumerate(entries):
+        parts.append(f'  print("\\n@@{i}@@\\n")\n')
+        # An exit-code test reports an Int, so print it; a stdout test prints
+        # its own text and its result is noise.
+        parts.append(f"  print(stringify(JsonInt(main_{i}())))\n"
+                     if kind == "exit"
+                     else f"  let _ = main_{i}()\n")
+    parts.append('  print("\\n@@end@@\\n")\n  ret 0\n')
+
+    out = _run_stdout("".join(parts), timeout=120, _batched=False)
+    cuts = list(_MARK.finditer(out))
+    for m, nxt in zip(cuts, cuts[1:]):
+        if m.group(1) == "end":
+            break
+        i = int(m.group(1))
+        payload = out[m.end():nxt.start()]
+        kind, src = entries[i]
+        _RESULTS[(kind, src)] = int(payload) if kind == "exit" else payload
+
+
+def setUpModule():
+    """Run every test once with the runners recording instead of compiling,
+    then compile the lot as a single unit."""
+    global _COLLECT
+    _COLLECT = []
+    for cls in (TestJsonComposite, TestJsonInteger, TestLargeString):
+        for name in sorted(n for n in dir(cls) if n.startswith("test")):
+            try:
+                getattr(cls(name), name)()
+            except Exception:
+                pass          # collect mode: only the sources matter
+    entries, _COLLECT = _COLLECT, None
+    seen, uniq = set(), []
+    for e in entries:
+        if e not in seen:
+            seen.add(e); uniq.append(e)
+    _batch(uniq)
 
 
 class TestJsonComposite(TestCase):
