@@ -119,18 +119,57 @@ fun soleItem(b: Findings): Found|None
 # count (self-compile 18→47 min before this memo).
 class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
 
+# stTypesIdx/stDataIdx: the root's find answers PREBUILT once per index build
+# (Python Statements._types_index/_data_index) — the same bucket walk
+# globalFindings did per query, paid once instead of ~176M times per
+# self-compile. Bucket order is preserved, so candidates and their order are
+# byte-identical to the per-query construction; empty kinds are omitted and
+# misses answer the shared empty.
 class [final] Statements(stOrdered: List<PStmt>,
                          stIndex: Dict<String, List<PStmt> >,
                          stTraits: List<PStmt>,
                          stInstances: List<PStmt>,
                          stAmbient: List<AmbEntry>,
-                         stAmbientBlocked: Bool)
+                         stAmbientBlocked: Bool,
+                         stTypesIdx: Dict<String, Findings >,
+                         stDataIdx: Dict<String, Findings >)
 
 fun buildStatements(stmts: List<PStmt>): Statements
-  ret withAmbient(indexLoop(chain(stmts),
+  ret withKindIndexes(withAmbient(indexLoop(chain(stmts),
                             Statements(stmts, Dict<String, List<PStmt> >(),
                                        List<PStmt>(), List<PStmt>(),
-                                       List<AmbEntry>(), false)))
+                                       List<AmbEntry>(), false,
+                                       Dict<String, Findings >(),
+                                       Dict<String, Findings >()))))
+
+fun withKindIndexes(base: Statements): Statements
+  # keys() answers a Set; sorted once into a walkable list (the walk order is
+  # unobservable — the kind dicts are only ever queried by key).
+  let ks = sort(keys(base.stIndex))
+  ret Statements(base.stOrdered, base.stIndex, base.stTraits,
+                 base.stInstances, base.stAmbient, base.stAmbientBlocked,
+                 kindLoop(chain(ks), base.stIndex, true,
+                          Dict<String, Findings >()),
+                 kindLoop(chain(ks), base.stIndex, false,
+                          Dict<String, Findings >()))
+
+# Per key, the kind walk REUSES globalLoop — the exact per-query filter — so
+# the prebuilt answers cannot diverge from what the query path produced.
+fun [tail] kindLoop(ks: Chain<String>, index: Dict<String, List<PStmt> >,
+                    wantType: Bool,
+                    acc: Dict<String, Findings >): Dict<String, Findings >
+  ret match(ks)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => kindLoop(l.next, index, wantType,
+                                kindPut(acc, l.value, get(index, l.value),
+                                        wantType))
+
+fun kindPut(acc: Dict<String, Findings >, key: String,
+            bucket: List<PStmt>|None, wantType: Bool): Dict<String, Findings >
+  let found = match(bucket)
+    (b: List<PStmt>) => globalLoop(chain(b), wantType, List<Found>())
+    ()               => List<Found>()
+  ret isEmpty(found) ? acc : put(acc, key, Findings(found, true))
 
 fun withAmbient(base: Statements): Statements
   let amb = buildAmbient(chain(base.stInstances),
@@ -138,7 +177,7 @@ fun withAmbient(base: Statements): Statements
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
                  base.stInstances,
                  dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
-                 amb.abBlocked)
+                 amb.abBlocked, base.stTypesIdx, base.stDataIdx)
 
 # (spec, own) dedupe, once per pass — two identical instances collapse to
 # ONE search entry (Python's per-query `add` set), whichever namespaces they
@@ -214,7 +253,7 @@ fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
                  acc.stTraits, acc.stInstances, acc.stAmbient,
-                 acc.stAmbientBlocked)
+                 acc.stAmbientBlocked, acc.stTypesIdx, acc.stDataIdx)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
                    st: PStmt): Dict<String, List<PStmt> >
@@ -238,12 +277,14 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
       ? Statements(acc.stOrdered, acc.stIndex,
                    build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stTraits)), st)),
-                   acc.stInstances, acc.stAmbient, acc.stAmbientBlocked)
+                   acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
+                   acc.stTypesIdx, acc.stDataIdx)
       : acc
     (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                         acc.stTraits,
                                         build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stInstances)), st)),
-                                        acc.stAmbient, acc.stAmbientBlocked)
+                                        acc.stAmbient, acc.stAmbientBlocked,
+                                        acc.stTypesIdx, acc.stDataIdx)
     (o: PStmt)  => acc
 
 fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
@@ -482,10 +523,18 @@ fun qualifiedIn(parent: Resolver, ns: String, query: String,
   ret wantType ? findType(parent, ns + "::" + query)
                : findData(parent, ns + "::" + query)
 
+# The shared miss answer (Python's module-level EMPTY): the query path must
+# not allocate.
+let emptyFindingsGlobal: Findings = Findings(List<Found>(), true)
+
 # The root's answer: every indexed statement under the query, split by whether
-# it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let).
+# it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let) —
+# PREBUILT per key at index build (withKindIndexes), so a query is one dict
+# hit returning a shared Findings.
 fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
-  ret Findings(globalLoop(chain(lookup(idx, query)), wantType, List<Found>()), true)
+  ret match(get(wantType ? idx.stTypesIdx : idx.stDataIdx, query))
+    (f: Findings) => f
+    ()            => emptyFindingsGlobal
 
 fun globalLoop(ss: Chain<PStmt>, wantType: Bool,
                       acc: List<Found>): List<Found>

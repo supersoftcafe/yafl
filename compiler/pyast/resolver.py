@@ -308,7 +308,8 @@ class Statements:
     A changed statement set is a *new* `Statements` built from the new
     contents, so there is never a stale index to reason about across passes.
     """
-    __slots__ = ("_ordered", "_index", "traits", "instances")
+    __slots__ = ("_ordered", "_index", "_types_index", "_data_index",
+                 "traits", "instances")
 
     def __init__(self, statements: "Iterable[s.Statement]") -> None:
         ordered = tuple(statements)
@@ -333,6 +334,24 @@ class Statements:
         self._index: dict[str, tuple[s.Statement, ...]] = {k: tuple(v) for k, v in index.items()}
         self.traits: tuple[s.LetStatement, ...] = tuple(traits)
         self.instances: tuple[s.TraitInstanceStatement, ...] = tuple(instances)
+        # The root's find_type/find_data answers, PREBUILT once per collection:
+        # the same bucket walk they used to do per query (profile: ~176M root
+        # queries per self-compile, each allocating its Resolved wrappers —
+        # the wrappers are frozen, so sharing them across queries is free).
+        # Bucket order is preserved, so candidates and their order are
+        # byte-identical to the per-query construction. Empty kinds are
+        # omitted; misses resolve to the shared EMPTY.
+        self._types_index: dict[str, Findings] = {}
+        self._data_index: dict[str, Findings] = {}
+        for key, sts in self._index.items():
+            types = tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
+                          for st in sts if isinstance(st, s.TypeStatement))
+            if types:
+                self._types_index[key] = Findings(types)
+            data = tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
+                         for st in sts if isinstance(st, s.DataStatement))
+            if data:
+                self._data_index[key] = Findings(data)
 
     @staticmethod
     def __index_variants(variants: "list[s.EnumStatement]", index: dict) -> None:
@@ -349,6 +368,11 @@ class Statements:
     # finder meeting an unresolved alias, never from a plain name miss here.
     def __getitem__(self, name: str) -> "Findings[s.Statement]": return Findings(self._index.get(name, ()))
     def get(self, name: str) -> "Findings[s.Statement]": return Findings(self._index.get(name, ()))
+    # The prebuilt root answers (see __init__); one dict hit, zero construction.
+    def find_type_global(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
+        return self._types_index.get(name, EMPTY)
+    def find_data_global(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
+        return self._data_index.get(name, EMPTY)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Statements):
@@ -391,12 +415,10 @@ class ResolverRoot(Resolver):
         return root_name in self.__breakers
 
     def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
-        return Findings(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
-                for st in self.__statements[name] if isinstance(st, s.TypeStatement)))
+        return self.__statements.find_type_global(name)
 
     def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
-        return Findings(tuple(Resolved(st.name, st, ResolvedScope.GLOBAL)
-                for st in self.__statements[name] if isinstance(st, s.DataStatement)))
+        return self.__statements.find_data_global(name)
 
     def get_traits(self) -> list[s.LetStatement]:
         return list(self.__statements.traits)
