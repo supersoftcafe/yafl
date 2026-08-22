@@ -1,7 +1,8 @@
 # Profiling (`--profile`)
 
-Status: M1 (flat profile) implemented in both compilers + runtime; M2 (call
-graph) planned. This document is the design record and the user guide.
+Status: M1 (flat profile) and M2 (call graph) implemented. M2 is runtime-only
+— the compiler emits the same instrumentation for both. This document is the
+design record and the user guide.
 
 ## What it is
 
@@ -122,7 +123,7 @@ under `--profile`.
 
 ## File formats
 
-Callgrind (M1 is flat — no `calls=` edges until M2):
+Callgrind, with the call graph:
 
 ```
 # callgrind format
@@ -137,26 +138,43 @@ positions: line
 events: Ns Calls
 
 fl=fib.yafl
+fn=Main::main@d4e5f6
+1 3000000 1
+cfl=fib.yafl
+cfn=Main::fib@a1b2c3
+calls=1 3
+1 401000000 0
+
+fl=fib.yafl
 fn=Main::fib@a1b2c3
 3 401000000 832040
-
-fl=??
-fn=(GC)
-0 55000000 123
+cfl=fib.yafl
+cfn=Main::fib@a1b2c3
+calls=832039 3
+3 399000000 0
 
 summary: 456000000 832164
 ```
 
+`calls=` counts are EXACT (one bounded hash probe per call in
+`yafl_prof_enter`, one uniform mechanism for direct, indirect and musttail
+calls); the cost line under each call record carries the edge's SAMPLED
+inclusive nanoseconds, derived at dump time from the unique-stack table's
+adjacent pairs (deduplicated per stack, so recursion is charged once). This
+is what lights up KCachegrind's inclusive costs and caller/callee views.
+
 Folded stacks: `__entrypoint__;Main::main@d4e5f6;Main::fib@a1b2c3 400`.
 
-## M2 (planned): call graph and contribution
+## Call-graph edge semantics (M2)
 
-`yafl_prof_enter` additionally bumps a per-thread open-addressing edge table
-keyed (shadow-stack top, callee id) — one mechanism covering direct,
-indirect and musttail calls, no compiler changes. The dump then emits
-`cfl=`/`cfn=`/`calls=<exact>` records with edge-inclusive `Ns` derived from
-the unique-stack table's adjacent pairs, which is what makes KCachegrind's
-inclusive costs and caller/callee views light up.
+- Per-thread open-addressing edge table keyed (shadow-stack top, callee).
+  On table overflow the count degrades to a per-callee accumulator —
+  SEPARATE storage, so the fallback cannot starve — reported under the
+  `(truncated)` caller.
+- Calls made while the shadow stack is beyond its 4096-frame cap have no
+  stored caller; they are charged to `(truncated)` as well (exact in total,
+  ancestry unknown). The KCachegrind invariant — a function's incoming
+  `calls=` sum equals its `Calls` counter — holds, roots aside.
 
 ## Deliberately out of scope
 

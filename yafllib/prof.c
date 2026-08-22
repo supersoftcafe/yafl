@@ -53,7 +53,14 @@ enum {
     PROF_TABLE_CAP = 32768,      // unique-stack slots (power of two, open addressing)
     PROF_PROBE_MAX = 32,         // linear-probe bound before the leaf fallback
     PROF_POOL_CAP  = 1 << 20,    // u32 id pool backing the stored stacks (4 MiB)
+    PROF_EDGE_CAP  = 1 << 18,    // (caller,callee) edge slots (power of two, 4 MiB)
+    PROF_EDGE_PROBE = 32,        // probe bound before the per-callee fallback
 };
+
+// The caller sentinel yafl.h's fast path passes when the shadow stack was
+// beyond its cap: the true caller was never stored, so the edge is charged
+// to the (truncated) row instead.
+#define PROF_CALLER_UNKNOWN 0xffffffffu
 
 // ── per-thread block ────────────────────────────────────────────────────────
 typedef struct {
@@ -62,6 +69,11 @@ typedef struct {
     uint32_t len;
     uint64_t weight;             // samples, pre-weighted by 1 + overrun
 } prof_slot_t;
+
+typedef struct {
+    uint64_t key;                // (caller << 32) | callee
+    uint64_t count;              // 0 = empty slot (a real edge is counted >= 1)
+} prof_edge_t;
 
 typedef struct prof_thread_s {
     struct prof_thread_s* next;  // intrusive registry list (CAS push)
@@ -75,6 +87,10 @@ typedef struct prof_thread_s {
     uint64_t*   leaf_self;       // [n_ids] overflow fallback: self weight by leaf —
                                  // constant-time, cannot fill, ancestry lost
     uint64_t    samples_degraded; // total weight that fell back to leaf_self
+    prof_edge_t* edges;          // [PROF_EDGE_CAP] exact (caller,callee) counts
+    uint64_t*   edge_fallback;   // [n_ids] overflow fallback BY CALLEE (caller
+                                 // lost -> (truncated)); separate storage, cannot fill
+    uint64_t    edges_degraded;  // edges that fell back, by count
 } prof_thread_t;
 
 // ── globals ─────────────────────────────────────────────────────────────────
@@ -88,6 +104,7 @@ static long                  _hz     = 997;        // YAFL_PROF_HZ; prime avoids
 static char                  _out[512];            // callgrind path; folded = path + ".folded"
 static _Atomic bool          _active = false;      // handler gate; cleared by dump
 static _Atomic(prof_thread_t*) _threads = NULL;    // registry of every worker's block
+static thread_local prof_thread_t* _self = NULL;   // this thread's block (edge path)
 
 static const char* _reserved_name(uint32_t reserved_id) {
     switch (reserved_id) {
@@ -101,6 +118,43 @@ static const char* _reserved_name(uint32_t reserved_id) {
 
 static const char* _id_name(uint32_t id) {
     return id < _n_fns ? _fns[id].name : _reserved_name(id - _n_fns);
+}
+
+// ── exact call-graph edges ──────────────────────────────────────────────────
+// Called from yafl_prof_enter for every call that has a caller: one bounded
+// linear probe into this thread's edge table. Shares nothing with the signal
+// handler (which touches only the sample tables), so a mid-probe interruption
+// is harmless. On table overflow the count degrades to a per-callee
+// accumulator — SEPARATE storage from the table, so it cannot starve (the M1
+// sample-fallback lesson) — and the caller is reported as (truncated).
+EXPORT void yafl_prof_edge(uint32_t callee, uint32_t caller) {
+    prof_thread_t* t = _self;
+    if (UNLIKELY(t == NULL))
+        return;
+    if (UNLIKELY(caller == PROF_CALLER_UNKNOWN)) {
+        t->edge_fallback[callee]++;
+        return;
+    }
+    uint64_t key = ((uint64_t)caller << 32) | callee;
+    // Fibonacci hashing spreads the packed ids well and costs one multiply.
+    uint32_t slot = (uint32_t)((key * 0x9e3779b97f4a7c15ull) >> 40) & (PROF_EDGE_CAP - 1);
+    for (int probe = 0; probe < PROF_EDGE_PROBE; probe++, slot = (slot + 1) & (PROF_EDGE_CAP - 1)) {
+        prof_edge_t* e = &t->edges[slot];
+        if (e->count == 0) {
+            // Key first, count last: the dump thread reads concurrently and a
+            // non-zero count must imply a valid key.
+            e->key = key;
+            atomic_signal_fence(memory_order_release);
+            e->count = 1;
+            return;
+        }
+        if (e->key == key) {
+            e->count++;
+            return;
+        }
+    }
+    t->edge_fallback[callee]++;
+    t->edges_degraded++;
 }
 
 // ── the sampling handler ────────────────────────────────────────────────────
@@ -268,20 +322,26 @@ HIDDEN void yafl_prof_thread_init(void) {
     prof_slot_t* table     = calloc(PROF_TABLE_CAP, sizeof *table);
     uint32_t*    pool      = calloc(PROF_POOL_CAP, sizeof *pool);
     uint64_t*    leaf_self = calloc(_n_ids, sizeof *leaf_self);
-    if (!t || !counters || !stack || !table || !pool || !leaf_self) {
+    prof_edge_t* edges     = calloc(PROF_EDGE_CAP, sizeof *edges);
+    uint64_t*    edge_fb   = calloc(_n_ids, sizeof *edge_fb);
+    if (!t || !counters || !stack || !table || !pool || !leaf_self || !edges || !edge_fb) {
         // Never fatal: the thread simply runs uninstrumented. Say so once.
         static _Atomic bool warned = false;
         if (!atomic_exchange(&warned, true))
             fprintf(stderr, "[yafl] profiler: out of memory registering a thread; "
                             "its activity will be missing from the profile\n");
-        free(t); free(counters); free(stack); free(table); free(pool); free(leaf_self);
+        free(t); free(counters); free(stack); free(table); free(pool);
+        free(leaf_self); free(edges); free(edge_fb);
         return;
     }
-    t->counters  = counters;
-    t->stack     = stack;
-    t->table     = table;
-    t->pool      = pool;
-    t->leaf_self = leaf_self;
+    t->counters      = counters;
+    t->stack         = stack;
+    t->table         = table;
+    t->pool          = pool;
+    t->leaf_self     = leaf_self;
+    t->edges         = edges;
+    t->edge_fallback = edge_fb;
+    _self = t;
 
     // Wire the fast-path TLS. From this point yafl_prof_enter on this thread
     // counts and pushes.
@@ -334,7 +394,139 @@ HIDDEN void yafl_prof_runtime_pop(void) {
 // _active first. A slot written concurrently with the disarm is either fully
 // visible (hash published last) or ignored.
 
-static void _write_callgrind(FILE* f, const uint64_t* counts, const uint64_t* self_ns) {
+// ── dump-time edge aggregation ──────────────────────────────────────────────
+// Exact per-edge counts merged across threads, plus SAMPLED inclusive
+// nanoseconds derived from the unique-stack tables' adjacent pairs
+// (deduplicated within each stack, so recursion is charged once per stack).
+// Dump-time only: malloc is fine here.
+
+typedef struct {
+    uint64_t key;        // (caller << 32) | callee
+    uint64_t calls;      // exact, from the per-thread edge tables
+    uint64_t incl_ns;    // sampled inclusive cost attributed to this edge
+    uint64_t stamp;      // per-stack dedupe serial
+    bool     used;
+} dump_edge_t;
+
+static dump_edge_t* _dedges = NULL;
+static uint32_t     _dedges_mask = 0;
+
+static dump_edge_t* _dedge_lookup(uint64_t key, bool create) {
+    if (_dedges == NULL)
+        return NULL;
+    uint32_t slot = (uint32_t)((key * 0x9e3779b97f4a7c15ull) >> 40) & _dedges_mask;
+    for (uint32_t n = 0; n <= _dedges_mask; n++, slot = (slot + 1) & _dedges_mask) {
+        dump_edge_t* e = &_dedges[slot];
+        if (!e->used) {
+            if (!create)
+                return NULL;
+            e->used = true;
+            e->key = key;
+            return e;
+        }
+        if (e->key == key)
+            return e;
+    }
+    return NULL;   // table full (sized generously below; effectively unreachable)
+}
+
+static uint32_t _pow2_at_least(uint64_t n) {
+    uint32_t p = 1u << 12;
+    while (p < n && p < (1u << 28))
+        p <<= 1;
+    return p;
+}
+
+// Build the aggregation from every thread's exact edges (+ per-callee
+// fallbacks, charged to the (truncated) caller), then attribute sampled
+// inclusive ns over the stacks' adjacent pairs. Returns the used entries,
+// sorted by key so the writer can walk them grouped by caller.
+static dump_edge_t** _dedges_build(uint64_t period_ns, uint64_t* out_n) {
+    uint64_t occupied = 0;
+    for (prof_thread_t* t = atomic_load(&_threads); t; t = t->next) {
+        for (uint32_t i = 0; i < PROF_EDGE_CAP; i++)
+            if (t->edges[i].count > 0)
+                occupied++;
+        for (uint32_t id = 0; id < _n_ids; id++)
+            if (t->edge_fallback[id] > 0)
+                occupied++;
+    }
+    uint32_t cap = _pow2_at_least((occupied + 4096) * 2);
+    _dedges = calloc(cap, sizeof *_dedges);
+    if (_dedges == NULL) {
+        *out_n = 0;
+        return NULL;
+    }
+    _dedges_mask = cap - 1;
+
+    uint64_t trunc_id = _n_fns + YAFL_PROF_RES_TRUNCATED;
+    for (prof_thread_t* t = atomic_load(&_threads); t; t = t->next) {
+        for (uint32_t i = 0; i < PROF_EDGE_CAP; i++) {
+            const prof_edge_t* e = &t->edges[i];
+            if (e->count == 0)
+                continue;
+            dump_edge_t* d = _dedge_lookup(e->key, true);
+            if (d) d->calls += e->count;
+        }
+        for (uint32_t id = 0; id < _n_ids; id++) {
+            if (t->edge_fallback[id] == 0)
+                continue;
+            dump_edge_t* d = _dedge_lookup((trunc_id << 32) | id, true);
+            if (d) d->calls += t->edge_fallback[id];
+        }
+    }
+
+    // Sampled inclusive: each unique stack charges its weight to every
+    // adjacent pair once (stamp dedupe). Pairs whose exact edge overflowed
+    // into a fallback are attributed to the (truncated) caller too — only
+    // when the pair genuinely never counted does the ns quietly stay flat.
+    uint64_t serial = 0;
+    for (prof_thread_t* t = atomic_load(&_threads); t; t = t->next) {
+        for (uint32_t i = 0; i < PROF_TABLE_CAP; i++) {
+            const prof_slot_t* s = &t->table[i];
+            if (s->hash == 0 || s->len < 2)
+                continue;
+            serial++;
+            for (uint32_t k = 1; k < s->len; k++) {
+                uint64_t key = ((uint64_t)t->pool[s->off + k - 1] << 32)
+                             | t->pool[s->off + k];
+                dump_edge_t* d = _dedge_lookup(key, false);
+                if (d == NULL)
+                    d = _dedge_lookup((trunc_id << 32) | t->pool[s->off + k], false);
+                if (d != NULL && d->stamp != serial) {
+                    d->stamp = serial;
+                    d->incl_ns += s->weight * period_ns;
+                }
+            }
+        }
+    }
+
+    dump_edge_t** list = malloc(cap * sizeof *list);
+    uint64_t n = 0;
+    if (list)
+        for (uint32_t i = 0; i < cap; i++)
+            if (_dedges[i].used)
+                list[n++] = &_dedges[i];
+    *out_n = list ? n : 0;
+    return list;
+}
+
+static int _dedge_cmp(const void* a, const void* b) {
+    uint64_t ka = (*(dump_edge_t* const*)a)->key;
+    uint64_t kb = (*(dump_edge_t* const*)b)->key;
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+}
+
+static const char* _id_file(uint32_t id) {
+    return id < _n_fns && _fns[id].file && _fns[id].file[0] ? _fns[id].file : "??";
+}
+
+static int32_t _id_line(uint32_t id) {
+    return id < _n_fns ? _fns[id].line : 0;
+}
+
+static void _write_callgrind(FILE* f, const uint64_t* counts, const uint64_t* self_ns,
+                             dump_edge_t** edges, uint64_t n_edges) {
     fprintf(f, "# callgrind format\n");
     fprintf(f, "version: 1\n");
     fprintf(f, "creator: yafl --profile\n");
@@ -345,15 +537,26 @@ static void _write_callgrind(FILE* f, const uint64_t* counts, const uint64_t* se
     fprintf(f, "positions: line\n");
     fprintf(f, "events: Ns Calls\n\n");
 
-    uint64_t total_ns = 0, total_calls = 0;
+    uint64_t total_ns = 0, total_calls = 0, cursor = 0;
     for (uint32_t id = 0; id < _n_ids; id++) {
-        if (counts[id] == 0 && self_ns[id] == 0)
-            continue;   // never called, never sampled: keep the file small
-        const char* file = id < _n_fns && _fns[id].file && _fns[id].file[0] ? _fns[id].file : "??";
-        int32_t line = id < _n_fns ? _fns[id].line : 0;
-        fprintf(f, "fl=%s\nfn=%s\n%d %llu %llu\n\n",
-                file, _id_name(id), (int)line,
+        bool has_edges = cursor < n_edges
+                      && (uint32_t)(edges[cursor]->key >> 32) == id;
+        if (counts[id] == 0 && self_ns[id] == 0 && !has_edges)
+            continue;   // never called, never sampled, calls nothing
+        fprintf(f, "fl=%s\nfn=%s\n%d %llu %llu\n",
+                _id_file(id), _id_name(id), (int)_id_line(id),
                 (unsigned long long)self_ns[id], (unsigned long long)counts[id]);
+        // Outgoing edges: exact call count on calls=, sampled inclusive ns on
+        // the cost line (0 for the Calls event — the counts are already on
+        // the callee's own row).
+        for (; cursor < n_edges && (uint32_t)(edges[cursor]->key >> 32) == id; cursor++) {
+            uint32_t callee = (uint32_t)(edges[cursor]->key & 0xffffffffu);
+            fprintf(f, "cfl=%s\ncfn=%s\ncalls=%llu %d\n%d %llu 0\n",
+                    _id_file(callee), _id_name(callee),
+                    (unsigned long long)edges[cursor]->calls, (int)_id_line(callee),
+                    (int)_id_line(id), (unsigned long long)edges[cursor]->incl_ns);
+        }
+        fprintf(f, "\n");
         total_ns += self_ns[id];
         total_calls += counts[id];
     }
@@ -392,13 +595,14 @@ HIDDEN void yafl_prof_dump(void) {
     // Disarm every thread's timer (timer ids are process-wide, deletable from
     // here), then give any in-flight handler a moment to retire. _active is
     // already false, so a straggler that does run records nothing.
-    uint64_t degraded = 0;
+    uint64_t degraded = 0, edges_degraded = 0;
     for (prof_thread_t* t = atomic_load(&_threads); t; t = t->next) {
         if (t->timer_armed) {
             timer_delete(t->timer);
             t->timer_armed = false;
         }
         degraded += t->samples_degraded;
+        edges_degraded += t->edges_degraded;
     }
 
     // Derive per-function totals: exact calls (merged counters) and self time
@@ -426,9 +630,14 @@ HIDDEN void yafl_prof_dump(void) {
         }
     }
 
+    uint64_t n_edges = 0;
+    dump_edge_t** edge_list = _dedges_build(period_ns, &n_edges);
+    if (edge_list)
+        qsort(edge_list, n_edges, sizeof *edge_list, _dedge_cmp);
+
     FILE* cg = fopen(_out, "w");
     if (cg) {
-        _write_callgrind(cg, counts, self_ns);
+        _write_callgrind(cg, counts, self_ns, edge_list, n_edges);
         fclose(cg);
     }
     char folded_path[sizeof _out + 8];
@@ -440,6 +649,9 @@ HIDDEN void yafl_prof_dump(void) {
     }
     free(counts);
     free(self_ns);
+    free(edge_list);
+    free(_dedges);
+    _dedges = NULL;
 
     if (cg || fd)
         fprintf(stderr, "[yafl] profile written to %s (+ %s)\n", _out, folded_path);
@@ -449,4 +661,8 @@ HIDDEN void yafl_prof_dump(void) {
         fprintf(stderr, "[yafl] profiler: %llu samples kept self-only as "
                         "(truncated);leaf — stack table/pool full\n",
                 (unsigned long long)degraded);
+    if (edges_degraded > 0)
+        fprintf(stderr, "[yafl] profiler: %llu calls charged to the (truncated) "
+                        "caller — edge table full\n",
+                (unsigned long long)edges_degraded);
 }

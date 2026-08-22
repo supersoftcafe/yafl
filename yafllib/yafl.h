@@ -625,6 +625,12 @@ EXTERN thread_local yafl_prof_tl_t yafl_prof_tl;
 // every worker registration and every instrumented call.
 EXTERN void yafl_prof_init(const yafl_prof_fn_t* functions, uint32_t n_functions);
 
+// Exact call-graph edge: callee entered with `caller` on top of the shadow
+// stack. One bounded hash probe in prof.c; covers direct, indirect and
+// musttail calls identically. `caller` is 0xffffffff when the stack was
+// beyond its cap (ancestry unknown — charged to the (truncated) row).
+EXTERN void yafl_prof_edge(uint32_t callee, uint32_t caller);
+
 // The per-call fast paths. Counters stay exact past the shadow-stack cap: sp
 // keeps advancing (so enter/leave stay balanced) while element stores are
 // skipped, and the sampler flags such samples as (truncated). The relaxed
@@ -637,6 +643,8 @@ INLINE void yafl_prof_enter(uint32_t id) {
         return;   // thread not registered (profiling off)
     t->counters[id]++;
     int32_t sp = atomic_load_explicit(&t->sp, memory_order_relaxed);
+    if (LIKELY(sp > 0))
+        yafl_prof_edge(id, sp <= t->cap ? t->stack[sp - 1] : 0xffffffffu);
     if (LIKELY(sp < t->cap))
         t->stack[sp] = id;
     atomic_signal_fence(memory_order_release);

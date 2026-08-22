@@ -136,6 +136,27 @@ def _parse_folded(text: str) -> dict[str, int]:
     return stacks
 
 
+def _parse_edges(text: str) -> dict[tuple[str, str], int]:
+    """(caller fn, callee fn) -> exact calls= count."""
+    edges: dict[tuple[str, str], int] = {}
+    caller = callee = None
+    for line in text.splitlines():
+        if line.startswith("fn="):
+            caller = line[3:]
+        elif line.startswith("cfn="):
+            callee = line[4:]
+        elif line.startswith("calls=") and caller and callee:
+            n = int(line[len("calls="):].split()[0])
+            edges[(caller, callee)] = edges.get((caller, callee), 0) + n
+    return edges
+
+
+def _edge(caller_prefix: str, callee_prefix: str) -> int:
+    """Summed exact count over edges matching the two name prefixes."""
+    return sum(n for (c, k), n in _RESULTS["edges"].items()
+               if c.startswith(caller_prefix) and k.startswith(callee_prefix))
+
+
 def setUpModule():
     global _RESULTS
     binary = compile_to_binary(_SOURCE, profile=True)
@@ -159,6 +180,7 @@ def setUpModule():
         "stderr": run.stderr.decode(),
         "rows": _parse_callgrind(cg_text),
         "folded": _parse_folded(folded_text),
+        "edges": _parse_edges(cg_text),
         "summary": (int(summary.group(1)), int(summary.group(2))) if summary else None,
     }
 
@@ -204,6 +226,26 @@ class TestProfiledRun(TestCase):
                                if name.startswith("$lambdas::"))
         self.assertIn(50, lambda_counts,
                       f"no $lambdas:: row with exactly 50 calls: {lambda_counts}")
+
+    def test_exact_edges(self):
+        # Call-graph edges carry exact per-(caller,callee) counts: one probe
+        # in yafl_prof_enter, covering direct, indirect and musttail calls.
+        self.assertEqual(1000, _edge("Prof::driver@", "Prof::leaf@"))
+        self.assertEqual(1, _edge("Prof::main@", "Prof::driver@"))
+        self.assertEqual(1, _edge("Prof::main@", "Prof::burn@"))
+        self.assertEqual(1, _edge("Prof::main@", "Prof::fib@"))
+        # Recursion: every fib call except main's root came from fib itself.
+        self.assertEqual(_FIB_CALLS[0] - 1, _edge("Prof::fib@", "Prof::fib@"))
+
+    def test_edges_are_consistent_with_counters(self):
+        # KCachegrind's core invariant: a function's incoming calls= sum
+        # equals its exact Calls counter (roots aside — these fixtures all
+        # have callers).
+        for prefix in ("Prof::leaf@", "Prof::fib@", "Prof::driver@"):
+            incoming = sum(n for (c, k), n in _RESULTS["edges"].items()
+                           if k.startswith(prefix))
+            self.assertEqual(_row(prefix)[2], incoming,
+                             f"incoming edges != Calls for {prefix}")
 
     def test_sampled_time_lands_on_the_burn(self):
         # 5M iterations is ~300ms of thread CPU at -O0; demand only 50ms

@@ -68,11 +68,25 @@ static char* slurp(const char* path) {
 static bool callgrind_row(const char* text, const char* name,
                           unsigned long long* ns, unsigned long long* calls) {
     char key[128];
-    snprintf(key, sizeof key, "fn=%s\n", name);
-    const char* p = strstr(text, key);
+    snprintf(key, sizeof key, "\nfn=%s\n", name);   // line-anchored: cfn= lines
+    const char* p = strstr(text, key);              // contain "fn=" too
     if (!p) return false;
     int line;
     return sscanf(p + strlen(key), "%d %llu %llu", &line, ns, calls) == 3;
+}
+
+// Within caller's fn= block, find "cfn=<callee>\ncalls=<n> ..." and return n.
+static bool callgrind_edge(const char* text, const char* caller,
+                           const char* callee, unsigned long long* calls) {
+    char key[128];
+    snprintf(key, sizeof key, "\nfn=%s\n", caller);
+    const char* p = strstr(text, key);
+    if (!p) return false;
+    const char* end = strstr(p + 1, "\n\n");   // the block ends at the blank line
+    snprintf(key, sizeof key, "\ncfn=%s\ncalls=", callee);
+    const char* e = strstr(p, key);
+    if (!e || (end && e > end)) return false;
+    return sscanf(e + strlen(key), "%llu", calls) == 1;
 }
 
 static void run_tests(object_t* _unused, fun_t continuation) {
@@ -146,6 +160,22 @@ static void run_tests(object_t* _unused, fun_t continuation) {
         CHECK(strtoull(row + strlen("test::burn "), NULL, 10) >= 20,
               "burn folded weight implausibly low");
 
+        // Exact call-graph edges: alpha called beta 7 times (the counters
+        // fixture). The deep fixture's 5000 nested enters split by the
+        // shadow cap: the first has no caller (sp==0, no edge); enters
+        // 2..4097 see beta on a stored top (4096 beta->beta); past the cap
+        // the caller was never stored, so 903 land on (truncated)->beta.
+        unsigned long long edge;
+        CHECK(callgrind_edge(cg, "test::alpha", "test::beta", &edge),
+              "alpha->beta edge missing");
+        CHECK(edge == 7, "alpha->beta edge count wrong");
+        CHECK(callgrind_edge(cg, "test::beta", "test::beta", &edge),
+              "beta->beta edge missing");
+        CHECK(edge == 4096, "beta->beta recursion edge count wrong");
+        CHECK(callgrind_edge(cg, "(truncated)", "test::beta", &edge),
+              "(truncated)->beta edge missing");
+        CHECK(edge == 903, "(truncated)->beta edge count wrong");
+
         free(cg);
         free(fd);
         printf("  prof_dump_writes_parseable_output            OK\n"); passed++;
@@ -158,6 +188,11 @@ static void run_tests(object_t* _unused, fun_t continuation) {
 }
 
 int main(void) {
+    // A prior FAILED run exits before its cleanup; start from a clean slate
+    // so the no-file-before-init check below tests this run, not history.
+    unlink(OUT_PATH);
+    unlink(OUT_PATH ".folded");
+
     // Before init, every entry point must be a harmless no-op.
     yafl_prof_thread_init();
     yafl_prof_enter(FN_ALPHA);
