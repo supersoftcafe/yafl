@@ -44,15 +44,9 @@ fun genFunctionIds(methodIds: List<MethodId>): String
         "\n    __FUNCTION_ID__" + mangleName(m.mName) + " = rotate_function_id(" + String(m.mId) + ")"), ",")
       + "\n};\n"
 
-fun miIdOf(methodIds: List<MethodId>, name: String): Int
-  ret match(head(filter(methodIds, (m: MethodId) => m.mName == name)))
-    (m: MethodId) => m.mId
-    ()             => 0   # unreachable: every slot id was assigned
-
-fun vsSizeOf(sizes: List<VtableSize>, name: String): Int
-  ret match(head(filter(sizes, (v: VtableSize) => v.vsClassName == name)))
-    (v: VtableSize) => v.vsSize
-    ()               => 1   # unreachable: sizes computed for every object
+# Slot-id and vtable-size lookups go through perfecthash's dict views
+# (methodIdGet/vtableSizeGet) — the linear miIdOf/vsSizeOf scans they replace
+# ran once per emitted slot and once per object.
 
 # ── the emission accumulator (Python's per-Application string lists) ─────────
 
@@ -179,9 +173,9 @@ fun vtDefaultRow(): VtRow
 fun vtIsDefault(r: VtRow): Bool
   ret r.vtI == "-1"
 
-fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: List<MethodId>,
-              sizes: List<VtableSize>): GenAcc
-  let vtableSize = vsSizeOf(sizes, o.objName)
+fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
+              sizes: Dict<String, Int>): GenAcc
+  let vtableSize = vtableSizeGet(sizes, o.objName)
   let rows0 = vtRows(vtableSize, List<VtRow>())
   let rows1 = fold(o.objFunctions, rows0, (rs: List<VtRow>, s2: CgFuncSlot) =>
                 vtPlace(rs, s2, methodIds, vtableSize))
@@ -244,8 +238,8 @@ fun [tail] vtLastLoop(rs: Chain<VtRow>, sofar: Bool): Bool
     (l: ChainLink)  => vtLastLoop(l.next, vtIsDefault(l.value))
 
 # id & (size-1), linear probe past occupied rows, growing as needed.
-fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: List<MethodId>, size: Int): List<VtRow>
-  let id = miIdOf(methodIds, s2.slotVirtualName)
+fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: Dict<String, Int>, size: Int): List<VtRow>
+  let id = methodIdGet(methodIds, s2.slotVirtualName)
   ret vtProbe(rows, id & (size - 1),
               VtRow("__FUNCTION_ID__" + mangleName(s2.slotVirtualName),
                     "(void*)&" + mangleName(s2.slotGlobalName)))
@@ -427,8 +421,10 @@ fun genApplication(a: CgApp, headers: List<String>, profile: Bool): List<String>
   # Explicit walks rather than folds: the accumulator is linear, so it is
   # threaded through one call per element instead of riding a fold's lambda.
   let acc1 = genFunctionsLoop(chain(appFunctions(a)), profile, 0, genAccEmpty())
-  let acc2 = genObjectsLoop(chain(objectsInExtendsOrder(a)), ph.methodIds,
-                            ph.vtableSizes, acc1)
+  let acc2 = genObjectsLoop(chain(objectsInExtendsOrder(a)),
+                            methodIdDict(chain(ph.methodIds), Dict<String, Int>()),
+                            vtableSizeDict(chain(ph.vtableSizes), Dict<String, Int>()),
+                            acc1)
   let acc0 = genGlobalsLoop(chain(appGlobals(a)), a, acc2)
   # The descriptor table is appended AFTER the emission loops: the lazy
   # struct_anon numbering is settled by then, and the table itself uses only
@@ -484,8 +480,8 @@ fun [tail] genFunctionsLoop(fs: Chain<CgFunction>, profile: Bool, nextId: Int,
                          genFunction(acc, l.value, profIdOf(profile, nextId)))
       : genFunctionsLoop(l.next, profile, nextId, genExtern(acc, l.value))
 
-fun [tail] genObjectsLoop(os: Chain<CgObject>, methodIds: List<MethodId>,
-                          sizes: List<VtableSize>,
+fun [tail] genObjectsLoop(os: Chain<CgObject>, methodIds: Dict<String, Int>,
+                          sizes: Dict<String, Int>,
                           [terminal] acc: GenAcc): GenAcc
   ret match(os)
     (nil: ChainEnd) => acc

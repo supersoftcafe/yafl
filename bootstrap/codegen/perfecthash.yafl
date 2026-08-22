@@ -79,15 +79,29 @@ fun [tail] phAssignIdsLoop(names: Chain<String>, [terminal] acc: IdAcc): IdAcc
 fun phVtableSizes(vtables: List<VtableEntry>): List<VtableSize>
   ret map(vtables, (v: VtableEntry) => VtableSize(v.className, nextPowerOfTwo(v.vtN * 2)))
 
-fun [tail] methodIdGet(ids: List<MethodId>, name: String): Int
-  ret match(head<MethodId>(ids))
-    (m: MethodId) => m.mName == name ? m.mId : methodIdGet(tail<MethodId>(ids), name)
-    ()             => 0   # unreachable: every method name has an assigned id
+# Dict views of the ordered lists — Python's create_perfect_lookups carries
+# dicts from the start; the port's Lists stay authoritative for emission
+# order, and these twins retire the linear per-query scans (vtableSizeGet
+# alone was 19.1s of a self-compile at ~116us per call).
+fun [tail] methodIdDict(ms: Chain<MethodId>, acc: Dict<String, Int>): Dict<String, Int>
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => methodIdDict(l.next, put(acc, l.value.mName, l.value.mId))
 
-fun [tail] vtableSizeGet(sizes: List<VtableSize>, className: String): Int
-  ret match(head<VtableSize>(sizes))
-    (v: VtableSize) => v.vsClassName == className ? v.vsSize : vtableSizeGet(tail<VtableSize>(sizes), className)
-    ()                => 0   # unreachable: every class has an assigned size
+fun [tail] vtableSizeDict(vs: Chain<VtableSize>, acc: Dict<String, Int>): Dict<String, Int>
+  ret match(vs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => vtableSizeDict(l.next, put(acc, l.value.vsClassName, l.value.vsSize))
+
+fun methodIdGet(ids: Dict<String, Int>, name: String): Int
+  ret match(get(ids, name))
+    (i: Int) => i
+    ()       => 0   # unreachable: every method name has an assigned id
+
+fun vtableSizeGet(sizes: Dict<String, Int>, className: String): Int
+  ret match(get(sizes, className))
+    (i: Int) => i
+    ()       => 0   # unreachable: every class has an assigned size
 
 # ── one collision-detection scan over all vtables (using the CURRENT ids) ──
 
@@ -103,7 +117,7 @@ class [final] CollisionPair(pairA: String, pairB: String)
 # answered that question. `pairs` is a builder: it is written and never read,
 # and its order IS observed, because buildConflictGraph replays it to
 # reproduce Python's key insertion order.
-fun [tail] phScanClassSlots(methods: Chain<String>, methodIds: List<MethodId>,
+fun [tail] phScanClassSlots(methods: Chain<String>, methodIds: Dict<String, Int>,
                             mask: Int, slots: Dict<Int, String>,
                             [terminal] pairs: ListBuilder<CollisionPair >): ListBuilder<CollisionPair >
   ret match(methods)
@@ -115,8 +129,8 @@ fun [tail] phScanClassSlots(methods: Chain<String>, methodIds: List<MethodId>,
                               put<Int, String>(slots, methodIdGet(methodIds, l.value) & mask, l.value),
                               pairs)
 
-fun [tail] phScanAllSlots(vtables: Chain<VtableEntry>, methodIds: List<MethodId>,
-                          vtableSizes: List<VtableSize>,
+fun [tail] phScanAllSlots(vtables: Chain<VtableEntry>, methodIds: Dict<String, Int>,
+                          vtableSizes: Dict<String, Int>,
                           [terminal] pairs: ListBuilder<CollisionPair >): ListBuilder<CollisionPair >
   ret match(vtables)
     (nil: ChainEnd) => pairs
@@ -234,8 +248,11 @@ fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, 
   ret phFixpoint(vtables, reassigned.methodIds, vtableSizes, iteration + 1, reassigned.nextId)
 
 fun phFixpointStep(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int): List<MethodId>
-  let pairs = build<CollisionPair >(phScanAllSlots(chain(vtables), methodIds0,
-                                                  vtableSizes,
+  # The dict views are per ROUND (ids are reassigned between rounds); the
+  # build is one walk, against millions of per-method linear scans inside.
+  let pairs = build<CollisionPair >(phScanAllSlots(chain(vtables),
+                                                  methodIdDict(chain(methodIds0), Dict<String, Int>()),
+                                                  vtableSizeDict(chain(vtableSizes), Dict<String, Int>()),
                                                   builder<CollisionPair >()))
   ret isEmpty<CollisionPair>(pairs)
     ? methodIds0

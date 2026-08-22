@@ -443,12 +443,18 @@ fun [tail] leafLoop(vs: Chain<PStmt>, acc: List<String>): List<String>
       (o: PStmt)  => leafLoop(l.next, acc)
 
 # _collect_data_fields: every TYPED constructor field in the whole tree, first
-# declaration wins (deduplicated by name).
-fun collectDataFields(e: PsEnum): List<SField>
-  ret dfVariants(chain(e.eVariants),
-                 dfParams(chain(flattenParams(e.eParams)), List<SField>()))
+# declaration wins (deduplicated by name). Mirrors Python's seen-set + append
+# (types.py _collect_data_fields): the dedup reads the SET, so the fields ride
+# ONE builder in declaration order — the old per-add list rebuild cost 1.4e9
+# pushes per self-compile (fields are DERIVED per read, so this path is hot).
+class [linear, final] FieldAcc(faSeen: Set<String >, faOut: ListBuilder<SField >)
 
-fun dfVariants(vs: Chain<PStmt>, acc: List<SField>): List<SField>
+fun collectDataFields(e: PsEnum): List<SField>
+  ret build<SField >(dfVariants(chain(e.eVariants),
+                     dfParams(chain(flattenParams(e.eParams)),
+                              FieldAcc(Set<String >(), builder<SField >()))).faOut)
+
+fun dfVariants(vs: Chain<PStmt>, [terminal] acc: FieldAcc): FieldAcc
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -458,7 +464,7 @@ fun dfVariants(vs: Chain<PStmt>, acc: List<SField>): List<SField>
                                                     acc)))
       (o: PStmt)  => dfVariants(l.next, acc)
 
-fun [tail] dfParams(ls: Chain<PStmt>, acc: List<SField>): List<SField>
+fun [tail] dfParams(ls: Chain<PStmt>, [terminal] acc: FieldAcc): FieldAcc
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -467,12 +473,12 @@ fun [tail] dfParams(ls: Chain<PStmt>, acc: List<SField>): List<SField>
         ()         => dfParams(l.next, acc)
       (o: PStmt)    => dfParams(l.next, acc)
 
-# Field DECLARATION order — it becomes the struct's layout. `acc` is read by
-# the dedup, so it cannot be a builder.
-fun addFieldOnce(acc: List<SField>, name: String, ty: Spec): List<SField>
-  ret hasFieldNamed(chain(acc), name)
-    ? acc
-    : build<SField >(push<SField >(_pushChain<SField >(builder<SField >(), chain<SField>(acc)), SField(name, ty)))
+fun addFieldOnce([terminal] acc: FieldAcc, name: String, ty: Spec): FieldAcc
+  let seen = acc.faSeen
+  let out = acc.faOut
+  ret contains<String >(seen, name)
+    ? FieldAcc(seen, out)
+    : FieldAcc(add<String >(seen, name), push<SField >(out, SField(name, ty)))
 
 fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
   ret match(fs)
