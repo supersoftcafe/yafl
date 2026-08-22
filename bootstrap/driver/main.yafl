@@ -614,20 +614,21 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # `impure`, so the timings bracket exactly the phase they name. With YAFL_LOG
 # unset every one of these is a foreign call and an integer compare — see
 # System::Log on why the level test is inside the call rather than at the site.
-fun cMode(text: String, optLevel: Int): (outs: List<String>, code: Int)
+fun cMode(text: String, optLevel: Int, profile: Bool): (outs: List<String>, code: Int)
   let spParse = spanBegin("compile", "parse")
   let parsed = parseMulti(text)
   let _ = spanEnd(spParse)
   ret match(parsed)
-    (stmts: List<PStmt>) => cModeConverge(stmts, optLevel)
+    (stmts: List<PStmt>) => cModeConverge(stmts, optLevel, profile)
     ()                   => (prepend("parse error\n", List<String>()), 1)
 
-fun cModeConverge(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
+fun cModeConverge(stmts: List<PStmt>, optLevel: Int,
+                  profile: Bool): (outs: List<String>, code: Int)
   let sp = spanBegin("compile", "converge+mono")
   let pm = convergeToPostmono(stmts)
   let _ = spanEnd(sp)
   ret match(pm)
-    (ok: PmOk)   => cStage(ok.pmStmts, optLevel)
+    (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile)
     (tx: PmText) => (prepend(tx.pmOut, List<String>()), tx.pmCode)
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
@@ -680,7 +681,8 @@ fun partText(parts: Dict<String, String>, name: String): String
     (t2: String) => t2
     ()           => ""   # unreachable: the name came from keys(parts)
 
-fun cStage(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
+fun cStage(stmts: List<PStmt>, optLevel: Int,
+           profile: Bool): (outs: List<String>, code: Int)
   let spTail = spanBegin("lower", "lift+hoist+tail")
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
   let _1 = spanEnd(spTail)
@@ -705,7 +707,7 @@ fun cStage(stmts: List<PStmt>, optLevel: Int): (outs: List<String>, code: Int)
   let final2 = assignBlockExits(low3)
   let _6 = spanEnd(spExits)
   ret match(cFindMain(chain(final2)))
-    (nm: System::String) => cEmit(final2, nm, optLevel)
+    (nm: System::String) => cEmit(final2, nm, optLevel, profile)
     ()                    => (prepend("No main function found\n", List<String>()), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
@@ -735,9 +737,9 @@ fun cIsBigintRet(ret2: Spec|None): Bool
     ()          => false
 
 fun cEmit(stmts: List<PStmt>, mainName: System::String,
-          optLevel: Int): (outs: List<String>, code: Int)
+          optLevel: Int, profile: Bool): (outs: List<String>, code: Int)
   let sp = spanBegin("codegen", "create_c_code")
-  let out = createCCode(stmts, mainName, optLevel,
+  let out = createCCode(stmts, mainName, optLevel, profile,
                         prepend("yafl.h", List<System::String>()))
   let _ = spanEnd(sp)
   ret isEmpty(out.ccErrors)
@@ -785,7 +787,11 @@ fun modeOf(argv: List<System::String>): System::String
 fun run(text: System::String, i: IO): System::Int
   let mode = modeOf(args())
   if mode == "c" || mode == "c1" || mode == "c2" || mode == "c3"
-    ret runC(text, mode == "c" ? 0 : mode == "c1" ? 1 : mode == "c2" ? 2 : 3, i)
+    ret runC(text, mode == "c" ? 0 : mode == "c1" ? 1 : mode == "c2" ? 2 : 3, false, i)
+  # --profile twins of the C modes (Python's `--profile` flag; the mode
+  # string IS the port's option surface).
+  if mode == "cp" || mode == "c1p" || mode == "c2p" || mode == "c3p"
+    ret runC(text, mode == "cp" ? 0 : mode == "c1p" ? 1 : mode == "c2p" ? 2 : 3, true, i)
   let r = mode == "tokens" ? tokensMode(text)
         : mode == "hash6" ? hash6Mode(text)
         : mode == "sha1" ? sha1Mode(text)
@@ -815,8 +821,8 @@ fun run(text: System::String, i: IO): System::Int
 # The C modes emit a LIST of fragments streamed to stdout in order — the
 # joined text was the compiler's one giant contiguous allocation (~83MB on a
 # self-host) and the only consumer is this write loop.
-fun runC(text: System::String, optLevel: Int, i: IO): System::Int
-  let r = cMode(text, optLevel)
+fun runC(text: System::String, optLevel: Int, profile: Bool, i: IO): System::Int
+  let r = cMode(text, optLevel, profile)
   let w = writeParts(stdout(), chain(r.outs), false)
   let code = w.failed2 ? 1 : r.code
   ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result

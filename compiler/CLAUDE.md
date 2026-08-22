@@ -17,9 +17,9 @@ python -m unittest test_parser.Test.test_parse_simple_named_type
 
 **Compile a yafl file:**
 ```bash
-python main.py [-O 0|1|2|3] [-c out.c] [-a out.s] [-o binary] input.yafl
+python main.py [-O 0|1|2|3] [--profile] [-c out.c] [-a out.s] [-o binary] input.yafl
 ```
-Output is C code piped through `clang` (requires `libyafl` at link time). Use `-c` to emit C without linking.
+Output is C code piped through `clang` (requires `libyafl` at link time). Use `-c` to emit C without linking. `--profile` instruments the whole program (exact call counters + sampled CPU time; the binary writes `callgrind.out.<pid>` + `.folded` at exit — see `docs/profiling-design.md`).
 
 ## Architecture
 

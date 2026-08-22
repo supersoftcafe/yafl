@@ -5,7 +5,7 @@ from typing import Callable, Any
 from dataclasses import dataclass, field
 from codegen.tools import mangle_name, to_pointer_mask, to_pointer_mask_window
 
-from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Label, Phi, Abort
+from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Label, Phi, Abort, ProfEnter, ProfLeave
 
 import codegen.typedecl as t
 import codegen.param as p
@@ -43,6 +43,8 @@ class Function:
     bypass_async: bool = False  # Skip async_lower; ops are already in their final hand-crafted form.
     always_inline: bool = False # `[inline(always)]`: inline at every call site regardless of size,
                                 # so a chain of marked functions fuses into its consumer (pre-async).
+    source_file: str = ""       # --profile descriptors; "" / 0 for synthesised functions
+    source_line: int = 0        # (their names self-describe: $async, lazy_*, __entrypoint__).
 
     def __post_init__(self):
         if len(self.params.fields) == 0:
@@ -80,6 +82,22 @@ class Function:
                 f"{vars_section}"
                 f"{''.join(op.to_c(type_cache) for op in self.ops)}"
                 f"}}\n")
+
+    def instrument_profile(self, fn_id: int) -> Function:
+        """--profile: ProfEnter first, ProfLeave before every exit — Return,
+        ReturnVoid, and musttail Call (the frame is replaced, so it leaves).
+        Runs AFTER the emission cleanup chain, so no optimisation pass ever
+        sees these ops and the pairing cannot be broken. Abort is deliberately
+        not bracketed: abort() skips the atexit dump, nothing to balance."""
+        def is_exit(op: Op) -> bool:
+            return (isinstance(op, (Return, ReturnVoid))
+                    or (isinstance(op, Call) and op.musttail))
+        new_ops: list[Op] = [ProfEnter(fn_id)]
+        for op in self.ops:
+            if is_exit(op):
+                new_ops.append(ProfLeave())
+            new_ops.append(op)
+        return dataclasses.replace(self, ops=tuple(new_ops))
 
     def lower_phis(self) -> Function:
         """Return a copy of this function with every `Phi` replaced by per-edge

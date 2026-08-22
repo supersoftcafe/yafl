@@ -1308,7 +1308,8 @@ fun alHotAssembleSync(f: CgFunction, wrappedResult: CgType, body: HotOut, hasPar
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  concat(body.hoOps, commonOps), f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
 
 fun alHotAssembleAsync(f: CgFunction, stateName: String, subtype: String|None,
                        bbs: List<ABlock>, layout: AFrame, wrappedResult: CgType,
@@ -1360,7 +1361,8 @@ fun alHotAssembleAsync(f: CgFunction, stateName: String, subtype: String|None,
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  build<Op >(common7), f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
 
 fun alSaveCases(bs: Chain<ABlock>, i: Int, acc: List<OpCase>): List<OpCase>
   ret build<OpCase >(alSaveCasesB(bs, i, _pushChain<OpCase >(builder<OpCase >(), chain<OpCase >(acc))))
@@ -1484,7 +1486,8 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName: String, subtype: String|Non
     : list2(CgField("$sv_state", CgDataPointer()), CgField("$sv_task", CgDataPointer()))
   ret CgFunction(f.fnName, f.fnParams, wrappedResult, CgStruct(svFields), ops4,
                  f.fnComment, f.fnForeignSymbol, f.fnSync, f.fnTail,
-                 f.fnBypassAsync, f.fnAlwaysInline)
+                 f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
 
 fun alOpsWriteDiscard(ops: List<Op>): Bool
   ret any(ops, (op: Op) => alWritesDiscard(op))
@@ -1995,10 +1998,12 @@ fun alSimpleWrap(f: CgFunction): CgFunction
     (w: CgTaskWrapper) => CgFunction(f.fnName, f.fnParams, wrapped, f.fnStackVars,
                                      alConvertReturnsHot(f.fnOps, wrapped),
                                      f.fnComment, f.fnForeignSymbol, f.fnSync,
-                                     f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                                     f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                                     f.fnSourceFile, f.fnSourceLine)
     (o: CgType)         => CgFunction(f.fnName, f.fnParams, wrapped, f.fnStackVars,
                                      f.fnOps, f.fnComment, f.fnForeignSymbol,
-                                     f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                                     f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                                     f.fnSourceFile, f.fnSourceLine)
 
 fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName: String,
                    bbs: List<ABlock>, nBbs: Int): AlOut

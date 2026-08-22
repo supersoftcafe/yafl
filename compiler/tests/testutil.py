@@ -132,35 +132,40 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
 def compile_and_run_stdlib(source: str, timeout: int = 5,
                            args: list[str] | None = None,
                            optimization_level: int = 0,
-                           env: dict[str, str] | None = None) -> int:
+                           env: dict[str, str] | None = None,
+                           profile: bool = False) -> int:
     """Compile yafl source with stdlib, link against libyafl, run, return exit code.
 
     `args`, when provided, are passed as the program's CLI arguments (so
     `System::args()` in the yafl source sees them). `optimization_level` selects
     the yafl optimisation level (>0 enables inlining etc.). `env` adds/overrides
-    environment variables for the RUN (e.g. YAFL_TASK_BACKLOG)."""
+    environment variables for the RUN (e.g. YAFL_TASK_BACKLOG). `profile`
+    compiles with --profile instrumentation (the run then writes a profile to
+    YAFL_PROF_FILE — pass one via `env` or the CWD gets callgrind.out.<pid>)."""
     rc, _ = compile_and_run_stdlib_capture(source, timeout=timeout, args=args,
-                                           optimization_level=optimization_level, env=env)
+                                           optimization_level=optimization_level, env=env,
+                                           profile=profile)
     return rc
 
 
 def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
                                    args: list[str] | None = None,
                                    optimization_level: int = 0,
-                                   env: dict[str, str] | None = None) -> tuple[int, str]:
+                                   env: dict[str, str] | None = None,
+                                   profile: bool = False) -> tuple[int, str]:
     """Same as compile_and_run_stdlib but also returns the program's stdout
     (decoded as UTF-8). Used by tests that batch several checks into one
     program and verify the printed output, sidestepping the per-test
     compile+link wall-clock. `optimization_level` selects the yafl optimisation
     level (>0 enables inlining etc.); `env` adds/overrides run environment."""
     # Batched? Only the plain form can be served from a batch — per-test args,
-    # env or optimisation level mean the program cannot share a unit.
-    if args is None and env is None and optimization_level == 0:
+    # env, optimisation level or profiling mean the program cannot share a unit.
+    if args is None and env is None and optimization_level == 0 and not profile:
         hit = _batch_lookup(source)
         if hit is not None:
             return hit
     c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
-                       optimization_level=optimization_level)
+                       optimization_level=optimization_level, profile=profile)
     assert c_code, "yafl compilation produced no output (type errors?)"
 
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
@@ -182,14 +187,15 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
             pass
 
 
-def compile_to_binary(source: str, optimization_level: int = 0) -> str:
+def compile_to_binary(source: str, optimization_level: int = 0, profile: bool = False) -> str:
     """Compile yafl source (with stdlib) to a runnable binary and return its
     path. The caller owns the file and must unlink it. For tests that need to
     drive the process directly — e.g. an interactive stdin pipe held open — rather
     than the one-shot compile_and_run helpers. `optimization_level` selects the
-    yafl optimisation level (>0 enables inlining etc.)."""
+    yafl optimisation level (>0 enables inlining etc.); `profile` instruments
+    for profiling (run with YAFL_PROF_FILE set to collect the output)."""
     c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
-                       optimization_level=optimization_level)
+                       optimization_level=optimization_level, profile=profile)
     assert c_code, "yafl compilation produced no output (type errors?)"
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
         binary = tmp.name

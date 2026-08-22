@@ -11,3 +11,4 @@ This folder contains design and reference documentation for YAFL. These document
 | [Internals](internals.md) | In-progress design notes on the garbage collector and runtime internals |
 | [Parser proposal](parser-proposal.md) | Design note: a self-hosted YAFL parser in the `parselib` combinator style |
 | [Build & packaging](build-and-packaging.md) | Design note: YAFL projects, libraries, manifests, the loader, and `.yl` packaging |
+| [Profiling](profiling-design.md) | `--profile`: exact call counters + sampled CPU time, callgrind/folded output, attribution semantics |

@@ -29,9 +29,15 @@ import Bootstrap::StdlibCandidates
 
 class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 
+# fnSourceFile/fnSourceLine: --profile descriptors ("" / 0 for synthesised
+# functions — their names self-describe). Declared LAST with defaults, the
+# objIsPinnable pattern: fresh-construction sites (entrypoint, $async, lazy
+# thunks, par callbacks) stay untouched and match Python's fresh Function()
+# defaults; every dataclasses.replace-mirroring copy site passes them through.
 class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnStackVars: CgType,
                           fnOps: List<Op>, fnComment: String, fnForeignSymbol: String|None,
-                          fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool)
+                          fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool,
+                          fnSourceFile: String = "", fnSourceLine: Int = 0)
 
 # objIsPinnable: [pinnable] — immutable EXCEPT inside a late pin, which
 # publishes into a write-once field. Unlike objIsMutable the object still
@@ -129,7 +135,37 @@ fun cgOpsToCStep(acc: (text: String, cache: List<CgCacheEntry>), op: Op): (text:
 
 fun cgFunctionWith(f: CgFunction, ops: List<Op>, stackVars: CgType): CgFunction
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, stackVars, ops, f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
+
+# ── --profile instrumentation (ir.py instrument_profile) ─────────────────────
+# ProfEnter first, ProfLeave before every exit — Return, ReturnVoid, and
+# musttail Call (the frame is replaced, so it leaves). Runs AFTER the emission
+# cleanup chain, so no optimisation pass ever sees these ops and the pairing
+# cannot be broken. Abort is deliberately not bracketed: abort() skips the
+# atexit dump, so there is nothing to keep balanced.
+
+fun cgFunctionInstrumentProfile(f: CgFunction, fnId: Int): CgFunction
+  let ops = build<Op >(cgInstrumentOps(chain(f.fnOps),
+              push<Op >(builder<Op >(), OpProfEnter(fnId, List<RParam>()))))
+  ret cgFunctionWith(f, ops, f.fnStackVars)
+
+fun [tail] cgInstrumentOps(ops: Chain<Op>,
+                           [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret match(ops)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => cgInstrumentOps(l.next,
+        push<Op >(cgIsProfExit(l.value)
+                    ? push<Op >(acc, OpProfLeave(List<RParam>()))
+                    : acc,
+                  l.value))
+
+fun cgIsProfExit(op: Op): Bool
+  ret match(op)
+    (x: OpReturn)     => true
+    (x: OpReturnVoid) => true
+    (x: OpCall)       => x.callMusttail
+    (o: Op)           => false
 
 fun cgFunctionReplaceParams(f: CgFunction, replacer: (:RParam): RParam): CgFunction
   ret cgFunctionWith(f, map(f.fnOps, (op: Op) => opReplaceParams(op, replacer)), f.fnStackVars)

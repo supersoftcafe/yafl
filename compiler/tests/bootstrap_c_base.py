@@ -90,7 +90,8 @@ class BootstrapCBase(TestCase):
     def tearDownClass(cls):
         pass  # the shared binary is cache-owned
 
-    def _compare_corpus(self, optimization_level: int, mode: str):
+    def _compare_corpus(self, optimization_level: int, mode: str,
+                        profile: bool = False):
         # Every corpus file is independent, and per file the two compiles
         # are independent — a bounded pool takes BOTH job kinds (Python
         # mirrors need processes for the GIL; port runs are subprocess
@@ -100,7 +101,7 @@ class BootstrapCBase(TestCase):
         # fork a pool — compute serially instead.
         import multiprocessing
         if multiprocessing.current_process().daemon:
-            py = {path: _python_c_text(path.name, optimization_level)
+            py = {path: _python_c_text(path.name, optimization_level, profile)
                   for path in _CORPUS}
             port = {path: _run_port_c(self.binary, _port_stream(path), mode)
                     for path in _CORPUS}
@@ -108,7 +109,7 @@ class BootstrapCBase(TestCase):
             from concurrent.futures import ProcessPoolExecutor
             with ProcessPoolExecutor(max_workers=4) as pool:
                 py_futs = {path: pool.submit(_python_c_text, path.name,
-                                             optimization_level)
+                                             optimization_level, profile)
                            for path in _CORPUS}
                 port_futs = {path: pool.submit(_run_port_c, self.binary,
                                                _port_stream(path), mode)
@@ -148,15 +149,17 @@ def _run_port_c(binary: str, text: str, mode: str = "c") -> str:
     return r.stdout
 
 
-def _python_c_text(target_name: str, optimization_level: int = 0) -> str:
+def _python_c_text(target_name: str, optimization_level: int = 0,
+                   profile: bool = False) -> str:
     from tests.testutil import cached_reference
     target = next(p for p in _CORPUS if p.name == target_name)
     return cached_reference("c", target.read_text(),
-                            lambda: _python_c_text_uncached(target_name, optimization_level),
-                            extra=f"{target_name}|O{optimization_level}")
+                            lambda: _python_c_text_uncached(target_name, optimization_level, profile),
+                            extra=f"{target_name}|O{optimization_level}" + ("|p" if profile else ""))
 
 
-def _python_c_text_uncached(target_name: str, optimization_level: int = 0) -> str:
+def _python_c_text_uncached(target_name: str, optimization_level: int = 0,
+                            profile: bool = False) -> str:
     target = next(p for p in _CORPUS if p.name == target_name)
     statements = []
     # Same canonical order as compiler.__tokenize_and_parse and the port's
@@ -250,4 +253,5 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0) -> st
     discs = lowering.unions.collect_discriminator_ids(statements)
     return "".join(_CREATE_C(statements, mains[0], just_testing=True,
                              optimization_level=optimization_level,
-                             union_discriminators=discs, headers=("yafl.h",)))
+                             union_discriminators=discs, headers=("yafl.h",),
+                             profile=profile))

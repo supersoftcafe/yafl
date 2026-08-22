@@ -53,7 +53,8 @@ fun prFunction(f: CgFunction, names: StrSet): CgFunction
                 (op: Op) => opReplaceParams(op, (p: RParam) => prRewrite(p, names)))
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars,
                  ops, f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
 
 fun prRewrite(p: RParam, names: StrSet): RParam
   ret match(p)

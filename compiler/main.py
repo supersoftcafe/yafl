@@ -41,6 +41,14 @@ def main():
         help="Additional library search path (repeatable)"
     )
 
+    # Whole-program profiling: instrument every function with exact call
+    # counters + a shadow stack, and sample CPU time at runtime. Composes with
+    # any -O level (the IR inliners are disabled so profiled functions exist).
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="Instrument for profiling; the binary writes callgrind.out.<pid> at exit"
+    )
+
     # Input: one or more .yafl files, or a project directory (compiled whole).
     parser.add_argument(
         "files", nargs="+",
@@ -53,7 +61,8 @@ def main():
     c_code, link_spec, warnings = c.compile_project(
         files, use_stdlib=True, just_testing=False,
         optimization_level=int(args.O),
-        lib_paths=args.lib_path)
+        lib_paths=args.lib_path,
+        profile=args.profile)
     for w in sorted(set(warnings)):
         print(w, file=sys.stderr)
 

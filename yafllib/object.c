@@ -3,6 +3,7 @@
 
 #include "yafl.h"
 #include "gc_internal.h"
+#include "prof.h"
 #include <malloc.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -1011,6 +1012,7 @@ EXPORT void gc_io_end() {
 // 8 bytes above it, never scanned — found by test_gc_fwd_chain).
 EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_declaration_func, void*thread_roots_context, object_t** stack_anchor) {
     yafl_stack_guard_init();   // turn a stack overflow on this thread into a clean error
+    yafl_prof_thread_init();   // no-op unless the program ran yafl_prof_init (--profile)
 #ifdef STACK_GROWS_DOWN
     gc_thread_info.stack_upper_ptr = stack_anchor;
 #else
@@ -2359,8 +2361,12 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
         // small here — so it stays only until the pool's numbers show the
         // remainder is not worth a second mechanism.
         size_t slack = young * 3;
+        if (UNLIKELY(yafl_prof_enabled))
+            yafl_prof_runtime_push(YAFL_PROF_RES_SCAVENGE);
         memory_scavenge(slack > GC_SCAVENGE_RETAIN_FLOOR ? slack : GC_SCAVENGE_RETAIN_FLOOR,
                         GC_SCAVENGE_BUDGET);
+        if (UNLIKELY(yafl_prof_enabled))
+            yafl_prof_runtime_pop();
 
         if (UNLIKELY(gc_stats_enabled))
             fprintf(stderr, "[GC CYCLE] survivors=%zu dirty=%zu old=%zu young=%zu promote_vol=%zu in_use=%zu cons_seeds=%llu (pages)\n",
@@ -2427,7 +2433,7 @@ static void gc_fsa_try_transition(enum gc_stage from) {
 
 static thread_local bool gc_in_fsa = false;
 
-static NOINLINE_DEBUG bool gc_fsa() {
+static NOINLINE_DEBUG bool gc_fsa_impl() {
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
 
     // RE-ENTRANCY GUARD: collector work can allocate (compaction's relocation
@@ -2552,6 +2558,21 @@ static NOINLINE_DEBUG bool gc_fsa() {
     atomic_store(&fsa_lock, false);
     gc_in_fsa = false;
     return true;
+}
+
+// Profiling shim: bracket ALL collector work with the (GC) pseudo-frame so
+// sampled GC time is a named row instead of a smear over whichever function's
+// allocation paced the cycle. One pair here beats edits at the four return
+// sites of the impl. A nested call (compaction refill re-entering via
+// gc_page_alloc) pushes a second (GC) frame around the impl's immediate
+// re-entrancy bail-out — harmless and vanishingly rarely sampled.
+static bool gc_fsa() {
+    if (LIKELY(!yafl_prof_enabled))
+        return gc_fsa_impl();
+    yafl_prof_runtime_push(YAFL_PROF_RES_GC);
+    bool result = gc_fsa_impl();
+    yafl_prof_runtime_pop();
+    return result;
 }
 
 

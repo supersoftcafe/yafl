@@ -34,7 +34,8 @@ fun funGlobalCodegen(f: PsFun, r0: Resolver): CgFunction
   ret CgFunction(f.fName, CgStruct(params), specGenerateOpt(f.fRet, bodyR), CgStruct(vars),
                  bundle.gbOps, f.fName, foreignSymbolOf(f),
                  hasAttr(f.fAttrs, "sync"), hasAttr(f.fAttrs, "tail"), false,
-                 inlineAlways(f))
+                 inlineAlways(f),
+                 f.psfLine.plFile, f.psfLine.plLine)
 
 fun fgcBodyBundle(b: PExpr, bodyR: Resolver, fRet: Spec|None): GBundle
   let bodyBundle = genExprTo(b, bodyR, fRet)

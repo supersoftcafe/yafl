@@ -147,7 +147,7 @@ fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
 fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
-                headers: List<String>): CreateCOut
+                profile: Bool, headers: List<String>): CreateCOut
   let discs = collectDiscriminatorIds(statements)
   let [lazy] breakers: List<String> = computeBreakers(statements)
   let r = RRoot((root: String) => contains2(breakers, root),
@@ -170,10 +170,14 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # -O3 adds the single-caller fold with vtable-slot trimming (compiler.py
   # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
   # tuples exactly).
-  let a3a = optLevel >= 2
+  # Under --profile both IR inliners are disabled (compiler.py's `and not
+  # profile` gates): they are the only passes that ERASE whole functions, and
+  # a profile must attribute counts and time to the functions the source
+  # declares. The AST inliner still runs — see compiler.py's comment.
+  let a3a = optLevel >= 2 && !profile
     ? ccO2Fixpoint(a3, 0, None, optLevel >= 3)
     : a3
-  let a3s = optLevel >= 3 ? ccO3Fixpoint(a3a, 0, None) : a3a
+  let a3s = optLevel >= 3 && !profile ? ccO3Fixpoint(a3a, 0, None) : a3a
   let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
   let spStatic = spanBegin("codegen", "staticinit")
   let a4 = resolveFlatStructGlobalInits(a3b)
@@ -218,7 +222,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   if !isEmpty(v4)
     ret CreateCOut(List<String>(), v4)
   let spGen = spanBegin("codegen", "gen_application")
-  let parts = genApplication(a9, headers)
+  let parts = genApplication(a9, headers, profile)
   let _gen = spanEnd(spGen)
   ret CreateCOut(parts, List<String>())
 

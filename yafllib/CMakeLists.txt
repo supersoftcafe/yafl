@@ -19,6 +19,7 @@ set(SRC_FILES
     gc_debug.c
     parallel.c
     primitive.c
+    prof.c
     stackguard.c
     string.c
     task.c
@@ -70,6 +71,7 @@ set(TEST_SRC_FILES
     gc_debug.c
     parallel.c
     primitive.c
+    prof.c
     stackguard.c
     string.c
     task.c
@@ -126,6 +128,7 @@ add_yafl_test(test_gc_fwd_chain)
 # child's address — it cannot demonstrate the hazard it describes. Kept in
 # tests/ as documentation, not registered.
 add_yafl_test(test_parallel)
+add_yafl_test(test_prof)
 add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)

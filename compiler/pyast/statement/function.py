@@ -264,4 +264,6 @@ class FunctionStatement(DataStatement):
             # `[inline(always)]` — the inline attribute carrying an argument (vs the
             # bare `[inline]` hint). Forces inlining regardless of size.
             always_inline = self.attributes.get("inline") is not None,
+            source_file = self.line_ref.filename,
+            source_line = self.line_ref.line,
         )

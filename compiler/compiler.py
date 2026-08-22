@@ -152,8 +152,8 @@ def __ensure_lazy_machinery(a: Application) -> None:
         lowering.lazy_thunks.ensure_lazy_machinery(a, ir_type)
 
 
-def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",)) -> list[str]:
-    a = Application(headers=headers)
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False) -> list[str]:
+    a = Application(headers=headers, profile=profile)
     resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {}, optimization_level=optimization_level)
     for stmt in statements:
         match stmt:
@@ -201,9 +201,14 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Inlining (skipped at -O0/-O1): -O2 inlines small functions only; -O3 also
     # inlines `[inline(always)]` functions regardless of size, recursively (to a
     # fixpoint) so a chain of marked stages fuses fully into its consumer.
+    # Under --profile both IR inliners are disabled: they are the only passes
+    # that ERASE whole functions, and a profile must attribute counts and time
+    # to the functions the source declares. (The AST inliner still runs — its
+    # sub-threshold/bare-[inline] inlining is structurally load-bearing at all
+    # levels, and those functions exist in no binary today at any -O level.)
     if optimization_level > 0:
         lowering.staticinit.reset_si_counter()
-        if optimization_level >= 2:
+        if optimization_level >= 2 and not profile:
             inline_always = optimization_level >= 3
             prev_shape: tuple | None = None
             for inl_round in range(16):  # bounded; converges as inlined-away functions are trimmed
@@ -228,7 +233,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         # in turn kill an object whose removal makes another slot single-
         # implementation — the cascade that fuses a stream pipeline into its
         # drain with no [inline(always)] annotations.
-        if optimization_level >= 3:
+        if optimization_level >= 3 and not profile:
             prev_shape = None
             for sc_round in range(16):  # bounded; recount each round as chains collapse
                 a = lowering.vtable_trim.trim_unused_vtable_slots(a)
@@ -549,7 +554,7 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
     )
 
 
-def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",)) -> tuple[str, list[Error]] | list[Error]:
+def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False) -> tuple[str, list[Error]] | list[Error]:
     """Returns (c_code, warnings) on success, or the diagnostic list on failure
     (which may include warnings alongside the errors — all get printed)."""
     # Regex literals: validate at compile time and intern each distinct
@@ -678,7 +683,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # pass that can create or copy blocks — so each block instance is unique.
     new_statements = lowering.block_exits.assign_block_exits(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
-    c_parts = __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers)
+    c_parts = __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers, profile=profile)
     return "".join(c_parts), warnings
 
 
@@ -762,7 +767,8 @@ def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
 
 def compile_project(source: list[Input], use_stdlib = False, just_testing = False,
                     optimization_level: int = 0,
-                    lib_paths: list[str] | None = None) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
+                    lib_paths: list[str] | None = None,
+                    profile: bool = False) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
     """Compile `source` together with every library it (transitively) references,
     discovered on the search path. Returns the generated C, the `LinkSpec`
     describing the headers/static libraries the loaded libraries need at link
@@ -806,7 +812,7 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     headers = ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h")
 
     compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
-        optimization_level=optimization_level, headers=headers)
+        optimization_level=optimization_level, headers=headers, profile=profile)
     if isinstance(compiled_result, list):
         return __print_errors(compiled_result), None, []
 
@@ -814,9 +820,9 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     return c_code, link_spec, warnings
 
 
-def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, lib_paths: list[str] | None = None) -> str:
+def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, lib_paths: list[str] | None = None, profile: bool = False) -> str:
     c_code, _, warnings = compile_project(source, use_stdlib=use_stdlib, just_testing=just_testing,
-        optimization_level=optimization_level, lib_paths=lib_paths)
+        optimization_level=optimization_level, lib_paths=lib_paths, profile=profile)
     for w in sorted(set(warnings)):
         print(w, file=sys.stderr)
     return c_code

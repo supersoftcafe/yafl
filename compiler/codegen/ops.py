@@ -381,6 +381,25 @@ class Return(Op):
 
 
 @dataclass(frozen=True)
+class ProfEnter(Op):
+    """--profile: bump the function's exact call counter and push its id on the
+    thread's shadow stack (the yafl.h inline fast path). Injected by
+    Function.instrument_profile AFTER the emission cleanup chain, so no
+    optimisation pass ever sees it."""
+    fn_id: int
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"    yafl_prof_enter({self.fn_id}u);\n"
+
+
+@dataclass(frozen=True)
+class ProfLeave(Op):
+    """--profile: pop the shadow stack. Injected before every function exit."""
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return "    yafl_prof_leave();\n"
+
+
+@dataclass(frozen=True)
 class ParallelCall(Op):
     """N concurrent zero-param function calls — lowered by async_lower into a parallel join.
 

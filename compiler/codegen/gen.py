@@ -28,6 +28,7 @@ class Application:
     globals: dict[str, Global] = field(default_factory=dict)
     union_discriminators: dict[str, int] = field(default_factory=dict)  # as_unique_id_str() → global discriminator ID
     headers: tuple[str, ...] = ("yafl.h",)  # headers to #include; yafl.h is the runtime baseline, libraries append theirs
+    profile: bool = False                   # --profile: instrument every function and emit the descriptor table
 
     def __post_init__(self):
         self.__type_cache: dict[Type, tuple[str, str]] = {}
@@ -39,13 +40,18 @@ class Application:
         self.__gc_roots: list[str] = []
 
 
-    def __gen_function(self, name: str, f: Function):
+    def __gen_function(self, name: str, f: Function, prof_id: int | None = None):
         # SSA → imperative first: replace every Phi with per-edge Moves while
         # the original CFG (and thus predecessor labels) is still intact.
         # All downstream codegen transformations are Phi-unaware and may
         # rewrite labels, so they must only ever see plain Moves and Jumps.
         f = f.lower_phis()
         f = f.strip_unused_operations().simplify_control_flow().fold_struct_fields().copy_propagate().simplify_control_flow().eliminate_common_subexpressions()
+        # --profile instrumentation goes in LAST, after the cleanup chain, so
+        # nothing can merge, move or delete the enter/leave pairing (CSE would
+        # otherwise be entitled to coalesce identical leaves).
+        if prof_id is not None:
+            f = f.instrument_profile(prof_id)
         self.__forwards.append(f.to_c_prototype(self.__type_cache))
         self.__functions.append(f.to_c_implement(self.__type_cache))
 
@@ -188,10 +194,28 @@ class Application:
                 f"    {declarations};\n"
                 f"}}\n")
 
+    def __gen_prof_table(self, prof_ids: dict[str, int]) -> str:
+        """--profile: the id -> (name, file, line) descriptor table handed to
+        yafl_prof_init. Ordered by id (the dict preserves numbering order)."""
+        def c_str(s: str) -> str:
+            return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        rows = ",\n".join(
+            f"    {{ {c_str(name)}, {c_str(f.source_file)}, {f.source_line} }}"
+            for name, f in ((n, self.functions[n]) for n in prof_ids))
+        return (f"static const yafl_prof_fn_t yafl_prof_fns[{len(prof_ids)}] = {{\n"
+                f"{rows}\n"
+                f"}};\n")
+
     def __declare_main(self) -> str:
+        # --profile: init BEFORE thread_start, so the profiler precedes every
+        # worker registration and every instrumented call.
+        n_prof = sum(1 for f in self.functions.values() if not f.foreign_symbol)
+        prof_init = (f"    yafl_prof_init(yafl_prof_fns, {n_prof}u);\n"
+                     if self.profile else "")
         return ("int main(int argc, char** argv) {\n"
                 "    _yafl_argc = argc;\n"
                 "    _yafl_argv = argv;\n"
+                f"{prof_init}"
                 "    _previous_declare_roots = add_roots_declaration_func(_declare_roots);\n"
                 "    thread_start(__entrypoint__);\n"
                 "    return 0;\n"
@@ -211,16 +235,31 @@ class Application:
                    for name, o in self.objects.items() if not o.is_foreign}
         global_ids, vtable_sizes = create_perfect_lookups(vtables)
 
+        # --profile: number the non-foreign functions 0..N-1 in emission order
+        # (ASCII-sorted by yafl name — the final trim rebuilt the dict sorted,
+        # so ids are deterministic). Foreign functions have no body to
+        # instrument and no descriptor.
+        prof_ids: dict[str, int] | None = None
+        if self.profile:
+            prof_ids = {name: i for i, name in enumerate(
+                name for name, f in self.functions.items() if not f.foreign_symbol)}
+
         for name, f in self.functions.items():
             if f.foreign_symbol:
                 self.__forwards.append(f.to_c_extern(self.__type_cache))
             else:
-                self.__gen_function(name, f)
+                self.__gen_function(name, f, prof_ids[name] if prof_ids is not None else None)
         for name, o in self.__objects_in_extends_order():
             if not o.is_foreign:
                 self.__gen_object(name, o, global_ids, vtable_sizes)
         for name, g in self.globals.items():
             self.__gen_global(name, g)
+
+        # The descriptor table is appended AFTER the emission loops: the lazy
+        # struct_anon numbering is settled by then, and the table itself uses
+        # only named C types so it can never touch the type cache.
+        if prof_ids is not None:
+            self.__variables.append(self.__gen_prof_table(prof_ids))
 
         # Generated code is held to -Wall -Wextra -Werror, but two warning
         # families are inherent to the lowering and not defects (verified):

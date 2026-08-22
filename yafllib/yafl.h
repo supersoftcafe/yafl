@@ -598,6 +598,59 @@ INLINE void *object_new(vtable_t *vtable) {
     return object;
 }
 
+// ── profiling (--profile) ────────────────────────────────────────────────────
+// Programs compiled with --profile call yafl_prof_enter/leave around every
+// function body and hand a descriptor table to yafl_prof_init from main().
+// Split like gc_alloc_tl above: this block is only what the inline fast paths
+// need; the sampler, timers and output live in prof.c. See
+// docs/profiling-design.md.
+
+typedef struct {
+    const char* name;   // fully qualified YAFL name
+    const char* file;   // defining source file ("" for synthesised functions)
+    int32_t     line;   // 1-based definition line (0 for synthesised)
+} yafl_prof_fn_t;
+
+typedef struct {
+    uint64_t*        counters;  // exact per-function call counts; single writer
+                                // (this thread), read racily by the exit dump
+    uint32_t*        stack;     // shadow stack of function ids, read by the
+                                // sampling signal handler on this same thread
+    _Atomic(int32_t) sp;        // logical depth; may exceed cap (see enter)
+    int32_t          cap;
+} yafl_prof_tl_t;
+EXTERN thread_local yafl_prof_tl_t yafl_prof_tl;
+
+// Called once from the generated main(), BEFORE thread_start — so it precedes
+// every worker registration and every instrumented call.
+EXTERN void yafl_prof_init(const yafl_prof_fn_t* functions, uint32_t n_functions);
+
+// The per-call fast paths. Counters stay exact past the shadow-stack cap: sp
+// keeps advancing (so enter/leave stay balanced) while element stores are
+// skipped, and the sampler flags such samples as (truncated). The relaxed
+// atomics on sp compile to plain moves; the signal fence orders the element
+// store before the sp advance for the handler, which pairs it with an acquire
+// fence after reading sp — an sp it reads covers only fully-stored elements.
+INLINE void yafl_prof_enter(uint32_t id) {
+    yafl_prof_tl_t* t = &yafl_prof_tl;
+    if (UNLIKELY(t->counters == NULL))
+        return;   // thread not registered (profiling off)
+    t->counters[id]++;
+    int32_t sp = atomic_load_explicit(&t->sp, memory_order_relaxed);
+    if (LIKELY(sp < t->cap))
+        t->stack[sp] = id;
+    atomic_signal_fence(memory_order_release);
+    atomic_store_explicit(&t->sp, sp + 1, memory_order_relaxed);
+}
+
+INLINE void yafl_prof_leave(void) {
+    yafl_prof_tl_t* t = &yafl_prof_tl;
+    if (UNLIKELY(t->counters == NULL))
+        return;
+    int32_t sp = atomic_load_explicit(&t->sp, memory_order_relaxed);
+    atomic_store_explicit(&t->sp, sp - 1, memory_order_relaxed);
+}
+
 EXTERN volatile bool gc_write_barrier_requested;
 
 

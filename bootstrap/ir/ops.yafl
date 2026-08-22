@@ -44,6 +44,12 @@ enum Op
   enum OpReturn(returnValue: RParam, returnSavedVars: List<RParam>)
   enum OpParallelCall(parCalls: List<RParam>, parResults: List<RParam>, parRegister: RParam|None, parSavedVars: List<RParam>)
   enum OpPhi(phiTarget: RParam, phiSources: List<OpPhiSource>, phiSavedVars: List<RParam>)
+  # --profile instrumentation (ops.py ProfEnter/ProfLeave). Injected by
+  # cgFunctionInstrumentProfile AFTER the emission cleanup chain, so no
+  # optimisation pass ever sees them — they exist only between injection
+  # and opToC.
+  enum OpProfEnter(profEnterFnId: Int, profEnterSavedVars: List<RParam>)
+  enum OpProfLeave(profLeaveSavedVars: List<RParam>)
 
 class [final] OpCase(caseValue: Int, caseLabel: String)
 class [final] OpPhiSource(sourceLabel: String, sourceValue: RParam)
@@ -63,6 +69,8 @@ fun opSavedVars(op: Op): List<RParam>
     (x: OpReturn) => x.returnSavedVars
     (x: OpParallelCall) => x.parSavedVars
     (x: OpPhi) => x.phiSavedVars
+    (x: OpProfEnter) => x.profEnterSavedVars
+    (x: OpProfLeave) => x.profLeaveSavedVars
 
 # ── test_params(predicate) ───────────────────────────────────────────────────
 
@@ -265,6 +273,8 @@ fun opToC(op: Op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCache
     (x: OpReturn) => opToCReturn(x, cache)
     (x: OpParallelCall) => ("", cache)   # unreachable: async_lower must remove ParallelCall before codegen
     (x: OpPhi) => ("", cache)            # unreachable: from_ssa must lower Phi to Moves before codegen
+    (x: OpProfEnter) => ("    yafl_prof_enter(" + String(x.profEnterFnId) + "u);\n", cache)
+    (x: OpProfLeave) => ("    yafl_prof_leave();\n", cache)
 
 fun opToCMove(x: OpMove, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sourceC = rpToC(x.moveSource, cache0)
@@ -485,6 +495,8 @@ fun opWithSavedVars(op: Op, sv: List<RParam>): Op
     (x: OpReturn)       => OpReturn(x.returnValue, sv)
     (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
     (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
+    (x: OpProfEnter)    => OpProfEnter(x.profEnterFnId, sv)
+    (x: OpProfLeave)    => OpProfLeave(sv)
 
 # Reads as StackVar RPARAMS (types intact — the liveness sets feed state-field
 # layout); the names-only twin is opReadVarNames above.

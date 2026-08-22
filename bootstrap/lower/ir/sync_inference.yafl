@@ -39,7 +39,8 @@ fun siMaterialise(f: CgFunction, syncSet: Set<String>): CgFunction
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars, f.fnOps,
                  f.fnComment, f.fnForeignSymbol,
                  contains<String>(syncSet, f.fnName),
-                 f.fnTail, f.fnBypassAsync, f.fnAlwaysInline)
+                 f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
 
 # A body returning TagTask(...) produces a tagged task pointer — its callers'
 # PTR_IS_TASK fires; the function cannot be sync regardless of its Calls.

@@ -76,14 +76,20 @@ fun genAccEmpty(): GenAcc
 
 # ── per-function: cleanup chain then prototype + implement ───────────────────
 
-fun genFunction([terminal] acc: GenAcc, f0: CgFunction): GenAcc
+fun genFunction([terminal] acc: GenAcc, f0: CgFunction, profId: Int|None): GenAcc
   # SSA → imperative first (Phi → per-edge Moves while the CFG is intact);
   # everything downstream is Phi-unaware.
   let f = cgFunctionEliminateCSE(cgFunctionSimplifyControlFlow(cgFunctionCopyPropagate(
             cgFunctionFoldStructFields(cgFunctionSimplifyControlFlow(
               cgFunctionStripUnusedOperations(cgFunctionLowerPhis(f0)))))))
-  let proto = cgFunctionToCPrototype(f, acc.gaCache)
-  let impl = cgFunctionToCImplement(f, proto.cache)
+  # --profile instrumentation goes in LAST, after the cleanup chain, so
+  # nothing can merge, move or delete the enter/leave pairing (gen.py
+  # __gen_function's exact position).
+  let fi = match(profId)
+    (id2: Int) => cgFunctionInstrumentProfile(f, id2)
+    ()          => f
+  let proto = cgFunctionToCPrototype(fi, acc.gaCache)
+  let impl = cgFunctionToCImplement(fi, proto.cache)
   ret GenAcc(impl.cache, acc.gaTypedefs,
              push<String >(acc.gaForwards, proto.text), acc.gaVariables,
              push<String >(acc.gaFunctions, impl.text), acc.gaGcRoots)
@@ -350,14 +356,54 @@ fun genDeclareRoots(roots: List<String>): String
       + "    " + declarations + ";\n"
       + "}\n"
 
-fun genDeclareMain(): String
+# --profile: init BEFORE thread_start, so the profiler precedes every worker
+# registration and every instrumented call (gen.py __declare_main).
+fun genDeclareMain(profile: Bool, nProf: Int): String
   ret "int main(int argc, char** argv) {\n"
       + "    _yafl_argc = argc;\n"
       + "    _yafl_argv = argv;\n"
+      + (profile ? "    yafl_prof_init(yafl_prof_fns, " + String(nProf) + "u);\n" : "")
       + "    _previous_declare_roots = add_roots_declaration_func(_declare_roots);\n"
       + "    thread_start(__entrypoint__);\n"
       + "    return 0;\n"
       + "}\n"
+
+# ── --profile descriptor table (gen.py __gen_prof_table) ─────────────────────
+
+# c_str: escape backslashes and quotes only — the exact twin of gen.py's local
+# escaper (names and paths never contain other C-special bytes).
+fun profCStr(s: String): String
+  ret "\"" + toString(profCStrBody(s, 0, StringBuilder())) + "\""
+
+fun [tail] profCStrBody(s: String, i: Int,
+                        [terminal] sb: StringBuilder): StringBuilder
+  let bs = findByte(s, '\\', i)
+  let qt = findByte(s, '"', i)
+  let nxt = bs < 0 ? qt : qt < 0 ? bs : bs < qt ? bs : qt
+  if nxt < 0
+    ret append(sb, slice(s, i, length(s)))
+  ret profCStrBody(s, nxt + 1,
+                   append(append(append(sb, slice(s, i, nxt)), "\\"),
+                          slice(s, nxt, nxt + 1)))
+
+# Rows in id order — the same non-foreign walk order the numbering used; the
+# count rides the walk (no-length ruling).
+fun genProfTable(a: CgApp): (text: String, n: Int)
+  let rows = profTableRows(chain(appFunctions(a)), 0, StringBuilder())
+  ret ("static const yafl_prof_fn_t yafl_prof_fns[" + String(rows.n) + "] = {\n"
+       + toString(rows.sb2) + "\n};\n", rows.n)
+
+fun [tail] profTableRows(fs: Chain<CgFunction>, n: Int,
+                         [terminal] sb: StringBuilder): (sb2: StringBuilder, n: Int)
+  ret match(fs)
+    (nil: ChainEnd) => (sb, n)
+    (l: ChainLink)  => isNoneStr(l.value.fnForeignSymbol)
+      ? profTableRows(l.next, n + 1,
+          append(n == 0 ? sb : append(sb, ",\n"),
+                 "    { " + profCStr(l.value.fnName) + ", "
+                 + profCStr(l.value.fnSourceFile) + ", "
+                 + String(l.value.fnSourceLine) + " }"))
+      : profTableRows(l.next, n, sb)
 
 # ── the assembly ─────────────────────────────────────────────────────────────
 
@@ -374,16 +420,26 @@ fun [tail] vtEntries(os: Chain<CgObject>,
       ? acc
       : push<VtableEntry >(acc, vtEntryOf(l.value)))
 
-fun genApplication(a: CgApp, headers: List<String>): List<String>
+fun genApplication(a: CgApp, headers: List<String>, profile: Bool): List<String>
   let vtables = build<VtableEntry >(vtEntries(chain(appObjects(a)),
                                               builder<VtableEntry >()))
   let ph = createPerfectLookups(vtables)
   # Explicit walks rather than folds: the accumulator is linear, so it is
   # threaded through one call per element instead of riding a fold's lambda.
-  let acc1 = genFunctionsLoop(chain(appFunctions(a)), genAccEmpty())
+  let acc1 = genFunctionsLoop(chain(appFunctions(a)), profile, 0, genAccEmpty())
   let acc2 = genObjectsLoop(chain(objectsInExtendsOrder(a)), ph.methodIds,
                             ph.vtableSizes, acc1)
-  let acc3 = genGlobalsLoop(chain(appGlobals(a)), a, acc2)
+  let acc0 = genGlobalsLoop(chain(appGlobals(a)), a, acc2)
+  # The descriptor table is appended AFTER the emission loops: the lazy
+  # struct_anon numbering is settled by then, and the table itself uses only
+  # named C types so it can never touch the cache (gen.py's exact position —
+  # the last element of the variables section).
+  let prof: (text: String, n: Int) = profile ? genProfTable(a) : ("", 0)
+  let acc3 = profile
+    ? GenAcc(acc0.gaCache, acc0.gaTypedefs, acc0.gaForwards,
+             push<String >(acc0.gaVariables, prof.text),
+             acc0.gaFunctions, acc0.gaGcRoots)
+    : acc0
   # A flat list of modest fragments, never one giant string — the caller
   # streams them to stdout in order (Application.gen returns the same parts
   # shape). Separators are explicit elements: "\n" between the items of a
@@ -410,16 +466,23 @@ fun genApplication(a: CgApp, headers: List<String>): List<String>
                 build<String >(acc3.gaFunctions)),
             prepend(genDeclareRoots(build<String >(acc3.gaGcRoots)),
                     List<String>())),
-            prepend(genDeclareMain(), List<String>()))
+            prepend(genDeclareMain(profile, prof.n), List<String>()))
   ret genFlatten(build<List<String> >(sec))
 
-fun [tail] genFunctionsLoop(fs: Chain<CgFunction>,
+fun profIdOf(profile: Bool, id2: Int): Int|None
+  ret profile ? id2 : None
+
+# --profile: non-foreign functions are numbered 0..N-1 in emission order —
+# the port's appFunctions order equals Python's sorted dict order by the
+# existing byte contract, so ids agree (gen.py's numbering comment).
+fun [tail] genFunctionsLoop(fs: Chain<CgFunction>, profile: Bool, nextId: Int,
                             [terminal] acc: GenAcc): GenAcc
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => genFunctionsLoop(l.next,
-        isNoneStr(l.value.fnForeignSymbol) ? genFunction(acc, l.value)
-                                           : genExtern(acc, l.value))
+    (l: ChainLink)  => isNoneStr(l.value.fnForeignSymbol)
+      ? genFunctionsLoop(l.next, profile, nextId + 1,
+                         genFunction(acc, l.value, profIdOf(profile, nextId)))
+      : genFunctionsLoop(l.next, profile, nextId, genExtern(acc, l.value))
 
 fun [tail] genObjectsLoop(os: Chain<CgObject>, methodIds: List<MethodId>,
                           sizes: List<VtableSize>,

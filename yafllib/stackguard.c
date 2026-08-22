@@ -57,6 +57,10 @@ static void _yafl_install_handler(void) {
     sa.sa_sigaction = _yafl_fault_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
+    // The profiler's SIGPROF handler runs on the NORMAL stack (no SA_ONSTACK);
+    // letting it interrupt fault handling on an exhausted stack would turn a
+    // clean overflow diagnostic into a double fault. Held blocked here.
+    sigaddset(&sa.sa_mask, SIGPROF);
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);
 }
