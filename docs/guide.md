@@ -22,7 +22,7 @@ fun main(): System::Int
 Walking through this line by line:
 
 - `namespace Test` — declares that everything in this file belongs to the `Test` namespace.
-- `import System` — brings the `System` namespace into scope so that qualified names like `System::String` and `System::print` resolve correctly.
+- `import System` — brings the `System` namespace into scope, so its names can be used unqualified (`println`) where unambiguous. Fully qualified names like `System::String` resolve with or without an import; visibility is otherwise strict — a file sees its own namespace and what it imports, nothing more.
 - `fun createMessage(...)` — a function declaration. Parameter types and the return type are explicitly written. `ret` is the return keyword.
 - `let message: System::String = ...` — a top-level value binding. The type annotation is always required.
 - `fun main(): System::Int` — the program entry point. It must take no parameters and return `System::Int`.

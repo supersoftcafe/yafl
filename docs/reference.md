@@ -45,7 +45,18 @@ Declares the namespace for all definitions in the current file. Must appear befo
 import <Name>
 ```
 
-Brings a namespace into scope so its names can be used with the `Name::` prefix. After `import System`, you write `System::String` and `System::print`. Multiple `import` statements are allowed. Sub-namespaces are imported separately: `import System::IO`.
+Brings a namespace into scope so its names can be referenced — qualified
+(`System::String`) or unqualified where unambiguous (`println`). Multiple
+`import` statements are allowed. Sub-namespaces are imported separately:
+`import System::IO`.
+
+Visibility is strict and block-scoped: a definition sees its own namespace
+plus the namespaces imported in its own namespace block — nothing else. A
+fully qualified name (`Other::helper`) always resolves, with or without an
+import. Declaring a namespace elsewhere in the same file grants no access
+to it, imports do not carry across `namespace` declarations, and an
+unqualified name matching more than one in-scope definition is an
+ambiguity error — qualify it.
 
 ### `typealias`
 

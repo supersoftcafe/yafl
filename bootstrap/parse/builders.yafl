@@ -381,41 +381,57 @@ fun exprLine(x: PExpr): PLine
 # synthesis is ported separately (create_constructor et al.).
 
 fun fixupProgram(stmts: List<PStmt>): List<PStmt>
-  ret fixupLoop(chain(stmts), "Main::",
-                importGroupOf(chain(stmts), builder<PStmt>()), builder<PStmt>())
+  ret match(chain(blockGroupsOf(chain(stmts))))
+    (g2: ChainLink) => fixupLoop(chain(stmts), "Main::", g2.next, g2.value,
+                                 builder<PStmt>())
+    (nil: ChainEnd) => List<PStmt>()   # unreachable: the default block always exists
 
-# The file-wide ImportGroup: every import, AND every namespace declaration (a
-# namespace IS an import of itself — that is how a bare `print` finds
-# `System::print` inside the stdlib), in file order.
-fun [tail] importGroupOf(ss: Chain<PStmt>, acc: ListBuilder<PStmt>): List<PStmt>
+# Block-scoped ImportGroups (USER RULING 2026-08-23; parser.py mirror): one
+# group per namespace block — the block's self-import (members see their
+# siblings unqualified) plus the imports written in that block, wherever
+# they sit within it. Declaring a namespace earlier in the file grants NO
+# access to it, and imports do not pool across blocks. Statements before
+# the first namespace declaration form the default block (namespace Main,
+# no self-import).
+fun blockGroupsOf(ss: Chain<PStmt>): List<List<PStmt>>
+  ret bgLoop(ss, List<PStmt>(), builder<List<PStmt>>())
+
+fun [tail] bgLoop(ss: Chain<PStmt>, cur: List<PStmt>,
+                  [terminal] done: ListBuilder<List<PStmt>>): List<List<PStmt>>
+  ret match(ss)
+    (nil: ChainEnd) => build(push(done, cur))
+    (l: ChainLink)  => match(l.value)
+      (im: PsImport)    => bgLoop(l.next, concat(cur, list1(l.value)), done)
+      (n2: PsNamespace) => bgLoop(l.next,
+                                  list1<PStmt>(PsImport(n2.nsPath, n2.psnLine)),
+                                  push(done, cur))
+      (o: PStmt)        => bgLoop(l.next, cur, done)
+
+fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grps: Chain<List<PStmt>>,
+                     grp: List<PStmt>, acc: ListBuilder<PStmt>): List<PStmt>
   ret match(ss)
     (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(l.value)
-      (im: PsImport)    => importGroupOf(l.next, push(acc, l.value))
-      (n2: PsNamespace) => importGroupOf(l.next,
-                                         push(acc, PsImport(n2.nsPath,
-                                                            n2.psnLine)))
-      (o: PStmt)        => importGroupOf(l.next, acc)
-
-fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grp: List<PStmt>,
-                     acc: ListBuilder<PStmt>): List<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => match(l.value)
-      (im: PsImport)    => fixupLoop(l.next, ns, grp, acc)
-      (n2: PsNamespace) => fixupLoop(l.next, n2.nsPath + "::", grp, acc)
-      (e: PsEnum)       => fixupLoop(l.next, ns, grp,
+      (im: PsImport)    => fixupLoop(l.next, ns, grps, grp, acc)
+      (n2: PsNamespace) => fixupNextBlock(l.next, n2, grps, acc)
+      (e: PsEnum)       => fixupLoop(l.next, ns, grps, grp,
                              pushAll(push(acc,
                                           withImports(addNamespace(e, ns), grp)),
                                      enumLeafConstructors(namespacedEnum(e, ns),
                                                           grp)))
-      (c: PsClass)      => fixupLoop(l.next, ns, grp, classWithCtor(c, ns, grp, acc))
+      (c: PsClass)      => fixupLoop(l.next, ns, grps, grp, classWithCtor(c, ns, grp, acc))
       # A first-class TraitInstanceStatement rides the ordinary named
       # handling (namespacing, import attachment); lower_instances.yafl
       # lowers it AFTER checking.
-      (other)           => fixupLoop(l.next, ns, grp,
+      (other)           => fixupLoop(l.next, ns, grps, grp,
                                      withImports(addNamespace(l.value, ns), grp)
                                        |> (st) => push(acc, st))
+
+fun fixupNextBlock(rest: Chain<PStmt>, n2: PsNamespace, grps: Chain<List<PStmt>>,
+                   acc: ListBuilder<PStmt>): List<PStmt>
+  ret match(grps)
+    (g2: ChainLink)  => fixupLoop(rest, n2.nsPath + "::", g2.next, g2.value, acc)
+    (nil2: ChainEnd) => fixupLoop(rest, n2.nsPath + "::", grps, List<PStmt>(), acc)   # unreachable: one group per namespace declaration
 
 # Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
 fun withImports(st: PStmt, grp: List<PStmt>): PStmt

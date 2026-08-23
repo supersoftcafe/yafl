@@ -1,8 +1,9 @@
-# Converge-contract corpus: per-statement IMPORTS. Every import — and every
-# namespace declaration — in the file joins one ImportGroup attached to each
-# named statement, and a bare name is retried under each of those scopes.
-# `Other` reaches `Corpus::util` and `Corpus::Int` only through its `import
-# Corpus`; a port that hardcodes the scope list leaves both unresolved.
+# Converge-contract corpus: per-statement IMPORTS are BLOCK-SCOPED. Each
+# namespace block's statements carry that block's ImportGroup — the block's
+# self-import plus the imports written in the block — and a bare name is
+# retried under exactly those scopes. `Other` reaches `Corpus::util` and
+# `Corpus::Int` only through its `import Corpus`; a port that hardcodes the
+# scope list, or pools imports file-wide, resolves the wrong set.
 namespace Corpus
 
 typealias Int : __builtin_type__<bigint>

@@ -1116,17 +1116,28 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
     if not statements:
         return result
 
-    imports = []
+    # Block-scoped visibility (USER RULING 2026-08-23): a statement sees its
+    # own namespace block — the block's self-import (members reference their
+    # siblings unqualified) plus the imports written in that block, wherever
+    # they sit within it — and nothing else. Declaring a namespace earlier
+    # in the file grants NO access to it, and imports do not pool across
+    # blocks; anything further afield needs an `import` or a fully
+    # qualified name. Blocks are delimited by `namespace` declarations;
+    # statements before the first one form the default block (namespace
+    # Main, no self-import — unchanged behaviour).
+    block_imports: list[list[s.ImportStatement]] = [[]]
     for statement in statements:
-        if isinstance(statement, s.ImportStatement):
-            imports.append(statement)
-        elif isinstance(statement, s.NamespaceStatement):
-            imports.append(s.ImportStatement(statement.line_ref, statement.path))
+        if isinstance(statement, s.NamespaceStatement):
+            block_imports.append([s.ImportStatement(statement.line_ref, statement.path)])
+        elif isinstance(statement, s.ImportStatement):
+            block_imports[-1].append(statement)
+    block_groups = [s.ImportGroup(imports=tuple(b)) for b in block_imports]
 
     errors = result.errors
-    import_group = s.ImportGroup(imports = tuple(imports))
     new_statements = []
     current_namespace = "Main::"
+    block = 0
+    import_group = block_groups[0]
 
     for statement in result.value:
         match statement:
@@ -1134,6 +1145,8 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
                 pass
             case s.NamespaceStatement(line_ref, path): # Note value and discard
                 current_namespace = f"{path}::"
+                block += 1
+                import_group = block_groups[block]
             case s.FunctionStatement() | s.LetStatement() | s.TypeAliasStatement() | s.ClassStatement() | s.TraitInstanceStatement(): # Rename and add to list
                 # A member is a vtable slot: its signature is the interface
                 # declaration with the OWNER's type args substituted, so a
