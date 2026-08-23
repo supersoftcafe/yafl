@@ -298,7 +298,16 @@ fun [tail] specSeen(ss: Chain<Spec>, sp: Spec): Bool
 # params substituted through). An interface whose name has not resolved is
 # INCOMPLETE — blocked, not absent. (On MORE than one resolution Python raises
 # a LookupError; the port answers incomplete, the nearest non-crashing reading.)
+# The root's per-pass member index serves the hot path (the trait-entry search
+# ran this 166.6M times per self-compile, one findType + one member scan each
+# — Python's ClassStatement.member_index() is the mirror); a hook miss
+# derives per query exactly as before.
 fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Findings
+  ret match(memberIdxHook(r, c.scName))
+    (mi: MemberIdx) => membersViaIdx(mi, c, own, query, r)
+    ()               => membersDerive(c, own, query, r)
+
+fun membersDerive(c: SClass, own: List<String>, query: String, r: Resolver): Findings
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
       (cs: PsClass) => arityMatches(cs, c)
@@ -306,6 +315,31 @@ fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Finding
                        : emptyFindings()
       (o: PStmt)    => emptyFindings()
     ()         => incompleteFindings()
+
+fun membersViaIdx(mi: MemberIdx, c: SClass, own: List<String>, query: String,
+                  r: Resolver): Findings
+  if !arityMatches(mi.miClass, c)
+    ret emptyFindings()
+  let direct = wrapMembers(chain(memberBucket(mi, query)), c, mi.miClass, own,
+                           builder<Found >())
+  ret isEmpty(direct)
+    ? parentMembers(mi.miClass, c, own, query, r)
+    : Findings(direct, true)
+
+fun memberBucket(mi: MemberIdx, query: String): List<PStmt>
+  ret match(get(mi.miByKey, query))
+    (ms: List<PStmt>) => ms
+    ()                => List<PStmt>()
+
+fun [tail] wrapMembers(ms: Chain<PStmt>, tp: SClass, owner: PsClass,
+                       own: List<String>,
+                       [terminal] acc: ListBuilder<Found >): List<Found>
+  ret match(ms)
+    (nil: ChainEnd) => build<Found >(acc)
+    (l: ChainLink)  => wrapMembers(l.next, tp, owner, own,
+                                   push<Found >(acc,
+                                       Found(stmtName(l.value), l.value,
+                                             ScTrait(), tp, owner, own)))
 
 fun arityMatches(cs: PsClass, c: SClass): Bool
   ret sameLen(chain(cs.cGens), chain(c.scParams))

@@ -130,6 +130,14 @@ class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
 # Statements._bare_*), so an in-scope lookup is two dict hits instead of one
 # root query per namespace. Hashed spellings are never scope-retried, so
 # only @-free keys are viewed.
+# stMembers: per-class member index — class name -> (the class statement,
+# member key -> matching members in declaration order), the port twin of
+# Python ClassStatement.member_index() ("the by-name index is a dict hit",
+# base.py). Keys follow namePrefixes, so nameMatches semantics are a bucket
+# hit, exactly like the global index.
+class [final] MemberIdx(miClass: PsClass,
+                        miByKey: Dict<String, List<PStmt> >)
+
 class [final] Statements(stOrdered: List<PStmt>,
                          stIndex: Dict<String, List<PStmt> >,
                          stTraits: List<PStmt>,
@@ -139,7 +147,8 @@ class [final] Statements(stOrdered: List<PStmt>,
                          stTypesIdx: Dict<String, Findings >,
                          stDataIdx: Dict<String, Findings >,
                          stBareTypes: Dict<String, Dict<String, Findings> >,
-                         stBareData: Dict<String, Dict<String, Findings> >)
+                         stBareData: Dict<String, Dict<String, Findings> >,
+                         stMembers: Dict<String, MemberIdx >)
 
 fun buildStatements(stmts: List<PStmt>): Statements
   ret withKindIndexes(withAmbient(indexLoop(chain(stmts),
@@ -149,7 +158,8 @@ fun buildStatements(stmts: List<PStmt>): Statements
                                        Dict<String, Findings >(),
                                        Dict<String, Findings >(),
                                        Dict<String, Dict<String, Findings> >(),
-                                       Dict<String, Dict<String, Findings> >()))))
+                                       Dict<String, Dict<String, Findings> >(),
+                                       Dict<String, MemberIdx >()))))
 
 fun withKindIndexes(base: Statements): Statements
   # keys() answers a Set; sorted once into a walkable list (the walk order is
@@ -163,7 +173,8 @@ fun withKindIndexes(base: Statements): Statements
                  bareView(chain(ks), types2,
                           Dict<String, Dict<String, Findings> >()),
                  bareView(chain(ks), data2,
-                          Dict<String, Dict<String, Findings> >()))
+                          Dict<String, Dict<String, Findings> >()),
+                 memberIndex(chain(base.stOrdered), Dict<String, MemberIdx >()))
 
 fun [tail] bareView(ks: Chain<String>, kind: Dict<String, Findings >,
                     acc: Dict<String, Dict<String, Findings> >): Dict<String, Dict<String, Findings> >
@@ -186,6 +197,43 @@ fun bareViewPut(acc: Dict<String, Dict<String, Findings> >, bare: String,
     (inner: Dict<String, Findings>) => put(acc, bare, put(inner, ns, f))
     ()                               => put(acc, bare,
                                             put(Dict<String, Findings >(), ns, f))
+
+fun [tail] memberIndex(ss: Chain<PStmt>,
+                       acc: Dict<String, MemberIdx >): Dict<String, MemberIdx >
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (cs: PsClass) => memberIndex(l.next,
+          put(acc, cs.cName,
+              MemberIdx(cs, memberKeys(chain(concat(flattenParams(cs.cParams),
+                                                    cs.cMembers)),
+                                       Dict<String, List<PStmt> >()))))
+      (o: PStmt)    => memberIndex(l.next, acc)
+
+# member_index: ctor params (flattened to leaf lets) PLUS body statements, in
+# declaration order — the order memberMatchesB walked. addKeys is the same
+# helper the global index uses, so bucket semantics match nameMatches.
+fun [tail] memberKeys(ms: Chain<PStmt>,
+                      acc: Dict<String, List<PStmt> >): Dict<String, List<PStmt> >
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => stmtName(l.value) == ""
+      ? memberKeys(l.next, acc)
+      : memberKeys(l.next, addKeys(acc, chain(namePrefixes(stmtName(l.value))),
+                                   l.value))
+
+# The per-pass member index, when the root carries one; a miss (direct RRoot
+# builder, or a class spelling the canonical key does not cover) derives per
+# query as before.
+fun [tail] memberIdxHook(r: Resolver, className: String): MemberIdx|None
+  ret match(r)
+    (root: RRoot)    => get(root.rrStmts.stMembers, className)
+    (sc: RScopes)    => memberIdxHook(sc.rsParent, className)
+    (d: RData)       => memberIdxHook(d.rdParent, className)
+    (t2: RTypes)     => memberIdxHook(t2.rtParent, className)
+    (tr: RTraits)    => memberIdxHook(tr.rtrParent, className)
+    (cb: RClassBody) => memberIdxHook(cb.rcbParent, className)
+    (rg: RGen)       => memberIdxHook(rg.rgParent, className)
 
 # Per key, the kind walk REUSES globalLoop — the exact per-query filter — so
 # the prebuilt answers cannot diverge from what the query path produced.
@@ -212,7 +260,7 @@ fun withAmbient(base: Statements): Statements
                  base.stInstances,
                  dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
                  amb.abBlocked, base.stTypesIdx, base.stDataIdx,
-                 base.stBareTypes, base.stBareData)
+                 base.stBareTypes, base.stBareData, base.stMembers)
 
 # (spec, own) dedupe, once per pass — two identical instances collapse to
 # ONE search entry (Python's per-query `add` set), whichever namespaces they
@@ -289,7 +337,7 @@ fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
                  acc.stTraits, acc.stInstances, acc.stAmbient,
                  acc.stAmbientBlocked, acc.stTypesIdx, acc.stDataIdx,
-                 acc.stBareTypes, acc.stBareData)
+                 acc.stBareTypes, acc.stBareData, acc.stMembers)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
                    st: PStmt): Dict<String, List<PStmt> >
@@ -314,14 +362,16 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
       ? Statements(acc.stOrdered, acc.stIndex,
                    build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stTraits)), st)),
                    acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
-                   acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData)
+                   acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData,
+                   acc.stMembers)
       : acc
     (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                         acc.stTraits,
                                         build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stInstances)), st)),
                                         acc.stAmbient, acc.stAmbientBlocked,
                                         acc.stTypesIdx, acc.stDataIdx,
-                                        acc.stBareTypes, acc.stBareData)
+                                        acc.stBareTypes, acc.stBareData,
+                                        acc.stMembers)
     (o: PStmt)  => acc
 
 fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
