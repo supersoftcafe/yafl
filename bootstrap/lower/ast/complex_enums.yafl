@@ -13,6 +13,10 @@ namespace Bootstrap::Lower::Ast
 import System
 
 import Bootstrap::Ast
+# Codegen: the per-leaf threshold analysis reuses collectLeafFieldSets /
+# filterDeclaredFields / asEnumVariant / enumIsRootStmt (Python's twins live
+# in pyast.typespec, which complex_enums.py imports the same way).
+import Bootstrap::Codegen
 import Bootstrap::Frontend
 import Bootstrap::Parse
 import Bootstrap::Resolve
@@ -534,3 +538,183 @@ fun computeBreakers(statements: List<PStmt>): List<String>
   let fieldsOf = enumFieldsProvider(statements)
   let map = ceNameMap(roots)
   ret cePickBreakers(ceEdges(roots, map, fieldsOf), roots, fieldsOf)
+
+# ══════════════════════════════════════════════════════════════════════════
+# Per-leaf value-struct threshold (the enum-encoding principle; Python
+# compute_boxed_leaves). A variant whose payload exceeds maxValueStructWords
+# words is a heap object EVERYWHERE it appears: one pointer slot in its
+# enum's pool, payload in the same per-leaf Object a complex enum would use.
+# The decision is a property of the variant TYPE, so widening between unions
+# holding it is always a straight slot copy. Widths are estimated at spec
+# level exactly as Python's spec_bytes: sub-word scalars true bytes,
+# pointers a word, closures two words, nested flat enums their own pool
+# estimate under decisions already made — children decide before parents
+# (the value-containment graph is acyclic once breakers are removed; an
+# on-stack root is answered as a pointer, defensively). Roots with
+# interior-node fields keep all leaves inline: inherited fields are read
+# positionally across sibling carriers, which requires one shared
+# representation. Recursion depths are bounded by program shape (fields per
+# leaf, leaves per root, roots), so these loops carry no [tail] markers.
+# ══════════════════════════════════════════════════════════════════════════
+
+let maxValueStructWords: Int = 8
+let maxValueStructBytes: Int = maxValueStructWords * 8
+
+class [final] BoxCtx(bxBreakers: List<String>, bxStmts: Dict<String, PsEnum>,
+                     bxMap: NameMap)
+class [final] BoxState(bsMemo: Dict<String, Int>, bsBoxed: Dict<String, Bool>)
+class [final] BxOut(bxW: Int, bxSt: BoxState)
+
+fun computeBoxedLeaves(statements: List<PStmt>,
+                       breakers: List<String>): Dict<String, Bool>
+  let roots = ceCollectRoots(statements)
+  let ctx = BoxCtx(breakers, bxRootStmts(statements), ceNameMap(roots))
+  let final = fold(sort<String>(keys<String, PsEnum>(ctx.bxStmts)),
+                   BoxState(Dict<String, Int>(), Dict<String, Bool>()),
+                   (st: BoxState, root: String) =>
+                     bxEnumValueBytes(ctx, root, List<String>(), st).bxSt)
+  ret final.bsBoxed
+
+# Root STATEMENTS by root name (first declaration wins): collectLeafFieldSets
+# needs the PsEnum, not just its spec.
+fun bxRootStmts(statements: List<PStmt>): Dict<String, PsEnum>
+  ret bxRootStmtsLoop(chain(statements), Dict<String, PsEnum>())
+
+fun [tail] bxRootStmtsLoop(ss: Chain<PStmt>,
+                           acc: Dict<String, PsEnum>): Dict<String, PsEnum>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e2: PsEnum) => bxRootStmtsLoop(l.next, bxRootStmtAdd(acc, e2))
+      (o: PStmt)   => bxRootStmtsLoop(l.next, acc)
+
+fun bxRootStmtAdd(acc: Dict<String, PsEnum>, e2: PsEnum): Dict<String, PsEnum>
+  ret match(asEnumVariant(e2.eSpec))
+    (sp: SEnum) => enumIsRootStmt(e2) && !contains<String, PsEnum>(acc, sp.seRoot)
+      ? put(acc, sp.seRoot, e2)
+      : acc
+    ()           => acc
+
+# True when any non-leaf node of the variant tree declares fields.
+fun bxHasInteriorFields(e2: PsEnum): Bool
+  ret isEmpty(e2.eVariants)
+    ? false
+    : !isEmpty(filterDeclaredFields(chain(flattenParams(e2.eParams)), List<PStmt>()))
+      || bxAnyInteriorVariant(chain(e2.eVariants))
+
+fun [tail] bxAnyInteriorVariant(vs: Chain<PStmt>): Bool
+  ret match(vs)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(l.value)
+      (v: PsEnum) => bxHasInteriorFields(v) ? true : bxAnyInteriorVariant(l.next)
+      (o: PStmt)  => bxAnyInteriorVariant(l.next)
+
+fun bxBuiltinBytes(name: String): Int
+  ret name == "bool" || name == "int8" ? 1
+    : name == "int16" ? 2
+    : name == "int32" || name == "float32" ? 4
+    : 8
+
+fun bxSpecBytes(ctx: BoxCtx, sp: Spec|None, stack: List<String>,
+                st: BoxState): BxOut
+  ret match(sp)
+    (s2: Spec) => bxSpecBytesOn(ctx, s2, stack, st)
+    ()          => BxOut(8, st)
+
+fun bxSpecBytesOn(ctx: BoxCtx, sp: Spec, stack: List<String>,
+                  st: BoxState): BxOut
+  ret match(sp)
+    (b: SBuiltin)      => BxOut(bxBuiltinBytes(b.sbName), st)
+    (cl: SCallable)    => BxOut(16, st)   # fun_t: code word + env pointer
+    (t2: STuple)       => bxEntriesBytes(ctx, chain(t2.stEntries), stack, st, 0)
+    (cm: SCombination) => bxCombBytes(ctx, chain(cm.scTypes), stack, st, 0)
+    (e2: SEnum)        => bxEnumValueBytes(ctx, e2.seRoot, stack, st)
+    # Direct name-map hit only (no suffix fallback), as Python.
+    (n: SNamed)        => match(get(ctx.bxMap.nmIndex, n.snName))
+      (root: String) => bxEnumValueBytes(ctx, root, stack, st)
+      ()             => BxOut(8, st)
+    (o: Spec)          => BxOut(8, st)   # classes, placeholders: a pointer
+
+fun bxEntriesBytes(ctx: BoxCtx, es: Chain<SEntry>, stack: List<String>,
+                   st: BoxState, acc: Int): BxOut
+  ret match(es)
+    (nil: ChainEnd) => BxOut(acc, st)
+    (l: ChainLink)  => bxEntriesStep(ctx, l, stack, st, acc)
+
+fun bxEntriesStep(ctx: BoxCtx, l: ChainLink<SEntry>, stack: List<String>,
+                  st: BoxState, acc: Int): BxOut
+  let o = bxSpecBytes(ctx, l.value.seType, stack, st)
+  ret bxEntriesBytes(ctx, l.next, stack, o.bxSt, acc + o.bxW)
+
+# Conservative: widest member plus a tag word (collapsed pointer unions are
+# really one word; the over-estimate only nudges near-threshold leaves
+# toward boxing).
+fun bxCombBytes(ctx: BoxCtx, ss: Chain<Spec>, stack: List<String>,
+                st: BoxState, widest: Int): BxOut
+  ret match(ss)
+    (nil: ChainEnd) => BxOut(widest + 8, st)
+    (l: ChainLink)  => bxCombStep(ctx, l, stack, st, widest)
+
+fun bxCombStep(ctx: BoxCtx, l: ChainLink<Spec>, stack: List<String>,
+               st: BoxState, widest: Int): BxOut
+  let o = bxSpecBytes(ctx, l.value, stack, st)
+  ret bxCombBytes(ctx, l.next, stack, o.bxSt, o.bxW > widest ? o.bxW : widest)
+
+fun bxEnumValueBytes(ctx: BoxCtx, root: String, stack: List<String>,
+                     st: BoxState): BxOut
+  if contains2(ctx.bxBreakers, root) || contains2(stack, root)
+    ret BxOut(8, st)   # heap pointer: complex root, or defensive on-stack
+  ret match(get(st.bsMemo, root))
+    (w: Int) => BxOut(w, st)
+    ()        => bxComputeRoot(ctx, root, stack, st)
+
+fun bxComputeRoot(ctx: BoxCtx, root: String, stack: List<String>,
+                  st: BoxState): BxOut
+  ret match(get(ctx.bxStmts, root))
+    (e2: PsEnum) => match(asEnumVariant(e2.eSpec))
+      (sp: SEnum) => bxRootPool(ctx, root, e2, sp, stack, st)
+      ()           => BxOut(8, st)   # unreachable: bxRootStmts keyed by SEnum
+    ()            => BxOut(8, st)    # no root statement: only ever a pointer
+
+fun bxRootPool(ctx: BoxCtx, root: String, e2: PsEnum, sp: SEnum,
+               stack: List<String>, st: BoxState): BxOut
+  let out = bxLeafLoop(ctx, root, chain(sp.seAllLeaves),
+                       chain(collectLeafFieldSets(e2, List<PStmt>())),
+                       !bxHasInteriorFields(e2), concat(stack, list1(root)),
+                       st, 0)
+  ret BxOut(out.bxW,
+            BoxState(put(out.bxSt.bsMemo, root, out.bxW), out.bxSt.bsBoxed))
+
+fun bxLeafLoop(ctx: BoxCtx, root: String, names: Chain<String>,
+               sets: Chain<List<PStmt>>, boxable: Bool, stack: List<String>,
+               st: BoxState, widest: Int): BxOut
+  ret match(names)
+    (nil: ChainEnd) => BxOut(widest + 8, st)   # widest variant + tag
+    (l: ChainLink)  => match(sets)
+      (nil2: ChainEnd) => BxOut(widest + 8, st)   # unreachable: zip 1:1
+      (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, widest)
+
+fun bxLeafStep(ctx: BoxCtx, root: String, l: ChainLink<String>,
+               s2: ChainLink<List<PStmt>>, boxable: Bool, stack: List<String>,
+               st: BoxState, widest: Int): BxOut
+  let o = bxFieldsBytes(ctx, chain(s2.value), stack, st, 0)
+  if o.bxW > maxValueStructBytes && boxable
+    ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack,
+                   BoxState(o.bxSt.bsMemo,
+                            put(o.bxSt.bsBoxed, boxedLeafKey(root, l.value), true)),
+                   widest > 8 ? widest : 8)
+  ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack, o.bxSt,
+                 o.bxW > widest ? o.bxW : widest)
+
+fun bxFieldsBytes(ctx: BoxCtx, fs: Chain<PStmt>, stack: List<String>,
+                  st: BoxState, acc: Int): BxOut
+  ret match(fs)
+    (nil: ChainEnd) => BxOut(acc, st)
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => bxFieldLet(ctx, let2, l.next, stack, st, acc)
+      (o: PStmt)    => bxFieldsBytes(ctx, l.next, stack, st, acc)
+
+fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest: Chain<PStmt>,
+               stack: List<String>, st: BoxState, acc: Int): BxOut
+  let o = bxSpecBytes(ctx, let2.lType, stack, st)
+  ret bxFieldsBytes(ctx, rest, stack, o.bxSt, acc + o.bxW)

@@ -250,20 +250,37 @@ fun arrayLengthFieldName(ap: PsLet): String|None
 
 # Complex enums emit one Object PER VARIANT (own vtable, variant-sized layout,
 # global discriminator id) plus a never-instantiated MARKER root object.
-# Simple enums (and non-root statements of a complex one) emit nothing.
+# A FLAT root with BOXED leaves (payload over the value-struct threshold —
+# the enum-encoding principle) emits the marker plus one Object per boxed
+# leaf, borrowing the same machinery; its inline leaves stay in the pool.
+# Simple enums (and non-root statements) emit nothing.
 fun enumGlobalCodegen(st: PsEnum, r: Resolver): List<CgObject>
   ret match(asEnumVariant(st.eSpec))
-    (sp: SEnum) => isComplexRoot(r, sp.seRoot) && enumIsRootStmt(st)
-      ? enumComplexObjects(st, sp, r)
+    (sp: SEnum) => enumIsRootStmt(st)
+      ? enumRootObjects(st, sp, r)
       : List<CgObject>()
     ()           => List<CgObject>()
+
+fun enumRootObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
+  if isComplexRoot(r, sp.seRoot)
+    ret enumComplexObjects(st, sp, r, true)
+  ret enumAnyBoxedLeaf(chain(sp.seAllLeaves), r, sp.seRoot)
+    ? enumComplexObjects(st, sp, r, false)
+    : List<CgObject>()
+
+fun [tail] enumAnyBoxedLeaf(names: Chain<String>, r: Resolver, rootName: String): Bool
+  ret match(names)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => isBoxedLeaf(r, rootName, l.value)
+      ? true
+      : enumAnyBoxedLeaf(l.next, r, rootName)
 
 fun enumIsRootStmt(st: PsEnum): Bool
   ret match(st.eRootName)
     (rn: String) => rn == st.eName
     ()            => true
 
-fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
+fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver, isComplex: Bool): List<CgObject>
   let discs = getDiscriminators(r)
   # NOTE: [mutable] on enums is still unimplemented (the ATTRIBUTE now parses;
   # honouring it here is separate work). Leaves are emitted immutable.

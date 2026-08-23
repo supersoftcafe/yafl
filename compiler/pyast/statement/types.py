@@ -172,10 +172,21 @@ class EnumStatement(TypeStatement):
         # discriminant lives in the vtable, once per type. Emit only at the
         # root statement (variants nested in `variants` carry the same
         # root_name).
-        if self._enum_spec is None or not resolver.is_complex_root(self.name):
+        if self._enum_spec is None:
             return []
         if self._root_name is not None and self._root_name != self.name:
             return []
+        is_complex = resolver.is_complex_root(self.name)
+        if not is_complex:
+            # A FLAT root still emits objects for its BOXED leaves (payload
+            # over the value-struct threshold — the enum-encoding principle):
+            # the marker plus one Object per boxed leaf, borrowing the
+            # complex-leaf machinery wholesale. Dispatch stays on $tag, so
+            # boxed leaves take the default discriminator (0, "never
+            # dispatched on") and register nothing.
+            if not any(resolver.is_boxed_leaf(self.name, leaf)
+                       for leaf in self._enum_spec.all_leaf_names):
+                return []
         discriminators = resolver.get_discriminators()
         # EVERY boxed enum carries a hidden Int32 hash-cache slot DIRECTLY
         # AFTER the vtable pointer, in every leaf (and the never-instantiated
@@ -195,6 +206,8 @@ class EnumStatement(TypeStatement):
         objects = [marker]
         leaf_field_sets = t._collect_leaf_field_sets(self, [])
         for leaf_name, leaf_fields in zip(self._enum_spec.all_leaf_names, leaf_field_sets):
+            if not is_complex and not resolver.is_boxed_leaf(self.name, leaf_name):
+                continue                    # flat root: inline leaves stay in the pool
             obj_name = t.enum_leaf_object_name(self.name, leaf_name)
             fields = prefix + tuple(
                 (let.name, let.declared_type.generate(resolver)) for let in leaf_fields)
@@ -205,8 +218,11 @@ class EnumStatement(TypeStatement):
                 fields=cg_t.ImmediateStruct(fields),
                 # Strict lookup: the registry enumerates leaves from these
                 # same root statements, so a miss is a compiler bug — fail
-                # here, not as a runtime dispatch fall-through.
-                discriminator=discriminators[f"enumleaf({obj_name})"]))
+                # here, not as a runtime dispatch fall-through. Boxed leaves
+                # of FLAT roots dispatch by $tag, not vtable, so they are
+                # absent from the registry and keep discriminator 0.
+                discriminator=(discriminators[f"enumleaf({obj_name})"]
+                               if is_complex else 0)))
         return objects
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:

@@ -207,6 +207,109 @@ def compute_breakers(statements: list[s.Statement]) -> set[str]:
     return _pick_cycle_breakers(edges, roots, fields_of)
 
 
+# ── per-leaf value-struct threshold (the enum-encoding principle) ───────────
+#
+# A variant whose payload exceeds this many words is a heap object EVERYWHERE
+# it appears: it contributes one pointer slot to its enum's pool and its
+# payload lives in the same per-leaf Object a complex enum would use. The
+# decision is a property of the variant TYPE, not of any one union, so
+# widening between unions holding it is always a straight slot copy. Sizes
+# are estimated at spec level (the analysis runs resolver-free, like the
+# breaker analysis): sub-word scalars count their true bytes, pointers a
+# word, closures two words, nested flat enums their own pool estimate under
+# decisions already made — children are decided before parents (the value-
+# containment graph is acyclic once breakers are removed), so a child whose
+# wide leaf boxes shrinks honestly before its parents are sized.
+
+_MAX_VALUE_STRUCT_WORDS = 8
+_MAX_VALUE_STRUCT_BYTES = _MAX_VALUE_STRUCT_WORDS * 8
+
+_BUILTIN_BYTES = {"bool": 1, "int8": 1, "int16": 2, "int32": 4, "float32": 4}
+
+
+def _has_interior_fields(stmt: s.EnumStatement) -> bool:
+    """True when any non-leaf node of the variant tree declares fields.
+    Inherited fields are read positionally across sibling variants, which
+    requires every carrier to share one representation — so roots with
+    interior-node fields keep all leaves inline (no per-leaf boxing)."""
+    def walk(node: s.EnumStatement) -> bool:
+        if not node.variants:
+            return False
+        own = any(let.declared_type is not None
+                  for let in node.parameters.flatten())
+        return own or any(walk(v) for v in node.variants)
+    return walk(stmt)
+
+
+def compute_boxed_leaves(statements: list[s.Statement],
+                         breakers: set[str] | None = None) -> frozenset:
+    """The boxed-leaf set — WHICH (root_name, leaf_name) variants of FLAT
+    enums box their payload — as a pure function of the statements, like
+    compute_breakers. Complex roots are excluded (every leaf of a complex
+    root is already a heap object via its own machinery)."""
+    if breakers is None:
+        breakers = compute_breakers(statements)
+    roots: dict[str, t.EnumSpec] = {}
+    root_stmts: dict[str, s.EnumStatement] = {}
+    for stmt in statements:
+        if isinstance(stmt, s.EnumStatement) and stmt._enum_spec is not None:
+            spec = stmt._enum_spec
+            roots.setdefault(spec.root_name, spec)
+            if stmt._root_name is None or stmt._root_name == stmt.name:
+                root_stmts.setdefault(spec.root_name, stmt)
+    if not root_stmts:
+        return frozenset()
+    name_to_root = _build_name_to_root(roots)
+    boxed: set[tuple[str, str]] = set()
+    pool_memo: dict[str, int] = {}
+
+    def spec_bytes(spec: t.TypeSpec | None, stack: list[str]) -> int:
+        if isinstance(spec, t.BuiltinSpec):
+            return _BUILTIN_BYTES.get(spec.type_name, 8)
+        if isinstance(spec, t.CallableSpec):
+            return 16                       # fun_t: code word + env pointer
+        if isinstance(spec, t.TupleSpec):
+            return sum(spec_bytes(e.type, stack) for e in spec.entries)
+        if isinstance(spec, t.CombinationSpec):
+            # Conservative: widest member plus a tag word. Collapsed pointer
+            # unions are really one word; the over-estimate only nudges
+            # near-threshold leaves toward boxing.
+            widths = [spec_bytes(m, stack) for m in spec.types]
+            return (max(widths) if widths else 0) + 8
+        if isinstance(spec, t.EnumSpec):
+            return enum_value_bytes(spec.root_name, stack)
+        if isinstance(spec, t.NamedSpec):
+            if spec.name in name_to_root:
+                return enum_value_bytes(name_to_root[spec.name], stack)
+            return 8                        # class or unresolved: a pointer
+        return 8                            # ClassSpec, placeholders, None
+
+    def enum_value_bytes(root: str, stack: list[str]) -> int:
+        if root in breakers or root not in root_stmts or root in stack:
+            return 8                        # heap pointer (cycles all break)
+        if root in pool_memo:
+            return pool_memo[root]
+        stmt = root_stmts[root]
+        leaf_sets = t._collect_leaf_field_sets(stmt, [])
+        leaf_names = roots[root].all_leaf_names
+        boxable = not _has_interior_fields(stmt)
+        inner = stack + [root]
+        widths = []
+        for leaf, lets in zip(leaf_names, leaf_sets):
+            w = sum(spec_bytes(let.declared_type, inner) for let in lets)
+            if w > _MAX_VALUE_STRUCT_BYTES and boxable:
+                boxed.add((root, leaf))
+                w = 8
+            widths.append(w)
+        pool = (max(widths) if widths else 0) + 8   # widest variant + tag
+        pool_memo[root] = pool
+        return pool
+
+    for root in sorted(root_stmts):
+        enum_value_bytes(root, [])
+    return frozenset(boxed)
+
+
 def mark_complex_enums(statements: list[s.Statement]) -> tuple[list[s.Statement], list[Error]]:
     """IDENTITY. is_complex is DERIVED (identity vs state): every reader
     queries the breaker analysis through its resolver (is_complex_root) or

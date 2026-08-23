@@ -413,10 +413,15 @@ enum Resolver
   # ResolverRoot.get_enum_fields' memo, precomputed eagerly here like
   # stAmbient). None on direct RRoot builders, whose readers derive per
   # query exactly as before.
+  # rrBoxedLeaves: the per-leaf value-struct-threshold analysis (Python
+  # ResolverRoot.is_boxed_leaf's lazy set), keyed boxedLeafKey(root, leaf).
+  # GENERATE-only, like rrDiscriminators: only createCCode's root supplies
+  # it; every other builder leaves None (nothing boxes).
   enum RRoot(rrComplex: (:String): Bool,
              rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
-             rrEnumFields: Dict<String, List<SField> >|None = None)
+             rrEnumFields: Dict<String, List<SField> >|None = None,
+             rrBoxedLeaves: Dict<String, Bool>|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
   # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
@@ -507,6 +512,26 @@ fun [tail] isComplexRoot(r: Resolver, root2: String): Bool
     (tr: RTraits)    => isComplexRoot(tr.rtrParent, root2)
     (cb: RClassBody)    => isComplexRoot(cb.rcbParent, root2)
     (rg: RGen)    => isComplexRoot(rg.rgParent, root2)
+
+# The one place the (root, leaf) pair becomes a Dict key (shared by the
+# analysis writer in complex_enums.yafl and the reader below).
+fun boxedLeafKey(root: String, leaf: String): String
+  ret root + "|" + leaf
+
+# DERIVED per-leaf boxing decision (the enum-encoding principle): walk to
+# the root resolver and ask its threshold analysis. Mirror of Python
+# Resolver.is_boxed_leaf; None (non-generate roots) boxes nothing.
+fun [tail] isBoxedLeaf(r: Resolver, root2: String, leaf: String): Bool
+  ret match(r)
+    (root: RRoot)    => match(root.rrBoxedLeaves)
+      (d2: Dict<String, Bool>) => !(get(d2, boxedLeafKey(root2, leaf)) is None)
+      ()                        => false
+    (sc: RScopes)    => isBoxedLeaf(sc.rsParent, root2, leaf)
+    (d: RData)    => isBoxedLeaf(d.rdParent, root2, leaf)
+    (t2: RTypes)    => isBoxedLeaf(t2.rtParent, root2, leaf)
+    (tr: RTraits)    => isBoxedLeaf(tr.rtrParent, root2, leaf)
+    (cb: RClassBody)    => isBoxedLeaf(cb.rcbParent, root2, leaf)
+    (rg: RGen)    => isBoxedLeaf(rg.rgParent, root2, leaf)
 
 fun ambientEntries(r: Resolver): AmbEntries
   ret ambEntryWalk(r, List<String>())

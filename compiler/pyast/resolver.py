@@ -169,6 +169,11 @@ class Resolver:
         # enum graph, so nothing is complex.
         return False
 
+    def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
+        # DERIVED per-leaf threshold decision (the enum-encoding principle):
+        # overridden by ResolverRoot; an empty resolver boxes nothing.
+        return False
+
     def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         return EMPTY
 
@@ -250,6 +255,9 @@ class DelegatingResolver(Resolver):
 
     def is_complex_root(self, root_name: str) -> bool:
         return self._parent.is_complex_root(root_name)
+
+    def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
+        return self._parent.is_boxed_leaf(root_name, leaf_name)
 
     def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
         return self._parent.find_type(name)
@@ -472,12 +480,24 @@ class ResolverRoot(Resolver):
         # per-pass cache. The port mirrors with a memoized closure carried by
         # RRoot (mechanism parity).
         self.__breakers = None
+        # Lazy per-leaf threshold analysis (derived is_boxed_leaf) — same
+        # lifetime and safety argument as the breaker set it builds on.
+        self.__boxed_leaves = None
 
     def is_complex_root(self, root_name: str) -> bool:
         if self.__breakers is None:
             from lowering.complex_enums import compute_breakers
             self.__breakers = compute_breakers(list(self.__statements))
         return root_name in self.__breakers
+
+    def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
+        if self.__boxed_leaves is None:
+            from lowering.complex_enums import compute_boxed_leaves, compute_breakers
+            if self.__breakers is None:
+                self.__breakers = compute_breakers(list(self.__statements))
+            self.__boxed_leaves = compute_boxed_leaves(
+                list(self.__statements), self.__breakers)
+        return (root_name, leaf_name) in self.__boxed_leaves
 
     def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
         return self.__statements.find_type_global(name)

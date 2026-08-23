@@ -56,13 +56,21 @@ def _collect_leaf_field_sets(
 
 
 def enum_variant_types(stmt: s.EnumStatement, resolver: g.Resolver) -> list[cg_t.Type]:
-    """Return one Struct type per leaf variant, with all fields accessible to that leaf."""
+    """Return one type per leaf variant: the Struct of all fields accessible
+    to that leaf — or a bare DataPointer for a BOXED leaf (the enum-encoding
+    principle: a variant payload over the value-struct threshold is a heap
+    object everywhere it appears, so it occupies one pointer slot here)."""
+    leaf_sets = _collect_leaf_field_sets(stmt, [])
+    leaf_names = (stmt._enum_spec.all_leaf_names if stmt._enum_spec is not None
+                  else [None] * len(leaf_sets))
     return [
-        cg_t.Struct(tuple(
+        cg_t.DataPointer()
+        if name is not None and resolver.is_boxed_leaf(stmt.name, name)
+        else cg_t.Struct(tuple(
             (let.name, let.declared_type.generate(resolver))
             for let in fields
         ))
-        for fields in _collect_leaf_field_sets(stmt, [])
+        for name, fields in zip(leaf_names, leaf_sets)
     ]
 
 

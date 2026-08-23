@@ -64,9 +64,28 @@ fun [tail] collectLeafFieldSetsVariants(vs: Chain<PStmt>, combined: List<PStmt>,
       (v: PsEnum) => collectLeafFieldSetsVariants(l.next, combined, concat(acc, collectLeafFieldSets(v, combined)))
       (o: PStmt)  => collectLeafFieldSetsVariants(l.next, combined, acc)
 
-# One Struct type per leaf variant, with all fields accessible to that leaf.
+# One type per leaf variant: the Struct of all fields accessible to that
+# leaf — or a bare DataPointer for a BOXED leaf (the enum-encoding
+# principle: a payload over the value-struct threshold is a heap object
+# everywhere it appears, so it occupies one pointer slot here).
 fun enumVariantTypes(st: PsEnum, r: Resolver): List<CgType>
-  ret map(collectLeafFieldSets(st, List<PStmt>()), (fields: List<PStmt>) => CgStruct(letFieldsToCgFields(fields, r)))
+  ret match(asEnumVariant(st.eSpec))
+    (sp: SEnum) => evtLoop(chain(sp.seAllLeaves),
+                           chain(collectLeafFieldSets(st, List<PStmt>())),
+                           st.eName, r, List<CgType>())
+    ()           => map(collectLeafFieldSets(st, List<PStmt>()),
+                        (fields: List<PStmt>) => CgStruct(letFieldsToCgFields(fields, r)))
+
+fun [tail] evtLoop(names: Chain<String>, sets: Chain<List<PStmt>>,
+                   rootName: String, r: Resolver, acc: List<CgType>): List<CgType>
+  ret match(names)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(sets)
+      (nil2: ChainEnd) => acc   # unreachable: leaf names and field sets zip 1:1
+      (s2: ChainLink)  => evtLoop(l.next, s2.next, rootName, r,
+          concat(acc, list1<CgType>(isBoxedLeaf(r, rootName, l.value)
+                                      ? CgDataPointer()
+                                      : CgStruct(letFieldsToCgFields(s2.value, r)))))
 
 fun letFieldsToCgFields(fields: List<PStmt>, r: Resolver): List<CgField>
   ret map(fields, (st: PStmt) => letFieldToCgField(st, r))
@@ -1015,32 +1034,45 @@ fun reprReadField(rep: GRepr, baseValue: RParam, fieldName: String, r: Resolver)
     (gc: GComplexEnum) => complexReadField(gc, baseValue, fieldName, r)
     (gp: GPointer) => RpNullPointer()   # unreachable: Python raises NotImplementedError (not an enum union)
 
-fun enumRootName(sp: Spec): String|None
-  ret match(sp)
-    (e2: SEnum) => e2.seRoot
-    (o: Spec)   => None
-
 fun taggedReadField(gt: GTagged, baseValue: RParam, fieldName: String, r: Resolver): RParam
-  ret match(enumRootName(gt.grtType))
-    (rootName: String) => match(soleItem(findType(r, rootName)))
+  ret match(gt.grtType)
+    (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
       (found: Found) => match(found.fStmt)
-        (root: PsEnum) => taggedReadFieldOn(gt, root, baseValue, fieldName, r)
+        (root: PsEnum) => taggedReadFieldOn(gt, e2, root, baseValue, fieldName, r)
         (o: PStmt)     => RpNullPointer()   # unreachable
       ()               => RpNullPointer()   # unreachable
-    ()                  => RpNullPointer()   # unreachable: only ever classified from an SEnum
+    (o: Spec)   => RpNullPointer()   # unreachable: only ever classified from an SEnum
 
-fun taggedReadFieldOn(gt: GTagged, root: PsEnum, baseValue: RParam, fieldName: String, r: Resolver): RParam
+fun taggedReadFieldOn(gt: GTagged, e2: SEnum, root: PsEnum, baseValue: RParam, fieldName: String, r: Resolver): RParam
   let leafFieldSets = collectLeafFieldSets(root, List<PStmt>())
   let slotFields = forceFields(gt.grtContainer)
-  ret taggedReadFieldLeaves(chain(leafFieldSets), 0, gt.grtVariantMap, slotFields, baseValue, fieldName, r)
+  ret taggedReadFieldLeaves(chain(e2.seAllLeaves), chain(leafFieldSets), 0, e2.seRoot,
+                            gt.grtVariantMap, slotFields, baseValue, fieldName, r)
 
-fun [tail] taggedReadFieldLeaves(leaves: Chain<List<PStmt>>, leafIdx: Int, variantMap: List<List<CgSlotEntry>>,
+fun [tail] taggedReadFieldLeaves(names: Chain<String>, leaves: Chain<List<PStmt>>, leafIdx: Int, rootName: String,
+                                 variantMap: List<List<CgSlotEntry>>,
                                  slotFields: List<CgField>, baseValue: RParam, fieldName: String, r: Resolver): RParam
-  ret match(leaves)
+  ret match(names)
     (nil: ChainEnd) => RpNullPointer()   # unreachable: check() guarantees the field exists on some leaf
-    (l: ChainLink)  => match(taggedReadFieldInLeaf(l.value, 0, forceNth(variantMap, leafIdx), slotFields, baseValue, fieldName, r))
-      (found: RParam) => found
-      ()               => taggedReadFieldLeaves(l.next, leafIdx + 1, variantMap, slotFields, baseValue, fieldName, r)
+    (n: ChainLink)  => match(leaves)
+      (nil2: ChainEnd) => RpNullPointer()   # unreachable: leaf names and field sets zip 1:1
+      (l: ChainLink)   => match(isBoxedLeaf(r, rootName, n.value)
+                                  ? taggedReadFieldBoxed(l.value, n.value, rootName, forceNth(variantMap, leafIdx), slotFields, baseValue, fieldName, r)
+                                  : taggedReadFieldInLeaf(l.value, 0, forceNth(variantMap, leafIdx), slotFields, baseValue, fieldName, r))
+        (found: RParam) => found
+        ()               => taggedReadFieldLeaves(n.next, l.next, leafIdx + 1, rootName, variantMap, slotFields, baseValue, fieldName, r)
+
+# Boxed leaf: the pool holds one pointer to the per-leaf heap object; the
+# field lives there under its own name — the complex-leaf read, borrowed per
+# variant, with the object pointer read out of the leaf's single slot.
+fun taggedReadFieldBoxed(fields: List<PStmt>, leafName: String, rootName: String,
+                         leafSlots: List<CgSlotEntry>, slotFields: List<CgField>,
+                         baseValue: RParam, fieldName: String, r: Resolver): RParam|None
+  ret match(listAt<CgSlotEntry>(leafSlots, 0))
+    (e2: CgSlotEntry) => complexReadFieldInLeaf(chain(fields), leafName, rootName,
+                             RpStructField(baseValue, fieldNameAt(slotFields, e2.slotIndex)),
+                             fieldName, r)
+    ()                 => None   # unreachable: a boxed leaf has exactly one slot
 
 fun taggedReadFieldInLeaf(fields: List<PStmt>, offset: Int, leafSlots: List<CgSlotEntry>,
                          slotFields: List<CgField>, baseValue: RParam, fieldName: String, r: Resolver): RParam|None
@@ -1216,13 +1248,79 @@ fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName:
   let container = gt.grtContainer
   let slotFields = forceFields(container)
   let tagConst = RpInteger(leafIdx, tagPrecision(fieldTypeNamed(slotFields, "$tag")))
-  let primStarts = primStartsOf(chain(leafFields), 0, r, List<PrimStart>())
   let zeroSlots = map(slotFields, (f: CgField) => RpNamedValue(f.fieldName, RpZeroOf(f.fieldType)))
   let taggedSlots = setNamedValueAt(zeroSlots, "$tag", tagConst)
+  if isBoxedLeaf(r, e2.seRoot, leafName)
+    ret taggedConstructBoxed(e2, leafFields, leafName, fieldArgs,
+                             forceNth(gt.grtVariantMap, leafIdx),
+                             slotFields, taggedSlots, container, r)
+  let primStarts = primStartsOf(chain(leafFields), 0, r, List<PrimStart>())
   let step = taggedConstructFields(chain(fieldArgs), leafFields, primStarts, forceNth(gt.grtVariantMap, leafIdx),
                                   slotFields, taggedSlots, r,
                                   builder<GBundle >())
   ret bundleJoin(bundleJoinAll(step.tcBundles), bundleValue(unionStruct(container, step.tcSlots)))
+
+# Boxed leaf (payload over the value-struct threshold): allocate the
+# per-leaf heap object — the complex-leaf construction, borrowed per
+# variant, ZeroOf for unwritten fields so staticinit can promote
+# all-constant constructions — then the pool carries the pointer in the
+# leaf's single slot, tagged as usual. Field args coerce into their
+# declared types (genExprTo), exactly as the flat path does.
+fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName: String,
+                         fieldArgs: List<PunArg>, variantSlots2: List<CgSlotEntry>,
+                         slotFields: List<CgField>, taggedSlots: List<RpNamedValue>,
+                         container: CgType, r: Resolver): GBundle
+  let objName = enumLeafObjectName(e2.seRoot, leafName)
+  let objVar = RpStackVar(CgDataPointer(), "boxed")
+  let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
+                               CcAcc(builder<Op >(), builder<GBundle >()))
+  let ops = concat(list1(OpNewObject(objName, objVar, None, List<RParam>())), step.ccOps)
+  let allocBundle = GBundle(list1(objVar), ops, objVar, List<RecurSource>(), List<ExitSource>())
+  ret match(listAt<CgSlotEntry>(variantSlots2, 0))
+    (se: CgSlotEntry) => bundleJoin(bundleJoinAll(step.ccBundles),
+                             bundleJoin(allocBundle,
+                                 bundleValue(unionStruct(container,
+                                     setNamedValueAt(taggedSlots,
+                                                     fieldNameAt(slotFields, se.slotIndex),
+                                                     objVar)))))
+    ()                 => emptyBundle()   # unreachable: a boxed leaf has exactly one slot
+
+# complexConstructFields with genExprTo: the flat construct path coerces
+# each argument into the field's declared type, and the boxed borrow keeps
+# that behaviour (Python taggedConstruct's generate_to).
+fun [tail] bxConstructFields(fields: Chain<PStmt>, objName: String, resultVar: RParam,
+                             fieldArgs: List<PunArg>, r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
+  ret match(fields)
+    (nil: ChainEnd) => ComplexConstructOut(build<Op >(acc.caOps),
+                                           build<GBundle >(acc.caBundles))
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => bxConstructField(let2, l.next, objName, resultVar,
+                                        fieldArgs, r, acc)
+      (o: PStmt)    => bxConstructFields(l.next, objName, resultVar,
+                                         fieldArgs, r, acc)
+
+fun bxConstructField(let2: PsLet, rest: Chain<PStmt>, objName: String, resultVar: RParam,
+                     fieldArgs: List<PunArg>, r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
+  let fieldType = specGenerateOpt(let2.lType, r)
+  ret match(punArgNamed(fieldArgs, let2.lName))
+    (pa: PunArg) => bxConstructFieldArg(pa, let2, fieldType, rest, objName,
+                                        resultVar, fieldArgs, r, acc)
+    ()            => bxConstructFields(rest, objName, resultVar, fieldArgs, r,
+                       CcAcc(push<Op >(acc.caOps,
+                                 OpMove(RpObjectField(fieldType, resultVar,
+                                            objName, let2.lName, None, true),
+                                        RpZeroOf(fieldType), false,
+                                        List<RParam>())),
+                             acc.caBundles))
+
+fun bxConstructFieldArg(pa: PunArg, let2: PsLet, fieldType: CgType, rest: Chain<PStmt>, objName: String,
+                        resultVar: RParam, fieldArgs: List<PunArg>, r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
+  let argBundle = withPrefix(genExprTo(pa.paExpr, r, let2.lType), "arg_" + bareName(let2.lName))
+  ret bxConstructFields(rest, objName, resultVar, fieldArgs, r,
+          CcAcc(push<Op >(acc.caOps,
+                    OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true),
+                           mustResult(argBundle), false, List<RParam>())),
+                push<GBundle >(acc.caBundles, argBundle)))
 
 class [final] TaggedConstructOut(tcBundles: List<GBundle>, tcSlots: List<RpNamedValue>)
 

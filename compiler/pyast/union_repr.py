@@ -442,7 +442,20 @@ class TaggedRepr(UnionRepr):
             si, _ = slot_assigns[off]
             return read_slot(si), off + 1
 
+        all_leaf_names = self.union_type.all_leaf_names
         for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
+            if resolver.is_boxed_leaf(self.union_type.root_name, all_leaf_names[leaf_idx]):
+                # Boxed leaf: the pool holds one pointer to the per-leaf heap
+                # object; the field lives there under its own name (the
+                # complex-leaf read, borrowed per variant).
+                for let in leaf_fields:
+                    if let.name == field_name:
+                        ftype = let.declared_type.generate(resolver)
+                        obj_name = t.enum_leaf_object_name(
+                            self.union_type.root_name, all_leaf_names[leaf_idx])
+                        si, _ = variant_map[leaf_idx][0]
+                        return cg_p.ObjectField(ftype, read_slot(si), obj_name, let.name, None)
+                continue
             offset = 0
             for let in leaf_fields:
                 field_type = let.declared_type.generate(resolver)
@@ -467,15 +480,45 @@ class TaggedRepr(UnionRepr):
         _, tag_slot_type = container.fields[-1]   # $tag is always last
         tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
 
+        slot_values = [(sname, cg_p.ZeroOf(stype)) for sname, stype in container.fields]
+        tag_slot_idx = next(i for i, (n, _) in enumerate(container.fields) if n == "$tag")
+        slot_values[tag_slot_idx] = ("$tag", tag_const)
+
+        if resolver.is_boxed_leaf(self.union_type.root_name, leaf_name):
+            # Boxed leaf (payload over the value-struct threshold): allocate
+            # the per-leaf heap object — the complex-leaf construction,
+            # borrowed per variant, ZeroOf for unwritten fields so staticinit
+            # can promote all-constant constructions — then the pool carries
+            # the pointer in the leaf's single slot, tagged as usual.
+            obj_name = t.enum_leaf_object_name(self.union_type.root_name, leaf_name)
+            obj_var = cg_p.StackVar(cg_t.DataPointer(), "boxed")
+            ops: list = [cg_o.NewObject(obj_name, obj_var)]
+            bundles = []
+            for let in leaf_fields:
+                field_type = let.declared_type.generate(resolver)
+                if let.name in field_args:
+                    arg_bundle = field_args[let.name].generate_to(
+                        resolver, let.declared_type).with_prefix(
+                        f"arg_{let.name.split('@')[0]}")
+                    bundles.append(arg_bundle)
+                    source = arg_bundle.result_var
+                else:
+                    source = cg_p.ZeroOf(field_type)
+                ops.append(cg_o.Move(
+                    cg_p.ObjectField(field_type, obj_var, obj_name, let.name, None,
+                                     fresh=True), source))
+            alloc_bundle = g.OperationBundle(stack_vars=(obj_var,),
+                                             operations=tuple(ops), result_var=obj_var)
+            si, _ = variant_map[leaf_idx][0]
+            slot_values[si] = (container.fields[si][0], obj_var)
+            final = g.OperationBundle((), (), cg_p.union_struct(container, dict(slot_values)))
+            return reduce(lambda a, b: a + b, bundles + [alloc_bundle, final])
+
         prim_start: dict[str, int] = {}
         offset = 0
         for let in leaf_fields:
             prim_start[let.name] = offset
             offset += len(cg_t._flatten_primitives(let.declared_type.generate(resolver)))
-
-        slot_values = [(sname, cg_p.ZeroOf(stype)) for sname, stype in container.fields]
-        tag_slot_idx = next(i for i, (n, _) in enumerate(container.fields) if n == "$tag")
-        slot_values[tag_slot_idx] = ("$tag", tag_const)
 
         bundles = []
         for field_name, arg_expr in field_args.items():

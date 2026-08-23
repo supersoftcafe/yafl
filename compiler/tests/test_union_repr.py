@@ -167,6 +167,110 @@ fun main(): System::Int
         # there is no standalone prototype to inspect here.
 
 
+class TestWideVariantBoxing(TestCase):
+    """Per-variant boxing (the enum-encoding principle): a variant whose
+    payload exceeds the value-struct threshold (8 words) becomes a heap
+    object EVERYWHERE it appears — it contributes one pointer slot to the
+    union pool instead of inflating every sibling with its fields. Variants
+    at or under the threshold stay inline in the flat tagged struct.
+
+    The boxed variant borrows the complex-enum leaf-object machinery, so the
+    C-level pin is the presence (wide leaf) / absence (small leaves, at-
+    threshold leaves) of the per-leaf heap Object typedef."""
+
+    # 9 pointer fields = 72 bytes > 64 (8 words): boxes. (Top-level names are
+    # unique across this class: batched compiles share one flat name pool.)
+    _WIDE_SRC = """
+namespace Main
+import System
+enum Shape
+  enum Dot(dTag: Int)
+  enum BigBox(s0: String, s1: String, s2: String, s3: String, s4: String,
+              s5: String, s6: String, s7: String, s8: String)
+fun mkShape(k: Int): Shape
+  ret k == 0
+    ? Dot(7)
+    : BigBox("a", "bb", "ccc", "d", "ee", "fff", "g", "hh", "iii")
+fun probeShape(k: Int): Int
+  ret match(mkShape(k))
+    (d: Dot)    => d.dTag
+    (b: BigBox) => length(b.s0) + length(b.s2) + length(b.s8)
+fun main(): System::Int
+  println(String(probeShape(0)) + " " + String(probeShape(1)))
+  ret 0
+"""
+
+    def test_wide_and_small_variants_roundtrip(self):
+        rc, out = compile_and_run_stdlib_capture(self._WIDE_SRC)
+        self.assertEqual(0, rc)
+        self.assertEqual("7 7", out.strip())
+
+    def test_wide_variant_boxes_to_heap_object(self):
+        code = _c_for(self._WIDE_SRC)
+        self.assertRegex(code, r"Main__BigBox\w*_t\b",
+                         "9-word variant should lower to a heap leaf object")
+        self.assertNotRegex(code, r"Main__Dot\w*_t\b",
+                            "small variant must stay inline in the pool")
+
+    def test_at_threshold_variant_stays_inline(self):
+        # Exactly 8 pointer words = 64 bytes: the rule is strictly greater-
+        # than, so this stays a flat tagged struct end to end.
+        src = """
+namespace Main
+import System
+enum Edge
+  enum Empty0()
+  enum Full8(f0: String, f1: String, f2: String, f3: String,
+             f4: String, f5: String, f6: String, f7: String)
+fun mkEdge(b: Bool): Edge
+  ret b ? Full8("a", "b", "c", "d", "e", "f", "g", "h") : Empty0()
+fun probeEdge(b: Bool): Int
+  ret match(mkEdge(b))
+    (f: Full8)  => length(f.f0) + length(f.f7)
+    (n: Empty0) => 42
+fun main(): System::Int
+  println(String(probeEdge(true)) + " " + String(probeEdge(false)))
+  ret 0
+"""
+        code = _c_for(src)
+        self.assertNotRegex(code, r"Main__Full8\w*_t\b",
+                            "an exactly-8-word variant must NOT box")
+        rc, out = compile_and_run_stdlib_capture(src)
+        self.assertEqual(0, rc)
+        self.assertEqual("2 42", out.strip())
+
+    def test_boxed_variant_in_combination_roundtrips(self):
+        # The enum (with its boxed variant) nested by value inside a
+        # combination: the pool's pointer slot rides through the outer
+        # union's slots, and reads go through the heap object.
+        src = """
+namespace Main
+import System
+enum Load
+  enum Tiny(tVal: Int)
+  enum Cargo(c0: String, c1: String, c2: String, c3: String, c4: String,
+             c5: String, c6: String, c7: String, c8: String)
+fun mkLoad(k: Int): Load
+  ret k == 0
+    ? Tiny(5)
+    : Cargo("a", "bb", "ccc", "d", "ee", "fff", "g", "hh", "iii")
+fun maybeLoad(k: Int): Load|None
+  ret k < 0 ? None : mkLoad(k)
+fun probeLoad(k: Int): Int
+  ret match(maybeLoad(k))
+    (l: Load) => match(l)
+      (t: Tiny)  => t.tVal
+      (c: Cargo) => length(c.c1)
+    (n: None) => 0 - 1
+fun main(): System::Int
+  println(String(probeLoad(0 - 1)) + " " + String(probeLoad(0)) + " " + String(probeLoad(1)))
+  ret 0
+"""
+        rc, out = compile_and_run_stdlib_capture(src)
+        self.assertEqual(0, rc)
+        self.assertEqual("-1 5 2", out.strip())
+
+
 class TestReprPartialOperationContract(TestCase):
     """The four representation-*partial* operations (box_value/widen_from are
     combination-only; read_field/construct_enum_value are enum-only) inherit a
