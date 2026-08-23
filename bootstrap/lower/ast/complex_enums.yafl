@@ -509,7 +509,23 @@ fun rootResolver(statements: List<PStmt>,
                  suggest: Dict<String, Spec>|None = None): Resolver
   let [lazy] breakers: List<String> = computeBreakers(statements)
   ret RRoot((root: String) => contains2(breakers, root),
-            buildStatements(statements), suggest)
+            buildStatements(statements), suggest, None, 0,
+            enumFieldsTable(statements))
+
+# Every root enum's derived fields, once per pass (the stAmbient pattern —
+# resolver-path readers asked ~938k times per self-compile otherwise).
+fun enumFieldsTable(statements: List<PStmt>): Dict<String, List<SField>>
+  ret eftLoop(chain(statements), Dict<String, List<SField> >())
+
+fun [tail] eftLoop(ss: Chain<PStmt>,
+                   acc: Dict<String, List<SField> >): Dict<String, List<SField> >
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (e: PsEnum) => efIsRoot(e)
+        ? eftLoop(l.next, put(acc, e.eName, deriveAllFields(e)))
+        : eftLoop(l.next, acc)
+      (o: PStmt)  => eftLoop(l.next, acc)
 
 fun computeBreakers(statements: List<PStmt>): List<String>
   let roots = ceCollectRoots(statements)

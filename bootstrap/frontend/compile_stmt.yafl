@@ -420,8 +420,16 @@ fun efIsRoot(e: PsEnum): Bool
 
 # Resolver-based derivation for compile/check-phase readers (mirror of
 # Python access.py's _enum_fields): the statement is the current truth; an
-# unreachable root (pruned) has no fields to resolve against.
+# unreachable root (pruned) has no fields to resolve against. The root's
+# per-pass provider serves the hot path (~938k derivations per self-compile
+# otherwise — Python memoises the same way in ResolverRoot.get_enum_fields);
+# a root without one derives per query as before.
 fun enumFieldsVia(r: Resolver, root: String): List<SField>
+  ret match(enumFieldsHook(r, root))
+    (fs: List<SField>) => fs
+    ()                 => enumFieldsDerive(r, root)
+
+fun enumFieldsDerive(r: Resolver, root: String): List<SField>
   ret match(soleItem(findType(r, root)))
     (f: Found) => match(f.fStmt)
       (e: PsEnum) => deriveAllFields(e)

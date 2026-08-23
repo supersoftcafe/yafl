@@ -205,6 +205,14 @@ class Resolver:
     def get_optimization_level(self) -> int:
         return 0
 
+    # An enum statement's derived fields. The base derives directly (identity
+    # vs state: the statement is the current truth); ResolverRoot overrides
+    # with a per-pass memo — the __ambient pattern — because member
+    # resolution asks ~938k times per self-compile and the derivation walks
+    # the whole variant tree each time.
+    def get_enum_fields(self, stmt) -> tuple:
+        return stmt.derive_all_fields()
+
     # The innermost in-progress [tail] loop's frame (read-only context for a
     # nested RecurExpression), or None outside any loop. Opaque here — only the
     # loop/recur expression nodes interpret it.
@@ -251,6 +259,9 @@ class DelegatingResolver(Resolver):
     def get_ambient_patterns(self, scopes: set[str] | None = None
                              ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":
         return self._parent.get_ambient_patterns(scopes)
+
+    def get_enum_fields(self, stmt) -> tuple:
+        return self._parent.get_enum_fields(stmt)
 
     def get_discriminators(self) -> dict[str, int]:
         return self._parent.get_discriminators()
@@ -402,6 +413,10 @@ class ResolverRoot(Resolver):
         self.__param_suggestions = param_suggestions or {}
         # Lazy per-pass memo for get_ambient_patterns (roots are per-pass).
         self.__ambient = None
+        # Lazy per-pass memo for get_enum_fields, keyed by statement name —
+        # same lifetime, same safety argument: a changed statement set is a
+        # new root, so a stale entry cannot be observed.
+        self.__enum_fields: dict[str, tuple] = {}
         # Lazy breaker analysis (derived is_complex) — computed once per
         # resolver from its own statements, the same lifetime as every other
         # per-pass cache. The port mirrors with a memoized closure carried by
@@ -428,6 +443,13 @@ class ResolverRoot(Resolver):
 
     def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
         return self.__param_suggestions.get(name)
+
+    def get_enum_fields(self, stmt) -> tuple:
+        cached = self.__enum_fields.get(stmt.name)
+        if cached is None:
+            cached = stmt.derive_all_fields()
+            self.__enum_fields[stmt.name] = cached
+        return cached
 
     def get_ambient_patterns(self, scopes: set[str] | None = None
                              ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":

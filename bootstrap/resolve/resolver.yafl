@@ -322,9 +322,14 @@ enum Resolver
   # in generate_expr.yafl. Carried on the root (rather than as a wrapping layer,
   # as Python does) because generate always starts from a fresh root built for
   # that one codegen run — there is no nested rebinding to support.
+  # rrEnumFields: the per-pass derived-enum-fields table (Python
+  # ResolverRoot.get_enum_fields' memo, precomputed eagerly here like
+  # stAmbient). None on direct RRoot builders, whose readers derive per
+  # query exactly as before.
   enum RRoot(rrComplex: (:String): Bool,
              rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
-             rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0)
+             rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
+             rrEnumFields: Dict<String, List<SField> >|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
   # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
@@ -468,6 +473,27 @@ fun [tail] paramSuggestion(r: Resolver, name: String): Spec|None
     (tr: RTraits)    => paramSuggestion(tr.rtrParent, name)
     (cb: RClassBody) => paramSuggestion(cb.rcbParent, name)
     (rg: RGen)       => paramSuggestion(rg.rgParent, name)
+
+# The per-pass derived-enum-fields table, carried on RRoot (rootResolver
+# supplies it, precomputed eagerly per pass — the stAmbient pattern). A root
+# built without one answers None and readers derive per query as before; a
+# table MISS is a pruned root, whose fields are empty either way.
+fun [tail] enumFieldsHook(r: Resolver, root: String): List<SField>|None
+  ret match(r)
+    (rt2: RRoot)     => match(rt2.rrEnumFields)
+      (d: Dict<String, List<SField> >) => enumFieldsAt(d, root)
+      ()                                => None
+    (sc: RScopes)    => enumFieldsHook(sc.rsParent, root)
+    (d: RData)       => enumFieldsHook(d.rdParent, root)
+    (t2: RTypes)     => enumFieldsHook(t2.rtParent, root)
+    (tr: RTraits)    => enumFieldsHook(tr.rtrParent, root)
+    (cb: RClassBody) => enumFieldsHook(cb.rcbParent, root)
+    (rg: RGen)       => enumFieldsHook(rg.rgParent, root)
+
+fun enumFieldsAt(d: Dict<String, List<SField> >, root: String): List<SField>
+  ret match(get(d, root))
+    (fs: List<SField>) => fs
+    ()                 => List<SField>()   # pruned root: no fields to resolve against
 
 # get_traits: every `[trait]` let in the statement set (precomputed by the
 # index) — no scope filter, exactly like Python's root.

@@ -56,7 +56,7 @@ def _enum_fields(resolver: g.Resolver, espec: "t.EnumSpec"):
     if len(found) == 1:
         stmt = found[0].statement
         if hasattr(stmt, "derive_all_fields"):
-            return stmt.derive_all_fields()
+            return resolver.get_enum_fields(stmt)
     return ()   # unreachable root (pruned): no fields to resolve against
 
 
