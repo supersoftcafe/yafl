@@ -172,6 +172,16 @@ class Resolver:
     def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         return EMPTY
 
+    # The root's scope-filtered bare-name answers (see Statements._bare_*):
+    # what querying "ns::bare" for each in-scope namespace produced, without
+    # the per-namespace root round trips. Scope layers call this instead of
+    # looping; only the root has anything to say.
+    def find_type_under(self, bare: str, scopes: tuple) -> "Findings":
+        return EMPTY
+
+    def find_data_under(self, bare: str, scopes: tuple) -> "Findings":
+        return EMPTY
+
     def get_traits(self) -> list[s.LetStatement]:
         return []
 
@@ -263,6 +273,12 @@ class DelegatingResolver(Resolver):
     def get_enum_fields(self, stmt) -> tuple:
         return self._parent.get_enum_fields(stmt)
 
+    def find_type_under(self, bare: str, scopes: tuple) -> "Findings":
+        return self._parent.find_type_under(bare, scopes)
+
+    def find_data_under(self, bare: str, scopes: tuple) -> "Findings":
+        return self._parent.find_data_under(bare, scopes)
+
     def get_discriminators(self) -> dict[str, int]:
         return self._parent.get_discriminators()
 
@@ -320,7 +336,7 @@ class Statements:
     contents, so there is never a stale index to reason about across passes.
     """
     __slots__ = ("_ordered", "_index", "_types_index", "_data_index",
-                 "traits", "instances")
+                 "_bare_types", "_bare_data", "traits", "instances")
 
     def __init__(self, statements: "Iterable[s.Statement]") -> None:
         ordered = tuple(statements)
@@ -363,6 +379,20 @@ class Statements:
                          for st in sts if isinstance(st, s.DataStatement))
             if data:
                 self._data_index[key] = Findings(data)
+        # The bare-name view of the same answers: bare -> namespace -> the
+        # SAME Findings the "ns::bare" key holds, so an in-scope lookup is
+        # two dict hits instead of one root query per namespace retried.
+        # Keys carrying an @hash are not retried by scope resolution, so only
+        # the unhashed spellings are viewed.
+        self._bare_types: dict[str, dict[str, Findings]] = {}
+        self._bare_data: dict[str, dict[str, Findings]] = {}
+        for kind_index, bare_index in ((self._types_index, self._bare_types),
+                                       (self._data_index, self._bare_data)):
+            for key, found in kind_index.items():
+                if "@" in key:
+                    continue
+                ns, _, bare = key.rpartition("::")
+                bare_index.setdefault(bare, {})[ns] = found
 
     @staticmethod
     def __index_variants(variants: "list[s.EnumStatement]", index: dict) -> None:
@@ -384,6 +414,13 @@ class Statements:
         return self._types_index.get(name, EMPTY)
     def find_data_global(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         return self._data_index.get(name, EMPTY)
+    # The scope-filtered bare answers: exactly what querying "ns::bare" per
+    # in-scope namespace produced, in the same namespace-then-declaration
+    # order, sharing the same Findings objects.
+    def find_type_under(self, bare: str, scopes: tuple) -> "Findings":
+        return _under(self._bare_types.get(bare), scopes)
+    def find_data_under(self, bare: str, scopes: tuple) -> "Findings":
+        return _under(self._bare_data.get(bare), scopes)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Statements):
@@ -394,6 +431,19 @@ class Statements:
 
     def __add__(self, other: "Iterable[s.Statement]") -> "Statements":
         return Statements(self._ordered + tuple(other))
+
+
+def _under(by_ns: "dict[str, Findings] | None", scopes: tuple) -> "Findings":
+    """Sum the per-namespace bags for the in-scope namespaces, in scope order.
+    The single-hit case (overwhelmingly common) returns the shared bag."""
+    if not by_ns:
+        return EMPTY
+    result = EMPTY
+    for scope in scopes:
+        found = by_ns.get(scope)
+        if found is not None:
+            result = found if result is EMPTY else result + found
+    return result
 
 
 def as_statements(statements: "Iterable[s.Statement] | Statements") -> Statements:
@@ -434,6 +484,12 @@ class ResolverRoot(Resolver):
 
     def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         return self.__statements.find_data_global(name)
+
+    def find_type_under(self, bare: str, scopes: tuple) -> "Findings":
+        return self.__statements.find_type_under(bare, scopes)
+
+    def find_data_under(self, bare: str, scopes: tuple) -> "Findings":
+        return self.__statements.find_data_under(bare, scopes)
 
     def get_traits(self) -> list[s.LetStatement]:
         return list(self.__statements.traits)
@@ -507,8 +563,10 @@ class AddScopeResolution(DelegatingResolver):
             return cached
         result = self._parent.find_type(name)
         if "::" not in name and "@" not in name:
-            for scope in self.__scopes:
-                result = result + self._parent.find_type(f"{scope}::{name}")
+            # One filtered bare-index lookup at the root replaces the
+            # per-namespace "scope::name" root round trips; same bags, same
+            # namespace-then-declaration order (Statements._bare_*).
+            result = result + self._parent.find_type_under(name, self.__scopes)
         self.__type_cache[name] = result
         return result
 
@@ -518,8 +576,7 @@ class AddScopeResolution(DelegatingResolver):
             return cached
         result = self._parent.find_data(name)
         if "::" not in name and "@" not in name:
-            for scope in self.__scopes:
-                result = result + self._parent.find_data(f"{scope}::{name}")
+            result = result + self._parent.find_data_under(name, self.__scopes)
         self.__data_cache[name] = result
         return result
 

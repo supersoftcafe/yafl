@@ -125,6 +125,11 @@ class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
 # self-compile. Bucket order is preserved, so candidates and their order are
 # byte-identical to the per-query construction; empty kinds are omitted and
 # misses answer the shared empty.
+# stBareTypes/stBareData: the bare-name view of the SAME kind answers —
+# bare -> namespace -> the Findings the "ns::bare" key holds (Python
+# Statements._bare_*), so an in-scope lookup is two dict hits instead of one
+# root query per namespace. Hashed spellings are never scope-retried, so
+# only @-free keys are viewed.
 class [final] Statements(stOrdered: List<PStmt>,
                          stIndex: Dict<String, List<PStmt> >,
                          stTraits: List<PStmt>,
@@ -132,7 +137,9 @@ class [final] Statements(stOrdered: List<PStmt>,
                          stAmbient: List<AmbEntry>,
                          stAmbientBlocked: Bool,
                          stTypesIdx: Dict<String, Findings >,
-                         stDataIdx: Dict<String, Findings >)
+                         stDataIdx: Dict<String, Findings >,
+                         stBareTypes: Dict<String, Dict<String, Findings> >,
+                         stBareData: Dict<String, Dict<String, Findings> >)
 
 fun buildStatements(stmts: List<PStmt>): Statements
   ret withKindIndexes(withAmbient(indexLoop(chain(stmts),
@@ -140,18 +147,45 @@ fun buildStatements(stmts: List<PStmt>): Statements
                                        List<PStmt>(), List<PStmt>(),
                                        List<AmbEntry>(), false,
                                        Dict<String, Findings >(),
-                                       Dict<String, Findings >()))))
+                                       Dict<String, Findings >(),
+                                       Dict<String, Dict<String, Findings> >(),
+                                       Dict<String, Dict<String, Findings> >()))))
 
 fun withKindIndexes(base: Statements): Statements
   # keys() answers a Set; sorted once into a walkable list (the walk order is
   # unobservable — the kind dicts are only ever queried by key).
   let ks = sort(keys(base.stIndex))
+  let types2 = kindLoop(chain(ks), base.stIndex, true, Dict<String, Findings >())
+  let data2 = kindLoop(chain(ks), base.stIndex, false, Dict<String, Findings >())
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
                  base.stInstances, base.stAmbient, base.stAmbientBlocked,
-                 kindLoop(chain(ks), base.stIndex, true,
-                          Dict<String, Findings >()),
-                 kindLoop(chain(ks), base.stIndex, false,
-                          Dict<String, Findings >()))
+                 types2, data2,
+                 bareView(chain(ks), types2,
+                          Dict<String, Dict<String, Findings> >()),
+                 bareView(chain(ks), data2,
+                          Dict<String, Dict<String, Findings> >()))
+
+fun [tail] bareView(ks: Chain<String>, kind: Dict<String, Findings >,
+                    acc: Dict<String, Dict<String, Findings> >): Dict<String, Dict<String, Findings> >
+  ret match(ks)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => contains(l.value, "@")
+      ? bareView(l.next, kind, acc)
+      : bareView(l.next, kind, bareViewAdd(acc, kind, l.value))
+
+fun bareViewAdd(acc: Dict<String, Dict<String, Findings> >,
+                kind: Dict<String, Findings >,
+                key: String): Dict<String, Dict<String, Findings> >
+  ret match(get(kind, key))
+    (f: Findings) => bareViewPut(acc, bareOfUnique(key), namespacePart(key), f)
+    ()            => acc
+
+fun bareViewPut(acc: Dict<String, Dict<String, Findings> >, bare: String,
+                ns: String, f: Findings): Dict<String, Dict<String, Findings> >
+  ret match(get(acc, bare))
+    (inner: Dict<String, Findings>) => put(acc, bare, put(inner, ns, f))
+    ()                               => put(acc, bare,
+                                            put(Dict<String, Findings >(), ns, f))
 
 # Per key, the kind walk REUSES globalLoop — the exact per-query filter — so
 # the prebuilt answers cannot diverge from what the query path produced.
@@ -177,7 +211,8 @@ fun withAmbient(base: Statements): Statements
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
                  base.stInstances,
                  dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
-                 amb.abBlocked, base.stTypesIdx, base.stDataIdx)
+                 amb.abBlocked, base.stTypesIdx, base.stDataIdx,
+                 base.stBareTypes, base.stBareData)
 
 # (spec, own) dedupe, once per pass — two identical instances collapse to
 # ONE search entry (Python's per-query `add` set), whichever namespaces they
@@ -253,7 +288,8 @@ fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
                  acc.stTraits, acc.stInstances, acc.stAmbient,
-                 acc.stAmbientBlocked, acc.stTypesIdx, acc.stDataIdx)
+                 acc.stAmbientBlocked, acc.stTypesIdx, acc.stDataIdx,
+                 acc.stBareTypes, acc.stBareData)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
                    st: PStmt): Dict<String, List<PStmt> >
@@ -278,13 +314,14 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
       ? Statements(acc.stOrdered, acc.stIndex,
                    build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stTraits)), st)),
                    acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
-                   acc.stTypesIdx, acc.stDataIdx)
+                   acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData)
       : acc
     (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                         acc.stTraits,
                                         build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stInstances)), st)),
                                         acc.stAmbient, acc.stAmbientBlocked,
-                                        acc.stTypesIdx, acc.stDataIdx)
+                                        acc.stTypesIdx, acc.stDataIdx,
+                                        acc.stBareTypes, acc.stBareData)
     (o: PStmt)  => acc
 
 fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
@@ -528,26 +565,59 @@ fun [tail] mergeNamesB([terminal] out: ListBuilder<String >, seen: Set<String >,
                     l.next)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
-# for a name that is still unqualified (no `::`) and unhashed (no `@`).
+# for a name that is still unqualified (no `::`) and unhashed (no `@`). The
+# per-namespace root round trips (one query-string build + one root query
+# each) are replaced by ONE filtered bare-index lookup at the root: same
+# bags, same namespace-then-declaration order (Python AddScopeResolution).
 fun scopedFindings(sc: RScopes, query: String, wantType: Bool): Findings
   let direct = wantType ? findType(sc.rsParent, query)
                         : findData(sc.rsParent, query)
   ret contains(query, "::") || contains(query, "@")
     ? direct
-    : scopeLoop(chain(sc.rsNames), sc.rsParent, query, wantType, direct)
+    : joinFindings(direct,
+                   bareScoped(sc.rsParent, query, wantType, sc.rsNames))
 
-fun [tail] scopeLoop(ns: Chain<String>, parent: Resolver, query: String,
-                     wantType: Bool, acc: Findings): Findings
+# addFindings without the allocation when either side is a complete empty —
+# the overwhelmingly common shapes here.
+fun joinFindings(a: Findings, b: Findings): Findings
+  if isEmpty(a.bItems) && a.bComplete
+    ret b
+  if isEmpty(b.bItems) && b.bComplete
+    ret a
+  ret addFindings(a, b)
+
+fun [tail] bareScoped(r: Resolver, bare: String, wantType: Bool,
+                      namespaces: List<String>): Findings
+  ret match(r)
+    (root: RRoot)    => bareAtRoot(root, bare, wantType, namespaces)
+    (sc: RScopes)    => bareScoped(sc.rsParent, bare, wantType, namespaces)
+    (d: RData)       => bareScoped(d.rdParent, bare, wantType, namespaces)
+    (t2: RTypes)     => bareScoped(t2.rtParent, bare, wantType, namespaces)
+    (tr: RTraits)    => bareScoped(tr.rtrParent, bare, wantType, namespaces)
+    (cb: RClassBody) => bareScoped(cb.rcbParent, bare, wantType, namespaces)
+    (rg: RGen)       => bareScoped(rg.rgParent, bare, wantType, namespaces)
+
+fun bareAtRoot(root: RRoot, bare: String, wantType: Bool,
+               namespaces: List<String>): Findings
+  ret match(get(wantType ? root.rrStmts.stBareTypes : root.rrStmts.stBareData,
+                bare))
+    (inner: Dict<String, Findings>) => underScopes(chain(namespaces), inner,
+                                                   emptyFindingsGlobal)
+    ()                               => emptyFindingsGlobal
+
+# Sum the per-namespace bags in scope order; the single-hit case returns the
+# shared bag (Python resolver._under).
+fun [tail] underScopes(ns: Chain<String>, inner: Dict<String, Findings >,
+                       acc: Findings): Findings
   ret match(ns)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => scopeLoop(l.next, parent, query, wantType,
-                                 addFindings(acc, qualifiedIn(parent, l.value,
-                                                          query, wantType)))
+    (l: ChainLink)  => underScopes(l.next, inner,
+                                   underAdd(acc, get(inner, l.value)))
 
-fun qualifiedIn(parent: Resolver, ns: String, query: String,
-                wantType: Bool): Findings
-  ret wantType ? findType(parent, ns + "::" + query)
-               : findData(parent, ns + "::" + query)
+fun underAdd(acc: Findings, hit: Findings|None): Findings
+  ret match(hit)
+    (f: Findings) => joinFindings(acc, f)
+    ()            => acc
 
 # The shared miss answer (Python's module-level EMPTY): the query path must
 # not allocate.

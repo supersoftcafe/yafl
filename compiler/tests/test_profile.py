@@ -186,9 +186,13 @@ def setUpModule():
 
 
 def _row(prefix: str) -> tuple[str, int, int]:
-    """The single callgrind row whose name starts `prefix` (fails if 0 or 2+)."""
+    """The single callgrind row whose name starts `prefix` (fails if 0 or 2+).
+
+    Rows for synthesised siblings (`name@hash$async` and friends) are
+    excluded: whether they EXIST depends on whether the run actually parked,
+    which is scheduling — asserting on the hot path must not be."""
     hits = [(name, ns, calls) for name, (ns, calls) in _RESULTS["rows"].items()
-            if name.startswith(prefix)]
+            if name.startswith(prefix) and "$" not in name[len(prefix):]]
     assert len(hits) == 1, f"expected exactly one row for {prefix!r}, got {hits}"
     return hits[0]
 
@@ -260,10 +264,12 @@ class TestProfiledRun(TestCase):
                           if "Prof::burn@" in stack)
         self.assertGreaterEqual(burn_weight, 20,
                                 f"folded burn weight implausibly low: {burn_weight}")
-        # Hierarchy: burn's samples sit under main under the entrypoint.
-        self.assertTrue(any("__entrypoint__" in s and "Prof::main@" in s
-                            and "Prof::burn@" in s for s in _RESULTS["folded"]),
-                        "no entrypoint;main;burn stack in the folded output")
+        # Hierarchy: burn's samples sit under main — either the sync shape
+        # (__entrypoint__;main;burn) or, when the run parked first, the
+        # resumed shape (main$async;burn). Which one happens is scheduling.
+        self.assertTrue(any("Prof::main@" in s and "Prof::burn@" in s
+                            for s in _RESULTS["folded"]),
+                        "no main;burn stack in the folded output")
 
     def test_summary_totals_are_consistent(self):
         self.assertIsNotNone(_RESULTS["summary"], "summary line missing")
