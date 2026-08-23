@@ -420,6 +420,15 @@ class _Emitter:
             return None
 
         def reconstruct(ctype, offset):
+            if isinstance(ctype, cg_t.FuncPointer):
+                # Reassemble the closure from its two slots — a closure IS a
+                # struct (the enum-encoding principle), deconstructed on write
+                # by union_repr._variant_slots.
+                si_f, _ = slot_assignments[offset]
+                si_o, _ = slot_assignments[offset + 1]
+                return cg_p.MakeFun(
+                    cg_p.StructField(sv, slot_fields[si_f][0]),
+                    cg_p.StructField(sv, slot_fields[si_o][0])), offset + 2
             if not isinstance(ctype, cg_t.Struct):
                 si, _ = slot_assignments[offset]
                 return cg_p.StructField(sv, slot_fields[si][0]), offset + 1

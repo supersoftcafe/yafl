@@ -57,6 +57,13 @@ enum RParam
   enum RpGlobalVar(fieldType: CgType, name: String)
   enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool)
   enum RpArrayElement(elementType: CgType, pointer: RParam, objectName: String, field: String, lengthField: String, index: RParam, checked: Bool)
+  # Union slotting of closures (param.py FunField/MakeFun — the enum-encoding
+  # principle: a closure IS a struct). RpFunField projects one primitive out
+  # of a closure value ("f" = code pointer as a NON-GC intptr word, "o" =
+  # environment as a GC pointer); RpMakeFun reassembles the closure from the
+  # two slot reads.
+  enum RpFunField(ffFun: RParam, ffPart: String)
+  enum RpMakeFun(mfCode: RParam, mfEnv: RParam)
 
 class [final] RpNamedValue(name: String, value: RParam)
 
@@ -112,6 +119,8 @@ fun rpGetType(r: RParam): CgType
     (x: RpObjectField) => x.fieldType
     (x: RpArrayElement) => x.elementType
     (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
+    (x: RpFunField) => x.ffPart == "f" ? CgIntPtr() : CgDataPointer()
+    (x: RpMakeFun) => CgFuncPointer()
 
 fun rpStructFieldType(x: RpStructField): CgType
   ret match(cgFieldsOf(rpGetType(x.structVal)))
@@ -150,6 +159,8 @@ fun rpFlatten(r: RParam, isReader: Bool): List<RParam>
     (x: RpGlobalVar) => isReader ? list1(r) : List<RParam>()
     (x: RpObjectField) => rpFlattenObjectField(r, x, isReader)
     (x: RpArrayElement) => concat<RParam>(prepend<RParam>(r, rpFlatten(x.pointer, true)), rpFlatten(x.index, true))
+    (x: RpFunField) => prepend<RParam>(r, rpFlatten(x.ffFun, true))
+    (x: RpMakeFun) => prepend<RParam>(r, concat<RParam>(rpFlatten(x.mfCode, true), rpFlatten(x.mfEnv, true)))
     (o: RParam) => list1(r)   # base default: [self]
 
 fun rpFlattenObjectField(r: RParam, x: RpObjectField, isReader: Bool): List<RParam>
@@ -192,6 +203,8 @@ fun rpTestChildren(r: RParam, pred: (:RParam): Bool): Bool
     (x: RpPointerTo) => rpTest(x.value, pred)
     (x: RpObjectField) => rpTest(x.pointer, pred) || rpTestOpt(x.index, pred)
     (x: RpArrayElement) => rpTest(x.pointer, pred) || rpTest(x.index, pred)
+    (x: RpFunField) => rpTest(x.ffFun, pred)
+    (x: RpMakeFun) => rpTest(x.mfCode, pred) || rpTest(x.mfEnv, pred)
     (o: RParam) => false
 
 fun rpTestOpt(o: RParam|None, pred: (:RParam): Bool): Bool
@@ -220,6 +233,8 @@ fun rpRenameVars(r: RParam, renames: List<RpRename>): RParam
     (x: RpGlobalVar) => r   # GlobalVar.rename_vars is identity in Python
     (x: RpObjectField) => RpObjectField(x.fieldType, rpRenameVars(x.pointer, renames), x.objectName, x.field, rpRenameVarsOpt(x.index, renames), x.fresh)
     (x: RpArrayElement) => RpArrayElement(x.elementType, rpRenameVars(x.pointer, renames), x.objectName, x.field, x.lengthField, rpRenameVars(x.index, renames), x.checked)
+    (x: RpFunField) => RpFunField(rpRenameVars(x.ffFun, renames), x.ffPart)
+    (x: RpMakeFun) => RpMakeFun(rpRenameVars(x.mfCode, renames), rpRenameVars(x.mfEnv, renames))
     (o: RParam) => r   # base default: self
 
 fun rpRenameVarsOpt(o: RParam|None, renames: List<RpRename>): RParam|None
@@ -256,6 +271,8 @@ fun rpReplaceParams(r: RParam, replacer: (:RParam): RParam): RParam
     (x: RpGlobalVar) => replacer(r)
     (x: RpObjectField) => replacer(RpObjectField(x.fieldType, rpReplaceParams(x.pointer, replacer), x.objectName, x.field, rpReplaceParamsOpt(x.index, replacer), x.fresh))
     (x: RpArrayElement) => replacer(RpArrayElement(x.elementType, rpReplaceParams(x.pointer, replacer), x.objectName, x.field, x.lengthField, rpReplaceParams(x.index, replacer), x.checked))
+    (x: RpFunField) => replacer(RpFunField(rpReplaceParams(x.ffFun, replacer), x.ffPart))
+    (x: RpMakeFun) => replacer(RpMakeFun(rpReplaceParams(x.mfCode, replacer), rpReplaceParams(x.mfEnv, replacer)))
     (o: RParam) => replacer(r)   # base default: replacer(self)
 
 fun rpReplaceParamsOpt(o: RParam|None, replacer: (:RParam): RParam): RParam|None
@@ -308,6 +325,8 @@ fun rpGetLiveVars(r: RParam): List<RParam>
     (x: RpGlobalVar) => List<RParam>()
     (x: RpObjectField) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVarsOpt(x.index))
     (x: RpArrayElement) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVars(x.index))
+    (x: RpFunField) => rpGetLiveVars(x.ffFun)
+    (x: RpMakeFun) => rpStackVarUnion(rpGetLiveVars(x.mfCode), rpGetLiveVars(x.mfEnv))
     (o: RParam) => List<RParam>()   # base default: empty set
 
 fun rpGetLiveVarsOpt(o: RParam|None): List<RParam>
@@ -424,8 +443,25 @@ fun eqRParam(a: RParam, b: RParam): Bool
       (y: RpArrayElement) => eqCgType(x.elementType, y.elementType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
                              && x.field == y.field && x.lengthField == y.lengthField && eqRParam(x.index, y.index) && x.checked == y.checked
       (o: RParam) => false
+    (x: RpFunField) => match(b)
+      (y: RpFunField) => eqRParam(x.ffFun, y.ffFun) && x.ffPart == y.ffPart
+      (o: RParam) => false
+    (x: RpMakeFun) => match(b)
+      (y: RpMakeFun) => eqRParam(x.mfCode, y.mfCode) && eqRParam(x.mfEnv, y.mfEnv)
+      (o: RParam) => false
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
+
+# Union slotting of closures (param.py FunField/MakeFun to_c, byte-exact).
+fun rpToCFunField(x: RpFunField, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let sub = rpToC(x.ffFun, cache0)
+  ret (x.ffPart == "f" ? "((intptr_t)(" + sub.text + ").f)"
+                       : "((" + sub.text + ").o)", sub.cache)
+
+fun rpToCMakeFun(x: RpMakeFun, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let codeC = rpToC(x.mfCode, cache0)
+  let envC = rpToC(x.mfEnv, codeC.cache)
+  ret ("((fun_t){.f=(void*)(" + codeC.text + "),.o=" + envC.text + "})", envC.cache)
 
 fun rpToC(r: RParam, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(r)
@@ -446,6 +482,8 @@ fun rpToC(r: RParam, cache: List<CgCacheEntry>): (text: String, cache: List<CgCa
     (x: RpNewStructTyped) => rpToCNewStructTyped(x, cache)
     (x: RpTagTask) => rpToCTagTask(x, cache)
     (x: RpGlobalFunction) => rpToCGlobalFunction(x, cache)
+    (x: RpFunField) => rpToCFunField(x, cache)
+    (x: RpMakeFun) => rpToCMakeFun(x, cache)
     (x: RpVirtualFunction) => rpToCVirtualFunction(x, cache)
     (x: RpPointerTo) => rpToCPointerTo(x, cache)
     (x: RpStackVar) => (mangleName(x.name), cache)

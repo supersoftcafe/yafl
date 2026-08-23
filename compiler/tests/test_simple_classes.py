@@ -357,3 +357,27 @@ fun main(): Int
     ret p.left + p.right
 """
         self.assertEqual(13, _run(src))
+
+
+class TestClosureFieldInUnion(TestCase):
+    """A [final] class whose ONLY field is a closure, carried in a union.
+
+    Found 2026-08-22 wiring the enum-fields memo: the single-field flatten
+    stuffed the two-word fun_t payload into a one-word union slot — invalid
+    C, silent at the YAFL level, caught only by clang (4 errors: fun_t
+    initialising intptr_t, and the match-arm read missing its .o). This is
+    the failing shape verbatim."""
+
+    def test_closure_wrapper_in_union_compiles_and_runs(self):
+        src = _PREAMBLE + _ARITH + """\
+class [final] Wrap(get: (:Int): Int)
+
+fun pick(w: Wrap|None): Int
+    ret match(w)
+      (p: Wrap) => p.get(1)
+      ()        => 0
+
+fun main(): Int
+    ret pick(Wrap((x: Int) => x + 41)) - 42
+"""
+        self.assertEqual(0, _run(src))

@@ -169,6 +169,72 @@ class StructField(RParam):
 
 
 @dataclass(frozen=True)
+class FunField(RParam):
+    """One primitive of a closure value, for union slotting. A closure IS a
+    struct (fun_t {f, o} — the enum-encoding principle): "f" is the code
+    pointer read as a NON-GC word (the union slot is intptr_t, never
+    scanned), "o" the environment as a GC pointer. The slot machinery
+    deconstructs a closure through this; MakeFun is the inverse."""
+    fun: RParam
+    part: str   # "f" or "o"
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.fun.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.fun.test(predicate)
+
+    def get_type(self) -> t.Type:
+        return t.IntPtr() if self.part == "f" else t.DataPointer()
+
+    def rename_vars(self, renames: dict[str, str]) -> FunField:
+        return dataclasses.replace(self, fun=self.fun.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, fun=self.fun.replace_params(replacer)))
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        base = self.fun.to_c(type_cache)
+        return f"((intptr_t)({base}).f)" if self.part == "f" else f"(({base}).o)"
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.fun.get_live_vars()
+
+
+@dataclass(frozen=True)
+class MakeFun(RParam):
+    """Reassemble a closure from its two union-slot primitives (the inverse
+    of FunField): the non-GC code word and the GC environment pointer."""
+    code: RParam
+    env: RParam
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.code.flatten() + self.env.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.code.test(predicate) or self.env.test(predicate)
+
+    def get_type(self) -> t.Type:
+        return t.FuncPointer()
+
+    def rename_vars(self, renames: dict[str, str]) -> MakeFun:
+        return dataclasses.replace(self, code=self.code.rename_vars(renames),
+                                   env=self.env.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(
+            self, code=self.code.replace_params(replacer),
+            env=self.env.replace_params(replacer)))
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return (f"((fun_t){{.f=(void*)({self.code.to_c(type_cache)}),"
+                f".o={self.env.to_c(type_cache)}}})")
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.code.get_live_vars() | self.env.get_live_vars()
+
+
+@dataclass(frozen=True)
 class String(RParam):
     value: str
 

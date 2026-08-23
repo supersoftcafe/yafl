@@ -272,9 +272,27 @@ fun variantSlots(value: RParam, innerCtype: CgType, slotAssignments: List<CgSlot
 class [final] CollectOut(cvValues: List<SlotValuePair>, cvOffset: Int)
 
 fun collectVariantSlots(param: RParam, ctype: CgType, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, offset: Int): CollectOut
-  ret match(cgFieldsOf(ctype))
-    (fields: List<CgField>) => collectVariantSlotsFields(chain(fields), param, slotAssignments, slotFields, offset, List<SlotValuePair>())
-    ()                       => collectVariantSlotsLeaf(param, slotAssignments, slotFields, offset)
+  ret match(ctype)
+    (fp: CgFuncPointer) => collectVariantSlotsFun(param, slotAssignments, slotFields, offset)
+    (o: CgType)          => match(cgFieldsOf(ctype))
+      (fields: List<CgField>) => collectVariantSlotsFields(chain(fields), param, slotAssignments, slotFields, offset, List<SlotValuePair>())
+      ()                       => collectVariantSlotsLeaf(param, slotAssignments, slotFields, offset)
+
+# A closure IS a struct (the enum-encoding principle): deconstructed into the
+# two primitives the layout allotted — the code word (non-GC), then the
+# environment pointer (GC). union_repr.py _variant_slots is the mirror.
+fun collectVariantSlotsFun(param: RParam, slotAssignments: List<CgSlotEntry>,
+                           slotFields: List<CgField>, offset: Int): CollectOut
+  ret match(listAt<CgSlotEntry>(slotAssignments, offset))
+    (ef: CgSlotEntry) => match(listAt<CgSlotEntry>(slotAssignments, offset + 1))
+      (eo: CgSlotEntry) => CollectOut(
+          list2(SlotValuePair(fieldNameAt(slotFields, ef.slotIndex),
+                              RpFunField(param, "f")),
+                SlotValuePair(fieldNameAt(slotFields, eo.slotIndex),
+                              RpFunField(param, "o"))),
+          offset + 2)
+      ()                 => CollectOut(List<SlotValuePair>(), offset + 2)   # unreachable
+    ()                 => CollectOut(List<SlotValuePair>(), offset + 2)   # unreachable
 
 fun collectVariantSlotsLeaf(param: RParam, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, offset: Int): CollectOut
   ret match(listAt<CgSlotEntry>(slotAssignments, offset))
@@ -1141,9 +1159,27 @@ class [final] EmitFlatOut(efSlots: List<RpNamedValue>, efOffset: Int)
 
 fun emitFlat(param: RParam, ftype: CgType, variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
             offset: Int, slots: List<RpNamedValue>): EmitFlatOut
-  ret match(cgFieldsOf(ftype))
-    (fields: List<CgField>) => emitFlatStruct(param, chain(fields), variantSlots2, slotFields, offset, slots)
-    ()                       => emitFlatLeaf(param, variantSlots2, slotFields, offset, slots)
+  ret match(ftype)
+    (fp: CgFuncPointer) => emitFlatFun(param, variantSlots2, slotFields, offset, slots)
+    (o: CgType)          => match(cgFieldsOf(ftype))
+      (fields: List<CgField>) => emitFlatStruct(param, chain(fields), variantSlots2, slotFields, offset, slots)
+      ()                       => emitFlatLeaf(param, variantSlots2, slotFields, offset, slots)
+
+# The closure deconstructs into its code word and environment pointer (the
+# enum-encoding principle; union_repr.py construct_enum_value.emit_flat).
+fun emitFlatFun(param: RParam, variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
+                offset: Int, slots: List<RpNamedValue>): EmitFlatOut
+  ret match(listAt<CgSlotEntry>(variantSlots2, offset))
+    (ef: CgSlotEntry) => match(listAt<CgSlotEntry>(variantSlots2, offset + 1))
+      (eo: CgSlotEntry) => EmitFlatOut(
+          setNamedValueAt(setNamedValueAt(slots,
+                              fieldNameAt(slotFields, ef.slotIndex),
+                              RpFunField(param, "f")),
+                          fieldNameAt(slotFields, eo.slotIndex),
+                          RpFunField(param, "o")),
+          offset + 2)
+      ()                 => EmitFlatOut(slots, offset + 2)   # unreachable
+    ()                 => EmitFlatOut(slots, offset + 2)   # unreachable
 
 fun emitFlatLeaf(param: RParam, variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
                  offset: Int, slots: List<RpNamedValue>): EmitFlatOut

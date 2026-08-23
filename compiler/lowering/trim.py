@@ -15,7 +15,7 @@ from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTas
 from codegen.ir import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
-    StructField, InitArray, RuntimeInvoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq, ArrayElement, VtableDiscriminator, StaticObjectRef
+    StructField, InitArray, RuntimeInvoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq, ArrayElement, VtableDiscriminator, StaticObjectRef, FunField, MakeFun
 from functools import reduce
 
 
@@ -97,6 +97,10 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return _scan_sets()
         case SyncWrap():
             return __scan_rparam(p.value)
+        case FunField():
+            return __scan_rparam(p.fun)
+        case MakeFun():
+            return __scan_rparam(p.code) | __scan_rparam(p.env)
 
         case _:
             raise NotImplementedError(f"Unknown type of RParam {type(p)}")

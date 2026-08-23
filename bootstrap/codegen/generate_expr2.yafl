@@ -304,9 +304,24 @@ class [final] ReconstructOut(rfValue: RParam, rfOffset: Int)
 
 fun reconstructFromSlots(ctype: CgType, slotAssignments: List<CgSlotEntry>,
                          slotFields: List<CgField>, sv: RParam, offset: Int): ReconstructOut
-  ret match(cgFieldsOf(ctype))
-    (fields: List<CgField>) => reconstructStruct(ctype, fields, slotAssignments, slotFields, sv, offset)
-    ()                       => reconstructLeaf(slotAssignments, slotFields, sv, offset)
+  ret match(ctype)
+    (fp: CgFuncPointer) => reconstructFun(slotAssignments, slotFields, sv, offset)
+    (o: CgType)          => match(cgFieldsOf(ctype))
+      (fields: List<CgField>) => reconstructStruct(ctype, fields, slotAssignments, slotFields, sv, offset)
+      ()                       => reconstructLeaf(slotAssignments, slotFields, sv, offset)
+
+# Reassemble the closure from its two slots (RpFunField's inverse; serves
+# both the match arm bind and read_field — match.py / union_repr.py mirrors).
+fun reconstructFun(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>,
+                   sv: RParam, offset: Int): ReconstructOut
+  ret match(listAt<CgSlotEntry>(slotAssignments, offset))
+    (ef: CgSlotEntry) => match(listAt<CgSlotEntry>(slotAssignments, offset + 1))
+      (eo: CgSlotEntry) => ReconstructOut(
+          RpMakeFun(RpStructField(sv, fieldNameAt(slotFields, ef.slotIndex)),
+                    RpStructField(sv, fieldNameAt(slotFields, eo.slotIndex))),
+          offset + 2)
+      ()                 => ReconstructOut(RpNullPointer(), offset + 2)   # unreachable
+    ()                 => ReconstructOut(RpNullPointer(), offset + 2)   # unreachable
 
 fun reconstructLeaf(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, sv: RParam, offset: Int): ReconstructOut
   ret match(listAt<CgSlotEntry>(slotAssignments, offset))

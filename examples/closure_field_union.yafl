@@ -1,0 +1,18 @@
+# Regression pin (2026-08-23): a [final] class whose only field is a closure,
+# carried in a union. Flattened, its two-word fun_t payload cannot ride the
+# union's word-sized slots — the simple-class lowering must keep it a heap
+# class (see __exclude_union_collisions reason 2). In the parity corpus so
+# both compilers agree on this shape byte-for-byte.
+namespace ClosureWrap
+
+import System
+
+class [final] Wrap(get: (:System::Int): System::Int)
+
+fun pick(w: Wrap|None): System::Int
+  ret match(w)
+    (p: Wrap) => p.get(1)
+    ()        => 0
+
+fun main(): System::Int
+  ret pick(Wrap((x: System::Int) => x + 41)) - 42

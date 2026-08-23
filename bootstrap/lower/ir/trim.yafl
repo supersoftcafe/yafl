@@ -107,6 +107,8 @@ fun scanRParam(p: RParam): ScanSets
     (nt: RpNewStructTyped) => fold(nt.values, ssEmpty(), (a: ScanSets, x: RpNamedValue) => ssUnion(a, scanRParam(x.value)))
     (tt: RpTagTask)        => scanRParam(tt.task)
     (sw: RpSyncWrap)       => scanRParam(sw.value)
+    (ff: RpFunField)       => scanRParam(ff.ffFun)
+    (mf: RpMakeFun)        => ssUnion(scanRParam(mf.mfCode), scanRParam(mf.mfEnv))
     (o: RParam)            => ssEmpty()   # String/Integer/Float/StackVar/NullPointer/ZeroOf/…
 
 fun scanOptRParam(p: RParam|None): ScanSets

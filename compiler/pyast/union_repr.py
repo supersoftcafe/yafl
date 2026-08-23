@@ -188,6 +188,14 @@ def _variant_slots(value, inner_ctype, slot_assignments, slot_fields):
                 part, offset = collect(cg_p.StructField(param, field_name), field_type, offset)
                 result.extend(part)
             return result, offset
+        if isinstance(ctype, cg_t.FuncPointer):
+            # A closure IS a struct (the enum-encoding principle): it
+            # deconstructs into the two primitives _flatten_primitives laid
+            # out — the code word (non-GC), then the environment pointer (GC).
+            si_f, _ = slot_assignments[offset]
+            si_o, _ = slot_assignments[offset + 1]
+            return [(slot_fields[si_f][0], cg_p.FunField(param, "f")),
+                    (slot_fields[si_o][0], cg_p.FunField(param, "o"))], offset + 2
         si, _ = slot_assignments[offset]
         return [(slot_fields[si][0], param)], offset + 1
 
@@ -426,6 +434,11 @@ class TaggedRepr(UnionRepr):
                     val, off = reconstruct_from_slots(ft, slot_assigns, off)
                     fvs.append((fname, val))
                 return cg_p.NewStruct(tuple(fvs)), off
+            if isinstance(ftype, cg_t.FuncPointer):
+                # Reassemble the closure from its two slots (FunField inverse).
+                si_f, _ = slot_assigns[off]
+                si_o, _ = slot_assigns[off + 1]
+                return cg_p.MakeFun(read_slot(si_f), read_slot(si_o)), off + 2
             si, _ = slot_assigns[off]
             return read_slot(si), off + 1
 
@@ -481,6 +494,16 @@ class TaggedRepr(UnionRepr):
                     for fname, ft in ftype.fields:
                         off = emit_flat(cg_p.StructField(param, fname), ft, off)
                     return off
+                if isinstance(ftype, cg_t.FuncPointer):
+                    # A closure deconstructs into its code word and
+                    # environment pointer (the enum-encoding principle).
+                    si_f, _ = variant_map[leaf_idx][off]
+                    si_o, _ = variant_map[leaf_idx][off + 1]
+                    slot_values[si_f] = (container.fields[si_f][0],
+                                         cg_p.FunField(param, "f"))
+                    slot_values[si_o] = (container.fields[si_o][0],
+                                         cg_p.FunField(param, "o"))
+                    return off + 2
                 si, _ = variant_map[leaf_idx][off]
                 sname, _ = container.fields[si]
                 slot_values[si] = (sname, param)
