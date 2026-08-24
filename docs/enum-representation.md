@@ -51,11 +51,17 @@ pointer).
 Mechanics (both compilers, kept in lockstep):
 
 - `compute_boxed_leaves` (beside `compute_breakers`): child-first memoised
-  width estimation over the value-containment graph, which is acyclic once
-  breakers are removed. Widths at spec level: sub-word scalars their true
-  bytes, pointers a word, closures two words, tuples summed, nested flat
-  enums their own pool estimate under decisions already made, combinations
-  widest-member-plus-tag (conservative), complex enums a pointer.
+  width analysis over the value-containment graph, which is acyclic once
+  breakers are removed. Widths are TRUE layout widths, mirrored from the
+  flatten/slot-merge arithmetic with per-primitive-class counters: a leaf
+  payload sums its fields' primitives; a pool or tagged combination takes
+  per-class maxima over its variants plus a one-byte tag; collapsed
+  pointer unions (all members one tagged pointer word, mutually
+  distinguishable — a spec-level mirror of `_pointer_word_kind`) count one
+  word; complex enums a pointer; closures two words. The one documented
+  approximation: tags are counted as one byte (the global discriminator
+  maximum fits i8; outgrowing it lags the estimate a byte per nesting,
+  noise against a 64-byte threshold).
 - Roots with interior-node (inherited) fields keep all leaves inline:
   inherited fields are read positionally across sibling carriers, which
   requires one shared representation.
@@ -72,12 +78,21 @@ Mechanics (both compilers, kept in lockstep):
   the pointer in the leaf's slot. Match needs no changes: guards compare
   `$tag`, and arms bind the subject pool value as-is.
 
-Ground truth at the time of landing: no enum leaf in stdlib+bootstrap
-exceeds 64 bytes (widest pools: `BeDef` 61B/12 slots, `Op` 60B/11), so the
-rule is byte-neutral on the tree and fires only on genuinely wide code.
+Ground truth: no enum leaf in stdlib+bootstrap exceeds 64 true bytes — the
+widest pools are `Op` at 60B (7 pointer slots + 3 byte slots + a byte tag;
+the widest inline variant, `OpIfTask`, is 57B) and `BeDef` — so with true
+widths the rule fires on nothing in-tree and only on genuinely wide code.
+History, for honesty: the analysis as FIRST landed (8f25eb8) used a
+conservative estimator that charged collapsed `X|None` unions member+tag
+and nested enum values a word of tag; that over-count boxed `OpCall` and
+`BdPhi` in-tree, so that commit's byte-neutrality claim was wrong (the
+self-compile carried both leaf objects; measured cost was nil — 281.2s CPU
+against the 282.8s ledger). The counter rewrite above replaced it.
 `tests/test_union_repr.py::TestWideVariantBoxing` pins the behaviour: a
 9-pointer-word variant boxes, an exactly-8-word variant does not (strictly
-greater-than), and inline/boxed variants roundtrip standalone and nested in
+greater-than), eight collapsed one-word unions (64B) stay inline, a
+straddling pair around the threshold under true arithmetic lands on both
+sides, and inline/boxed variants roundtrip standalone and nested in
 combinations.
 
 ## Deferred

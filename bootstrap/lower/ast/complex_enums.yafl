@@ -545,34 +545,88 @@ fun computeBreakers(statements: List<PStmt>): List<String>
 # words is a heap object EVERYWHERE it appears: one pointer slot in its
 # enum's pool, payload in the same per-leaf Object a complex enum would use.
 # The decision is a property of the variant TYPE, so widening between unions
-# holding it is always a straight slot copy. Widths are estimated at spec
-# level exactly as Python's spec_bytes: sub-word scalars true bytes,
-# pointers a word, closures two words, nested flat enums their own pool
-# estimate under decisions already made — children decide before parents
-# (the value-containment graph is acyclic once breakers are removed; an
-# on-stack root is answered as a pointer, defensively). Roots with
-# interior-node fields keep all leaves inline: inherited fields are read
-# positionally across sibling carriers, which requires one shared
-# representation. Recursion depths are bounded by program shape (fields per
-# leaf, leaves per root, roots), so these loops carry no [tail] markers.
+# holding it is always a straight slot copy.
+#
+# Widths are TRUE layout widths, mirrored from _flatten_primitives and the
+# slot merge via per-primitive-class counters: a leaf payload SUMS its
+# fields' primitives; a pool (or a tagged combination) takes per-class
+# MAXIMA over its variants — greedy same-type slot reuse yields exactly
+# that — plus a one-byte tag. Collapsed pointer unions (all members one
+# tagged pointer word, mutually distinguishable) count one word, via a
+# spec-level mirror of _pointer_word_kind / _union_collapses_to_pointer.
+# Classes are kept apart exactly where the layout keeps slots apart
+# (ptr, code, i64, f64, i32, f32, i16, i8). Tags count one byte: the global
+# discriminator maximum fits i8 today; outgrowing it lags the estimate a
+# byte per nesting — noise against a 64-byte threshold, layout unaffected.
+#
+# Children decide before parents (the value-containment graph is acyclic
+# once breakers are removed; an on-stack root answers as a pointer,
+# defensively). Roots with interior-node fields keep all leaves inline:
+# inherited fields are read positionally across sibling carriers, which
+# requires one shared representation. Recursion depths are bounded by
+# program shape, so these loops carry no [tail] markers.
 # ══════════════════════════════════════════════════════════════════════════
 
 let maxValueStructWords: Int = 8
 let maxValueStructBytes: Int = maxValueStructWords * 8
 
 class [final] BoxCtx(bxBreakers: List<String>, bxStmts: Dict<String, PsEnum>,
-                     bxMap: NameMap)
-class [final] BoxState(bsMemo: Dict<String, Int>, bsBoxed: Dict<String, Bool>)
-class [final] BxOut(bxW: Int, bxSt: BoxState)
+                     bxMap: NameMap, bxForeign: Dict<String, Bool>)
+class [final] BxPrims(bpPtr: Int, bpCode: Int, bpI64: Int, bpF64: Int,
+                      bpI32: Int, bpF32: Int, bpI16: Int, bpI8: Int)
+class [final] BoxState(bsMemo: Dict<String, BxPrims>, bsBoxed: Dict<String, Bool>)
+class [final] BxOut(bxP: BxPrims, bxSt: BoxState)
+
+fun bxZero(): BxPrims
+  ret BxPrims(0, 0, 0, 0, 0, 0, 0, 0)
+
+fun bxPtrOne(): BxPrims
+  ret BxPrims(1, 0, 0, 0, 0, 0, 0, 0)
+
+# fun_t: env pointer + code word.
+fun bxFunPrims(): BxPrims
+  ret BxPrims(1, 1, 0, 0, 0, 0, 0, 0)
+
+fun bxAddTag(a: BxPrims): BxPrims
+  ret BxPrims(a.bpPtr, a.bpCode, a.bpI64, a.bpF64, a.bpI32, a.bpF32,
+              a.bpI16, a.bpI8 + 1)
+
+fun bxAdd(a: BxPrims, b: BxPrims): BxPrims
+  ret BxPrims(a.bpPtr + b.bpPtr, a.bpCode + b.bpCode, a.bpI64 + b.bpI64,
+              a.bpF64 + b.bpF64, a.bpI32 + b.bpI32, a.bpF32 + b.bpF32,
+              a.bpI16 + b.bpI16, a.bpI8 + b.bpI8)
+
+fun bxMaxI(a: Int, b: Int): Int
+  ret a > b ? a : b
+
+fun bxMax(a: BxPrims, b: BxPrims): BxPrims
+  ret BxPrims(bxMaxI(a.bpPtr, b.bpPtr), bxMaxI(a.bpCode, b.bpCode),
+              bxMaxI(a.bpI64, b.bpI64), bxMaxI(a.bpF64, b.bpF64),
+              bxMaxI(a.bpI32, b.bpI32), bxMaxI(a.bpF32, b.bpF32),
+              bxMaxI(a.bpI16, b.bpI16), bxMaxI(a.bpI8, b.bpI8))
+
+fun bxBytes(a: BxPrims): Int
+  ret 8 * (a.bpPtr + a.bpCode + a.bpI64 + a.bpF64) + 4 * (a.bpI32 + a.bpF32)
+    + 2 * a.bpI16 + a.bpI8
+
+fun bxBuiltinPrims(name: String): BxPrims
+  ret name == "int64" ? BxPrims(0, 0, 1, 0, 0, 0, 0, 0)
+    : name == "float64" ? BxPrims(0, 0, 0, 1, 0, 0, 0, 0)
+    : name == "int32" ? BxPrims(0, 0, 0, 0, 1, 0, 0, 0)
+    : name == "float32" ? BxPrims(0, 0, 0, 0, 0, 1, 0, 0)
+    : name == "int16" ? BxPrims(0, 0, 0, 0, 0, 0, 1, 0)
+    : name == "int8" || name == "bool" ? BxPrims(0, 0, 0, 0, 0, 0, 0, 1)
+    : bxPtrOne()   # bigint, str, unknown
 
 fun computeBoxedLeaves(statements: List<PStmt>,
                        breakers: List<String>): Dict<String, Bool>
   let roots = ceCollectRoots(statements)
-  let ctx = BoxCtx(breakers, bxRootStmts(statements), ceNameMap(roots))
+  let ctx = BoxCtx(breakers, bxRootStmts(statements), ceNameMap(roots),
+                   bxForeignClasses(statements))
   let final = fold(sort<String>(keys<String, PsEnum>(ctx.bxStmts)),
-                   BoxState(Dict<String, Int>(), Dict<String, Bool>()),
+                   BoxState(Dict<String, BxPrims>(), Dict<String, Bool>()),
                    (st: BoxState, root: String) =>
-                     bxEnumValueBytes(ctx, root, List<String>(), st).bxSt)
+                     bxEnumValuePrims(ctx, root, List<String>(), st).bxSt)
   ret final.bsBoxed
 
 # Root STATEMENTS by root name (first declaration wins): collectLeafFieldSets
@@ -595,6 +649,20 @@ fun bxRootStmtAdd(acc: Dict<String, PsEnum>, e2: PsEnum): Dict<String, PsEnum>
       : acc
     ()           => acc
 
+# The [foreign] classes by canonical name (ClassSpec.name matches).
+fun bxForeignClasses(statements: List<PStmt>): Dict<String, Bool>
+  ret bxForeignLoop(chain(statements), Dict<String, Bool>())
+
+fun [tail] bxForeignLoop(ss: Chain<PStmt>,
+                         acc: Dict<String, Bool>): Dict<String, Bool>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (c: PsClass) => hasAttr(c.cAttrs, "foreign")
+        ? bxForeignLoop(l.next, put(acc, c.cName, true))
+        : bxForeignLoop(l.next, acc)
+      (o: PStmt)   => bxForeignLoop(l.next, acc)
+
 # True when any non-leaf node of the variant tree declares fields.
 fun bxHasInteriorFields(e2: PsEnum): Bool
   ret isEmpty(e2.eVariants)
@@ -609,112 +677,161 @@ fun [tail] bxAnyInteriorVariant(vs: Chain<PStmt>): Bool
       (v: PsEnum) => bxHasInteriorFields(v) ? true : bxAnyInteriorVariant(l.next)
       (o: PStmt)  => bxAnyInteriorVariant(l.next)
 
-fun bxBuiltinBytes(name: String): Int
-  ret name == "bool" || name == "int8" ? 1
-    : name == "int16" ? 2
-    : name == "int32" || name == "float32" ? 4
-    : 8
+# ── the pointer-word mirror (union_repr._pointer_word_kind at spec level) ──
+# "" when the member is not representable as one tagged pointer word.
 
-fun bxSpecBytes(ctx: BoxCtx, sp: Spec|None, stack: List<String>,
+fun bxPointerKind(ctx: BoxCtx, sp: Spec|None): String
+  ret match(sp)
+    (s2: Spec) => bxPointerKindOn(ctx, s2)
+    ()          => ""
+
+fun bxPointerKindOn(ctx: BoxCtx, sp: Spec): String
+  ret match(sp)
+    (t2: STuple)  => isEmpty(t2.stEntries) ? "unit" : bxNewtypeKind(ctx, t2.stEntries)
+    (b: SBuiltin) => b.sbName == "bigint" ? "int"
+                   : b.sbName == "str" ? "str"
+                   : ""
+    (cl: SClass)  => contains<String, Bool>(ctx.bxForeign, cl.scName)
+      ? "foreign"
+      : "class:" + cl.scName
+    (e2: SEnum)   => contains2(ctx.bxBreakers, e2.seRoot) ? "enum:" + e2.seRoot : ""
+    (n: SNamed)   => match(get(ctx.bxMap.nmIndex, n.snName))
+      (root: String) => contains2(ctx.bxBreakers, root) ? "enum:" + root : ""
+      ()             => ""
+    (o: Spec)     => ""
+
+# A single-field tuple is a newtype wrapper: peel to the inner kind.
+fun bxNewtypeKind(ctx: BoxCtx, entries: List<SEntry>): String
+  ret isEmpty(tail(entries))
+    ? match(head(entries))
+        (e2: SEntry) => bxPointerKind(ctx, e2.seType)
+        ()            => ""
+    : ""
+
+class [final] BxKindTally(ktUnits: Int, ktForeign: Int, ktNonUnit: Int,
+                          ktDup: Bool, ktSeen: Set<String>)
+
+# Mirror of _union_collapses_to_pointer: every member a pointer word, at
+# least one non-unit, at most one unit and one foreign, testable kinds
+# mutually distinct.
+fun bxCollapses(ctx: BoxCtx, members: List<Spec>): Bool
+  let kinds = map(members, (m: Spec) => bxPointerKindOn(ctx, m))
+  if contains2(kinds, "")
+    ret false
+  let t2 = fold(kinds, BxKindTally(0, 0, 0, false, Set<String>()), bxKindStep)
+  ret t2.ktNonUnit > 0 && t2.ktUnits <= 1 && t2.ktForeign <= 1 && !t2.ktDup
+
+fun bxKindStep(t2: BxKindTally, k: String): BxKindTally
+  ret k == "unit"
+    ? BxKindTally(t2.ktUnits + 1, t2.ktForeign, t2.ktNonUnit, t2.ktDup, t2.ktSeen)
+    : k == "foreign"
+      ? BxKindTally(t2.ktUnits, t2.ktForeign + 1, t2.ktNonUnit + 1, t2.ktDup, t2.ktSeen)
+      : BxKindTally(t2.ktUnits, t2.ktForeign, t2.ktNonUnit + 1,
+                    t2.ktDup || contains<String>(t2.ktSeen, k),
+                    add<String>(t2.ktSeen, k))
+
+# ── widths ─────────────────────────────────────────────────────────────────
+
+fun bxSpecPrims(ctx: BoxCtx, sp: Spec|None, stack: List<String>,
                 st: BoxState): BxOut
   ret match(sp)
-    (s2: Spec) => bxSpecBytesOn(ctx, s2, stack, st)
-    ()          => BxOut(8, st)
+    (s2: Spec) => bxSpecPrimsOn(ctx, s2, stack, st)
+    ()          => BxOut(bxPtrOne(), st)
 
-fun bxSpecBytesOn(ctx: BoxCtx, sp: Spec, stack: List<String>,
+fun bxSpecPrimsOn(ctx: BoxCtx, sp: Spec, stack: List<String>,
                   st: BoxState): BxOut
   ret match(sp)
-    (b: SBuiltin)      => BxOut(bxBuiltinBytes(b.sbName), st)
-    (cl: SCallable)    => BxOut(16, st)   # fun_t: code word + env pointer
-    (t2: STuple)       => bxEntriesBytes(ctx, chain(t2.stEntries), stack, st, 0)
-    (cm: SCombination) => bxCombBytes(ctx, chain(cm.scTypes), stack, st, 0)
-    (e2: SEnum)        => bxEnumValueBytes(ctx, e2.seRoot, stack, st)
+    (b: SBuiltin)      => BxOut(bxBuiltinPrims(b.sbName), st)
+    (cl: SCallable)    => BxOut(bxFunPrims(), st)
+    (t2: STuple)       => bxEntriesPrims(ctx, chain(t2.stEntries), stack, st, bxZero())
+    (cm: SCombination) => bxCollapses(ctx, cm.scTypes)
+      ? BxOut(bxPtrOne(), st)
+      : bxCombPrims(ctx, chain(cm.scTypes), stack, st, bxZero())
+    (e2: SEnum)        => bxEnumValuePrims(ctx, e2.seRoot, stack, st)
     # Direct name-map hit only (no suffix fallback), as Python.
     (n: SNamed)        => match(get(ctx.bxMap.nmIndex, n.snName))
-      (root: String) => bxEnumValueBytes(ctx, root, stack, st)
-      ()             => BxOut(8, st)
-    (o: Spec)          => BxOut(8, st)   # classes, placeholders: a pointer
+      (root: String) => bxEnumValuePrims(ctx, root, stack, st)
+      ()             => BxOut(bxPtrOne(), st)
+    (o: Spec)          => BxOut(bxPtrOne(), st)   # classes, placeholders
 
-fun bxEntriesBytes(ctx: BoxCtx, es: Chain<SEntry>, stack: List<String>,
-                   st: BoxState, acc: Int): BxOut
+fun bxEntriesPrims(ctx: BoxCtx, es: Chain<SEntry>, stack: List<String>,
+                   st: BoxState, acc: BxPrims): BxOut
   ret match(es)
     (nil: ChainEnd) => BxOut(acc, st)
     (l: ChainLink)  => bxEntriesStep(ctx, l, stack, st, acc)
 
 fun bxEntriesStep(ctx: BoxCtx, l: ChainLink<SEntry>, stack: List<String>,
-                  st: BoxState, acc: Int): BxOut
-  let o = bxSpecBytes(ctx, l.value.seType, stack, st)
-  ret bxEntriesBytes(ctx, l.next, stack, o.bxSt, acc + o.bxW)
+                  st: BoxState, acc: BxPrims): BxOut
+  let o = bxSpecPrims(ctx, l.value.seType, stack, st)
+  ret bxEntriesPrims(ctx, l.next, stack, o.bxSt, bxAdd(acc, o.bxP))
 
-# Conservative: widest member plus a tag word (collapsed pointer unions are
-# really one word; the over-estimate only nudges near-threshold leaves
-# toward boxing).
-fun bxCombBytes(ctx: BoxCtx, ss: Chain<Spec>, stack: List<String>,
-                st: BoxState, widest: Int): BxOut
+# Tagged combination: per-class maxima over the members, plus a byte tag.
+fun bxCombPrims(ctx: BoxCtx, ss: Chain<Spec>, stack: List<String>,
+                st: BoxState, acc: BxPrims): BxOut
   ret match(ss)
-    (nil: ChainEnd) => BxOut(widest + 8, st)
-    (l: ChainLink)  => bxCombStep(ctx, l, stack, st, widest)
+    (nil: ChainEnd) => BxOut(bxAddTag(acc), st)
+    (l: ChainLink)  => bxCombStep(ctx, l, stack, st, acc)
 
 fun bxCombStep(ctx: BoxCtx, l: ChainLink<Spec>, stack: List<String>,
-               st: BoxState, widest: Int): BxOut
-  let o = bxSpecBytes(ctx, l.value, stack, st)
-  ret bxCombBytes(ctx, l.next, stack, o.bxSt, o.bxW > widest ? o.bxW : widest)
+               st: BoxState, acc: BxPrims): BxOut
+  let o = bxSpecPrimsOn(ctx, l.value, stack, st)
+  ret bxCombPrims(ctx, l.next, stack, o.bxSt, bxMax(acc, o.bxP))
 
-fun bxEnumValueBytes(ctx: BoxCtx, root: String, stack: List<String>,
+fun bxEnumValuePrims(ctx: BoxCtx, root: String, stack: List<String>,
                      st: BoxState): BxOut
   if contains2(ctx.bxBreakers, root) || contains2(stack, root)
-    ret BxOut(8, st)   # heap pointer: complex root, or defensive on-stack
+    ret BxOut(bxPtrOne(), st)   # heap pointer: complex, or defensive on-stack
   ret match(get(st.bsMemo, root))
-    (w: Int) => BxOut(w, st)
-    ()        => bxComputeRoot(ctx, root, stack, st)
+    (p: BxPrims) => BxOut(p, st)
+    ()            => bxComputeRoot(ctx, root, stack, st)
 
 fun bxComputeRoot(ctx: BoxCtx, root: String, stack: List<String>,
                   st: BoxState): BxOut
   ret match(get(ctx.bxStmts, root))
     (e2: PsEnum) => match(asEnumVariant(e2.eSpec))
       (sp: SEnum) => bxRootPool(ctx, root, e2, sp, stack, st)
-      ()           => BxOut(8, st)   # unreachable: bxRootStmts keyed by SEnum
-    ()            => BxOut(8, st)    # no root statement: only ever a pointer
+      ()           => BxOut(bxPtrOne(), st)   # unreachable: keyed by SEnum
+    ()            => BxOut(bxPtrOne(), st)    # no root statement: a pointer
 
 fun bxRootPool(ctx: BoxCtx, root: String, e2: PsEnum, sp: SEnum,
                stack: List<String>, st: BoxState): BxOut
   let out = bxLeafLoop(ctx, root, chain(sp.seAllLeaves),
                        chain(collectLeafFieldSets(e2, List<PStmt>())),
                        !bxHasInteriorFields(e2), concat(stack, list1(root)),
-                       st, 0)
-  ret BxOut(out.bxW,
-            BoxState(put(out.bxSt.bsMemo, root, out.bxW), out.bxSt.bsBoxed))
+                       st, bxZero())
+  ret BxOut(out.bxP,
+            BoxState(put(out.bxSt.bsMemo, root, out.bxP), out.bxSt.bsBoxed))
 
 fun bxLeafLoop(ctx: BoxCtx, root: String, names: Chain<String>,
                sets: Chain<List<PStmt>>, boxable: Bool, stack: List<String>,
-               st: BoxState, widest: Int): BxOut
+               st: BoxState, pool: BxPrims): BxOut
   ret match(names)
-    (nil: ChainEnd) => BxOut(widest + 8, st)   # widest variant + tag
+    (nil: ChainEnd) => BxOut(bxAddTag(pool), st)   # widest variant + tag
     (l: ChainLink)  => match(sets)
-      (nil2: ChainEnd) => BxOut(widest + 8, st)   # unreachable: zip 1:1
-      (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, widest)
+      (nil2: ChainEnd) => BxOut(bxAddTag(pool), st)   # unreachable: zip 1:1
+      (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, pool)
 
 fun bxLeafStep(ctx: BoxCtx, root: String, l: ChainLink<String>,
                s2: ChainLink<List<PStmt>>, boxable: Bool, stack: List<String>,
-               st: BoxState, widest: Int): BxOut
-  let o = bxFieldsBytes(ctx, chain(s2.value), stack, st, 0)
-  if o.bxW > maxValueStructBytes && boxable
+               st: BoxState, pool: BxPrims): BxOut
+  let o = bxFieldsPrims(ctx, chain(s2.value), stack, st, bxZero())
+  if bxBytes(o.bxP) > maxValueStructBytes && boxable
     ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack,
                    BoxState(o.bxSt.bsMemo,
                             put(o.bxSt.bsBoxed, boxedLeafKey(root, l.value), true)),
-                   widest > 8 ? widest : 8)
+                   bxMax(pool, bxPtrOne()))
   ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack, o.bxSt,
-                 o.bxW > widest ? o.bxW : widest)
+                 bxMax(pool, o.bxP))
 
-fun bxFieldsBytes(ctx: BoxCtx, fs: Chain<PStmt>, stack: List<String>,
-                  st: BoxState, acc: Int): BxOut
+fun bxFieldsPrims(ctx: BoxCtx, fs: Chain<PStmt>, stack: List<String>,
+                  st: BoxState, acc: BxPrims): BxOut
   ret match(fs)
     (nil: ChainEnd) => BxOut(acc, st)
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => bxFieldLet(ctx, let2, l.next, stack, st, acc)
-      (o: PStmt)    => bxFieldsBytes(ctx, l.next, stack, st, acc)
+      (o: PStmt)    => bxFieldsPrims(ctx, l.next, stack, st, acc)
 
 fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest: Chain<PStmt>,
-               stack: List<String>, st: BoxState, acc: Int): BxOut
-  let o = bxSpecBytes(ctx, let2.lType, stack, st)
-  ret bxFieldsBytes(ctx, rest, stack, o.bxSt, acc + o.bxW)
+               stack: List<String>, st: BoxState, acc: BxPrims): BxOut
+  let o = bxSpecPrims(ctx, let2.lType, stack, st)
+  ret bxFieldsPrims(ctx, rest, stack, o.bxSt, bxAdd(acc, o.bxP))

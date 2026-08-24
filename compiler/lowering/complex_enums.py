@@ -213,18 +213,49 @@ def compute_breakers(statements: list[s.Statement]) -> set[str]:
 # it appears: it contributes one pointer slot to its enum's pool and its
 # payload lives in the same per-leaf Object a complex enum would use. The
 # decision is a property of the variant TYPE, not of any one union, so
-# widening between unions holding it is always a straight slot copy. Sizes
-# are estimated at spec level (the analysis runs resolver-free, like the
-# breaker analysis): sub-word scalars count their true bytes, pointers a
-# word, closures two words, nested flat enums their own pool estimate under
-# decisions already made — children are decided before parents (the value-
+# widening between unions holding it is always a straight slot copy. Widths
+# are TRUE layout widths computed at spec level (the analysis runs
+# resolver-free, like the breaker analysis) via the primitive-class
+# counters below; children are decided before parents (the value-
 # containment graph is acyclic once breakers are removed), so a child whose
 # wide leaf boxes shrinks honestly before its parents are sized.
 
 _MAX_VALUE_STRUCT_WORDS = 8
 _MAX_VALUE_STRUCT_BYTES = _MAX_VALUE_STRUCT_WORDS * 8
 
-_BUILTIN_BYTES = {"bool": 1, "int8": 1, "int16": 2, "int32": 4, "float32": 4}
+# Primitive-class counters, mirroring _flatten_primitives and the slot
+# merge exactly: a leaf payload SUMS its fields' primitives; a pool (or a
+# tagged combination) takes per-class MAXIMA over its variants — greedy
+# same-type slot reuse in compute_union_slots yields precisely that — plus
+# a one-byte tag. Classes are kept apart exactly where the layout keeps
+# slots apart: (ptr, code, i64, f64, i32, f32, i16, i8). Tags are counted
+# as one byte: the global discriminator maximum fits i8 today; if it ever
+# outgrows that, the estimate lags a byte per nesting level — noise against
+# a 64-byte threshold, and the layout itself is unaffected.
+_ZERO = (0, 0, 0, 0, 0, 0, 0, 0)
+_PTR = (1, 0, 0, 0, 0, 0, 0, 0)
+_FUN = (1, 1, 0, 0, 0, 0, 0, 0)     # fun_t: env pointer + code word
+_TAG = (0, 0, 0, 0, 0, 0, 0, 1)
+_BUILTIN_PRIMS = {
+    "bigint": _PTR, "str": _PTR,
+    "int64": (0, 0, 1, 0, 0, 0, 0, 0), "float64": (0, 0, 0, 1, 0, 0, 0, 0),
+    "int32": (0, 0, 0, 0, 1, 0, 0, 0), "float32": (0, 0, 0, 0, 0, 1, 0, 0),
+    "int16": (0, 0, 0, 0, 0, 0, 1, 0),
+    "int8": (0, 0, 0, 0, 0, 0, 0, 1), "bool": (0, 0, 0, 0, 0, 0, 0, 1),
+}
+
+
+def _prims_add(a: tuple, b: tuple) -> tuple:
+    return tuple(x + y for x, y in zip(a, b))
+
+
+def _prims_max(a: tuple, b: tuple) -> tuple:
+    return tuple(max(x, y) for x, y in zip(a, b))
+
+
+def _prims_bytes(c: tuple) -> int:
+    ptr, code, i64, f64, i32, f32, i16, i8 = c
+    return 8 * (ptr + code + i64 + f64) + 4 * (i32 + f32) + 2 * i16 + i8
 
 
 def _has_interior_fields(stmt: s.EnumStatement) -> bool:
@@ -260,33 +291,79 @@ def compute_boxed_leaves(statements: list[s.Statement],
     if not root_stmts:
         return frozenset()
     name_to_root = _build_name_to_root(roots)
+    foreign_classes = {stmt.name for stmt in statements
+                       if isinstance(stmt, s.ClassStatement)
+                       and "foreign" in stmt.attributes}
     boxed: set[tuple[str, str]] = set()
-    pool_memo: dict[str, int] = {}
+    pool_memo: dict[str, tuple] = {}
 
-    def spec_bytes(spec: t.TypeSpec | None, stack: list[str]) -> int:
-        if isinstance(spec, t.BuiltinSpec):
-            return _BUILTIN_BYTES.get(spec.type_name, 8)
-        if isinstance(spec, t.CallableSpec):
-            return 16                       # fun_t: code word + env pointer
+    def pointer_kind(spec: t.TypeSpec | None) -> tuple | None:
+        """Spec-level mirror of union_repr._pointer_word_kind: the runtime
+        dispatch kind IF the member is one tagged pointer word, else None."""
         if isinstance(spec, t.TupleSpec):
-            return sum(spec_bytes(e.type, stack) for e in spec.entries)
-        if isinstance(spec, t.CombinationSpec):
-            # Conservative: widest member plus a tag word. Collapsed pointer
-            # unions are really one word; the over-estimate only nudges
-            # near-threshold leaves toward boxing.
-            widths = [spec_bytes(m, stack) for m in spec.types]
-            return (max(widths) if widths else 0) + 8
+            if len(spec.entries) == 0:
+                return ('UNIT',)
+            if len(spec.entries) == 1 and spec.entries[0].type is not None:
+                return pointer_kind(spec.entries[0].type)   # newtype wrapper
+            return None
+        if isinstance(spec, t.BuiltinSpec):
+            if spec.type_name == "bigint":
+                return ('INT',)
+            if spec.type_name == "str":
+                return ('STR',)
+            return None
+        if isinstance(spec, t.ClassSpec):
+            return (('FOREIGN',) if spec.name in foreign_classes
+                    else ('CLASS', spec.name))
         if isinstance(spec, t.EnumSpec):
-            return enum_value_bytes(spec.root_name, stack)
+            return ('ENUM', spec.root_name) if spec.root_name in breakers else None
+        if isinstance(spec, t.NamedSpec):
+            root = name_to_root.get(spec.name)
+            if root is not None:
+                return ('ENUM', root) if root in breakers else None
+            return None                     # unresolved: conservatively not
+        return None
+
+    def collapses_to_pointer(members: list) -> bool:
+        """Spec-level mirror of _union_collapses_to_pointer."""
+        kinds = [pointer_kind(m) for m in members]
+        if any(k is None for k in kinds):
+            return False
+        if not any(k != ('UNIT',) for k in kinds):
+            return False
+        if kinds.count(('UNIT',)) > 1 or kinds.count(('FOREIGN',)) > 1:
+            return False
+        testable = [k for k in kinds if k not in (('UNIT',), ('FOREIGN',))]
+        return len(testable) == len(set(testable))
+
+    def spec_prims(spec: t.TypeSpec | None, stack: list[str]) -> tuple:
+        if isinstance(spec, t.BuiltinSpec):
+            return _BUILTIN_PRIMS.get(spec.type_name, _PTR)
+        if isinstance(spec, t.CallableSpec):
+            return _FUN
+        if isinstance(spec, t.TupleSpec):
+            acc = _ZERO
+            for e in spec.entries:
+                acc = _prims_add(acc, spec_prims(e.type, stack))
+            return acc
+        if isinstance(spec, t.CombinationSpec):
+            if collapses_to_pointer(list(spec.types)):
+                return _PTR
+            acc = _ZERO
+            for m in spec.types:
+                acc = _prims_max(acc, spec_prims(m, stack))
+            return _prims_add(acc, _TAG)
+        if isinstance(spec, t.EnumSpec):
+            return enum_value_prims(spec.root_name, stack)
         if isinstance(spec, t.NamedSpec):
             if spec.name in name_to_root:
-                return enum_value_bytes(name_to_root[spec.name], stack)
-            return 8                        # class or unresolved: a pointer
-        return 8                            # ClassSpec, placeholders, None
+                return enum_value_prims(name_to_root[spec.name], stack)
+            return _PTR                     # class or unresolved: a pointer
+        return _PTR                         # ClassSpec, placeholders, None
 
-    def enum_value_bytes(root: str, stack: list[str]) -> int:
+    def enum_value_prims(root: str, stack: list[str]) -> tuple:
         if root in breakers or root not in root_stmts or root in stack:
-            return 8                        # heap pointer (cycles all break)
+            return _PTR                     # heap pointer (cycles all break)
         if root in pool_memo:
             return pool_memo[root]
         stmt = root_stmts[root]
@@ -294,19 +371,21 @@ def compute_boxed_leaves(statements: list[s.Statement],
         leaf_names = roots[root].all_leaf_names
         boxable = not _has_interior_fields(stmt)
         inner = stack + [root]
-        widths = []
+        pool = _ZERO
         for leaf, lets in zip(leaf_names, leaf_sets):
-            w = sum(spec_bytes(let.declared_type, inner) for let in lets)
-            if w > _MAX_VALUE_STRUCT_BYTES and boxable:
+            c = _ZERO
+            for let in lets:
+                c = _prims_add(c, spec_prims(let.declared_type, inner))
+            if _prims_bytes(c) > _MAX_VALUE_STRUCT_BYTES and boxable:
                 boxed.add((root, leaf))
-                w = 8
-            widths.append(w)
-        pool = (max(widths) if widths else 0) + 8   # widest variant + tag
+                c = _PTR
+            pool = _prims_max(pool, c)
+        pool = _prims_add(pool, _TAG)       # widest merged variant + tag
         pool_memo[root] = pool
         return pool
 
     for root in sorted(root_stmts):
-        enum_value_bytes(root, [])
+        enum_value_prims(root, [])
     return frozenset(boxed)
 
 

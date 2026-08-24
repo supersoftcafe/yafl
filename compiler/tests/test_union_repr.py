@@ -239,6 +239,83 @@ fun main(): System::Int
         self.assertEqual(0, rc)
         self.assertEqual("2 42", out.strip())
 
+    def test_estimator_counts_collapsed_unions_as_one_word(self):
+        # Width analysis must use TRUE layout widths. `Wrap|None` collapses
+        # to a single pointer word (newtype over Int + NULL), so eight such
+        # fields are exactly 64 bytes = at the threshold, NOT over it: the
+        # variant stays inline. An estimator that charges collapsed unions
+        # member+tag (16B) would wrongly box this leaf.
+        src = """
+namespace Main
+import System
+class Wrap(wVal: Int)
+enum Edge2
+  enum None2()
+  enum Flat8(w0: Wrap|None, w1: Wrap|None, w2: Wrap|None, w3: Wrap|None,
+             w4: Wrap|None, w5: Wrap|None, w6: Wrap|None, w7: Wrap|None)
+fun mkEdge2(b: Bool): Edge2
+  ret b ? Flat8(Wrap(1), None, Wrap(3), None, Wrap(5), None, Wrap(7), None) : None2()
+fun readWrap(x: Wrap|None): Int
+  ret match(x)
+    (w: Wrap) => w.wVal
+    (n: None) => 0 - 1
+fun probeEdge2(b: Bool): Int
+  ret match(mkEdge2(b))
+    (f: Flat8) => readWrap(f.w0) + readWrap(f.w6)
+    (n: None2) => 42
+fun main(): System::Int
+  println(String(probeEdge2(true)) + " " + String(probeEdge2(false)))
+  ret 0
+"""
+        code = _c_for(src)
+        self.assertNotRegex(code, r"Main__Flat8\w*_t\b",
+                            "8 collapsed one-word unions = 64B = at the "
+                            "threshold: must stay inline")
+        rc, out = compile_and_run_stdlib_capture(src)
+        self.assertEqual(0, rc)
+        self.assertEqual("8 42", out.strip())
+
+    def test_estimator_counts_nested_enum_pools_truly(self):
+        # A nested flat enum value costs its pool: one pointer + a byte tag
+        # here (9B), not pointer+word (16B). Six Strings + two such enums =
+        # 66B > 64: boxes. Five Strings + two = 58B: stays inline. The pin
+        # is the PAIR straddling the threshold under true arithmetic.
+        src = """
+namespace Main
+import System
+enum Duo
+  enum DuoA(dPtr: String)
+  enum DuoB()
+enum Straddle
+  enum Under5(u0: String, u1: String, u2: String, u3: String, u4: String,
+              ua: Duo, ub: Duo)
+  enum Over6(o0: String, o1: String, o2: String, o3: String, o4: String,
+             o5: String, oa: Duo, ob: Duo)
+fun mkS(k: Int): Straddle
+  ret k == 0
+    ? Under5("a", "b", "c", "d", "e", DuoA("x"), DuoB())
+    : Over6("a", "b", "c", "d", "e", "f", DuoA("yy"), DuoB())
+fun probeS(k: Int): Int
+  ret match(mkS(k))
+    (u: Under5) => match(u.ua)
+      (a: DuoA) => length(a.dPtr)
+      (b: DuoB) => 0 - 2
+    (o: Over6) => match(o.oa)
+      (a: DuoA) => length(a.dPtr) + length(o.o5)
+      (b: DuoB) => 0 - 3
+fun main(): System::Int
+  println(String(probeS(0)) + " " + String(probeS(1)))
+  ret 0
+"""
+        code = _c_for(src)
+        self.assertNotRegex(code, r"Main__Under5\w*_t\b",
+                            "58B true width must stay inline")
+        self.assertRegex(code, r"Main__Over6\w*_t\b",
+                         "66B true width must box")
+        rc, out = compile_and_run_stdlib_capture(src)
+        self.assertEqual(0, rc)
+        self.assertEqual("1 3", out.strip())
+
     def test_boxed_variant_in_combination_roundtrips(self):
         # The enum (with its boxed variant) nested by value inside a
         # combination: the pool's pointer slot rides through the outer
