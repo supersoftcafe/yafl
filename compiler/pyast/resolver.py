@@ -174,6 +174,11 @@ class Resolver:
         # overridden by ResolverRoot; an empty resolver boxes nothing.
         return False
 
+    def merged_members(self, class_name: str):
+        # Overridden by ResolverRoot with the per-pass merged member table;
+        # an empty resolver resolves no classes (None = incomplete).
+        return None
+
     def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
         return EMPTY
 
@@ -258,6 +263,9 @@ class DelegatingResolver(Resolver):
 
     def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
         return self._parent.is_boxed_leaf(root_name, leaf_name)
+
+    def merged_members(self, class_name: str):
+        return self._parent.merged_members(class_name)
 
     def find_type(self, name: str) -> list[Resolved[s.TypeStatement]]:
         return self._parent.find_type(name)
@@ -483,6 +491,9 @@ class ResolverRoot(Resolver):
         # Lazy per-leaf threshold analysis (derived is_boxed_leaf) — same
         # lifetime and safety argument as the breaker set it builds on.
         self.__boxed_leaves = None
+        # Lazy per-pass merged member tables: find_in_class's per-query
+        # parent-chain walk, precomputed once per class. See merged_members.
+        self.__merged_members: dict = {}
 
     def is_complex_root(self, root_name: str) -> bool:
         if self.__breakers is None:
@@ -498,6 +509,93 @@ class ResolverRoot(Resolver):
             self.__boxed_leaves = compute_boxed_leaves(
                 list(self.__statements), self.__breakers)
         return (root_name, leaf_name) in self.__boxed_leaves
+
+    def merged_members(self, class_name: str):
+        """The class's member rows with its whole parent chain baked in —
+        what find_in_class derived by walking parents per query, computed
+        once per pass per class. Returns (rows, absent_incomplete, n_gens)
+        or None while the name does not resolve to exactly one class.
+
+        rows: {query-key: (entries, complete)} where every member registers
+        under each of its @-prefix forms (the name_matches contract) and an
+        entry is (stmt, owner_cls, pattern) — pattern None for the class's
+        own members (the queried spec serves as-is) or the ancestor
+        instantiation expressed in THIS class's type params. Shadowing is
+        per inheritance path (a level's hit stops that path's deeper
+        search; sibling paths still contribute), and completeness is per
+        name: an unresolved parent at some level infects every name merged
+        through that level, exactly as the per-query walk behaved.
+        absent_incomplete answers queries that miss every row."""
+        if class_name in self.__merged_members:
+            return self.__merged_members[class_name]
+        result = self.__build_merged_members(class_name, set())
+        self.__merged_members[class_name] = result
+        return result
+
+    def __build_merged_members(self, class_name: str, visiting: set):
+        from pyast.statement.classdef import ClassStatement
+        import pyast.typespec as t
+        if class_name in visiting:
+            return None                     # defensive: cyclic implements
+        found = [rs.statement for rs in self.find_type(class_name)]
+        if len(found) != 1 or not isinstance(found[0], ClassStatement):
+            return None                     # unresolved: queries answer INCOMPLETE
+        cls = found[0]
+        visiting.add(class_name)
+        rows: dict = {}
+        own_keys: set = set()
+        for stmt in cls.parameters.flatten() + cls.statements:
+            n = getattr(stmt, "name", None)
+            if not n:
+                continue
+            for key in _name_prefixes(n):
+                own_keys.add(key)
+                entries, comp = rows.get(key, ((), True))
+                rows[key] = (entries + ((stmt, cls, None),), comp)
+        level_broken = False                # an unresolved parent at THIS level
+        absent_incomplete = False
+        for parent in cls.implements:
+            if (isinstance(parent, t.NamedSpec)
+                    or any(isinstance(a, t.NamedSpec) for a in parent.type_params)):
+                level_broken = True
+                continue
+            if parent.name in self.__merged_members:
+                sub = self.__merged_members[parent.name]
+            else:
+                sub = self.__build_merged_members(parent.name, visiting)
+                self.__merged_members[parent.name] = sub
+            if sub is None:
+                level_broken = True
+                continue
+            sub_rows, sub_absent, sub_ngens = sub
+            if len(parent.type_params) != sub_ngens:
+                continue                    # arity mismatch: EMPTY, complete
+            absent_incomplete = absent_incomplete or sub_absent
+            mapping = None
+            for key, (entries, comp) in sub_rows.items():
+                if key in own_keys:
+                    continue                # own hit shadows this path
+                if mapping is None:
+                    parent_found = [rs.statement for rs in self.find_type(parent.name)]
+                    pgens = (parent_found[0].type_params
+                             if parent_found and isinstance(parent_found[0], ClassStatement) else ())
+                    mapping = {p.name: c for p, c in zip(pgens, parent.type_params)}
+                composed = tuple(
+                    (stmt, owner,
+                     parent if pattern is None
+                     else (t.substitute_placeholders(pattern, mapping, self)
+                           if mapping else pattern))
+                    for stmt, owner, pattern in entries)
+                prev_entries, prev_comp = rows.get(key, ((), True))
+                rows[key] = (prev_entries + composed, prev_comp and comp)
+        if level_broken:
+            # A broken parent means every non-own answer may be missing
+            # candidates: mark the merged rows and the absent default.
+            absent_incomplete = True
+            rows = {key: (entries, comp and key in own_keys)
+                    for key, (entries, comp) in rows.items()}
+        visiting.discard(class_name)
+        return (rows, absent_incomplete, len(cls.type_params))
 
     def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
         return self.__statements.find_type_global(name)

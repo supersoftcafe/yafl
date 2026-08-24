@@ -163,9 +163,10 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # computed once for the codegen root, the only resolver that answers
   # isBoxedLeaf (mirrors Python ResolverRoot's lazy is_boxed_leaf).
   let boxedLeaves = computeBoxedLeaves(statements, breakers)
+  let st = buildStatements(statements)
   let r = RRoot((root: String) => contains2(breakers, root),
-                buildStatements(statements), None, discs, optLevel,
-                None, boxedLeaves)
+                st, None, discs, optLevel,
+                None, boxedLeaves, mergedMembersTable(st))
   let spIr = spanBegin("codegen", "ir_build")
   let a0 = fold(statements, emptyApp(), (a: CgApp, st: PStmt) => ccStmt(a, st, r))
   let a1 = appPutFunction(a0, createEntryPoint(mainName))

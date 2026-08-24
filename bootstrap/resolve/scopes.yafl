@@ -303,9 +303,43 @@ fun [tail] specSeen(ss: Chain<Spec>, sp: Spec): Bool
 # — Python's ClassStatement.member_index() is the mirror); a hook miss
 # derives per query exactly as before.
 fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Findings
-  ret match(memberIdxHook(r, c.scName))
-    (mi: MemberIdx) => membersViaIdx(mi, c, own, query, r)
-    ()               => membersDerive(c, own, query, r)
+  ret match(mergedHook(r, c.scName))
+    (mo: MergedOut) => match(mo)
+      (ms: MTable) => membersViaMerged(ms.mtoTable, c, own, query, r)
+      (mn: MMissing) => incompleteFindings()   # class unresolved at build
+    ()               => match(memberIdxHook(r, c.scName))
+      (mi: MemberIdx) => membersViaIdx(mi, c, own, query, r)
+      ()               => membersDerive(c, own, query, r)
+
+# One row probe answers the whole parent chain (the merged table bakes
+# shadowing, per-name completeness and DFS parent order); substitution
+# grounds each HIT's pattern against the queried instantiation. Misses pay
+# a single dict get.
+fun membersViaMerged(mt: MergedTable, c: SClass, own: List<String>,
+                     query: String, r: Resolver): Findings
+  if !sameLen(chain(mt.mtGens), chain(c.scParams))
+    ret emptyFindings()
+  ret match(get(mt.mtRows, query))
+    (row: MergedRow) => Findings(wrapMerged(chain(row.mrEntries),
+                                            paramMapping(mt.mtGens, c.scParams),
+                                            c, own, builder<Found >()),
+                                 row.mrComplete)
+    ()                => mt.mtAbsentInc ? incompleteFindings() : emptyFindings()
+
+fun [tail] wrapMerged(es: Chain<MergedEntry>, mapping: List<Binding>,
+                      c: SClass, own: List<String>,
+                      [terminal] acc: ListBuilder<Found >): List<Found>
+  ret match(es)
+    (nil: ChainEnd) => build<Found >(acc)
+    (l: ChainLink)  => wrapMerged(l.next, mapping, c, own,
+        push<Found >(acc, Found(stmtName(l.value.meStmt), l.value.meStmt,
+                                ScTrait(), mergedTp(l.value.mePattern, mapping, c),
+                                l.value.meOwner, own)))
+
+fun mergedTp(pattern: Spec|None, mapping: List<Binding>, c: SClass): Spec
+  ret match(pattern)
+    (p: Spec) => isEmpty(mapping) ? p : substitute(p, mapping)
+    ()         => c
 
 fun membersDerive(c: SClass, own: List<String>, query: String, r: Resolver): Findings
   ret match(soleItem(findType(r, c.scName)))

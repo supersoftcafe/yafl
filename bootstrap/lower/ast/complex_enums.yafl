@@ -512,9 +512,11 @@ fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
 fun rootResolver(statements: List<PStmt>,
                  suggest: Dict<String, Spec>|None = None): Resolver
   let [lazy] breakers: List<String> = computeBreakers(statements)
+  let st = buildStatements(statements)
   ret RRoot((root: String) => contains2(breakers, root),
-            buildStatements(statements), suggest, None, 0,
-            enumFieldsTable(statements))
+            st, suggest, None, 0,
+            enumFieldsTable(statements), None,
+            mergedMembersTable(st))
 
 # Every root enum's derived fields, once per pass (the stAmbient pattern —
 # resolver-path readers asked ~938k times per self-compile otherwise).

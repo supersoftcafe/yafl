@@ -417,11 +417,15 @@ enum Resolver
   # ResolverRoot.is_boxed_leaf's lazy set), keyed boxedLeafKey(root, leaf).
   # GENERATE-only, like rrDiscriminators: only createCCode's root supplies
   # it; every other builder leaves None (nothing boxes).
+  # rrMerged: the per-pass merged member tables (mergedMembersTable) —
+  # membersOf's one-probe fast path; None on direct builders (the old
+  # per-query derivation serves).
   enum RRoot(rrComplex: (:String): Bool,
              rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
              rrEnumFields: Dict<String, List<SField> >|None = None,
-             rrBoxedLeaves: Dict<String, Bool>|None = None)
+             rrBoxedLeaves: Dict<String, Bool>|None = None,
+             rrMerged: Dict<String, MergedOut>|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
   # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
@@ -776,3 +780,146 @@ fun stmtName(st: PStmt): String
     (ti: PsTraitInstance) => ti.tiName
     (d: PsDestructure) => d.dName
     (o: PStmt)        => ""
+
+# ══════════════════════════════════════════════════════════════════════════
+# Merged member tables (Python ResolverRoot.merged_members): the per-class
+# member rows with the whole parent chain baked in — what membersOf derived
+# by walking parents per query (~167M walks per self-compile). Shadowing is
+# per inheritance PATH (a level's hit stops that path's deeper search,
+# sibling paths still contribute); completeness is per NAME (a broken
+# parent at some level infects every name merged through that level);
+# substitution is deferred to query-time HITS (patterns are expressed in
+# the owning class's OWN type params). Built once per pass from a
+# Statements' own indexes; classes the member index does not cover fall
+# back to the old per-query derivation.
+# ══════════════════════════════════════════════════════════════════════════
+
+class [final] MergedEntry(meStmt: PStmt, meOwner: PsClass, mePattern: Spec|None)
+class [final] MergedRow(mrEntries: List<MergedEntry>, mrComplete: Bool)
+class [final] MergedTable(mtRows: Dict<String, MergedRow>, mtAbsentInc: Bool,
+                          mtGens: List<PGen>)
+
+enum MergedOut
+  enum MTable(mtoTable: MergedTable)
+  enum MMissing()
+
+fun mergedMembersTable(st: Statements): Dict<String, MergedOut>
+  ret fold(sort(keys(st.stMembers)), Dict<String, MergedOut>(),
+           (acc: Dict<String, MergedOut>, name: String) =>
+             mmEnsure(name, st, List<String>(), acc))
+
+fun mmEnsure(name: String, st: Statements, visiting: List<String>,
+             acc: Dict<String, MergedOut>): Dict<String, MergedOut>
+  ret match(get(acc, name))
+    (done: MergedOut) => acc
+    ()                 => mmBuild(name, st, visiting, acc)
+
+fun mmBuild(name: String, st: Statements, visiting: List<String>,
+            acc: Dict<String, MergedOut>): Dict<String, MergedOut>
+  if contains2(visiting, name)
+    ret put(acc, name, MMissing())   # defensive: cyclic implements
+  ret match(get(st.stMembers, name))
+    (mi: MemberIdx) => mmBuildClass(name, mi, st, visiting, acc)
+    ()               => put(acc, name, MMissing())
+
+class [final] MMState(mmRows: Dict<String, MergedRow>, mmAbsent: Bool,
+                      mmBroken: Bool, mmAcc: Dict<String, MergedOut>)
+
+fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
+                 visiting: List<String>, acc: Dict<String, MergedOut>): Dict<String, MergedOut>
+  let ownRows = mmOwnRows(sort(keys(mi.miByKey)), mi, Dict<String, MergedRow>())
+  let stt = fold(mi.miClass.cImplements,
+                 MMState(ownRows, false, false, acc),
+                 (s2: MMState, parent: Spec) =>
+                   mmParent(s2, parent, mi, st, prepend<String>(name, visiting)))
+  let rows = stt.mmBroken ? mmMarkNonOwn(stt.mmRows, mi) : stt.mmRows
+  ret put(stt.mmAcc, name,
+          MTable(MergedTable(rows, stt.mmAbsent || stt.mmBroken,
+                            mi.miClass.cGens)))
+
+fun [tail] mmOwnRows(ks: List<String>, mi: MemberIdx,
+                     acc: Dict<String, MergedRow>): Dict<String, MergedRow>
+  ret match(head(ks))
+    (k: String) => mmOwnRows(tail(ks), mi,
+        put(acc, k, MergedRow(map(memberBucket(mi, k),
+                                  (m: PStmt) => MergedEntry(m, mi.miClass, None)),
+                              true)))
+    ()           => acc
+
+# A broken parent means every non-own answer may be missing candidates.
+fun mmMarkNonOwn(rows: Dict<String, MergedRow>, mi: MemberIdx): Dict<String, MergedRow>
+  ret fold(sort(keys(rows)), rows,
+           (acc: Dict<String, MergedRow>, k: String) =>
+             contains<String, List<PStmt>>(mi.miByKey, k)
+               ? acc
+               : mmMarkOne(acc, k))
+
+fun mmMarkOne(rows: Dict<String, MergedRow>, k: String): Dict<String, MergedRow>
+  ret match(get(rows, k))
+    (row: MergedRow) => put(rows, k, MergedRow(row.mrEntries, false))
+    ()                => rows
+
+fun mmParent(s2: MMState, parent: Spec, mi: MemberIdx, st: Statements,
+             visiting: List<String>): MMState
+  ret match(parent)
+    (n: SNamed) => MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
+    (c: SClass) => anyNamed(chain(c.scParams))
+      ? MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
+      : mmParentClass(s2, c, mi, st, visiting)
+    (o: Spec)   => s2   # unreachable: implements entries are class or named
+
+fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
+                  visiting: List<String>): MMState
+  let acc2 = mmEnsure(parent.scName, st, visiting, s2.mmAcc)
+  ret match(get(acc2, parent.scName))
+    (mo: MergedOut) => match(mo)
+      (ms: MTable) => sameLen(chain(parent.scParams), chain(ms.mtoTable.mtGens))
+        ? mmMergeParent(MMState(s2.mmRows, s2.mmAbsent, s2.mmBroken, acc2),
+                        parent, ms.mtoTable, mi)
+        : MMState(s2.mmRows, s2.mmAbsent, s2.mmBroken, acc2)   # arity: EMPTY, complete
+      (mn: MMissing) => MMState(s2.mmRows, s2.mmAbsent, true, acc2)
+    ()               => MMState(s2.mmRows, s2.mmAbsent, true, acc2)   # unreachable
+
+fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
+                  mi: MemberIdx): MMState
+  let mapping = paramMapping(sub.mtGens, parent.scParams)
+  let rows = fold(sort(keys(sub.mtRows)), s2.mmRows,
+                  (acc: Dict<String, MergedRow>, k: String) =>
+                    contains<String, List<PStmt>>(mi.miByKey, k)
+                      ? acc   # own hit shadows this path
+                      : mmMergeRow(acc, k, sub, parent, mapping))
+  ret MMState(rows, s2.mmAbsent || sub.mtAbsentInc, s2.mmBroken, s2.mmAcc)
+
+fun mmMergeRow(acc: Dict<String, MergedRow>, k: String, sub: MergedTable,
+               parent: SClass, mapping: List<Binding>): Dict<String, MergedRow>
+  ret match(get(sub.mtRows, k))
+    (row: MergedRow) => mmAppendRow(acc, k,
+        map(row.mrEntries, (e: MergedEntry) =>
+          MergedEntry(e.meStmt, e.meOwner, mmCompose(e.mePattern, parent, mapping))),
+        row.mrComplete)
+    ()                => acc   # unreachable: k came from sub's keys
+
+fun mmCompose(pattern: Spec|None, parent: SClass, mapping: List<Binding>): Spec|None
+  ret match(pattern)
+    (p: Spec) => substitute(p, mapping)
+    ()         => parent
+
+fun mmAppendRow(acc: Dict<String, MergedRow>, k: String,
+                entries: List<MergedEntry>, comp: Bool): Dict<String, MergedRow>
+  ret match(get(acc, k))
+    (prev: MergedRow) => put(acc, k, MergedRow(concat(prev.mrEntries, entries),
+                                               prev.mrComplete && comp))
+    ()                 => put(acc, k, MergedRow(entries, comp))
+
+# The per-pass merged table, when the root carries one.
+fun [tail] mergedHook(r: Resolver, className: String): MergedOut|None
+  ret match(r)
+    (root: RRoot)    => match(root.rrMerged)
+      (d2: Dict<String, MergedOut>) => get(d2, className)
+      ()                             => None
+    (sc: RScopes)    => mergedHook(sc.rsParent, className)
+    (d: RData)       => mergedHook(d.rdParent, className)
+    (t2: RTypes)     => mergedHook(t2.rtParent, className)
+    (tr: RTraits)    => mergedHook(tr.rtrParent, className)
+    (cb: RClassBody) => mergedHook(cb.rcbParent, className)
+    (rg: RGen)       => mergedHook(rg.rgParent, className)

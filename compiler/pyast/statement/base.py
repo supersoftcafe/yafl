@@ -64,33 +64,38 @@ class NamedStatement(Statement):
 
         def find_in_class(tp: t.ClassSpec | t.NamedSpec,
                           instance_params: tuple[str, ...] = ()) -> "g.Findings[g.Resolved[DataStatement]]":
+            # The parent chain is baked into the resolver's per-pass merged
+            # member table (one row probe per query; the trait-entry search
+            # ran the old per-query walk ~167M times per self-compile).
+            # Substitution happens per HIT: an ancestor entry's pattern is
+            # its instantiation in cls's own type params, grounded here
+            # against the queried args. Shadowing, per-name completeness and
+            # DFS parent order are properties of the table itself.
             found = [rs.statement for rs in resolver.find_type(tp.name)]
             match found:
                 case [ClassStatement() as cls]:
                     if len(tp.type_params) != len(cls.type_params):
                         return g.EMPTY
-                    # Direct members first (the by-name index is a dict hit).
-                    direct = cls.member_index()[query]
-                    if direct:
-                        return g.Findings(tuple(g.Resolved(x.name, x, g.ResolvedScope.TRAIT, tp, cls,
-                                                      instance_params) for x in direct))
-                    # Recurse into each parent interface with type params
-                    # substituted (Math<TVal> : Plus<TVal>, tp Math<Int> ⇒
-                    # Plus<Int>). `implements` is already a flat list of
-                    # individual interfaces — the parser split any `A | B`
-                    # inheritance spelling — so there is never a union here.
+                    merged = resolver.merged_members(tp.name)
+                    if merged is None:
+                        return g.INCOMPLETE
+                    rows, absent_incomplete, _n = merged
+                    row = rows.get(query)
+                    if row is None:
+                        return g.INCOMPLETE if absent_incomplete else g.EMPTY
+                    entries, complete = row
                     mapping = {p.name: c for p, c in zip(cls.type_params, tp.type_params)}
-                    result = g.EMPTY
-                    for parent_type in cls.implements:
-                        parent = t.substitute_placeholders(parent_type, mapping, resolver)
-                        # A parent whose name — or any type arg — is still a
-                        # NamedSpec has not grounded: its operators aren't
-                        # knowable yet, so this whole search is incomplete.
-                        if isinstance(parent, t.NamedSpec) or any(isinstance(a, t.NamedSpec) for a in parent.type_params):
-                            result = result + g.INCOMPLETE
+                    out = []
+                    for stmt, owner, pattern in entries:
+                        if pattern is None:
+                            tp_final = tp
+                        elif mapping:
+                            tp_final = t.substitute_placeholders(pattern, mapping, resolver)
                         else:
-                            result = result + find_in_class(parent, instance_params)
-                    return result
+                            tp_final = pattern
+                        out.append(g.Resolved(stmt.name, stmt, g.ResolvedScope.TRAIT,
+                                              tp_final, owner, instance_params))
+                    return g.Findings(tuple(out), complete)
                 case []:
                     return g.INCOMPLETE  # interface name not resolved yet — blocked, not absent
                 case _:
