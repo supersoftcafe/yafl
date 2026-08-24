@@ -103,13 +103,22 @@ fun createEntryPoint(mainName: String): CgFunction
 # the (type) set directly from the deferred-init lets (top-level and in
 # bodies), where the type is known — same machinery, pure plumbing.
 fun collectLazyTypes(statements: List<PStmt>, r: Resolver): List<CgType>
-  ret foldStmts<List<CgType>>(statements, (acc: List<CgType>, st: PStmt) => lazyTypeOf(acc, st, r),
-                              foldNoExprT, List<CgType>())
+  let out = foldStmts<LazyTypes>(statements,
+                                 (acc: LazyTypes, st: PStmt) => lazyTypeOf(acc, st, r),
+                                 foldNoExprLT, LazyTypes(List<CgType>(), Dict<String, Bool>()))
+  ret out.ltList
 
-fun foldNoExprT(acc: List<CgType>, x: PExpr): List<CgType>
+# First-seen-order distinct types + the mangled names already seen: the
+# dedup keys on irMangle ONCE per candidate (Python dedups Lazy$<mangle>
+# names in a set). The old pairwise `any(acc, irMangle(x) == irMangle(t2))`
+# re-hashed every nested struct per comparison — quadratic SHA1, ~42s of a
+# self-compile.
+class [final] LazyTypes(ltList: List<CgType>, ltSeen: Dict<String, Bool>)
+
+fun foldNoExprLT(acc: LazyTypes, x: PExpr): LazyTypes
   ret acc
 
-fun lazyTypeOf(acc: List<CgType>, st: PStmt, r: Resolver): List<CgType>
+fun lazyTypeOf(acc: LazyTypes, st: PStmt, r: Resolver): LazyTypes
   ret match(st)
     (l: PsLet) => isDeferredInit(l) && !isNoneSpec2(l.lType)
       ? lazyTypeAdd(acc, specGenerateOpt(l.lType, r))
@@ -121,12 +130,12 @@ fun isNoneSpec2(sp: Spec|None): Bool
     (s2: Spec) => false
     ()          => true
 
-# Distinct lazy value types, in first-seen order — the machinery they get is
-# emitted in it. `acc` is read by the dedup, so it cannot be a builder.
-fun lazyTypeAdd(acc: List<CgType>, t2: CgType): List<CgType>
-  ret any(acc, (x: CgType) => irMangle(x) == irMangle(t2))
+fun lazyTypeAdd(acc: LazyTypes, t2: CgType): LazyTypes
+  let m2 = irMangle(t2)
+  ret contains<String, Bool>(acc.ltSeen, m2)
     ? acc
-    : build<CgType >(push<CgType >(_pushChain<CgType >(builder<CgType >(), chain<CgType>(acc)), t2))
+    : LazyTypes(build<CgType >(push<CgType >(_pushChain<CgType >(builder<CgType >(), chain<CgType>(acc.ltList)), t2)),
+                put(acc.ltSeen, m2, true))
 
 fun ensureLazyMachinery(a: CgApp, types2: List<CgType>): CgApp
   if isEmpty(types2)
