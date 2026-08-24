@@ -298,7 +298,11 @@ fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>,
                     grp: List<PStmt>): PStmt
   let lr = leaf.pseLine
   let tps = map(root.eGens, (g2: PGen) => SGeneric(g2.genName, false, g2.pgLine))
-  let retTy = SNamed(root.eName, tps, lr)
+  # A construction builds exactly one variant, so the constructor returns
+  # the LEAF type (USER RULING 2026-08-24; parser.py mirror). The
+  # representation is unchanged — a leaf-typed value carries the root's
+  # struct — so this is a type-system fact only.
+  let retTy = SNamed(leaf.eName, tps, lr)
   let body = PeBlock(List<PStmt>(),
                      PeNewEnum(root.eName, leaf.eName,
                                map(params, (p: PStmt) =>

@@ -136,10 +136,18 @@ def meet(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None | _Conf
         return _meet_params(a, a.type_params, b.type_params)
     if (isinstance(a, EnumSpec) and isinstance(b, EnumSpec)
             and a.root_name == b.root_name
-            and a.valid_leaf_names == b.valid_leaf_names
             and a.all_leaf_names == b.all_leaf_names
             and len(a.type_params) == len(b.type_params)):
-        return _meet_params(a, a.type_params, b.type_params) if a.type_params else a
+        # Same enum, possibly different VIEWS — a leaf-typed construction
+        # meeting the root (or a sibling leaf) from another flow. Views JOIN:
+        # the union of the valid leaf sets is what both flows satisfy, and
+        # every view shares one representation (the enum-encoding
+        # principle), so the join costs nothing.
+        joined = (a if a.valid_leaf_names == b.valid_leaf_names
+                  else dataclasses.replace(
+                      a, valid_leaf_names=a.valid_leaf_names | b.valid_leaf_names))
+        return (_meet_params(joined, a.type_params, b.type_params)
+                if a.type_params else joined)
     if (isinstance(a, TupleSpec) and isinstance(b, TupleSpec)
             and len(a.entries) == len(b.entries)):
         out = []

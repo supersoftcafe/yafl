@@ -60,7 +60,6 @@ fun main(): System::Int
       (m: Node3) => match(m.right)
         (l: Leaf3) => l.val == 9 ? 0 : 1
         (o: Tree3) => 2
-    (o3: Tree3)  => 4
 """
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
         self.assertEqual(0, code, out)
@@ -108,7 +107,6 @@ fun [refeq, impure] boxEq(l: Box3, r: Box3): System::Bool
 fun main(): System::Int
   ret match(B3(7))
     (b: B3) => boxEq(b, with b(v = b.v)) ? 0 : 1
-    (o: Box3) => 2
 """
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
         self.assertEqual(0, code, out)
@@ -133,7 +131,6 @@ fun [hashed] h3Hash(h: H3): System::Int32
 fun main(): System::Int
   ret match(H31(5))
     (a: H31) => h3Hash(a) != h3Hash(with a(v = 6)) ? 0 : 1
-    (o: H3)  => 2
 """
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
         self.assertEqual(0, code, out)

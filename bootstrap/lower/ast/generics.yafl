@@ -2377,13 +2377,11 @@ fun [tail] rfrEntriesB(es: Chain<SEntry>, c: Canon,
 fun rfrEnum(e2: SEnum, c: Canon): Spec
   let rebuilt = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
                       rfrSpecList(e2.seParams, c), e2.seLine)
-  ret match(rebuilt)
-    (re: SEnum) => match(canonLookup(c, re.seRoot))
-      (spec: SEnum) => fieldsStale(re, spec)
-        ? refreshedEnum(re, spec)
-        : rebuilt
-      ()            => rebuilt
-    (o: Spec)   => rebuilt
+  ret match(canonLookup(c, rebuilt.seRoot))
+    (spec: SEnum) => fieldsStale(rebuilt, spec)
+      ? refreshedEnum(rebuilt, spec)
+      : rebuilt
+    ()            => rebuilt
 
 # ── unresolved-generic-call guard ────────────────────────────────────────────
 # Python: report_unresolved_generic_calls. A reference from NON-generic code

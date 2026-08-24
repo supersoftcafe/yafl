@@ -911,7 +911,7 @@ fun taggedWidenFrom(gt: GTagged, srcRep: GRepr, value: RParam, r: Resolver): GBu
     (gp: GPointer) => widenFromPointer(value, gp.grpType, gt, endLabel, r)
     (o: GRepr)      => widenFromTagged(value, forceTagged(srcRep), gt, endLabel, r)
   let resultVar = RpStackVar(gt.grtContainer, "wide_result")
-  let joinBundle = GBundle(list1(resultVar), list2(OpLabel(endLabel, List<RParam>()), OpPhi(resultVar, wo.woSources, List<RParam>())), resultVar, List<RecurSource>(), List<ExitSource>())
+  let joinBundle = GBundle(list1(resultVar), list2<Op>(OpLabel(endLabel, List<RParam>()), OpPhi(resultVar, wo.woSources, List<RParam>())), resultVar, List<RecurSource>(), List<ExitSource>())
   ret bundleJoin(bundleJoinAll(wo.woBundles), joinBundle)
 
 fun forceTagged(rep: GRepr): GTagged
@@ -958,9 +958,9 @@ fun widenFromPointerWithVariant(sv: RParam, ptrVariant: Spec, unitVariant: Spec|
   let sources = list2(OpPhiSource("ptr_exit", unionStruct(gt.grtContainer, slotValues)),
                       OpPhiSource("null_exit", unionStruct(gt.grtContainer, list1(RpNamedValue("$tag", RpInteger(unitTag, 32))))))
   let bodies = list3(
-    bundleOps(list1(OpJumpIf(nullLabel, RpIntEqConst(sv, 0), false, List<RParam>()))),
-    bundleOps(list3(OpLabel("ptr_exit", List<RParam>()), OpJump(endLabel, List<RParam>()), OpLabel(nullLabel, List<RParam>()))),
-    bundleOps(list1(OpLabel("null_exit", List<RParam>()))))
+    bundleOps(list1<Op>(OpJumpIf(nullLabel, RpIntEqConst(sv, 0), false, List<RParam>()))),
+    bundleOps(list3<Op>(OpLabel("ptr_exit", List<RParam>()), OpJump(endLabel, List<RParam>()), OpLabel(nullLabel, List<RParam>()))),
+    bundleOps(list1<Op>(OpLabel("null_exit", List<RParam>()))))
   ret WidenOut(bodies, sources)
 
 class [final] OneWidenOut(owBundles: List<GBundle>, owSource: OpPhiSource)
@@ -1019,9 +1019,9 @@ fun widenFromTaggedOne(srcVar: Spec, i: Int, sv: RParam, srcRep: GTagged, gt: GT
         varTag)
     ()          => list1(RpNamedValue("$tag", RpInteger(varTag, 32)))
   let bundles = list3(
-    bundleOps(list3(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, List<RParam>()), OpJump(nextLabel, List<RParam>()), OpLabel(armLabel, List<RParam>()))),
-    bundleOps(list2(OpLabel(exitLabel, List<RParam>()), OpJump(endLabel, List<RParam>()))),
-    bundleOps(list1(OpLabel(nextLabel, List<RParam>()))))
+    bundleOps(list3<Op>(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, List<RParam>()), OpJump(nextLabel, List<RParam>()), OpLabel(armLabel, List<RParam>()))),
+    bundleOps(list2<Op>(OpLabel(exitLabel, List<RParam>()), OpJump(endLabel, List<RParam>()))),
+    bundleOps(list1<Op>(OpLabel(nextLabel, List<RParam>()))))
   ret OneWidenOut(bundles, OpPhiSource(exitLabel, unionStruct(gt.grtContainer, slotValues)))
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1274,7 +1274,7 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName: String,
   let objVar = RpStackVar(CgDataPointer(), "boxed")
   let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
                                CcAcc(builder<Op >(), builder<GBundle >()))
-  let ops = concat(list1(OpNewObject(objName, objVar, None, List<RParam>())), step.ccOps)
+  let ops = concat(list1<Op>(OpNewObject(objName, objVar, None, List<RParam>())), step.ccOps)
   let allocBundle = GBundle(list1(objVar), ops, objVar, List<RecurSource>(), List<ExitSource>())
   ret match(listAt<CgSlotEntry>(variantSlots2, 0))
     (se: CgSlotEntry) => bundleJoin(bundleJoinAll(step.ccBundles),
@@ -1363,7 +1363,7 @@ fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName: String, fie
   let step = complexConstructFields(chain(leafFields), objName, resultVar,
                                     fieldArgs, r,
                                     CcAcc(builder<Op >(), builder<GBundle >()))
-  let ops = concat(list1(OpNewObject(objName, resultVar, None, List<RParam>())), step.ccOps)
+  let ops = concat(list1<Op>(OpNewObject(objName, resultVar, None, List<RParam>())), step.ccOps)
   let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List<RecurSource>(), List<ExitSource>())
   ret bundleJoin(bundleJoinAll(step.ccBundles), ctorBundle)
 

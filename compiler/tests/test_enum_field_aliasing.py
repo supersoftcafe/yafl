@@ -26,8 +26,10 @@ enum Inst
   enum Save(slot: System::Int32, nxt: System::Int32)
 
 fun main(): System::Int
-  let s = Save(0i32, 1i32)
-  let r = Range(7i32, 8i32, 9i32)
+  # Annotated at the ROOT: a bare construction is leaf-typed now, which
+  # would make the else arms provably dead and the field reads unambiguous.
+  let s: Inst = Save(0i32, 1i32)
+  let r: Inst = Range(7i32, 8i32, 9i32)
   let a = match(s)
     (sv: Save) => System::Int(sv.nxt)
     ()         => 99
@@ -48,8 +50,9 @@ enum Node
   enum Pair(val: System::Int, rest: Node)
 
 fun main(): System::Int
-  let l = Leaf(7, 3)
-  let p = Pair(4, l)
+  # Annotated at the ROOT (see _FLAT).
+  let l: Node = Leaf(7, 3)
+  let p: Node = Pair(4, l)
   let a = match(l)
     (lf: Leaf) => lf.val
     ()         => 99
@@ -68,9 +71,11 @@ enum Inst
   enum Save(slot: System::Int32, nxt: System::Int32)
 
 fun main(): System::Int
-  let s = Save(0i32, 1i32)
-  # Un-narrowed: both variants declare `nxt` in different positions — this
-  # cannot be a silent read of either slot.
+  # Annotated at the ROOT: un-narrowed, so both variants' differently-
+  # positioned `nxt` fields stay in play — this cannot be a silent read of
+  # either slot. (A bare construction is leaf-typed and reads its own
+  # `nxt` legally.)
+  let s: Inst = Save(0i32, 1i32)
   ret System::Int(s.nxt)
 """
 

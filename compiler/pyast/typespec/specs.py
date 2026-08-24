@@ -551,6 +551,17 @@ class EnumSpec(TypeSpec):
         for lp, rp in zip(self.type_params, right.type_params):
             if lp == rp:
                 continue
+            if (isinstance(lp, EnumSpec) and isinstance(rp, EnumSpec)
+                    and lp.root_name == rp.root_name
+                    and lp.all_leaf_names == rp.all_leaf_names):
+                # Views of one enum are ONE type argument: every view shares
+                # the root's representation and monomorphisation identity
+                # (uids are root-only), so invariance ignores the leaf sets.
+                # Fall through to the MUTUAL check with the leaf sets
+                # normalised — equality is param-blind for enums, so it must
+                # not be rechecked here; the mutual recursion compares the
+                # enums' own arguments.
+                rp = dataclasses.replace(rp, valid_leaf_names=lp.valid_leaf_names)
             if (isinstance(lp, NamedSpec) or isinstance(rp, NamedSpec)
                     or _holds_placeholder(lp) or _holds_placeholder(rp)
                     or not lp.is_concrete() or not rp.is_concrete()):

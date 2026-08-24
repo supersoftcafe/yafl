@@ -170,6 +170,25 @@ fun [tail] argsRestUnknown(r: Resolver, ls: Chain<Spec>, rs: Chain<Spec>): Tri
 fun argPairSame(r: Resolver, a: Spec, b: Spec): Int
   if eqSpec(a, b)
     ret 1
+  ret argPairMutual(r, a, argNormaliseView(a, b))
+
+# Views of one enum are ONE type argument (uids are root-only, and every
+# view shares the root's representation), so invariance ignores leaf sets:
+# normalise the right side's to the left's and let the mutual check below
+# recurse into the enums' own arguments. Mirrors specs.py's
+# trivially_assignable_from param loop.
+fun argNormaliseView(a: Spec, b: Spec): Spec
+  ret match(a)
+    (ea: SEnum) => match(b)
+      (eb: SEnum) => ea.seRoot == eb.seRoot
+          && sameLen(chain(ea.seAllLeaves), chain(eb.seAllLeaves))
+          && allIn(chain(ea.seAllLeaves), eb.seAllLeaves)
+        ? SEnum(eb.seRoot, ea.seValidLeaves, eb.seAllLeaves, eb.seParams, eb.seLine)
+        : b
+      (o: Spec)   => b
+    (o: Spec)    => b
+
+fun argPairMutual(r: Resolver, a: Spec, b: Spec): Int
   if argOneUnknown(a, b)
     ret 0
   ret match(assignableFrom(r, a, b))

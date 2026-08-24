@@ -1079,12 +1079,18 @@ def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.Enum
         root_name = true_root.name
         leaf_name = root.name
         type_params = true_root.type_params
-        # Return type references the root enum; if it's generic, carry type params
+        # A construction builds exactly one variant, so the constructor
+        # returns the LEAF type (USER RULING 2026-08-24). Representation is
+        # unchanged — a leaf-typed value carries the root's struct — so this
+        # is a type-system fact: fresh constructions feed leaf-typed
+        # positions, and widening to the root is free. Generic enums carry
+        # the type params on the leaf reference exactly as they did on the
+        # root's.
         if type_params:
             return_type_params = tuple(tp.type for tp in type_params)
-            return_type = t.NamedSpec(root.line_ref, root_name, type_params=return_type_params)
+            return_type = t.NamedSpec(root.line_ref, leaf_name, type_params=return_type_params)
         else:
-            return_type = t.NamedSpec(root.line_ref, root_name)
+            return_type = t.NamedSpec(root.line_ref, leaf_name)
         field_args = {let.name: e.NamedExpression(let.line_ref, let.name) for let in all_params}
         destr = s.DestructureStatement(root.line_ref, '_', None, {}, (), None, None, all_params)
         new_enum_type_params = tuple(tp.type for tp in type_params) if type_params else ()

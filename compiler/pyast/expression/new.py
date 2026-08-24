@@ -179,7 +179,16 @@ class NewEnumExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         types = resolver.find_type(self.root_spec_name)
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
-            return types[0].statement._enum_spec
+            spec = types[0].statement._enum_spec
+            if spec is None:
+                return None
+            # A construction builds exactly one variant, so its TYPE is the
+            # LEAF (USER RULING 2026-08-24). Representation is unchanged —
+            # the value carries the root's struct — this is type-system only.
+            if self.leaf_name in spec.all_leaf_names:
+                return dataclasses.replace(
+                    spec, valid_leaf_names=frozenset({self.leaf_name}))
+            return spec
         return None
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:

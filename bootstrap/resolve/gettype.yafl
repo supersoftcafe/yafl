@@ -296,14 +296,25 @@ fun [tail] parTypeLoop(es: Chain<PExpr>, r: Resolver, [terminal] acc: ListBuilde
         (o: Spec)       => None
       ()          => None
 
-# An enum constructor yields the ROOT enum type, read from the declaration —
-# never from a spec instance in hand (which may be a stale copy).
+# A construction builds exactly one variant, so its type is the LEAF —
+# the declaration's spec restricted to that leaf (USER RULING 2026-08-24;
+# NewEnumExpression.get_type mirror). Read from the declaration, never
+# from a spec instance in hand (which may be a stale copy).
 fun newEnumType(ne: PeNewEnum, r: Resolver): Spec|None
   ret match(soleItem(findType(r, ne.rootName)))
     (f: Found) => match(f.fStmt)
-      (e: PsEnum) => e.eSpec
+      (e: PsEnum) => restrictToLeaf(e.eSpec, ne.leafName)
       (o: PStmt)  => None
     ()         => None
+
+fun restrictToLeaf(sp: Spec|None, leafName: String): Spec|None
+  ret match(sp)
+    (s2: Spec) => match(s2)
+      (e2: SEnum) => contains2(e2.seAllLeaves, leafName)
+        ? SEnum(e2.seRoot, prepend<String>(leafName, List<String>()), e2.seAllLeaves, e2.seParams, e2.seLine)
+        : s2
+      (o: Spec)   => s2
+    ()          => None
 
 # A field read: through a tuple by entry NAME, through a class or enum by
 # looking the member up on the DECLARATION.

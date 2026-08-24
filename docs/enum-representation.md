@@ -95,6 +95,29 @@ straddling pair around the threshold under true arithmetic lands on both
 sides, and inline/boxed variants roundtrip standalone and nested in
 combinations.
 
+## Types narrow; the representation never does
+
+`Dark` and `Shade` are different types in the language and one type in the
+IR: the pool struct with its discriminator. A site that statically knows
+the variant simply ignores the discriminator. This uniformity is
+load-bearing, not a simplification: closure compatibility is
+variance-based — a parameter of type `(:Car):Int` accepts a function of
+type `(:Vehicle):Int` — and that assignment is a plain pointer copy only
+because a `Car` argument and a `Vehicle` argument are the same IR type.
+Per-view layouts would force an adapter thunk at every such assignment.
+Consequently there are no representation conversions between views of one
+enum: widening and narrowing are type-system facts with identical bytes.
+
+Constructors return the leaf type: `Dark(7, "deep")` has type `Dark`, not
+`Shade` (a construction builds exactly one variant). The value it builds
+is still the pool struct, so this too is type-system only. Visible
+consequences: a fresh construction feeds leaf-typed fields and parameters
+directly; `ret Dark(...)` is exact where `Dark` is declared; a bare
+`let s = Save(...)` is `Save`-typed, so a defensive `else` after full
+coverage of such a value is a provably-dead-arm error (annotate the let
+at the root to keep an un-narrowed value); and reading a construction's
+own field is legal.
+
 ## Deferred
 
 - **Stage B — breaker subsumption**: recursive variants boxing per-variant

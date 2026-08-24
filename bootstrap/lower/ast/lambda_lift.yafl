@@ -51,10 +51,7 @@ fun llInBlock(f0: PsFun, bk0: PeBlock): PStmt
   let nested = hoNestedFns2(chain(bodyStmts), List<PsFun>())
   if isEmpty(nested)
     ret rebuilt
-  # The enum constructor returns the ROOT type — narrow back to PsFun.
-  ret match(rebuilt)
-    (f2: PsFun) => llAnalyse(f2, nested)
-    (o: PStmt)  => rebuilt
+  ret llAnalyse(rebuilt, nested)
 
 fun llDeepFirst(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
   ret build<PStmt >(llDeepFirstB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
@@ -564,19 +561,17 @@ fun llExpr(x: PExpr, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
 fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
   let rebuilt = PeCall(llExpr(c.function, ctx, paramLets),
                        llExpr(c.parameter, ctx, paramLets), c.pecLine)
-  ret match(rebuilt)
-    (c2: PeCall) => match(c2.function)
-      (nm: PeName) => isEmpty(llExtrasFor(ctx, nm.refName))
-        ? rebuilt
-        : PeCall(c2.function,
-                 PeTuple(concat(llCallArgs(c2.parameter),
-                                llExtraEnts(chain(llExtrasFor(ctx,
-                                                              nm.refName)),
-                                            c2.pecLine, List<PTupEnt>())),
-                         c2.pecLine),
-                 c2.pecLine)
-      (o: PExpr)   => rebuilt
-    (o2: PExpr)  => rebuilt
+  ret match(rebuilt.function)
+    (nm: PeName) => isEmpty(llExtrasFor(ctx, nm.refName))
+      ? rebuilt
+      : PeCall(rebuilt.function,
+               PeTuple(concat(llCallArgs(rebuilt.parameter),
+                              llExtraEnts(chain(llExtrasFor(ctx,
+                                                            nm.refName)),
+                                          rebuilt.pecLine, List<PTupEnt>())),
+                       rebuilt.pecLine),
+               rebuilt.pecLine)
+    (o: PExpr)   => rebuilt
 
 fun llExtraEnts(ns: Chain<String>, lr: PLine,
                        acc: List<PTupEnt>): List<PTupEnt>

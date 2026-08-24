@@ -369,11 +369,10 @@ fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
   let glb = concat(params.soExtra, variants.slGlobals)
   # The constructor returns the ROOT statement type — narrow back to the
   # variant to run the layout over the freshly compiled node.
-  ret match(PsEnum(e.eName, e.eAttrs, e.eGens, stmtOr(params, e.eParams),
-                   variants.slStmts, e.eHasParams, e.pseLine,
-                   None, None, e.eImports))
-    (t2: PsEnum) => StmtOut(layoutEnum(t2), glb)
-    (o: PStmt)   => StmtOut(o, glb)
+  ret StmtOut(layoutEnum(PsEnum(e.eName, e.eAttrs, e.eGens,
+                                stmtOr(params, e.eParams),
+                                variants.slStmts, e.eHasParams, e.pseLine,
+                                None, None, e.eImports)), glb)
 
 fun layoutEnum(t2: PsEnum): PStmt
   let allLeaves = collectLeafNames(t2)

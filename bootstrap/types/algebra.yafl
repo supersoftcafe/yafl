@@ -261,12 +261,33 @@ fun meetClass(ca: SClass, b: Spec): Meet
 # name plus ALL its arguments). Params refine positionally.
 fun meetEnum(ea: SEnum, b: Spec): Meet
   ret match(b)
-    (eb: SEnum) => !sameEnum(ea, eb)
+    (eb: SEnum) => ea.seRoot != eb.seRoot
       ? MConflict()
-      : isEmpty(ea.seParams) || !sameLen(chain(ea.seParams), chain(eb.seParams))
-        ? MSpec(ea)
-        : meetParams(ea, ea.seParams, eb.seParams)
+      : meetEnumViews(ea, eb)
     (o)         => MConflict()
+
+# Same enum, possibly different VIEWS — a leaf-typed construction meeting
+# the root (or a sibling leaf) from another flow. Views JOIN: the union of
+# the valid leaf sets is what both flows satisfy, and every view shares one
+# representation (the enum-encoding principle), so the join costs nothing.
+fun meetEnumViews(ea: SEnum, eb: SEnum): Meet
+  # Views join only within ONE instantiation: the all-leaf sets must agree
+  # (mirrors specs.py meet's guard); different all-sets are stale copies of
+  # different instantiations — a genuine conflict.
+  if !(sameLen(chain(ea.seAllLeaves), chain(eb.seAllLeaves))
+       && allIn(chain(ea.seAllLeaves), eb.seAllLeaves))
+    ret MConflict()
+  let joined = sameEnum(ea, eb)
+    ? ea
+    : SEnum(ea.seRoot, unionLeaves(ea.seValidLeaves, eb.seValidLeaves),
+            ea.seAllLeaves, ea.seParams, ea.seLine)
+  ret isEmpty(ea.seParams) || !sameLen(chain(ea.seParams), chain(eb.seParams))
+    ? MSpec(joined)
+    : meetParams(joined, ea.seParams, eb.seParams)
+
+fun unionLeaves(a: List<String>, b: List<String>): List<String>
+  ret fold(b, a, (acc: List<String>, n: String) =>
+    contains2(acc, n) ? acc : prepend<String>(n, acc))
 
 fun sameEnum(ea: SEnum, eb: SEnum): Bool
   ret ea.seRoot == eb.seRoot

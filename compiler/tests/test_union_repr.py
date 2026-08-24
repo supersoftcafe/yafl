@@ -348,6 +348,93 @@ fun main(): System::Int
         self.assertEqual("-1 5 2", out.strip())
 
 
+class TestLeafConstructorTyping(TestCase):
+    """A construction builds exactly one variant, so its TYPE is the leaf
+    (USER RULING): `Dark(7, "d")` has type Dark, not Shade. Representation
+    is unchanged — leaf-typed values carry the root's struct (common fields
+    + discriminator) — so this is a type-system fact only: fresh
+    constructions become legal wherever a leaf type is declared, and
+    `ret Dark(...)` is exact where Dark is the declared result."""
+
+    # A fresh construction feeding a leaf-typed FIELD and a leaf-typed
+    # PARAMETER — the shapes that previously required a match bind.
+    _HOLD_SRC = """
+namespace Main
+import System
+enum Payload
+  enum Pay1(p0: String, p1: String)
+  enum Pay2(pTiny: Int)
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+fun sizeOfPay(p: Pay1): Int
+  ret length(p.p0) + length(p.p1)
+fun mkHost(b: Bool): Host
+  ret b ? Hold(Pay1("a", "bb")) : Empty1()
+fun probeHost(b: Bool): Int
+  ret match(mkHost(b))
+    (h: Hold)   => sizeOfPay(h.hPay)
+    (e: Empty1) => 42
+fun main(): System::Int
+  println(String(probeHost(true)) + " " + String(probeHost(false)))
+  ret 0
+"""
+
+    def test_construction_feeds_leaf_typed_positions(self):
+        rc, out = compile_and_run_stdlib_capture(self._HOLD_SRC)
+        self.assertEqual(0, rc, "a fresh construction IS a leaf value and "
+                                "must feed leaf-typed fields and parameters")
+        self.assertEqual("3 42", out.strip())
+
+    def test_leaf_result_accepts_construction_and_widens_at_use(self):
+        # `ret Dark(...)` where Dark is declared is exact; a Dark value
+        # widens into Shade contexts unchanged (same struct either way).
+        src = """
+namespace Main
+import System
+enum Shade
+  enum Dark(dLevel: Int, dName: String)
+  enum Light(lLevel: Int)
+fun mkDark(): Dark
+  ret Dark(7, "deep")
+fun describeDark(d: Dark): Int
+  ret d.dLevel + length(d.dName)
+fun asShade(d: Dark): Shade
+  ret d
+fun probeShade(k: Int): Int
+  ret match(k == 0 ? asShade(mkDark()) : Light(3))
+    (d: Dark)  => describeDark(d) + 100
+    (l: Light) => l.lLevel
+fun main(): System::Int
+  println(String(probeShade(0)) + " " + String(probeShade(1)))
+  ret 0
+"""
+        rc, out = compile_and_run_stdlib_capture(src)
+        self.assertEqual(0, rc)
+        self.assertEqual("111 3", out.strip())
+
+    def test_root_still_rejected_where_leaf_declared(self):
+        # The ruling types CONSTRUCTIONS as leaves; a root-typed VALUE is
+        # still not assignable to a leaf-typed parameter.
+        src = """
+namespace Main
+import System
+enum Shade
+  enum Dark(dLevel: Int)
+  enum Light(lLevel: Int)
+fun wantsDark(d: Dark): Int
+  ret d.dLevel
+fun probe(s: Shade): Int
+  ret wantsDark(s)
+fun main(): System::Int
+  ret probe(Dark(1))
+"""
+        out = c.compile([c.Input(src, "rootleaf.yafl")], use_stdlib=True,
+                        just_testing=False)
+        self.assertFalse(bool(out),
+                         "a root-typed value must not pass a leaf parameter")
+
+
 class TestReprPartialOperationContract(TestCase):
     """The four representation-*partial* operations (box_value/widen_from are
     combination-only; read_field/construct_enum_value are enum-only) inherit a

@@ -614,10 +614,7 @@ fun clLambdaExpr(lm: PeLambda, r: Resolver, paths: ClPaths,
   let bodyR = localScope(flattenParams(lm.lamParams), r)
   let b = clExpr(lm.lamBody, bodyR, paths, p.clStExports)
   let rebuilt = PeLambda(p.clStStmt, b.clExExpr, lm.pelLine, lm.lamRet)
-  # The enum constructor returns the ROOT type — narrow back to PeLambda.
-  ret match(rebuilt)
-    (lm2: PeLambda) => clExportLambda(lm2, r, paths, b.clExExports)
-    (o: PExpr)      => ClEx(rebuilt, b.clExExports)
+  ret clExportLambda(rebuilt, r, paths, b.clExExports)
 
 # ast_inline can DUPLICATE a lambda within one host: the copies share a
 # line_ref (the path map's clone-stable key, first-occurrence-wins), so
