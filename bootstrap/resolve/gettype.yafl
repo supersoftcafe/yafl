@@ -161,11 +161,17 @@ fun [tail] filterByPatternB(ds: Chain<Found>, cache: Spec,
       ? filterByPatternB(l.next, cache, push<Found >(acc, l.value))
       : filterByPatternB(l.next, cache, acc)
 
+# unifyGeneric is deliberately lenient: a structural mismatch defers (returns
+# the mapping so far) rather than failing, so the caller must demand every
+# instance placeholder actually bound — exactly as solveInstanceScope does.
+# Accepting any UMap let a FOREIGN generic instance of the same interface
+# through on the empty mapping (two generic ambient Drop instances made every
+# drop unresolvable). (access.py _scope_filtered)
 fun patternMatches(f: Found, cache: Spec): Bool
   ret match(f.fInstanceParams)
     (own: List<String>) => !isEmpty(own) && match(f.fTraitScope)
       (ts: Spec) => match(unifyGeneric(ts, cache, own, List<Binding>()))
-        (m: UMap)   => true
+        (m: UMap)   => bindsAll(chain(own), m.uBindings)
         (f2: UFail) => false
       ()         => false
     ()                  => false

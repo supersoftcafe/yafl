@@ -229,12 +229,21 @@ def __to_named_fully_qualified(value: tuple[e.NamedExpression, list[e.NamedExpre
     return expr
 
 
-def __to_builtin_op(result: p.Result[tuple[str, e.TupleExpression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    typename, params_tuple = result.value
+def __to_builtin_op(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
+    type_spec, params_tuple = result.value
     op, *_ = params_tuple.expressions
     if not isinstance(op.value, e.StringExpression):
         return p.Result.error("__builtin_op__ first parameter must be a string", tokens, result.line_ref)
-    expr = e.BuiltinOpExpression(result.line_ref, t.BuiltinSpec(result.line_ref, typename), op.value, params_tuple.trim_left(1))
+    # A bare builtin name (`<bool>`, `<int64>`) stays a BuiltinSpec — those
+    # identifiers are not YAFL-level names and must not resolve as such. Any
+    # other spelling is an ordinary type: an op like array_builder_alloc
+    # declares a full `Array<T>` result.
+    _BUILTINS = {"bigint", "str", "bool", "int8", "int16", "int32", "int64",
+                 "float32", "float64"}
+    if isinstance(type_spec, t.NamedSpec) and not type_spec.type_params \
+            and type_spec.name in _BUILTINS:
+        type_spec = t.BuiltinSpec(result.line_ref, type_spec.name)
+    expr = e.BuiltinOpExpression(result.line_ref, type_spec, op.value, params_tuple.trim_left(1))
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
@@ -846,7 +855,7 @@ __parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression).map(__to_
                             | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression).map(__to_expr_tuple_entry)))
 __parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple").build(__to_expr_tuple)
 __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_expr_lambda
-__parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & p.ident() & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
+__parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & __parse_type & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
 __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params).map(__to_named_fully_qualified)
 
 # match arm: "(" literal ("," literal)* ")" |  "(" name ":" type ")"  |  "()"

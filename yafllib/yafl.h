@@ -718,10 +718,12 @@ INLINE vtable_t *object_get_vtable_inline(object_t *object) {
 }
 #define object_get_vtable object_get_vtable_inline
 
-EXTERN bool list_builder_pin(object_t *cell);
 EXTERN int64_t list_builder_slot(object_t *cell);
 EXTERN bool list_builder_link(object_t *prev, object_t *cell, int64_t slot);
-EXTERN bool list_builder_seal(object_t *tail);
+EXTERN object_t* array_builder_begin(object_t *arr);
+EXTERN bool array_builder_end(object_t *arr);
+EXTERN bool array_builder_seal(object_t *arr, int32_t length);
+EXTERN bool gc_debug_major_now(object_t *ignored);
 EXTERN vtable_t *object_get_vtable(object_t *object);
 
 // TRUE virtual dispatch: probe the perfect-hashed function table. Entry

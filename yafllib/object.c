@@ -827,25 +827,24 @@ EXPORT size_t object_get_size(object_t* ptr) {
 
 // ── ListBuilder support ──────────────────────────────────────────────────────
 // In-order list construction (stdlib ListBuilder): cells are ordinary
-// immutable ChainLinks; the ONE mutable step — writing the previous tail's
-// `next` — happens here, on a cell that is PINNED (compaction never moves
-// it) and not yet published (linearity: only the builder can reach it).
+// movable immutable ChainLinks; the ONE mutable step — writing the previous
+// tail's `next` — is a LOCKING late init (the once.c write-once idiom):
+// resolve forwarding, pin for the one bounded store, announce the late
+// write, store, unpin. Nothing stays pinned between pushes. (Design ruling:
+// late init always takes the locking update; removing locks that are proven
+// unnecessary is a future optimisation, never the default.)
 // `next` is the LAST field of every ChainLink<T> instantiation (the value's
-// representation varies, the trailing pointer slot does not), so the slot is
-// object_size - sizeof(void*) from the cell base. No write barrier: under
-// SATB the barrier snapshots the OLD value, and the old value here is the
-// ChainEnd terminator the cell was constructed with — a static.
-EXPORT bool list_builder_pin(object_t *cell) {
-    object_pin(cell);
-    return true;
-}
+// representation varies, the trailing pointer slot does not). No write
+// barrier: under SATB the barrier snapshots the OLD value, and the old
+// value here is the ChainEnd terminator the cell was constructed with — a
+// static. The store keeps RELEASE order: whoever follows the published
+// `next` also sees the cell behind it fully built.
 
 // The `next` slot index for this instantiation's cells: the TRAILING pointer
 // field = the highest set bit of the pointer mask (object_size is slot-
 // rounded and can land in padding; the mask indexes 8-byte slots from the
 // object base, vtable at bit 0). Computed ONCE per builder — the layout is
-// constant per instantiation — and carried in the builder; per-push linking
-// is then a single indexed store.
+// constant per instantiation — and carried in the builder.
 EXPORT int64_t list_builder_slot(object_t *cell) {
     vtable_t *vt = vtable_untag(cell->vtable);
     ptr_mask_t mask = vt->object_pointer_locations;
@@ -853,13 +852,50 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 }
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
-    ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
-    object_unpin(prev);                          // prev is now frozen
+    object_t *owner = object_pin_resolve(prev);
+    gc_note_late_write(owner);
+    __atomic_store_n((uintptr_t*)((object_t**)owner + slot), (uintptr_t)cell,
+                     __ATOMIC_RELEASE);
+    object_unpin(owner);
     return true;
 }
 
-EXPORT bool list_builder_seal(object_t *tail) {
-    object_unpin(tail);
+// ── array builder ────────────────────────────────────────────────────────────
+// An Array<T> under construction is an ordinary movable object; the fill may
+// suspend (an async producer parks in a heap frame) and the half-built array
+// crosses any number of cycles, relocations included. Each element store is
+// therefore bracketed by a MOMENTARY late pin (the once.c write-once idiom):
+// resolve forwarding, pin — excluding the compactor for the bounded,
+// allocation-free store — announce the late write, store, unpin. Between
+// stores nothing is pinned. array_create has already zero-filled the payload
+// and stamped length = CAPACITY, so the scanner traces every slot from birth
+// (NULLs where nothing is written yet).
+
+// Open the bracket around ONE inline element store: the returned address is
+// the current copy, pinned. The caller's store follows immediately (the
+// element's C type varies per instantiation, so the store itself is emitted
+// by the compiler); the redirty note lands BEFORE the store so a cycle that
+// opens mid-bracket already treats the page as dirty.
+EXPORT object_t* array_builder_begin(object_t *arr) {
+    object_t *owner = object_pin_resolve(arr);
+    gc_note_late_write(owner);
+    return owner;
+}
+
+EXPORT bool array_builder_end(object_t *arr) {
+    object_unpin(arr);
+    return true;
+}
+
+// Publish: shorten length to the filled count, under its own momentary
+// bracket. The field never UNDERSTATES the traceable extent, and the trimmed
+// tail is never-written zeros — shrinking can only untrace zeros, so no
+// redirty note is needed. The array is immutable from here on.
+EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
+    object_t *owner = object_pin_resolve(arr);
+    vtable_t *vt = vtable_untag(owner->vtable);
+    *((int32_t*)(((char*)owner) + vt->array_len_offset)) = length;
+    object_unpin(owner);
     return true;
 }
 
@@ -2593,6 +2629,16 @@ EXPORT void gc_debug_step(void)  { gc_fsa(); }
 
 // DEBUG: force the next cycle to be a major (collect the old generation).
 EXPORT void gc_debug_request_major(void) { gc_major_request = true; }
+
+// DEBUG: request a major and take a safe point NOW, callable from YAFL via
+// __builtin_op__ (which needs a non-void return and at least one argument).
+// Lets a YAFL test force collection activity at a chosen program point.
+EXPORT bool gc_debug_major_now(object_t *ignored) {
+    (void)ignored;
+    gc_major_request = true;
+    gc_fsa();
+    return true;
+}
 
 // DEBUG: which generation holds this object? 0 = young, 1 = old,
 // -1 = not a managed-heap object.

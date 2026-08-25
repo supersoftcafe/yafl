@@ -17,7 +17,7 @@ Permitted on an unordered container:
   `singleOrNone`, `isMoreThanOne`
 * an EXPLICIT ordering — `sort`, which is the only way out to a `List`
 
-## The four containers
+## The five containers
 
 | type | ordered? | built by | for |
 |---|---|---|---|
@@ -25,6 +25,7 @@ Permitted on an unordered container:
 | `Set<T>` | no | `add` | membership; a `Dict<T,()>` behind a wrapper |
 | `Bag<T>` | no | `add` | accumulation when order does not matter |
 | `List<T>` | YES | `ListBuilder` / `prepend` | sequences whose order is meaningful |
+| `Array<T>` | YES | ctor init fn / `ArrayBuilder` | O(1) indexed reads; ONE heap object per sequence |
 
 Pick the SIMPLEST container that does the job. A loop that reads its own
 accumulator wants a `Set`. Plain accumulation wants a `Bag`, or a
@@ -52,6 +53,23 @@ rear is the sole reason `_chainReverse` existed.
 `reverse` is REMOVED. On a front-normal list it can only be implemented by
 building a reversed copy — `_chainReverse` under a new name, which is exactly
 what must not reappear. Order changes come from `sort`.
+
+### Array
+
+Ordered with O(1) indexed reads (`a[i]`), stored as ONE heap object: a
+`length: Int32` plus the elements inline. Where a `List<T>` is a heap cell
+per element (~85B for a ~60B payload, one GC mark per element per cycle),
+an `Array<T>` is a header plus `n × sizeof(element)` — the container of
+choice for large, build-once-read-many sequences. Two ways in:
+
+* `Array<T>(n, initFn)` — tabulate `initFn` over `0..n-1`
+* `arrayBuilder<T>(estimate)` … `push` … `build` — linear incremental
+  construction when the final count isn't known up front
+  (see [ArrayBuilder design](array-builder-design.md))
+
+There is no update, no slice, no cursor: read by index, or walk `0..length`.
+A sequence that grows or is consumed element-at-a-time is a `List`; a
+sequence built once and then indexed is an `Array`.
 
 ## Removed, and what replaces it
 

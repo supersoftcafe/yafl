@@ -20,3 +20,82 @@ fun `[]`<T>(a: Array<T>, i: Int): T
 # Int32 form for byte-scanning code that already holds a sized index.
 fun `[]`<T>(a: Array<T>, i: Int32): T
   ret a.array(i)
+
+
+# ── ArrayBuilder ─────────────────────────────────────────────────────────────
+# Linear incremental construction: allocate at an ESTIMATED capacity, push
+# elements, and build() publishes by SHORTENING length from capacity to the
+# filled count.
+#
+# The half-built array is an ORDINARY MOVABLE object: a fill may suspend —
+# an async producer parks in a heap frame — and the array crosses any number
+# of GC cycles, relocations included. Each element store is bracketed by a
+# MOMENTARY late pin (array_builder_begin/end, the once.c write-once idiom):
+# resolve forwarding, pin for the one bounded store, unpin. Between pushes
+# nothing is pinned and the compactor is free.
+#
+# The length field starts AT CAPACITY and never understates the traceable
+# extent: the scanner walks every slot from birth (the payload is
+# zero-filled, so unwritten slots trace as NULLs), each pushed element is
+# traceable the moment it lands, and the sealing write trims only
+# never-written zeros while telling readers the true count.
+#
+# Linearity certifies the single-writer confinement (every operation consumes
+# the builder), and _ok threads the runtime results so no pass can discard
+# the calls — both exactly as ListBuilder.
+class [linear,final] ArrayBuilder<T>(_arr: Array<T>, _at: Int32, _cap: Int32,
+                                     _ok: Bool)
+
+fun arrayBuilder<T>(estimate: Int): ArrayBuilder<T>
+  let cap = truncateToInt32(estimate < 1 ? 1 : estimate)
+  ret ArrayBuilder<T>(__builtin_op__<Array<T> >("array_builder_alloc", cap),
+                      0i32, cap, true)
+
+fun push<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
+  ret b._at < b._cap
+    ? ArrayBuilder<T>(b._arr, b._at + 1i32, b._cap,
+                      b._ok && __builtin_op__<bool>("array_builder_store",
+                                                    b._arr, b._at, x))
+    : _pushGrown<T>(b, x)
+
+# Capacity exhausted: a fresh run at double, elements copied across, the old
+# run simply abandoned (it was never published — builder-owned only — so it
+# dies as ordinary garbage). The estimate parameter exists to make this path
+# rare.
+fun _pushGrown<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
+  let cap2 = b._cap + b._cap
+  let arr2 = __builtin_op__<Array<T> >("array_builder_alloc", cap2)
+  let ok2 = b._ok && _copyInto<T>(b._arr, arr2, 0i32, b._at)
+  ret push<T>(ArrayBuilder<T>(arr2, b._at, cap2, ok2), x)
+
+fun [tail] _copyInto<T>(src: Array<T>, dst: Array<T>, i: Int32, n: Int32): Bool
+  ret i < n
+    ? (__builtin_op__<bool>("array_builder_store", dst, i, src[i])
+        ? _copyInto<T>(src, dst, i + 1i32, n)
+        : false)
+    : true
+
+# Publish: shorten length to the filled count (under seal's own momentary
+# bracket). The array is immutable from here on.
+fun build<T>([terminal] b: ArrayBuilder<T>): Array<T>
+  ret b._ok && __builtin_op__<bool>("array_builder_seal", b._arr, b._at)
+    ? b._arr
+    : b._arr   # unreachable: seal always succeeds; keeps the call live
+
+# The failure-path counterpart of build (ListBuilder's discard precedent):
+# seal empty, severing the run's element references — the abandoned run and
+# everything it pointed at die as ordinary garbage at the next cycle.
+fun discard<T>([terminal] b: ArrayBuilder<T>): None
+  ret _sealDiscarded(b._ok && __builtin_op__<bool>("array_builder_seal",
+                                                   b._arr, 0i32))
+
+fun _sealDiscarded(_ok: Bool): None
+  ret None
+
+# Drop: an ABANDONED builder — a failed parse alternative, an early exit —
+# is consumed here so linearity balances; discarding seals empty. [ambient]:
+# the drops pass inserts plain `drop(x)` calls that must resolve in concrete
+# user code without a spelled `where`.
+instance [ambient]<T> Drop<ArrayBuilder<T>>
+  fun drop(self: ArrayBuilder<T>): None
+    ret discard<T>(self)

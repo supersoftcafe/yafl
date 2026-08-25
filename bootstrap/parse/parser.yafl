@@ -881,23 +881,45 @@ fun parseArg(ps: Ps): (v: PTupEnt|PFail, rest: Ps)
 
 # __builtin_op__<type>("op", args…): the first tuple entry must be a string;
 # the node keeps the op and the REMAINING entries (parser.py trim_left(1)).
+# The type slot takes a full type spec; a bare builtin name (`<bool>`,
+# `<int64>`) stays an SBuiltin — those identifiers are not YAFL-level names
+# and must not resolve as such (parser.py __to_builtin_op).
 fun parseBuiltinOp(kwLr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
-  if !(atSym(ps, "<") && isIdentTok(peek(bump(ps))) && atSym(bump(bump(ps)), ">"))
+  if !atSym(ps, "<")
     ret (hardFail("invalid use of __builtin_op__", ps), ps)
-  let ty = peek(bump(ps)).text
-  let after = bump(bump(bump(ps)))
+  let ty = parseType(bump(ps))
+  ret match(ty.v)
+    (f: PFail) => (hardFail("invalid use of __builtin_op__", ps), ps)
+    (sp: Spec) => parseBuiltinOpArgs(sp, ty.rest, ps)
+
+fun parseBuiltinOpArgs(sp: Spec, rest: Ps, ps: Ps): (v: PExpr|PFail, rest: Ps)
+  if !atSym(rest, ">")
+    ret (hardFail("invalid use of __builtin_op__", ps), ps)
+  let after = bump(rest)
   let lr = lineAt(ps)
   let args = parseTupleTerm(after)
   ret match(args.v)
     (f: PFail)   => (harden(f, "invalid use of __builtin_op__"), args.rest)
-    (tup: PExpr) => builtinFromTuple(ty, tup, lr, args.rest)
+    (tup: PExpr) => builtinFromTuple(builtinFastPath(sp, lr), tup, lr, args.rest)
 
-fun builtinFromTuple(ty: String, tup: PExpr, lr: PLine,
+fun builtinFastPath(sp: Spec, lr: PLine): Spec
+  ret match(sp)
+    (n: SNamed) => isEmpty(n.snParams) && isBuiltinTypeName(n.snName)
+      ? SBuiltin(n.snName, lr)
+      : sp
+    (other)     => sp
+
+fun isBuiltinTypeName(name: String): Bool
+  ret name == "bigint" || name == "str" || name == "bool"
+    || name == "int8" || name == "int16" || name == "int32" || name == "int64"
+    || name == "float32" || name == "float64"
+
+fun builtinFromTuple(ty: Spec, tup: PExpr, lr: PLine,
                      ps: Ps): (v: PExpr|PFail, rest: Ps)
   ret match(tup)
     (t2: PeTuple) => match(head(t2.exprs))
       (first: PTupEnt) => match(first.tupValue)
-        (op: PeStr) => (PeBuiltinOp(SBuiltin(ty, lr), first.tupValue,
+        (op: PeStr) => (PeBuiltinOp(ty, first.tupValue,
                                     PeTuple(tail(t2.exprs), t2.petLine), lr), ps)
         ()          => (hardFail("__builtin_op__ first parameter must be a string", ps), ps)
       ()               => (hardFail("__builtin_op__ first parameter must be a string", ps), ps)

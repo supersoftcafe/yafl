@@ -353,10 +353,20 @@ def _scope_filtered(datas, resolved_trait_scope: t.ClassSpec | None):
         return datas
     filtered = [d for d in datas if d.trait_scope == resolved_trait_scope]
     if len(filtered) != 1:
-        filtered = [d for d in datas
-                    if d.instance_params and d.trait_scope is not None
-                    and t.unify_generic(d.trait_scope, resolved_trait_scope,
-                                        set(d.instance_params)) is not None]
+        # unify_generic is deliberately lenient: a structural mismatch defers
+        # (returns the mapping so far) rather than failing, so the caller must
+        # demand every instance placeholder actually bound — exactly as
+        # _solve_instance_scope does. Testing `is not None` alone let a
+        # FOREIGN generic instance of the same interface through on the empty
+        # mapping (two generic ambient Drop instances made every drop
+        # unresolvable).
+        def scope_binds(d) -> bool:
+            if not d.instance_params or d.trait_scope is None:
+                return False
+            binding = t.unify_generic(d.trait_scope, resolved_trait_scope,
+                                      set(d.instance_params))
+            return binding is not None and set(binding) == set(d.instance_params)
+        filtered = [d for d in datas if scope_binds(d)]
     return filtered if len(filtered) == 1 else datas
 
 

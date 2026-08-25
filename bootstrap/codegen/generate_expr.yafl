@@ -794,9 +794,14 @@ fun genLazyForce(irT: CgType, stubRef: RParam): GBundle
 # ══════════════════════════════════════════════════════════════════════════
 
 fun genBuiltinOp(op: PeBuiltinOp, r: Resolver): GBundle
-  ret isReprAwareOp(builtinOpName(op.opName)) && !builtinSubjectBoxed(op, r)
-    ? genBuiltinValueRepr(op, builtinOpName(op.opName), r)
-    : genBuiltinOpGeneric(op, r)
+  let nm = builtinOpName(op.opName)
+  if isReprAwareOp(nm) && !builtinSubjectBoxed(op, r)
+    ret genBuiltinValueRepr(op, nm, r)
+  if nm == "array_builder_alloc"
+    ret genArrayBuilderAlloc(op, r)
+  if nm == "array_builder_store"
+    ret genArrayBuilderStore(op, r)
+  ret genBuiltinOpGeneric(op, r)
 
 fun genBuiltinOpGeneric(op: PeBuiltinOp, r: Resolver): GBundle
   let paramsBundle = genExpr(op.opParams, r)
@@ -845,6 +850,93 @@ fun builtinOpName(nameExpr: PExpr): String
   ret match(nameExpr)
     (s2: PeStr) => s2.strValue
     (o: PExpr)  => ""   # unreachable: op.opName is always a string literal
+
+# ── ArrayBuilder special forms (builtin_op.py __array_builder_alloc/store) ──
+# Sized, unfilled allocation for a builder: array_create zero-fills
+# pointer-bearing payloads and stamps length = CAPACITY, so the scanner
+# traces every slot from birth. The element type rides the builtin's
+# declared RESULT type; no init function runs.
+fun genArrayBuilderAlloc(op: PeBuiltinOp, r: Resolver): GBundle
+  ret match(arrayAllocParts(op, r))
+    (p: (cname: String, capE: PExpr)) => genArrayBuilderAllocOn(p.cname, p.capE, r)
+    ()                                 => emptyBundle()   # unreachable: stdlib-only op
+
+fun arrayAllocParts(op: PeBuiltinOp, r: Resolver): (cname: String, capE: PExpr)|None
+  ret match(op.opType)
+    (c: SClass) => match(arrayInfoOf(c, r))
+      (info: (cname: String, elem: Spec, lenName: String)) => match(firstBuiltinArg(op.opParams))
+        (capE: PExpr) => (info.cname, capE)
+        ()            => None
+      ()               => None
+    (o: Spec)   => None
+
+fun genArrayBuilderAllocOn(cname: String, capE: PExpr, r: Resolver): GBundle
+  let capB = withPrefix(genExpr(capE, r), "abcap")
+  let rv = RpStackVar(CgDataPointer(), "abarr")
+  ret bundleJoin(capB,
+                 GBundle(list1(rv),
+                         list1(OpNewObject(cname, rv, mustResult(capB), List<RParam>())),
+                         rv, List<RecurSource>(), List<ExitSource>()))
+
+# Inline element store under a MOMENTARY late pin (the once.c write-once
+# idiom): array_builder_begin resolves forwarding, pins, and notes the late
+# write; the store lands through the returned owner; array_builder_end
+# unpins. The store itself must be inline — the element's C type varies per
+# instantiation — and the operands are all evaluated BEFORE the bracket
+# opens, keeping the pinned section bounded and allocation-free. fresh: each
+# slot is written at most once over the allocator's zero fill, so there is
+# no old edge for the snapshot barrier to keep (new edges are begin's
+# redirty note).
+fun genArrayBuilderStore(op: PeBuiltinOp, r: Resolver): GBundle
+  ret match(threeBuiltinArgs(op.opParams))
+    (a: (a0: PExpr, a1: PExpr, a2: PExpr)) => genArrayBuilderStoreOn(a.a0, a.a1, a.a2, r)
+    ()                                      => emptyBundle()   # unreachable: stdlib-only op
+
+fun genArrayBuilderStoreOn(arrE: PExpr, idxE: PExpr, valE: PExpr, r: Resolver): GBundle
+  ret match(arrayInfo(arrE, r))
+    (info: (cname: String, elem: Spec, lenName: String)) => genArrayBuilderStoreAll(info.cname, info.elem, arrE, idxE, valE, r)
+    ()                                                     => emptyBundle()   # unreachable: check()
+                                                                              # typed the subject as Array
+
+fun genArrayBuilderStoreAll(cname: String, elem: Spec, arrE: PExpr, idxE: PExpr, valE: PExpr, r: Resolver): GBundle
+  let arrB = withPrefix(genExpr(arrE, r), "absarr")
+  let idxB = withPrefix(genExpr(idxE, r), "absidx")
+  let valB = withPrefix(genExpr(valE, r), "absval")
+  let owner = RpStackVar(CgDataPointer(), "absown")
+  let done = RpStackVar(CgInt(8), "absend")
+  let begin = RpRuntimeInvoke("array_builder_begin",
+                              RpNewStruct(list1(RpNamedValue("arr", mustResult(arrB)))),
+                              CgDataPointer())
+  let store = OpMove(RpObjectField(specGenerate(elem, r), owner, cname, "array",
+                                   mustResult(idxB), true),
+                     mustResult(valB), false, List<RParam>())
+  let endInv = RpRuntimeInvoke("array_builder_end",
+                               RpNewStruct(list1(RpNamedValue("arr", owner))),
+                               CgInt(8))
+  ret bundleJoin(bundleJoin(bundleJoin(arrB, idxB), valB),
+                 GBundle(list2(owner, done),
+                         list3(OpMove(owner, begin, false, List<RParam>()),
+                               store,
+                               OpMove(done, endInv, false, List<RParam>())),
+                         done, List<RecurSource>(), List<ExitSource>()))
+
+fun firstBuiltinArg(params: PExpr): PExpr|None
+  ret match(params)
+    (tp: PeTuple) => match(head<PTupEnt>(tp.exprs))
+      (e0: PTupEnt) => e0.tupValue
+      ()            => None
+    (o: PExpr)    => None
+
+fun threeBuiltinArgs(params: PExpr): (a0: PExpr, a1: PExpr, a2: PExpr)|None
+  ret match(params)
+    (tp: PeTuple) => match(head<PTupEnt>(tp.exprs))
+      (e0: PTupEnt) => match(head<PTupEnt>(tail<PTupEnt>(tp.exprs)))
+        (e1: PTupEnt) => match(head<PTupEnt>(tail<PTupEnt>(tail<PTupEnt>(tp.exprs))))
+          (e2: PTupEnt) => (e0.tupValue, e1.tupValue, e2.tupValue)
+          ()            => None
+        ()              => None
+      ()              => None
+    (o: PExpr)    => None
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 7: CallExpression (pyast/expression/call.py).

@@ -785,10 +785,14 @@ fun markOne(st: PStmt): PStmt
 # token, so this fold is what lets a constant Bool become a literal and inline.
 fun compileBuiltinOp(op: PeBuiltinOp, r: Resolver, expected: Spec|None): ExprOut
   let ps = compileExpr(op.opParams, r, None)
-  let out = PeBuiltinOp(op.opType, op.opName, ps.eoExpr, op.peboLine)
+  # The declared type may be a full spec (array_builder_alloc's Array<T>):
+  # compile it so the name resolves like any declared type. SBuiltins
+  # compile to themselves, so the historical ops are untouched.
+  let ty = compileSpec(op.opType, r)
+  let out = PeBuiltinOp(ty.soSpec, op.opName, ps.eoExpr, op.peboLine)
   ret match(foldConstCompare(out))
-    (b: PExpr) => ExprOut(b, ps.eoGlobals)
-    ()         => ExprOut(converted(out, expected, r), ps.eoGlobals)
+    (b: PExpr) => ExprOut(b, concat(ps.eoGlobals, ty.soGlobals))
+    ()         => ExprOut(converted(out, expected, r), concat(ps.eoGlobals, ty.soGlobals))
 
 # Takes the ROOT type: an enum-variant constructor yields the root, so a caller
 # that has just built a PeBuiltinOp cannot pass it as one.
