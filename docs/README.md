@@ -13,3 +13,4 @@ This folder contains design and reference documentation for YAFL. These document
 | [Build & packaging](build-and-packaging.md) | Design note: YAFL projects, libraries, manifests, the loader, and `.yl` packaging |
 | [Profiling](profiling-design.md) | `--profile`: exact call counters + sampled CPU time, callgrind/folded output, attribution semantics |
 | [Enum representation](enum-representation.md) | The enum-encoding principle: minimal shared fields + tag, deconstruction, the 8-word threshold, per-variant boxing |
+| [Heap profiling](heap-profiling-design.md) | Design: live census by type → massif; sampled inuse_space by site → pprof; instrument the collection boundary, never allocation counts |

@@ -4,6 +4,7 @@
 #include "yafl.h"
 #include "gc_internal.h"
 #include "prof.h"
+#include "heapprof.h"
 #include <malloc.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -1013,6 +1014,7 @@ EXPORT void gc_io_end() {
 EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_declaration_func, void*thread_roots_context, object_t** stack_anchor) {
     yafl_stack_guard_init();   // turn a stack overflow on this thread into a clean error
     yafl_prof_thread_init();   // no-op unless the program ran yafl_prof_init (--profile)
+    yafl_heapprof_thread_init();   // no-op unless YAFL_HEAPPROF is set
 #ifdef STACK_GROWS_DOWN
     gc_thread_info.stack_upper_ptr = stack_anchor;
 #else
@@ -1597,6 +1599,11 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
     // has warmed the exact line the RMW then needs.
     if (bitmap_test(&page->head.scanner.atomic_seen, slot)) return;
     bool was_set = atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
+    // Heap census: exactly once per live object per cycle, on the winning
+    // first-mark (docs/heap-profiling-design.md).
+    if (UNLIKELY(yafl_heapprof_enabled) && !was_set)
+        yafl_heapprof_census((const struct vtable *)object_get_vtable(object),
+                             object_get_size(object));
 
     // Newly marked on a page the scanner already finished this epoch: a
     // back-edge. Push the object for direct scanning — the per-page drain in
@@ -2368,6 +2375,9 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
         if (UNLIKELY(yafl_prof_enabled))
             yafl_prof_runtime_pop();
 
+        if (UNLIKELY(yafl_heapprof_enabled))
+            yafl_heapprof_cycle_end(memory_count() * (size_t)GC_PAGE_SIZE,
+                                    memory_total_pages() * (size_t)GC_PAGE_SIZE);
         if (UNLIKELY(gc_stats_enabled))
             fprintf(stderr, "[GC CYCLE] survivors=%zu dirty=%zu old=%zu young=%zu promote_vol=%zu in_use=%zu cons_seeds=%llu (pages)\n",
                     gc_cycle_survivors, gc_dirty_old_count, gc_old_page_count,
@@ -2659,6 +2669,7 @@ EXPORT void _gc_write_barrier2(object_t **field, ptr_mask_t mask) {
 EXPORT void gc_start() {
     assert(stage == GC_STAGE_NOT_STARTED);
     gc_read_config();
+    yafl_heapprof_init();
     if (gc_stats_enabled) {
         clock_gettime(CLOCK_MONOTONIC, &gc_stats_t0);
         atexit(gc_stats_report);

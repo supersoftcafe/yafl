@@ -20,6 +20,7 @@ set(SRC_FILES
     parallel.c
     primitive.c
     prof.c
+    heapprof.c
     stackguard.c
     string.c
     task.c
@@ -72,6 +73,7 @@ set(TEST_SRC_FILES
     parallel.c
     primitive.c
     prof.c
+    heapprof.c
     stackguard.c
     string.c
     task.c
@@ -129,6 +131,7 @@ add_yafl_test(test_gc_fwd_chain)
 # tests/ as documentation, not registered.
 add_yafl_test(test_parallel)
 add_yafl_test(test_prof)
+add_yafl_test(test_heapprof)
 add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)
