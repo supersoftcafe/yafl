@@ -120,6 +120,29 @@ static const char* _id_name(uint32_t id) {
     return id < _n_fns ? _fns[id].name : _reserved_name(id - _n_fns);
 }
 
+// ── descriptor access for the heap profiler ────────────────────────────────
+HIDDEN uint32_t yafl_prof_id_total(void) {
+    return yafl_prof_enabled ? _n_ids : 0;
+}
+
+HIDDEN uint32_t yafl_prof_reserved_id(uint32_t which) {
+    return _n_fns + which;
+}
+
+HIDDEN const char* yafl_prof_id_name(uint32_t id) {
+    return id < _n_ids ? _id_name(id) : "(?)";
+}
+
+HIDDEN void yafl_prof_id_srcloc(uint32_t id, const char** file, int32_t* line) {
+    if (id < _n_fns) {
+        *file = _fns[id].file;
+        *line = _fns[id].line;
+    } else {
+        *file = "??";
+        *line = 0;
+    }
+}
+
 // ── exact call-graph edges ──────────────────────────────────────────────────
 // Called from yafl_prof_enter for every call that has a caller: one bounded
 // linear probe into this thread's edge table. Shares nothing with the signal

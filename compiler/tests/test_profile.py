@@ -13,6 +13,7 @@ slows the wall but not the assertion).
 """
 from __future__ import annotations
 
+import gzip
 import os
 import re
 import subprocess
@@ -73,17 +74,22 @@ fun indirect(n: System::Int): System::Int
 fun [tail] burn(i: System::Int, acc: System::Int): System::Int
   ret i <= 0 ? acc : burn(i - 1, acc + i)
 
+fun [tail] grow(i: System::Int, s: System::String): System::String
+  ret i <= 0 ? s : grow(i - 1, s + "abcdefgh")
+
 fun main(): System::Int
   let r1: System::Int = driver(1000, 0)
   let r2: System::Int = fib(20)
   let r3: System::Int = indirect(9)
   let r4: System::Int = futureUser()
   let r5: System::Int = burn(5000000, 0)
+  let big: System::String = grow(3000, "")
   println(r1)
   println(r2)
   println(r3)
   println(r4)
   println(r5)
+  println(big == "" ? 0 : 1)
   ret 0
 """
 
@@ -172,6 +178,22 @@ def setUpModule():
                 cg_text = f.read()
             with open(prof_path + ".folded", encoding="utf-8") as f:
                 folded_text = f.read()
+
+            # Second run of the SAME binary with heap profiling on: the massif
+            # census (layer 1) and sampled allocation sites (layer 2).
+            massif_path = os.path.join(tmp, "prof.massif")
+            heap_run = subprocess.run(
+                [binary], capture_output=True, timeout=60,
+                env={**_RUN_ENV, "YAFL_PROF_FILE": prof_path,
+                     "YAFL_HEAPPROF": massif_path,
+                     "YAFL_HEAPPROF_SAMPLE": "4096"})
+            assert heap_run.returncode == 0, (
+                f"heap-profiled program failed rc={heap_run.returncode}\n"
+                f"{heap_run.stderr.decode()}")
+            with open(massif_path, encoding="utf-8") as f:
+                massif_text = f.read()
+            with open(massif_path + ".heap.pb.gz", "rb") as f:
+                heap_pb_gz = f.read()
     finally:
         os.unlink(binary)
     summary = re.search(r"^summary: (\d+) (\d+)$", cg_text, re.M)
@@ -182,6 +204,9 @@ def setUpModule():
         "folded": _parse_folded(folded_text),
         "edges": _parse_edges(cg_text),
         "summary": (int(summary.group(1)), int(summary.group(2))) if summary else None,
+        "massif": massif_text,
+        "heap_pb_gz": heap_pb_gz,
+        "heap_stderr": heap_run.stderr.decode(),
     }
 
 
@@ -201,7 +226,7 @@ class TestProfiledRun(TestCase):
     def test_program_output_is_correct(self):
         # Instrumentation must not change semantics.
         self.assertEqual(
-            [str(v) for v in (_EXPECT_R1, _EXPECT_R2, _EXPECT_R3, _EXPECT_R4, _EXPECT_R5)],
+            [str(v) for v in (_EXPECT_R1, _EXPECT_R2, _EXPECT_R3, _EXPECT_R4, _EXPECT_R5, 1)],
             _RESULTS["stdout"].split())
 
     def test_exact_counts_direct_and_tail(self):
@@ -279,6 +304,36 @@ class TestProfiledRun(TestCase):
 
     def test_profile_announced_on_stderr(self):
         self.assertIn("profile written to", _RESULTS["stderr"])
+
+
+class TestHeapProfile(TestCase):
+    """Layers 1+2 of heap profiling, end to end over the same binary: the
+    massif census stream and the pprof allocation-site file. Deep record
+    semantics (death sweeps, forwarding) are pinned by the runtime unit
+    test (yafllib/tests/test_heapprof2.c); this asserts the compile-to-file
+    plumbing and site attribution."""
+
+    def test_massif_stream_written(self):
+        self.assertIn("time_unit: ms", _RESULTS["massif"])
+        # Snapshots exist only if a full GC cycle completed during the run —
+        # true in practice with this program's churn, but the structural
+        # assert stays conditional to keep the test load-immune.
+        if "snapshot=" in _RESULTS["massif"]:
+            self.assertIn("heap_tree=detailed", _RESULTS["massif"])
+
+    def test_pprof_is_valid_gzip_with_inuse_types(self):
+        pb = gzip.decompress(_RESULTS["heap_pb_gz"])
+        for name in (b"inuse_objects", b"count", b"inuse_space", b"bytes", b"space"):
+            self.assertIn(name, pb)
+
+    def test_alloc_site_attributed(self):
+        # grow's string churn triggers page refills; its frame must appear
+        # in the profile's function table.
+        pb = gzip.decompress(_RESULTS["heap_pb_gz"])
+        self.assertIn(b"Prof::grow", pb)
+
+    def test_announced_on_stderr(self):
+        self.assertIn("sampling sites every 4096 bytes", _RESULTS["heap_stderr"])
 
 
 class TestInstrumentationShape(TestCase):

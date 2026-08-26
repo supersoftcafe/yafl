@@ -44,3 +44,11 @@ HIDDEN void yafl_prof_dump(void);
 // whatever YAFL function happened to trigger it.
 HIDDEN void yafl_prof_runtime_push(uint32_t reserved_id);
 HIDDEN void yafl_prof_runtime_pop(void);
+
+// Descriptor access for other runtime profilers (the heap profiler resolves
+// its sampled shadow-stack ids at dump time). All return empty/zero when
+// profiling is off.
+HIDDEN uint32_t yafl_prof_id_total(void);                  // program + reserved ids
+HIDDEN uint32_t yafl_prof_reserved_id(uint32_t which);     // program count + which
+HIDDEN const char* yafl_prof_id_name(uint32_t id);
+HIDDEN void yafl_prof_id_srcloc(uint32_t id, const char** file, int32_t* line);

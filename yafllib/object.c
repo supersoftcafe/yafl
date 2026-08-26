@@ -757,6 +757,14 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
         if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
             atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, 0);
+        // Never sample relocation allocations: compaction targets are
+        // GC-internal copies of objects that were already sampled at birth
+        // (the forward hook re-keys the original record onto the copy) — a
+        // sample here would double-count AND pollute the stack table with
+        // a (GC)-suffixed variant of every mutator stack.
+        if (UNLIKELY(yafl_heapprof_sample_enabled) && !gc_thread_info.in_relocation)
+            yafl_heapprof_sample_alloc(page->slots, actual_size,
+                                       page_count * (size_t)GC_PAGE_SIZE);
         return page->slots;
     }
 
@@ -771,7 +779,11 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
 
     list_link(&gc_thread_info.new_pages, (list_element_t*)&new_page->head.list);
 
-    return object_alloc_fast_raw(size, is_mutable);
+    void *object = object_alloc_fast_raw(size, is_mutable);
+    // Relocation gate: see the multi-page arm above.
+    if (UNLIKELY(yafl_heapprof_sample_enabled) && !gc_thread_info.in_relocation)
+        yafl_heapprof_sample_alloc(object, actual_size, GC_PAGE_SIZE);
+    return object;
 }
 
 EXPORT void* object_create(vtable_t *vtable) {
@@ -1175,6 +1187,8 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // the object over to the lazy-fixup protocol.
         __atomic_store_n((uintptr_t*)&object->vtable, (uintptr_t)target,
                          __ATOMIC_RELEASE);
+        if (UNLIKELY(yafl_heapprof_sample_enabled))
+            yafl_heapprof_sample_forwarded(object, target);
     }
     gc_thread_info.in_relocation = was_in_relocation;
 }
@@ -2447,6 +2461,8 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
         if (UNLIKELY(yafl_prof_enabled))
             yafl_prof_runtime_pop();
 
+        if (UNLIKELY(yafl_heapprof_sample_enabled))
+            yafl_heapprof_sample_sweep();
         if (UNLIKELY(yafl_heapprof_enabled))
             yafl_heapprof_cycle_end(memory_count() * (size_t)GC_PAGE_SIZE,
                                     memory_total_pages() * (size_t)GC_PAGE_SIZE);
