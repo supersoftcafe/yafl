@@ -236,15 +236,20 @@ fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r: Resolver): ClassOb
         # Header, the scalar fields, then the trailing array LAST.
         CgImmediateStruct(concat(list1(CgField("type", CgDataPointer())),
                                  build<CgField >(push<CgField >(_pushChain<CgField >(builder<CgField >(), chain<CgField>(scalarFields)), arrayField)))),
-        arrayLengthFieldName(ap))
+        arrayLengthFieldName(scalars, ap))
 
 fun isSameLet(p: PStmt, ap: PsLet): Bool
   ret match(p)
     (l: PsLet) => l.lName == ap.lName
     (o: PStmt) => false
 
-fun arrayLengthFieldName(ap: PsLet): String|None
-  ret length(ap.lArrayLen) > 0 ? ap.lArrayLen : None
+# Python: `next(p.name for p in scalars if name_matches(p.name, length_field))`
+# — the length field's MANGLED name, resolved among the scalar params. The
+# marker string is the field's bare spelling; the emitted offsetof needs the
+# struct member's name (fieldNameMatching, as the array-read path already
+# does), or the vtable points at a member that does not exist.
+fun arrayLengthFieldName(scalars: List<PStmt>, ap: PsLet): String|None
+  ret length(ap.lArrayLen) > 0 ? fieldNameMatching(chain(scalars), ap.lArrayLen) : None
 
 # ── EnumStatement.global_codegen (types.py) ─────────────────────────────────
 

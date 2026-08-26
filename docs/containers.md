@@ -17,7 +17,7 @@ Permitted on an unordered container:
   `singleOrNone`, `isMoreThanOne`
 * an EXPLICIT ordering — `sort`, which is the only way out to a `List`
 
-## The five containers
+## The six containers
 
 | type | ordered? | built by | for |
 |---|---|---|---|
@@ -26,6 +26,7 @@ Permitted on an unordered container:
 | `Bag<T>` | no | `add` | accumulation when order does not matter |
 | `List<T>` | YES | `ListBuilder` / `prepend` | sequences whose order is meaningful |
 | `Array<T>` | YES | ctor init fn / `ArrayBuilder` | O(1) indexed reads; ONE heap object per sequence |
+| `Seq<T>` | YES | `SeqBuilder` | build-then-walk sequences; one SMALL heap object per ≤16 elements |
 
 Pick the SIMPLEST container that does the job. A loop that reads its own
 accumulator wants a `Set`. Plain accumulation wants a `Bag`, or a
@@ -70,6 +71,35 @@ choice for large, build-once-read-many sequences. Two ways in:
 There is no update, no slice, no cursor: read by index, or walk `0..length`.
 A sequence that grows or is consumed element-at-a-time is a `List`; a
 sequence built once and then indexed is an `Array`.
+
+### Seq
+
+Ordered, stored as a chain of SEGMENTS: each segment is one heap object
+holding up to 16 elements inline plus the link to the next segment. The
+midway point between `List` and `Array` — far fewer heap objects (and GC
+marks) than a cell per element, without the multi-page single objects that
+broke the collector's cycle economics when hot lists were migrated to
+arrays wholesale.
+
+There is no wrapper enum: a Seq IS `Segment<T>|None`, and `None` is the
+empty sequence — the union collapses to one nullable pointer word, so
+emptiness is encoded once and consumers match once. (List's
+`ListEmpty`/`ListFull` facade is a banker's-queue leftover; Seq does not
+repeat it.)
+
+Build with `seqBuilder<T>()` … `push` … `build`. Segment capacities ramp
+along the Fibonacci sequence — 1, 1, 2, 3, 5, 8, 13 — then stay at the 16
+cap, so tiny sequences stay tiny and long ones settle at the largest
+allocation unit that is still GC-friendly. Segments are LINKED as they
+fill; elements are never copied. The open tail is pinned from allocation
+to link/seal — the same construction contract as `ArrayBuilder` (see
+[ArrayBuilder design](array-builder-design.md)).
+
+Consume with `seqStream` (the `Stream` instance) or `fold`/`map`/`filter`/
+`any`. There is no indexed access and no prepend/uncons: a sequence read
+by position wants an `Array`, element-at-a-time front manipulation wants a
+`List`. The sweet spot is build-once-walk-many sequences whose per-element
+cells would otherwise dominate the heap.
 
 ## Removed, and what replaces it
 

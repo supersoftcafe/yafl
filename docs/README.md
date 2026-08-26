@@ -15,3 +15,4 @@ This folder contains design and reference documentation for YAFL. These document
 | [Enum representation](enum-representation.md) | The enum-encoding principle: minimal shared fields + tag, deconstruction, the 8-word threshold, per-variant boxing |
 | [Heap profiling](heap-profiling-design.md) | Live census by type → massif; sampled inuse_space by allocation site → pprof; instrument the collection boundary, never allocation counts |
 | [ArrayBuilder](array-builder-design.md) | Linear incremental `Array<T>` construction: pinned from alloc to seal, length starts at capacity and seal shortens, element stores inlined at monomorphisation |
+| [Containers](containers.md) | The container design law: no iteration on unordered containers; the six containers and what each is for; what was removed and why |

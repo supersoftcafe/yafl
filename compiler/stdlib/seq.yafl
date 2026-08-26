@@ -1,0 +1,247 @@
+namespace System
+import System
+
+
+# An ordered sequence stored as a chain of SEGMENTS: each segment is ONE heap
+# object holding up to 16 elements inline, plus the pointer to the next
+# segment. The midway point between List and Array. Where a List spends a
+# heap cell per element (the census put ChainLink cells at ~56% of live
+# bytes, and each cell is a GC mark every cycle), and a whole-sequence Array
+# is one object that can span many pages (which broke the collector's cycle
+# economics when hot lists were migrated wholesale), a Seq spends one small
+# single-page object per ~16 elements: far fewer marks than a List, without
+# an Array's span.
+#
+# There is no wrapper enum and no distinct "Seq" type: a sequence IS
+# `Segment<T>|None`, and None IS the empty sequence. (List's ListEmpty/
+# ListFull wrapper is a leftover from its banker's-queue days, when it held
+# front and rear chains; wrapping a chain that already encodes emptiness
+# buys nothing, and this container does not repeat it. The union collapses
+# to one nullable pointer word.)
+#
+# Build with seqBuilder/push/build — in order, O(1) per push. Segment
+# capacities ramp along the Fibonacci sequence — 1, 1, 2, 3, 5, 8, 13 —
+# then stay at the 16 cap: tiny sequences stay tiny, and long ones settle
+# at the largest allocation unit that is still GC-friendly. Segments are
+# LINKED as they fill — elements are never copied (unlike ArrayBuilder's
+# doubling growth).
+#
+# Consume with seqStream (the Stream instance) or fold/map/filter/any.
+# There is no indexed access (a sequence read by position wants an Array),
+# and no prepend or uncons (element-at-a-time front manipulation wants a
+# List).
+#
+# Invariants the code below leans on:
+#   * an UNSEALED segment's `length` is its CAPACITY — array_create stamps
+#     length = capacity at allocation, and only build/discard ever seal,
+#     only ever the final tail. Non-tail segments keep length == capacity
+#     forever, which is also what makes them fully readable.
+#   * every published segment holds at least one element: element 0 is
+#     stored into a fresh segment before it is ever linked or built, so a
+#     walk crossing to `next` may read its element 0 unconditionally.
+class [final] Segment<T>(length: Int32, next: Segment<T>|None, array: T[length])
+
+
+# ── combinators ──────────────────────────────────────────────────────────────
+# The List combinators' Seq overloads: same names, resolved by argument
+# type, so a container migration is a type change at the call site. Every
+# Segment match arm spells its type argument — `(seg: Segment<T>)` — because
+# over a union subject the arm's generics are not inferred, and the
+# builtins below need the binder's class fully grounded (the memoize.yafl
+# idiom).
+
+fun isEmpty<T>(s: Segment<T>|None): Bool
+  ret match(s)
+    (seg: Segment<T>) => false
+    (nil: None)       => true
+
+# In-order left fold: an indexed walk within each segment, one pointer hop
+# between segments.
+fun fold<T, TAcc>(s: Segment<T>|None, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
+  ret _foldSeg<T, TAcc>(s, 0i32, acc, f)
+
+fun [tail] _foldSeg<T, TAcc>(s: Segment<T>|None, i: Int32, acc: TAcc,
+                             f: (acc: TAcc, x: T): TAcc): TAcc
+  ret match(s)
+    (nil: None)       => acc
+    (seg: Segment<T>) => i < seg.length
+      ? _foldSeg<T, TAcc>(s, i + 1i32, f(acc, seg.array(i)), f)
+      : _foldSeg<T, TAcc>(seg.next, 0i32, acc, f)
+
+# Element-wise transform. The result is built afresh, so its segment sizes
+# ramp from 1 again regardless of the source's shape.
+fun map<T, TOut>(s: Segment<T>|None, f: (x: T): TOut): Segment<TOut>|None
+  ret build<TOut>(_mapSeg<T, TOut>(s, 0i32, f, seqBuilder<TOut>()))
+
+fun [tail] _mapSeg<T, TOut>(s: Segment<T>|None, i: Int32, f: (x: T): TOut,
+                            [terminal] b: SeqBuilder<TOut>): SeqBuilder<TOut>
+  ret match(s)
+    (nil: None)       => b
+    (seg: Segment<T>) => i < seg.length
+      ? _mapSeg<T, TOut>(s, i + 1i32, f, push<TOut>(b, f(seg.array(i))))
+      : _mapSeg<T, TOut>(seg.next, 0i32, f, b)
+
+fun filter<T>(s: Segment<T>|None, pred: (:T): Bool): Segment<T>|None
+  ret build<T>(_filterSeg<T>(s, 0i32, pred, seqBuilder<T>()))
+
+fun [tail] _filterSeg<T>(s: Segment<T>|None, i: Int32, pred: (:T): Bool,
+                         [terminal] b: SeqBuilder<T>): SeqBuilder<T>
+  ret match(s)
+    (nil: None)       => b
+    (seg: Segment<T>) => i < seg.length
+      ? _filterSeg<T>(s, i + 1i32, pred, pred(seg.array(i)) ? push<T>(b, seg.array(i)) : b)
+      : _filterSeg<T>(seg.next, 0i32, pred, b)
+
+fun any<T>(s: Segment<T>|None, pred: (:T): Bool): Bool
+  ret _anySeg<T>(s, 0i32, pred)
+
+fun [tail] _anySeg<T>(s: Segment<T>|None, i: Int32, pred: (:T): Bool): Bool
+  ret match(s)
+    (nil: None)       => false
+    (seg: Segment<T>) => i < seg.length
+      ? (pred(seg.array(i)) || _anySeg<T>(s, i + 1i32, pred))
+      : _anySeg<T>(seg.next, 0i32, pred)
+
+
+# ── SeqBuilder ───────────────────────────────────────────────────────────────
+# Linear in-order construction: O(1) push, segments linked as they fill,
+# elements never copied. The mutable steps — element stores into the open
+# tail, and writing a full tail's `next` — happen on segments that are
+# PINNED from allocation until they are linked (non-tail) or sealed (the
+# final tail): pinned objects never move, so every store is a plain store
+# at a stable address and no reader anywhere pays a forwarding resolve (the
+# once.c locking bracket is Memoize's price, not construction's). The link
+# needs no barrier: the old value of `next` is the allocator's zero-fill
+# None, and the pin blocks page promotion, so both sides stay young. A full
+# segment needs no length write either — filled == capacity == the length
+# stamped at allocation; only the final tail is trimmed, by build's seal.
+# Exactly one segment is pinned per live builder at rest, transiently two
+# inside a growth push.
+#
+# EXACTLY FOUR FIELDS, on purpose: at four the builder flattens to a
+# by-value struct (lowering/simple_classes.py's _MAX_FLAT_STRUCT_FIELDS); a
+# fifth field would silently turn every push into a heap allocation. The
+# two fields the budget excludes are recovered from invariants: the open
+# tail's capacity IS its unsealed `length`, and the link slot is recomputed
+# per link (once per segment, a vtable load + clz). _head is None while the
+# first segment is still the tail, and holds the first segment once it is
+# not — build recovers the head from whichever is set, and _pushGrown reads
+# "closing the first segment" (the Fibonacci ramp's duplicated leading 1)
+# straight off it.
+#
+# Linearity certifies the single-writer confinement (every operation
+# consumes the builder), and _ok threads the runtime results so no pass can
+# discard the calls — both exactly as ListBuilder and ArrayBuilder.
+class [linear,final] SeqBuilder<T>(_head: Segment<T>|None, _tail: Segment<T>|None,
+                                   _at: Int32, _ok: Bool)
+
+fun seqBuilder<T>(): SeqBuilder<T>
+  ret SeqBuilder<T>(None, None, 0i32, true)
+
+fun push<T>([terminal] b: SeqBuilder<T>, x: T): SeqBuilder<T>
+  ret match(b._tail)
+    (t2: Segment<T>) => b._at < t2.length
+      ? SeqBuilder<T>(b._head, b._tail, b._at + 1i32,
+                      b._ok && __builtin_op__<bool>("array_builder_store", t2, b._at, x))
+      : _pushGrown<T>(b, t2, x)
+    (nil: None) => _pushFirst<T>(b, x)
+
+# First push: the builder allocates nothing until it holds an element.
+# _head stays None — the fresh segment is both first and tail.
+fun _pushFirst<T>([terminal] b: SeqBuilder<T>, x: T): SeqBuilder<T>
+  let seg = __builtin_op__<Segment<T> >("array_builder_alloc", 1i32)
+  let ok2 = b._ok && __builtin_op__<bool>("array_builder_pin", seg)
+  ret SeqBuilder<T>(None, seg, 1i32,
+                    ok2 && __builtin_op__<bool>("array_builder_store", seg, 0i32, x))
+
+# Tail full: open a fresh pinned segment at the next capacity, store the
+# element as its element 0, then link — the link writes the old tail's
+# `next` and releases its pin in one step. The old tail is full, so its
+# stamped length is already its true count.
+fun _pushGrown<T>([terminal] b: SeqBuilder<T>, prev: Segment<T>, x: T): SeqBuilder<T>
+  let cap2 = match(b._head)
+    (h: Segment<T>) => _nextCap(prev.length)
+    (nil: None)     => 1i32
+  let seg = __builtin_op__<Segment<T> >("array_builder_alloc", cap2)
+  let ok2 = b._ok && __builtin_op__<bool>("array_builder_pin", seg)
+  let ok3 = ok2 && __builtin_op__<bool>("array_builder_store", seg, 0i32, x)
+  let ok4 = ok3 && __builtin_op__<bool>("list_builder_link", prev, seg,
+                                        __builtin_op__<int64>("list_builder_slot", prev))
+  ret match(b._head)
+    (h2: Segment<T>) => SeqBuilder<T>(h2, seg, 1i32, ok4)
+    (nil2: None)     => SeqBuilder<T>(prev, seg, 1i32, ok4)
+
+# Fibonacci capacity ladder: 1, 1, 2, 3, 5, 8, 13, then clamped to 16
+# forever. Keyed off the closing tail's capacity; the duplicated leading 1
+# is the head-is-still-the-tail case, decided at the call site above.
+fun _nextCap(cap: Int32): Int32
+  ret cap == 1i32 ? 2i32
+    : cap == 2i32 ? 3i32
+    : cap == 3i32 ? 5i32
+    : cap == 5i32 ? 8i32
+    : cap == 8i32 ? 13i32
+    : 16i32
+
+# Publish: trim the tail's length to the filled count and unpin it. Every
+# segment is immutable — and compactable — from here on.
+fun build<T>([terminal] b: SeqBuilder<T>): Segment<T>|None
+  ret match(b._tail)
+    (t2: Segment<T>) => _built<T>(b._head, t2,
+                          b._ok && __builtin_op__<bool>("array_builder_seal", t2, b._at))
+    (nil2: None)     => None
+
+fun _built<T>(head: Segment<T>|None, t2: Segment<T>, ok: Bool): Segment<T>|None
+  ret !ok ? None   # unreachable: seal always succeeds; keeps the call live
+    : match(head)
+        (h: Segment<T>) => h
+        (nil: None)     => t2
+
+# The failure-path counterpart of build: seal the tail empty — releasing
+# its pin — so the whole chain dies as ordinary garbage at the next cycle.
+fun discard<T>([terminal] b: SeqBuilder<T>): None
+  ret match(b._tail)
+    (t2: Segment<T>) => _sealDiscarded(b._ok && __builtin_op__<bool>("array_builder_seal",
+                                                                    t2, 0i32))
+    (nil: None)      => None
+
+# Push every element of `l`, in order (the ListBuilder helper's Seq overload).
+fun pushAll<T>([terminal] b: SeqBuilder<T>, l: List<T>): SeqBuilder<T>
+  ret _pushChain<T>(b, chain<T>(l))
+
+fun [tail] _pushChain<T>([terminal] b: SeqBuilder<T>, c: Chain<T>): SeqBuilder<T>
+  ret match(c)
+    (nil: ChainEnd) => b
+    (l: ChainLink)  => _pushChain<T>(push<T>(b, l.value), l.next)
+
+# Drop: an abandoned builder — a failed alternative, an early exit — must
+# still release its pinned tail (a leaked pin is a permanently unmovable
+# object). [ambient]: the drops pass inserts plain `drop(x)` calls that
+# must resolve in concrete user code without a spelled `where`.
+instance [ambient]<T> Drop<SeqBuilder<T>>
+  fun drop(self: SeqBuilder<T>): None
+    ret discard<T>(self)
+
+
+# ── a Seq as a Stream ────────────────────────────────────────────────────────
+# The by-value state is a (segment, index) pool struct stepped in
+# registers; with [inline(always)] a drive loop compiles to the segment
+# walk it replaces (ArrayStream/ChainStream precedent). E = Never: an
+# in-memory source cannot fail. The boundary hop reads the next segment's
+# element 0 unconditionally — published segments are never empty.
+class [final] SeqStream<T>(ssSeg: Segment<T>|None, ssAt: Int32)
+
+fun seqStream<T>(s: Segment<T>|None): SeqStream<T>
+  ret SeqStream<T>(s, 0i32)
+
+instance<T> Stream<SeqStream<T>, T, Never>
+  fun [inline(always)] next(self: SeqStream<T>): (stream: SeqStream<T>, value: Result<T | None, Never>)
+    ret match(self.ssSeg)
+      (nil: None)       => (self, Ok<T | None, Never>(None))
+      (seg: Segment<T>) => self.ssAt < seg.length
+        ? (SeqStream<T>(self.ssSeg, self.ssAt + 1i32),
+           Ok<T | None, Never>(seg.array(self.ssAt)))
+        : match(seg.next)
+            (n2: Segment<T>) => (SeqStream<T>(n2, 1i32),
+                                 Ok<T | None, Never>(n2.array(0i32)))
+            (nil2: None)     => (SeqStream<T>(None, 0i32),
+                                 Ok<T | None, Never>(None))

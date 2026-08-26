@@ -1,0 +1,30 @@
+# Regression pin (2026-08-26): a [final] class with a trailing inline array
+# field — Seq's Segment — instantiated through SeqBuilder, fold and the
+# SeqStream drive. No other corpus program instantiates an array-field class,
+# so this pins the emission both compilers must agree on byte-for-byte: the
+# vtable's array_len_offset names the length field's MANGLED struct member
+# (the divergence found 2026-08-26 — the port emitted the bare spelling), the
+# four-field builder flattens to a by-value struct, and the element store
+# lands on a match-narrowed Segment binder.
+namespace SeqPin
+
+import System
+
+fun [tail] fill(b: SeqBuilder<Int32>, n: Int32, stop: Int32): SeqBuilder<Int32>
+  ret n > stop ? b : fill(push<Int32>(b, n), n + 1i32, stop)
+
+fun [tail] drain(st: SeqStream<Int32>, acc: Int): Int
+  let r = streamNext<SeqStream<Int32>, Int32, Never>(st)
+  ret match(r.value)
+    (ok: Ok<Int32 | None, Never>) => match(ok.value)
+      (x: Int32) => drain(r.stream, acc * 31 + Int(x))
+      (n: None)  => acc
+    (er: Error<Int32 | None, Never>) => acc
+
+fun [tail] href(n: Int, stop: Int, acc: Int): Int
+  ret n > stop ? acc : href(n + 1, stop, acc * 31 + n)
+
+fun main(): System::Int
+  let s = build<Int32>(fill(seqBuilder<Int32>(), 1i32, 21i32))
+  let viaFold = fold<Int32, Int>(s, 7, (acc: Int, x: Int32) => acc * 31 + Int(x))
+  ret viaFold == href(1, 21, 7) && drain(seqStream<Int32>(s), 7) == viaFold ? 0 : 1

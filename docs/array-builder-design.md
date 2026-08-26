@@ -102,7 +102,8 @@ unpinning, so run and referents die at the next cycle. (Adding this SECOND
 generic ambient Drop instance exposed a latent resolver bug — see
 `_scope_filtered` in `pyast/expression/access.py`: `unify_generic` callers
 must demand every instance placeholder bound, not merely a non-None
-mapping.)
+mapping.) `SeqBuilder<T>`'s ambient Drop is now the third generic instance
+riding the same resolution path.
 
 ## Tests
 
