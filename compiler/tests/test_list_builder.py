@@ -10,6 +10,32 @@ from tests.testutil import compile_and_run_stdlib_capture
 class TestListBuilder(TestCase):
     _TIMEOUT = 600
 
+    def test_fill_across_promotion_then_minors(self):
+        # Promote the half-built chain once (a single forced major), then
+        # continue pushing under young churn only. The built list must be
+        # complete and ordered — stale mirrors of the tail must resolve
+        # relocation ([pinnable] ChainLink) rather than read the pre-write
+        # copy and end the chain early.
+        src = """import System
+fun gcNudge(x: Int): Int
+  ret __builtin_op__<bool>("gc_debug_major_now", x) ? x : x
+fun [tail] waste(k: Int, acc: Int): Int
+  ret k == 0 ? acc : waste(k - 1, acc + length(String(k + 1000000)))
+fun [tail] fill(b: ListBuilder<Int>, n: Int): ListBuilder<Int>
+  ret n == 0 ? b
+    : n == 19900 ? fill(push(b, gcNudge(n)), n - 1)
+    : fill(push(b, n + waste(40, 0) - 280), n - 1)
+fun [tail] check(c: Chain<Int>, expect: Int): Int
+  ret match(c)
+    (nil: ChainEnd) => expect == 0 ? 0 : 1
+    (l: ChainLink)  => l.value == expect ? check(l.next, expect - 1) : 2
+fun main(): System::Int
+  let xs = build(fill(builder<Int>(), 20000))
+  ret check(chain(xs), 20000)
+"""
+        rc, out = compile_and_run_stdlib_capture(src, timeout=240)
+        self.assertEqual(0, rc, f"promotion-then-minors list fill failed; stdout:\n{out}")
+
     def test_order_scale_and_gc(self):
         src = """import System
 

@@ -90,6 +90,17 @@ Needs a post-mono discharge check with a proper diagnostic (both compilers).
 bug has a regression test at `compiler/tests/test_arm_binder_in_pipe.py`.)
 
 
+# TODO: functions can derive their "async" nature from parameters
+
+In YAFL all functions are async, but if the call knows that the function
+will never yield it can optimise the call and treat it as a sync call. Sometimes
+this can depend on parameters, so for example 'fold' which takes a function
+as a parameter must be async because function pointers are async, but if
+the caller knows that the function it is passing in is sync, we can derive
+that 'fold' is itself going to be sync. This might help to reduce the amount
+of inlining we do when trying to reduce the amount of async work, allowing
+us to lower the inline thresholds.
+
 # TODO: a cached (memoised) function in YAFL
 
 Long term we want a language/stdlib facility for a **cached function**: same

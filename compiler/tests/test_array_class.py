@@ -147,6 +147,21 @@ fun main(): System::Int
 """, timeout=30)
         self.assertEqual(0, rc, f"pointer-element build failed; stdout:\n{out}")
 
+    def test_combinators(self):
+        # map/fold/isEmpty overloads. map's closure captures (a, f), so the
+        # ctor fill loop's call is not sync-provable and the loop becomes an
+        # async state machine whose BACK-EDGE Jump is the function's final op
+        # — the shape that exposed the last-op special case in async_lower's
+        # liveness (the loop-carried length var wasn't saved across the park).
+        rc, out = compile_and_run_stdlib_capture(self._HDR + """
+fun main(): System::Int
+  let a = Array<Int>(5i32, (i: Int32) => Int(i) * 3)
+  let doubled = map<Int, Int>(a, (x: Int) => x * 2)
+  let total = fold<Int, Int>(doubled, 0, (acc: Int, x: Int) => acc + x)
+  ret isEmpty<Int>(a) ? 1 : (total == 60 ? 0 : 2)
+""", timeout=30)
+        self.assertEqual(0, rc, f"combinator chain failed; stdout:\n{out}")
+
     def test_builder_is_linear(self):
         # Using a consumed builder again is a linearity error, not a program.
         src = self._HDR + """
@@ -183,6 +198,29 @@ fun main(): System::Int
   ret a.length == 12i32 && first == "1332" && mid == "666" && last == "111" ? 0 : 1
 """, timeout=60)
         self.assertEqual(0, rc, f"fill across forced majors failed; stdout:\n{out}")
+
+    def test_fill_across_promotion_then_minors(self):
+        # Promote the half-built array's storage once (a single forced
+        # major), then keep pushing under young-generation churn only. The
+        # sealed result is read back in full — stale mirrors of the run must
+        # resolve relocation ([pinnable]) rather than read pre-store slots.
+        rc, out = compile_and_run_stdlib_capture(self._HDR + """
+fun gcNudge(x: Int): Int
+  ret __builtin_op__<bool>("gc_debug_major_now", x) ? x : x
+fun [tail] waste(k: Int, acc: Int): Int
+  ret k == 0 ? acc : waste(k - 1, acc + length(String(k + 1000000)))
+fun [tail] fillP(b: ArrayBuilder<Int>, n: Int): ArrayBuilder<Int>
+  ret n == 0 ? b
+    : n == 3900 ? fillP(push<Int>(b, gcNudge(n)), n - 1)
+    : fillP(push<Int>(b, n + waste(40, 0) - 280), n - 1)
+fun [tail] checkAll(a: Array<Int>, i: Int, bad: Int): Int
+  ret i >= 4000 ? bad
+    : checkAll(a, i + 1, bad + (a[i] == 4000 - i ? 0 : 1))
+fun main(): System::Int
+  let a = build<Int>(fillP(arrayBuilder<Int>(64), 4000))
+  ret a.length == 4000i32 ? checkAll(a, 0, 0) : 0 - 1
+""", timeout=120)
+        self.assertEqual(0, rc, f"promotion-then-minors fill failed; stdout:\n{out}")
 
     def test_async_fill_across_forced_major_cycles(self):
         # The motivating scenario for the pin: the producer contains a

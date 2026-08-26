@@ -42,13 +42,22 @@ import dataclasses
 
 import codegen.typedecl as t
 from codegen.gen import Application
-from codegen.param import NewStruct, ObjectField, RParam, RuntimeInvoke
+from codegen.param import ArrayElement, NewStruct, ObjectField, RParam, RuntimeInvoke
 
 
 def resolve_pinnable_reads(app: Application) -> Application:
     pinnable = {name for name, obj in app.objects.items() if obj.is_pinnable}
     if not pinnable:
         return app
+
+    def already_resolved(pointer: RParam) -> bool:
+        return (isinstance(pointer, RuntimeInvoke)
+                and pointer.function == "object_resolve")
+
+    def wrap(pointer: RParam) -> RParam:
+        return RuntimeInvoke("object_resolve",
+                             NewStruct((("o", pointer),)),
+                             t.DataPointer())
 
     def rewrite(p: RParam) -> RParam:
         # A FRESH store needs no resolve: the object was allocated moments ago
@@ -60,12 +69,14 @@ def resolve_pinnable_reads(app: Application) -> Application:
         # is merely redundant while a missing one is a stale read.
         if (isinstance(p, ObjectField) and p.object_name in pinnable
                 and not p.fresh
-                and not (isinstance(p.pointer, RuntimeInvoke)
-                         and p.pointer.function == "object_resolve")):
-            resolved = RuntimeInvoke("object_resolve",
-                                     NewStruct((("o", p.pointer),)),
-                                     t.DataPointer())
-            return dataclasses.replace(p, pointer=resolved)
+                and not already_resolved(p.pointer)):
+            return dataclasses.replace(p, pointer=wrap(p.pointer))
+        # A [pinnable] ARRAY class's element read (`a[i]`): the base pointer
+        # resolves for the same reason — the elements and the sealed length
+        # are late-pin written, so a stale base reads pre-write slots.
+        if (isinstance(p, ArrayElement) and p.object_name in pinnable
+                and not already_resolved(p.pointer)):
+            return dataclasses.replace(p, pointer=wrap(p.pointer))
         return p
 
     new_functions = {name: dataclasses.replace(fn, ops=tuple(

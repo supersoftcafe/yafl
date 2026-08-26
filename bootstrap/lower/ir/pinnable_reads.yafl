@@ -58,8 +58,23 @@ fun prFunction(f: CgFunction, names: StrSet): CgFunction
 
 fun prRewrite(p: RParam, names: StrSet): RParam
   ret match(p)
-    (x: RpObjectField) => prRewriteField(x, names)
-    (o: RParam)        => p
+    (x: RpObjectField)  => prRewriteField(x, names)
+    (x: RpArrayElement) => prRewriteElement(x, names)
+    (o: RParam)         => p
+
+# A [pinnable] ARRAY class's element read (`a[i]`): the base pointer resolves
+# for the same reason — the elements and the sealed length are late-pin
+# written, so a stale base reads pre-write slots (pinnable_reads.py).
+fun prRewriteElement(x: RpArrayElement, names: StrSet): RParam
+  ret !setHas(names, x.objectName) || prAlreadyResolved(x.pointer)
+    ? x
+    : RpArrayElement(x.elementType,
+                     RpRuntimeInvoke("object_resolve",
+                                     RpNewStruct(list1<RpNamedValue>(
+                                         RpNamedValue("o", x.pointer))),
+                                     CgDataPointer()),
+                     x.objectName, x.field, x.lengthField, x.index,
+                     x.checked)
 
 # A FRESH store needs no resolve: the object was allocated moments ago on a
 # thread-private page, straight-line before this store, so it cannot have been

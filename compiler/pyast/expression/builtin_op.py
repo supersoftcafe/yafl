@@ -135,16 +135,13 @@ class BuiltinOpExpression(Expression):
         return cap_b + alloc
 
     def __array_builder_store(self, resolver: g.Resolver) -> "g.OperationBundle":
-        """Inline element store under a MOMENTARY late pin (the once.c
-        write-once idiom): array_builder_begin resolves forwarding, pins,
-        and notes the late write; the store lands through the returned
-        owner; array_builder_end unpins. The store itself must be inline —
-        the element's C type varies per instantiation, so a runtime call
-        cannot express it — and the operands are all evaluated BEFORE the
-        bracket opens, keeping the pinned section bounded and
-        allocation-free. fresh: each slot is written at most once over the
-        allocator's zero fill, so there is no old edge for the snapshot
-        barrier to keep (new edges are begin's redirty note)."""
+        """Inline pinned-array element store: a Move into the indexed
+        trailing array field. A runtime call cannot express this — the
+        element's C type varies per instantiation — and the builder holds
+        the pin from allocation to seal, so a plain store at the stable
+        address is exactly right. fresh: each slot is written at most once
+        over the allocator's zero fill, so there is no old edge for the
+        snapshot barrier to keep."""
         arr_e = self.params.expressions[0].value
         idx_e = self.params.expressions[1].value
         val_e = self.params.expressions[2].value
@@ -152,23 +149,12 @@ class BuiltinOpExpression(Expression):
         arr_b = arr_e.generate(resolver).with_prefix("absarr")
         idx_b = idx_e.generate(resolver).with_prefix("absidx")
         val_b = val_e.generate(resolver).with_prefix("absval")
-        owner = cg_p.StackVar(cg_t.DataPointer(), "absown")
-        done = cg_p.StackVar(cg_t.Int(8), "absend")
-        begin = cg_p.RuntimeInvoke(
-            "array_builder_begin",
-            cg_p.NewStruct((("arr", arr_b.result_var),)), cg_t.DataPointer())
         store = cg_o.Move(
-            cg_p.ObjectField(elem_ctype, owner, cname, "array",
+            cg_p.ObjectField(elem_ctype, arr_b.result_var, cname, "array",
                              idx_b.result_var, fresh=True),
             val_b.result_var)
-        end = cg_p.RuntimeInvoke(
-            "array_builder_end",
-            cg_p.NewStruct((("arr", owner),)), cg_t.Int(8))
-        bracket = g.OperationBundle(
-            (owner, done),
-            (cg_o.Move(owner, begin), store, cg_o.Move(done, end)),
-            done)
-        return arr_b + idx_b + val_b + bracket
+        done = g.OperationBundle((), (store,), cg_p.Integer(1, 8))
+        return arr_b + idx_b + val_b + done
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         special = self.__repr_aware(resolver)

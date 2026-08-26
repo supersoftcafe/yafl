@@ -22,21 +22,26 @@ fun resolveKnownTags(a: CgApp): CgApp
 
 fun ktFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
-  let walked = ktWalk(chain(f.fnOps), defs, builder<Op >(), false)
+  let walked = ktWalk<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), defs,
+                                       builder<Op >(), false)
   if !walked.folded
     ret f
   ret cgFunctionStripUnusedOperations(cgFunctionWith(f, walked.ops,
                                                      f.fnStackVars))
 
-fun [tail] ktWalk(ops: Chain<Op>, defs: SsaDefs,
-                  [terminal] acc: ListBuilder<Op >, folded: Bool): (ops: List<Op>, folded: Bool)
-  ret match(ops)
-    (nil: ChainEnd) => (build<Op >(acc), folded)
-    (l: ChainLink)  => match(l.value)
-      (ji: OpJumpIf) => match(staticInt(ji.jumpIfCondition, defs))
-        (cond: Int) => ktWalk(l.next, defs, ktHarden(acc, ji, cond), true)
-        ()          => ktWalk(l.next, defs, push<Op >(acc, l.value), folded)
-      (o: Op)        => ktWalk(l.next, defs, push<Op >(acc, l.value), folded)
+# Stream-driven (storage-agnostic). Error arm unreachable: Never.
+fun [tail] ktWalk<S>(s: S, defs: SsaDefs,
+                     [terminal] acc: ListBuilder<Op >, folded: Bool): (ops: List<Op>, folded: Bool) where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => match(cur)
+        (ji: OpJumpIf) => match(staticInt(ji.jumpIfCondition, defs))
+          (cond: Int) => ktWalk<S>(r.stream, defs, ktHarden(acc, ji, cond), true)
+          ()          => ktWalk<S>(r.stream, defs, push<Op >(acc, cur), folded)
+        (o: Op)        => ktWalk<S>(r.stream, defs, push<Op >(acc, cur), folded)
+      (n: None) => (build<Op >(acc), folded)
+    (er: Error<Op | None, Never>) => (build<Op >(acc), folded)
 
 # Taken: `Jump(label)`; never taken: the guard evaporates.
 fun ktHarden([terminal] acc: ListBuilder<Op >, ji: OpJumpIf,

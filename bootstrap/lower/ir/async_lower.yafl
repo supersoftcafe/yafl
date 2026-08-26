@@ -411,13 +411,22 @@ fun [tail] alLivenessCalc(os: Chain<Op>, ix: AlIx, i: Int, nxt: Op|None,
       |> (o) => alLivenessCalc(l.next, ix, i - 1, o, prepend(o, acc))
 
 # saved(op) = (edge-in of the fall-through/Jump successor ∪ edge-in of the
-# JumpIf target) − op's own writes.
+# JumpIf target) − op's own writes. A Jump's successor is its label WHEREVER
+# the op sits — testing last-op first severed the back edge of a loop whose
+# back-edge Jump is the function's final op (the array-ctor fill inlined
+# into a tail position), so nothing loop-carried was saved across a park
+# inside that loop (async_lower.py calc).
 fun alLivenessOne(op: Op, ix: AlIx, i: Int, nxt: Op|None): Op
-  let ss1 = i >= ix.aiInv.avN - 1
-    ? List<RParam>()
-    : alSs1(ix, i, op, nxt)
+  let ss1 = alIsJumpOp(op) || i < ix.aiInv.avN - 1
+    ? alSs1(ix, i, op, nxt)
+    : List<RParam>()
   let ss2 = alSs2(ix, i, op)
   ret opWithSavedVars(op, svSetSub(svSetUnion(ss1, ss2), alWritesOf(op)))
+
+fun alIsJumpOp(op: Op): Bool
+  ret match(op)
+    (j: OpJump) => true
+    (o: Op)     => false
 
 fun alSs1(ix: AlIx, i: Int, op: Op, nxt: Op|None): List<RParam>
   ret match(op)

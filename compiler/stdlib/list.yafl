@@ -407,16 +407,14 @@ fun [tail] _mergeInto<T>([terminal] out: ListBuilder<T>, a: Chain<T>, b: Chain<T
 
 # ── ListBuilder ──────────────────────────────────────────────────────────────
 # Linear in-order construction: O(1) push, natural order, no reversals, and
-# build() hands back a FRONT-NORMAL list whose chain() is free. The cells
-# are ordinary MOVABLE immutable ChainLinks; the one mutable step — writing
-# the previous tail's `next` — is a locking late init in the runtime
-# (list_builder_link: resolve forwarding, pin for the one bounded store,
-# unpin — concurrent lazy relocation's "either copy is fine" contract only
-# covers immutable objects, so the store must land on the authoritative
-# copy). Nothing stays pinned between pushes. Linearity certifies the
-# confinement: the builder is consumed by every operation, so no push can
-# race another or follow build. The runtime calls' results thread through
-# _ok so no pass can discard them.
+# build() hands back a FRONT-NORMAL list whose chain() is free. The cells are
+# ordinary immutable ChainLinks; the one mutable step — writing the previous
+# tail's `next` — lives in the runtime, on a cell that is PINNED (compaction
+# never moves it: concurrent lazy relocation's "either copy is fine" contract
+# only covers immutable objects) and not yet published. Linearity certifies
+# the confinement: the builder is consumed by every operation, so no push can
+# race another or follow build. Exactly one cell is pinned per live builder.
+# The runtime calls' results thread through _ok so no pass can discard them.
 class [linear,final] ListBuilder<T>(_head: Chain<T>, _tail: Chain<T>,
                                      _slot: Int64, _ok: Bool)
 
@@ -425,20 +423,20 @@ fun builder<T>(): ListBuilder<T>
 
 fun push<T>([terminal] b: ListBuilder<T>, x: T): ListBuilder<T>
   let cell = ChainLink<T>(x, ChainEnd<T>())
+  let pinned = __builtin_op__<bool>("list_builder_pin", cell)
   ret match(b._tail)
     (prev: ChainLink) => ListBuilder<T>(b._head, cell, b._slot,
-        b._ok && __builtin_op__<bool>("list_builder_link", prev, cell, b._slot))
+        pinned && __builtin_op__<bool>("list_builder_link", prev, cell, b._slot))
     # First push: compute the cell layout's next-slot index ONCE; every later
-    # link is a single locking indexed store.
+    # link is a single indexed store.
     (nil: ChainEnd)   => ListBuilder<T>(cell, cell,
-        __builtin_op__<int64>("list_builder_slot", cell), b._ok)
+        __builtin_op__<int64>("list_builder_slot", cell), pinned)
 
 fun build<T>([terminal] b: ListBuilder<T>): List<T>
   ret match(b._tail)
-    (t2: ChainLink) => b._ok
+    (t2: ChainLink) => __builtin_op__<bool>("list_builder_seal", t2)
       ? ListFull<T>(b._head)
-      : ListEmpty<T>()   # unreachable: links always succeed; consuming _ok
-                         # keeps the whole call chain live
+      : ListEmpty<T>()   # unreachable: seal always succeeds; keeps the call live
     (nil: ChainEnd)  => ListEmpty<T>()
 
 # Push every element of `l`, in order.
@@ -459,10 +457,11 @@ fun discard<T>([terminal] b: ListBuilder<T>): None
   ret _discardBuilt(build(b))
 
 # Drop: an ABANDONED builder — a failed parse alternative, an early exit —
-# is consumed here so linearity balances (nothing is pinned; the cells are
-# ordinary garbage). Dropping is building and discarding the result.
-# [ambient]: the drops pass inserts plain `drop(x)` calls that must resolve
-# in concrete user code without a spelled `where`.
+# must still release its pinned tail cell (a leaked pin is a permanently
+# unmovable object). Dropping is building and discarding the result: build's
+# seal unpins, and the discarded cells are ordinary garbage. [ambient]: the
+# drops pass inserts plain `drop(x)` calls that must resolve in concrete
+# user code without a spelled `where`.
 instance [ambient]<T> Drop<ListBuilder<T>>
   fun drop(self: ListBuilder<T>): None
     ret _discardBuilt(build(self))

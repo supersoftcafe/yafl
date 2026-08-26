@@ -27,7 +27,8 @@ class [final] CpOut(cpFn: CgFunction, cpChanged: Bool)
 
 fun cpOnce(f: CgFunction): CpOut
   let readCounts = cpCountReads(f.fnOps)
-  let walked = cpWalk(chain(f.fnOps), readCounts, builder<Op >(), false)
+  let walked = cpWalk<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)),
+                                       readCounts, builder<Op >(), false)
   ret walked.cpwChanged
     ? CpOut(cpPruneStackVars(f, walked.cpwOps), true)
     : CpOut(f, false)
@@ -45,58 +46,83 @@ fun cpCountReads(ops: List<Op>): Dict<String, Int>
 
 class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
 
-fun [tail] cpWalk(ops: Chain<Op>, readCounts: Dict<String, Int>,
-                  [terminal] acc: ListBuilder<Op >, changed: Bool): CpWalkOut
-  ret match(ops)
-    (nil: ChainEnd) => CpWalkOut(build<Op >(acc), changed)
-    (l: ChainLink)  => match(cpTryPropagate(l, readCounts))
-      (s2: CpStep) => cpWalk(s2.cpsRest, readCounts,
-                             _pushChain<Op >(acc, chain<Op>(s2.cpsEmit)), true)
-      ()            => cpWalk(l.next, readCounts, push<Op >(acc, l.value),
-                              changed)
+# PAIRED-CARRY stream walk: pull the first element, then the [tail] carry
+# loop holds the PREVIOUS op as a parameter and pulls the next — the pair
+# exists as two locals, no lookahead into the container. When a pair
+# propagates, BOTH are consumed: emit, pull afresh to re-establish the
+# carry, recurse. Storage-agnostic: the container appears only in cpOnce's
+# source construction.
+fun cpWalk<S>(s: S, readCounts: Dict<String, Int>,
+              [terminal] acc: ListBuilder<Op >, changed: Bool): CpWalkOut where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (first: Op) => cpCarry<S>(first, r.stream, readCounts, acc, changed)
+      (n: None)   => CpWalkOut(build<Op >(acc), changed)
+    (er: Error<Op | None, Never>) => CpWalkOut(build<Op >(acc), changed)
 
-class [final] CpStep(cpsEmit: List<Op>, cpsRest: Chain<Op>)
+fun [tail] cpCarry<S>(cur: Op, s: S, readCounts: Dict<String, Int>,
+                      [terminal] acc: ListBuilder<Op >, changed: Bool): CpWalkOut where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (nxt: Op) => match(cpTryPropagate(cur, nxt, readCounts))
+        # Both ops of the pair are consumed: emit, then pull one more IN
+        # PLACE to re-establish the carry ([tail] needs direct
+        # self-recursion, so the re-prime cannot be its own function).
+        (s2: CpStep) => streamNext<S, Op, Never>(r.stream)
+          |> (r2) => match(r2.value)
+            (ok2: Ok<Op | None, Never>) => match(ok2.value)
+              (nx2: Op)  => cpCarry<S>(nx2, r2.stream, readCounts,
+                                       _pushChain<Op >(acc, chain<Op>(s2.cpsEmit)), true)
+              (n2: None) => CpWalkOut(build<Op >(_pushChain<Op >(acc, chain<Op>(s2.cpsEmit))), true)
+            (er2: Error<Op | None, Never>) =>
+              CpWalkOut(build<Op >(_pushChain<Op >(acc, chain<Op>(s2.cpsEmit))), true)
+        ()            => cpCarry<S>(nxt, r.stream, readCounts,
+                                    push<Op >(acc, cur), changed)
+      (n: None) => CpWalkOut(build<Op >(push<Op >(acc, cur)), changed)
+    (er: Error<Op | None, Never>) => CpWalkOut(build<Op >(push<Op >(acc, cur)), changed)
+
+class [final] CpStep(cpsEmit: List<Op>)
 
 # The candidate shape: Move(M:StackVar, S:StackVar); next op not a Label and
 # reads M. Emits the substituted next op (keeping the Move when M has other
-# readers) and consumes both ops.
-fun cpTryPropagate(l: ChainLink<Op>, readCounts: Dict<String, Int>): CpStep|None
-  ret match(l.value)
-    (m: OpMove) => cpTryMove(l, m, readCounts)
+# readers); the carry loop consumes both.
+fun cpTryPropagate(cur: Op, nxt: Op, readCounts: Dict<String, Int>): CpStep|None
+  ret match(cur)
+    (m: OpMove) => cpTryMove(m, nxt, readCounts)
     (o: Op)     => None
 
-fun cpTryMove(l: ChainLink<Op>, m: OpMove, readCounts: Dict<String, Int>): CpStep|None
+fun cpTryMove(m: OpMove, nxt: Op, readCounts: Dict<String, Int>): CpStep|None
   ret match(m.moveTarget)
     (mt: RpStackVar) => match(m.moveSource)
-      (ms: RpStackVar) => cpTryNext(l, m, mt, ms, readCounts)
+      (ms: RpStackVar) => cpTryNext(m, mt, ms, nxt, readCounts)
       (o: RParam)       => None
     (o2: RParam)      => None
 
-fun cpTryNext(l: ChainLink<Op>, m: OpMove, mt: RpStackVar, ms: RpStackVar,
+fun cpTryNext(m: OpMove, mt: RpStackVar, ms: RpStackVar, nxt: Op,
               readCounts: Dict<String, Int>): CpStep|None
-  ret match(l.next)
-    (nil: ChainEnd) => None
-    (nx: ChainLink) => match(nx.value)
-      (lb: OpLabel) => None
-      (o: Op)       => strListMember(opReadVarNames(nx.value), mt.name)
-        ? cpEmit(m, mt, ms, nx, readCounts)
-        : None
+  ret match(nxt)
+    (lb: OpLabel) => None
+    (o: Op)       => strListMember(opReadVarNames(nxt), mt.name)
+      ? cpEmit(m, mt, ms, nxt, readCounts)
+      : None
 
 # `m` is the Move being (possibly) kept — but this helper only re-emits it,
 # so it takes the ROOT type: a narrowed variant type in a signature is for
 # helpers that read variant fields.
-fun cpEmit(m: Op, mt: RpStackVar, ms: RpStackVar, nx: ChainLink<Op>,
+fun cpEmit(m: Op, mt: RpStackVar, ms: RpStackVar, nxt: Op,
            readCounts: Dict<String, Int>): CpStep
   # Python substitutes the SOURCE INSTANCE (replace_params swaps the whole
   # StackVar node for `s`, TYPE INCLUDED) — a name-only rename would keep the
   # target instance's type and mint a same-name-different-type chimera when
   # the two declarations disagree (the $par_result|unsupported uninit ghost).
-  let substituted = opReplaceParams(nx.value, (p: RParam) => cpSubstVar(p, mt.name, ms))
+  let substituted = opReplaceParams(nxt, (p: RParam) => cpSubstVar(p, mt.name, ms))
   # M's only read was the one just substituted → drop the Move entirely;
   # other readers elsewhere keep it.
   ret sdCountOf(readCounts, mt.name) == 1
-    ? CpStep(list1(substituted), nx.next)
-    : CpStep(list2(m, substituted), nx.next)
+    ? CpStep(list1(substituted))
+    : CpStep(list2(m, substituted))
 
 fun cpSubstVar(p: RParam, m: String, s: RpStackVar): RParam
   ret match(p)

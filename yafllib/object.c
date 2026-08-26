@@ -542,6 +542,15 @@ static _Atomic(size_t) gc_cycle_survivor_slots = 0; // live SLOTS on young survi
 // them. The floor of 1 keeps every step productive (its aggregate excess is
 // one page per step, the same property the serial pacing had).
 static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_pace_claimed = 0;
+
+// MARK-stage progress in REAL pages scanned (a multi-page object's pop
+// advances this by its whole span). The mark loop runs while
+// pages_scanned < alloc_clock * step_base — so a 20-page object's scan
+// pre-pays the obligation of the next ~10 allocations, whose fsa calls
+// then do no mark work at all. Monotonic, like the clock; the books are
+// cumulative. (Prune keeps the claim pool: its per-pop cost does not
+// scale with object span.)
+static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_pages_scanned = 0;
 static unsigned gc_pace_credit(void) {
     uint64_t now = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed);
     uint64_t claimed = atomic_load_explicit(&gc_pace_claimed, memory_order_relaxed);
@@ -827,18 +836,22 @@ EXPORT size_t object_get_size(object_t* ptr) {
 
 // ── ListBuilder support ──────────────────────────────────────────────────────
 // In-order list construction (stdlib ListBuilder): cells are ordinary
-// movable immutable ChainLinks; the ONE mutable step — writing the previous
-// tail's `next` — is a LOCKING late init (the once.c write-once idiom):
-// resolve forwarding, pin for the one bounded store, announce the late
-// write, store, unpin. Nothing stays pinned between pushes. (Design ruling:
-// late init always takes the locking update; removing locks that are proven
-// unnecessary is a future optimisation, never the default.)
+// immutable ChainLinks; the ONE mutable step — writing the previous tail's
+// `next` — happens here, on a cell that is PINNED (compaction never moves
+// it) and not yet published (linearity: only the builder can reach it).
+// Pinned-at-construction rather than the once.c locking bracket (ruling
+// 2026-08-25): the momentary bracket makes cells relocatable while
+// late-writable, which taxes EVERY reader with forwarding resolution —
+// a price Memoize pays happily and list construction must not.
 // `next` is the LAST field of every ChainLink<T> instantiation (the value's
-// representation varies, the trailing pointer slot does not). No write
-// barrier: under SATB the barrier snapshots the OLD value, and the old
-// value here is the ChainEnd terminator the cell was constructed with — a
-// static. The store keeps RELEASE order: whoever follows the published
-// `next` also sees the cell behind it fully built.
+// representation varies, the trailing pointer slot does not), so the slot is
+// object_size - sizeof(void*) from the cell base. No write barrier: under
+// SATB the barrier snapshots the OLD value, and the old value here is the
+// ChainEnd terminator the cell was constructed with — a static.
+EXPORT bool list_builder_pin(object_t *cell) {
+    object_pin(cell);
+    return true;
+}
 
 // The `next` slot index for this instantiation's cells: the TRAILING pointer
 // field = the highest set bit of the pointer mask (object_size is slot-
@@ -852,50 +865,39 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 }
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
-    object_t *owner = object_pin_resolve(prev);
-    gc_note_late_write(owner);
-    __atomic_store_n((uintptr_t*)((object_t**)owner + slot), (uintptr_t)cell,
-                     __ATOMIC_RELEASE);
-    object_unpin(owner);
+    ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
+    object_unpin(prev);                          // prev is now frozen
+    return true;
+}
+
+EXPORT bool list_builder_seal(object_t *tail) {
+    object_unpin(tail);
     return true;
 }
 
 // ── array builder ────────────────────────────────────────────────────────────
-// An Array<T> under construction is an ordinary movable object; the fill may
-// suspend (an async producer parks in a heap frame) and the half-built array
-// crosses any number of cycles, relocations included. Each element store is
-// therefore bracketed by a MOMENTARY late pin (the once.c write-once idiom):
-// resolve forwarding, pin — excluding the compactor for the bounded,
-// allocation-free store — announce the late write, store, unpin. Between
-// stores nothing is pinned. array_create has already zero-filled the payload
-// and stamped length = CAPACITY, so the scanner traces every slot from birth
-// (NULLs where nothing is written yet).
-
-// Open the bracket around ONE inline element store: the returned address is
-// the current copy, pinned. The caller's store follows immediately (the
-// element's C type varies per instantiation, so the store itself is emitted
-// by the compiler); the redirty note lands BEFORE the store so a cycle that
-// opens mid-bracket already treats the page as dirty.
-EXPORT object_t* array_builder_begin(object_t *arr) {
-    object_t *owner = object_pin_resolve(arr);
-    gc_note_late_write(owner);
-    return owner;
-}
-
-EXPORT bool array_builder_end(object_t *arr) {
-    object_unpin(arr);
+// An Array<T> under construction is PINNED from allocation to seal: the fill
+// may suspend (an async producer parks in a heap frame), so the half-built
+// array crosses safe points — pinned, every element store is an ordinary
+// generated store at a stable address, and no reader anywhere pays a
+// forwarding resolve (ruling 2026-08-25: construction must not tax readers;
+// the once.c locking bracket stays for Memoize-style late init only).
+// array_create has already zero-filled the payload and stamped length =
+// CAPACITY, so the scanner traces every slot from birth (NULLs where
+// nothing is written yet). The pin also blocks page promotion, so element
+// stores stay young-generation writes.
+EXPORT bool array_builder_pin(object_t *arr) {
+    object_pin(arr);
     return true;
 }
 
-// Publish: shorten length to the filled count, under its own momentary
-// bracket. The field never UNDERSTATES the traceable extent, and the trimmed
-// tail is never-written zeros — shrinking can only untrace zeros, so no
-// redirty note is needed. The array is immutable from here on.
+// Publish: shorten length to the filled count — the field never UNDERSTATES
+// the traceable extent, and the trimmed tail is never-written zeros — then
+// release the pin. The array is immutable (and compactable) from here on.
 EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
-    object_t *owner = object_pin_resolve(arr);
-    vtable_t *vt = vtable_untag(owner->vtable);
-    *((int32_t*)(((char*)owner) + vt->array_len_offset)) = length;
-    object_unpin(owner);
+    vtable_t *vt = vtable_untag(arr->vtable);
+    *((int32_t*)(((char*)arr) + vt->array_len_offset)) = length;
+    object_unpin(arr);
     return true;
 }
 
@@ -1850,7 +1852,23 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
 // looks empty — a HINT to attempt the (exclusive) transition, never a verdict.
 static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     GC_STAT_BUMP(gc_stat_mark_steps);
-    const unsigned step_pages = gc_step_base * gc_pace_credit();
+    // Allowance = how far REAL scanning lags the target (alloc pages x
+    // step_base). A big object's span-counted scan runs pages_scanned
+    // AHEAD of the target and later calls fall through here with the
+    // floor only. The floor of 1 is liveness, not pacing: manual-mode
+    // stepped tests and end-of-allocation drains must still progress.
+    const uint64_t _target = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed)
+                             * (uint64_t)gc_step_base;
+    const uint64_t _done = atomic_load_explicit(&gc_pages_scanned, memory_order_relaxed);
+    uint64_t _lag = _target > _done ? _target - _done : 0;
+    const uint64_t _cap = (uint64_t)gc_step_base * GC_PACE_CREDIT_MAX;
+    if (_lag > _cap) _lag = _cap;
+    // Floor = one CREDIT's worth (gc_step_base pages), matching the old
+    // claim-pool floor exactly: under heap-full synchronous driving the
+    // clock freezes while REQUEUED pages (mutator re-marks) refill the
+    // queue — work the clock never funded — and a 1-page floor drains it
+    // too slowly to outrun the allocator stall (test_gc_pressure OOM).
+    const unsigned step_pages = _lag > 0 ? (unsigned)_lag : gc_step_base;
     uint64_t _t0 = gc_stats_enabled ? gc_tsc() : 0;
 
     // BATCHED claims/publication, same shape as prune (see the comment
@@ -1899,6 +1917,18 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         }
 
         GC_PROF_LAP(gc_prof_t_merge, _t0);
+        // PACE ACCOUNTING for multi-page objects: this ONE pop scans the
+        // object's whole extent (the trailing-array walk crosses every page
+        // of the allocation), so charge the full span against the step
+        // budget — the "scan N pages per allocation" promise is kept in
+        // PAGES, not pops. Without this an Array spanning 30 pages costs one
+        // pop's credit while doing 30 pages of work: the call quantum blows
+        // up by the span and the whole cycle cadence mis-paces (observed as
+        // a 16x cycle collapse and +53% mark time on the array-backed
+        // self-compile). The head page's `pages` field is 1 for ordinary
+        // pages, so this is a no-op off the multi-page path.
+        if (page->head.pages > 1)
+            count += page->head.pages - 1;
         // ENTER on "the merged target has any bits" — a REQUEUED page arrives
         // with its late marks already folded into `seen` (end-of-page re-merge)
         // and an empty atomic source, and its diff must still run. REPEAT on
@@ -1957,6 +1987,12 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
 
     // Move re-process pages back on to the scan list
     gc_fsa_mark_sweep$pump_ring();
+
+    // Publish REAL pages scanned (spans included): this is what the
+    // allowance above nets against the target, so a big object's surplus
+    // survives this call and eases the following ones.
+    if (count > 0)
+        atomic_fetch_add_explicit(&gc_pages_scanned, count, memory_order_relaxed);
 
     // The worklist is always empty here — it is drained per page above — so
     // only the scan list governs whether a transition attempt is worthwhile.

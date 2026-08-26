@@ -163,17 +163,21 @@ class [final] SaPlan(saPhiIdx: Int, saAcc: String, saSteps: List<SaStep>,
 fun saFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
   let reads = sdReadCounts(f)
-  ret match(saFindPlan(chain(f.fnOps), 0, defs, reads))
+  ret match(saFindPlan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, defs, reads))
     (plan: SaPlan) => saApplyPlan(f, plan, defs, reads)
     ()             => f
 
-fun [tail] saFindPlan(ops: Chain<Op>, i: Int, defs: SsaDefs,
-                      reads: Dict<String, Int>): SaPlan|None
-  ret match(ops)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => match(saPlanForOp(l.value, i, defs, reads))
-      (plan: SaPlan) => plan
-      ()             => saFindPlan(l.next, i + 1, defs, reads)
+# Stream + carried index (the plan records op POSITIONS). Error arm: Never.
+fun [tail] saFindPlan<S>(s: S, i: Int, defs: SsaDefs,
+                         reads: Dict<String, Int>): SaPlan|None where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => match(saPlanForOp(cur, i, defs, reads))
+        (plan: SaPlan) => plan
+        ()             => saFindPlan<S>(r.stream, i + 1, defs, reads)
+      (n: None) => None
+    (er: Error<Op | None, Never>) => None
 
 fun saPlanForOp(op: Op, i: Int, defs: SsaDefs,
                 reads: Dict<String, Int>): SaPlan|None
@@ -238,15 +242,18 @@ fun saIsDirectAcc(v: RParam, acc: String): Bool
 # to its label; any acc read in that span (outside the recognised chains)
 # bails the plan.
 fun saLoopLabel(f: CgFunction, phiIdx: Int): String|None
-  ret saLabelScan(chain(f.fnOps), 0, phiIdx, None)
+  ret saLabelScan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, phiIdx, None)
 
-fun [tail] saLabelScan(ops: Chain<Op>, i: Int, phiIdx: Int,
-                       latest: String|None): String|None
-  ret match(ops)
-    (nil: ChainEnd) => latest
-    (l: ChainLink)  => i >= phiIdx
-      ? latest
-      : saLabelScan(l.next, i + 1, phiIdx, saLabelName(l.value, latest))
+fun [tail] saLabelScan<S>(s: S, i: Int, phiIdx: Int,
+                          latest: String|None): String|None where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => i >= phiIdx
+        ? latest
+        : saLabelScan<S>(r.stream, i + 1, phiIdx, saLabelName(cur, latest))
+      (n: None) => latest
+    (er: Error<Op | None, Never>) => latest
 
 fun saLabelName(op: Op, latest: String|None): String|None
   ret match(op)
@@ -261,14 +268,17 @@ fun saJumpTarget(op: Op): String|None
 
 fun saSpanEnd(f: CgFunction, loopLabel: String|None, phiIdx: Int): Int
   ret match(loopLabel)
-    (lbl: String) => saSpanScan(chain(f.fnOps), 0, lbl, phiIdx)
+    (lbl: String) => saSpanScan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, lbl, phiIdx)
     ()            => phiIdx
 
-fun [tail] saSpanScan(ops: Chain<Op>, i: Int, lbl: String, latest: Int): Int
-  ret match(ops)
-    (nil: ChainEnd) => latest
-    (l: ChainLink)  => saSpanScan(l.next, i + 1, lbl,
-                                  saTargets(l.value, lbl) ? i : latest)
+fun [tail] saSpanScan<S>(s: S, i: Int, lbl: String, latest: Int): Int where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => saSpanScan<S>(r.stream, i + 1, lbl,
+                                 saTargets(cur, lbl) ? i : latest)
+      (n: None) => latest
+    (er: Error<Op | None, Never>) => latest
 
 fun saTargets(op: Op, lbl: String): Bool
   ret match(saJumpTarget(op))
@@ -288,15 +298,18 @@ fun saChainMoveTarget(op: Op, chainAll: Set<String>): Bool
       (o: RParam)      => false
     (o: Op)     => false
 
-fun [tail] saAnyInSpan(ops: Chain<Op>, i: Int, from2: Int, to2: Int,
-                       acc: String, chainAll: Set<String>): Bool
-  ret match(ops)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => i > to2
-      ? false
-      : i >= from2 && saReadsAccOutsideChain(l.value, acc, chainAll)
-        ? true
-        : saAnyInSpan(l.next, i + 1, from2, to2, acc, chainAll)
+fun [tail] saAnyInSpan<S>(s: S, i: Int, from2: Int, to2: Int,
+                          acc: String, chainAll: Set<String>): Bool where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => i > to2
+        ? false
+        : i >= from2 && saReadsAccOutsideChain(cur, acc, chainAll)
+          ? true
+          : saAnyInSpan<S>(r.stream, i + 1, from2, to2, acc, chainAll)
+      (n: None) => false
+    (er: Error<Op | None, Never>) => false
 
 # ── the rewrite ─────────────────────────────────────────────────────────────
 
@@ -309,21 +322,24 @@ fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: SsaDefs,
                       (acc2: Set<String>, s2: SaStep) =>
                         fold(s2.saChainMoves, acc2,
                              (s3: Set<String>, n: String) => add<String>(s3, n)))
-  if saAnyBuried(chain(f.fnOps), 0, plan)
+  if saAnyBuried<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, plan)
     ret f
   let spanEnd = saSpanEnd(f, saLoopLabel(f, plan.saPhiIdx), plan.saPhiIdx)
-  if saAnyInSpan(chain(f.fnOps), 0, plan.saPhiIdx + 1, spanEnd,
+  if saAnyInSpan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, plan.saPhiIdx + 1, spanEnd,
                  plan.saAcc, chainAll)
     ret f
   let out = saRewriteOps(chain(f.fnOps), 0, plan, chainAll, (List<Op>(), 0))
   ret saRestack(f, plan, chainAll, out.ops, out.n)
 
-fun [tail] saAnyBuried(ops: Chain<Op>, i: Int, plan: SaPlan): Bool
-  ret match(ops)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => saPhiSourceBuriesAcc(l.value, i, plan)
-      ? true
-      : saAnyBuried(l.next, i + 1, plan)
+fun [tail] saAnyBuried<S>(s: S, i: Int, plan: SaPlan): Bool where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => saPhiSourceBuriesAcc(cur, i, plan)
+        ? true
+        : saAnyBuried<S>(r.stream, i + 1, plan)
+      (n: None) => false
+    (er: Error<Op | None, Never>) => false
 
 fun saBufVar(plan: SaPlan): RParam
   ret RpStackVar(CgDataPointer(), saBufName(plan.saAcc))

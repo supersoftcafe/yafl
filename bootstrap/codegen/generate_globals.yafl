@@ -326,9 +326,30 @@ fun enumLeafObject(leafName: String, leafFields: List<PStmt>, rootName: String,
                        map(leafFields, (p: PStmt) => letCgField(p, r)))
   # Strict lookup: the registry enumerates leaves from these same root
   # statements, so a miss is a compiler bug — loud, not a dispatch fall-through.
+  # A VARIANT's [pinnable] reaches its emitted object (a leaf whose field is
+  # late-pin written), exactly as for a [pinnable] class.
   ret CgObject(objName, list1(rootName), List<CgFuncSlot>(),
                CgImmediateStruct(fields), None, "", false, false,
-               getOr0(discs, "enumleaf(" + objName + ")"))
+               getOr0(discs, "enumleaf(" + objName + ")"),
+               enumLeafIsPinnable(rootName, leafName, r))
+
+fun enumLeafIsPinnable(rootName: String, leafName: String, r: Resolver): Bool
+  ret match(soleItem(findType(r, rootName)))
+    (f: Found) => match(f.fStmt)
+      (e: PsEnum) => leafHasAttr(e, leafName, "pinnable")
+      (o: PStmt)  => false
+    ()          => false
+
+fun leafHasAttr(e: PsEnum, leafName: String, attr: String): Bool
+  ret fold(e.eVariants, false, (found: Bool, v: PStmt) =>
+        found || variantHasAttr(v, leafName, attr))
+
+fun variantHasAttr(v: PStmt, leafName: String, attr: String): Bool
+  ret match(v)
+    (ve: PsEnum) => isEmpty(ve.eVariants)
+      ? (ve.eName == leafName && hasAttr(ve.eAttrs, attr))
+      : leafHasAttr(ve, leafName, attr)
+    (o: PStmt)   => false
 
 # ── LetStatement.global_codegen: statics + [lazy] globals (lets.py) ─────────
 

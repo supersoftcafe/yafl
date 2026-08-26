@@ -22,17 +22,15 @@ between two pushes the program can suspend, allocate, and take any number of
 GC cycles, with the half-built array live the whole time. Three decisions
 make that sound:
 
-**A MOMENTARY pin brackets each element store — the array is otherwise an
-ordinary movable object.** Pinning is never a state the builder holds:
-between pushes the compactor is free to relocate the array (references to
-it, including the builder's `_arr` field, are fixed up like any others).
-Each store runs the `once.c` write-once idiom: `array_builder_begin`
-resolves forwarding, takes the pin (a mutex against the compactor claiming
-the object), and notes the late write; the store lands through the returned
-owner pointer; `array_builder_end` unpins. The bracketed section is bounded
-and allocation-free — the operands are all evaluated before it opens —
-which is what makes the pin's spin-lock discipline correct. `seal` does the
-same around its one length write.
+**Pinned from allocation to seal.** `array_builder_pin` pins the fresh run;
+until `build`/`discard` seals it, the array cannot be moved by compaction —
+so every push is a plain generated store at a stable address, and NO READER
+ANYWHERE pays a forwarding resolve. (The alternative — a momentary locking
+bracket per store, the `once.c` idiom — makes the cells relocatable while
+late-writable, which forces `[pinnable]`-style resolving reads onto the
+hottest walks in the language; measured at ~+23% on a self-compile. Memoize
+pays that price happily; construction must not. Ruling 2026-08-25.) The pin
+also blocks page promotion, so element stores stay young-generation writes.
 
 **`length` starts AT CAPACITY and seal SHORTENS it.** There is one length
 field, and it never understates the traceable extent. `array_create`
@@ -44,13 +42,11 @@ trim only discards never-written zeros.
 
 **Stores are barrier-free (`fresh`).** Each slot is written at most once
 over the allocator's zero fill, so there is no old edge for the snapshot
-barrier to preserve; new edges are announced by `begin`'s redirty note
-before the store lands.
+barrier to preserve; new edges are covered by SATB's allocation rules.
 
-Growth (`push` past `_cap`): fresh run at double capacity, `_copyInto`,
-the abandoned run simply dropped (never published — builder-owned only —
-so it dies as ordinary garbage), then the push retries. The `estimate`
-parameter exists to make this path rare.
+Growth (`push` past `_cap`): fresh run at double capacity (pinned),
+`_copyInto`, the abandoned run sealed EMPTY — releasing its pin — then the
+push retries. The `estimate` parameter exists to make this path rare.
 
 ## Element representation: `T` never crosses the runtime boundary
 
@@ -58,11 +54,9 @@ A C function cannot take a `T` by value — its width varies per
 instantiation (1 byte, a pointer, a multi-word struct). So the runtime
 primitives are representation-BLIND:
 
-* `array_builder_begin(arr)` — resolve forwarding, pin, note the late
-  write; returns the owner pointer the store goes through
-* `array_builder_end(arr)` — unpin
+* `array_builder_pin(arr)` — object-level pin, held to seal
 * `array_builder_seal(arr, len)` — writes an `int32` at
-  `vtable->array_len_offset` under its own begin/end-style bracket
+  `vtable->array_len_offset`, then unpins
 
 Everything element-typed is a COMPILER special form, inlined after
 monomorphisation where the width is a static fact
@@ -73,11 +67,10 @@ monomorphisation where the width is a static fact
   representation: `array_el_size` (stride) and `array_el_pointer_locations`
   (per-ELEMENT pointer mask — a struct element with pointers at words 2 and
   5 has bits 2 and 5).
-* `array_builder_store` — the begin/store/end bracket with a typed IR
-  `Move` into the indexed trailing array member at its centre:
-  `((Array_X_t*)owner)->array.a[i] = val`. Both sides carry the element C
-  type from the same monomorphised copy, so a width disagreement is a clang
-  error, not a silent smash. The store op itself is byte-for-byte the ctor
+* `array_builder_store` — a typed IR `Move` into the indexed trailing
+  array member: `((Array_X_t*)arr)->array.a[i] = val`. Both sides carry the
+  element C type from the same monomorphised copy, so a width disagreement
+  is a clang error, not a silent smash. This is byte-for-byte the ctor
   fill's store (new.py:159) re-exposed at a builtin boundary.
 
 Bounds are by construction, not by check: `push` tests `_at < _cap` in YAFL
@@ -103,9 +96,9 @@ constructed atomically with those contents.
 ## Drop
 
 `instance [ambient]<T> Drop<ArrayBuilder<T>>` — an abandoned builder (a
-failed parse alternative, an early exit) is consumed by the drops pass so
-linearity balances; `discard` seals empty, severing the run's element
-references so run and referents die at the next cycle. (Adding this SECOND
+failed parse alternative, an early exit) must still release its pinned run
+(a leaked pin is a permanently unmovable object): `discard` seals empty,
+unpinning, so run and referents die at the next cycle. (Adding this SECOND
 generic ambient Drop instance exposed a latent resolver bug — see
 `_scope_filtered` in `pyast/expression/access.py`: `unify_generic` callers
 must demand every instance placeholder bound, not merely a non-None
@@ -116,7 +109,7 @@ mapping.)
 `tests/test_array_class.py` — exact-estimate, growth, clamp, empty,
 discard, implicit drop, pointer elements, linearity rejection, and two
 GC-interaction fills (sync and async producer) that force a major cycle
-before every push via `gc_debug_major_now`, exercising the scanner tracing
-a half-built pointer array and the momentary store brackets interleaved
-with compaction. Runtime pin/seal unit coverage rides the existing ctest
+before every push via `gc_debug_major_now`, plus a promote-then-minors
+fill, exercising the scanner tracing a half-built pointer array and the
+pinned run crossing cycles and promotions. Runtime pin/seal unit coverage rides the existing ctest
 suite (object.c debug exports).

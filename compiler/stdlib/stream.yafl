@@ -55,6 +55,37 @@ fun [inline(always)] streamNext<S, T, E>(s: S): (stream: S, value: Result<T | Sy
   ret next(s)
 
 
+# ── sources: an Array or a Chain as a stream ─────────────────────────────────
+# The by-value states are pool structs — (array, index) and (chain) — stepped
+# in registers; with [inline(always)] a drive loop over one of these compiles
+# to the indexed walk / chain match it replaces. E = Never: in-memory sources
+# cannot fail, and Never's emptiness makes the Error arm unconstructable.
+
+class [final] ArrayStream<T>(asArr: System::Array<T>, asAt: System::Int32)
+
+fun arrayStream<T>(a: System::Array<T>): ArrayStream<T>
+  ret ArrayStream<T>(a, 0i32)
+
+instance<T> Stream<ArrayStream<T>, T, Never>
+  fun [inline(always)] next(self: ArrayStream<T>): (stream: ArrayStream<T>, value: Result<T | System::None, Never>)
+    ret self.asAt < self.asArr.length
+      ? (ArrayStream<T>(self.asArr, self.asAt + 1i32),
+         Ok<T | System::None, Never>(self.asArr[self.asAt]))
+      : (self, Ok<T | System::None, Never>(None))
+
+class [final] ChainStream<T>(csChain: System::Chain<T>)
+
+fun chainStream<T>(c: System::Chain<T>): ChainStream<T>
+  ret ChainStream<T>(c)
+
+instance<T> Stream<ChainStream<T>, T, Never>
+  fun [inline(always)] next(self: ChainStream<T>): (stream: ChainStream<T>, value: Result<T | System::None, Never>)
+    ret match(self.csChain)
+      (nil: System::ChainEnd) => (self, Ok<T | System::None, Never>(None))
+      (l: System::ChainLink)  => (ChainStream<T>(l.next),
+                                  Ok<T | System::None, Never>(l.value))
+
+
 # ── map: apply `f` to every value; Ok(None) and Error pass through ───────────
 class [final] Map<S, A, B, E>(inner: S, f: (A): B) where Stream<S, A, E>
 

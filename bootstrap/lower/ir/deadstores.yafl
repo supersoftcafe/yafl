@@ -45,21 +45,27 @@ fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
-  let walked = dsWalk(chain(f.fnOps), reads, builder<Op >(), false)
+  let walked = dsWalk<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), reads,
+                                       builder<Op >(), false)
   ret walked.changed
     ? (cpPruneStackVars(f, walked.ops), true)
     : (f, false)
 
-fun [tail] dsWalk(ops: Chain<Op>, reads: Dict<String, Bool>,
-                  [terminal] acc: ListBuilder<Op >,
-                  changed: Bool): (ops: List<Op>, changed: Bool)
-  ret match(ops)
-    (nil: ChainEnd) => (build<Op >(acc), changed)
-    (l: ChainLink)  => dsStep(l.value, reads)
-      |> (step) => match(step.op)
-        (kept: Op) => dsWalk(l.next, reads, push<Op >(acc, kept),
-                             changed || step.changed)
-        ()         => dsWalk(l.next, reads, acc, true)
+# Stream-driven (storage-agnostic): swapping the container is one source
+# construction in dsOnce, not a walk rewrite. Error arm unreachable: Never.
+fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
+                     [terminal] acc: ListBuilder<Op >,
+                     changed: Bool): (ops: List<Op>, changed: Bool) where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => dsStep(cur, reads)
+        |> (step) => match(step.op)
+          (kept: Op) => dsWalk<S>(r.stream, reads, push<Op >(acc, kept),
+                                  changed || step.changed)
+          ()         => dsWalk<S>(r.stream, reads, acc, true)
+      (n: None) => (build<Op >(acc), changed)
+    (er: Error<Op | None, Never>) => (build<Op >(acc), changed)
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.

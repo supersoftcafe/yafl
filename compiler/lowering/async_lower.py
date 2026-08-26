@@ -377,10 +377,15 @@ def __calculate_saved_vars(fn: Function) -> Function:
 
         def calc(index: int) -> Op:
             op = cur[index]
-            if index >= n - 1:
-                ss1 = frozenset()
-            elif isinstance(op, Jump):
+            # A Jump's successor is its label WHEREVER the op sits — testing
+            # last-op first severed the back edge of a loop whose back-edge
+            # Jump was the function's final op (the array-ctor fill inlined
+            # into a tail position), so nothing loop-carried was saved
+            # across a park inside that loop.
+            if isinstance(op, Jump):
                 ss1 = edge_in(index, labels[op.name]) if op.name in labels else frozenset()
+            elif index >= n - 1:
+                ss1 = frozenset()
             else:
                 ss1 = edge_in(index, index + 1)
             ss2 = (edge_in(index, labels[op.label])

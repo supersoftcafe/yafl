@@ -205,6 +205,11 @@ class EnumStatement(TypeStatement):
             comment=f"{self.name} — enum root marker (never instantiated)")
         objects = [marker]
         leaf_field_sets = t._collect_leaf_field_sets(self, [])
+        # A VARIANT's attributes reach its emitted object: `[pinnable]` on a
+        # leaf (ChainLink — its `next` is late-pin written by the builder)
+        # makes that leaf's reads resolve relocation first, exactly as for a
+        # [pinnable] class.
+        leaf_attrs = self._leaf_attribute_map()
         for leaf_name, leaf_fields in zip(self._enum_spec.all_leaf_names, leaf_field_sets):
             if not is_complex and not resolver.is_boxed_leaf(self.name, leaf_name):
                 continue                    # flat root: inline leaves stay in the pool
@@ -222,8 +227,24 @@ class EnumStatement(TypeStatement):
                 # of FLAT roots dispatch by $tag, not vtable, so they are
                 # absent from the registry and keep discriminator 0.
                 discriminator=(discriminators[f"enumleaf({obj_name})"]
-                               if is_complex else 0)))
+                               if is_complex else 0),
+                is_pinnable="pinnable" in leaf_attrs.get(leaf_name, ())))
         return objects
+
+    def _leaf_attribute_map(self) -> dict:
+        """{leaf name: attributes} over the variant tree — the same leaves,
+        in the same sense, as _collect_leaf_names (a variant with its own
+        variants is a nested root, not a leaf)."""
+        out: dict = {}
+        def walk(v: "EnumStatement"):
+            if v.variants:
+                for c in v.variants:
+                    walk(c)
+            else:
+                out[v.name] = v.attributes
+        for v in self.variants:
+            walk(v)
+        return out
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
         # Expose generic type params so variant field types resolve correctly.

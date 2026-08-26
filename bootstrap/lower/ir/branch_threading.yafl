@@ -27,13 +27,19 @@ class [final] BtOut(btOps: List<Op>, btChanged: Bool)
 class [linear, final] BtAcc(baOps: ListBuilder<Op >, baChanged: Bool)
 
 fun btOnce(ops: List<Op>): BtOut
-  ret btLoop(chain(ops), ops, BtAcc(builder<Op >(), false))
+  ret btLoop<ChainStream<Op>>(chainStream<Op>(chain(ops)), ops,
+                              BtAcc(builder<Op >(), false))
 
-fun [tail] btLoop(os: Chain<Op>, ops: List<Op>,
-                  [terminal] acc: BtAcc): BtOut
-  ret match(os)
-    (nil: ChainEnd) => BtOut(build<Op >(acc.baOps), acc.baChanged)
-    (l: ChainLink)  => btLoop(l.next, ops, btStep(acc, l.value, ops))
+# Stream-driven walk; `ops` rides alongside for the label-target search
+# (random access, not part of the sequential drive). Error arm: Never.
+fun [tail] btLoop<S>(s: S, ops: List<Op>,
+                     [terminal] acc: BtAcc): BtOut where Stream<S, Op, Never>
+  let r = streamNext<S, Op, Never>(s)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>) => match(ok.value)
+      (cur: Op) => btLoop<S>(r.stream, ops, btStep(acc, cur, ops))
+      (n: None) => BtOut(build<Op >(acc.baOps), acc.baChanged)
+    (er: Error<Op | None, Never>) => BtOut(build<Op >(acc.baOps), acc.baChanged)
 
 fun btStep([terminal] acc: BtAcc, op: Op, ops: List<Op>): BtAcc
   ret match(op)

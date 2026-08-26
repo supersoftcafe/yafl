@@ -878,15 +878,12 @@ fun genArrayBuilderAllocOn(cname: String, capE: PExpr, r: Resolver): GBundle
                          list1(OpNewObject(cname, rv, mustResult(capB), List<RParam>())),
                          rv, List<RecurSource>(), List<ExitSource>()))
 
-# Inline element store under a MOMENTARY late pin (the once.c write-once
-# idiom): array_builder_begin resolves forwarding, pins, and notes the late
-# write; the store lands through the returned owner; array_builder_end
-# unpins. The store itself must be inline — the element's C type varies per
-# instantiation — and the operands are all evaluated BEFORE the bracket
-# opens, keeping the pinned section bounded and allocation-free. fresh: each
-# slot is written at most once over the allocator's zero fill, so there is
-# no old edge for the snapshot barrier to keep (new edges are begin's
-# redirty note).
+# Inline pinned-array element store: a Move into the indexed trailing array
+# field. A runtime call cannot express this — the element's C type varies
+# per instantiation — and the builder holds the pin from allocation to
+# seal, so a plain store at the stable address is exactly right. fresh:
+# each slot is written at most once over the allocator's zero fill, so
+# there is no old edge for the snapshot barrier to keep.
 fun genArrayBuilderStore(op: PeBuiltinOp, r: Resolver): GBundle
   ret match(threeBuiltinArgs(op.opParams))
     (a: (a0: PExpr, a1: PExpr, a2: PExpr)) => genArrayBuilderStoreOn(a.a0, a.a1, a.a2, r)
@@ -902,23 +899,12 @@ fun genArrayBuilderStoreAll(cname: String, elem: Spec, arrE: PExpr, idxE: PExpr,
   let arrB = withPrefix(genExpr(arrE, r), "absarr")
   let idxB = withPrefix(genExpr(idxE, r), "absidx")
   let valB = withPrefix(genExpr(valE, r), "absval")
-  let owner = RpStackVar(CgDataPointer(), "absown")
-  let done = RpStackVar(CgInt(8), "absend")
-  let begin = RpRuntimeInvoke("array_builder_begin",
-                              RpNewStruct(list1(RpNamedValue("arr", mustResult(arrB)))),
-                              CgDataPointer())
-  let store = OpMove(RpObjectField(specGenerate(elem, r), owner, cname, "array",
+  let store = OpMove(RpObjectField(specGenerate(elem, r), mustResult(arrB), cname, "array",
                                    mustResult(idxB), true),
                      mustResult(valB), false, List<RParam>())
-  let endInv = RpRuntimeInvoke("array_builder_end",
-                               RpNewStruct(list1(RpNamedValue("arr", owner))),
-                               CgInt(8))
   ret bundleJoin(bundleJoin(bundleJoin(arrB, idxB), valB),
-                 GBundle(list2(owner, done),
-                         list3(OpMove(owner, begin, false, List<RParam>()),
-                               store,
-                               OpMove(done, endInv, false, List<RParam>())),
-                         done, List<RecurSource>(), List<ExitSource>()))
+                 GBundle(List<RParam>(), list1(store), RpInteger(1, 8),
+                         List<RecurSource>(), List<ExitSource>()))
 
 fun firstBuiltinArg(params: PExpr): PExpr|None
   ret match(params)
