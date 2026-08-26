@@ -40,6 +40,12 @@ $ kcachegrind callgrind.out.41837
 Environment: `YAFL_PROF_HZ` (0 = counters only, no timers; clamped to
 10000), `YAFL_PROF_FILE` (exact output path).
 
+A `--profile` binary also unlocks HEAP profiling by allocation site: with
+`YAFL_HEAPPROF=<path>` and `YAFL_HEAPPROF_SAMPLE=<bytes>` set, the same
+shadow stack attributes sampled live allocations and the run writes a
+pprof `inuse_space` profile beside the massif census — see
+`docs/heap-profiling-design.md`.
+
 ## Division of labour
 
 - **Compiler** (`--profile`, both compilers — port modes `cp`/`c1p`/`c2p`/`c3p`):
