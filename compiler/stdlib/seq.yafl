@@ -55,6 +55,13 @@ fun isEmpty<T>(s: Segment<T>|None): Bool
     (seg: Segment<T>) => false
     (nil: None)       => true
 
+# First element, or None when empty — published segments are never empty, so
+# the head is always the first segment's element 0.
+fun head<T>(s: Segment<T>|None): T|None
+  ret match(s)
+    (seg: Segment<T>) => seg.array(0i32)
+    (nil: None)       => None
+
 # In-order left fold: an indexed walk within each segment, one pointer hop
 # between segments.
 fun fold<T, TAcc>(s: Segment<T>|None, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
@@ -207,6 +214,18 @@ fun discard<T>([terminal] b: SeqBuilder<T>): None
 # Push every element of `l`, in order (the ListBuilder helper's Seq overload).
 fun pushAll<T>([terminal] b: SeqBuilder<T>, l: List<T>): SeqBuilder<T>
   ret _pushChain<T>(b, chain<T>(l))
+
+# Push every element of an existing Seq, in order — the concatenation
+# primitive: seed a builder, pushAll the pieces, build.
+fun pushAll<T>([terminal] b: SeqBuilder<T>, s: Segment<T>|None): SeqBuilder<T>
+  ret _pushSeg<T>(b, s, 0i32)
+
+fun [tail] _pushSeg<T>([terminal] b: SeqBuilder<T>, s: Segment<T>|None, i: Int32): SeqBuilder<T>
+  ret match(s)
+    (nil: None)       => b
+    (seg: Segment<T>) => i < seg.length
+      ? _pushSeg<T>(push<T>(b, seg.array(i)), s, i + 1i32)
+      : _pushSeg<T>(b, seg.next, 0i32)
 
 fun [tail] _pushChain<T>([terminal] b: SeqBuilder<T>, c: Chain<T>): SeqBuilder<T>
   ret match(c)

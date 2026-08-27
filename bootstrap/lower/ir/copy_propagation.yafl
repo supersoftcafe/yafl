@@ -27,8 +27,8 @@ class [final] CpOut(cpFn: CgFunction, cpChanged: Bool)
 
 fun cpOnce(f: CgFunction): CpOut
   let readCounts = cpCountReads(f.fnOps)
-  let walked = cpWalk<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)),
-                                       readCounts, builder<Op >(), false)
+  let walked = cpWalk<SeqStream<Op>>(seqStream<Op>(f.fnOps),
+                                       readCounts, seqBuilder<Op >(), false)
   ret walked.cpwChanged
     ? CpOut(cpPruneStackVars(f, walked.cpwOps), true)
     : CpOut(f, false)
@@ -39,12 +39,12 @@ fun cpOnce(f: CgFunction): CpOut
 fun cpAddName(acc: Set<String>, n: String): Set<String>
   ret add<String>(acc, n)
 
-fun cpCountReads(ops: List<Op>): Dict<String, Int>
+fun cpCountReads(ops: Segment<Op>|None): Dict<String, Int>
   ret fold(ops, Dict<String, Int>(),
            (acc: Dict<String, Int>, op: Op) =>
              fold(fold(opReadVarNames(op), Set<String>(), cpAddName), acc, sdBump))
 
-class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
+class [final] CpWalkOut(cpwOps: Segment<Op>|None, cpwChanged: Bool)
 
 # PAIRED-CARRY stream walk: pull the first element, then the [tail] carry
 # loop holds the PREVIOUS op as a parameter and pulls the next — the pair
@@ -53,7 +53,7 @@ class [final] CpWalkOut(cpwOps: List<Op>, cpwChanged: Bool)
 # carry, recurse. Storage-agnostic: the container appears only in cpOnce's
 # source construction.
 fun cpWalk<S>(s: S, readCounts: Dict<String, Int>,
-              [terminal] acc: ListBuilder<Op >, changed: Bool): CpWalkOut where Stream<S, Op, Never>
+              [terminal] acc: SeqBuilder<Op >, changed: Bool): CpWalkOut where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -62,7 +62,7 @@ fun cpWalk<S>(s: S, readCounts: Dict<String, Int>,
     (er: Error<Op | None, Never>) => CpWalkOut(build<Op >(acc), changed)
 
 fun [tail] cpCarry<S>(cur: Op, s: S, readCounts: Dict<String, Int>,
-                      [terminal] acc: ListBuilder<Op >, changed: Bool): CpWalkOut where Stream<S, Op, Never>
+                      [terminal] acc: SeqBuilder<Op >, changed: Bool): CpWalkOut where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -130,7 +130,7 @@ fun cpSubstVar(p: RParam, m: String, s: RpStackVar): RParam
     (o: RParam)      => p
 
 # Drop stack_var declarations no longer referenced anywhere (reads OR writes).
-fun cpPruneStackVars(f: CgFunction, newOps: List<Op>): CgFunction
+fun cpPruneStackVars(f: CgFunction, newOps: Segment<Op>|None): CgFunction
   let mentioned = fold(newOps, Set<String>(),
                        (acc: Set<String>, op: Op) =>
                          fold(concat(opReadVarNames(op), cpWriteNames(op)), acc,

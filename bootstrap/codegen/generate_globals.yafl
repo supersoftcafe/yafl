@@ -32,7 +32,7 @@ fun funGlobalCodegen(f: PsFun, r0: Resolver): CgFunction
                        map(paramTargets(f.fParams), (t2: PStmt) => CgField(stmtName2(t2), specGenerateOpt(targetType(t2), bodyR))))
   let vars = map(bundle.gbStackVars, (sv: RParam) => CgField(stackVarName(sv), rpGetType(sv)))
   ret CgFunction(f.fName, CgStruct(params), specGenerateOpt(f.fRet, bodyR), CgStruct(vars),
-                 bundle.gbOps, f.fName, foreignSymbolOf(f),
+                 cgOpsOf(bundle.gbOps), f.fName, foreignSymbolOf(f),
                  hasAttr(f.fAttrs, "sync"), hasAttr(f.fAttrs, "tail"), false,
                  inlineAlways(f),
                  f.psfLine.plFile, f.psfLine.plLine)
@@ -173,7 +173,7 @@ fun createThunk(className: String, let2: PsLet, r: Resolver): CgFunction
                  CgStruct(concat(list1(CgField("this", CgDataPointer())), cgStructFields(paramStruct))),
                  resultType,
                  CgStruct(list1(CgField("result", resultType))),
-                 list2(opCall, OpReturn(resultVar, List<RParam>())),
+                 cgOpsOf(list2(opCall, OpReturn(resultVar, List<RParam>()))),
                  "", None, false, false, false, false)
 
 fun thunkParamStruct(sp: Spec|None, r: Resolver): CgType

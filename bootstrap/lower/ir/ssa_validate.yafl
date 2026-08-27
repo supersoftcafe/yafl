@@ -99,11 +99,19 @@ fun ssavSingleDefinition(f: CgFunction): List<String>
 # Abort/Jump, a musttail Call, or a conditional whose fall-through is the
 # not-taken path).
 fun ssavAllPathsReturn(f: CgFunction): List<String>
-  ret match(lastOp(chain(f.fnOps)))
+  ret match(lastOp(f.fnOps))
     (op: Op) => ssavIsTerminator(op)
       ? List<String>()
       : list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
     ()        => List<String>()
+
+# Seq twin: hop to the last segment, read its final element.
+fun [tail] lastOp(s: Segment<Op>|None): Op|None
+  ret match(s)
+    (nil: None)        => None
+    (seg: Segment<Op>) => match(seg.next)
+      (n2: Segment<Op>) => lastOp(seg.next)
+      (nil2: None)      => seg.length > 0i32 ? seg.array(seg.length - 1i32) : None
 
 fun [tail] lastOp(ops: Chain<Op>): Op|None
   ret match(ops)
@@ -130,14 +138,17 @@ fun ssavIsTerminator(op: Op): Bool
 class [final] PredEntry(peLabel: String, pePreds: Set<String>)
 
 fun ssavPredecessors(f: CgFunction): List<PredEntry>
-  ret ssavPredLoop(chain(f.fnOps), None, "", List<PredEntry>())
+  let p0 = cgPullOp(seqStream<Op>(f.fnOps))
+  ret ssavPredLoop(p0.op, p0.stream, None, "", List<PredEntry>())
 
-fun [tail] ssavPredLoop(ops: Chain<Op>, prev: Op|None, current: String,
+fun [tail] ssavPredLoop(cur: Op|None, st: SeqStream<Op>, prev: Op|None, current: String,
                         acc: List<PredEntry>): List<PredEntry>
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ssavPredLoop(l.next, l.value, ssavNextCurrent(l.value, current),
-                                    ssavPredStep(l.value, prev, current, acc))
+  if cur is None
+    ret acc
+  let op = forceOp(cur)
+  let p = cgPullOp(st)
+  ret ssavPredLoop(p.op, p.stream, op, ssavNextCurrent(op, current),
+                   ssavPredStep(op, prev, current, acc))
 
 fun ssavNextCurrent(op: Op, current: String): String
   ret match(op)
@@ -194,17 +205,20 @@ fun predsOf(acc: List<PredEntry>, label: String): Set<String>
 # region (Labels open one; any non-Phi op closes it).
 fun ssavPhiWellFormed(f: CgFunction): List<String>
   let preds = ssavPredecessors(f)
-  ret ssavPhiLoop(chain(f.fnOps), preds, f.fnName, "", false, List<String>())
+  let p0 = cgPullOp(seqStream<Op>(f.fnOps))
+  ret ssavPhiLoop(p0.op, p0.stream, preds, f.fnName, "", false, List<String>())
 
-fun [tail] ssavPhiLoop(ops: Chain<Op>, preds: List<PredEntry>, fname: String,
+fun [tail] ssavPhiLoop(cur: Op|None, st: SeqStream<Op>, preds: List<PredEntry>, fname: String,
                        current: String, inRegion: Bool, acc: List<String>): List<String>
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => ssavPhiLoop(l.next, preds, fname, lb.labelName, true, acc)
-      (ph: OpPhi)   => ssavPhiLoop(l.next, preds, fname, current, inRegion,
-                                   concat(acc, ssavPhiCheck(ph, preds, fname, current, inRegion)))
-      (o: Op)       => ssavPhiLoop(l.next, preds, fname, current, false, acc)
+  if cur is None
+    ret acc
+  let op = forceOp(cur)
+  let p = cgPullOp(st)
+  ret match(op)
+    (lb: OpLabel) => ssavPhiLoop(p.op, p.stream, preds, fname, lb.labelName, true, acc)
+    (ph: OpPhi)   => ssavPhiLoop(p.op, p.stream, preds, fname, current, inRegion,
+                                 concat(acc, ssavPhiCheck(ph, preds, fname, current, inRegion)))
+    (o: Op)       => ssavPhiLoop(p.op, p.stream, preds, fname, current, false, acc)
 
 fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname: String,
                  current: String, inRegion: Bool): List<String>

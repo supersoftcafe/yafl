@@ -159,15 +159,19 @@ fun main(): System::Int
 """, timeout=30)
         self.assertEqual(0, rc, f"int32-element seq failed; stdout:\n{out}")
 
-    def test_pushAll_list(self):
-        # Cross-container feed: a List's elements pushed in traversal order.
+    def test_pushAll_list_and_seq(self):
+        # Cross-container feeds: a List's elements pushed in traversal order,
+        # then a Seq's own elements re-pushed (the concatenation primitive).
         rc, out = compile_and_run_stdlib_capture(self._HDR + self._FILL + """
 fun main(): System::Int
   let l = prepend<Int>(1, prepend<Int>(2, prepend<Int>(3, List<Int>())))
   let s = build<Int>(pushAll<Int>(seqBuilder<Int>(), l))
-  ret hSeq(s) == ((7 * 31 + 1) * 31 + 2) * 31 + 3 ? 0 : 1
+  let s2 = build<Int>(pushAll<Int>(pushAll<Int>(seqBuilder<Int>(), s), l))
+  let okList = hSeq(s) == ((7 * 31 + 1) * 31 + 2) * 31 + 3
+  let okSeq = hSeq(s2) == (((((7 * 31 + 1) * 31 + 2) * 31 + 3) * 31 + 1) * 31 + 2) * 31 + 3
+  ret okList && okSeq ? 0 : 1
 """, timeout=30)
-        self.assertEqual(0, rc, f"pushAll from List failed; stdout:\n{out}")
+        self.assertEqual(0, rc, f"pushAll feeds failed; stdout:\n{out}")
 
     def test_combinators(self):
         # map/filter/any/isEmpty overloads; filter-to-nothing builds None.

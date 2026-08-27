@@ -95,7 +95,7 @@ fun createEntryPoint(mainName: String): CgFunction
                  CgVoid(),
                  CgStruct(list2(CgField("result", CgDataPointer()),
                                 CgField("$sv_discard", CgDataPointer()))),
-                 ops, "", None, false, false, true, false)
+                 cgOpsOf(ops), "", None, false, false, true, false)
 
 # ── lazy machinery (ensure) ──────────────────────────────────────────────────
 
@@ -338,8 +338,7 @@ fun [tail] ccFnsSame(a: Chain<CgFunction>, b: Chain<CgFunction>): Bool
     (la: ChainLink) => match(b)
       (nil2: ChainEnd) => false
       (lb: ChainLink)  => (la.value.fnName == lb.value.fnName
-                           && sameLen(chain(la.value.fnOps),
-                                      chain(lb.value.fnOps)))
+                           && sameLen(la.value.fnOps, lb.value.fnOps))
         ? ccFnsSame(la.next, lb.next)
         : false
 

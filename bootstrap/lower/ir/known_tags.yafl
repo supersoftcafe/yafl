@@ -22,8 +22,8 @@ fun resolveKnownTags(a: CgApp): CgApp
 
 fun ktFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
-  let walked = ktWalk<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), defs,
-                                       builder<Op >(), false)
+  let walked = ktWalk<SeqStream<Op>>(seqStream<Op>(f.fnOps), defs,
+                                       seqBuilder<Op >(), false)
   if !walked.folded
     ret f
   ret cgFunctionStripUnusedOperations(cgFunctionWith(f, walked.ops,
@@ -31,7 +31,7 @@ fun ktFunction(f: CgFunction): CgFunction
 
 # Stream-driven (storage-agnostic). Error arm unreachable: Never.
 fun [tail] ktWalk<S>(s: S, defs: SsaDefs,
-                     [terminal] acc: ListBuilder<Op >, folded: Bool): (ops: List<Op>, folded: Bool) where Stream<S, Op, Never>
+                     [terminal] acc: SeqBuilder<Op >, folded: Bool): (ops: Segment<Op>|None, folded: Bool) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -44,8 +44,8 @@ fun [tail] ktWalk<S>(s: S, defs: SsaDefs,
     (er: Error<Op | None, Never>) => (build<Op >(acc), folded)
 
 # Taken: `Jump(label)`; never taken: the guard evaporates.
-fun ktHarden([terminal] acc: ListBuilder<Op >, ji: OpJumpIf,
-             cond: Int): ListBuilder<Op >
+fun ktHarden([terminal] acc: SeqBuilder<Op >, ji: OpJumpIf,
+             cond: Int): SeqBuilder<Op >
   ret (cond != 0) != ji.jumpIfInvert
     ? push<Op >(acc, OpJump(ji.jumpIfLabel, List<RParam>()))
     : acc

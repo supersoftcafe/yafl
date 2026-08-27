@@ -163,7 +163,7 @@ class [final] SaPlan(saPhiIdx: Int, saAcc: String, saSteps: List<SaStep>,
 fun saFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
   let reads = sdReadCounts(f)
-  ret match(saFindPlan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, defs, reads))
+  ret match(saFindPlan<SeqStream<Op>>(seqStream<Op>(f.fnOps), 0, defs, reads))
     (plan: SaPlan) => saApplyPlan(f, plan, defs, reads)
     ()             => f
 
@@ -242,7 +242,7 @@ fun saIsDirectAcc(v: RParam, acc: String): Bool
 # to its label; any acc read in that span (outside the recognised chains)
 # bails the plan.
 fun saLoopLabel(f: CgFunction, phiIdx: Int): String|None
-  ret saLabelScan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, phiIdx, None)
+  ret saLabelScan<SeqStream<Op>>(seqStream<Op>(f.fnOps), 0, phiIdx, None)
 
 fun [tail] saLabelScan<S>(s: S, i: Int, phiIdx: Int,
                           latest: String|None): String|None where Stream<S, Op, Never>
@@ -268,7 +268,7 @@ fun saJumpTarget(op: Op): String|None
 
 fun saSpanEnd(f: CgFunction, loopLabel: String|None, phiIdx: Int): Int
   ret match(loopLabel)
-    (lbl: String) => saSpanScan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, lbl, phiIdx)
+    (lbl: String) => saSpanScan<SeqStream<Op>>(seqStream<Op>(f.fnOps), 0, lbl, phiIdx)
     ()            => phiIdx
 
 fun [tail] saSpanScan<S>(s: S, i: Int, lbl: String, latest: Int): Int where Stream<S, Op, Never>
@@ -322,13 +322,13 @@ fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: SsaDefs,
                       (acc2: Set<String>, s2: SaStep) =>
                         fold(s2.saChainMoves, acc2,
                              (s3: Set<String>, n: String) => add<String>(s3, n)))
-  if saAnyBuried<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, plan)
+  if saAnyBuried<SeqStream<Op>>(seqStream<Op>(f.fnOps), 0, plan)
     ret f
   let spanEnd = saSpanEnd(f, saLoopLabel(f, plan.saPhiIdx), plan.saPhiIdx)
-  if saAnyInSpan<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), 0, plan.saPhiIdx + 1, spanEnd,
+  if saAnyInSpan<SeqStream<Op>>(seqStream<Op>(f.fnOps), 0, plan.saPhiIdx + 1, spanEnd,
                  plan.saAcc, chainAll)
     ret f
-  let out = saRewriteOps(chain(f.fnOps), 0, plan, chainAll, (List<Op>(), 0))
+  let out = saRewriteOps(f.fnOps, 0i32, 0, plan, chainAll, (List<Op>(), 0))
   ret saRestack(f, plan, chainAll, out.ops, out.n)
 
 fun [tail] saAnyBuried<S>(s: S, i: Int, plan: SaPlan): Bool where Stream<S, Op, Never>
@@ -355,14 +355,16 @@ fun saSnapshot(plan: SaPlan): RParam
 # determines the whole set — and with it the declaration order of their stack
 # fields, which is observed (it is C struct field order, and Python appends
 # them in exactly this order).
-fun [tail] saRewriteOps(ops: Chain<Op>, i: Int, plan: SaPlan,
+fun [tail] saRewriteOps(s: Segment<Op>|None, iSeg: Int32, i: Int, plan: SaPlan,
                         chainAll: Set<String>,
                         acc: (ops: List<Op>, n: Int)): (ops: List<Op>, n: Int)
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => saRewriteOps(l.next, i + 1, plan, chainAll,
-                                    saRewriteOne(l.value, i, plan, chainAll,
-                                                 acc))
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? saRewriteOps(s, iSeg + 1i32, i + 1, plan, chainAll,
+                     saRewriteOne(seg.array(iSeg), i, plan, chainAll,
+                                  acc))
+      : saRewriteOps(seg.next, 0i32, i, plan, chainAll, acc)
 
 fun saRewriteOne(op: Op, i: Int, plan: SaPlan, chainAll: Set<String>,
                  acc: (ops: List<Op>, n: Int)): (ops: List<Op>, n: Int)
@@ -536,7 +538,9 @@ fun saRestack(f: CgFunction, plan: SaPlan, chainAll: Set<String>,
       CgField(saBufName(plan.saAcc), CgDataPointer())),
       CgField(saOffName(plan.saAcc), CgDataPointer()))
   let withSnaps = build<CgField >(saSnapFields(0, nSnaps, plan, base))
-  ret cgFunctionWith(f, newOps,
+  # The rewrite assembles a transient List; the retained result crosses to
+  # Segment storage here.
+  ret cgFunctionWith(f, cgOpsOf(newOps),
                      CgStruct(fold(plan.saSteps, withSnaps, saStepFields)))
 
 fun saStepFields(acc: List<CgField>, step: SaStep): List<CgField>

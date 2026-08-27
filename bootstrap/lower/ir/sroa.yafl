@@ -60,7 +60,7 @@ fun [tail] sroaConsiderAll(ns: Chain<String>, done: List<String>,
 # Read occurrences: a projection StructField(StackVar v, f) flattens to BOTH
 # nodes, so a var whose every read is a projection has sv_reads == proj_total;
 # any whole use is a bare StackVar with no enclosing StructField.
-fun sroaSvReads(ops: List<Op>): List<StrCount>
+fun sroaSvReads(ops: Segment<Op>|None): List<StrCount>
   ret fold(ops, List<StrCount>(),
            (acc: List<StrCount>, op: Op) => fold(opAllParams(op), acc, sroaSvRead1))
 
@@ -69,7 +69,7 @@ fun sroaSvRead1(acc: List<StrCount>, p: RParam): List<StrCount>
     (sv: RpStackVar) => strCountIncr(acc, sv.name)
     (o: RParam)       => acc
 
-fun sroaProjReads(ops: List<Op>): List<ProjCount>
+fun sroaProjReads(ops: Segment<Op>|None): List<ProjCount>
   ret fold(ops, List<ProjCount>(),
            (acc: List<ProjCount>, op: Op) => fold(opAllParams(op), acc, sroaProj1))
 
@@ -94,15 +94,17 @@ fun pjIncr(acc: List<ProjCount>, v: String, f: String): List<ProjCount>
 class [final] SroaDef(sdName: String, sdVar: RParam, sdIndex: Int, sdOp: Op)
 class [final] SroaDefs(sdEntries: List<SroaDef>, sdMulti: Set<String>)
 
-fun sroaDefs(ops: List<Op>): SroaDefs
-  ret sroaDefsLoop(chain(ops), 0, SroaDefs(List<SroaDef>(), Set<String>()))
+fun sroaDefs(ops: Segment<Op>|None): SroaDefs
+  ret sroaDefsLoop(ops, 0i32, 0, SroaDefs(List<SroaDef>(), Set<String>()))
 
-fun [tail] sroaDefsLoop(os: Chain<Op>, i: Int, acc: SroaDefs): SroaDefs
-  ret match(os)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => sroaDefsLoop(l.next, i + 1,
-        fold(ssavOpWrites(l.value), acc,
-             (a: SroaDefs, w: RParam) => sroaDef1(a, w, i, l.value)))
+fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: SroaDefs): SroaDefs
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? sroaDefsLoop(s, iSeg + 1i32, i + 1,
+          fold(ssavOpWrites(seg.array(iSeg)), acc,
+               (a: SroaDefs, w: RParam) => sroaDef1(a, w, i, seg.array(iSeg))))
+      : sroaDefsLoop(seg.next, 0i32, i, acc)
 
 fun sroaDef1(acc: SroaDefs, w: RParam, i: Int, op: Op): SroaDefs
   ret match(w)
@@ -164,8 +166,8 @@ fun sroaDefOpOk(op: Op): Bool
 # ── the rewrite ──────────────────────────────────────────────────────────────
 
 fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
-  let newOps = build<Op >(sroaApplyLoop(chain(f.fnOps), sp, 0,
-                                        builder<Op >()))
+  let newOps = build<Op >(sroaApplyLoop(f.fnOps, 0i32, sp, 0,
+                                        seqBuilder<Op >()))
   let newFields = fold(sp, List<CgField>(),
         (acc: List<CgField>, s2: Sroa) => concat(acc,
           map(s2.srFields, (fl: SroaField) => CgField(stackVarName(fl.sfLocal), rpGetType(fl.sfLocal)))))
@@ -175,15 +177,17 @@ fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
 # Rewrite every projection v.f → v$f; the freshly inserted seeding Moves are
 # NOT routed through the replacer, so they read the original v exactly once,
 # right after its definition — before any suspension can intervene.
-fun [tail] sroaApplyLoop(os: Chain<Op>, sp: List<Sroa>, i: Int,
-                         [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(os)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => sroaApplyLoop(l.next, sp, i + 1,
-        _pushChain<Op >(
-            push<Op >(acc, opReplaceParams(l.value,
-                               (p: RParam) => sroaReplacer(p, sp))),
-            chain<Op>(sroaSeedMoves(sp, i))))
+fun [tail] sroaApplyLoop(s: Segment<Op>|None, iSeg: Int32, sp: List<Sroa>, i: Int,
+                         [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? sroaApplyLoop(s, iSeg + 1i32, sp, i + 1,
+          _pushChain<Op >(
+              push<Op >(acc, opReplaceParams(seg.array(iSeg),
+                                 (p: RParam) => sroaReplacer(p, sp))),
+              chain<Op>(sroaSeedMoves(sp, i))))
+      : sroaApplyLoop(seg.next, 0i32, sp, i, acc)
 
 fun sroaReplacer(p: RParam, sp: List<Sroa>): RParam
   ret match(p)

@@ -29,7 +29,7 @@ fun inlCutoffComplexity(): Int
 fun inlineSmallFunctions(a: CgApp, inlineAlways: Bool, epoch: Int): CgApp
   ret appWithFunctions(a, map(appFunctions(a), (f: CgFunction) =>
         doInlining(f, "s" + String(epoch), a, (target: CgFunction) =>
-          !atLeast(chain(target.fnOps), inlCutoffComplexity())
+          !atLeast(target.fnOps, inlCutoffComplexity())
           || (inlineAlways && target.fnAlwaysInline))))
 
 # `syncNames` restricts the fold to callees that provably never suspend:
@@ -64,19 +64,23 @@ fun doInlining(f: CgFunction, tag: String, a: CgApp,
                shouldInline: (:CgFunction): Bool): CgFunction
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret f
-  let out = inlLoop(chain(f.fnOps), 0, tag, f, a, shouldInline,
+  let out = inlLoop(f.fnOps, 0i32, 0, tag, f, a, shouldInline,
                     InlAcc(builder<Op >(), List<CgField>()))
-  ret cgFunctionWith(f, build<Op >(out.inlOps),
+  # The splice assembly stays a transient List (end-bookkeeping reads and
+  # pops it); the retained result crosses to Segment storage here.
+  ret cgFunctionWith(f, cgOpsOf(build<Op >(out.inlOps)),
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
 
-fun [tail] inlLoop(ops: Chain<Op>, index: Int, tag: String, f: CgFunction,
+fun [tail] inlLoop(s: Segment<Op>|None, iSeg: Int32, index: Int, tag: String, f: CgFunction,
                    a: CgApp, shouldInline: (:CgFunction): Bool,
                    [terminal] acc: InlAcc): InlAcc
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => inlLoop(l.next, index + 1, tag, f, a, shouldInline,
-                               inlStep(l.value, tag + "$" + String(index),
-                                       f, a, shouldInline, acc))
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? inlLoop(s, iSeg + 1i32, index + 1, tag, f, a, shouldInline,
+                inlStep(seg.array(iSeg), tag + "$" + String(index),
+                        f, a, shouldInline, acc))
+      : inlLoop(seg.next, 0i32, index, tag, f, a, shouldInline, acc)
 
 # One op: splice the callee in when every guard passes, else keep the op.
 fun inlStep(op: Op, uniqueId: String, f: CgFunction, a: CgApp,
@@ -107,17 +111,15 @@ fun inlCandidateChecked(c: OpCall, gf: RpGlobalFunction, ns: RpNewStruct,
   ret match(appFunction(a, gf.name))
     (target: CgFunction) => !isEmpty(target.fnOps)
                             && shouldInline(target)
-                            && !inlAnyParallel(chain(target.fnOps))
+                            && !any<Op>(target.fnOps, inlIsParallel)
       ? InlTarget(c, gf, ns, target)
       : None
     ()                    => None
 
-fun [tail] inlAnyParallel(ops: Chain<Op>): Bool
-  ret match(ops)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => match(l.value)
-      (p: OpParallelCall) => true
-      (o: Op)             => inlAnyParallel(l.next)
+fun inlIsParallel(op: Op): Bool
+  ret match(op)
+    (p: OpParallelCall) => true
+    (o: Op)             => false
 
 # ── the splice ───────────────────────────────────────────────────────────────
 # Fresh inl<id>$-prefixed stack vars for the callee's params + locals, label
@@ -136,7 +138,7 @@ fun inlSplice(t2: InlTarget, uniqueId: String,
   let renames = concat(
         map(allFields, (f2: CgField) =>
           RpRename(f2.fieldName, "inl" + uniqueId + "$" + f2.fieldName)),
-        inlLabelRenames(chain(target.fnOps), uniqueId, List<RpRename>()))
+        inlLabelRenames(target.fnOps, uniqueId))
   let newVars = map(allFields, (f2: CgField) =>
         CgField("inl" + uniqueId + "$" + f2.fieldName, f2.fieldType))
   let endLabel = "inl" + uniqueId + "end"
@@ -145,24 +147,25 @@ fun inlSplice(t2: InlTarget, uniqueId: String,
   let ops1 = inlThisCapture(t2, uniqueId, allFields, acc.inlOps)
   let ops2 = inlParamMovesB(chain(t2.itArgs.values), chain(tail(pFields)),
                             uniqueId, allFields, ops1)
-  let ops3 = inlBody(chain(target.fnOps), t2.itCall, renames, endLabel, ops2)
+  let ops3 = inlBody(target.fnOps, 0i32, t2.itCall, renames, endLabel, ops2)
   ret InlAcc(_pushChain<Op >(builder<Op >(),
                  chain<Op>(inlEndBookkeeping(build<Op >(ops3), endLabel))),
              concat(acc.inlVars, newVars))
 
-fun inlLabelRenames(ops: Chain<Op>, uniqueId: String,
-                           acc: List<RpRename>): List<RpRename>
-  ret build<RpRename >(inlLabelRenamesB(ops, uniqueId, _pushChain<RpRename >(builder<RpRename >(), chain<RpRename >(acc))))
+fun inlLabelRenames(ops: Segment<Op>|None, uniqueId: String): List<RpRename>
+  ret build<RpRename >(inlLabelRenamesB(ops, 0i32, uniqueId, builder<RpRename >()))
 
-fun [tail] inlLabelRenamesB(ops: Chain<Op>, uniqueId: String,
+fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i: Int32, uniqueId: String,
                            [terminal] acc: ListBuilder<RpRename >): ListBuilder<RpRename >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => inlLabelRenamesB(l.next, uniqueId,
-          push<RpRename >(acc, RpRename(lb.labelName,
-                               "inl" + uniqueId + "$" + lb.labelName)))
-      (o: Op)       => inlLabelRenamesB(l.next, uniqueId, acc)
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i >= seg.length
+      ? inlLabelRenamesB(seg.next, 0i32, uniqueId, acc)
+      : match(seg.array(i))
+          (lb: OpLabel) => inlLabelRenamesB(s, i + 1i32, uniqueId,
+              push<RpRename >(acc, RpRename(lb.labelName,
+                                   "inl" + uniqueId + "$" + lb.labelName)))
+          (o: Op)       => inlLabelRenamesB(s, i + 1i32, uniqueId, acc)
 
 # The renamed StackVar for a callee param/local (its declared type + the
 # fresh inl<id>$ name) — the Move targets Python builds via variable_mapping.
@@ -200,13 +203,15 @@ fun [tail] inlParamMovesB(args: Chain<RpNamedValue>, params: Chain<CgField>,
                                           uniqueId),
                              av.value.value, false, List<RParam>())))
 
-fun [tail] inlBody(ops: Chain<Op>, c: OpCall, renames: List<RpRename>,
+fun [tail] inlBody(s: Segment<Op>|None, i: Int32, c: OpCall, renames: List<RpRename>,
                    endLabel: String,
                    [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => inlBody(l.next, c, renames, endLabel,
-                               inlBodyOp(l.value, c, renames, endLabel, acc))
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? inlBody(s, i + 1i32, c, renames, endLabel,
+                inlBodyOp(seg.array(i), c, renames, endLabel, acc))
+      : inlBody(seg.next, 0i32, c, renames, endLabel, acc)
 
 fun inlBodyOp(op: Op, c: OpCall, renames: List<RpRename>, endLabel: String,
               [terminal] acc: ListBuilder<Op >): ListBuilder<Op >

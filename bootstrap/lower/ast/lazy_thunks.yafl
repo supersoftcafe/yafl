@@ -128,7 +128,7 @@ fun makeDrainFunction(valueType: CgType): CgFunction
                  CgStruct(list3(CgField("$sv_head", CgDataPointer()),
                                 CgField("$sv_next", CgDataPointer()),
                                 CgField("$sv_lazy_discard", CgDataPointer()))),
-                 build<Op >(push<Op >(_pushChain<Op >(builder<Op >(), chain<Op>(ops)), OpReturn(RpNullPointer(), List<RParam>()))),
+                 build<Op >(push<Op >(_pushChain<Op >(seqBuilder<Op >(), chain<Op>(ops)), OpReturn(RpNullPointer(), List<RParam>()))),
                  "lazy chain drain for " + irMangle(valueType),
                  None, false, false, true, false)
 
@@ -170,8 +170,8 @@ fun makeFetchFunction(valueType: CgType): CgFunction
                                               CgField("result_wrapped", wrapped)))),
                      CgField("value", valueType)),
                      CgField("$sv_lazy_discard", CgDataPointer())))),
-                 fetchOps(valueType, cls, waiterTy, wrapped, this, waiter, status, flagAddr,
-                          closure, rwrapped, value, flagF, closureF, valueF, isComplete),
+                 cgOpsOf(fetchOps(valueType, cls, waiterTy, wrapped, this, waiter, status, flagAddr,
+                          closure, rwrapped, value, flagF, closureF, valueF, isComplete)),
                  "lazy fetch for " + irMangle(valueType),
                  None, false, false, true, false)
 
@@ -243,9 +243,9 @@ fun makeFutureRunnerFunction(valueType: CgType): CgFunction
                                 CgField("$task", CgDataPointer()))),
                  CgDataPointer(),
                  CgStruct(list1(CgField("result_wrapped", wrapped))),
-                 list2(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
+                 cgOpsOf(list2(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
                               RpNewStruct(List<RpNamedValue>()), rwrapped, false, false, None, List<RParam>()),
-                       OpReturn(RpNullPointer(), List<RParam>())),
+                       OpReturn(RpNullPointer(), List<RParam>()))),
                  "[future] worker runner for " + irMangle(valueType),
                  None, false, false, true, false)
 
@@ -267,12 +267,12 @@ fun makeFinisherFunction(valueType: CgType): CgFunction
                  CgDataPointer(),
                  CgStruct(list2(CgField("value", valueType),
                                 CgField("$sv_lazy_discard", CgDataPointer()))),
-                 concat(concat(list2(OpMove(value, completedResult, false, List<RParam>()),
+                 cgOpsOf(concat(concat(list2(OpMove(value, completedResult, false, List<RParam>()),
                                      OpMove(valueF, value, false, List<RParam>())),
                                lazyPublishRootShades(value, valueType)),
                         list3(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List<RParam>()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
-                              OpReturn(RpNullPointer(), List<RParam>()))),
+                              OpReturn(RpNullPointer(), List<RParam>())))),
                  "lazy fetch async-finisher for " + irMangle(valueType),
                  None, true, false, true, false)
 

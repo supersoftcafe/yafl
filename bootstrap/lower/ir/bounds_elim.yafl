@@ -101,7 +101,7 @@ enum BeDef
 
 class [final] BeDefEntry(bdName: String, bdDef: BeDef, bdCount: Int)
 
-fun beSingleDefs(ops: List<Op>): List<BeDefEntry>
+fun beSingleDefs(ops: Segment<Op>|None): List<BeDefEntry>
   ret filter(fold(ops, List<BeDefEntry>(), beDefOp),
              (e: BeDefEntry) => e.bdCount == 1)
 
@@ -263,7 +263,7 @@ fun beEntryFromPhi(name: String, phi: OpPhi,
 class [final] BeStore(bsPtr: BeVal, bsField: String, bsValue: BeVal,
                       bsCount: Int)
 
-fun beFieldStores(ops: List<Op>, defs: List<BeDefEntry>): List<BeStore>
+fun beFieldStores(ops: Segment<Op>|None, defs: List<BeDefEntry>): List<BeStore>
   ret filter(fold(ops, List<BeStore>(),
                   (acc: List<BeStore>, op: Op) => beStoreOp(acc, op, defs)),
              (s2: BeStore) => s2.bsCount == 1 && !beIsOpaque(s2.bsPtr))
@@ -301,21 +301,19 @@ fun beStoreLookup(stores: List<BeStore>, ptr: BeVal,
 class [final] BeRegion(brLo: Int, brHi: Int)
 class [final] BeLabelAt(blName: String, blIndex: Int)
 
-fun beLabelIndex(ops: List<Op>): List<BeLabelAt>
-  ret beLabelLoop(chain(ops), 0, List<BeLabelAt>())
+fun beLabelIndex(ops: Segment<Op>|None): List<BeLabelAt>
+  ret build<BeLabelAt >(beLabelLoopB(ops, 0i32, 0, builder<BeLabelAt >()))
 
-fun beLabelLoop(ops: Chain<Op>, i: Int,
-                       acc: List<BeLabelAt>): List<BeLabelAt>
-  ret build<BeLabelAt >(beLabelLoopB(ops, i, _pushChain<BeLabelAt >(builder<BeLabelAt >(), chain<BeLabelAt >(acc))))
-
-fun [tail] beLabelLoopB(ops: Chain<Op>, i: Int,
+fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg: Int32, i: Int,
                        [terminal] acc: ListBuilder<BeLabelAt >): ListBuilder<BeLabelAt >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (lb: OpLabel) => beLabelLoopB(l.next, i + 1,
-                                   push<BeLabelAt >(acc, BeLabelAt(lb.labelName, i)))
-      (o: Op)       => beLabelLoopB(l.next, i + 1, acc)
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg >= seg.length
+      ? beLabelLoopB(seg.next, 0i32, i, acc)
+      : match(seg.array(iSeg))
+          (lb: OpLabel) => beLabelLoopB(s, iSeg + 1i32, i + 1,
+                                       push<BeLabelAt >(acc, BeLabelAt(lb.labelName, i)))
+          (o: Op)       => beLabelLoopB(s, iSeg + 1i32, i + 1, acc)
 
 fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String): Int|None
   ret match(ls)
@@ -324,25 +322,23 @@ fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String): Int|None
       ? l.value.blIndex
       : beLabelAt(l.next, name)
 
-fun beLoopRegions(ops: List<Op>, labels: List<BeLabelAt>): List<BeRegion>
-  ret beRegionLoop(chain(ops), 0, labels, List<BeRegion>())
+fun beLoopRegions(ops: Segment<Op>|None, labels: List<BeLabelAt>): List<BeRegion>
+  ret build<BeRegion >(beRegionLoopB(ops, 0i32, 0, labels, builder<BeRegion >()))
 
-fun beRegionLoop(ops: Chain<Op>, i: Int, labels: List<BeLabelAt>,
-                        acc: List<BeRegion>): List<BeRegion>
-  ret build<BeRegion >(beRegionLoopB(ops, i, labels, _pushChain<BeRegion >(builder<BeRegion >(), chain<BeRegion >(acc))))
-
-fun [tail] beRegionLoopB(ops: Chain<Op>, i: Int, labels: List<BeLabelAt>,
+fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg: Int32, i: Int, labels: List<BeLabelAt>,
                         [terminal] acc: ListBuilder<BeRegion >): ListBuilder<BeRegion >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (j: OpJump) => match(beLabelAt(chain(labels), j.jumpName))
-        (at: Int) => at < i
-          ? beRegionLoopB(l.next, i + 1, labels,
-                         push<BeRegion >(acc, BeRegion(at, i)))
-          : beRegionLoopB(l.next, i + 1, labels, acc)
-        ()        => beRegionLoopB(l.next, i + 1, labels, acc)
-      (o: Op)     => beRegionLoopB(l.next, i + 1, labels, acc)
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg >= seg.length
+      ? beRegionLoopB(seg.next, 0i32, i, labels, acc)
+      : match(seg.array(iSeg))
+          (j: OpJump) => match(beLabelAt(chain(labels), j.jumpName))
+            (at: Int) => at < i
+              ? beRegionLoopB(s, iSeg + 1i32, i + 1, labels,
+                             push<BeRegion >(acc, BeRegion(at, i)))
+              : beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
+            ()        => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
+          (o: Op)     => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
 
 # (induction_id, bound_id) pairs proven `induction < bound` inside the
 # region's body. The key question per guard is which truth value of its
@@ -352,12 +348,12 @@ fun [tail] beRegionLoopB(ops: Chain<Op>, i: Int, labels: List<BeLabelAt>,
 #     from exactly 0 by +1 and n is a length (caller checks the load).
 class [final] BeProof(bpInd: BeVal, bpBound: BeVal)
 
-fun beGuardedBounds(ops: List<Op>, region: BeRegion,
+fun beGuardedBounds(ops: Segment<Op>|None, region: BeRegion,
                     labels: List<BeLabelAt>,
                     defs: List<BeDefEntry>): List<BeProof>
   ret beGuardLoop(ops, region.brLo, region, labels, defs, List<BeProof>())
 
-fun [tail] beGuardLoop(ops: List<Op>, i: Int, region: BeRegion,
+fun [tail] beGuardLoop(ops: Segment<Op>|None, i: Int, region: BeRegion,
                        labels: List<BeLabelAt>, defs: List<BeDefEntry>,
                        acc: List<BeProof>): List<BeProof>
   if i >= region.brHi
@@ -368,7 +364,7 @@ fun [tail] beGuardLoop(ops: List<Op>, i: Int, region: BeRegion,
                                        acc))
     ()       => acc
 
-fun beGuardOne(op: Op, i: Int, ops: List<Op>, region: BeRegion,
+fun beGuardOne(op: Op, i: Int, ops: Segment<Op>|None, region: BeRegion,
                labels: List<BeLabelAt>, defs: List<BeDefEntry>,
                acc: List<BeProof>): List<BeProof>
   ret match(op)
@@ -384,7 +380,7 @@ fun beGuardOne(op: Op, i: Int, ops: List<Op>, region: BeRegion,
     (o: Op)        => acc
 
 fun beGuardWithTruth(fnName: String, args: List<BeVal>, ji: OpJumpIf,
-                     i: Int, ops: List<Op>, region: BeRegion,
+                     i: Int, ops: Segment<Op>|None, region: BeRegion,
                      labels: List<BeLabelAt>, defs: List<BeDefEntry>,
                      acc: List<BeProof>): List<BeProof>
   ret match(beGuardTruth(ji, i, ops, region, labels))
@@ -392,7 +388,7 @@ fun beGuardWithTruth(fnName: String, args: List<BeVal>, ji: OpJumpIf,
     ()                => acc
 
 # Which truth value of the condition ENTERS the body; None = not a guard.
-fun beGuardTruth(ji: OpJumpIf, i: Int, ops: List<Op>, region: BeRegion,
+fun beGuardTruth(ji: OpJumpIf, i: Int, ops: Segment<Op>|None, region: BeRegion,
                  labels: List<BeLabelAt>): Bool|None
   let target = beLabelAt(chain(labels), ji.jumpIfLabel)
   let inside = beInRegion(target, region)
@@ -476,27 +472,29 @@ fun beApplyRegion(f: CgFunction, region: BeRegion, defs: List<BeDefEntry>,
   let proven = beGuardedBounds(f.fnOps, region, labels, defs)
   if isEmpty(proven)
     ret f
-  ret cgFunctionWith(f, beRewriteOps(chain(f.fnOps), 0, region, proven,
+  ret cgFunctionWith(f, beRewriteOps(f.fnOps, 0, region, proven,
                                      defs, stores, List<Op>()),
                      f.fnStackVars)
 
-fun beRewriteOps(ops: Chain<Op>, i: Int, region: BeRegion,
+fun beRewriteOps(ops: Segment<Op>|None, i: Int, region: BeRegion,
                         proven: List<BeProof>, defs: List<BeDefEntry>,
-                        stores: List<BeStore>, acc: List<Op>): List<Op>
-  ret build<Op >(beRewriteOpsB(ops, i, region, proven, defs, stores, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+                        stores: List<BeStore>, acc: List<Op>): Segment<Op>|None
+  ret build<Op >(beRewriteOpsB(ops, 0i32, i, region, proven, defs, stores, seqBuilder<Op >()))
 
-fun [tail] beRewriteOpsB(ops: Chain<Op>, i: Int, region: BeRegion,
+fun [tail] beRewriteOpsB(s: Segment<Op>|None, iSeg: Int32, i: Int, region: BeRegion,
                         proven: List<BeProof>, defs: List<BeDefEntry>,
-                        stores: List<BeStore>, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => beRewriteOpsB(l.next, i + 1, region, proven, defs,
-                                    stores,
-                                    push<Op >(acc, i >= region.brLo
-                                                && i <= region.brHi
-                                      ? beRewriteOp(l.value, proven, defs,
-                                                    stores)
-                                      : l.value))
+                        stores: List<BeStore>, [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? beRewriteOpsB(s, iSeg + 1i32, i + 1, region, proven, defs,
+                      stores,
+                      push<Op >(acc, i >= region.brLo
+                                  && i <= region.brHi
+                        ? beRewriteOp(seg.array(iSeg), proven, defs,
+                                      stores)
+                        : seg.array(iSeg)))
+      : beRewriteOpsB(seg.next, 0i32, i, region, proven, defs, stores, acc)
 
 # Flip only at READ positions of the op kinds Python touches: Move.source,
 # Call.function+parameters, Return.value, JumpIf.condition, Phi sources.

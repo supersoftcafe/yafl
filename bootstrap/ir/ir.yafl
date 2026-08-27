@@ -35,7 +35,7 @@ class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 # thunks, par callbacks) stay untouched and match Python's fresh Function()
 # defaults; every dataclasses.replace-mirroring copy site passes them through.
 class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnStackVars: CgType,
-                          fnOps: List<Op>, fnComment: String, fnForeignSymbol: String|None,
+                          fnOps: Segment<Op>|None, fnComment: String, fnForeignSymbol: String|None,
                           fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool,
                           fnSourceFile: String = "", fnSourceLine: Int = 0)
 
@@ -126,14 +126,33 @@ fun cgFunctionToCImplement(f: CgFunction, cache0: List<CgCacheEntry>): (text: St
   let opsC = cgOpsToC(f.fnOps, proto.cache)
   ret (cgFunctionCommentLine(f) + proto.text + "\n{\n" + varsSection + opsC.text + "}\n", opsC.cache)
 
-fun cgOpsToC(ops: List<Op>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgOpsToC(ops: Segment<Op>|None, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret fold(ops, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), op: Op) => cgOpsToCStep(acc, op))
 
 fun cgOpsToCStep(acc: (text: String, cache: List<CgCacheEntry>), op: Op): (text: String, cache: List<CgCacheEntry>)
   let sub = opToC(op, acc.cache)
   ret (acc.text + sub.text, sub.cache)
 
-fun cgFunctionWith(f: CgFunction, ops: List<Op>, stackVars: CgType): CgFunction
+# A finished List<Op> op stream as the retained Segment storage: the
+# container boundary between transient assembly (GBundle) and the
+# per-function IR that lives until C emission — the census-dominant lists.
+fun cgOpsOf(ops: List<Op>): Segment<Op>|None
+  ret build<Op >(_pushChain<Op >(seqBuilder<Op >(), chain<Op>(ops)))
+
+# The inverse boundary, for the one pass (async liveness) whose tuned
+# Dict-indexed fixpoint keeps List internals: copy out, iterate, copy back.
+fun cgOpsToList(s: Segment<Op>|None): List<Op>
+  ret build<Op >(cgOtlLoop(s, 0i32, builder<Op >()))
+
+fun [tail] cgOtlLoop(s: Segment<Op>|None, i: Int32,
+                     [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? cgOtlLoop(s, i + 1i32, push<Op >(acc, seg.array(i)))
+      : cgOtlLoop(seg.next, 0i32, acc)
+
+fun cgFunctionWith(f: CgFunction, ops: Segment<Op>|None, stackVars: CgType): CgFunction
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, stackVars, ops, f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
                  f.fnSourceFile, f.fnSourceLine)
@@ -146,19 +165,21 @@ fun cgFunctionWith(f: CgFunction, ops: List<Op>, stackVars: CgType): CgFunction
 # atexit dump, so there is nothing to keep balanced.
 
 fun cgFunctionInstrumentProfile(f: CgFunction, fnId: Int): CgFunction
-  let ops = build<Op >(cgInstrumentOps(chain(f.fnOps),
-              push<Op >(builder<Op >(), OpProfEnter(fnId, List<RParam>()))))
+  let ops = build<Op >(cgInstrumentOps(f.fnOps, 0i32,
+              push<Op >(seqBuilder<Op >(), OpProfEnter(fnId, List<RParam>()))))
   ret cgFunctionWith(f, ops, f.fnStackVars)
 
-fun [tail] cgInstrumentOps(ops: Chain<Op>,
-                           [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cgInstrumentOps(l.next,
-        push<Op >(cgIsProfExit(l.value)
-                    ? push<Op >(acc, OpProfLeave(List<RParam>()))
-                    : acc,
-                  l.value))
+fun [tail] cgInstrumentOps(s: Segment<Op>|None, i: Int32,
+                           [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? cgInstrumentOps(s, i + 1i32,
+          push<Op >(cgIsProfExit(seg.array(i))
+                      ? push<Op >(acc, OpProfLeave(List<RParam>()))
+                      : acc,
+                    seg.array(i)))
+      : cgInstrumentOps(seg.next, 0i32, acc)
 
 fun cgIsProfExit(op: Op): Bool
   ret match(op)
@@ -168,13 +189,13 @@ fun cgIsProfExit(op: Op): Bool
     (o: Op)           => false
 
 fun cgFunctionReplaceParams(f: CgFunction, replacer: (:RParam): RParam): CgFunction
-  ret cgFunctionWith(f, map(f.fnOps, (op: Op) => opReplaceParams(op, replacer)), f.fnStackVars)
+  ret cgFunctionWith(f, map<Op, Op>(f.fnOps, (op: Op) => opReplaceParams(op, replacer)), f.fnStackVars)
 
 # ── lower_phis ───────────────────────────────────────────────────────────────
 
 class [final] PhiAtEntry(atLabel: String, phiOp: Op)
 
-fun cgCollectPhis(ops: List<Op>): List<PhiAtEntry>
+fun cgCollectPhis(ops: Segment<Op>|None): List<PhiAtEntry>
   let result = fold(ops, ("", List<PhiAtEntry>()), (acc: (curLabel: String, phis: List<PhiAtEntry>), op: Op) => cgCollectPhisStep(acc, op))
   ret result.phis
 
@@ -216,11 +237,11 @@ fun cgIsTerminatorForPhi(op: Op): Bool
 # through into the next. `paFall` is MAINTAINED as ops are pushed — deriving it
 # meant asking last(out), which walks the entire emitted stream, once per op of
 # the function.
-class [linear, final] PhiAcc(paCur: String, paOut: ListBuilder<Op >,
+class [linear, final] PhiAcc(paCur: String, paOut: SeqBuilder<Op >,
                              paFall: Bool)
 
 fun [tail] cgPhiMoves(ps: Chain<Op>, predLabel: String,
-                      [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+                      [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cgPhiMoves(l.next, predLabel,
@@ -255,18 +276,20 @@ fun cgLowerPhisStep([terminal] acc: PhiAcc, op: Op,
     (o: Op)        => PhiAcc(acc.paCur, push<Op >(acc.paOut, op),
                              !cgIsTerminatorForPhi(op))
 
-fun cgLowerPhisPass2(ops: List<Op>, phis: List<PhiAtEntry>): List<Op>
-  ret build<Op >(cgLowerPhisLoop(chain(ops), phis,
-                     PhiAcc("", builder<Op >(), false)).paOut)
+fun cgLowerPhisPass2(ops: Segment<Op>|None, phis: List<PhiAtEntry>): Segment<Op>|None
+  ret build<Op >(cgLowerPhisLoop(ops, 0i32, phis,
+                     PhiAcc("", seqBuilder<Op >(), false)).paOut)
 
-fun [tail] cgLowerPhisLoop(ops: Chain<Op>, phis: List<PhiAtEntry>,
+fun [tail] cgLowerPhisLoop(s: Segment<Op>|None, i: Int32, phis: List<PhiAtEntry>,
                            [terminal] acc: PhiAcc): PhiAcc
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cgLowerPhisLoop(l.next, phis,
-                                       cgLowerPhisStep(acc, l.value, phis))
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? cgLowerPhisLoop(s, i + 1i32, phis,
+                        cgLowerPhisStep(acc, seg.array(i), phis))
+      : cgLowerPhisLoop(seg.next, 0i32, phis, acc)
 
-fun cgLowerPhisForEmission(f: CgFunction): List<Op>
+fun cgLowerPhisForEmission(f: CgFunction): Segment<Op>|None
   let phis = cgCollectPhis(f.fnOps)
   ret isEmpty<PhiAtEntry>(phis) ? f.fnOps : cgLowerPhisPass2(f.fnOps, phis)
 
@@ -326,39 +349,43 @@ fun cgInvertJumpIfWithOp(ji: OpJumpIf, n: Op): Op
     (j: OpJump) => OpJumpIf(j.jumpName, ji.jumpIfCondition, true, ji.jumpIfSavedVars)
     (o: Op)      => ji
 
-# One O(n) chain walk per pass (the index-based walk re-derived length and
-# position per op — quadratic with allocation, detonating on the mega
-# functions the -O3 single-caller fold builds).
-fun chainHeadOp(c: Chain<Op>): Op|None
-  ret match(c)
-    (l: ChainLink) => l.value
-    (nil: ChainEnd) => None
-
-fun chainTailOp(c: Chain<Op>): Chain<Op>
-  ret match(c)
-    (l: ChainLink) => l.next
-    (nil: ChainEnd) => c
+# One O(n) walk per pass. Over segments a lookahead cannot peek a
+# neighbouring cell, so the stream pull maintains a TWO-OP window
+# (cur, n1, n2) carried as parameters; the window shifts by one (drop or
+# emit cur) or by two (the invertible jumpIf+jump pair consumes both).
+# Ok(None)-after-end makes the unconditional refill pulls safe. Shared by
+# every op-stream walk that carries a lookahead window (simplify, tail-call
+# discovery, block partition, ...).
+fun [inline(always)] cgPullOp(st: SeqStream<Op>): (stream: SeqStream<Op>, op: Op|None)
+  let r = streamNext<SeqStream<Op>, Op, Never>(st)
+  ret match(r.value)
+    (ok: Ok<Op | None, Never>)    => (r.stream, ok.value)
+    (er: Error<Op | None, Never>) => (r.stream, None)   # unreachable: Never
 
 # ONE self-recursive stepper ([tail] accepts only direct self-recursion, so
-# the walk and its per-link body cannot be split into a mutual pair).
-fun [tail] cgSimplifyOnePass(c: Chain<Op>, [terminal] acc: ListBuilder<Op >,
-                             changed: Bool): (ops: List<Op>, changed: Bool)
-  ret match(c)
-    (nil: ChainEnd) => (build<Op >(acc), changed)
-    (l: ChainLink)  =>
-      (isJumpToImmediateLabel(l.value, chainHeadOp(l.next))
-       || isJumpIfToImmediateLabel(l.value, chainHeadOp(l.next)))
-      ? cgSimplifyOnePass(l.next, acc, true)
-      : isInvertibleJumpIfJumpLabel(l.value, chainHeadOp(l.next),
-                                    chainHeadOp(chainTailOp(l.next)))
-        ? cgSimplifyOnePass(chainTailOp(l.next),
-                            push<Op >(acc, cgInvertJumpIf(l.value,
-                                              chainHeadOp(l.next))),
-                            true)
-        : cgSimplifyOnePass(l.next, push<Op >(acc, l.value), changed)
+# the walk and its per-link body cannot be split into a mutual pair). Both
+# refills are pulled up front to keep every recursion direct; the one-shift
+# arms simply discard the second.
+fun [tail] cgSimplifyLoop(cur: Op|None, n1: Op|None, n2: Op|None, st: SeqStream<Op>,
+                          [terminal] acc: SeqBuilder<Op >,
+                          changed: Bool): (ops: Segment<Op>|None, changed: Bool)
+  if cur is None
+    ret (build<Op >(acc), changed)
+  let op = forceOp(cur)
+  let pA = cgPullOp(st)
+  let pB = cgPullOp(pA.stream)
+  ret (isJumpToImmediateLabel(op, n1) || isJumpIfToImmediateLabel(op, n1))
+    ? cgSimplifyLoop(n1, n2, pA.op, pA.stream, acc, true)
+    : isInvertibleJumpIfJumpLabel(op, n1, n2)
+      ? cgSimplifyLoop(n2, pA.op, pB.op, pB.stream,
+                       push<Op >(acc, cgInvertJumpIf(op, n1)), true)
+      : cgSimplifyLoop(n1, n2, pA.op, pA.stream, push<Op >(acc, op), changed)
 
-fun [tail] cgSimplifyControlFlowFixpoint(ops: List<Op>): List<Op>
-  let pass2 = cgSimplifyOnePass(chain(ops), builder<Op >(), false)
+fun [tail] cgSimplifyControlFlowFixpoint(ops: Segment<Op>|None): Segment<Op>|None
+  let p0 = cgPullOp(seqStream<Op>(ops))
+  let p1 = cgPullOp(p0.stream)
+  let p2 = cgPullOp(p1.stream)
+  let pass2 = cgSimplifyLoop(p0.op, p1.op, p2.op, p2.stream, seqBuilder<Op >(), false)
   ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
 
 fun cgCollectReferencedLabelsStep(acc: StrSet, op: Op): StrSet
@@ -369,7 +396,7 @@ fun cgCollectReferencedLabelsStep(acc: StrSet, op: Op): StrSet
     (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2: StrSet, c: OpCase) => setAdd(acc2, c.caseLabel))
     (o: Op) => acc
 
-fun cgCollectReferencedLabels(ops: List<Op>): StrSet
+fun cgCollectReferencedLabels(ops: Segment<Op>|None): StrSet
   ret fold(ops, setEmpty(), (acc: StrSet, op: Op) => cgCollectReferencedLabelsStep(acc, op))
 
 fun cgIsUnreferencedLabel(op: Op, referenced: StrSet): Bool
@@ -377,7 +404,7 @@ fun cgIsUnreferencedLabel(op: Op, referenced: StrSet): Bool
     (l: OpLabel) => !setHas(referenced, l.labelName)
     (o: Op)       => false
 
-fun cgRemoveUnreferencedLabels(ops: List<Op>, referenced: StrSet): List<Op>
+fun cgRemoveUnreferencedLabels(ops: Segment<Op>|None, referenced: StrSet): Segment<Op>|None
   ret filter<Op>(ops, (op: Op) => !cgIsUnreferencedLabel(op, referenced))
 
 fun cgFunctionSimplifyControlFlow(f: CgFunction): CgFunction
@@ -397,7 +424,7 @@ fun cgFunctionSimplifyControlFlow(f: CgFunction): CgFunction
 class [final] StripIx(sxOps: Dict<Int, Op>, sxN: Int,
                       sxLabels: Dict<String, Int>)
 
-fun cgStripIndex(ops: List<Op>): StripIx
+fun cgStripIndex(ops: Segment<Op>|None): StripIx
   let built = fold(ops, (Dict<Int, Op>(), 0, Dict<String, Int>()),
         (acc: (byIx: Dict<Int, Op>, i: Int, labels: Dict<String, Int>), op: Op) =>
           (put(acc.byIx, acc.i, op), acc.i + 1, cgStripLabelPut(acc.labels, op, acc.i)))
@@ -469,18 +496,20 @@ fun cgReachable(ix: StripIx): Dict<Int, Bool>
   ret cgReachableLoop(ix, chainPrependInt(0, chain(List<Int>())),
                       put(Dict<Int, Bool>(), 0, true))
 
-fun [tail] cgKeepSeenIndices(ops: Chain<Op>, i: Int, seen: Dict<Int, Bool>,
-                             [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cgKeepSeenIndices(l.next, i + 1, seen,
-        get(seen, i) is Bool ? push<Op >(acc, l.value) : acc)
+fun [tail] cgKeepSeenIndices(s: Segment<Op>|None, iSeg: Int32, i: Int, seen: Dict<Int, Bool>,
+                             [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? cgKeepSeenIndices(s, iSeg + 1i32, i + 1, seen,
+          get(seen, i) is Bool ? push<Op >(acc, seg.array(iSeg)) : acc)
+      : cgKeepSeenIndices(seg.next, 0i32, i, seen, acc)
 
 fun cgFunctionStripUnusedOperations(f: CgFunction): CgFunction
   let ix = cgStripIndex(f.fnOps)
   let seen = cgReachable(ix)
-  let newOps = build<Op >(cgKeepSeenIndices(chain(f.fnOps), 0, seen,
-                                           builder<Op >()))
+  let newOps = build<Op >(cgKeepSeenIndices(f.fnOps, 0i32, 0, seen,
+                                           seqBuilder<Op >()))
   ret cgFunctionWith(f, newOps, f.fnStackVars)
 
 # ── fold_struct_fields ───────────────────────────────────────────────────────
@@ -539,7 +568,7 @@ fun cgCPWriteCountsStep(acc: (writes: List<StrCount>, zeroInit: Set<String>), op
     (n: OpNewObject) => cgCPWriteCountsReq(acc, n.newObjRegister)
     (o: Op) => acc
 
-fun cgCollectWrites(ops: List<Op>): (writes: List<StrCount>, zeroInit: Set<String>)
+fun cgCollectWrites(ops: Segment<Op>|None): (writes: List<StrCount>, zeroInit: Set<String>)
   ret fold(ops, (List<StrCount>(), Set<String>()), (acc: (writes: List<StrCount>, zeroInit: Set<String>), op: Op) => cgCPWriteCountsStep(acc, op))
 
 class [final] AliasEntry(aeVarName: String, aeAliasOf: RParam)
@@ -569,7 +598,7 @@ fun cgBuildAliasesStep(acc: List<AliasEntry>, op: Op, writes: List<StrCount>, ze
     (m: OpMove) => cgBuildAliasesMove(acc, m, writes, zeroInit, gcSafe, paramNames)
     (o: Op)      => acc
 
-fun cgBuildAliases(ops: List<Op>, writes: List<StrCount>, zeroInit: Set<String>, gcSafe: Set<String>, paramNames: Set<String>): List<AliasEntry>
+fun cgBuildAliases(ops: Segment<Op>|None, writes: List<StrCount>, zeroInit: Set<String>, gcSafe: Set<String>, paramNames: Set<String>): List<AliasEntry>
   ret fold(ops, List<AliasEntry>(), (acc: List<AliasEntry>, op: Op) => cgBuildAliasesStep(acc, op, writes, zeroInit, gcSafe, paramNames))
 
 fun [tail] aliasLookup(aliases: List<AliasEntry>, name: String): RParam|None
@@ -614,21 +643,24 @@ fun cgIsEliminatedMoveTarget(target: RParam, eliminated: List<String>): Bool
     (sv: RpStackVar) => strListMember(eliminated, sv.name)
     (o: RParam)       => false
 
-fun cgCopyPropagateFilterStep(op: Op, rest: List<Op>, eliminated: List<String>, renames: List<RpRename>): List<Op>
-  ret cgIsEliminatedMove(op, eliminated)
-    ? cgCopyPropagateFilterOps(rest, eliminated, renames)
-    : prepend<Op>(opRenameVars(op, renames), cgCopyPropagateFilterOps(rest, eliminated, renames))
-
-fun cgCopyPropagateFilterOps(ops: List<Op>, eliminated: List<String>, renames: List<RpRename>): List<Op>
-  ret match(head<Op>(ops))
-    (op: Op) => cgCopyPropagateFilterStep(op, tail<Op>(ops), eliminated, renames)
-    ()        => List<Op>()
+fun [tail] cgCopyPropagateFilterOps(s: Segment<Op>|None, i: Int32, eliminated: List<String>,
+                                    renames: List<RpRename>,
+                                    [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? cgCopyPropagateFilterOps(s, i + 1i32, eliminated, renames,
+          cgIsEliminatedMove(seg.array(i), eliminated)
+            ? acc
+            : push<Op >(acc, opRenameVars(seg.array(i), renames)))
+      : cgCopyPropagateFilterOps(seg.next, 0i32, eliminated, renames, acc)
 
 fun cgFunctionCopyPropagateApply(f: CgFunction, aliases: List<AliasEntry>): CgFunction
   let resolved = cgResolvedAliases(aliases)
   let renames = cgAliasesToRenames(resolved)
   let eliminated = cgEliminatedNames(aliases)
-  let newOps = cgCopyPropagateFilterOps(f.fnOps, eliminated, renames)
+  let newOps = build<Op >(cgCopyPropagateFilterOps(f.fnOps, 0i32, eliminated, renames,
+                                                   seqBuilder<Op >()))
   let newStackVars = filter<CgField>(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => !strListMember(eliminated, fld.fieldName))
   ret cgFunctionWith(f, newOps, CgStruct(newStackVars))
 
@@ -658,7 +690,7 @@ fun cgCSEWriteCountsStep(acc: List<StrCount>, op: Op): List<StrCount>
     (n: OpNewObject) => cgCSEWriteCountsTarget(acc, n.newObjRegister)
     (o: Op) => acc
 
-fun cgCSEWriteCounts(ops: List<Op>): List<StrCount>
+fun cgCSEWriteCounts(ops: Segment<Op>|None): List<StrCount>
   ret fold(ops, List<StrCount>(), (acc: List<StrCount>, op: Op) => cgCSEWriteCountsStep(acc, op))
 
 fun cseIsMultiWriteStackVar(x: RParam, multiWrite: List<String>): Bool
@@ -695,7 +727,7 @@ fun cseIsHeapRead(x: RParam): Bool
 class [linear, final] CseAcc(csRenames: List<RpRename>,
                              csAvailable: List<AvailEntry>,
                              csEliminated: List<String>,
-                             csNewOps: ListBuilder<Op >)
+                             csNewOps: SeqBuilder<Op >)
 
 fun cgCSEInvalidate(available: List<AvailEntry>): List<AvailEntry>
   ret filter<AvailEntry>(available, (e: AvailEntry) => !rpTest(e.cseExpr, cseIsHeapRead))
@@ -745,19 +777,21 @@ fun cgCSEStep([terminal] acc: CseAcc, op0: Op, multiWrite: List<String>): CseAcc
                push<Op >(acc.csNewOps, op))
 
 # An explicit walk, not a fold: the accumulator is linear.
-fun cgCSEFold(ops: List<Op>, multiWrite: List<String>): CseOut
-  ret cseBuild(cgCSELoop(chain(ops), multiWrite,
+fun cgCSEFold(ops: Segment<Op>|None, multiWrite: List<String>): CseOut
+  ret cseBuild(cgCSELoop(ops, 0i32, multiWrite,
                          CseAcc(List<RpRename>(), List<AvailEntry>(),
-                                List<String>(), builder<Op >())))
+                                List<String>(), seqBuilder<Op >())))
 
-fun [tail] cgCSELoop(ops: Chain<Op>, multiWrite: List<String>,
+fun [tail] cgCSELoop(s: Segment<Op>|None, i: Int32, multiWrite: List<String>,
                      [terminal] acc: CseAcc): CseAcc
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cgCSELoop(l.next, multiWrite,
-                                 cgCSEStep(acc, l.value, multiWrite))
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? cgCSELoop(s, i + 1i32, multiWrite,
+                  cgCSEStep(acc, seg.array(i), multiWrite))
+      : cgCSELoop(seg.next, 0i32, multiWrite, acc)
 
-class [final] CseOut(coEliminated: List<String>, coNewOps: List<Op>)
+class [final] CseOut(coEliminated: List<String>, coNewOps: Segment<Op>|None)
 
 fun cseBuild(acc: CseAcc): CseOut
   ret CseOut(acc.csEliminated, build<Op >(acc.csNewOps))

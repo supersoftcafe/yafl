@@ -72,7 +72,7 @@ fun appGlobals(a: CgApp): List<CgGlobal>
 fun forceFn(x: CgFunction|None): CgFunction
   ret match(x)
     (f: CgFunction) => f
-    ()              => CgFunction("", CgVoid(), CgVoid(), CgVoid(), List<Op>(),
+    ()              => CgFunction("", CgVoid(), CgVoid(), CgVoid(), None,
                                   "", None, false, false, false, false)
 
 fun forceObj(x: CgObject|None): CgObject

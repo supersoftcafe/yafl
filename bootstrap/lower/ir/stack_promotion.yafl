@@ -74,18 +74,20 @@ fun spBaseIsName(ptr: RParam, name: String): Bool
 fun spCandidates(f: CgFunction, a: CgApp): List<SpCand>
   # In op order: the candidates' order becomes the promoted locals' field
   # declaration order.
-  let news = build<SpCand >(spNewsLoop(chain(f.fnOps), a,
+  let news = build<SpCand >(spNewsLoop(f.fnOps, 0i32, a,
                                        builder<SpCand >()))
   ret filter(news,
              (c: SpCand) => spDefCount(f.fnOps, c.spReg) == 1
                             && !any(f.fnOps,
                                     (op: Op) => spOpEscapes(op, c.spReg)))
 
-fun [tail] spNewsLoop(ops: Chain<Op>, a: CgApp,
+fun [tail] spNewsLoop(s: Segment<Op>|None, i: Int32, a: CgApp,
                       [terminal] acc: ListBuilder<SpCand >): ListBuilder<SpCand >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => spNewsLoop(l.next, a, spNewsOp(acc, l.value, a))
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? spNewsLoop(s, i + 1i32, a, spNewsOp(acc, seg.array(i), a))
+      : spNewsLoop(seg.next, 0i32, a, acc)
 
 fun spNewsOp([terminal] acc: ListBuilder<SpCand >, op: Op, a: CgApp): ListBuilder<SpCand >
   ret match(op)
@@ -102,7 +104,7 @@ fun spNewsRegister([terminal] acc: ListBuilder<SpCand >, no: OpNewObject,
       ()                       => acc
     (o: RParam)      => acc
 
-fun spDefCount(ops: List<Op>, name: String): Int
+fun spDefCount(ops: Segment<Op>|None, name: String): Int
   ret fold(ops, 0,
            (n: Int, op: Op) => n + countIf(opGetLiveVars(op).writes,
                                            (sv: RParam) => saIsVarNamed(sv,
@@ -149,8 +151,8 @@ fun spFunction(f: CgFunction, a: CgApp): CgFunction
   let promoted = spCandidates(f, a)
   if isEmpty(promoted)
     ret f
-  let newOps = build<Op >(spRewriteLoop(chain(f.fnOps), promoted,
-                                        builder<Op >()))
+  let newOps = build<Op >(spRewriteLoop(f.fnOps, 0i32, promoted,
+                                        seqBuilder<Op >()))
   ret cgFunctionWith(f, newOps, spRestack(f, promoted))
 
 fun [tail] spCandFor(cs: Chain<SpCand>, name: String): SpCand|None
@@ -184,15 +186,17 @@ fun spRewriteField(of: RpObjectField, promoted: List<SpCand>): RParam
       ()             => of
     (o: RParam)      => of
 
-fun [tail] spRewriteLoop(ops: Chain<Op>, promoted: List<SpCand>,
-                         [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(ops)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => spRewriteLoop(l.next, promoted,
-                                     spRewriteOp(acc, l.value, promoted))
+fun [tail] spRewriteLoop(s: Segment<Op>|None, i: Int32, promoted: List<SpCand>,
+                         [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => i < seg.length
+      ? spRewriteLoop(s, i + 1i32, promoted,
+                      spRewriteOp(acc, seg.array(i), promoted))
+      : spRewriteLoop(seg.next, 0i32, promoted, acc)
 
-fun spRewriteOp([terminal] acc: ListBuilder<Op >, op: Op,
-                promoted: List<SpCand>): ListBuilder<Op >
+fun spRewriteOp([terminal] acc: SeqBuilder<Op >, op: Op,
+                promoted: List<SpCand>): SeqBuilder<Op >
   ret match(op)
     (no: OpNewObject) => match(spPromotedRegister(no, promoted))
       (cand: SpCand) => spZeroFills(acc, cand)
@@ -212,11 +216,11 @@ fun spPromotedRegister(no: OpNewObject, promoted: List<SpCand>): SpCand|None
 
 # NewObject zero-fills; the field locals must match so a partially-
 # initialised read stays defined.
-fun spZeroFills([terminal] acc: ListBuilder<Op >, cand: SpCand): ListBuilder<Op >
+fun spZeroFills([terminal] acc: SeqBuilder<Op >, cand: SpCand): SeqBuilder<Op >
   ret spZeroFillsLoop(chain(cand.spPayload), cand, acc)
 
 fun [tail] spZeroFillsLoop(fs: Chain<CgField>, cand: SpCand,
-                           [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+                           [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => spZeroFillsLoop(l.next, cand,

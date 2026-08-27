@@ -304,6 +304,39 @@ fun atMost<T>(c: Chain<T>, n: Int): Bool
 fun exactly<T>(c: Chain<T>, n: Int): Bool
   ret atLeast<T>(c, n) && !atLeast<T>(c, n + 1)
 
+# ── Seq twins ────────────────────────────────────────────────────────────────
+# The same vocabulary over Segment chains. Per-segment STORED lengths are
+# facts the container carries, so consuming them is not "calculating a
+# length" — atLeast hops whole segments (walks at most n elements' worth),
+# and sameLen balances the two stored-length sums, O(segments) each side.
+
+fun [tail] atLeast<T>(s: Segment<T>|None, n: Int): Bool
+  ret n <= 0 ? true : match(s)
+    (nil: None)        => false
+    (seg: Segment<T>)  => Int(seg.length) >= n
+      ? true
+      : atLeast<T>(seg.next, n - Int(seg.length))
+
+fun exactly<T>(s: Segment<T>|None, n: Int): Bool
+  ret atLeast<T>(s, n) && !atLeast<T>(s, n + 1)
+
+# Indexed read by segment hop — O(segments) to the target, then one inline
+# read; the List twin (frontend/checks.yafl nthOf) walks every cell.
+fun [tail] nthOf<T>(s: Segment<T>|None, idx: Int): T|None
+  ret match(s)
+    (nil: None)        => None
+    (seg: Segment<T>)  => idx < Int(seg.length)
+      ? seg.array(truncateToInt32(idx))
+      : nthOf<T>(seg.next, idx - Int(seg.length))
+
+fun sameLen<T, U>(a: Segment<T>|None, b: Segment<U>|None): Bool
+  ret _segLenSum<T>(a, 0) == _segLenSum<U>(b, 0)
+
+fun [tail] _segLenSum<T>(s: Segment<T>|None, acc: Int): Int
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<T>)  => _segLenSum<T>(seg.next, acc + Int(seg.length))
+
 # The two-list co-walks spell EVERY generic call with explicit type args.
 # The silent third-shape abort (a bare match arm inside a two-type-param host
 # latching the wrong enum instantiation) is FIXED — witness test:

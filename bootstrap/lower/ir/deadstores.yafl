@@ -27,7 +27,7 @@ fun [tail] dsFunction(f: CgFunction): CgFunction
 # All StackVar names ever READ across all ops — the get_live_vars reads half,
 # plus every op's saved_vars. Dict-backed SET (Python's is a set; user ruling
 # 2026-07-22: lookups are dict-backed).
-fun dsCollectReads(ops: List<Op>): Dict<String, Bool>
+fun dsCollectReads(ops: Segment<Op>|None): Dict<String, Bool>
   ret fold(ops, Dict<String, Bool>(), dsOpReads)
 
 fun dsOpReads(acc: Dict<String, Bool>, op: Op): Dict<String, Bool>
@@ -45,8 +45,8 @@ fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
-  let walked = dsWalk<ChainStream<Op>>(chainStream<Op>(chain(f.fnOps)), reads,
-                                       builder<Op >(), false)
+  let walked = dsWalk<SeqStream<Op>>(seqStream<Op>(f.fnOps), reads,
+                                       seqBuilder<Op >(), false)
   ret walked.changed
     ? (cpPruneStackVars(f, walked.ops), true)
     : (f, false)
@@ -54,8 +54,8 @@ fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
 # Stream-driven (storage-agnostic): swapping the container is one source
 # construction in dsOnce, not a walk rewrite. Error arm unreachable: Never.
 fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
-                     [terminal] acc: ListBuilder<Op >,
-                     changed: Bool): (ops: List<Op>, changed: Bool) where Stream<S, Op, Never>
+                     [terminal] acc: SeqBuilder<Op >,
+                     changed: Bool): (ops: Segment<Op>|None, changed: Bool) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)

@@ -23,7 +23,7 @@ fun removePhis(a: CgApp): CgApp
 
 class [final] PrCounts(prDefs: List<StrCount>, prReads: List<StrCount>)
 
-fun prCountVars(ops: List<Op>): PrCounts
+fun prCountVars(ops: Segment<Op>|None): PrCounts
   ret fold(ops, PrCounts(List<StrCount>(), List<StrCount>()), prCountOp)
 
 fun prCountOp(acc: PrCounts, op: Op): PrCounts
@@ -43,7 +43,8 @@ fun prIncrIfStackVar(acc: List<StrCount>, sv: RParam): List<StrCount>
 
 fun prCoalesceCopies(f: CgFunction): CgFunction
   let counts = prCountVars(f.fnOps)
-  let out = prScan(chain(f.fnOps), List<Op>(), counts, 0, List<Int>(), List<PrRename>(),
+  let p0 = cgPullOp(seqStream<Op>(f.fnOps))
+  let out = prScan(p0.op, p0.stream, List<Op>(), counts, 0, List<Int>(), List<PrRename>(),
                    counts.prDefs)
   ret isEmpty(out.proRemoved)
     ? f
@@ -59,20 +60,22 @@ class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
 # `back` is the ops already scanned, most-recent FIRST — prFindDef's backward
 # walk reads it directly instead of re-indexing `ops` (prepend keeps the list
 # front-normal, so chain() over it is free).
-fun [tail] prScan(os: Chain<Op>, back: List<Op>, counts: PrCounts, i: Int,
+fun [tail] prScan(cur: Op|None, st: SeqStream<Op>, back: List<Op>, counts: PrCounts, i: Int,
                   removed: List<Int>, renames: List<PrRename>,
                   defs: List<StrCount>): PrOut
-  ret match(os)
-    (nil: ChainEnd) => PrOut(removed, renames)
-    (l: ChainLink)  => match(prCandidate(l.value))
-      (c: PrCand) => c.pcSelf
-        # `removed` is turned into a Dict set by its consumer, and each rename
-        # is applied by matching its op index — neither order is observed.
-        ? prScan(l.next, prepend(l.value, back), counts, i + 1,
-                 prepend(i, removed), renames, defs)
-        : prTryCoalesce(l, back, counts, i, c, removed, renames, defs)
-      ()           => prScan(l.next, prepend(l.value, back), counts, i + 1,
-                             removed, renames, defs)
+  if cur is None
+    ret PrOut(removed, renames)
+  let op = forceOp(cur)
+  let p = cgPullOp(st)
+  ret match(prCandidate(op))
+    (c: PrCand) => c.pcSelf
+      # `removed` is turned into a Dict set by its consumer, and each rename
+      # is applied by matching its op index — neither order is observed.
+      ? prScan(p.op, p.stream, prepend(op, back), counts, i + 1,
+               prepend(i, removed), renames, defs)
+      : prTryCoalesce(op, p.op, p.stream, back, counts, i, c, removed, renames, defs)
+    ()           => prScan(p.op, p.stream, prepend(op, back), counts, i + 1,
+                           removed, renames, defs)
 
 # A coalescible copy: Move without keep, StackVar := StackVar. pcSelf marks
 # the degenerate T := T (dropped outright).
@@ -90,17 +93,18 @@ fun prCandTargets(m: OpMove): PrCand|None
       (o: RParam)       => None
     (o2: RParam)      => None
 
-fun prTryCoalesce(l: ChainLink<Op>, back: List<Op>, counts: PrCounts, i: Int,
+fun prTryCoalesce(op: Op, nxt: Op|None, st: SeqStream<Op>, back: List<Op>,
+                  counts: PrCounts, i: Int,
                   c: PrCand, removed: List<Int>, renames: List<PrRename>,
                   defs: List<StrCount>): PrOut
-  let onwards = prepend(l.value, back)
+  let onwards = prepend(op, back)
   if strCountGet(defs, c.pcS) != 1 || strCountGet(counts.prReads, c.pcS) != 1
-    ret prScan(l.next, onwards, counts, i + 1, removed, renames, defs)
+    ret prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
   ret match(prFindDef(chain(back), i - 1, c))
-    (di: Int) => prScan(l.next, onwards, counts, i + 1, prepend(i, removed),
+    (di: Int) => prScan(nxt, st, onwards, counts, i + 1, prepend(i, removed),
                         prepend(PrRename(di, c.pcS, c.pcTVar), renames),
                         strCountIncr(defs, c.pcT))
-    ()         => prScan(l.next, onwards, counts, i + 1, removed, renames, defs)
+    ()         => prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
 
 # Walk back within the block to src's definition; bail on a block boundary
 # (labels/jumps/returns — value flow beyond the block is invisible here) or
@@ -144,13 +148,13 @@ fun prTouches(op: Op, name: String): Bool
 fun prRebuild(f: CgFunction, out: PrOut): CgFunction
   let removedSet = prRemovedSet(chain(out.proRemoved), Dict<Int, Bool>())
   let newOps = prRebuildOps(f.fnOps, out, removedSet)
-  let dead = prDeadSources(chain(f.fnOps), 0, removedSet, Set<String>())
+  let dead = prDeadSources(f.fnOps, 0i32, 0, removedSet, Set<String>())
   ret cgFunctionWith(f, newOps,
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
                         (fld: CgField) => !contains<String>(dead, fld.fieldName))))
 
-fun prRebuildOps(ops: List<Op>, out: PrOut, removedSet: Dict<Int, Bool>): List<Op>
-  ret prRebuildLoop(chain(ops), out, removedSet, 0, List<Op>())
+fun prRebuildOps(ops: Segment<Op>|None, out: PrOut, removedSet: Dict<Int, Bool>): Segment<Op>|None
+  ret build<Op >(prRebuildLoopB(ops, 0i32, out, removedSet, 0, seqBuilder<Op >()))
 
 # Removed indices are a SET (Python's `removed: set[int]`) — the membership
 # test runs once per op, so a list scan made the rebuild quadratic.
@@ -164,18 +168,17 @@ fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int): Bool
     (b: Bool) => b
     ()        => false
 
-fun prRebuildLoop(os: Chain<Op>, out: PrOut, removedSet: Dict<Int, Bool>,
-                         i: Int, acc: List<Op>): List<Op>
-  ret build<Op >(prRebuildLoopB(os, out, removedSet, i, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
-
-fun [tail] prRebuildLoopB(os: Chain<Op>, out: PrOut, removedSet: Dict<Int, Bool>,
-                         i: Int, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
-  ret match(os)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => prIsRemoved(removedSet, i)
-      ? prRebuildLoopB(l.next, out, removedSet, i + 1, acc)
-      : prRebuildLoopB(l.next, out, removedSet, i + 1,
-                      push<Op >(acc, prApplyRename(l.value, i, out.proRenames)))
+fun [tail] prRebuildLoopB(s: Segment<Op>|None, iSeg: Int32, out: PrOut,
+                          removedSet: Dict<Int, Bool>,
+                          i: Int, [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? prRebuildLoopB(s, iSeg + 1i32, out, removedSet, i + 1,
+          prIsRemoved(removedSet, i)
+            ? acc
+            : push<Op >(acc, prApplyRename(seg.array(iSeg), i, out.proRenames)))
+      : prRebuildLoopB(seg.next, 0i32, out, removedSet, i, acc)
 
 fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
   ret fold(renames, op, (o: Op, r: PrRename) => r.prrIdx == i
@@ -183,12 +186,14 @@ fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
              : o)
 
 # Dead = each removed non-self copy's SOURCE name.
-fun [tail] prDeadSources(os: Chain<Op>, i: Int, removedSet: Dict<Int, Bool>,
+fun [tail] prDeadSources(s: Segment<Op>|None, iSeg: Int32, i: Int, removedSet: Dict<Int, Bool>,
                          acc: Set<String>): Set<String>
-  ret match(os)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => prDeadSources(l.next, i + 1, removedSet,
-                         prIsRemoved(removedSet, i) ? prDeadOne(acc, l.value) : acc)
+  ret match(s)
+    (nil: None)        => acc
+    (seg: Segment<Op>) => iSeg < seg.length
+      ? prDeadSources(s, iSeg + 1i32, i + 1, removedSet,
+          prIsRemoved(removedSet, i) ? prDeadOne(acc, seg.array(iSeg)) : acc)
+      : prDeadSources(seg.next, 0i32, i, removedSet, acc)
 
 fun prDeadOne(acc: Set<String>, op: Op): Set<String>
   ret match(prCandidate(op))
