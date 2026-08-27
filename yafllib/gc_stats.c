@@ -24,6 +24,7 @@ _Atomic(uint64_t) gc_stat_cons_seeds   = 0;  // objects seeded live by conservat
    and pointer tallies, promotion outcomes, and tsc per mark/prune section —
    printed at exit as [GC PROF]/[GC PROMO] alongside the stats. */
 _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
+_Atomic(uint64_t) gc_prof_drain_pages;
 _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
                 gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
 _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
@@ -122,9 +123,10 @@ void gc_stats_report(void) {
             (unsigned long long)gc_prof_promote_ok, (unsigned long long)gc_prof_promote_dirty,
             (unsigned long long)gc_prof_block_unstable, (unsigned long long)gc_prof_block_volume,
             (unsigned long long)gc_prof_block_kind, (unsigned long long)gc_prof_defer);
-    fprintf(stderr, "[GC PROF] objs=%llu ptrs=%llu drained=%llu passes=%llu | tsc: drain=%llu merge=%llu pages=%llu live=%llu prune_rest=%llu\n",
+    fprintf(stderr, "[GC PROF] objs=%llu ptrs=%llu drained=%llu passes=%llu drain_pages=%llu | tsc: drain=%llu merge=%llu pages=%llu live=%llu prune_rest=%llu\n",
             (unsigned long long)gc_prof_objs, (unsigned long long)gc_prof_ptrs,
             (unsigned long long)gc_prof_drained, (unsigned long long)gc_prof_passes,
+            (unsigned long long)gc_prof_drain_pages,
             (unsigned long long)gc_prof_t_drain, (unsigned long long)gc_prof_t_merge,
             (unsigned long long)gc_prof_t_pages, (unsigned long long)gc_prof_t_live,
             (unsigned long long)gc_prof_t_prune_rest);

@@ -143,6 +143,7 @@ extern _Atomic(uint64_t) gc_stat_mark_steps, gc_stat_pages_popped, gc_stat_reque
                          gc_stat_prune_steps, gc_stat_pages_freed, gc_stat_page_allocs,
                          gc_stat_majors, gc_stat_cons_seeds;
 extern _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
+extern _Atomic(uint64_t) gc_prof_drain_pages;
 extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
                          gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
 extern _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;

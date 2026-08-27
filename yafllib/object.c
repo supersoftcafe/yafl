@@ -225,12 +225,33 @@ static bool bitmap_test_all(const bitmap_t *bitmap) {
     return result != 0;
 }
 
+// PEEK BEFORE THE LOCKED EXCHANGE (all three merges below). `atomic_seen` is
+// empty for the overwhelming majority of merges — the mutator marks only what
+// it actually overwrites — yet an unconditional exchange pays a locked RMW and
+// a store-buffer drain (~20-40 cycles) on all 8 words regardless. A page pop
+// runs two or three of these merges and prune runs a fourth, so at 27.16M pops
+// that is ~0.5-0.7 BILLION locked operations per self-compile, nearly all of
+// them exchanging zero for zero. mark_object already takes exactly this
+// relaxed-read-first route for the same reason (see its comment below:
+// "measured at 58% of mark_object's cycles at T=12"); these four sites were
+// simply never given it.
+//
+// SAFETY: the skip never CLEARS a word, so a bit can only be DELAYED to the
+// next merge, never lost — and every path that skips here is followed by
+// another merge that will find it (the fixpoint loop, the end-of-page
+// re-merge, and finally prune's residue merge, which is what already covers
+// the documented barrier-off window). The relaxed load racing a mutator's
+// fetch_or is well-defined on an _Atomic object, and reading a stale zero is
+// indistinguishable from the exchange having linearised one instant earlier —
+// the mutator-vs-scanner window around `processed_by_epoch` keeps the shape it
+// has today.
 static bool bitmap_or_test_reset_all(bitmap_t * __restrict target, bitmap_t * __restrict source) {
     mask_bits_t result = 0;
     for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {
         _Atomic(mask_bits_t) *src_ptr = (_Atomic(mask_bits_t)*)&source->a[index];
-        mask_bits_t bits = atomic_exchange(src_ptr, 0);
-        result |= (target->a[index] |= bits);
+        if (atomic_load_explicit(src_ptr, memory_order_relaxed) != 0)
+            target->a[index] |= atomic_exchange(src_ptr, 0);
+        result |= target->a[index];
     }
     return result != 0;
 }
@@ -246,6 +267,8 @@ static bool bitmap_or_test_new_reset_all(bitmap_t * __restrict target, bitmap_t 
     mask_bits_t result = 0;
     for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {
         _Atomic(mask_bits_t) *src_ptr = (_Atomic(mask_bits_t)*)&source->a[index];
+        if (atomic_load_explicit(src_ptr, memory_order_relaxed) == 0)
+            continue;                       // contributes no bits: result and target both unchanged
         mask_bits_t bits = atomic_exchange(src_ptr, 0);
         result |= bits & ~target->a[index];
         target->a[index] |= bits;
@@ -262,6 +285,8 @@ static bool bitmap_or_test_source_reset_all(bitmap_t * __restrict target, bitmap
     mask_bits_t result = 0;
     for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {
         _Atomic(mask_bits_t) *src_ptr = (_Atomic(mask_bits_t)*)&source->a[index];
+        if (atomic_load_explicit(src_ptr, memory_order_relaxed) == 0)
+            continue;                       // source contributed nothing for this word
         mask_bits_t bits = atomic_exchange(src_ptr, 0);
         target->a[index] |= bits;
         result |= bits;
@@ -1666,6 +1691,34 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
         mark_worklist_push(object);
 }
 
+// Mark a gathered batch of children: the mark + forwarding walk shared by
+// the fixed-field scan and the fused array-payload scan below. The batch
+// carries the child VALUE the gather loaded, not a re-read of the slot: the
+// gather already proved that value on-heap (so no per-entry range test is
+// owed here — a forward target is always on-heap too), and a mutable
+// container's slot may be rewritten by the mutator between gather and flush,
+// where a re-read could observe NULL. Marking the gathered value is the same
+// SATB obligation either way.
+static void gc_fsa_mark_sweep$scan_flush(object_t ***batch_slot, object_t **batch_obj,
+                                         unsigned count, bool fixup) {
+    for (unsigned i = 0; i < count; ++i) {
+        object_t **ptr_ptr = batch_slot[i];
+        object_t *object = batch_obj[i];
+
+        for (;;) {
+            gc_fsa_mark_sweep$mark_object(object);
+
+            // Apply any forwarding pointer if found
+            vtable_t *vt = object->vtable;
+            if (LIKELY(!vtable_is_forward(vt)))
+                break;
+
+            object = (object_t*)vt;
+            if (fixup) *ptr_ptr = object;
+        }
+    }
+}
+
 // `fixup` controls whether a relocated child's field is snapped to the
 // forwarding target. For an IMMUTABLE container the GC owns the field and snaps
 // it (true). For a MUTABLE container the mutator may be writing the same slot in
@@ -1681,14 +1734,18 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
         unsigned index = (unsigned)__builtin_ctzll(pointer_locations);
         object_t **ptr_ptr = &base_ptr[index];
         object_t *object = *ptr_ptr;
-        while (gc_object_is_on_heap_fast(object)) {
+        // One range test on entry; forward targets are always on-heap, so
+        // the hop loop needs no re-test.
+        if (gc_object_is_on_heap_fast(object)) {
             __builtin_prefetch(object, 0);
-            gc_fsa_mark_sweep$mark_object(object);
-            vtable_t *vt = object->vtable;
-            if (LIKELY(!vtable_is_forward(vt)))
-                break;
-            object = (object_t*)vt;
-            if (fixup) *ptr_ptr = object;
+            for (;;) {
+                gc_fsa_mark_sweep$mark_object(object);
+                vtable_t *vt = object->vtable;
+                if (LIKELY(!vtable_is_forward(vt)))
+                    break;
+                object = (object_t*)vt;
+                if (fixup) *ptr_ptr = object;
+            }
         }
         return;
     }
@@ -1696,7 +1753,8 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
     // headers (where the mark bitmaps live), then mark them. The gather pass
     // issues all the independent loads up front so the header misses overlap
     // instead of serialising one per child.
-    object_t **batch[64];
+    object_t **batch_slot[64];
+    object_t  *batch_obj[64];
     unsigned   count = 0;
     for (ptr_mask_t m = pointer_locations; m; m &= m - 1) {
         unsigned index = __builtin_ctzll(m);
@@ -1705,26 +1763,13 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
             __builtin_prefetch(&((gc_page_t*)((uintptr_t)object &~ (uintptr_t)(GC_PAGE_SIZE-1)))->head.scanner, 1);
             __builtin_prefetch(object, 0);   // child body (vtable + first fields) —
                                              // the LIFO pops it next; start the line now
-            batch[count++] = &base_ptr[index];
+            batch_slot[count] = &base_ptr[index];
+            batch_obj[count]  = object;
+            ++count;
         }
     }
 
-    for (unsigned i = 0; i < count; ++i) {
-        object_t **ptr_ptr = batch[i];
-        object_t *object = *ptr_ptr;
-
-        while (gc_object_is_on_heap_fast(object)) {
-            gc_fsa_mark_sweep$mark_object(object);
-
-            // Apply any forwarding pointer if found
-            vtable_t *vt = object->vtable;
-            if (LIKELY(!vtable_is_forward(vt)))
-                break;
-
-            object = (object_t*)vt;
-            if (fixup) *ptr_ptr = object;
-        }
-    }
+    gc_fsa_mark_sweep$scan_flush(batch_slot, batch_obj, count, fixup);
 }
 
 // poison-mode dangle check: gc_debug.c
@@ -1798,9 +1843,39 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
     if (vt->array_el_pointer_locations) {
         uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
         char*  array = ((char*)object) + vt->object_size;
-        for (; len-- > 0; array += vt->array_el_size) {
-            gc_fsa_mark_sweep$scan_elements((object_t**)array, vt->array_el_pointer_locations, fixup);
+        const ptr_mask_t am     = vt->array_el_pointer_locations;
+        const uint32_t   stride = vt->array_el_size;
+        // Fused element walk (experiment): children are gathered into the
+        // batch ACROSS elements, so the page-header prefetches of one
+        // element's children overlap the gather of the next — the
+        // per-element scan_elements call could only overlap within one
+        // element's mask. Flush order equals the old per-element order.
+        object_t **batch_slot[64];
+        object_t  *batch_obj[64];
+        unsigned   count = 0;
+        for (; len-- > 0; array += stride) {
+            // Stride prefetch: the parent's own element lines past the first
+            // 64B are cold (the body prefetch warmed line 0 only) — start
+            // the line two elements ahead while gathering this one.
+            __builtin_prefetch(array + 2u * stride, 0);
+            for (ptr_mask_t m = am; m; m &= m - 1) {
+                object_t **pp = &((object_t**)array)[__builtin_ctzll(m)];
+                object_t *child = *pp;
+                if (gc_object_is_on_heap_fast(child)) {
+                    __builtin_prefetch(&((gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1)))->head.scanner, 1);
+                    __builtin_prefetch(child, 0);
+                    batch_slot[count] = pp;
+                    batch_obj[count]  = child;
+                    ++count;
+                    if (count == 64) {
+                        gc_fsa_mark_sweep$scan_flush(batch_slot, batch_obj, count, fixup);
+                        count = 0;
+                    }
+                }
+            }
         }
+        if (count)
+            gc_fsa_mark_sweep$scan_flush(batch_slot, batch_obj, count, fixup);
     }
 }
 
@@ -1826,14 +1901,40 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep$scan_page(gc_page_t *page) {
 // push more back-edges), repeat until nothing remains. Each object is pushed
 // at most once per cycle (only when its seen bit transitions unset->set), so
 // total pops are bounded by the live set and this always terminates.
+//
+// SCAN IMMEDIATELY ON POP — do not batch. It is tempting to accumulate a burst
+// of back-edges and group it by address before scanning, since the drained
+// objects DO cluster (measured: ~15 per page, the stats counter below). Both
+// shapes were built and measured, and both are worse: a 64-object burst costs
+// +6% mark on its own, and sorting the burst by address costs +16%. The reason
+// is that this pop is the CONSUMER END OF A PREFETCH PIPELINE — scan_elements'
+// gather issued a prefetch for each child's body and then marked it, so the
+// object the LIFO hands back next is the one whose line was most recently
+// requested. Deferring it behind 63 other scans lets that line die before use,
+// and reordering breaks the pairing outright. The clustering is real; it is
+// simply already being exploited, one object ahead, by the gather.
 static void gc_fsa_mark_sweep$drain_worklist(void) {
+    // DIAGNOSTIC (stats-gated): drained objects vs the distinct pages they land
+    // on. A 32-entry direct-mapped filter approximates the distinct count
+    // (aliasing over-counts, so the ratio is a LOWER bound on true clustering).
+    gc_page_t *seen_pages[32];
+    if (UNLIKELY(gc_stats_enabled)) memset(seen_pages, 0, sizeof(seen_pages));
+
     for (object_t *o; (o = mark_worklist_pop()) != NULL; ) {
         // No scanned-bit write here: the only reader is the page re-diff after
         // a mutator-barrier requeue, where a duplicate scan is idempotent
         // (mark_object skips already-seen children) — cheaper than a
         // page-header RMW per drained object, the dominant population.
         gc_fsa_mark_sweep$scan_object(o);
-        if (UNLIKELY(gc_stats_enabled)) gc_prof_drained++;
+        if (UNLIKELY(gc_stats_enabled)) {
+            gc_prof_drained++;
+            gc_page_t *p = (gc_page_t*)((uintptr_t)o &~ (uintptr_t)(GC_PAGE_SIZE-1));
+            unsigned slot = (unsigned)(((uintptr_t)p >> 14) & 31u);
+            if (seen_pages[slot] != p) {
+                seen_pages[slot] = p;
+                gc_prof_drain_pages++;
+            }
+        }
     }
 }
 
