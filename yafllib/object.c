@@ -12,6 +12,15 @@
 #include <time.h>
 
 
+// Occupancy at or below which a survivor page is evacuated. Pages fuller than
+// this are left alone: evacuating them copies nearly a page's worth of objects
+// to win back nearly nothing. RUNTIME-TUNABLE (YAFL_GC_COMPACT_PERCENT, 0
+// disables compaction entirely) because the band it does NOT cover is where
+// the resident heap sits — a self-compile censuses ~44% of its in-use bytes as
+// live, i.e. most pages sit above this threshold and keep their dead slots
+// forever, and old-generation pages are never even offered to the evacuator
+// (prune walks survivors, and old pages are not in that list) until a major
+// demotes them.
 #define COMPACT_THRESHOLD_PERCENT   33
 #define REPROCESS_PAGE_COUNT        16
 
@@ -108,6 +117,7 @@
 #define GC_PACE_LAG_MAX     4096  // cap on a thread's accumulated catch-up debt
 static unsigned gc_step_base  = GC_PACE_SCAN_PAGES;
 static unsigned gc_prune_base = GC_PACE_PRUNE_PAGES;
+static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
 
 // Scavenger call-site knobs (the scavenger itself lives in mmap.c, with its
 // own age/hysteresis tuning). The retain floor only smooths intra-cycle
@@ -152,6 +162,12 @@ static void gc_read_config(void) {
     if ((e = getenv("YAFL_GC_PRUNE_PAGES")) != NULL) {
         int base = atoi(e);
         if (base > 0) gc_prune_base = (unsigned)base;
+    }
+    // 0 disables compaction; values above 100 are clamped (the evacuation set
+    // can never exceed a page's slots).
+    if ((e = getenv("YAFL_GC_COMPACT_PERCENT")) != NULL) {
+        int pct = atoi(e);
+        if (pct >= 0) gc_compact_percent = (unsigned)(pct > 100 ? 100 : pct);
     }
     gc_poison_enabled = (e = getenv("YAFL_GC_POISON")) && e[0] && e[0] != '0';
     gc_stats_enabled  = getenv("YAFL_GC_STATS") != NULL;
@@ -1111,9 +1127,12 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     while (!atomic_compare_exchange_weak(&threads, &gc_thread_info.next, &gc_thread_info));
 }
 
-#if COMPACT_THRESHOLD_PERCENT > 0
 static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
-    const unsigned slots_threshold = SLOTS_PER_PAGE * COMPACT_THRESHOLD_PERCENT / 100;
+    // Runtime threshold (YAFL_GC_COMPACT_PERCENT); 0 disables compaction.
+    const unsigned pct = gc_compact_percent;
+    if (pct == 0)
+        return;
+    const unsigned slots_threshold = SLOTS_PER_PAGE * pct / 100;
 
     // Previously compacted. If we do it again we'll be making redundent copies.
     if (page->head.compacted)
@@ -1144,7 +1163,10 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
 
     unsigned total = 0;
     unsigned object_count = 0;
-    struct { uint16_t o; uint16_t s; } objects[slots_threshold];
+    // Sized to the worst case rather than to the threshold: the bound is now a
+    // runtime value, and a page can hold at most SLOTS_PER_PAGE objects. ~2KB
+    // of stack; the bitmap_count gate above still caps what is actually filled.
+    struct { uint16_t o; uint16_t s; } objects[SLOTS_PER_PAGE];
 
     // Find size and offset of each object
     // If we hit the upper size threshold, abort the operation
@@ -1217,7 +1239,6 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     }
     gc_thread_info.in_relocation = was_in_relocation;
 }
-#endif
 
 
 
@@ -2372,9 +2393,7 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             bitmap_reset_all(&page->head.scanner.scanned);
             bitmap_reset_all(&page->head.scanner.atomic_seen);
             list_link(&survivors, (list_element_t*)&page->head.list);
-#if COMPACT_THRESHOLD_PERCENT > 0
             gc_compact_page(page);
-#endif
             // Cleared for the next cycle: root scanning re-pins if a conservative
             // reference still points into this page.
             page->head.scanner.pinned = false;
