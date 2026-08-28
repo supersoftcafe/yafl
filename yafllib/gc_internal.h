@@ -144,6 +144,11 @@ extern _Atomic(uint64_t) gc_stat_mark_steps, gc_stat_pages_popped, gc_stat_reque
                          gc_stat_majors, gc_stat_cons_seeds;
 extern _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
 extern _Atomic(uint64_t) gc_prof_drain_pages;
+extern size_t gc_occ_hist_pages[10], gc_occ_hist_dead[10], gc_occ_hist_promo[10];
+extern _Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof_block_compacted;
+#define GC_FWD_AGE_BUCKETS 16
+extern size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
+extern _Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
 extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
                          gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
 extern _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;

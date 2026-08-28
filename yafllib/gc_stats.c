@@ -25,8 +25,12 @@ _Atomic(uint64_t) gc_stat_cons_seeds   = 0;  // objects seeded live by conservat
    printed at exit as [GC PROF]/[GC PROMO] alongside the stats. */
 _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
 _Atomic(uint64_t) gc_prof_drain_pages;
+size_t gc_occ_hist_pages[10], gc_occ_hist_dead[10], gc_occ_hist_promo[10];
 _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
                 gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
+_Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof_block_compacted;
+size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
+_Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
 _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
 // gc_tsc / GC_STAT_BUMP / GC_PROF_LAP: gc_internal.h
 
@@ -119,10 +123,51 @@ void gc_stats_report(void) {
             gc_snap_sparse[cls],
             gc_snap_sparse_free[cls] * sizeof(slot_t) / 1024);
     }
+    // Occupancy histogram over every young-rotation survivor of the whole run
+    // (see gc_occupancy_account). Reads as: at each occupancy decile, how many
+    // page-visits landed there, how much dead space those pages were holding
+    // (the prize a hole-reusing allocator could claim), and how many were
+    // already halfway to graduating (the cost — reuse resets that clock and
+    // keeps the page in the rotation). Pages under 25% are already evacuated,
+    // which retires them outright; the middle deciles are the stranded band.
+    {
+        size_t tot_pages = 0, tot_dead = 0;
+        for (unsigned b = 0; b < 10; ++b) { tot_pages += gc_occ_hist_pages[b]; tot_dead += gc_occ_hist_dead[b]; }
+        fprintf(stderr, "[GC OCC] survivor page-visits=%zu holding %zu MB dead\n",
+                tot_pages, tot_dead * sizeof(slot_t) / (1024*1024));
+        for (unsigned b = 0; b < 10; ++b) {
+            if (gc_occ_hist_pages[b] == 0) continue;
+            fprintf(stderr, "[GC OCC] %2u-%2u%% live: pages=%-10zu dead=%6zu MB  near-promotion=%zu (%.0f%%)\n",
+                    b * 10, b * 10 + 9, gc_occ_hist_pages[b],
+                    gc_occ_hist_dead[b] * sizeof(slot_t) / (1024*1024),
+                    gc_occ_hist_promo[b],
+                    gc_occ_hist_pages[b] ? 100.0 * (double)gc_occ_hist_promo[b] / (double)gc_occ_hist_pages[b] : 0.0);
+        }
+    }
     fprintf(stderr, "[GC PROMO] ok=%llu dirty=%llu unstable=%llu volume=%llu kind=%llu defer=%llu\n",
             (unsigned long long)gc_prof_promote_ok, (unsigned long long)gc_prof_promote_dirty,
             (unsigned long long)gc_prof_block_unstable, (unsigned long long)gc_prof_block_volume,
             (unsigned long long)gc_prof_block_kind, (unsigned long long)gc_prof_defer);
+    {   // How long evacuated-from pages outlive their evacuation. A healthy
+        // system frees them within a cycle or two; a long tail is a census of
+        // pointers the collector could not rewrite, each pinning a whole page.
+        size_t tot = 0;
+        for (unsigned b = 0; b < GC_FWD_AGE_BUCKETS; ++b) tot += gc_fwd_age[b];
+        if (tot) {
+            fprintf(stderr, "[GC FWD] compacted freed=%zu; husk holders: mutable-field=%llu stack-ref=%llu\n",
+                    tot, (unsigned long long)gc_prof_mut_fwd_hops, (unsigned long long)gc_prof_stack_held_husk);
+            for (unsigned b = 0; b < GC_FWD_AGE_BUCKETS; ++b) {
+                if (!gc_fwd_age[b]) continue;
+                if (b == 0) fprintf(stderr, "[GC FWD]     0 cycles: %-9zu (%.1f%%)\n",
+                                    gc_fwd_age[b], 100.0*(double)gc_fwd_age[b]/(double)tot);
+                else fprintf(stderr, "[GC FWD]  <2^%-2u cycles: %-9zu (%.1f%%)\n", b,
+                             gc_fwd_age[b], 100.0*(double)gc_fwd_age[b]/(double)tot);
+            }
+        }
+    }
+    fprintf(stderr, "[GC PROMO] kind breakdown: multipage=%llu mutable=%llu compacted=%llu\n",
+            (unsigned long long)gc_prof_block_multipage, (unsigned long long)gc_prof_block_mutable,
+            (unsigned long long)gc_prof_block_compacted);
     fprintf(stderr, "[GC PROF] objs=%llu ptrs=%llu drained=%llu passes=%llu drain_pages=%llu | tsc: drain=%llu merge=%llu pages=%llu live=%llu prune_rest=%llu\n",
             (unsigned long long)gc_prof_objs, (unsigned long long)gc_prof_ptrs,
             (unsigned long long)gc_prof_drained, (unsigned long long)gc_prof_passes,

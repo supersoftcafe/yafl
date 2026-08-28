@@ -647,6 +647,37 @@ static void gc_occupancy_account(gc_page_t *page) {
     }
     unsigned live_slots = gc_page_live_slots(page);
 
+    // OCCUPANCY HISTOGRAM (cumulative over the run, not per cycle — one late
+    // cycle is not representative). Every page reaching prune is a young-rotation
+    // survivor, i.e. exactly the population a hole-reusing allocator could draw
+    // from: `old` pages never come here, and reusing one would be unsound anyway
+    // (mark_object early-returns on old, so a young object placed there would
+    // never be traced). The question this answers: if the allocator could bump
+    // into the holes of a partially-filled page instead of demanding a wholly
+    // free one, how much space is actually on offer, and at what cost?
+    //
+    //   dead   — slots the page is holding that nothing lives in. The prize.
+    //   promo  — pages already at least halfway to graduating. Reuse resets
+    //            `stable_since`, so every one of these is a graduation
+    //            forfeited: the page stays in the rotation and is re-scanned
+    //            every cycle thereafter. This is the cost side, and it is why
+    //            reuse must not be applied to the dense end of the histogram.
+    //
+    // Sparse pages (< 25%) are already handled by evacuation, which retires the
+    // page outright — strictly better than refilling it — so the interesting
+    // band is the middle: too full to evacuate cheaply, too empty to ignore.
+    {
+        unsigned b = (unsigned)((size_t)live_slots * 10u / SLOTS_PER_PAGE);
+        if (b > 9) b = 9;
+        gc_occ_hist_pages[b] += 1;
+        gc_occ_hist_dead[b]  += SLOTS_PER_PAGE - live_slots;
+        uint64_t clock = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed);
+        if (gc_promote_volume != 0
+                && page->head.stable_since != UINT64_MAX
+                && clock - page->head.stable_since >= gc_promote_volume / 2)
+            gc_occ_hist_promo[b] += 1;
+    }
+
     int cls = page->head.mutable ? 1 : 0;
     gc_occ_pages[cls] += 1;
     gc_occ_live[cls]  += live_slots;
@@ -747,6 +778,20 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
 
 static NOINLINE_DEBUG void gc_page_free(gc_page_t* page) {
     GC_STAT_BUMP(gc_stat_pages_freed);
+    // DIAGNOSTIC: how long did an evacuated-from page outlive its evacuation?
+    // It should die almost immediately — it holds only forwarding stubs, and
+    // once every referrer has been snapped to the target nothing marks them.
+    // Age is therefore a direct census of references the collector could NOT
+    // rewrite (mutable slots are skipped by fixup on purpose; old-generation
+    // referrers wait for a re-scan). Log2 buckets of cycles survived.
+    if (UNLIKELY(gc_stats_enabled) && page->head.compacted) {
+        uint32_t now = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
+        uint32_t age = now > page->head.compacted_cycle ? now - page->head.compacted_cycle : 0;
+        unsigned b = 0;
+        while (age > 0 && b < GC_FWD_AGE_BUCKETS - 1) { age >>= 1; ++b; }
+        gc_fwd_age[b] += 1;
+        gc_fwd_freed  += 1;
+    }
     assert(page->head.tag == PAGE_MAGIC_NUMBER);
     LOG(TRACE, "gc_page_free(%d) = 0x%lx", page->head.pages, (uintptr_t)page);
 
@@ -1200,6 +1245,7 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // class of allocation that must succeed near full, because each evacuated
     // page returns more pages than the evacuation consumed.
     page->head.compacted = true;
+    page->head.compacted_cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
     bool was_in_relocation = gc_thread_info.in_relocation;
     gc_thread_info.in_relocation = true;
     for (unsigned index = 0; index < object_count; ++index) {
@@ -1541,6 +1587,16 @@ static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, ob
             continue;   // before the first object on the page
         if (page->head.old) continue;   // old generation: implicitly live, never pruned
         page->head.scanner.pinned = true;
+        // DIAGNOSTIC: a conservative root landing on an already-EVACUATED page.
+        // Only two referent classes can keep a husk alive — a mutable object's
+        // field and a stack/register reference. Ordinary heap references are
+        // snapped in a single sweep, and mutable fields are now snapped too
+        // (gc_snap_mutable_slot, counted by gc_prof_mut_fwd_hops), which leaves
+        // this one: the collector cannot rewrite a stack slot at all, since
+        // conservative scanning cannot tell a pointer from an integer. So this
+        // counter is the residual class, and a husk outliving a couple of
+        // cycles should be traceable to it or to a CAS that lost.
+        if (UNLIKELY(gc_stats_enabled) && page->head.compacted) gc_prof_stack_held_husk++;
         if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, containing))
             GC_STAT_BUMP(gc_stat_cons_seeds);   // diagnostic: conservative root seeds
     }
@@ -1712,6 +1768,44 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
         mark_worklist_push(object);
 }
 
+// Snap a MUTABLE container's slot to the forwarding tail — by COMPARE-EXCHANGE,
+// never a blind store. The blind store is what made this unsafe before: the GC
+// reads P, computes the tail P', and meanwhile the mutator stores an unrelated
+// Q; a plain write then reverts Q to P' and the mutator's update is lost (the
+// old comment's "clobber its update with the slot's previous occupant"). A CAS
+// from exactly the value this scan observed cannot do that — if anything at all
+// changed the slot, it fails and the mutator's value stands. Failure needs no
+// handling: the slot then holds something newer than what we traced, the husk
+// simply survives to the next cycle, and the old copy stays live because we
+// marked the whole chain regardless.
+//
+// Worth doing because an unsnapped mutable slot pins a whole evacuated page
+// until someone happens to read it — measured at ~29 such children per cycle,
+// the dominant class of husk holders. Cost is one atomic per FORWARDED child,
+// i.e. inside a branch that is already UNLIKELY, never on the common path.
+//
+// Sound for the reader either way: the target is immutable (mutable objects are
+// never evacuated — gc_compact_page returns early on page->head.mutable), so P
+// and P' have identical field values and "either copy is fine" holds. No write
+// barrier is owed: SATB wants the prior value marked, and the whole forwarding
+// chain including P was marked by the walk above.
+//
+// RELEASE on success is load-bearing, not decoration. gc_compact_page publishes
+// the forwarding word with __ATOMIC_RELEASE so that "a reader that follows this
+// word must see a fully written object"; a reader arriving at P' through THIS
+// store never touches that word, so this store has to carry the same edge or
+// the copy's contents could be observed uninitialised. It is free where it
+// matters least and correct where it matters most: on x86-64 the lock-prefixed
+// exchange is already a full barrier (release compiles to identical machine
+// code — verified by disassembly), while on a weakly-ordered target it is the
+// difference between correct and subtly broken.
+static inline void gc_snap_mutable_slot(object_t **slot, object_t *expected, object_t *tail) {
+    _Atomic(object_t*) *a = (_Atomic(object_t*)*)slot;
+    object_t *want = expected;
+    atomic_compare_exchange_strong_explicit(a, &want, tail,
+                                            memory_order_release, memory_order_relaxed);
+}
+
 // Mark a gathered batch of children: the mark + forwarding walk shared by
 // the fixed-field scan and the fused array-payload scan below. The batch
 // carries the child VALUE the gather loaded, not a re-read of the slot: the
@@ -1725,6 +1819,7 @@ static void gc_fsa_mark_sweep$scan_flush(object_t ***batch_slot, object_t **batc
     for (unsigned i = 0; i < count; ++i) {
         object_t **ptr_ptr = batch_slot[i];
         object_t *object = batch_obj[i];
+        object_t *loaded = object;   // what the gather saw; the CAS's expected value
 
         for (;;) {
             gc_fsa_mark_sweep$mark_object(object);
@@ -1735,8 +1830,11 @@ static void gc_fsa_mark_sweep$scan_flush(object_t ***batch_slot, object_t **batc
                 break;
 
             object = (object_t*)vt;
+            if (UNLIKELY(gc_stats_enabled) && !fixup) gc_prof_mut_fwd_hops++;
             if (fixup) *ptr_ptr = object;
         }
+        if (!fixup && object != loaded)
+            gc_snap_mutable_slot(ptr_ptr, loaded, object);
     }
 }
 
@@ -1744,10 +1842,11 @@ static void gc_fsa_mark_sweep$scan_flush(object_t ***batch_slot, object_t **batc
 // forwarding target. For an IMMUTABLE container the GC owns the field and snaps
 // it (true). For a MUTABLE container the mutator may be writing the same slot in
 // parallel (async state objects rewrite their coalesced array slots as they
-// run); the GC must NOT store into it — a fixup write races the mutator and can
-// clobber its update with the slot's previous occupant. It still marks through
-// the whole forward chain so the original stays live; the mutator follows
-// forwarding lazily on read.
+// run); a blind fixup write there races the mutator and can clobber its update
+// with the slot's previous occupant, so `fixup` stays false for them. They are
+// still snapped — by compare-exchange, which cannot lose a racing write — in
+// gc_snap_mutable_slot above; the walk marks the whole forward chain either way,
+// so the original stays live if the CAS loses.
 static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t pointer_locations, bool fixup) {
     // Single-pointer fast path — list nodes and other one-child shapes
     // dominate chain-heavy heaps; skip the batch machinery for them.
@@ -1755,6 +1854,7 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
         unsigned index = (unsigned)__builtin_ctzll(pointer_locations);
         object_t **ptr_ptr = &base_ptr[index];
         object_t *object = *ptr_ptr;
+        object_t *loaded = object;   // the CAS's expected value, see scan_flush
         // One range test on entry; forward targets are always on-heap, so
         // the hop loop needs no re-test.
         if (gc_object_is_on_heap_fast(object)) {
@@ -1765,8 +1865,11 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
                 if (LIKELY(!vtable_is_forward(vt)))
                     break;
                 object = (object_t*)vt;
+                if (UNLIKELY(gc_stats_enabled) && !fixup) gc_prof_mut_fwd_hops++;
                 if (fixup) *ptr_ptr = object;
             }
+            if (!fixup && object != loaded)
+                gc_snap_mutable_slot(ptr_ptr, loaded, object);
         }
         return;
     }
@@ -2507,6 +2610,17 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                 }
             } else if (UNLIKELY(gc_stats_enabled)) {
                 gc_prof_block_kind++;
+                // Decomposed: `kind` lumps three very different causes, and
+                // they imply opposite fixes. multipage/mutable are inherent
+                // (a large object or a mutable page simply cannot graduate),
+                // whereas `compacted` is a flag we set and NEVER clear — an
+                // evacuated-from page is barred from the old generation for
+                // the rest of the run, so it is re-marked and re-pruned every
+                // cycle forever. If that term dominates, raising the
+                // compaction threshold compounds its own cost.
+                if (page->head.pages != 1)      gc_prof_block_multipage++;
+                else if (page->head.mutable)    gc_prof_block_mutable++;
+                else if (page->head.compacted)  gc_prof_block_compacted++;
             }
             // Young survivor accounting (see comment above the sample site).
             if (!page->head.old && !page->head.dirty_old)

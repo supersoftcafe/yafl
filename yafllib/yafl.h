@@ -464,6 +464,17 @@ typedef struct page_head {
                           // Reset on instability and on major demotion. Sound
                           // while deferred: the page stays dirty-old, i.e. a
                           // force-marked root.
+    uint32_t compacted_cycle; // DIAGNOSTIC (stats builds read it): cycle at
+                           // which this page was evacuated. A compacted page
+                           // holds only forwarding stubs, so it should die
+                           // within a cycle or two — once its referrers are
+                           // fixed up, nothing marks the stubs. One that
+                           // LINGERS is evidence of a reference that could not
+                           // be rewritten (a mutable container's slot, which
+                           // fixup deliberately skips to avoid racing the
+                           // mutator, or an old-generation referrer awaiting
+                           // re-scan), and it is immortal until that reference
+                           // dies. Age at death measures exactly that.
     uint64_t stable_since; // Allocation-clock reading (pages) at the last
                            // prune that found a death on this page — or
                            // UINT64_MAX before the first prune (a page's
