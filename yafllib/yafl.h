@@ -1619,7 +1619,15 @@ INLINE int32_t yafl_hash_norm(int32_t h) { return h == 0 ? 1 : h; }
 // struct the bytes — embedded references compare as pointer words in place.
 // Struct padding can only cause a false NEGATIVE (one avoidable allocation),
 // never a wrong answer.
-#define yafl_same(a, b) (memcmp(&(a), &(b), sizeof(a)) == 0)
+// VARIADIC in the second operand: a value-representation enum's field read
+// lowers to a COMPOUND LITERAL — `(struct_anon_1_t){._s0 = x, ._tag = y}` —
+// whose braces contain commas the preprocessor splits on, so a two-parameter
+// macro sees three arguments and fails to expand ("too many arguments
+// provided to function-like macro invocation"). __VA_ARGS__ absorbs them and
+// the extra parentheses make the reconstructed compound literal addressable.
+// Only reachable once `with` is used on a value enum — the AST rewrites use
+// boxed nodes, so this went unexercised until the IR rewrites adopted it.
+#define yafl_same(a, ...) (memcmp(&(a), &((__VA_ARGS__)), sizeof(a)) == 0)
 EXTERN int32_t yafl_hash_peek(object_t* v);
 EXTERN int32_t yafl_hash_store(object_t* v, int32_t h);
 

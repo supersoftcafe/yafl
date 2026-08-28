@@ -167,22 +167,26 @@ fun opRenameVarsOpt(o: RParam|None, renames: List<RpRename>): RParam|None
 
 fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op
   ret match(op)
-    (x: OpMove) => OpMove(rpReplaceParams(x.moveTarget, replacer), rpReplaceParams(x.moveSource, replacer), x.moveKeep, x.moveSavedVars)
-    (x: OpJumpIf) => OpJumpIf(x.jumpIfLabel, rpReplaceParams(x.jumpIfCondition, replacer), x.jumpIfInvert, x.jumpIfSavedVars)
-    (x: OpIfTask) => OpIfTask(rpReplaceParams(x.taskCondition, replacer), rpReplaceParams(x.taskSource, replacer),
-                              rpReplaceParams(x.taskLhs, replacer), rpReplaceParams(x.callIdLhs, replacer), x.callId,
-                              x.taskTarget, x.taskSavedVars)
-    (x: OpSwitchJump) => OpSwitchJump(rpReplaceParams(x.switchCondition, replacer), x.switchCases, x.switchSavedVars)
-    (x: OpNewObject) => OpNewObject(x.newObjName, rpReplaceParams(x.newObjRegister, replacer), rpReplaceParamsOpt(x.newObjSize, replacer), x.newObjSavedVars)
-    (x: OpCall) => OpCall(rpReplaceParams(x.callFunction, replacer), rpReplaceParams(x.callParameters, replacer),
-                          opReplaceParamsOpt(x.callRegister, replacer), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
-    (x: OpReturn) => OpReturn(rpReplaceParams(x.returnValue, replacer), x.returnSavedVars)
-    (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c: RParam) => replacer(c)),
-                                          map(x.parResults, (r: RParam) => replacer(r)),
-                                          opReplaceParamsRegisterDirect(x.parRegister, replacer), x.parSavedVars)
-    (x: OpPhi) => OpPhi(replacer(x.phiTarget),
-                        map(x.phiSources, (s: OpPhiSource) => OpPhiSource(s.sourceLabel, rpReplaceParams(s.sourceValue, replacer))),
-                        x.phiSavedVars)
+    (x: OpMove) => with x(moveTarget = rpReplaceParams(x.moveTarget, replacer),
+                          moveSource = rpReplaceParams(x.moveSource, replacer))
+    (x: OpJumpIf) => with x(jumpIfCondition = rpReplaceParams(x.jumpIfCondition, replacer))
+    (x: OpIfTask) => with x(taskCondition = rpReplaceParams(x.taskCondition, replacer),
+                            taskSource    = rpReplaceParams(x.taskSource, replacer),
+                            taskLhs       = rpReplaceParams(x.taskLhs, replacer),
+                            callIdLhs     = rpReplaceParams(x.callIdLhs, replacer))
+    (x: OpSwitchJump) => with x(switchCondition = rpReplaceParams(x.switchCondition, replacer))
+    (x: OpNewObject) => with x(newObjRegister = rpReplaceParams(x.newObjRegister, replacer),
+                               newObjSize     = rpReplaceParamsOpt(x.newObjSize, replacer))
+    (x: OpCall) => with x(callFunction   = rpReplaceParams(x.callFunction, replacer),
+                          callParameters = rpReplaceParams(x.callParameters, replacer),
+                          callRegister   = opReplaceParamsOpt(x.callRegister, replacer))
+    (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
+    (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c: RParam) => replacer(c)),
+                                  parResults = map(x.parResults, (r: RParam) => replacer(r)),
+                                  parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
+    (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
+                         phiSources = map(x.phiSources,
+                                          (s: OpPhiSource) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
     (o: Op) => op   # base default: self (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opReplaceParamsOpt(o: RParam|None, replacer: (:RParam): RParam): RParam|None

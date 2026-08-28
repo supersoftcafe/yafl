@@ -101,6 +101,48 @@ runtime; `tests/test_profile.py` asserts the end-to-end plumbing from a
 compiled program. The `pprof` tool itself is not on the dev box — first
 external-tool read should confirm rendering.
 
+## How to read the output — and how NOT to
+
+Three traps, each of which has already cost a wrong conclusion. Read this
+before acting on either layer's ranking.
+
+**1. A high `inuse_space` site is NOT a site that wastes memory.** Layer 2
+attributes SURVIVING bytes to whichever site allocated the object that is
+still live at the dump. When a value is rebuilt by a chain of passes, every
+earlier copy is dead and only the LAST allocator is charged — so a rewriting
+pass appears at the top of the ranking precisely because it produced the
+final, wanted data. `inuse_space` answers "who allocated what is still
+here", never "who allocates too much".
+
+The corollary is the one that misleads: eliminating a pass's intermediate
+copies does NOT move its `inuse_space` number, because those copies were
+never counted in it. They were transient, and transient allocation is close
+to free here by the same argument this document opens with — objects that
+die before a collection visits them cost almost nothing. (Measured: making
+the IR rewrites identity-preserving via `with` changed peak RSS and CPU by
+nothing at all, 4 interleaved runs. The 44 MB charged to `rpReplaceParams`
+was the IR itself, not waste.)
+
+To find bytes worth eliminating, ask instead: is this data still REACHABLE
+when it should not be, or is it larger than it needs to be? Retention and
+representation move RSS; allocation churn does not.
+
+**2. Layer 1's census counts only what the collector VISITED that cycle.**
+Minor cycles skip the old generation entirely (`mark_object` returns early
+on `page->head.old`), so most snapshots measure the young rotation alone.
+On a self-compile the median snapshot censuses a couple of MB while the
+majors — 3 snapshots out of 30,760 — census 400+ MB. **Always take the live
+figure from a major**, i.e. from the largest snapshots, never from the
+median or from an arbitrary one.
+
+**3. `mem_heap_extra_B` is reserved-minus-in-use, not fragmentation.** With
+a large `YAFL_HEAP_SIZE` it is dominated by the untouched remainder of the
+reservation and tells you nothing about RSS. Compare `mem_heap_B` (in use)
+against the census total to get the figure that matters: how much of the
+in-use heap is actually live. On a self-compile that ratio is ~44%, and the
+missing half — floating garbage plus partially-occupied pages — is a bigger
+RSS contributor than any single type in the ranking.
+
 ## Interface
 
 - `YAFL_HEAPPROF=<path>` enables layer 1 and names the massif output
@@ -120,3 +162,12 @@ external-tool read should confirm rendering.
 Allocation counts and cumulative alloc_space (misleading for a
 generational collector); byte-exact site attribution (sampling suffices
 at RSS scale); interop with interposition tools.
+
+Note what the first of those implies, since the ranking makes it easy to
+forget: neither layer measures allocation VOLUME, so neither can tell you
+that a pass allocates too much. That is deliberate — volume is the metric
+this design rejects — but it means "reduce the allocations at the top site"
+is a conclusion the data cannot support. If you want to test an
+allocation-churn hypothesis you need a different instrument (the GC's own
+`allocs=`/`cycles=` counters, or CPU time), and you should expect the
+answer to be "no measurable difference" unless the objects survive.
