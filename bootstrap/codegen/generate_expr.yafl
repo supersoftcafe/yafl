@@ -159,7 +159,7 @@ fun stackVarName(sv: RParam): String
     (o: RParam)      => ""   # unreachable: gbStackVars only ever holds RpStackVar
 
 fun opLabelRenames(ops: Chain<Op>, prefix: String, acc: List<RpRename>): List<RpRename>
-  ret build<RpRename >(opLabelRenamesB(ops, prefix, _pushChain<RpRename >(builder<RpRename >(), chain<RpRename >(acc))))
+  ret build<RpRename >(opLabelRenamesB(ops, prefix, builderFrom<RpRename>(acc)))
 
 fun [tail] opLabelRenamesB(ops: Chain<Op>, prefix: String, [terminal] acc: ListBuilder<RpRename >): ListBuilder<RpRename >
   ret match(ops)
@@ -294,7 +294,7 @@ fun builtinCType(name: String): CgType
     ()          => CgVoid()   # unreachable: check() rejects an unknown builtin name earlier
 
 fun tupleFieldsOf(es: Chain<SEntry>, idx: Int, r: Resolver, acc: List<CgField>): List<CgField>
-  ret build<CgField >(tupleFieldsOfB(es, idx, r, _pushChain<CgField >(builder<CgField >(), chain<CgField >(acc))))
+  ret build<CgField >(tupleFieldsOfB(es, idx, r, builderFrom<CgField>(acc)))
 
 fun [tail] tupleFieldsOfB(es: Chain<SEntry>, idx: Int, r: Resolver, [terminal] acc: ListBuilder<CgField >): ListBuilder<CgField >
   ret match(es)
@@ -1008,7 +1008,7 @@ fun bundleSwap(xs: List<GBundle>, i: Int, j: Int): List<GBundle>
 
 fun swapLoop(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
                     vj: GBundle, acc: List<GBundle>): List<GBundle>
-  ret build<GBundle >(swapLoopB(cs, at, i, j, vi, vj, _pushChain<GBundle >(builder<GBundle >(), chain<GBundle >(acc))))
+  ret build<GBundle >(swapLoopB(cs, at, i, j, vi, vj, builderFrom<GBundle>(acc)))
 
 fun [tail] swapLoopB(cs: Chain<GBundle>, at: Int, i: Int, j: Int, vi: GBundle,
                     vj: GBundle, [terminal] acc: ListBuilder<GBundle >): ListBuilder<GBundle >
@@ -1034,7 +1034,7 @@ fun namedValuesOf(bundles: List<GBundle>): List<RpNamedValue>
   ret namedValuesLoop(chain(bundles), 0, List<RpNamedValue>())
 
 fun namedValuesLoop(bs: Chain<GBundle>, idx: Int, acc: List<RpNamedValue>): List<RpNamedValue>
-  ret build<RpNamedValue >(namedValuesLoopB(bs, idx, _pushChain<RpNamedValue >(builder<RpNamedValue >(), chain<RpNamedValue >(acc))))
+  ret build<RpNamedValue >(namedValuesLoopB(bs, idx, builderFrom<RpNamedValue>(acc)))
 
 fun [tail] namedValuesLoopB(bs: Chain<GBundle>, idx: Int, [terminal] acc: ListBuilder<RpNamedValue >): ListBuilder<RpNamedValue >
   ret match(bs)
@@ -1080,7 +1080,7 @@ fun genNewPlain(cs: PsClass, cname: String, paramsBundle: GBundle, paramsVar: RP
 
 fun fieldMoveOps(fs: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
                         index: Int, r: Resolver, acc: List<Op>): List<Op>
-  ret build<Op >(fieldMoveOpsB(fs, cname, resultVar, paramsVar, index, r, _pushChain<Op >(builder<Op >(), chain<Op >(acc))))
+  ret build<Op >(fieldMoveOpsB(fs, cname, resultVar, paramsVar, index, r, builderFrom<Op>(acc)))
 
 fun [tail] fieldMoveOpsB(fs: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
                         index: Int, r: Resolver, [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
@@ -1332,7 +1332,7 @@ fun genBlockFtLabel([terminal] b: ListBuilder<Op >, ftExit: String,
 
 fun genBlockAssembleUnit(ops0: List<Op>, stackVars0: List<RParam>, recur0: List<RecurSource>,
                          endLabel: String, ftExit: String, reachesEnd: Bool): GBundle
-  let ops1 = genBlockFtLabel(_pushChain<Op >(builder<Op >(), chain<Op>(ops0)),
+  let ops1 = genBlockFtLabel(builderFrom<Op>(ops0),
                              ftExit, reachesEnd)
   ret GBundle(stackVars0,
               build<Op >(push<Op >(ops1, OpLabel(endLabel, List<RParam>()))),
@@ -1345,13 +1345,12 @@ fun genBlockAssembleValued(slotType: Spec, r: Resolver, tag: String, ops0: List<
   let fv = match(ftValue)
     (v: RParam) => v
     ()           => RpZeroOf(rpGetType(resultVar))
-  let ops1 = genBlockFtLabel(_pushChain<Op >(builder<Op >(), chain<Op>(ops0)),
+  let ops1 = genBlockFtLabel(builderFrom<Op>(ops0),
                              ftExit, reachesEnd)
   # The fall-through edge is the LAST phi source, matching the label order.
   let sources1 = reachesEnd
     ? build<ExitSource >(push<ExitSource >(
-          _pushChain<ExitSource >(builder<ExitSource >(),
-                                  chain<ExitSource>(sources0)),
+          builderFrom<ExitSource>(sources0),
           ExitSource(ftExit, fv)))
     : sources0
   let ops2 = build<Op >(_pushChain<Op >(ops1,
@@ -1359,8 +1358,7 @@ fun genBlockAssembleValued(slotType: Spec, r: Resolver, tag: String, ops0: List<
                                  OpPhi(resultVar, exitSourcesToPhi(sources1),
                                        List<RParam>())))))
   ret GBundle(build<RParam >(push<RParam >(
-                  _pushChain<RParam >(builder<RParam >(),
-                                      chain<RParam>(stackVars0)),
+                  builderFrom<RParam>(stackVars0),
                   resultVar)),
               ops2, resultVar, recur0, List<ExitSource>())
 
@@ -1548,7 +1546,7 @@ fun genParallelExprs(pl: PeParallel, exprs: List<PExpr>, r: Resolver): GBundle
   ret bundleJoin(bundleJoinAll(fnBundles), parallelBundle)
 
 fun genParallelFnBundles(es: Chain<PExpr>, r: Resolver, i: Int, acc: List<GBundle>): List<GBundle>
-  ret build<GBundle >(genParallelFnBundlesB(es, r, i, _pushChain<GBundle >(builder<GBundle >(), chain<GBundle >(acc))))
+  ret build<GBundle >(genParallelFnBundlesB(es, r, i, builderFrom<GBundle>(acc)))
 
 fun [tail] genParallelFnBundlesB(es: Chain<PExpr>, r: Resolver, i: Int, [terminal] acc: ListBuilder<GBundle >): ListBuilder<GBundle >
   ret match(es)

@@ -132,7 +132,7 @@ fun substEntries(es: List<SEntry>, mapping: List<Binding>): List<SEntry>
 
 fun substEntLoop(es: Chain<SEntry>, mapping: List<Binding>,
                         acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(substEntLoopB(es, mapping, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(substEntLoopB(es, mapping, builderFrom<SEntry>(acc)))
 
 fun [tail] substEntLoopB(es: Chain<SEntry>, mapping: List<Binding>,
                         [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
@@ -481,7 +481,7 @@ fun rebind(mapping: List<Binding>, name: String, sp: Spec): List<Binding>
 
 fun rebindLoop(ms: Chain<Binding>, name: String, sp: Spec,
                       acc: List<Binding>): List<Binding>
-  ret build<Binding >(rebindLoopB(ms, name, sp, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+  ret build<Binding >(rebindLoopB(ms, name, sp, builderFrom<Binding>(acc)))
 
 fun [tail] rebindLoopB(ms: Chain<Binding>, name: String, sp: Spec,
                       [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
@@ -556,7 +556,7 @@ fun unifyTuple(t2: STuple, concrete: Spec, names: List<String>,
     (o)          => UMap(mapping)
 
 fun entryNames(es: Chain<SEntry>, acc: List<String>): List<String>
-  ret build<String >(entryNamesB(es, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(entryNamesB(es, builderFrom<String>(acc)))
 
 fun [tail] entryNamesB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(es)

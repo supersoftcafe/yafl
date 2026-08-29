@@ -183,8 +183,7 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
   # The catch-all must be LAST, so when it is missing it is pushed on the end.
   let rows = vtLastIsDefault(rows1)
     ? rows1
-    : build<VtRow >(push<VtRow >(_pushChain<VtRow >(builder<VtRow >(),
-                                                    chain<VtRow>(rows1)),
+    : build<VtRow >(push<VtRow >(builderFrom<VtRow>(rows1),
                                  vtDefaultRow()))
   let mangled = mangleName(o.objName)
   # Counts ride the SAME walks that render the text (no-length ruling):

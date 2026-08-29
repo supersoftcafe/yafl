@@ -150,7 +150,7 @@ fun phiSourcesOf(es: List<GEntry>, idx: Int): List<OpPhiSource>
   ret phiSourcesLoop(chain(es), idx, 0, List<OpPhiSource>())
 
 fun phiSourcesLoop(es: Chain<GEntry>, idx: Int, k: Int, acc: List<OpPhiSource>): List<OpPhiSource>
-  ret build<OpPhiSource >(phiSourcesLoopB(es, idx, k, _pushChain<OpPhiSource >(builder<OpPhiSource >(), chain<OpPhiSource >(acc))))
+  ret build<OpPhiSource >(phiSourcesLoopB(es, idx, k, builderFrom<OpPhiSource>(acc)))
 
 fun [tail] phiSourcesLoopB(es: Chain<GEntry>, idx: Int, k: Int, [terminal] acc: ListBuilder<OpPhiSource >): ListBuilder<OpPhiSource >
   ret match(es)

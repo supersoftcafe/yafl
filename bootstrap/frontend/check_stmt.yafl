@@ -390,7 +390,7 @@ fun classFields(c: PsClass): List<PStmt>
                                                   List<PStmt>()))
 
 fun letMembers(ms: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(letMembersB(ms, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(letMembersB(ms, builderFrom<PStmt>(acc)))
 
 fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ms)
@@ -400,7 +400,7 @@ fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): L
       (o: PStmt)    => letMembersB(l.next, acc)
 
 fun arrayFieldsOf(fs: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(arrayFieldsOfB(fs, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(arrayFieldsOfB(fs, builderFrom<PStmt>(acc)))
 
 fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(fs)

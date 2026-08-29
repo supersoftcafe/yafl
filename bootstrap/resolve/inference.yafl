@@ -74,7 +74,7 @@ fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
 
 fun priorBindings(gs: Chain<PGen>, ss: Chain<Spec>,
                          acc: List<Binding>): List<Binding>
-  ret build<Binding >(priorBindingsB(gs, ss, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+  ret build<Binding >(priorBindingsB(gs, ss, builderFrom<Binding>(acc)))
 
 fun [tail] priorBindingsB(gs: Chain<PGen>, ss: Chain<Spec>,
                          [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
@@ -88,7 +88,7 @@ fun [tail] priorBindingsB(gs: Chain<PGen>, ss: Chain<Spec>,
 
 fun mergeLoop(gs: Chain<PGen>, prior: List<Binding>,
                      mapping: List<Binding>, acc: List<Spec>): List<Spec>
-  ret build<Spec >(mergeLoopB(gs, prior, mapping, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+  ret build<Spec >(mergeLoopB(gs, prior, mapping, builderFrom<Spec>(acc)))
 
 fun [tail] mergeLoopB(gs: Chain<PGen>, prior: List<Binding>,
                      mapping: List<Binding>, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
@@ -138,7 +138,7 @@ fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
     ()         => mapping
 
 fun genNames(gs: Chain<PGen>, acc: List<String>): List<String>
-  ret build<String >(genNamesB(gs, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(genNamesB(gs, builderFrom<String>(acc)))
 
 fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(gs)
@@ -165,7 +165,7 @@ fun viaWhere(stmt: PStmt, gens: List<PGen>, mapping: List<Binding>,
 fun whereTargets(gs: Chain<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
                         acc: List<String>): List<String>
-  ret build<String >(whereTargetsB(gs, mapping, argInferrable, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(whereTargetsB(gs, mapping, argInferrable, builderFrom<String>(acc)))
 
 fun [tail] whereTargetsB(gs: Chain<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
@@ -226,7 +226,7 @@ fun traitInstances(r: Resolver): List<TraitInst>
 # PRE-LOWERING first-class instances: the pattern IS the interface — no
 # witness lookup, no parent substitution (_trait_instances).
 fun tiStmtLoop(ts: Chain<PStmt>, acc: List<TraitInst>): List<TraitInst>
-  ret build<TraitInst >(tiStmtLoopB(ts, _pushChain<TraitInst >(builder<TraitInst >(), chain<TraitInst >(acc))))
+  ret build<TraitInst >(tiStmtLoopB(ts, builderFrom<TraitInst>(acc)))
 
 fun [tail] tiStmtLoopB(ts: Chain<PStmt>, [terminal] acc: ListBuilder<TraitInst >): ListBuilder<TraitInst >
   ret match(ts)
@@ -291,7 +291,7 @@ fun addIface(iface: Spec, paramNames: List<String>,
   ret match(iface)
     # Declaration order is kept: the sort is STABLE, so this order decides
     # ties between instances of equal param count.
-    (ic: SClass) => build<TraitInst >(push<TraitInst >(_pushChain<TraitInst >(builder<TraitInst >(), chain<TraitInst>(acc)), TraitInst(paramNames, ic)))
+    (ic: SClass) => build<TraitInst >(push<TraitInst >(builderFrom<TraitInst>(acc), TraitInst(paramNames, ic)))
     (o: Spec)    => acc
 
 # Sorted by param count, STABLY — concrete (zero-param) instances win ties in

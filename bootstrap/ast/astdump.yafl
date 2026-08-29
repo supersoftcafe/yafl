@@ -198,7 +198,7 @@ fun lazyCapMark(c: String|None): String
     ()          => ""
 
 fun loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
-  ret build<String >(loopParamNamesB(ps, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(loopParamNamesB(ps, builderFrom<String>(acc)))
 
 fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ps)

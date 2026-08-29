@@ -57,7 +57,7 @@ fun stmtScopes(st: PStmt): List<String>
   # is the list's order.
   ret own == "" || contains2(grp, own)
     ? grp
-    : build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(grp)), own))
+    : build<String >(push<String >(builderFrom<String>(grp), own))
 
 fun stmtImports(st: PStmt): List<PStmt>
   ret match(st)
@@ -77,8 +77,7 @@ fun importsOr(grp: List<PStmt>|None): List<PStmt>
 # Same shape as mergeNames: Set for "seen", builder for order.
 fun importPaths(ss: Chain<PStmt>, acc: List<String>): List<String>
   ret build<String >(importPathsB(ss,
-                                  _pushChain<String >(builder<String >(),
-                                                      chain<String >(acc)),
+                                  builderFrom<String>(acc),
                                   _chainToSet<String >(chain<String >(acc),
                                                        Set<String >())))
 
@@ -125,7 +124,7 @@ fun genScope(gens: List<PGen>, r: Resolver): Resolver
   ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List<Found>()), r)
 
 fun genFounds(gs: Chain<PGen>, acc: List<Found>): List<Found>
-  ret build<Found >(genFoundsB(gs, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+  ret build<Found >(genFoundsB(gs, builderFrom<Found>(acc)))
 
 fun [tail] genFoundsB(gs: Chain<PGen>, [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
   ret match(gs)
@@ -394,7 +393,7 @@ fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
 fun memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
                          owner: PsClass, own: List<String>,
                          acc: List<Found>): List<Found>
-  ret build<Found >(memberMatchesB(ms, query, tp, owner, own, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+  ret build<Found >(memberMatchesB(ms, query, tp, owner, own, builderFrom<Found>(acc)))
 
 fun [tail] memberMatchesB(ms: Chain<PStmt>, query: String, tp: SClass,
                          owner: PsClass, own: List<String>,
@@ -439,7 +438,7 @@ fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
 
 fun mapLoop(gs: Chain<PGen>, as2: Chain<Spec>,
                    acc: List<Binding>): List<Binding>
-  ret build<Binding >(mapLoopB(gs, as2, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+  ret build<Binding >(mapLoopB(gs, as2, builderFrom<Binding>(acc)))
 
 fun [tail] mapLoopB(gs: Chain<PGen>, as2: Chain<Spec>,
                    [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >

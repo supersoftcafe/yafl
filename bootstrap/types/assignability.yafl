@@ -316,7 +316,7 @@ fun entryNames(es: List<SEntry>): List<String>
   ret nameLoop(chain(es), List<String>())
 
 fun nameLoop(es: Chain<SEntry>, acc: List<String>): List<String>
-  ret build<String >(nameLoopB(es, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(nameLoopB(es, builderFrom<String>(acc)))
 
 fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(es)

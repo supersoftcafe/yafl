@@ -159,7 +159,7 @@ fun last<T>(l: List<T>): T|None
 # with sortBy.
 
 fun concat<T>(a: List<T>, b: List<T>): List<T>
-  ret build<T>(_pushChain<T>(_pushChain<T>(builder<T>(), chain<T>(a)), chain<T>(b)))
+  ret build<T>(_pushChain<T>(builderFrom<T>(a), chain<T>(b)))
 
 
 # First `n` elements (fewer if the list is shorter); `n <= 0` gives the empty
@@ -442,6 +442,14 @@ fun build<T>([terminal] b: ListBuilder<T>): List<T>
 # Push every element of `l`, in order.
 fun pushAll<T>([terminal] b: ListBuilder<T>, l: List<T>): ListBuilder<T>
   ret _pushChain<T>(b, chain(l))
+
+# A fresh builder already holding `l` — the seed for an accumulate loop that
+# must carry a list IN rather than start empty. Spelling this out at the call
+# site (`builderFrom<T>(l)`) buried the one thing the
+# reader wants, which list the loop starts from, under three nested calls and
+# three repetitions of the element type.
+fun builderFrom<T>(l: List<T>): ListBuilder<T>
+  ret pushAll<T>(builder<T>(), l)
 
 fun [tail] _pushChain<T>([terminal] b: ListBuilder<T>, c: Chain<T>): ListBuilder<T>
   ret match(c)

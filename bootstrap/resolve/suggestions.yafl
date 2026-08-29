@@ -157,7 +157,7 @@ fun recordTyped(name: String, ptype: Spec|None, acc: Hints): Hints
     ()         => acc
 
 fun entryTypes(es: Chain<SEntry>, acc: List<Meet>): List<Meet>
-  ret build<Meet >(entryTypesB(es, _pushChain<Meet >(builder<Meet >(), chain<Meet >(acc))))
+  ret build<Meet >(entryTypesB(es, builderFrom<Meet>(acc)))
 
 fun [tail] entryTypesB(es: Chain<SEntry>, [terminal] acc: ListBuilder<Meet >): ListBuilder<Meet >
   ret match(es)
@@ -223,7 +223,7 @@ fun addDetailId(seen: List<String>, ty: Spec|None): List<String>
 # agreeing site revives the suggestion for it.
 fun meetSlots(xs: Chain<Meet>, ys: Chain<Meet>,
                      acc: List<Meet>): List<Meet>
-  ret build<Meet >(meetSlotsB(xs, ys, _pushChain<Meet >(builder<Meet >(), chain<Meet >(acc))))
+  ret build<Meet >(meetSlotsB(xs, ys, builderFrom<Meet>(acc)))
 
 fun [tail] meetSlotsB(xs: Chain<Meet>, ys: Chain<Meet>,
                      [terminal] acc: ListBuilder<Meet >): ListBuilder<Meet >
@@ -269,7 +269,7 @@ fun suggestionTuple(ms: List<Meet>): Spec
              PLine("suggestion", 0, 0))
 
 fun hintEntriesOf(ms: Chain<Meet>, acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(hintEntriesOfB(ms, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(hintEntriesOfB(ms, builderFrom<SEntry>(acc)))
 
 fun [tail] hintEntriesOfB(ms: Chain<Meet>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ms)
@@ -304,7 +304,7 @@ fun fillParams(params: PStmt, tp: STuple, r: Resolver): PStmt
 
 fun fillTargets(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                        acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(fillTargetsB(ts, es, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(fillTargetsB(ts, es, r, builderFrom<PStmt>(acc)))
 
 fun [tail] fillTargetsB(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                        [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >

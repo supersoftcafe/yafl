@@ -141,7 +141,7 @@ fun propagate(parentTy: Spec|None, targets: List<PStmt>,
 
 fun propagateLoop(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                          acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(propagateLoopB(ts, es, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(propagateLoopB(ts, es, r, builderFrom<PStmt>(acc)))
 
 fun [tail] propagateLoopB(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
@@ -298,7 +298,7 @@ fun strippedWhereFn(m: PStmt): PStmt
     (o: PStmt) => m
 
 fun resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>): List<Spec>
-  ret build<Spec >(resolvedImplementsB(fs, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+  ret build<Spec >(resolvedImplementsB(fs, builderFrom<Spec>(acc)))
 
 fun [tail] resolvedImplementsB(fs: Chain<FoundClass>, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(fs)
@@ -507,7 +507,7 @@ fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>): PStmt
 fun assignAllSpecs(vs: Chain<PStmt>, root: String,
                           allLeaves: List<String>,
                           acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(assignAllSpecsB(vs, root, allLeaves, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(assignAllSpecsB(vs, root, allLeaves, builderFrom<PStmt>(acc)))
 
 fun [tail] assignAllSpecsB(vs: Chain<PStmt>, root: String,
                           allLeaves: List<String>,
@@ -558,7 +558,7 @@ fun collapseElseIf(stmts: List<PStmt>): List<PStmt>
   ret ceiLoop(chain(stmts), List<PStmt>())
 
 fun ceiLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(ceiLoopB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(ceiLoopB(ss, builderFrom<PStmt>(acc)))
 
 fun [tail] ceiLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ss)

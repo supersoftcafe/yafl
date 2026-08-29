@@ -244,6 +244,5 @@ fun tokenize(src: System::String): List<Token>
   # The EOF token is derived from the LAST real token, so the stream is built
   # first and the terminator pushed onto a builder seeded from it.
   let toks = build(scanLines(chain(splitLines(src)), 1, builder<Token>()))
-  ret build<Token>(push<Token>(_pushChain<Token>(builder<Token>(),
-                                                 chain<Token>(toks)),
+  ret build<Token>(push<Token>(builderFrom<Token>(toks),
                                eofToken(toks)))

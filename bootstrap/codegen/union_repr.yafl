@@ -48,7 +48,7 @@ fun collectLeafFieldSets(st: PsEnum, inherited: List<PStmt>): List<List<PStmt>>
     : collectLeafFieldSetsVariants(chain(st.eVariants), combined, List<List<PStmt>>())
 
 fun filterDeclaredFields(ps: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(filterDeclaredFieldsB(ps, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(filterDeclaredFieldsB(ps, builderFrom<PStmt>(acc)))
 
 fun [tail] filterDeclaredFieldsB(ps: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ps)
@@ -610,8 +610,7 @@ fun combinationUnionValuePointer(memberCtype: CgType, vi: Int, variantMap: List<
 # rather than the list operation that implements it.
 fun withTagField(values: List<RpNamedValue>, tag: Int): List<RpNamedValue>
   ret build<RpNamedValue >(push<RpNamedValue >(
-          _pushChain<RpNamedValue >(builder<RpNamedValue >(),
-                                    chain<RpNamedValue>(values)),
+          builderFrom<RpNamedValue>(values),
           RpNamedValue("$tag", RpInteger(tag, 32))))
 
 fun combinationUnionValueTagged(narrowCtype: CgType, narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>,
@@ -627,7 +626,7 @@ fun zipSlotFields(narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>, 
 
 fun zipSlotFieldsLoop(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
                              wideSlotFields: List<CgField>, sv: RParam, acc: List<RpNamedValue>): List<RpNamedValue>
-  ret build<RpNamedValue >(zipSlotFieldsLoopB(ns, ws, narrowFields, wideSlotFields, sv, _pushChain<RpNamedValue >(builder<RpNamedValue >(), chain<RpNamedValue >(acc))))
+  ret build<RpNamedValue >(zipSlotFieldsLoopB(ns, ws, narrowFields, wideSlotFields, sv, builderFrom<RpNamedValue>(acc)))
 
 fun [tail] zipSlotFieldsLoopB(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
                              wideSlotFields: List<CgField>, sv: RParam, [terminal] acc: ListBuilder<RpNamedValue >): ListBuilder<RpNamedValue >
@@ -1162,7 +1161,7 @@ fun tagPrecision(t: CgType): Int
 class [final] PrimStart(psName: String, psOffset: Int)
 
 fun primStartsOf(fields: Chain<PStmt>, offset: Int, r: Resolver, acc: List<PrimStart>): List<PrimStart>
-  ret build<PrimStart >(primStartsOfB(fields, offset, r, _pushChain<PrimStart >(builder<PrimStart >(), chain<PrimStart >(acc))))
+  ret build<PrimStart >(primStartsOfB(fields, offset, r, builderFrom<PrimStart>(acc)))
 
 fun [tail] primStartsOfB(fields: Chain<PStmt>, offset: Int, r: Resolver, [terminal] acc: ListBuilder<PrimStart >): ListBuilder<PrimStart >
   ret match(fields)

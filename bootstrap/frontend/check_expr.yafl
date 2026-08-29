@@ -90,7 +90,7 @@ fun unresolvedAmbient(nm: PeName, f: Found): Bool
     ()                  => false
 
 fun foundNames(ds: Chain<Found>, acc: List<String>): List<String>
-  ret build<String >(foundNamesB(ds, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(foundNamesB(ds, builderFrom<String>(acc)))
 
 fun [tail] foundNamesB(ds: Chain<Found>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(ds)
@@ -111,7 +111,7 @@ fun distinctFinds(ds: List<Found>): List<Found>
 
 fun dfLoop(ds: Chain<Found>, acc: List<Found>,
                   seen: List<String>): List<Found>
-  ret build<Found >(dfLoopB(ds, _pushChain<Found >(builder<Found >(), chain<Found >(acc)), seen))
+  ret build<Found >(dfLoopB(ds, builderFrom<Found>(acc), seen))
 
 fun [tail] dfLoopB(ds: Chain<Found>, [terminal] acc: ListBuilder<Found >,
                   seen: List<String>): ListBuilder<Found >
@@ -273,7 +273,7 @@ fun backTicked(raw: String): String
   ret startsWith(raw, "`") ? raw : "`" + raw + "`"
 
 fun candidateSigs(cs: Chain<Found>, acc: List<String>): List<String>
-  ret build<String >(candidateSigsB(cs, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(candidateSigsB(cs, builderFrom<String>(acc)))
 
 fun [tail] candidateSigsB(cs: Chain<Found>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(cs)
@@ -772,7 +772,7 @@ fun withVisibleFields(wx: PeWith, r: Resolver): List<String>
     ()         => List<String>()
 
 fun withBareNames(fs: Chain<PStmt>, acc: List<String>): List<String>
-  ret build<String >(withBareNamesB(fs, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(withBareNamesB(fs, builderFrom<String>(acc)))
 
 fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(fs)
@@ -782,7 +782,7 @@ fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String >
       (o: PStmt) => withBareNamesB(l.next, acc)
 
 fun withCoverBares(fs: Chain<SField>, acc: List<String>): List<String>
-  ret build<String >(withCoverBaresB(fs, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(withCoverBaresB(fs, builderFrom<String>(acc)))
 
 fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(fs)

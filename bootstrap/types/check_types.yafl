@@ -208,7 +208,7 @@ fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
 
 fun callerGenFounds(gs: Chain<PGen>, cs: Chain<Spec>,
                            acc: List<Found>): List<Found>
-  ret build<Found >(callerGenFoundsB(gs, cs, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+  ret build<Found >(callerGenFoundsB(gs, cs, builderFrom<Found>(acc)))
 
 fun [tail] callerGenFoundsB(gs: Chain<PGen>, cs: Chain<Spec>,
                            [terminal] acc: ListBuilder<Found >): ListBuilder<Found >

@@ -320,7 +320,7 @@ fun narrowedEnumField(r: Resolver, e2: SEnum, bare: String): Narrowed
 
 fun fieldsMatching(fs: Chain<SField>, bare: String,
                           acc: List<SField>): List<SField>
-  ret build<SField >(fieldsMatchingB(fs, bare, _pushChain<SField >(builder<SField >(), chain<SField >(acc))))
+  ret build<SField >(fieldsMatchingB(fs, bare, builderFrom<SField>(acc)))
 
 fun [tail] fieldsMatchingB(fs: Chain<SField>, bare: String,
                           [terminal] acc: ListBuilder<SField >): ListBuilder<SField >
@@ -341,7 +341,7 @@ fun ownedHit(cands: List<SField>, covering: List<SField>): Narrowed
 
 fun fieldsCovered(cs: Chain<SField>, covering: List<SField>,
                          acc: List<SField>): List<SField>
-  ret build<SField >(fieldsCoveredB(cs, covering, _pushChain<SField >(builder<SField >(), chain<SField >(acc))))
+  ret build<SField >(fieldsCoveredB(cs, covering, builderFrom<SField>(acc)))
 
 fun [tail] fieldsCoveredB(cs: Chain<SField>, covering: List<SField>,
                          [terminal] acc: ListBuilder<SField >): ListBuilder<SField >
@@ -372,7 +372,7 @@ fun [tail] coverVariants(vs: Chain<PStmt>, valid: List<String>,
       (o: PStmt)  => coverVariants(l.next, valid, acc)
 
 fun typedFieldsOf(ls: Chain<PStmt>, acc: List<SField>): List<SField>
-  ret build<SField >(typedFieldsOfB(ls, _pushChain<SField >(builder<SField >(), chain<SField >(acc))))
+  ret build<SField >(typedFieldsOfB(ls, builderFrom<SField>(acc)))
 
 fun [tail] typedFieldsOfB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<SField >): ListBuilder<SField >
   ret match(ls)
@@ -531,7 +531,7 @@ fun tupNames(tp: PeTuple): List<String>
   ret nameOfEnts(chain(tp.exprs), List<String>())
 
 fun nameOfEnts(es: Chain<PTupEnt>, acc: List<String>): List<String>
-  ret build<String >(nameOfEntsB(es, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(nameOfEntsB(es, builderFrom<String>(acc)))
 
 fun [tail] nameOfEntsB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
   ret match(es)
@@ -548,7 +548,7 @@ fun slotsFor(declared: List<SEntry>, binding: List<Int>,
 
 # One blank slot per supplied entry — sized by the walk, never by a count.
 fun emptySlots(es: Chain<PTupEnt>, acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(emptySlotsB(es, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(emptySlotsB(es, builderFrom<SEntry>(acc)))
 
 fun [tail] emptySlotsB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(es)
@@ -573,7 +573,7 @@ fun setAt(es: List<SEntry>, i: Int, v: SEntry): List<SEntry>
 
 fun setLoop(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
                    acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(setLoopB(es, i, v, at, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(setLoopB(es, i, v, at, builderFrom<SEntry>(acc)))
 
 fun [tail] setLoopB(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
                    [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
@@ -993,7 +993,7 @@ fun withConstruct(ctorName: String, fields: List<PStmt>, repls: List<PTupEnt>,
 fun withCtorArgs(fs: Chain<PStmt>, repls: List<PTupEnt>,
                         carrier: String, lr: PLine,
                         acc: List<PTupEnt>): List<PTupEnt>
-  ret build<PTupEnt >(withCtorArgsB(fs, repls, carrier, lr, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+  ret build<PTupEnt >(withCtorArgsB(fs, repls, carrier, lr, builderFrom<PTupEnt>(acc)))
 
 fun [tail] withCtorArgsB(fs: Chain<PStmt>, repls: List<PTupEnt>,
                         carrier: String, lr: PLine,
@@ -1070,7 +1070,7 @@ fun withValidLeaves(ns: Chain<String>, valid: List<String>): List<String>
 
 fun withValidLoop(ns: Chain<String>, valid: List<String>,
                          acc: List<String>): List<String>
-  ret build<String >(withValidLoopB(ns, valid, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build<String >(withValidLoopB(ns, valid, builderFrom<String>(acc)))
 
 fun [tail] withValidLoopB(ns: Chain<String>, valid: List<String>,
                          [terminal] acc: ListBuilder<String >): ListBuilder<String >
@@ -1093,7 +1093,7 @@ fun [tail] withSingleLeaf(ns: Chain<String>, sets: Chain<List<PStmt>>,
 fun withArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                     tag: String, wx: PeWith, e2: SEnum,
                     acc: List<PArm>): List<PArm>
-  ret build<PArm >(withArmsB(ns, sets, i, tag, wx, e2, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+  ret build<PArm >(withArmsB(ns, sets, i, tag, wx, e2, builderFrom<PArm>(acc)))
 
 fun [tail] withArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                     tag: String, wx: PeWith, e2: SEnum,

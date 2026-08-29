@@ -116,7 +116,7 @@ fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
         concat(genFunctions, thunks))
 
 fun classMemberFunctions(ms: Chain<PStmt>, r: Resolver, acc: List<CgFunction>): List<CgFunction>
-  ret build<CgFunction >(classMemberFunctionsB(ms, r, _pushChain<CgFunction >(builder<CgFunction >(), chain<CgFunction >(acc))))
+  ret build<CgFunction >(classMemberFunctionsB(ms, r, builderFrom<CgFunction>(acc)))
 
 fun [tail] classMemberFunctionsB(ms: Chain<PStmt>, r: Resolver, [terminal] acc: ListBuilder<CgFunction >): ListBuilder<CgFunction >
   ret match(ms)
@@ -149,7 +149,7 @@ fun [tail] cseLoop(ss: Chain<Slot>, acc: List<CgFuncSlot>): List<CgFuncSlot>
 # field off `this`, call it with the packed params, return the result.
 fun classFieldThunks(ps: Chain<PStmt>, className: String, functionNames: List<String>,
                             r: Resolver, acc: List<CgFunction>): List<CgFunction>
-  ret build<CgFunction >(classFieldThunksB(ps, className, functionNames, r, _pushChain<CgFunction >(builder<CgFunction >(), chain<CgFunction >(acc))))
+  ret build<CgFunction >(classFieldThunksB(ps, className, functionNames, r, builderFrom<CgFunction>(acc)))
 
 fun [tail] classFieldThunksB(ps: Chain<PStmt>, className: String, functionNames: List<String>,
                             r: Resolver, [terminal] acc: ListBuilder<CgFunction >): ListBuilder<CgFunction >
@@ -235,7 +235,7 @@ fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r: Resolver): ClassOb
   ret ClassObjFields(
         # Header, the scalar fields, then the trailing array LAST.
         CgImmediateStruct(concat(list1(CgField("type", CgDataPointer())),
-                                 build<CgField >(push<CgField >(_pushChain<CgField >(builder<CgField >(), chain<CgField>(scalarFields)), arrayField)))),
+                                 build<CgField >(push<CgField >(builderFrom<CgField>(scalarFields), arrayField)))),
         arrayLengthFieldName(scalars, ap))
 
 fun isSameLet(p: PStmt, ap: PsLet): Bool
@@ -312,7 +312,7 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver, isComplex: Bool): Lis
 fun enumLeafObjects(names: Chain<String>, sets: Chain<List<PStmt>>, rootName: String,
                            discs: Dict<String, Int>, r: Resolver,
                            prefix: List<CgField>, acc: List<CgObject>): List<CgObject>
-  ret build<CgObject >(enumLeafObjectsB(names, sets, rootName, discs, r, prefix, _pushChain<CgObject >(builder<CgObject >(), chain<CgObject >(acc))))
+  ret build<CgObject >(enumLeafObjectsB(names, sets, rootName, discs, r, prefix, builderFrom<CgObject>(acc)))
 
 fun [tail] enumLeafObjectsB(names: Chain<String>, sets: Chain<List<PStmt>>, rootName: String,
                            discs: Dict<String, Int>, r: Resolver,
@@ -527,7 +527,7 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
   ret match(sub.sgpRp)
     (rp: RParam) => sgpLeafOk(rp)
       ? sgpEmitFields(l.next, lf.next, cls, r, chasing, hint, i + 1,
-                      build<RpNamedValue >(push<RpNamedValue >(_pushChain<RpNamedValue >(builder<RpNamedValue >(), chain<RpNamedValue>(pairs)), RpNamedValue(stmtName2(lf.value), rp))),
+                      build<RpNamedValue >(push<RpNamedValue >(builderFrom<RpNamedValue>(pairs), RpNamedValue(stmtName2(lf.value), rp))),
                       concat(globals, sub.sgpGlobals))
       : sgpNo()
     ()            => sgpNo()
@@ -535,7 +535,7 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
 fun sgpInstanceDone(cls: PsClass, hint: String, pairs: List<RpNamedValue>,
                     globals: List<CgGlobal>): SgpOut
   ret SgpOut(RpStaticObjectRef(hint),
-             build<CgGlobal >(push<CgGlobal >(_pushChain<CgGlobal >(builder<CgGlobal >(), chain<CgGlobal>(globals)), CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
+             build<CgGlobal >(push<CgGlobal >(builderFrom<CgGlobal>(globals), CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
 
 # A reference to another global let: chase its own plan. An integer/float
 # constant inlines its constant; a static class instance is referenced by

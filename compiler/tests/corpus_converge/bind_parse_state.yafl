@@ -1,0 +1,58 @@
+# `?>` over a STATE-THREADING pair: `(v: T|Fail, rest: S)`.
+#
+# The third shape of the bind, alongside stdlib/result.yafl's plain `TIn|E`
+# and io.yafl's `(io, v: TIn|IOError)`. A recursive-descent parser returns a
+# value-or-failure paired with the token position it reached, so neither
+# stdlib overload fits: the success member and the threaded state sit in ONE
+# tuple, and the state must survive the failure arm too (a failed parse still
+# reports where it stopped).
+#
+# Pins two things the parser conversion depends on: that a user-defined `?>`
+# overload on a tuple resolves alongside the two stdlib ones without an
+# ambiguity error, and that the failure arm's NARROWED binding (`e: PbFail`)
+# widens back into the result union `TOut|PbFail` rather than re-widening the
+# subject's `TIn|PbFail`.
+class [final] PbPs(pbPos: Int)
+class [final] PbFail(pbHard: Bool, pbMsg: String)
+
+fun [inline] `?>`<TIn, TOut>(pair: (v: TIn|PbFail, rest: PbPs),
+                             f: (:TIn, :PbPs): (v: TOut|PbFail, rest: PbPs)):
+                             (v: TOut|PbFail, rest: PbPs)
+  ret match(pair.v)
+    (x: TIn)     => f(x, pair.rest)
+    (e: PbFail)  => (e, pair.rest)
+
+# Harden a soft failure with a message; a success passes through untouched.
+# The parser's `harden` is this shape — it is what the 27 non-pass-through
+# failure arms do before propagating.
+fun [inline] pbHardened<TIn>(pair: (v: TIn|PbFail, rest: PbPs),
+                             msg: String): (v: TIn|PbFail, rest: PbPs)
+  ret match(pair.v)
+    (x: TIn)    => pair
+    (e: PbFail) => (PbFail(true, msg), pair.rest)
+
+fun pbStep(n: Int, ps: PbPs): (v: Int|PbFail, rest: PbPs)
+  ret n > 100
+    ? (PbFail(false, "too big"), ps)
+    : (n * 2, PbPs(ps.pbPos + 1))
+
+fun pbRun(start: Int): Int
+  let out = pbStep(start, PbPs(0))
+    ?> (a: Int, ps: PbPs) => pbStep(a, ps)
+    ?> (b: Int, ps: PbPs) => pbStep(b, ps)
+  ret match(out.v)
+    (v: Int)    => v + out.rest.pbPos
+    (e: PbFail) => 0 - length(e.pbMsg)
+
+fun pbRunHard(start: Int): Int
+  let out = pbHardened(pbStep(start, PbPs(0)), "hardened!")
+    ?> (a: Int, ps: PbPs) => pbStep(a, ps)
+  ret match(out.v)
+    (v: Int)    => v
+    (e: PbFail) => e.pbHard ? 0 - length(e.pbMsg) : 0
+
+fun main(): Int
+  # pbRun(3): 3->6->12->24 over three steps, pos 3  => 27.
+  # pbRun(200): soft-fails on the first step, "too big" (7)  => -7.
+  # pbRunHard(200): hardened to "hardened!" (9)  => -9.
+  ret pbRun(3) + (0 - pbRun(200)) + (0 - pbRunHard(200))

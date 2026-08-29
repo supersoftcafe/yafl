@@ -52,7 +52,7 @@ fun findClassesOrError(types: List<Spec>, r: Resolver): List<FoundClass>
 
 fun fceLoop(ts: Chain<Spec>, r: Resolver,
                    acc: List<FoundClass>): List<FoundClass>
-  ret build<FoundClass >(fceLoopB(ts, r, _pushChain<FoundClass >(builder<FoundClass >(), chain<FoundClass >(acc))))
+  ret build<FoundClass >(fceLoopB(ts, r, builderFrom<FoundClass>(acc)))
 
 fun [tail] fceLoopB(ts: Chain<Spec>, r: Resolver,
                    [terminal] acc: ListBuilder<FoundClass >): ListBuilder<FoundClass >
@@ -83,7 +83,7 @@ fun compileSpecsPlain(ps: List<Spec>, r: Resolver): List<Spec>
   ret cspLoop(chain(ps), r, List<Spec>())
 
 fun cspLoop(ps: Chain<Spec>, r: Resolver, acc: List<Spec>): List<Spec>
-  ret build<Spec >(cspLoopB(ps, r, _pushChain<Spec >(builder<Spec >(), chain<Spec >(acc))))
+  ret build<Spec >(cspLoopB(ps, r, builderFrom<Spec>(acc)))
 
 fun [tail] cspLoopB(ps: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
   ret match(ps)
@@ -101,7 +101,7 @@ fun createSlotsFromMembers(cs: PsClass): List<Slot>
                List<Slot>())
 
 fun slotLoop(ms: Chain<PStmt>, acc: List<Slot>): List<Slot>
-  ret build<Slot >(slotLoopB(ms, _pushChain<Slot >(builder<Slot >(), chain<Slot >(acc))))
+  ret build<Slot >(slotLoopB(ms, builderFrom<Slot>(acc)))
 
 fun [tail] slotLoopB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
   ret match(ms)
@@ -142,7 +142,7 @@ fun overrideInheritedSlots(r: Resolver, base: List<Slot>,
 
 fun enhanceLoop(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
                        acc: List<Slot>): List<Slot>
-  ret build<Slot >(enhanceLoopB(bs, r, parents, _pushChain<Slot >(builder<Slot >(), chain<Slot >(acc))))
+  ret build<Slot >(enhanceLoopB(bs, r, parents, builderFrom<Slot>(acc)))
 
 fun [tail] enhanceLoopB(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
                        [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
@@ -178,7 +178,7 @@ fun [tail] allProvides(ss: Chain<Slot>, acc: List<String>): List<String>
 
 fun keepUnabsorbed(ps: Chain<Slot>, exclusion: List<String>,
                           acc: List<Slot>): List<Slot>
-  ret build<Slot >(keepUnabsorbedB(ps, exclusion, _pushChain<Slot >(builder<Slot >(), chain<Slot >(acc))))
+  ret build<Slot >(keepUnabsorbedB(ps, exclusion, builderFrom<Slot>(acc)))
 
 fun [tail] keepUnabsorbedB(ps: Chain<Slot>, exclusion: List<String>,
                           [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
@@ -194,7 +194,7 @@ fun [tail] keepUnabsorbedB(ps: Chain<Slot>, exclusion: List<String>,
 # orders that reach generated code. `acc` is read by the dedup just above, so
 # it cannot be a builder — this is the copy the old append did, written out.
 fun addNameOnce(acc: List<String>, n: String): List<String>
-  ret contains2(acc, n) ? acc : build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(acc)), n))
+  ret contains2(acc, n) ? acc : build<String >(push<String >(builderFrom<String>(acc), n))
 
 fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
   ret match(ns)
@@ -202,7 +202,7 @@ fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
     (l: ChainLink)  => addNamesOnce(addNameOnce(acc, l.value), l.next)
 
 fun addSpecOnce(acc: List<Spec>, sp: Spec): List<Spec>
-  ret containsSpec(acc, sp) ? acc : build<Spec >(push<Spec >(_pushChain<Spec >(builder<Spec >(), chain<Spec>(acc)), sp))
+  ret containsSpec(acc, sp) ? acc : build<Spec >(push<Spec >(builderFrom<Spec>(acc), sp))
 
 fun [tail] addSpecsOnce(acc: List<Spec>, ss: Chain<Spec>): List<Spec>
   ret match(ss)
@@ -228,7 +228,7 @@ fun nonArrayFields(cs: PsClass): List<PStmt>
   ret dropArrayField(chain(flattenParams(cs.cParams)), List<PStmt>())
 
 fun dropArrayField(ls: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(dropArrayFieldB(ls, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build<PStmt >(dropArrayFieldB(ls, builderFrom<PStmt>(acc)))
 
 fun [tail] dropArrayFieldB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
   ret match(ls)
@@ -246,7 +246,7 @@ fun isArrayStorage(st: PStmt): Bool
 
 fun memberFinds(ms: Chain<PStmt>, query: String,
                        acc: List<Found>): List<Found>
-  ret build<Found >(memberFindsB(ms, query, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+  ret build<Found >(memberFindsB(ms, query, builderFrom<Found>(acc)))
 
 fun [tail] memberFindsB(ms: Chain<PStmt>, query: String,
                        [terminal] acc: ListBuilder<Found >): ListBuilder<Found >

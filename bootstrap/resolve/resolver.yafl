@@ -61,7 +61,7 @@ fun namePrefixes(name: String): List<String>
 
 fun prefixLoop(ps: Chain<String>, acc: String,
                       out: List<String>): List<String>
-  ret build<String >(prefixLoopB(ps, acc, _pushChain<String >(builder<String >(), chain<String >(out))))
+  ret build<String >(prefixLoopB(ps, acc, builderFrom<String>(out)))
 
 fun [tail] prefixLoopB(ps: Chain<String>, acc: String,
                       [terminal] out: ListBuilder<String >): ListBuilder<String >
@@ -350,7 +350,7 @@ fun putUnder(d: Dict<String, List<PStmt> >, key: String,
   ret match(get(d, key))
     # Declaration order within a bucket: it is the candidate order overload
     # resolution and the "Candidates:" message both see.
-    (prev: List<PStmt>) => put(d, key, build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(prev)), st)))
+    (prev: List<PStmt>) => put(d, key, build<PStmt >(push<PStmt >(builderFrom<PStmt>(prev), st)))
     ()                  => put(d, key, prepend(st, List<PStmt>()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
@@ -628,8 +628,7 @@ fun [tail] traitLets(r: Resolver): List<PStmt>
 # keeps the order the Set cannot. Reading a half-built list was the only
 # reason this loop could not simply push.
 fun mergeNames(acc: List<String>, ns: Chain<String>): List<String>
-  ret build<String >(mergeNamesB(_pushChain<String >(builder<String >(),
-                                                     chain<String >(acc)),
+  ret build<String >(mergeNamesB(builderFrom<String>(acc),
                                  _chainToSet<String >(chain<String >(acc),
                                                       Set<String >()),
                                  ns))
@@ -713,7 +712,7 @@ fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
 
 fun globalLoop(ss: Chain<PStmt>, wantType: Bool,
                       acc: List<Found>): List<Found>
-  ret build<Found >(globalLoopB(ss, wantType, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+  ret build<Found >(globalLoopB(ss, wantType, builderFrom<Found>(acc)))
 
 fun [tail] globalLoopB(ss: Chain<PStmt>, wantType: Bool,
                       [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
@@ -760,7 +759,7 @@ fun matchingFound(names: List<Found>, query: String): Findings
 
 fun matchLoop(fs: Chain<Found>, query: String,
                      acc: List<Found>): List<Found>
-  ret build<Found >(matchLoopB(fs, query, _pushChain<Found >(builder<Found >(), chain<Found >(acc))))
+  ret build<Found >(matchLoopB(fs, query, builderFrom<Found>(acc)))
 
 fun [tail] matchLoopB(fs: Chain<Found>, query: String,
                      [terminal] acc: ListBuilder<Found >): ListBuilder<Found >

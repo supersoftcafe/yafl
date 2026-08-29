@@ -95,7 +95,7 @@ fun instanceWildcarded(ty: Spec, x: Found): Spec
 
 fun nameWildcards(ns: Chain<String>, lr: PLine,
                          acc: List<Binding>): List<Binding>
-  ret build<Binding >(nameWildcardsB(ns, lr, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+  ret build<Binding >(nameWildcardsB(ns, lr, builderFrom<Binding>(acc)))
 
 fun [tail] nameWildcardsB(ns: Chain<String>, lr: PLine,
                          [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
@@ -168,7 +168,7 @@ fun wildcarded(ty: Spec, x: Found): Spec
 
 fun wildcardBindings(gs: Chain<PGen>, lr: PLine,
                             acc: List<Binding>): List<Binding>
-  ret build<Binding >(wildcardBindingsB(gs, lr, _pushChain<Binding >(builder<Binding >(), chain<Binding >(acc))))
+  ret build<Binding >(wildcardBindingsB(gs, lr, builderFrom<Binding>(acc)))
 
 fun [tail] wildcardBindingsB(gs: Chain<PGen>, lr: PLine,
                             [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
