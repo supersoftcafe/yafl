@@ -377,6 +377,7 @@ fun exprLine(x: PExpr): PLine
     (nw: PeNew) => nw.penwLine
     (ar: PeArrayRead) => ar.pearLine
     (cv: PeConvert) => cv.pecvLine
+    (qq: PeCoalesce) => qq.peqqLine
 
 # ── parse() fixups: namespace qualification, import removal ─────────────────
 # Mirrors parser.py parse()'s tail: imports and namespaces vanish from the

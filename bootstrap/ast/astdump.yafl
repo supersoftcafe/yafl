@@ -144,7 +144,10 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
       |> (s1) => dumpExpr(t3.condition, depth + 1, s1)
       |> (s2) => dumpExpr(t3.trueResult, depth + 1, s2)
       |> (s3) => dumpExpr(t3.falseResult, depth + 1, s3)
-    (lm: PeLambda) => dLine(sb, depth, "Lambda", lm.pelLine, "")
+    # lamRet IS compared by eqExpr, and the lambda-lifting passes read it, so
+    # it belongs in the dump — a contract that cannot see it reports two
+    # DIFFERENT trees as equal. `tyStr` is the existing Spec|None speller.
+    (lm: PeLambda) => dLine(sb, depth, "Lambda", lm.pelLine, tyStr(lm.lamRet))
       |> (s1) => dumpStmt(lm.lamParams, depth + 1, s1)
       |> (s2) => dumpExpr(lm.lamBody, depth + 1, s2)
     (bk: PeBlock)  => dLine(sb, depth, "Block", bk.pebkLine, bk.blockTag)
@@ -177,6 +180,9 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
     (cv: PeConvert)   => dLine(sb, depth, "Convert", cv.pecvLine,
                                tyOf(cv.convTarget))
       |> (s1) => dumpExpr(cv.convInner, depth + 1, s1)
+    (qq: PeCoalesce)  => dLine(sb, depth, "Coalesce", qq.peqqLine, "")
+      |> (s1) => dumpExpr(qq.qqSubject, depth + 1, s1)
+      |> (s2) => dumpExpr(qq.qqFallback, depth + 1, s2)
     # tail_loop lowering only — exercised by the tail-stage contract.
     (lp: PeLoop)      => dLine(sb, depth, "Loop", lp.pelpLine,
                                join(loopParamNames(chain(lp.loopParams),

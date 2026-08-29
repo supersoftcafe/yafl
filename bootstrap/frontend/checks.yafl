@@ -244,6 +244,7 @@ fun nsExpr(x: PExpr, acc: Set<PErr>): Set<PErr>
     (nw: PeNew)    => nsExpr(nw.newParam, nsSpec(nw.newType, acc))
     (ar: PeArrayRead) => nsExpr(ar.arrIndex, nsExpr(ar.arrObj, acc))
     (cv: PeConvert) => nsSpec(cv.convTarget, nsExpr(cv.convInner, acc))
+    (qq: PeCoalesce) => nsExpr(qq.qqFallback, nsExpr(qq.qqSubject, acc))
     (wx: PeWith)   => nsExpr(wx.withRepls, nsExpr(wx.withSubject, acc))
     (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams),
                                 fold(ne.fieldArgs, acc, (a2: Set<PErr>, fa: PFieldArg) =>

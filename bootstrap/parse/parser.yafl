@@ -551,7 +551,7 @@ fun [tail] orLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
                                      exprLine(lhs)), r.rest)
 
 fun parseAnd(ps: Ps): (v: PExpr|PFail, rest: Ps)
-  let a = parseBind(ps)
+  let a = parseCoalesce(ps)
   ret match(a.v)
     (f: PFail) => a
     (l: PExpr) => andLoop(l, a.rest)
@@ -559,11 +559,27 @@ fun parseAnd(ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun [tail] andLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if !atSym(ps, "&&")
     ret (lhs, ps)
-  let r = parseBind(bump(ps))
+  let r = parseCoalesce(bump(ps))
   ret match(r.v)
     (f: PFail)   => f.hard ? (f, r.rest) : (lhs, ps)
     (rhs: PExpr) => andLoop(PeTernary(lhs, rhs, PeBool(false, exprLine(lhs)),
                                       exprLine(lhs)), r.rest)
+
+# `??` ends an option with a default. LOOSER than `?>`/`|>` so that
+# `x ?> f ?? d` groups as `(x ?> f) ?? d` — the bind propagates the absent
+# case, the coalesce is what finally eliminates it — and TIGHTER than `&&`.
+# Left-associative: `a ?? b ?? c` takes the first present value.
+fun parseCoalesce(ps: Ps): (v: PExpr|PFail, rest: Ps)
+  ret parseBind(ps)
+    ?> (l: PExpr, rest: Ps) => coalesceLoop(l, rest)
+
+fun [tail] coalesceLoop(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
+  if !atSym(ps, "??")
+    ret (lhs, ps)
+  let r = parseBind(bump(ps))
+  ret match(r.v)
+    (f: PFail)   => f.hard ? (f, r.rest) : (lhs, ps)
+    (rhs: PExpr) => coalesceLoop(PeCoalesce(lhs, rhs, exprLine(lhs)), r.rest)
 
 # `|>` and `?>` share ONE level so mixed chains fold strictly left-to-right.
 # The pipe lives here — LOOSER than the arithmetic/comparison operators (like

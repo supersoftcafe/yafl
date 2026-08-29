@@ -72,6 +72,17 @@ enum PExpr
   # inserts one exactly where needsConversion says a representation changes.
   # The parser never builds one.
   enum PeConvert(convInner: PExpr, convTarget: Spec, pecvLine: PLine)
+  # `qqSubject ?? qqFallback` — the subject's value when it is not None, else
+  # the fallback. Exists only until the fixpoint knows the subject's type,
+  # then compileCoalesce rewrites it into the match it means:
+  #
+  #   match(subject) (v: <subject minus None>) => v ; () => fallback
+  #
+  # which is why it is a NODE and not parse-time sugar: that arm type is not
+  # spellable at parse time, and the `()` else arm binds at the SUBJECT's type
+  # so the obvious sugar yields `T|None` where `T` is wanted. Codegen has no
+  # case for it — a survivor there is a compile bug, not a shape to emit.
+  enum PeCoalesce(qqSubject: PExpr, qqFallback: PExpr, peqqLine: PLine)
   # tail_loop lowering only. A [tail] body wrapped as an SSA loop: the
   # loop-carried params are NamedExpression REFERENCES (PeName), so ordinary
   # renaming passes rewrite them with the body's uses.

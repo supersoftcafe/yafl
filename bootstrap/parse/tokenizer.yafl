@@ -160,7 +160,7 @@ fun isDigitOrUnderscore(c: System::Int32): System::Bool
 fun symbolLen(ln: System::String, pos: System::Int): System::Int
   let two = pos + 2 <= System::length(ln) ? System::slice(ln, pos, pos + 2) : ""
   ret match(two)
-    ("&&", "||", "==", "|>", "?>", "<<", ">>",
+    ("&&", "||", "==", "|>", "?>", "??", "<<", ">>",
      "!=", "<=", ">=", "=>", "::", "..") => 2
     () => System::containsByte("=%*+?-/&|^!~()[]<>.;:,", System::byteAt(ln, pos)) ? 1 : 0
 

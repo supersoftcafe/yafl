@@ -160,6 +160,7 @@ fun cpExpr(x: PExpr, path: List<String>, acc: ClPaths): ClPaths
     (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path,
                                  fold(ne.fieldArgs, acc, (a2, fa: PFieldArg) =>
                                    cpExpr(fa.faValue, path, a2)))
+    (qq: PeCoalesce) => cpExpr(qq.qqFallback, path, cpExpr(qq.qqSubject, path, acc))
     (ar: PeArrayRead) => cpExpr(ar.arrIndex, path, cpExpr(ar.arrObj, path, acc))
     (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
     (wx: PeWith)      => cpExpr(wx.withRepls, path,
@@ -570,6 +571,10 @@ fun clExpr(x: PExpr, r: Resolver, paths: ClPaths, exports: List<PStmt>): ClEx
     (c: PeCall)       => clExpr(c.function, r, paths, exports)
       |> (f2) => (f2, clExpr(c.parameter, r, paths, f2.clExExports))
       |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine), p.clExExports)
+    (qq: PeCoalesce)      => clExpr(qq.qqSubject, r, paths, exports)
+      |> (s2) => (s2, clExpr(qq.qqFallback, r, paths, s2.clExExports))
+      |> (s2, p) => ClEx(PeCoalesce(s2.clExExpr, p.clExExpr, qq.peqqLine),
+                         p.clExExports)
     (wx: PeWith)      => clExpr(wx.withSubject, r, paths, exports)
       |> (s2) => (s2, clExpr(wx.withRepls, r, paths, s2.clExExports))
       |> (s2, p) => ClEx(PeWith(s2.clExExpr, p.clExExpr, wx.pewLine),

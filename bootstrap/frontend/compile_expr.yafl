@@ -73,6 +73,69 @@ fun retargeted(target: Spec, expected: Spec|None): Spec
     (e2: Spec) if isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target) => e2
     ()         => target
 
+# ── `??`: ending an option ───────────────────────────────────────────────────
+# PeCoalesce lives only until the subject's type is ground, then becomes the
+# match it means. Mirrors pyast/expression/coalesce.py; see nodes.yafl for why
+# this cannot be parse-time sugar.
+
+fun compileCoalesce(qq: PeCoalesce, r: Resolver, expected: Spec|None): ExprOut
+  # The subject compiles with NO expected type: pushing the receiver's type
+  # down would land the fallback's type on the option and defeat the
+  # narrowing. This compile is also how the subject's type becomes known,
+  # which is what decides whether the node can dissolve yet.
+  let subj = compileExpr(qq.qqSubject, r, None)
+  ret match(exprType(subj.eoExpr, r))
+    (st: Spec) => isConcrete(st)
+      ? coalesceOn(qq, subj, st, r, expected)
+      : coalesceStay(qq, subj, r, expected)
+    ()         => coalesceStay(qq, subj, r, expected)
+
+fun coalesceOn(qq: PeCoalesce, subj: ExprOut, st: Spec, r: Resolver,
+               expected: Spec|None): ExprOut
+  ret match(withoutNone(st))
+    (nr: Spec) => coalesceDesugar(qq, nr, r, expected)
+    ()         => coalesceStay(qq, subj, r, expected)
+
+# Not ground yet: keep the node, with both children advanced one pass.
+fun coalesceStay(qq: PeCoalesce, subj: ExprOut, r: Resolver,
+                 expected: Spec|None): ExprOut
+  let fb = compileExpr(qq.qqFallback, r, expected)
+  ret ExprOut(PeCoalesce(subj.eoExpr, fb.eoExpr, qq.peqqLine),
+              concat(subj.eoGlobals, fb.eoGlobals))
+
+# `match(subject) (v: narrowed) => v ; () => fallback`.
+#
+# The binder is keyed on the FALLBACK's position. `a ?? b ?? c` folds
+# left-associatively and every node in that fold carries the LEFT operand's
+# line, so armUniqueName — which appends the arm line's hash — would hand both
+# arms the same name and the two would define one SSA value. The fallbacks are
+# what differ.
+# Desugars from the ORIGINAL children, discarding the probe compile above.
+# compileMatch compiles its own subject and arms, so handing it already-
+# compiled ones compiles each TWICE — and a compile is not idempotent for
+# anything that LIFTS: a lambda in the subject became two
+# `$lambdas::lambda@...` globals and the two compilers disagreed about which
+# survived. Recompiling from the original is deterministic and yields one.
+fun coalesceDesugar(qq: PeCoalesce, narrowed: Spec, r: Resolver,
+                    expected: Spec|None): ExprOut
+  let subject = qq.qqSubject
+  let fallback = qq.qqFallback
+  let lr = qq.peqqLine
+  let fl = exprLine(fallback)
+  let binder = "$qq" + hash6(fl.plFile, fl.plLine, fl.plCol)
+  let hit = PArm(binder, narrowed, PeName(binder, List<Spec>(), lr),
+                 List<PLit>(), None, lr)
+  let els = PArm("", None, fallback, List<PLit>(), None, lr)
+  # The arms MUST be given a target. A match's arms converge on the RECEIVER's
+  # type, and that is what makes each arm wrap itself when they differ — which
+  # they do whenever the fallback is itself an option (`a ?? b ?? c`: hit arm
+  # `T`, fallback `T|None`). With no receiver the arms stay unconverted while
+  # the match's own type is their join, and codegen aborts on the mismatch.
+  let target = match(expected)
+    (e2: Spec) => e2
+    ()         => join(narrowed, exprType(fallback, r))
+  ret compileMatch(PeMatch(subject, list2(hit, els), lr), r, target)
+
 # ── the pass ────────────────────────────────────────────────────────────────
 
 fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
@@ -104,6 +167,7 @@ fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
     (lm: PeLambda) => compileLambda(lm, r, expected)
     (wx: PeWith)   => compileWith(wx, r, expected)
     (cv: PeConvert) => compileConvert(cv, r, expected)
+    (qq: PeCoalesce) => compileCoalesce(qq, r, expected)
 
 # A name RESOLVES: once its declaration is known the node carries the unique
 # (hashed) name. Never commit against an INCOMPLETE search — the candidate

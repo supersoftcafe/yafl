@@ -109,7 +109,10 @@ def dump(statements) -> str:
             walk_expr(x.trueResult, depth + 1)
             walk_expr(x.falseResult, depth + 1)
         elif isinstance(x, e.LambdaExpression):
-            line(depth, "Lambda", x, "")
+            # return_type IS compared by equality (eqExpr's lamRet), and the
+            # lambda-lifting passes read it, so it belongs in the dump — a
+            # contract that cannot see it reports two DIFFERENT trees as equal.
+            line(depth, "Lambda", x, _ty(x.return_type))
             walk_stmt(x.parameters, depth + 1)
             walk_expr(x.expression, depth + 1)
         elif isinstance(x, e.BlockExpression):
@@ -160,6 +163,13 @@ def dump(statements) -> str:
             # is exercised by the CONVERGED-tree contract, not the parse one.
             line(depth, "Convert", x, _ty(x.target))
             walk_expr(x.inner, depth + 1)
+        elif isinstance(x, e.CoalesceExpression):
+            # `a ?? b`, parse-phase only: it dissolves into a match as soon as
+            # the subject's type is ground, so the CONVERGED contract never
+            # sees one. Subject then fallback, matching the port's order.
+            line(depth, "Coalesce", x, "")
+            walk_expr(x.subject, depth + 1)
+            walk_expr(x.fallback, depth + 1)
         elif isinstance(x, e.LoopExpression):
             # tail_loop lowering only — exercised by the tail-stage contract.
             # The loop-carried params are NamedExpression references.

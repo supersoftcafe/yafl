@@ -454,6 +454,7 @@ fun [tail] linCount(x: PExpr, env: LinEnv, r: Resolver, acc: Set<PErr>): LinOut
     (c: PeCall)    => countCall(c, env, r, acc)
     (tp: PeTuple)  => countEntries(chain(tp.exprs), env, r, linZero(acc))
     (nw: PeNew)    => linCount(nw.newParam, env, r, acc)
+    (qq: PeCoalesce) => linPair(qq.qqSubject, qq.qqFallback, env, r, acc)
     (ar: PeArrayRead) => linPair(ar.arrObj, ar.arrIndex, env, r, acc)
     (ne: PeNewEnum) => linFieldArgs(chain(ne.fieldArgs), env, r, acc)
     (op: PeBuiltinOp) => linCount(op.opParams, env, r, acc)
@@ -878,6 +879,7 @@ fun instExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
     (mt: PeMatch)  => instArms(chain(mt.arms), r, instExpr(mt.subject, r, acc))
     (op: PeBuiltinOp) => instExpr(op.opParams, r, acc)
     (nw: PeNew)    => instExpr(nw.newParam, r, instSpecOpt(nw.newType, r, acc))
+    (qq: PeCoalesce) => instExpr(qq.qqFallback, r, instExpr(qq.qqSubject, r, acc))
     (ar: PeArrayRead) => instExpr(ar.arrIndex, r, instExpr(ar.arrObj, r, acc))
     (cv: PeConvert) => instExpr(cv.convInner, r,
                                 instSpecOpt(cv.convTarget, r, acc))

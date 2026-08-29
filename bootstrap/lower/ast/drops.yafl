@@ -227,6 +227,11 @@ fun drExpr(x: PExpr, wheres: List<Spec>, r: Resolver,
                       ? PeCall(pairA(p.deExpr), pairB(p.deExpr), c.pecLine)
                       : x,
                     p.deChanged)
+    (qq: PeCoalesce)   => drPair(qq.qqSubject, qq.qqFallback, wheres, r, ids)
+      |> (p) => DrE(p.deChanged
+                      ? PeCoalesce(pairA(p.deExpr), pairB(p.deExpr), qq.peqqLine)
+                      : x,
+                    p.deChanged)
     (wx: PeWith)   => drPair(wx.withSubject, wx.withRepls, wheres, r, ids)
       |> (p) => DrE(p.deChanged
                       ? PeWith(pairA(p.deExpr), pairB(p.deExpr), wx.pewLine)
@@ -766,6 +771,9 @@ fun drFixExpr(x: PExpr, let2: PsLet): DrBx
       |> (o) => DrBx(PeDot(o.bxExpr, d.member, d.pedLine), o.bxDid, o.bxOk)
     (c: PeCall)     => drFixPair(c.function, c.parameter, let2)
       |> (p) => DrBx(PeCall(pairA(p.bxExpr), pairB(p.bxExpr), c.pecLine),
+                     p.bxDid, p.bxOk)
+    (qq: PeCoalesce)    => drFixPair(qq.qqSubject, qq.qqFallback, let2)
+      |> (p) => DrBx(PeCoalesce(pairA(p.bxExpr), pairB(p.bxExpr), qq.peqqLine),
                      p.bxDid, p.bxOk)
     (wx: PeWith)    => drFixPair(wx.withSubject, wx.withRepls, let2)
       |> (p) => DrBx(PeWith(pairA(p.bxExpr), pairB(p.bxExpr), wx.pewLine),

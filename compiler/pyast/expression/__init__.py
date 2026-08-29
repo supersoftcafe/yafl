@@ -35,3 +35,4 @@ from pyast.expression.ternary import TernaryExpression
 from pyast.expression.with_expr import WithExpression
 from pyast.expression.loop import RecurExpression, LoopExpression
 from pyast.expression.conversion import ConvertExpression, converted, needs_conversion
+from pyast.expression.coalesce import CoalesceExpression, without_none

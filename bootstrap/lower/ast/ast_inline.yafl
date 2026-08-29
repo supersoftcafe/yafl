@@ -77,6 +77,8 @@ fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String >): Set<String >
                              frExpr(mt.subject, exclude, acc))
     (op: PeBuiltinOp) => frExpr(op.opParams, exclude, acc)
     (nw: PeNew)    => frExpr(nw.newParam, exclude, acc)
+    (qq: PeCoalesce) => frExpr(qq.qqFallback, exclude,
+                                frExpr(qq.qqSubject, exclude, acc))
     (ar: PeArrayRead) => frExpr(ar.arrIndex, exclude,
                                 frExpr(ar.arrObj, exclude, acc))
     (cv: PeConvert) => frExpr(cv.convInner, exclude, acc)
@@ -246,6 +248,8 @@ fun rcmExpr(x: PExpr, m: ThisMap): PExpr
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rcmExpr(op.opParams, m), op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rcmExpr(nw.newParam, m), nw.penwLine)
+    (qq: PeCoalesce) => PeCoalesce(rcmExpr(qq.qqSubject, m),
+                                     rcmExpr(qq.qqFallback, m), qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(rcmExpr(ar.arrObj, m),
                                      rcmExpr(ar.arrIndex, m), ar.pearLine)
     (cv: PeConvert) => PeConvert(rcmExpr(cv.convInner, m), cv.convTarget,
@@ -983,6 +987,8 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rnmExpr(op.opParams, m), op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rnmExpr(nw.newParam, m), nw.penwLine)
+    (qq: PeCoalesce) => PeCoalesce(rnmExpr(qq.qqSubject, m),
+                                     rnmExpr(qq.qqFallback, m), qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(rnmExpr(ar.arrObj, m),
                                      rnmExpr(ar.arrIndex, m), ar.pearLine)
     (cv: PeConvert) => PeConvert(rnmExpr(cv.convInner, m), cv.convTarget,

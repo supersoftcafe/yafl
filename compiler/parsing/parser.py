@@ -460,6 +460,18 @@ def __to_ternery(value: tuple[e.Expression, list[tuple[e.Expression, e.Expressio
     return expr
 
 
+def __to_coalesce(value: tuple) -> e.Expression:
+    # `a ?? b` is the elimination half of the option idiom: a's value when it
+    # is not None, else b. Left-associative, so `a ?? b ?? c` tries a, then b,
+    # then c. Short-circuit is structural — CoalesceExpression rewrites into a
+    # match, and `b` sits in an arm, so it is only evaluated when taken. See
+    # pyast/expression/coalesce.py for why this is a node rather than sugar.
+    def accumulate(left: e.Expression, right: e.Expression) -> e.Expression:
+        return e.CoalesceExpression(left.line_ref, left, right)
+    left_expr, right_list = value
+    return reduce(accumulate, right_list, left_expr)
+
+
 def __to_logical_and(value: tuple[e.Expression, list[e.Expression]]) -> e.Expression:
     # `a && b` is short-circuit sugar for `a ? b : false` — guaranteed control
     # flow, not a function call, so the right operand is never evaluated when the
@@ -941,7 +953,8 @@ __parse_bind    = (__parse_is       & p.many(p.sym(["?>", "|>"])     & __parse_i
 # the comparison/bind level and tighter than the ternary `?:`. They are parse-time
 # sugar for the ternary (see __to_logical_and/__to_logical_or), so short-circuit
 # is a guaranteed semantic rather than an optimiser artefact.
-__parse_logand  = (__parse_bind     & p.many(p.discard_sym("&&")     & __parse_bind      )).map(__to_logical_and)
+__parse_coalesce= (__parse_bind     & p.many(p.discard_sym("??")     & __parse_bind      )).map(__to_coalesce)
+__parse_logand  = (__parse_coalesce & p.many(p.discard_sym("&&")     & __parse_coalesce  )).map(__to_logical_and)
 __parse_logor   = (__parse_logand   & p.many(p.discard_sym("||")     & __parse_logand    )).map(__to_logical_or)
 __parse_ternery = (__parse_logor    & p.many(p.discard_sym("?") & __parse_logor & p.discard_sym(":") & __parse_logor)).map(__to_ternery)
 

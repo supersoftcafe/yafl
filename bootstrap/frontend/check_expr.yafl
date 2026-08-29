@@ -44,6 +44,8 @@ fun checkExpr(x: PExpr, r: Resolver, expected: Spec|None): Set<PErr>
     (pl: PeParallel) => checkExpr(pl.parParams, r, None)
     (wx: PeWith)   => checkWith(wx, r)
     (cv: PeConvert) => checkExpr(cv.convInner, r, None)
+    (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
+                              checkExpr(qq.qqFallback, r, expected))
     # tail_loop lowering only — never present at check time; mirrored from
     # loop.py's check methods for completeness.
     (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
@@ -651,6 +653,8 @@ fun referencedNames(x: PExpr, acc: List<String>): List<String>
     (ar: PeArrayRead) => referencedNames(ar.arrIndex,
                                          referencedNames(ar.arrObj, acc))
     (cv: PeConvert) => referencedNames(cv.convInner, acc)
+    (qq: PeCoalesce) => referencedNames(qq.qqFallback,
+                                        referencedNames(qq.qqSubject, acc))
     # A NewEnum's references live in its field-arg VALUE expressions.
     (wx: PeWith)   => referencedNames(wx.withRepls,
                                       referencedNames(wx.withSubject, acc))

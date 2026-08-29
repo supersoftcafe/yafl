@@ -142,6 +142,8 @@ fun tlCountSelf(x: PExpr, fName: String, n: Int): Int
     (d: PeDot)     => tlCountSelf(d.base, fName, n2)
     (c: PeCall)    => tlCountSelf(c.parameter, fName,
                                   tlCountSelf(c.function, fName, n2))
+    (qq: PeCoalesce)   => tlCountSelf(qq.qqFallback, fName,
+                                  tlCountSelf(qq.qqSubject, fName, n2))
     (wx: PeWith)   => tlCountSelf(wx.withRepls, fName,
                                   tlCountSelf(wx.withSubject, fName, n2))
     (tp: PeTuple)  => tlCountEnts(chain(tp.exprs), fName, n2)

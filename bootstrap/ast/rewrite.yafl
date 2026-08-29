@@ -159,6 +159,8 @@ fun rwExprKids(x: PExpr, w: Rw): PExpr
                                  arrIndex = rwExpr(ar.arrIndex, w))
     (cv: PeConvert) => with cv(convInner  = rwExpr(cv.convInner, w),
                                convTarget = rwSpec(cv.convTarget, w))
+    (qq: PeCoalesce) => with qq(qqSubject  = rwExpr(qq.qqSubject, w),
+                                qqFallback = rwExpr(qq.qqFallback, w))
     (wx: PeWith)   => with wx(withSubject = rwExpr(wx.withSubject, w),
                               withRepls   = rwExpr(wx.withRepls, w))
     (pl: PeParallel) => with pl(parParams = rwExpr(pl.parParams, w))
@@ -383,6 +385,8 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                      foldExpr<T>(ar.arrObj, f, fx, acc2))
     (cv: PeConvert) => foldSpec<T>(cv.convTarget, f, fx,
                                    foldExpr<T>(cv.convInner, f, fx, acc2))
+    (qq: PeCoalesce) => foldExpr<T>(qq.qqFallback, f, fx,
+                                    foldExpr<T>(qq.qqSubject, f, fx, acc2))
     (wx: PeWith)   => foldExpr<T>(wx.withRepls, f, fx,
                                   foldExpr<T>(wx.withSubject, f, fx, acc2))
     (pl: PeParallel) => foldExpr<T>(pl.parParams, f, fx, acc2)
@@ -628,6 +632,10 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
     (cv: PeConvert) => rwnExpr(cv.convInner, w, n)
       |> (iv) => RwNE(iv.rneN, PeConvert(iv.rneExpr, cv.convTarget,
                                          cv.pecvLine))
+    (qq: PeCoalesce) => rwnExpr(qq.qqSubject, w, n)
+      |> (sv) => (sv, rwnExpr(qq.qqFallback, w, sv.rneN))
+      |> (sv, fv) => RwNE(fv.rneN, PeCoalesce(sv.rneExpr, fv.rneExpr,
+                                              qq.peqqLine))
     (wx: PeWith)   => rwnExpr(wx.withSubject, w, n)
       |> (sv) => (sv, rwnExpr(wx.withRepls, w, sv.rneN))
       |> (sv, rv) => RwNE(rv.rneN, PeWith(sv.rneExpr, rv.rneExpr,
@@ -779,6 +787,7 @@ fun fasExpr<T>(x: PExpr, f: (:T, :Spec): T, acc: T): T
                                      fasExpr<T>(fa.faValue, f, a2)))
     (ar: PeArrayRead) => fasExpr<T>(ar.arrIndex, f, fasExpr<T>(ar.arrObj, f, acc))
     (cv: PeConvert) => fasSpec<T>(cv.convTarget, f, fasExpr<T>(cv.convInner, f, acc))
+    (qq: PeCoalesce) => fasExpr<T>(qq.qqFallback, f, fasExpr<T>(qq.qqSubject, f, acc))
     (wx: PeWith)   => fasExpr<T>(wx.withRepls, f, fasExpr<T>(wx.withSubject, f, acc))
     (pl: PeParallel) => fasExpr<T>(pl.parParams, f, acc)
     (lp: PeLoop)    => fasExprs<T>(chain(lp.loopParams), f, fasExpr<T>(lp.loopBody, f, acc))

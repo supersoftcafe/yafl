@@ -1601,6 +1601,12 @@ fun genExpr(x: PExpr, r: Resolver): GBundle
     (nw: PeNew)       => genNew(nw, r)
     (ar: PeArrayRead) => genArrayRead(ar, r)
     (cv: PeConvert)   => genConvert(cv, r)
+    # PeCoalesce dissolves into a match during compile, once the subject's
+    # type is ground. Reaching codegen means it never did — a compile bug, not
+    # a shape to emit. Python raises here; the port has no exception, so it
+    # emits the empty bundle, which fails loudly downstream rather than
+    # silently generating a wrong value.
+    (qq: PeCoalesce)  => emptyBundle()
     (lp: PeLoop)      => genLoop(lp, r, None)
     (rc: PeRecur)     => genRecur(rc, r)
     (lz: PeLazy)      => genLazy(lz, r)

@@ -108,6 +108,18 @@ fun exprType(x: PExpr, r: Resolver): Spec|None
     (nw: PeNew)      => nw.newType
     (ar: PeArrayRead) => arrayReadType(ar, r)
     (cv: PeConvert)   => cv.convTarget
+    (qq: PeCoalesce)  => coalesceType(qq, r)
+
+# `a ?? b` — the subject's non-None part joined with the fallback, which is
+# exactly the type of the match it becomes, so nothing shifts when the node
+# dissolves. Undecided (None) while the subject has no answerable non-None
+# part: the fixpoint asks again next pass.
+fun coalesceType(qq: PeCoalesce, r: Resolver): Spec|None
+  ret match(exprType(qq.qqSubject, r))
+    (st: Spec) => match(withoutNone(st))
+      (nr: Spec) => join(nr, exprType(qq.qqFallback, r))
+      ()         => None
+    ()         => exprType(qq.qqFallback, r)
 
 # A literal's precision names its builtin (0 = the unbounded default).
 fun intBuiltin(precision: Int): String

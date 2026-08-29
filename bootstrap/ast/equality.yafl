@@ -192,6 +192,11 @@ fun eqExpr(a: PExpr, b: PExpr): Bool
                         && eqExpr(x.convInner, y.convInner)
                         && eqLine(x.pecvLine, y.pecvLine)
       (o: PExpr)     => false
+    (x: PeCoalesce) => match(b)
+      (y: PeCoalesce) => eqExpr(x.qqSubject, y.qqSubject)
+                         && eqExpr(x.qqFallback, y.qqFallback)
+                         && eqLine(x.peqqLine, y.peqqLine)
+      (o: PExpr)      => false
     (x: PeLoop) => match(b)
       (y: PeLoop) => eqExpr(x.loopBody, y.loopBody)
                      && eqExprs(x.loopParams, y.loopParams)

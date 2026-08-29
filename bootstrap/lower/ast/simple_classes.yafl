@@ -546,6 +546,7 @@ fun scCuExpr(x: PExpr, acc: List<Spec>): List<Spec>
     (ne: PeNewEnum)   => scCuSpecs(chain(ne.neTypeParams),
                                    fold(ne.fieldArgs, acc, (a2: List<Spec>, fa: PFieldArg) =>
                                      scCuExpr(fa.faValue, a2)))
+    (qq: PeCoalesce) => scCuExpr(qq.qqFallback, scCuExpr(qq.qqSubject, acc))
     (ar: PeArrayRead) => scCuExpr(ar.arrIndex, scCuExpr(ar.arrObj, acc))
     (cv: PeConvert)   => scCuSpec(cv.convTarget, scCuExpr(cv.convInner, acc))
     (wx: PeWith)      => scCuExpr(wx.withRepls, scCuExpr(wx.withSubject, acc))
@@ -1036,6 +1037,8 @@ fun scTKids(x: PExpr, c: ScCtx, r: Resolver): PExpr
                                  map(ne.fieldArgs, (fa: PFieldArg) =>
                                    PFieldArg(fa.faName, scTExpr(fa.faValue, c, r))),
                                  scTSpecs(ne.neTypeParams, c), ne.penewLine)
+    (qq: PeCoalesce) => PeCoalesce(scTExpr(qq.qqSubject, c, r),
+                                     scTExpr(qq.qqFallback, c, r), qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(scTExpr(ar.arrObj, c, r),
                                      scTExpr(ar.arrIndex, c, r), ar.pearLine)
     (cv: PeConvert) => PeConvert(scTExpr(cv.convInner, c, r),

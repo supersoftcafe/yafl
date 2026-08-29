@@ -167,6 +167,31 @@ fun [tail] allEntriesConcrete(es: Chain<SEntry>): Bool
 fun reprMembers(cm: SCombination): List<Spec>
   ret reprMembersOf(cm.scTypes)
 
+# The unit type — `typealias None : ()`, the empty tuple. This is what `??`
+# eliminates and what a bare `()` match arm catches.
+fun isUnitSpec(sp: Spec): Bool
+  ret match(sp)
+    (t2: STuple) => isEmpty(t2.stEntries)
+    (o: Spec)    => false
+
+# `sp` minus its None member, or None when that is not yet ANSWERABLE — the
+# subject is not a union, carries no None member, or is nothing but None.
+# Each of those is either an error for the check phase to name or a type that
+# has not settled, and in both cases `??` must wait rather than guess.
+# Spelling-level on purpose: an unresolved SNamed("None") is not treated as
+# the unit member, because desugaring against a type still in motion is how a
+# fixpoint stops converging.
+fun withoutNone(sp: Spec): Spec|None
+  ret match(sp)
+    (cm: SCombination) => withoutNoneOf(reprMembers(cm), cm.scmLine)
+    (o: Spec)          => None
+
+fun withoutNoneOf(members: List<Spec>, lr: PLine): Spec|None
+  let kept = filter(members, (m: Spec) => !isUnitSpec(m))
+  ret sameLen(chain(kept), chain(members)) || isEmpty(kept)
+    ? None
+    : (exactly(chain(kept), 1) ? head(kept) : SCombination(kept, lr))
+
 # Takes the MEMBERS, not the union: a variant constructor returns the root
 # enum type, so a caller that has just built an SCombination cannot pass it
 # where an SCombination is expected.

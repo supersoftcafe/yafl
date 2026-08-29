@@ -215,6 +215,7 @@ fun fciExpr(x: PExpr, acc: GRefs): GRefs
     (mt: PeMatch)  => fciArms(chain(mt.arms), fciExpr(mt.subject, acc))
     (op: PeBuiltinOp) => fciExpr(op.opParams, fciSpecOpt(op.opType, acc))
     (nw: PeNew)    => fciExpr(nw.newParam, fciSpecOpt(nw.newType, acc))
+    (qq: PeCoalesce) => fciExpr(qq.qqFallback, fciExpr(qq.qqSubject, acc))
     (ar: PeArrayRead) => fciExpr(ar.arrIndex, fciExpr(ar.arrObj, acc))
     (cv: PeConvert) => fciSpecOpt(cv.convTarget, fciExpr(cv.convInner, acc))
     (wx: PeWith)   => fciExpr(wx.withRepls, fciExpr(wx.withSubject, acc))
@@ -583,6 +584,9 @@ fun gsubExpr(x: PExpr, sub: GSub, visited: List<String>): PExpr
                                    PFieldArg(fa.faName, gsubExpr(fa.faValue, sub, visited))),
                                  gsubList(ne.neTypeParams, sub, visited),
                                  ne.penewLine)
+    (qq: PeCoalesce) => PeCoalesce(gsubExpr(qq.qqSubject, sub, visited),
+                                     gsubExpr(qq.qqFallback, sub, visited),
+                                     qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(gsubExpr(ar.arrObj, sub, visited),
                                      gsubExpr(ar.arrIndex, sub, visited),
                                      ar.pearLine)
@@ -1158,6 +1162,8 @@ fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
                                      rcrExpr(op.opParams, refs), op.peboLine)
     (nw: PeNew)    => PeNew(rcrSpec(nw.newType, refs),
                             rcrExpr(nw.newParam, refs), nw.penwLine)
+    (qq: PeCoalesce) => PeCoalesce(rcrExpr(qq.qqSubject, refs),
+                                     rcrExpr(qq.qqFallback, refs), qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(rcrExpr(ar.arrObj, refs),
                                      rcrExpr(ar.arrIndex, refs), ar.pearLine)
     (cv: PeConvert) => PeConvert(rcrExpr(cv.convInner, refs),
@@ -1362,6 +1368,7 @@ fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec>
     (mt: PeMatch)  => cccArms(chain(mt.arms), cccExpr(mt.subject, acc))
     (op: PeBuiltinOp) => cccExpr(op.opParams, acc)
     (nw: PeNew)    => cccExpr(nw.newParam, acc)
+    (qq: PeCoalesce) => cccExpr(qq.qqFallback, cccExpr(qq.qqSubject, acc))
     (ar: PeArrayRead) => cccExpr(ar.arrIndex, cccExpr(ar.arrObj, acc))
     (cv: PeConvert) => cccExpr(cv.convInner, acc)
     (wx: PeWith)   => cccExpr(wx.withRepls, cccExpr(wx.withSubject, acc))
@@ -1917,6 +1924,9 @@ fun rtrExpr(x: PExpr, r: Resolver, traits: List<PStmt>): PExpr
                                      op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rtrExpr(nw.newParam, r, traits),
                             nw.penwLine)
+    (qq: PeCoalesce) => PeCoalesce(rtrExpr(qq.qqSubject, r, traits),
+                                     rtrExpr(qq.qqFallback, r, traits),
+                                     qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(rtrExpr(ar.arrObj, r, traits),
                                      rtrExpr(ar.arrIndex, r, traits),
                                      ar.pearLine)
@@ -2285,6 +2295,8 @@ fun rfrExpr(x: PExpr, c: Canon): PExpr
                                    PFieldArg(fa.faName, rfrExpr(fa.faValue, c))),
                                  rfrSpecList(ne.neTypeParams, c),
                                  ne.penewLine)
+    (qq: PeCoalesce) => PeCoalesce(rfrExpr(qq.qqSubject, c),
+                                     rfrExpr(qq.qqFallback, c), qq.peqqLine)
     (ar: PeArrayRead) => PeArrayRead(rfrExpr(ar.arrObj, c),
                                      rfrExpr(ar.arrIndex, c), ar.pearLine)
     (cv: PeConvert) => PeConvert(rfrExpr(cv.convInner, c),
@@ -2516,6 +2528,7 @@ fun rugExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
     (mt: PeMatch)  => rugArms(chain(mt.arms), r, rugExpr(mt.subject, r, acc))
     (op: PeBuiltinOp) => rugExpr(op.opParams, r, acc)
     (nw: PeNew)    => rugExpr(nw.newParam, r, acc)
+    (qq: PeCoalesce) => rugExpr(qq.qqFallback, r, rugExpr(qq.qqSubject, r, acc))
     (ar: PeArrayRead) => rugExpr(ar.arrIndex, r, rugExpr(ar.arrObj, r, acc))
     (cv: PeConvert) => rugExpr(cv.convInner, r, acc)
     (wx: PeWith)   => rugExpr(wx.withRepls, r,

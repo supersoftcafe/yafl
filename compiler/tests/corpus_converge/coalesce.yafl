@@ -1,0 +1,80 @@
+# `??` — ending an option with a default — through the port's C path.
+#
+# The counterpart to `?>`: the bind PROPAGATES the absent case, `??` is what
+# finally eliminates it. Written by hand 262 times in the compiler as
+# `match(x) (v: T) => v; () => default`.
+#
+# `??` is an AST node, not parse-time sugar, because the desugar needs an arm
+# typed at the subject's non-None part and that is not spellable at parse
+# time — see pyast/expression/coalesce.py and the PeCoalesce comment in
+# bootstrap/ast/nodes.yafl. The node dissolves into a match during compile, so
+# what reaches codegen is an ordinary match; this file gates that both
+# compilers dissolve it into the SAME one.
+#
+# Three shapes, each of which cost a bug:
+#   1. narrowing — the result is QqShape, not QqShape|None;
+#   2. chaining — `a ?? b ?? c` has arms of DIFFERENT types (hit `T`, fallback
+#      `T|None`), so the arms must converge on the node's own type, and the
+#      two nodes share a line_ref so their binders must not collide;
+#   3. composition with `?>`, pinning the precedence: `??` is LOOSER, so
+#      `x ?> f ?? d` groups as `(x ?> f) ?? d`.
+#
+# BOTH an enum subject and a simple-CLASS subject, because the class case is
+# what caught the real bug here. A stage contract compiles its corpus file
+# WITHOUT the stdlib, so `?>` never resolves, the subject's type never becomes
+# ground, and PeCoalesce legitimately SURVIVES into lowering. Python's walkers
+# are reflective and descend through it; the port's are hand-written and had
+# no PeCoalesce arm — with catch-alls, so they compiled cleanly and silently
+# skipped the node's children. That lost a lambda lift and a New strip. Both
+# subject kinds are pinned here so a future node cannot regress it quietly.
+namespace Corpus
+
+import System
+
+
+enum QqShape
+  enum QqBox(qqv: Int)
+  enum QqDot()
+
+fun qqMaybe(n: Int): QqShape|None
+  ret n > 0 ? QqBox(n) : None
+
+fun qqDepth(s: QqShape): Int
+  ret match(s)
+    (b: QqBox) => b.qqv
+    ()         => 0
+
+# 1. The result is QqShape — passing it straight to qqDepth is the proof.
+fun qqPick(n: Int): QqShape
+  ret qqMaybe(n) ?? QqDot()
+
+# 2. Left-associative: the first present value wins.
+fun qqFirstOf(a: Int, b: Int): Int
+  ret qqDepth(qqMaybe(a) ?? qqMaybe(b) ?? QqBox(9))
+
+# 3. `?>` propagates, `??` ends it.
+fun qqChained(n: Int): Int
+  ret (qqMaybe(n) ?> (s: QqShape) => qqDepth(s)) ?? (0 - 7)
+
+# 4. A simple-CLASS subject: its constructor is inlined and the class is
+# flattened to a bare tuple, so the surviving-node walk has to reach the New
+# inside the inlined copy.
+class [final] QqCell(qcv: Int)
+
+fun qqCell(n: Int): QqCell|None
+  ret n > 0 ? QqCell(n) : None
+
+fun qqCellOr(n: Int): QqCell
+  ret qqCell(n) ?? QqCell(0 - 1)
+
+# The exit code is 8-BIT: keep the total well under 256.
+fun main(): Int
+  # 5 present, 0 absent -> QqDot, depth 0            -> 5
+  let a = qqDepth(qqPick(5)) + qqDepth(qqPick(0))
+  # 4, then b=8, then the literal QqBox(9)           -> 21
+  let b = qqFirstOf(4, 8) + qqFirstOf(0, 8) + qqFirstOf(0, 0)
+  # 3 present, 0 absent -> -7                        -> 10
+  let c = qqChained(3) + (0 - qqChained(0))
+  # 5 present, 0 absent -> -1, encoded as +1              -> 6
+  let d = qqCellOr(5).qcv + (0 - qqCellOr(0).qcv)
+  ret a + b + c + d
