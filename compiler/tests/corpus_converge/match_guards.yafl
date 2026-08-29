@@ -1,0 +1,62 @@
+# Match ARM GUARDS through the port's C path.
+#
+# `(name: Type) if cond => body` — the guard is evaluated after the binding,
+# and a false guard falls through to the NEXT arm. test_match_extensions.py
+# covers this in the Python compiler; nothing exercised the PORT's codegen for
+# it, because no corpus file used a guard and the compiler's own sources never
+# spelled one (the feature shipped end-to-end and then went unused). This file
+# is that gate: both compilers must agree on the emitted C and the answer.
+#
+# Three shapes, because they lower differently:
+#   1. guard falling through to the ELSE arm — the common one, and the shape
+#      the `cond ? a : b` arm bodies in the compiler collapse into;
+#   2. guard falling through to a later TYPED arm of the same variant;
+#   3. two guards on the same variant, first-match-wins between them.
+namespace Corpus
+
+import System
+
+
+enum MgShape
+  enum MgBox(mgWidth: Int, mgHeight: Int)
+  enum MgDot()
+
+# 1 + 2: a guarded arm, then an unguarded arm of the SAME variant, then else.
+# A guarded arm covers nothing for exhaustiveness, so the unguarded MgBox arm
+# is what makes this total over MgBox — and MgDot needs the else.
+fun mgClassify(s: MgShape): Int
+  ret match(s)
+    (b: MgBox) if b.mgWidth == b.mgHeight => 1        # square
+    (b: MgBox) if b.mgWidth > b.mgHeight  => 2        # wide
+    (b: MgBox)                            => 3        # tall
+    ()                                    => 4        # MgDot
+
+# The `converted`-shaped case: guard, else fall-through, binding used in both
+# the guard and the body.
+fun mgScale(s: MgShape): Int
+  ret match(s)
+    (b: MgBox) if b.mgWidth > 10 => b.mgWidth * 2
+    ()                           => 0
+
+# A guard over a LITERAL arm, and one whose condition is false at runtime so
+# the fall-through is the arm actually taken.
+fun mgDigit(n: Int): Int
+  ret match(n)
+    (0, 1) if n > 0 => 5
+    (0, 1)          => 6
+    (2 .. 4)        => 7
+    ()              => 8
+
+# The exit code is 8-BIT, so every arm's value and the total stay well under
+# 256 — an encoding that overflows reports a wrapped answer and the test
+# passes or fails for the wrong reason.
+fun main(): Int
+  # 1 + 2 + 3 + 4 = 10
+  let a = mgClassify(MgBox(4, 4)) + mgClassify(MgBox(9, 2))
+          + mgClassify(MgBox(2, 9)) + mgClassify(MgDot())
+  # 24 (guard true) + 0 (guard false -> else) = 24
+  let b = mgScale(MgBox(12, 1)) + mgScale(MgBox(3, 3))
+  # 5 (n=1, guard true) + 6 (n=0, guard false -> next literal arm)
+  #   + 7 (range) + 8 (else) = 26
+  let c = mgDigit(1) + mgDigit(0) + mgDigit(3) + mgDigit(7)
+  ret a + b + c

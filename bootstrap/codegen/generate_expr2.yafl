@@ -274,7 +274,8 @@ fun [tail] eqCgTypeList(a: List<CgType>, b: List<CgType>): Bool
 # one-field structs ending in a DataPointer) from a bare pointer word.
 fun wrapPointerInto(ctype: CgType, ptrValue: RParam): RParam
   ret match(cgFieldsOf(ctype))
-    (fields: List<CgField>) => exactly(chain(fields), 1) ? wrapPointerIntoField(head(fields), ptrValue) : ptrValue
+    (fields: List<CgField>) if exactly(chain(fields), 1) =>
+        wrapPointerIntoField(head(fields), ptrValue)
     ()                       => ptrValue
 
 fun wrapPointerIntoField(f: CgField|None, ptrValue: RParam): RParam

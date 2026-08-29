@@ -43,9 +43,7 @@ fun noGlobals(x: PExpr): ExprOut
 
 fun converted(x: PExpr, expected: Spec|None, r: Resolver): PExpr
   ret match(expected)
-    (want: Spec) => needsConversion(r, exprType(x, r), want)
-      ? PeConvert(x, want, exprLine(x))
-      : x
+    (want: Spec) if needsConversion(r, exprType(x, r), want) => PeConvert(x, want, exprLine(x))
     ()           => x
 
 fun convertedOut(out: ExprOut, expected: Spec|None, r: Resolver): ExprOut
@@ -72,9 +70,7 @@ fun compileConvert(cv: PeConvert, r: Resolver, expected: Spec|None): ExprOut
 
 fun retargeted(target: Spec, expected: Spec|None): Spec
   ret match(expected)
-    (e2: Spec) => isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target)
-      ? e2
-      : target
+    (e2: Spec) if isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target) => e2
     ()         => target
 
 # ── the pass ────────────────────────────────────────────────────────────────
@@ -430,10 +426,8 @@ fun cneLeafFields(ne: PeNewEnum, r: Resolver): List<PStmt>
 
 fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt>
   ret match(asEnumVariant(root.eSpec))
-    (sp: SEnum) => contains2(sp.seAllLeaves, ne.leafName)
-      ? forceNth(collectLeafFieldSets(root, List<PStmt>()),
-                 indexOfString(sp.seAllLeaves, ne.leafName, 0))
-      : List<PStmt>()
+    (sp: SEnum) if contains2(sp.seAllLeaves, ne.leafName) =>
+        forceNth(collectLeafFieldSets(root, List<PStmt>()), indexOfString(sp.seAllLeaves, ne.leafName, 0))
     ()           => List<PStmt>()
 
 class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>)
@@ -517,9 +511,7 @@ fun effectiveTarget(tp: PeTuple, r: Resolver, expected: Spec|None): Spec|None
 
 fun tupleVariantOf(tp: PeTuple, r: Resolver, want: Spec): Spec|None
   ret match(exprType(tp, r))
-    (actual: Spec) => isConcrete(actual)
-      ? matchingTupleVariant(r, actual, want)
-      : None
+    (actual: Spec) if isConcrete(actual) => matchingTupleVariant(r, actual, want)
     ()             => None
 
 fun boundSlots(st: STuple, tp: PeTuple): List<SEntry>
@@ -676,9 +668,7 @@ fun armBinderLet(a: PArm, ty: Spec): PStmt
 
 fun propagateSubjParams(a: PArm, subjTy: Spec|None, r: Resolver): PArm
   ret match(subjTy)
-    (st: Spec) => resolvedParams(typeParamsOf(st), r)
-      ? withSubjParams(a, typeParamsOf(st))
-      : a
+    (st: Spec) if resolvedParams(typeParamsOf(st), r) => withSubjParams(a, typeParamsOf(st))
     ()         => a
 
 fun withSubjParams(a: PArm, params: List<Spec>): PArm

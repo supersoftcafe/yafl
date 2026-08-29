@@ -912,9 +912,8 @@ fun cgGlobalPrototypeNewStructLastIsInitArray(lastVal: RpNamedValue): Bool
 
 fun cgGlobalPrototypeNewStruct(g: CgGlobal, objName: String, ns: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(last<RpNamedValue>(ns.values))
-    (lastVal: RpNamedValue) => cgGlobalPrototypeNewStructLastIsInitArray(lastVal)
-      ? cgGlobalPrototypeInitArrayForm(g, ns.values, cache0)
-      : cgGlobalPrototypeDataForm(g, objName, cache0)
+    (lastVal: RpNamedValue) if cgGlobalPrototypeNewStructLastIsInitArray(lastVal) =>
+        cgGlobalPrototypeInitArrayForm(g, ns.values, cache0)
     ()                        => cgGlobalPrototypeDataForm(g, objName, cache0)
 
 fun cgGlobalPrototypeWithObject(g: CgGlobal, objName: String, init: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
@@ -958,9 +957,8 @@ fun cgGlobalToCImplementDataForm(g: CgGlobal, objName: String, values: List<RpNa
 
 fun cgGlobalToCImplementNewStruct(g: CgGlobal, objName: String, ns: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(last<RpNamedValue>(ns.values))
-    (lastVal: RpNamedValue) => cgGlobalPrototypeNewStructLastIsInitArray(lastVal)
-      ? cgGlobalToCImplementInitArrayForm(g, objName, ns.values, cache0)
-      : cgGlobalToCImplementDataForm(g, objName, ns.values, cache0)
+    (lastVal: RpNamedValue) if cgGlobalPrototypeNewStructLastIsInitArray(lastVal) =>
+        cgGlobalToCImplementInitArrayForm(g, objName, ns.values, cache0)
     ()                        => cgGlobalToCImplementDataForm(g, objName, ns.values, cache0)
 
 fun cgGlobalToCImplementObject(g: CgGlobal, objName: String, init: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)

@@ -296,9 +296,8 @@ fun checkDestructure2(d: PsDestructure, r: Resolver): Set<PErr>
 
 fun checkRet2(rt: PsRet, r: Resolver, retTy: Spec|None): Set<PErr>
   ret match(exprType(rt.retValue, r))
-    (xt: Spec) => triFalse(assignableEq(r, retTy, xt))
-      ? oneErr(rt.psrLine, "Incorrect return type")
-      : checkExpr(rt.retValue, r, retTy)
+    (xt: Spec) if triFalse(assignableEq(r, retTy, xt)) =>
+        oneErr(rt.psrLine, "Incorrect return type")
     ()         => checkExpr(rt.retValue, r, retTy)
 
 # No value vanishes silently: a statement-position expression discards its

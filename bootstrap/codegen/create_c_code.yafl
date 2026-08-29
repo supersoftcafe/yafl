@@ -50,10 +50,8 @@ fun discEnumRoot(acc: DiscAcc, e2: PsEnum,
   if !enumIsRootStmt(e2)
     ret acc
   ret match(asEnumVariant(e2.eSpec))
-    (sp: SEnum) => contains2(breakers, sp.seRoot)
-      ? fold(sp.seAllLeaves, acc, (a: DiscAcc, leaf: String) =>
-          discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
-      : acc
+    (sp: SEnum) if contains2(breakers, sp.seRoot) =>
+        fold(sp.seAllLeaves, acc, (a: DiscAcc, leaf: String) => discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
     ()           => acc
 
 fun discSpec(acc: DiscAcc, sp: Spec): DiscAcc
@@ -326,32 +324,20 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
 # are unique, so Python's (name, count) sort order IS name order).
 fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects: Bool): Bool
   ret match(prev)
-    (p: CgApp) => ccFnsSame(chain(appFunctions(p)), chain(appFunctions(cur)))
+    (p: CgApp) => ccFnsSame(appFunctions(p), appFunctions(cur))
                   && (!withObjects
-                      || ccObjsSame(chain(ccSortObjs(appObjects(p))),
-                                    chain(ccSortObjs(appObjects(cur)))))
+                      || ccObjsSame(ccSortObjs(appObjects(p)),
+                                    ccSortObjs(appObjects(cur))))
     ()         => false
 
-fun [tail] ccFnsSame(a: Chain<CgFunction>, b: Chain<CgFunction>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (la: ChainLink) => match(b)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => (la.value.fnName == lb.value.fnName
-                           && sameLen(la.value.fnOps, lb.value.fnOps))
-        ? ccFnsSame(la.next, lb.next)
-        : false
+fun ccFnsSame(a: List<CgFunction>, b: List<CgFunction>): Bool
+  ret eqBy<CgFunction>(a, b, (x: CgFunction, y: CgFunction) =>
+        x.fnName == y.fnName && sameLen(x.fnOps, y.fnOps))
 
-fun [tail] ccObjsSame(a: Chain<CgObject>, b: Chain<CgObject>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (la: ChainLink) => match(b)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => (la.value.objName == lb.value.objName
-                           && sameLen(chain(la.value.objFunctions),
-                                      chain(lb.value.objFunctions)))
-        ? ccObjsSame(la.next, lb.next)
-        : false
+fun ccObjsSame(a: List<CgObject>, b: List<CgObject>): Bool
+  ret eqBy<CgObject>(a, b, (x: CgObject, y: CgObject) =>
+        x.objName == y.objName
+        && sameLen(chain(x.objFunctions), chain(y.objFunctions)))
 
 fun ccSortObjs(os: List<CgObject>): List<CgObject>
   # By name. This was an INSERTION SORT — each object walking the sorted

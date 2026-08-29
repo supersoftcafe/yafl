@@ -357,8 +357,8 @@ fun attrNameText(t: Token): System::String
   if isIdentTok(t)
     ret t.text
   ret match(t.text)
-    ("where", "let", "fun", "class", "interface", "ret", "import", "namespace") =>
-      isSymTok(t, t.text) ? t.text : ""
+    ("where", "let", "fun", "class", "interface", "ret", "import", "namespace") if isSymTok(t, t.text) =>
+        t.text
     () => ""
 
 fun [tail] parseAttrList(ps: Ps, acc: ListBuilder<PAttr>): (v: List<PAttr>|PFail, rest: Ps)
@@ -579,7 +579,7 @@ fun parseBind(ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun [tail] bindPipeLoop(lhs: PExpr, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
   let t = peek(ps)
   let op = match(t.kind)
-    (k: KSymbol) => t.text == "?>" || t.text == "|>" ? t.text : ""
+    (k: KSymbol) if t.text == "?>" || t.text == "|>" => t.text
     ()           => ""
   if op == ""
     ret (lhs, ps)
@@ -676,7 +676,7 @@ fun parseUnary(ps: Ps): (v: PExpr|PFail, rest: Ps)
   if isSymTok(t, "with")
     ret parseWith(lineAt(ps), bump(ps))
   let op = match(t.kind)
-    (k: KSymbol) => t.text == "-" || t.text == "!" || t.text == "~" ? t.text : ""
+    (k: KSymbol) if t.text == "-" || t.text == "!" || t.text == "~" => t.text
     ()           => ""
   if op == ""
     ret parsePostfix(ps)
@@ -1130,9 +1130,7 @@ fun parseStmt(ps: Ps): (v: PStmt|PFail, rest: Ps)
 fun stmtExprStart(ps: Ps, x: PExpr): PLine
   let t = peek(ps)
   ret match(t.kind)
-    (k: KSymbol) => t.text == "-" || t.text == "!" || t.text == "~"
-      ? lineAt(ps)
-      : startLine(x)
+    (k: KSymbol) if t.text == "-" || t.text == "!" || t.text == "~" => lineAt(ps)
     ()           => startLine(x)
 
 fun parseAction(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)

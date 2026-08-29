@@ -261,9 +261,7 @@ fun arrayLengthFieldName(scalars: List<PStmt>, ap: PsLet): String|None
 # Simple enums (and non-root statements) emit nothing.
 fun enumGlobalCodegen(st: PsEnum, r: Resolver): List<CgObject>
   ret match(asEnumVariant(st.eSpec))
-    (sp: SEnum) => enumIsRootStmt(st)
-      ? enumRootObjects(st, sp, r)
-      : List<CgObject>()
+    (sp: SEnum) if enumIsRootStmt(st) => enumRootObjects(st, sp, r)
     ()           => List<CgObject>()
 
 fun enumRootObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
@@ -525,11 +523,12 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
                  pairs: List<RpNamedValue>, globals: List<CgGlobal>): SgpOut
   let sub = sgpEmit(l.value.tupValue, r, chasing, hint + "$f" + String(i))
   ret match(sub.sgpRp)
-    (rp: RParam) => sgpLeafOk(rp)
-      ? sgpEmitFields(l.next, lf.next, cls, r, chasing, hint, i + 1,
-                      build<RpNamedValue >(push<RpNamedValue >(builderFrom<RpNamedValue>(pairs), RpNamedValue(stmtName2(lf.value), rp))),
+    (rp: RParam) if sgpLeafOk(rp) =>
+        sgpEmitFields(l.next, lf.next, cls, r, chasing, hint, i + 1,
+                      build<RpNamedValue >(
+                        push<RpNamedValue >(builderFrom<RpNamedValue>(pairs),
+                                            RpNamedValue(stmtName2(lf.value), rp))),
                       concat(globals, sub.sgpGlobals))
-      : sgpNo()
     ()            => sgpNo()
 
 fun sgpInstanceDone(cls: PsClass, hint: String, pairs: List<RpNamedValue>,

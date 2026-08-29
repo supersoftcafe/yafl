@@ -80,6 +80,40 @@ C) is only meaningful if both compilers also REJECT identically — there is
 no gate feeding invalid programs to both compilers today. Fix the port's
 resolution hole, then add a small invalid-program parity harness.
 
+## 1b. Corpus files that test nothing and still pass (QUEUED after the
+##     multi-subject `match` and `??` milestones)
+
+A `corpus_converge/*.yafl` file with no `namespace` + `import System` (and no
+self-contained prelude of its own) resolves NOTHING — `Int`, `String`, `+` all
+fail — so the port emits a few hundred bytes of error text where it should emit
+tens of thousands of bytes of C. The parity test still passes, because
+`_python_c_text` produces the SAME error text: a dud test is indistinguishable
+from a green one.
+
+Known duds, each carrying a comment claiming to pin a specific codegen
+behaviour it cannot be reaching:
+
+  * `pipe_chain.yafl`         — 270 bytes; claims to pin destructure-type
+                                inference surviving beta-reduction
+  * `union_boxing.yafl`
+  * `default_fill_const.yafl`
+
+Fix = give each a prelude (`namespace Corpus` + `import System`, or an own
+`namespace System` prelude like drop_balancing.yafl), then re-check parity.
+EXPECT FALLOUT: these have been mutually-failing for an unknown time, so real
+port-vs-Python differences may be hiding behind them.
+
+Verify any corpus file is real before believing it:
+
+    from tests import bootstrap_c_base as b
+    from tests.testutil import shared_bootstrap_binary
+    t = next(p for p in b._CORPUS if p.name == NAME)
+    print(len(b._run_port_c(shared_bootstrap_binary(), b._port_stream(t), 'c1')))
+    # hundreds = dud; tens of thousands = real
+
+(Found 2026-08-29 when `bind_parse_state.yafl` shipped in f32c8c1 as a dud and
+was fixed the same session.)
+
 ## 2. Undischarged `where` crashes codegen
 
 Ledgered in `project_undischarged_where_crash.md`: a `where` constraint

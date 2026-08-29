@@ -12,6 +12,11 @@
 # ambiguity error, and that the failure arm's NARROWED binding (`e: PbFail`)
 # widens back into the result union `TOut|PbFail` rather than re-widening the
 # subject's `TIn|PbFail`.
+namespace Corpus
+
+import System
+
+
 class [final] PbPs(pbPos: Int)
 class [final] PbFail(pbHard: Bool, pbMsg: String)
 

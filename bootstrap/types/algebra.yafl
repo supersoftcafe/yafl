@@ -751,7 +751,7 @@ fun checkPinned(prior: Spec, rest: List<Spec>, con: List<Spec>,
 fun bindHoleTo(name: String, rest: List<Spec>, cm: SCombination,
                mapping: List<Binding>): Unify
   let value = match(head(rest))
-    (only: Spec) => isEmpty(tail(rest)) ? only : SCombination(rest, cm.scmLine)
+    (only: Spec) if isEmpty(tail(rest)) => only
     ()           => SCombination(rest, cm.scmLine)
   ret UMap(prepend(Binding(name, value), mapping))
 
@@ -805,12 +805,12 @@ fun soleMember(members: List<Spec>, fallback: Spec): Spec
 fun refineWidening(current: Spec|None, fresh: Spec|None, r: Resolver): Spec|None
   let refined = refine(current, r, fresh)
   ret match(refined)
-    (rf: Spec) => isConcrete(rf) ? widenTo(rf, fresh, r) : refined
+    (rf: Spec) if isConcrete(rf) => widenTo(rf, fresh, r)
     ()         => refined
 
 fun widenTo(refined: Spec, fresh: Spec|None, r: Resolver): Spec
   ret match(fresh)
-    (f: Spec) => isConcrete(f) && strictlyWider(f, refined, r) ? f : refined
+    (f: Spec) if isConcrete(f) && strictlyWider(f, refined, r) => f
     ()        => refined
 
 # `f` is a STRICT superset of `refined`: it accepts everything refined does,

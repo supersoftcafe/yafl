@@ -270,20 +270,12 @@ fun [tail] entrySeen(ss: Chain<TraitEntry>, x: TraitEntry): Bool
   ret match(ss)
     (nil: ChainEnd) => false
     (l: ChainLink)  => eqSpec(l.value.teSpec, x.teSpec)
-                       && eqNameList(chain(l.value.teOwn), chain(x.teOwn))
+                       && eqNameList(l.value.teOwn, x.teOwn)
       ? true
       : entrySeen(l.next, x)
 
-fun [tail] eqNameList(a: Chain<String>, b: Chain<String>): Bool
-  ret match(a)
-    (nil: ChainEnd) => match(b)
-      (nil2: ChainEnd) => true
-      (l2: ChainLink)  => false
-    (l: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (l2: ChainLink)  => l.value == l2.value
-        ? eqNameList(l.next, l2.next)
-        : false
+fun eqNameList(a: List<String>, b: List<String>): Bool
+  ret eqBy<String>(a, b, (x: String, y: String) => x == y)
 
 fun containsSpec(ss: List<Spec>, sp: Spec): Bool
   ret specSeen(chain(ss), sp)

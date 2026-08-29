@@ -282,7 +282,7 @@ fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry,
       ? out
       : push<AmbEntry >(out, x))
     (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
-                       && eqNameList(chain(l.value.amOwn), chain(x.amOwn))
+                       && eqNameList(l.value.amOwn, x.amOwn)
       ? mergeAmb(l.next, x,
                  push<AmbEntry >(out, AmbEntry(mergeNames(l.value.amNs,
                                                           chain(x.amNs)),

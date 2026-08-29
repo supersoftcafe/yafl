@@ -581,9 +581,10 @@ fun combinationUnionEntryFor(vi: Int|None, member: Spec, u: String, discs: Dict<
                              narrowCtype: CgType, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
                              [terminal] acc: ListBuilder<GEntry >): ListBuilder<GEntry >
   ret match(vi)
-    (viv: Int) => contains(discs, u)
-      ? push<GEntry >(acc, combinationUnionEntry(viv, member, u, discs, variantMap, slotFields, tag, sv, k, narrowCtype, narrowMap, hasNarrowMap, r))
-      : acc
+    (viv: Int) if contains(discs, u) =>
+        push<GEntry >(acc, combinationUnionEntry(viv, member, u, discs, variantMap,
+                                                 slotFields, tag, sv, k, narrowCtype,
+                                                 narrowMap, hasNarrowMap, r))
     ()          => acc
 
 fun combinationUnionEntry(vi: Int, member: Spec, u: String, discs: Dict<String, Int>, variantMap: List<List<CgSlotEntry>>,

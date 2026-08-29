@@ -137,16 +137,7 @@ fun eqTypeId(a: TypeId, b: TypeId): Bool
       (o: TypeId)    => false
 
 fun eqTypeIds(a: List<TypeId>, b: List<TypeId>): Bool
-  ret eqTiLoop(chain(a), chain(b))
-
-fun [tail] eqTiLoop(a: Chain<TypeId>, b: Chain<TypeId>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (la: ChainLink) => match(b)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => eqTypeId(la.value, lb.value)
-        ? eqTiLoop(la.next, lb.next)
-        : false
+  ret eqBy<TypeId>(a, b, (x: TypeId, y: TypeId) => eqTypeId(x, y))
 
 fun [tail] eqTiEntries(a: Chain<(tteName: String, tteId: TypeId)>,
                        b: Chain<(tteName: String, tteId: TypeId)>): Bool

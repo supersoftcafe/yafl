@@ -221,6 +221,45 @@ fun flatMap<T,U>(l: List<T>, f: (:T): List<U>): List<U>
   ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => concat<U>(acc, f(x)))
 
 
+# ─── Co-walks: two lists advanced in step ────────────────────────────────────
+#
+# Neither of these computes a length. There is no `length` (see isEmpty), and
+# taking one would walk each list an extra time to answer a question the
+# co-walk already answers as it goes: whichever chain ends first says
+# everything about how the two compare.
+
+# Element-wise equality under a caller-supplied comparator: the same elements,
+# in the same order, and neither list longer than the other. Ragged is unequal
+# by construction — one chain ending while the other still holds an element
+# IS the inequality, not a separate case to test for.
+#
+# `&&` is the short-circuit ternary, so the recursive call stays in tail
+# position and the walk compiles to a loop.
+fun eqBy<T>(a: List<T>, b: List<T>, same: (:T, :T): Bool): Bool
+  fun [tail] walk(x: Chain<T>, y: Chain<T>): Bool
+    ret match(x)
+      (nil: ChainEnd) => y is ChainEnd
+      (lx: ChainLink) => match(y)
+        (ly: ChainLink) => same(lx.value, ly.value) && walk(lx.next, ly.next)
+        (e: ChainEnd)   => false
+  ret walk(chain<T>(a), chain<T>(b))
+
+
+# Pairwise map, stopping at the shorter list. The ragged tail is DISCARDED,
+# not an error: a caller for whom running out MEANS something — a binding
+# whose declared entries outrun the supplied ones, say — is deciding something
+# this cannot express and should keep its own walk.
+fun zipMap<A, B, C>(a: List<A>, b: List<B>, f: (:A, :B): C): List<C>
+  fun [tail] walk([terminal] acc: ListBuilder<C>,
+                  x: Chain<A>, y: Chain<B>): ListBuilder<C>
+    ret match(x)
+      (lx: ChainLink) => match(y)
+        (ly: ChainLink) => walk(push<C>(acc, f(lx.value, ly.value)), lx.next, ly.next)
+        (e: ChainEnd)   => acc
+      (nil: ChainEnd) => acc
+  ret build<C>(walk(builder<C>(), chain<A>(a), chain<B>(b)))
+
+
 
 
 # map/filter walk FORWARD and push into a ListBuilder, so the result is built

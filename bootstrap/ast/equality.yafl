@@ -376,129 +376,38 @@ fun eqStrOpt(a: String|None, b: String|None): Bool
 
 # Python's field_args dict equality: same keys in order AND equal value exprs.
 fun eqFieldArgs(a: List<PFieldArg>, b: List<PFieldArg>): Bool
-  ret eqFaLoop(chain(a), chain(b))
-
-fun [tail] eqFaLoop(a: Chain<PFieldArg>, b: Chain<PFieldArg>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => x.value.faName == y.value.faName
-                          && eqExpr(x.value.faValue, y.value.faValue)
-        ? eqFaLoop(x.next, y.next)
-        : false
+  ret eqBy<PFieldArg>(a, b, (x: PFieldArg, y: PFieldArg) =>
+        x.faName == y.faName && eqExpr(x.faValue, y.faValue))
 
 fun eqStrs(a: List<String>, b: List<String>): Bool
-  ret eqStrLoop(chain(a), chain(b))
-
-fun [tail] eqStrLoop(a: Chain<String>, b: Chain<String>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => x.value != y.value ? false : eqStrLoop(x.next, y.next)
+  ret eqBy<String>(a, b, (x: String, y: String) => x == y)
 
 fun eqSpecs(a: List<Spec>, b: List<Spec>): Bool
-  ret eqSpecLoop(chain(a), chain(b))
-
-fun [tail] eqSpecLoop(a: Chain<Spec>, b: Chain<Spec>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqSpec(x.value, y.value)
-        ? false
-        : eqSpecLoop(x.next, y.next)
+  ret eqBy<Spec>(a, b, (x: Spec, y: Spec) => eqSpec(x, y))
 
 fun eqEntries(a: List<SEntry>, b: List<SEntry>): Bool
-  ret eqEntryLoop(chain(a), chain(b))
-
-fun [tail] eqEntryLoop(a: Chain<SEntry>, b: Chain<SEntry>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqEntry(x.value, y.value)
-        ? false
-        : eqEntryLoop(x.next, y.next)
+  ret eqBy<SEntry>(a, b, (x: SEntry, y: SEntry) => eqEntry(x, y))
 
 fun eqExprs(a: List<PExpr>, b: List<PExpr>): Bool
-  ret eqExprLoop(chain(a), chain(b))
-
-fun [tail] eqExprLoop(a: Chain<PExpr>, b: Chain<PExpr>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqExpr(x.value, y.value)
-        ? false
-        : eqExprLoop(x.next, y.next)
+  ret eqBy<PExpr>(a, b, (x: PExpr, y: PExpr) => eqExpr(x, y))
 
 fun eqStmts(a: List<PStmt>, b: List<PStmt>): Bool
-  ret eqStmtLoop(chain(a), chain(b))
-
-fun [tail] eqStmtLoop(a: Chain<PStmt>, b: Chain<PStmt>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqStmt(x.value, y.value)
-        ? false
-        : eqStmtLoop(x.next, y.next)
+  ret eqBy<PStmt>(a, b, (x: PStmt, y: PStmt) => eqStmt(x, y))
 
 fun eqTupEnts(a: List<PTupEnt>, b: List<PTupEnt>): Bool
-  ret eqTupEntLoop(chain(a), chain(b))
-
-fun [tail] eqTupEntLoop(a: Chain<PTupEnt>, b: Chain<PTupEnt>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqTupEnt(x.value, y.value)
-        ? false
-        : eqTupEntLoop(x.next, y.next)
+  ret eqBy<PTupEnt>(a, b, (x: PTupEnt, y: PTupEnt) => eqTupEnt(x, y))
 
 fun eqArms(a: List<PArm>, b: List<PArm>): Bool
-  ret eqArmLoop(chain(a), chain(b))
-
-fun [tail] eqArmLoop(a: Chain<PArm>, b: Chain<PArm>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqArm(x.value, y.value) ? false : eqArmLoop(x.next, y.next)
+  ret eqBy<PArm>(a, b, (x: PArm, y: PArm) => eqArm(x, y))
 
 fun eqLits(a: List<PLit>, b: List<PLit>): Bool
-  ret eqLitLoop(chain(a), chain(b))
-
-fun [tail] eqLitLoop(a: Chain<PLit>, b: Chain<PLit>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqLit(x.value, y.value) ? false : eqLitLoop(x.next, y.next)
+  ret eqBy<PLit>(a, b, (x: PLit, y: PLit) => eqLit(x, y))
 
 fun eqAttrs(a: List<PAttr>, b: List<PAttr>): Bool
-  ret eqAttrLoop(chain(a), chain(b))
-
-fun [tail] eqAttrLoop(a: Chain<PAttr>, b: Chain<PAttr>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqAttr(x.value, y.value)
-        ? false
-        : eqAttrLoop(x.next, y.next)
+  ret eqBy<PAttr>(a, b, (x: PAttr, y: PAttr) => eqAttr(x, y))
 
 fun eqGens(a: List<PGen>, b: List<PGen>): Bool
-  ret eqGenLoop(chain(a), chain(b))
-
-fun [tail] eqGenLoop(a: Chain<PGen>, b: Chain<PGen>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqGen(x.value, y.value) ? false : eqGenLoop(x.next, y.next)
+  ret eqBy<PGen>(a, b, (x: PGen, y: PGen) => eqGen(x, y))
 
 # ── set-wise comparisons ─────────────────────────────────────────────────────
 # Python holds _all_parents and a slot's provides as SETS: equality is mutual
@@ -544,16 +453,7 @@ fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None): Bool
 # The slot LIST is ordered (own slots first, surviving parent slots after);
 # each slot's provides is a set.
 fun eqSlots(a: List<Slot>, b: List<Slot>): Bool
-  ret eqSlotLoop(chain(a), chain(b))
-
-fun [tail] eqSlotLoop(a: Chain<Slot>, b: Chain<Slot>): Bool
-  ret match(a)
-    (nil: ChainEnd) => b is ChainEnd
-    (x: ChainLink)  => match(b)
-      (nil2: ChainEnd) => false
-      (y: ChainLink)   => !eqSlot(x.value, y.value)
-        ? false
-        : eqSlotLoop(x.next, y.next)
+  ret eqBy<Slot>(a, b, (x: Slot, y: Slot) => eqSlot(x, y))
 
 fun eqSlot(a: Slot, b: Slot): Bool
   ret a.slotName == b.slotName
