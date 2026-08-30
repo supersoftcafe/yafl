@@ -220,7 +220,8 @@ fun fciExpr(x: PExpr, acc: GRefs): GRefs
     (cv: PeConvert) => fciSpecOpt(cv.convTarget, fciExpr(cv.convInner, acc))
     (wx: PeWith)   => fciExpr(wx.withRepls, fciExpr(wx.withSubject, acc))
     (pl: PeParallel) => fciExpr(pl.parParams, acc)
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
 
 fun nameRef(name: String, args: List<Spec>, acc: GRefs): GRefs
   ret !isEmpty(args) && isConcreteTypeArgs(args)
@@ -598,7 +599,8 @@ fun gsubExpr(x: PExpr, sub: GSub, visited: List<String>): PExpr
                              wx.pewLine)
     (pl: PeParallel) => PeParallel(gsubExpr(pl.parParams, sub, visited),
                                    pl.pepLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLowered) => x
 
 fun gsubExprOpt(x: PExpr|None, sub: GSub, visited: List<String>): PExpr|None
   ret match(x)
@@ -1171,7 +1173,8 @@ fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
     (wx: PeWith)   => PeWith(rcrExpr(wx.withSubject, refs),
                              rcrExpr(wx.withRepls, refs), wx.pewLine)
     (pl: PeParallel) => PeParallel(rcrExpr(pl.parParams, refs), pl.pepLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLowered) => x
 
 fun rcrExprOpt(x: PExpr|None, refs: GRefsIx): PExpr|None
   ret match(x)
@@ -1373,7 +1376,9 @@ fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec>
     (cv: PeConvert) => cccExpr(cv.convInner, acc)
     (wx: PeWith)   => cccExpr(wx.withRepls, cccExpr(wx.withSubject, acc))
     (pl: PeParallel) => cccExpr(pl.parParams, acc)
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
+    (o: PeNewEnum) => acc
 
 fun cccExprOpt(x: PExpr|None, acc: List<Spec>): List<Spec>
   ret match(x)
@@ -1936,7 +1941,9 @@ fun rtrExpr(x: PExpr, r: Resolver, traits: List<PStmt>): PExpr
                              rtrExpr(wx.withRepls, r, traits), wx.pewLine)
     (pl: PeParallel) => PeParallel(rtrExpr(pl.parParams, r, traits),
                                    pl.pepLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLowered) => x
+    (o: PeNewEnum) => x
 
 fun rtrTupEnts(es: Chain<PTupEnt>, r: Resolver, traits: List<PStmt>,
                       acc: List<PTupEnt>): List<PTupEnt>
@@ -2304,7 +2311,8 @@ fun rfrExpr(x: PExpr, c: Canon): PExpr
     (wx: PeWith)   => PeWith(rfrExpr(wx.withSubject, c),
                              rfrExpr(wx.withRepls, c), wx.pewLine)
     (pl: PeParallel) => PeParallel(rfrExpr(pl.parParams, c), pl.pepLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLowered) => x
 
 fun rfrTupEnts(es: Chain<PTupEnt>, c: Canon,
                       acc: List<PTupEnt>): List<PTupEnt>
@@ -2534,7 +2542,9 @@ fun rugExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
     (wx: PeWith)   => rugExpr(wx.withRepls, r,
                               rugExpr(wx.withSubject, r, acc))
     (pl: PeParallel) => rugExpr(pl.parParams, r, acc)
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
+    (o: PeNewEnum) => acc
 
 fun [tail] rugTupEnts(es: Chain<PTupEnt>, r: Resolver,
                       acc: Set<PErr>): Set<PErr>

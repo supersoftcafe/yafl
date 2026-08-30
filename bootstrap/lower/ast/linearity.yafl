@@ -465,7 +465,8 @@ fun [tail] linCount(x: PExpr, env: LinEnv, r: Resolver, acc: Set<PErr>): LinOut
     (bk: PeBlock)  => countBlock(bk, env, r, acc)
     (lm: PeLambda) => countLambda(lm, env, r, acc)
     (pl: PeParallel) => countParallel(pl, env, r, acc)
-    (o: PExpr)     => linZero(acc)       # literals carry no linear value
+    (o: PeLiteral) => linZero(acc)       # literals carry no linear value
+    (o: PeLowered) => linZero(acc)       # literals carry no linear value
 
 # A method call `recv.method(args)` passes `recv` as `this`: count the
 # RECEIVER itself (counting the method-access dot would read as a borrow).
@@ -886,7 +887,9 @@ fun instExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
     (wx: PeWith)   => instExpr(wx.withRepls, r,
                                instExpr(wx.withSubject, r, acc))
     (pl: PeParallel) => instExpr(pl.parParams, r, acc)
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
+    (o: PeNewEnum) => acc
 
 fun [tail] instEntries(es: Chain<PTupEnt>, r: Resolver,
                        acc: Set<PErr>): Set<PErr>

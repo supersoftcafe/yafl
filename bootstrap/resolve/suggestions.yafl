@@ -114,7 +114,11 @@ fun hintExpr(x: PExpr, r: Resolver, acc: Hints): Hints
     (qq: PeCoalesce) => hintExpr(qq.qqFallback, r, hintExpr(qq.qqSubject, r, acc))
     (wx: PeWith)   => hintExpr(wx.withRepls, r,
                                hintExpr(wx.withSubject, r, acc))
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
+    (o: PeName) => acc
+    (o: PeNewEnum) => acc
+    (o: PeParallel) => acc
 
 fun hintExprOpt2(x: PExpr, r: Resolver, acc: Hints): Hints
   ret hintExpr(x, r, acc)

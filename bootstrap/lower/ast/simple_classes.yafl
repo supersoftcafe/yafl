@@ -554,7 +554,7 @@ fun scCuExpr(x: PExpr, acc: List<Spec>): List<Spec>
     (lp: PeLoop)      => scCuExpr(lp.loopBody, scCuExprs(chain(lp.loopParams), acc))
     (rc: PeRecur)     => scCuExprs(chain(rc.recArgs), acc)
     (lz: PeLazy)      => scCuSpec(lz.lzTarget, acc)
-    (o: PExpr)        => acc
+    (o: PeLiteral) => acc
 
 fun scCuStmt(st: PStmt, acc: List<Spec>): List<Spec>
   ret match(st)
@@ -1055,7 +1055,7 @@ fun scTKids(x: PExpr, c: ScCtx, r: Resolver): PExpr
                               rc.recIndex, rc.percLine)
     (lz: PeLazy)   => PeLazy(lz.stubName, scTSpec(lz.lzTarget, c),
                              lz.lzCaptured, lz.lzStubOnly, lz.pelzLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
 
 fun scTTrait(sp: Spec|None, c: ScCtx): Spec|None
   ret match(sp)

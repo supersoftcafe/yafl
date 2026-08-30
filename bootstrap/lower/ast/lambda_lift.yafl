@@ -355,7 +355,9 @@ fun llFold(x: PExpr, name: String, n: Int, calls: Bool): Int
     (rc: PeRecur)  => llFoldExprs(chain(rc.recArgs), name, n, calls)
     (ne: PeNewEnum) => fold(ne.fieldArgs, n, (a2: Int, fa: PFieldArg) =>
                             llCountOne(fa.faValue, name, a2, calls))
-    (o: PExpr)     => n
+    (o: PeLiteral) => n
+    (o: PeLazy) => n
+    (o: PeName) => n
 
 fun llCountOne(x: PExpr, name: String, n: Int, calls: Bool): Int
   ret calls ? llCountCalls(x, name, n) : llCountNames(x, name, n)
@@ -562,7 +564,9 @@ fun llExpr(x: PExpr, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
                                  map(ne.fieldArgs, (fa: PFieldArg) =>
                                    PFieldArg(fa.faName, llExpr(fa.faValue, ctx, paramLets))),
                                  ne.neTypeParams, ne.penewLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLazy) => x
+    (o: PeName) => x
 
 fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
   let rebuilt = PeCall(llExpr(c.function, ctx, paramLets),

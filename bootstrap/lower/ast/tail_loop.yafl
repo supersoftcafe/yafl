@@ -164,7 +164,9 @@ fun tlCountSelf(x: PExpr, fName: String, n: Int): Int
     (pl: PeParallel) => tlCountSelf(pl.parParams, fName, n2)
     (ne: PeNewEnum) => fold(ne.fieldArgs, n2, (a2: Int, fa: PFieldArg) =>
                             tlCountSelf(fa.faValue, fName, a2))
-    (o: PExpr)     => n2
+    (o: PeLiteral) => n2
+    (o: PeLowered) => n2
+    (o: PeName) => n2
 
 fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName: String, n: Int): Int
   ret match(es)

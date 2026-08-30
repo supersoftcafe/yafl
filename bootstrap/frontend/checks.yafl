@@ -249,7 +249,9 @@ fun nsExpr(x: PExpr, acc: Set<PErr>): Set<PErr>
     (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams),
                                 fold(ne.fieldArgs, acc, (a2: Set<PErr>, fa: PFieldArg) =>
                                   nsExpr(fa.faValue, a2)))
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
+    (o: PeParallel) => acc
 
 fun [tail] nsEntries(es: Chain<PTupEnt>, acc: Set<PErr>): Set<PErr>
   ret match(es)

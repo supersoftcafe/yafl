@@ -169,7 +169,7 @@ fun cpExpr(x: PExpr, path: List<String>, acc: ClPaths): ClPaths
     (lp: PeLoop)      => cpExprs(chain(lp.loopParams), path, cpExpr(lp.loopBody, path, acc))
     (rc: PeRecur)     => cpExprs(chain(rc.recArgs), path, acc)
     (lz: PeLazy)      => cpSpec(lz.lzTarget, path, acc)
-    (o: PExpr)        => acc
+    (o: PeLiteral) => acc
 
 fun cpLambdaExpr(lm: PeLambda, path: List<String>, acc: ClPaths): ClPaths
   let acc1 = cpRecord(acc, lm.pelLine, path)
@@ -611,7 +611,10 @@ fun clExpr(x: PExpr, r: Resolver, paths: ClPaths, exports: List<PStmt>): ClEx
     (rc: PeRecur)     => clExprs(chain(rc.recArgs), r, paths, exports, builder<PExpr >())
       |> (as3) => ClEx(PeRecur(as3.clExsExprs, rc.recIndex, rc.percLine),
                       as3.clExsExports)
-    (o: PExpr)        => ClEx(x, exports)
+    (o: PeLiteral) => ClEx(x, exports)
+    (o: PeLazy) => ClEx(x, exports)
+    (o: PeName) => ClEx(x, exports)
+    (o: PeNewEnum) => ClEx(x, exports)
 
 fun clLambdaExpr(lm: PeLambda, r: Resolver, paths: ClPaths,
                  exports: List<PStmt>): ClEx

@@ -169,7 +169,7 @@ fun rwExprKids(x: PExpr, w: Rw): PExpr
     (rc: PeRecur)  => with rc(recArgs = rwExprs(rc.recArgs, w))
     # LazyExpression visits ONLY its target type (access.py:597-599).
     (lz: PeLazy)   => with lz(lzTarget = rwSpec(lz.lzTarget, w))
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
 
 # A penTrait replacement that is not a class spec becomes None
 # (access.py:374-378).
@@ -398,7 +398,7 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                                acc2))
     (rc: PeRecur)  => foldExprs<T>(chain(rc.recArgs), f, fx, acc2)
     (lz: PeLazy)   => foldSpec<T>(lz.lzTarget, f, fx, acc2)
-    (o: PExpr)     => acc2
+    (o: PeLiteral) => acc2
 
 fun [tail] foldExprs<T>(es: Chain<PExpr>, f: (:T, :PStmt): T,
                         fx: (:T, :PExpr): T, acc: T): T
@@ -654,7 +654,8 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
       |> (as3) => RwNE(as3.rnesN, PeRecur(as3.rnesExprs, rc.recIndex,
                                           rc.percLine))
     (lz: PeLazy)   => RwNE(n, x)   # target type carries no counter work
-    (o: PExpr)     => RwNE(n, x)
+    (o: PeLiteral) => RwNE(n, x)
+    (o: PeName) => RwNE(n, x)
 
 class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
 
@@ -793,7 +794,7 @@ fun fasExpr<T>(x: PExpr, f: (:T, :Spec): T, acc: T): T
     (lp: PeLoop)    => fasExprs<T>(chain(lp.loopParams), f, fasExpr<T>(lp.loopBody, f, acc))
     (rc: PeRecur)   => fasExprs<T>(chain(rc.recArgs), f, acc)
     (lz: PeLazy)    => fasSpec<T>(lz.lzTarget, f, acc)
-    (o: PExpr)      => acc
+    (o: PeLiteral) => acc
 
 fun fasTrait<T>(sp: Spec|None, f: (:T, :Spec): T, acc: T): T
   ret fasSpecOpt<T>(sp, f, acc)

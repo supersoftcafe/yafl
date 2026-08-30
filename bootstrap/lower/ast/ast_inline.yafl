@@ -90,7 +90,8 @@ fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String >): Set<String >
     (rc: PeRecur)  => frExprs(chain(rc.recArgs), exclude, acc)
     (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: Set<String >, fa: PFieldArg) =>
                             frExpr(fa.faValue, exclude, a2))
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLazy) => acc
 
 fun [tail] frExprs(es: Chain<PExpr>, exclude: List<String>,
                    acc: Set<String >): Set<String >
@@ -267,7 +268,8 @@ fun rcmExpr(x: PExpr, m: ThisMap): PExpr
                                  map(ne.fieldArgs, (fa: PFieldArg) =>
                                    PFieldArg(fa.faName, rcmExpr(fa.faValue, m))),
                                  ne.neTypeParams, ne.penewLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLazy) => x
 
 fun rcmExprs(es: Chain<PExpr>, m: ThisMap,
                     acc: List<PExpr>): List<PExpr>
@@ -1006,7 +1008,8 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
                                  map(ne.fieldArgs, (fa: PFieldArg) =>
                                    PFieldArg(fa.faName, rnmExpr(fa.faValue, m))),
                                  ne.neTypeParams, ne.penewLine)
-    (o: PExpr)     => x
+    (o: PeLiteral) => x
+    (o: PeLazy) => x
 
 fun rnmExprs(es: Chain<PExpr>, m: ThisMap,
                     acc: List<PExpr>): List<PExpr>

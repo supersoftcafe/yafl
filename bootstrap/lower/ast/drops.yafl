@@ -265,7 +265,9 @@ fun drExpr(x: PExpr, wheres: List<Spec>, r: Resolver,
       |> (o) => DrE(o.deChanged ? PeParallel(o.deExpr, pl.pepLine) : x,
                     o.deChanged)
     (ne: PeNewEnum) => drFieldArgs(ne, wheres, r, ids)
-    (o: PExpr)     => DrE(x, false)
+    (o: PeLiteral) => DrE(x, false)
+    (o: PeLowered) => DrE(x, false)
+    (o: PeName) => DrE(x, false)
 
 fun drFieldArgs(ne: PeNewEnum, wheres: List<Spec>, r: Resolver,
                 ids: List<String>): DrE
@@ -796,7 +798,9 @@ fun drFixExpr(x: PExpr, let2: PsLet): DrBx
     (pl: PeParallel) => drFixExpr(pl.parParams, let2)
       |> (o) => DrBx(PeParallel(o.bxExpr, pl.pepLine), o.bxDid, o.bxOk)
     (ne: PeNewEnum) => drFixFieldArgs(ne, let2)
-    (o: PExpr)      => DrBx(x, false, true)
+    (o: PeLiteral) => DrBx(x, false, true)
+    (o: PeLowered) => DrBx(x, false, true)
+    (o: PeName) => DrBx(x, false, true)
 
 fun drFixPair(a: PExpr, b: PExpr, let2: PsLet): DrBx
   let oa = drFixExpr(a, let2)

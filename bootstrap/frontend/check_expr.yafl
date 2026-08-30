@@ -661,7 +661,8 @@ fun referencedNames(x: PExpr, acc: List<String>): List<String>
     (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: List<String>, fa: PFieldArg) =>
                             referencedNames(fa.faValue, a2))
     (pl: PeParallel) => referencedNames(pl.parParams, acc)
-    (o: PExpr)     => acc
+    (o: PeLiteral) => acc
+    (o: PeLowered) => acc
 
 fun [tail] refEntries(es: Chain<PTupEnt>, acc: List<String>): List<String>
   ret match(es)
