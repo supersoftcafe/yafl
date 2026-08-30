@@ -124,8 +124,8 @@ fun coalesceDesugar(qq: PeCoalesce, narrowed: Spec, r: Resolver,
   let fl = exprLine(fallback)
   let binder = "$qq" + hash6(fl.plFile, fl.plLine, fl.plCol)
   let hit = PArm(binder, narrowed, PeName(binder, List<Spec>(), lr),
-                 List<PLit>(), None, lr)
-  let els = PArm("", None, fallback, List<PLit>(), None, lr)
+                 List<PLit>(), None, lr, List<PPos>())
+  let els = PArm("", None, fallback, List<PLit>(), None, lr, List<PPos>())
   # The arms MUST be given a target. A match's arms converge on the RECEIVER's
   # type, and that is what makes each arm wrap itself when they differ — which
   # they do whenever the fallback is itself an option (`a ?? b ?? c`: hit arm
@@ -134,7 +134,7 @@ fun coalesceDesugar(qq: PeCoalesce, narrowed: Spec, r: Resolver,
   let target = match(expected)
     (e2: Spec) => e2
     ()         => join(narrowed, exprType(fallback, r))
-  ret compileMatch(PeMatch(subject, list2(hit, els), lr), r, target)
+  ret compileMatch(PeMatch(subject, list2(hit, els), lr, List<PExpr>()), r, target)
 
 # ── the pass ────────────────────────────────────────────────────────────────
 
@@ -663,24 +663,109 @@ fun compileTernary(te: PeTernary, r: Resolver, expected: Spec|None): ExprOut
 fun compileMatch(mt: PeMatch, r: Resolver, expected: Spec|None): ExprOut
   let subj = compileExpr(mt.subject, r, None)
   let subjTy = exprType(subj.eoExpr, r)
+  # Subjects after the first compile the same way; their arm patterns are
+  # plain type dispatch, so nothing threads down to them.
+  let ex = compileExprs(chain(mt.matchExtra), r, builder<PExpr >(), List<PStmt>())
   let arms = compileArms(chain(mt.arms), r, subjTy, expected,
-                         builder<PArm >(), List<PStmt>())
-  ret ExprOut(PeMatch(subj.eoExpr, arms.aoArms, mt.pemLine),
-              concat(subj.eoGlobals, arms.aoGlobals))
+                         builder<PArm >(), List<PStmt>(), ex.ceTypes)
+  ret ExprOut(with mt(subject = subj.eoExpr, arms = arms.aoArms,
+                      matchExtra = ex.ceExprs),
+              concat(subj.eoGlobals, concat(ex.ceGlobals, arms.aoGlobals)))
+
+class [final] CompiledExprs(ceExprs: List<PExpr>, ceGlobals: List<PStmt>,
+                            ceTypes: List<Spec|None>)
+
+fun compileExprs(es: Chain<PExpr>, r: Resolver, [terminal] acc: ListBuilder<PExpr >,
+                 glb: List<PStmt>): CompiledExprs
+  ret compileExprsB(es, r, acc, glb, List<Spec|None>())
+
+fun [tail] compileExprsB(es: Chain<PExpr>, r: Resolver,
+                         [terminal] acc: ListBuilder<PExpr >, glb: List<PStmt>,
+                         tys: List<Spec|None>): CompiledExprs
+  ret match(es)
+    (nil: ChainEnd) => CompiledExprs(build<PExpr >(acc), glb, tys)
+    (l: ChainLink)  => compileExpr(l.value, r, None)
+      |> (o) => compileExprsB(l.next, r, push<PExpr >(acc, o.eoExpr),
+                              concat(glb, o.eoGlobals),
+                              appendSpecOpt(tys, exprType(o.eoExpr, r)))
+
+fun appendSpecOpt(acc: List<Spec|None>, sp: Spec|None): List<Spec|None>
+  ret build<Spec|None >(push<Spec|None >(builderFrom<Spec|None>(acc), sp))
 
 class [final] ArmsOut(aoArms: List<PArm>, aoGlobals: List<PStmt>)
 
 fun [tail] compileArms(as2: Chain<PArm>, r: Resolver, subjTy: Spec|None,
                        expected: Spec|None, [terminal] acc: ListBuilder<PArm >,
-                       glb: List<PStmt>): ArmsOut
+                       glb: List<PStmt>, extraTys: List<Spec|None>): ArmsOut
   ret match(as2)
     (nil: ChainEnd) => ArmsOut(build<PArm >(acc), glb)
-    (l: ChainLink)  => compileArm(l.value, r, subjTy, expected)
+    (l: ChainLink)  => compileArm(l.value, r, subjTy, expected, extraTys)
       |> (a) => compileArms(l.next, r, subjTy, expected,
                             push<PArm >(acc, a.a1Arm),
-                            concat(glb, a.a1Globals))
+                            concat(glb, a.a1Globals), extraTys)
 
 class [final] ArmOut(a1Arm: PArm, a1Globals: List<PStmt>)
+
+# `chain` over a List<Spec|None> — a distinct name, since `chain` on a union
+# element type needs its own instantiation.
+fun chain2(l: List<Spec|None>): Chain<Spec|None>
+  ret chain<Spec|None >(l)
+
+# One scope per extra position, over the arm's own. A position with no name or
+# no type binds nothing, exactly as position 0 does.
+fun [tail] extraScope(ps: Chain<PPos>, tys: Chain<Spec|None>,
+                      r: Resolver): Resolver
+  ret match(ps)
+    (nil: ChainEnd) => r
+    (l: ChainLink)  => extraScope(l.next, restOf(tys),
+                                  posScope(l.value, headOf(tys), r))
+
+fun restOf(tys: Chain<Spec|None>): Chain<Spec|None>
+  ret match(tys)
+    (l: ChainLink)  => l.next
+    (nil: ChainEnd) => tys
+
+fun headOf(tys: Chain<Spec|None>): Spec|None
+  ret match(tys)
+    (l: ChainLink)  => l.value
+    (nil: ChainEnd) => None
+
+fun posScope(p: PPos, subjTy: Spec|None, r: Resolver): Resolver
+  ret p.posName == "" || p.posName == "_"
+    ? r
+    : match(posBindType(p, subjTy))
+      (t2: Spec) => RData(prepend(Found(posUniqueName(p), posBinderLet(p, t2),
+                                        ScLocal()),
+                                  List<Found>()),
+                          r)
+      ()         => r
+
+fun [tail] renamePositions(ps: Chain<PPos>, tys: Chain<Spec|None>, r: Resolver,
+                           acc: List<PPos>): List<PPos>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => renamePositions(l.next, restOf(tys), r,
+                         appendPosOut(acc,
+                           with l.value(posName = posUniqueName(l.value),
+                                        posType = specOf(compileSpecOpt(l.value.posType, r)))))
+
+fun appendPosOut(acc: List<PPos>, p: PPos): List<PPos>
+  ret build<PPos >(push<PPos >(builderFrom<PPos>(acc), p))
+
+fun posBindType(p: PPos, subjTy: Spec|None): Spec|None
+  ret match(p.posType)
+    (t2: Spec) => p.posType
+    ()         => subjTy
+
+fun posUniqueName(p: PPos): String
+  ret p.posName == "" || p.posName == "_" || contains(p.posName, "@arm")
+    ? p.posName
+    : p.posName + "@arm" + hash6(p.pposLine.plFile, p.pposLine.plLine,
+                                 p.pposLine.plCol)
+
+fun posBinderLet(p: PPos, ty: Spec): PStmt
+  ret PsLet(posUniqueName(p), List<PAttr>(), List<PGen>(), ty, None, "",
+            List<Spec>(), p.pposLine)
 
 # The arm's bound name resolves to a LOCAL let of the arm's own type (a bound
 # else arm: of the subject's type) under a per-arm UNIQUE name — two arms may
@@ -688,15 +773,20 @@ class [final] ArmOut(a1Arm: PArm, a1Globals: List<PStmt>)
 # binding; the arm is renamed in the same pass so it stays in sync with the
 # body's rewritten names.
 fun compileArm(a0: PArm, r: Resolver, subjTy: Spec|None,
-               expected: Spec|None): ArmOut
+               expected: Spec|None, extraTys: List<Spec|None>): ArmOut
   let a = propagateSubjParams(a0, subjTy, r)
-  let bodyR = bindingScope(a, armBindType(a, subjTy), r)
+  # Every position binds: position 0 through the arm, the rest through their
+  # own PPos. Positions are independent, so the chaining order is immaterial.
+  let bodyR = extraScope(chain(a.armExtra), chain2(extraTys),
+                         bindingScope(a, armBindType(a, subjTy), r))
   let body = compileExpr(a.armBody, bodyR, expected)
   let ty = compileSpecOpt(a.armType, r)
   let lits = compileLits(chain(a.armLiterals), r, builder<PLit >(), List<PStmt>())
   let guard = compileExprOpt(a.armGuard, bodyR, None)
-  ret ArmOut(PArm(armUniqueName(a), specOf(ty), body.eoExpr, lits.loLits,
-                  exprOf(guard), a.parmLine),
+  # Every position takes its UNIQUE name, not just position 0: the body was
+  # compiled against a scope registering the unique names, so leaving the
+  # extras bare desynchronises the binder from the body's references.
+  ret ArmOut(with a(armName = armUniqueName(a), armType = specOf(ty), armBody = body.eoExpr, armLiterals = lits.loLits, armGuard = exprOf(guard), armExtra = renamePositions(chain(a.armExtra), chain2(extraTys), r, List<PPos>())),
              concat(body.eoGlobals,
                     concat(globalsOfSpec(ty),
                            concat(lits.loGlobals, globalsOf(guard)))))
@@ -743,13 +833,11 @@ fun withSubjParams(a: PArm, params: List<Spec>): PArm
 fun withArmSpecParams(a: PArm, t2: Spec, params: List<Spec>): PArm
   ret match(t2)
     (n: SNamed) => isEmpty(n.snParams)
-      ? PArm(a.armName, SNamed(n.snName, params, n.snLine), a.armBody,
-             a.armLiterals, a.armGuard, a.parmLine)
+      ? with a(armType = SNamed(n.snName, params, n.snLine))
       : a
     (e2: SEnum) => isEmpty(e2.seParams)
-      ? PArm(a.armName, SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                              params, e2.seLine),
-             a.armBody, a.armLiterals, a.armGuard, a.parmLine)
+      ? with a(armType = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
+                              params, e2.seLine))
       : a
     (o: Spec)   => a
 
@@ -1117,7 +1205,7 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum): PExpr|None
         PeMatch(PeName("$ws", List<Spec>(), lr),
                 withArms(chain(leaves.names), chain(leaves.sets), 0, tag,
                          wx, e2, List<PArm>()),
-                lr))
+                lr, List<PExpr>()))
 
 fun withValidLeaves(ns: Chain<String>, valid: List<String>): List<String>
   ret withValidLoop(ns, valid, List<String>())
@@ -1163,7 +1251,7 @@ fun [tail] withArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                              SNamed(n.value, List<Spec>(), wx.pewLine),
                              withConstruct(n.value, l.value, withEntryList(wx),
                                            "$wx" + String(i), wx.pewLine),
-                             List<PLit>(), None, wx.pewLine)))
+                             List<PLit>(), None, wx.pewLine, List<PPos>())))
 
 fun withAssemble(wx: PeWith, copy: PExpr): PExpr
   let lr = wx.pewLine

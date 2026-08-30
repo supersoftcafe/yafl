@@ -533,10 +533,9 @@ fun llExpr(x: PExpr, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
                                       List<PStmt>()),
                               llExpr(bk.blockValue, ctx, paramLets),
                               bk.blockTag, bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(llExpr(mt.subject, ctx, paramLets),
-                              llArms(chain(mt.arms), ctx, paramLets,
-                                     List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = llExpr(mt.subject, ctx, paramLets),
+                      arms    = llArms(chain(mt.arms), ctx, paramLets,
+                                     List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      llExpr(op.opParams, ctx, paramLets),
                                      op.peboLine)
@@ -627,8 +626,4 @@ fun [tail] llArmsB(as2: Chain<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => llArmsB(l.next, ctx, paramLets,
-        push<PArm >(acc, PArm(l.value.armName, l.value.armType,
-                         llExpr(l.value.armBody, ctx, paramLets),
-                         l.value.armLiterals,
-                         llExprOpt(l.value.armGuard, ctx, paramLets),
-                         l.value.parmLine)))
+        push<PArm >(acc, with l.value(armBody = llExpr(l.value.armBody, ctx, paramLets), armGuard = llExprOpt(l.value.armGuard, ctx, paramLets))))

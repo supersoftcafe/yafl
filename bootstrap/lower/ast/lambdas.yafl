@@ -681,7 +681,8 @@ fun clMatchExpr(mt: PeMatch, r: Resolver, paths: ClPaths,
   let subj = clExpr(mt.subject, r, paths, exports)
   let arms = clArms(chain(mt.arms), r, paths, subj.clExExports,
                     builder<PArm >())
-  ret ClEx(PeMatch(subj.clExExpr, arms.clArmsArms, mt.pemLine), arms.clArmsExports)
+  ret ClEx(with mt(subject = subj.clExExpr, arms = arms.clArmsArms),
+           arms.clArmsExports)
 
 fun [tail] clArms(as2: Chain<PArm>, r: Resolver, paths: ClPaths,
                   exports: List<PStmt>,
@@ -700,8 +701,7 @@ fun clArmOne(a: PArm, r: Resolver, paths: ClPaths, exports: List<PStmt>): ClArmO
   let lits = clLits(chain(a.armLiterals), r, paths, body.clExExports,
                     builder<PLit >())
   let guard = clExprOpt(a.armGuard, bodyR, paths, lits.clLitsExports)
-  ret ClArmOne(PArm(a.armName, a.armType, body.clExExpr, lits.clLitsLits,
-                    guard.clExOExpr, a.parmLine),
+  ret ClArmOne(with a(armBody = body.clExExpr, armLiterals = lits.clLitsLits, armGuard = guard.clExOExpr),
               guard.clExOExports)
 
 fun [tail] clLits(ls: Chain<PLit>, r: Resolver, paths: ClPaths,

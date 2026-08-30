@@ -15,7 +15,7 @@ import Bootstrap::StdlibCandidates
 
 fun isHexByte(c: Int32): Bool
   ret match(c)
-    ('0' .. '9', 'a' .. 'f', 'A' .. 'F') => true
+    ('0' .. '9' | 'a' .. 'f' | 'A' .. 'F') => true
     ()                                   => false
 
 fun hexVal(c: Int32): Int32

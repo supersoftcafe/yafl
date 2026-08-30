@@ -1026,9 +1026,8 @@ fun scTKids(x: PExpr, c: ScCtx, r: Resolver): PExpr
                                                   r)),
                                lm.pelLine, scTSpecOpt(lm.lamRet, c))
     (bk: PeBlock)  => scTBlock(bk, c, blockScope(bk.blockStmts, r))
-    (mt: PeMatch)  => PeMatch(scTExpr(mt.subject, c, r),
-                              scTArms(chain(mt.arms), c, r, List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = scTExpr(mt.subject, c, r),
+                      arms    = scTArms(chain(mt.arms), c, r, List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(scTSpec(op.opType, c), op.opName,
                                      scTExpr(op.opParams, c, r), op.peboLine)
     (nw: PeNew)    => PeNew(scTSpec(nw.newType, c),
@@ -1104,10 +1103,7 @@ fun [tail] scTArmsB(as2: Chain<PArm>, c: ScCtx, r: Resolver,
 
 fun scTArmOne(a: PArm, c: ScCtx, r: Resolver): PArm
   let bodyR = bindingScope(a, a.armType, r)
-  ret PArm(a.armName, scTSpecOpt(a.armType, c),
-           scTExpr(a.armBody, c, bodyR),
-           scTLits(chain(a.armLiterals), c, r, List<PLit>()),
-           scTExprOpt(a.armGuard, c, bodyR), a.parmLine)
+  ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(chain(a.armLiterals), c, r, List<PLit>()), armGuard = scTExprOpt(a.armGuard, c, bodyR))
 
 fun scTLits(ls: Chain<PLit>, c: ScCtx, r: Resolver,
                    acc: List<PLit>): List<PLit>

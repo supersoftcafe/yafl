@@ -243,9 +243,8 @@ fun rcmExpr(x: PExpr, m: ThisMap): PExpr
                                        List<PStmt>()),
                               rcmExpr(bk.blockValue, m), bk.blockTag,
                               bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(rcmExpr(mt.subject, m),
-                              rcmArms(chain(mt.arms), m, List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = rcmExpr(mt.subject, m),
+                      arms    = rcmArms(chain(mt.arms), m, List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rcmExpr(op.opParams, m), op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rcmExpr(nw.newParam, m), nw.penwLine)
@@ -300,9 +299,7 @@ fun [tail] rcmArmsB(as2: Chain<PArm>, m: ThisMap, [terminal] acc: ListBuilder<PA
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcmArmsB(l.next, m,
-        push<PArm >(acc, PArm(l.value.armName, l.value.armType,
-                         rcmExpr(l.value.armBody, m), l.value.armLiterals,
-                         rcmOpt(l.value.armGuard, m), l.value.parmLine)))
+        push<PArm >(acc, with l.value(armBody = rcmExpr(l.value.armBody, m), armGuard = rcmOpt(l.value.armGuard, m))))
 
 fun rcmOpt(x: PExpr|None, m: ThisMap): PExpr|None
   ret match(x)
@@ -983,9 +980,8 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
                                        List<PStmt>()),
                               rnmExpr(bk.blockValue, m), bk.blockTag,
                               bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(rnmExpr(mt.subject, m),
-                              rnmArms(chain(mt.arms), m, List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = rnmExpr(mt.subject, m),
+                      arms    = rnmArms(chain(mt.arms), m, List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rnmExpr(op.opParams, m), op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rnmExpr(nw.newParam, m), nw.penwLine)
@@ -1040,9 +1036,7 @@ fun [tail] rnmArmsB(as2: Chain<PArm>, m: ThisMap, [terminal] acc: ListBuilder<PA
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rnmArmsB(l.next, m,
-        push<PArm >(acc, PArm(l.value.armName, l.value.armType,
-                         rnmExpr(l.value.armBody, m), l.value.armLiterals,
-                         rnmOpt(l.value.armGuard, m), l.value.parmLine)))
+        push<PArm >(acc, with l.value(armBody = rnmExpr(l.value.armBody, m), armGuard = rnmOpt(l.value.armGuard, m))))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # The INLINER half (ast_inline.py:55-663): function inlining at statement
@@ -1144,15 +1138,33 @@ fun aiArmNameLoop(as2: Chain<PArm>, acc: List<String>): List<String>
                                     _chainToSet<String >(chain<String >(acc),
                                                          Set<String >())))
 
+# Every POSITION binds — position 0 on the arm, the rest on its PPos entries.
+# Miss the extras and each inlined copy redefines the same stack var, which is
+# an SSA single-definition violation.
 fun [tail] aiArmNameLoopB(as2: Chain<PArm>, [terminal] out: ListBuilder<String >,
                           seen: Set<String >): ListBuilder<String >
   ret match(as2)
     (nil: ChainEnd) => out
-    (l: ChainLink)  => l.value.armName != "" && l.value.armName != "_"
-                       && !contains<String >(seen, l.value.armName)
-      ? aiArmNameLoopB(l.next, push<String >(out, l.value.armName),
-                       add<String >(seen, l.value.armName))
-      : aiArmNameLoopB(l.next, out, seen)
+    (l: ChainLink)  => aiOneName(l.value.armName, out, seen)
+      |> (o) => aiPosNames(chain(l.value.armExtra), o.anOut, o.anSeen)
+      |> (p) => aiArmNameLoopB(l.next, p.anOut, p.anSeen)
+
+# Carries the builder THROUGH: it is linear, so the class holding it is
+# [linear] too, and each step consumes exactly one and yields the next.
+class [linear, final] AiNames(anOut: ListBuilder<String >, anSeen: Set<String >)
+
+fun aiOneName(n: String, [terminal] out: ListBuilder<String >,
+              seen: Set<String >): AiNames
+  ret n != "" && n != "_" && !contains<String >(seen, n)
+    ? AiNames(push<String >(out, n), add<String >(seen, n))
+    : AiNames(out, seen)
+
+fun [tail] aiPosNames(ps: Chain<PPos>, [terminal] out: ListBuilder<String >,
+                      seen: Set<String >): AiNames
+  ret match(ps)
+    (nil: ChainEnd) => AiNames(out, seen)
+    (l: ChainLink)  => aiOneName(l.value.posName, out, seen)
+      |> (o) => aiPosNames(l.next, o.anOut, o.anSeen)
 
 fun aiRenameArmsStmts(ss: List<PStmt>, suffix: String): List<PStmt>
   let bound = aiArmNamesStmts(ss)
@@ -1172,10 +1184,9 @@ fun aiArmRenCb(x: PExpr, bound: List<String>, suffix: String): PExpr|None
       ? PeName(nm.refName + suffix, nm.refTypeParams, nm.penLine,
                nm.penTrait)
       : None
-    (mt: PeMatch) => PeMatch(mt.subject,
-                             aiArmRenLoop(chain(mt.arms), bound, suffix,
-                                          List<PArm>()),
-                             mt.pemLine)
+    (mt: PeMatch) => with mt(subject = mt.subject,
+                      arms    = aiArmRenLoop(chain(mt.arms), bound, suffix,
+                                          List<PArm>()))
     (o: PExpr)    => None
 
 fun aiArmRenLoop(as2: Chain<PArm>, bound: List<String>,
@@ -1187,10 +1198,23 @@ fun [tail] aiArmRenLoopB(as2: Chain<PArm>, bound: List<String>,
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => aiArmRenLoopB(l.next, bound, suffix,
-        push<PArm >(acc, contains2(bound, l.value.armName)
-          ? PArm(l.value.armName + suffix, l.value.armType, l.value.armBody,
-                 l.value.armLiterals, l.value.armGuard, l.value.parmLine)
-          : l.value))
+        push<PArm >(acc,
+          with l.value(armName  = contains2(bound, l.value.armName)
+                                    ? l.value.armName + suffix
+                                    : l.value.armName,
+                       armExtra = aiRenamePositions(chain(l.value.armExtra),
+                                                    bound, suffix,
+                                                    List<PPos>()))))
+
+fun [tail] aiRenamePositions(ps: Chain<PPos>, bound: List<String>,
+                             suffix: String, acc: List<PPos>): List<PPos>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => aiRenamePositions(l.next, bound, suffix,
+        build<PPos >(push<PPos >(builderFrom<PPos>(acc),
+          contains2(bound, l.value.posName)
+            ? with l.value(posName = l.value.posName + suffix)
+            : l.value)))
 
 # Rename every let bound at the TOP of `stmts` (binding sites at any depth
 # with a matching name rename too, exactly like Python's walker).

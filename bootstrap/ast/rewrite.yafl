@@ -146,8 +146,9 @@ fun rwExprKids(x: PExpr, w: Rw): PExpr
                               lamRet    = rwSpecOpt(lm.lamRet, w))
     (bk: PeBlock)  => with bk(blockStmts = rwStmts(bk.blockStmts, w),
                               blockValue = rwExpr(bk.blockValue, w))
-    (mt: PeMatch)  => with mt(subject = rwExpr(mt.subject, w),
-                              arms    = rwArms(mt.arms, w))
+    (mt: PeMatch)  => with mt(subject    = rwExpr(mt.subject, w),
+                              arms       = rwArms(mt.arms, w),
+                              matchExtra = rwExprs(mt.matchExtra, w))
     (op: PeBuiltinOp) => with op(opType   = rwSpec(op.opType, w),
                                  opParams = rwExpr(op.opParams, w))
     (nw: PeNew)    => with nw(newType  = rwSpec(nw.newType, w),
@@ -209,7 +210,21 @@ fun rwArm(a: PArm, w: Rw): PArm
   ret with a(armType     = rwSpecOpt(a.armType, w),
              armBody     = rwExpr(a.armBody, w),
              armLiterals = rwLits(a.armLiterals, w),
-             armGuard    = rwExprOpt(a.armGuard, w))
+             armGuard    = rwExprOpt(a.armGuard, w),
+             armExtra    = rwPositions(a.armExtra, w))
+
+# An extra position carries a SPEC, and a spec position a walker does not
+# reach is a spec that never resolves or substitutes.
+fun rwPositions(ps: List<PPos>, w: Rw): List<PPos>
+  ret match(ps)
+    (le: ListEmpty) => ps
+    (lf: ListFull)  => with lf(front = rwPosChain(lf.front, w))
+
+fun rwPosChain(ps: Chain<PPos>, w: Rw): Chain<PPos>
+  ret match(ps)
+    (nil: ChainEnd) => ps
+    (l: ChainLink)  => with l(value = with l.value(posType = rwSpecOpt(l.value.posType, w)),
+                              next  = rwPosChain(l.next, w))
 
 # Arm LITERALS are expressions and Python's MatchArm visits them
 # (match.py:181) — a fold or rewrite that skips them diverges (first seen as
@@ -376,7 +391,8 @@ fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
     (bk: PeBlock)  => foldExpr<T>(bk.blockValue, f, fx,
                                   foldStmts<T>(bk.blockStmts, f, fx, acc2))
     (mt: PeMatch)  => foldArms<T>(chain(mt.arms), f, fx,
-                                  foldExpr<T>(mt.subject, f, fx, acc2))
+                                  foldExprs<T>(chain(mt.matchExtra), f, fx,
+                                    foldExpr<T>(mt.subject, f, fx, acc2)))
     (op: PeBuiltinOp) => foldExpr<T>(op.opParams, f, fx,
                                      foldSpec<T>(op.opType, f, fx, acc2))
     (nw: PeNew)    => foldExpr<T>(nw.newParam, f, fx,
@@ -420,11 +436,20 @@ fun [tail] foldArms<T>(as2: Chain<PArm>, f: (:T, :PStmt): T,
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => foldArms<T>(l.next, f, fx,
-        foldExprOpt<T>(l.value.armGuard, f, fx,
-                       foldLits<T>(chain(l.value.armLiterals), f, fx,
-                                   foldExpr<T>(l.value.armBody, f, fx,
-                                     foldSpecOpt<T>(l.value.armType, f, fx,
-                                                    acc)))))
+        foldPositions<T>(chain(l.value.armExtra), f, fx,
+          foldExprOpt<T>(l.value.armGuard, f, fx,
+                         foldLits<T>(chain(l.value.armLiterals), f, fx,
+                                     foldExpr<T>(l.value.armBody, f, fx,
+                                       foldSpecOpt<T>(l.value.armType, f, fx,
+                                                      acc))))))
+
+# Every extra position's SPEC — the same reach law as the rw walker.
+fun [tail] foldPositions<T>(ps: Chain<PPos>, f: (:T, :PStmt): T,
+                            fx: (:T, :PExpr): T, acc: T): T
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldPositions<T>(l.next, f, fx,
+                         foldSpecOpt<T>(l.value.posType, f, fx, acc))
 
 fun [tail] foldLits<T>(ls: Chain<PLit>, f: (:T, :PStmt): T,
                        fx: (:T, :PExpr): T, acc: T): T
@@ -617,9 +642,14 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
       |> (ss, v) => RwNE(v.rneN, PeBlock(ss.rnssStmts, v.rneExpr,
                                          bk.blockTag, bk.pebkLine))
     (mt: PeMatch)  => rwnExpr(mt.subject, w, n)
-      |> (sj) => (sj, rwnArms(chain(mt.arms), w, sj.rneN, builder<PArm >()))
-      |> (sj, as3) => RwNE(as3.rnasN, PeMatch(sj.rneExpr, as3.rnasArms,
-                                              mt.pemLine))
+      |> (sj) => (sj, rwnExprs(chain(mt.matchExtra), w, sj.rneN,
+                               builder<PExpr >()))
+      |> (sj, ex) => (sj, ex, rwnArms(chain(mt.arms), w, ex.rnesN,
+                                      builder<PArm >()))
+      |> (sj, ex, as3) => RwNE(as3.rnasN,
+                               with mt(subject    = sj.rneExpr,
+                                       arms       = as3.rnasArms,
+                                       matchExtra = ex.rnesExprs))
     (op: PeBuiltinOp) => rwnExpr(op.opParams, w, n)
       |> (p) => RwNE(p.rneN, PeBuiltinOp(op.opType, op.opName, p.rneExpr,
                                          op.peboLine))
@@ -695,9 +725,7 @@ fun [tail] rwnArms(as2: Chain<PArm>, w: RwN, n: Int,
       |> (b, ls) => (b, ls, rwnExprOpt(l.value.armGuard, w, ls.rnlsN))
       |> (b, ls, gd) => rwnArms(l.next, w, gd.rneN2,
                                 push<PArm >(acc,
-                                    PArm(l.value.armName, l.value.armType,
-                                         b.rneExpr, ls.rnlsLits,
-                                         gd.rneExpr2, l.value.parmLine)))
+                                    with l.value(armBody = b.rneExpr, armLiterals = ls.rnlsLits, armGuard = gd.rneExpr2)))
 
 class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
 
@@ -780,7 +808,9 @@ fun fasExpr<T>(x: PExpr, f: (:T, :Spec): T, acc: T): T
                          fasExpr<T>(lm.lamBody, f,
                            fasStmt<T>(lm.lamParams, f, acc)))
     (bk: PeBlock)   => fasExpr<T>(bk.blockValue, f, fasStmts<T>(chain(bk.blockStmts), f, acc))
-    (mt: PeMatch)   => fasArms<T>(chain(mt.arms), f, fasExpr<T>(mt.subject, f, acc))
+    (mt: PeMatch)   => fasArms<T>(chain(mt.arms), f,
+                                  fasExprs<T>(chain(mt.matchExtra), f,
+                                              fasExpr<T>(mt.subject, f, acc)))
     (op: PeBuiltinOp) => fasExpr<T>(op.opParams, f, fasSpec<T>(op.opType, f, acc))
     (nw: PeNew)     => fasExpr<T>(nw.newParam, f, fasSpec<T>(nw.newType, f, acc))
     (ne: PeNewEnum) => fasSpecs<T>(chain(ne.neTypeParams), f,
@@ -808,10 +838,17 @@ fun [tail] fasArms<T>(as2: Chain<PArm>, f: (:T, :Spec): T, acc: T): T
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fasArms<T>(l.next, f,
-        fasExprOpt<T>(l.value.armGuard, f,
-          fasLits<T>(chain(l.value.armLiterals), f,
-            fasExpr<T>(l.value.armBody, f,
-              fasSpecOpt<T>(l.value.armType, f, acc)))))
+        fasPositions<T>(chain(l.value.armExtra), f,
+          fasExprOpt<T>(l.value.armGuard, f,
+            fasLits<T>(chain(l.value.armLiterals), f,
+              fasExpr<T>(l.value.armBody, f,
+                fasSpecOpt<T>(l.value.armType, f, acc))))))
+
+fun [tail] fasPositions<T>(ps: Chain<PPos>, f: (:T, :Spec): T, acc: T): T
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => fasPositions<T>(l.next, f,
+                         fasSpecOpt<T>(l.value.posType, f, acc))
 
 fun [tail] fasLits<T>(ls: Chain<PLit>, f: (:T, :Spec): T, acc: T): T
   ret match(ls)

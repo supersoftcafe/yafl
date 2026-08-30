@@ -80,11 +80,32 @@ def _wrap_pointer_into(ctype: cg_t.Type, ptr_value: cg_p.RParam) -> cg_p.RParam:
     return ptr_value
 
 
+def _rewritten_extra(extra: tuple, resolver: g.Resolver,
+                     replace: Callable[[g.Resolver, Any], Any]) -> Any:
+    """Rewrite each extra position's spec, honouring rw's UNCHANGED protocol.
+
+    `rw.rebuild` answers UNCHANGED when nothing moved, which is a sentinel and
+    not a node — so it cannot go straight into a tuple. Keep the original in
+    that case, and report UNCHANGED for the whole sequence only when no
+    position moved, so an unchanged arm is not needlessly rebuilt."""
+    out, changed = [], False
+    for pos in extra:
+        spec = rw.opt(pos.type_spec, resolver, replace)
+        if spec is rw.UNCHANGED:
+            out.append(pos)
+        else:
+            out.append(dataclasses.replace(pos, type_spec=spec))
+            changed = True
+    return tuple(out) if changed else rw.UNCHANGED
+
+
 def _binding_finder(arm: "MatchArm", bound_type: t.TypeSpec) -> Callable[[str], list]:
     """The one way an arm's bound name resolves: a LetStatement of
     `bound_type` under the arm's unique name. Matches either the user-typed
     name (first compile pass on the body) or the already-rewritten unique
     name (subsequent passes and generate-time lookups)."""
+    # `arm` is a MatchArm or a MatchPos: only .name and .line_ref are read,
+    # so one finder serves both position 0 and the extra positions.
     uniq = _arm_unique_name(arm)
     def find(query: str, a=arm, ty=bound_type, u=uniq) -> list:
         if u == query or g.name_matches(a.name, query):
@@ -100,6 +121,22 @@ def _binding_resolver(resolver: g.Resolver, arm: "MatchArm",
     if not arm.name or arm.name == "_" or bound_type is None:
         return resolver
     return g.ResolverData(resolver, _binding_finder(arm, bound_type))
+
+
+def _extra_binding_resolver(resolver: g.Resolver, arm: "MatchArm") -> g.Resolver:
+    """Chain a binding for every position AFTER the first.
+
+    Each extra position binds its own name at its own declared type, so
+    `(x: Spec, y: Spec) => eqSpec(x, y)` sees both. Positions are independent
+    — no position can refer to another's binding — so the order of chaining
+    does not matter; each is added only when it names something and has a
+    type to bind at."""
+    out = resolver
+    for pos in arm.extra:
+        if not pos.name or pos.name == "_" or pos.type_spec is None:
+            continue
+        out = g.ResolverData(out, _binding_finder(pos, pos.type_spec))
+    return out
 
 
 @dataclass
@@ -148,6 +185,21 @@ class MatchRange:
 
 
 @dataclass
+class MatchPos:
+    """One arm's pattern for a subject AFTER the first.
+
+    Position 0 stays on MatchArm itself (`name`/`type_spec`/`literals`) so
+    every single-subject path — compile, exhaustiveness, all four union-repr
+    generators — is byte-for-byte untouched by multi-subject support. A
+    one-subject match has `extra == ()` and behaves exactly as before.
+    """
+    line_ref: LineRef
+    name: str | None
+    type_spec: t.TypeSpec | None
+    literals: tuple[e.Expression, ...] = ()
+
+
+@dataclass
 class MatchArm:
     """One arm of a match expression.
 
@@ -167,19 +219,29 @@ class MatchArm:
     body: e.Expression
     literals: tuple[e.Expression, ...] = ()  # Literal values to match against (any-of)
     guard: e.Expression | None = None        # `if cond` — sees the arm's binding
+    extra: tuple[MatchPos, ...] = ()         # patterns for subjects 1..N-1
 
     def __body_resolver(self, resolver: g.Resolver) -> g.Resolver:
         # The else arm's binding type (the whole subject) isn't knowable
         # here; MatchExpression.compile supplies it. Typed arms bind their
         # own type_spec.
-        return _binding_resolver(resolver, self, self.type_spec)
+        return _extra_binding_resolver(
+            _binding_resolver(resolver, self, self.type_spec), self)
+
+    def body_resolver(self, resolver: g.Resolver) -> g.Resolver:
+        """Public view of the arm's body scope — position 0's binding plus one
+        for every extra position. The multi-subject emitter needs exactly this
+        resolver for the arm body, and building it here keeps one definition of
+        what an arm's body can see."""
+        return self.__body_resolver(resolver)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> MatchArm:
         return rw.rebuild(self,
             body=self.body.search_and_replace(self.__body_resolver(resolver), replace),
             type_spec=rw.opt(self.type_spec, resolver, replace),
             literals=rw.seq(self.literals, resolver, replace),
-            guard=rw.opt(self.guard, self.__body_resolver(resolver), replace))
+            guard=rw.opt(self.guard, self.__body_resolver(resolver), replace),
+            extra=_rewritten_extra(self.extra, resolver, replace))
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement]]:
         new_body, body_stmts = self.body.compile(self.__body_resolver(resolver), func_ret_type)
@@ -194,9 +256,19 @@ class MatchArm:
         # body's NamedExpressions (which the binding finder rewrote during
         # the body.compile() call above).  ast_inline then renames arm.name
         # and the body together; without this, those two sides would desync.
+        # Each extra position compiles its own spec and takes its own unique
+        # name, exactly as position 0 does — the names must be rewritten in
+        # step with the body, which already resolved through them.
+        new_extra = []
+        for pos in self.extra:
+            pt, pstmts = pos.type_spec.compile(resolver) if pos.type_spec else (None, [])
+            type_stmts = type_stmts + pstmts
+            new_extra.append(dataclasses.replace(pos, name=_arm_unique_name(pos),
+                                                 type_spec=pt))
         return dataclasses.replace(self, name=_arm_unique_name(self),
                                     type_spec=new_type, body=new_body, literals=new_literals,
-                                    guard=new_guard), body_stmts + type_stmts + lit_stmts + guard_stmts
+                                    guard=new_guard, extra=tuple(new_extra)), \
+               body_stmts + type_stmts + lit_stmts + guard_stmts
 
     def get_body_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.body.get_type(self.__body_resolver(resolver))
@@ -445,14 +517,24 @@ class _Emitter:
 
 @dataclass
 class MatchExpression(e.Expression):
-    """match subject\n    arm*"""
+    """match subject(, subject)*\n    arm*
+
+    `subject` is position 0 and `extra_subjects` the rest, mirroring MatchArm's
+    split: with no extras every path below is the original single-subject one.
+    Dispatch over several subjects is a SEQUENCE of checks per arm, not a
+    decision tree — _Emitter.arm already takes staged checks and falls through
+    to the next arm when any stage fails, which IS first-match-wins across
+    positions.
+    """
     subject: e.Expression
     arms: list[MatchArm]
+    extra_subjects: tuple[e.Expression, ...] = ()
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> e.Expression:
         return rw.rewrite(self, replace, resolver,
             subject=self.subject.search_and_replace(resolver, replace),
-            arms=rw.seq(self.arms, resolver, replace))
+            arms=rw.seq(self.arms, resolver, replace),
+            extra_subjects=rw.seq(self.extra_subjects, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         # A match yields a value of ANY arm's body type, so its type is a pure
@@ -472,6 +554,13 @@ class MatchExpression(e.Expression):
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
         new_subject, subj_stmts = self.subject.compile(resolver, None)
+        # Subjects after the first compile the same way; their arm patterns are
+        # plain type dispatch, so nothing threads down to them.
+        extra_compiled = []
+        for x in self.extra_subjects:
+            cx, cstmts = x.compile(resolver, None)
+            extra_compiled.append(cx)
+            subj_stmts = subj_stmts + cstmts
         subj_type = new_subject.get_type(resolver)
         # When the subject is a concrete generic-enum instantiation (e.g.
         # Chain<String>), its variant arms (e.g. `(link: ChainLink)`) bind the
@@ -512,7 +601,9 @@ class MatchExpression(e.Expression):
                 arm_results.append(arm.compile(resolver, expected_type))
         new_arms = [arm for arm, _ in arm_results]
         arm_stmts = [stmt for _, stmts in arm_results for stmt in stmts]
-        return dataclasses.replace(self, subject=new_subject, arms=new_arms), subj_stmts + arm_stmts
+        return (dataclasses.replace(self, subject=new_subject, arms=new_arms,
+                                    extra_subjects=tuple(extra_compiled)),
+                subj_stmts + arm_stmts)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list:
         # The subject is an ordinary expression: check it, so an unresolved
@@ -538,6 +629,42 @@ class MatchExpression(e.Expression):
                           + ", or use literal patterns on an Int/String subject")]
 
         errors = list(subject_err)
+        # A position whose repr cannot supply guards must be REPORTED, not
+        # left to raise out of codegen. Ask each position's repr, using THAT
+        # repr's own ctype for the probe value — an option is a DataPointer
+        # union sometimes and a TAGGED STRUCT other times (Int32|None), so a
+        # guessed pointer type builds a StructField on a pointer and dies.
+        if self.extra_subjects:
+            subs = [self.subject] + list(self.extra_subjects)
+            for i, sub in enumerate(subs):
+                sty = sub.get_type(resolver)
+                if not isinstance(sty, (t.EnumSpec, t.CombinationSpec)):
+                    continue
+                rep = union_repr.classify(sty, resolver)
+                probe = cg_p.StackVar(rep.ctype(), "$probe")
+                for arm in self.arms:
+                    pat = (arm.type_spec if i == 0
+                           else (arm.extra[i - 1].type_spec if len(arm.extra) >= i else None))
+                    if pat is None:
+                        continue
+                    try:
+                        rep.position_guards(probe, pat, resolver)
+                    except NotImplementedError as ex:
+                        errors.append(Error(arm.line_ref, str(ex)))
+                        break
+        # Arity: an arm has one pattern per subject. The grammar cannot check
+        # this — it does not know the subject count — so it lands here, where
+        # both are in hand. An else arm `()` carries no patterns and is total
+        # at any arity.
+        want = 1 + len(self.extra_subjects)
+        for arm in self.arms:
+            if arm.type_spec is None and not arm.literals and not arm.extra:
+                continue                                  # the else arm
+            got = 1 + len(arm.extra)
+            if got != want:
+                errors.append(Error(arm.line_ref,
+                    f"match arm has {got} pattern{'' if got == 1 else 's'} "
+                    f"but the match has {want} subject{'' if want == 1 else 's'}"))
         for arm in self.arms:
             errors += arm.check(resolver, expected_type)
             # The else arm must stay total — the match's coverage guarantee
@@ -654,7 +781,97 @@ class MatchExpression(e.Expression):
 
         return errors
 
+    def __position_variants(self, subj_type: t.TypeSpec, resolver: g.Resolver):
+        """(key -> printable name) for one subject's variants, or None when the
+        subject is not yet resolved enough to enumerate."""
+        if isinstance(subj_type, t.EnumSpec):
+            return {n: n for n in subj_type.valid_leaf_names}
+        if not isinstance(subj_type, t.CombinationSpec):
+            return None
+        out = {}
+        for v in subj_type.repr_members():
+            uid = v.as_unique_id_str()
+            if uid is None:
+                return None
+            out[uid] = getattr(v, "name", uid)
+        return out
+
+    def __covered_keys(self, subj_type, arm_type, keys, resolver) -> set:
+        """Which of `keys` an arm's pattern at one position matches."""
+        if arm_type is None:
+            return set(keys)                      # no pattern here: anything
+        if isinstance(subj_type, t.EnumSpec):
+            if not isinstance(arm_type, t.EnumSpec):
+                return set()
+            return set(arm_type.valid_leaf_names) & set(keys)
+        if isinstance(arm_type, t.CombinationSpec):
+            out = set()
+            for member in arm_type.repr_members():
+                out |= self.__covered_keys(subj_type, member, keys, resolver)
+            return out
+        out = set()
+        for uid in keys:
+            v = next((m for m in subj_type.repr_members()
+                      if m.as_unique_id_str() == uid), None)
+            if v is not None and arm_type.trivially_assignable_from(resolver, v) is True:
+                out.add(uid)
+        return out
+
+    def __check_exhaustiveness_multi(self, resolver: g.Resolver) -> list:
+        """Coverage over the PRODUCT of the subjects' variants.
+
+        An arm covers the product of what each of its positions matches, and
+        the match is exhaustive when the arms' products cover the whole space.
+        For one subject this is exactly the single-subject rule, which is why
+        that path is left alone rather than generalised — its error text is a
+        contract (test_bootstrap_reject diffs refusal text between compilers).
+        """
+        subjects = [self.subject] + list(self.extra_subjects)
+        tables = []
+        for sub in subjects:
+            ty = sub.get_type(resolver)
+            if ty is None:
+                return []
+            tab = self.__position_variants(ty, resolver)
+            if tab is None:
+                return []                          # not resolved yet
+            tables.append((ty, tab))
+
+        space = {(): None}
+        for _ty, tab in tables:
+            space = {tup + (k,): None for tup in space for k in tab}
+        remaining = set(space)
+        errors: list = []
+        for arm in self.arms:
+            if arm.guard is not None or arm.literals:
+                continue                           # covers nothing / narrows only
+            pats = [arm.type_spec] + [pos.type_spec for pos in arm.extra]
+            if all(p is None for p in pats):
+                if not remaining:
+                    errors.append(Error(arm.line_ref,
+                        "unreachable else arm: all combinations already covered"))
+                remaining = set()
+                continue
+            per_pos = [self.__covered_keys(tables[i][0], pats[i], tables[i][1], resolver)
+                       for i in range(len(tables))]
+            covers = {tup for tup in remaining
+                      if all(tup[i] in per_pos[i] for i in range(len(tup)))}
+            if not covers:
+                errors.append(Error(arm.line_ref,
+                    "unreachable arm: this combination is already covered"))
+            remaining -= covers
+        if remaining:
+            shown = " | ".join(
+                ", ".join(tables[i][1][k] for i, k in enumerate(tup))
+                for tup in sorted(remaining)[:4])
+            more = "" if len(remaining) <= 4 else f" (+{len(remaining) - 4} more)"
+            errors.append(Error(self.line_ref,
+                f"non-exhaustive match; missing: {shown}{more}"))
+        return errors
+
     def __check_exhaustiveness(self, subj_type: t.TypeSpec, resolver: g.Resolver) -> list:
+        if self.extra_subjects:
+            return self.__check_exhaustiveness_multi(resolver)
         """Emit errors for non-exhaustive match and unreachable arms.
 
         For CombinationSpec subjects, an arm's type T covers a subject
@@ -774,7 +991,60 @@ class MatchExpression(e.Expression):
         # coerce afterwards.
         return self.generate(resolver, expected_type)
 
+    def __generate_multi(self, resolver, expected_type):
+        """Dispatch over several subjects: each arm is a SEQUENCE of stages,
+        one per position, and _Emitter.arm falls through to the next arm the
+        moment a stage fails — first-match-wins across positions, no decision
+        tree and no duplicated arm bodies."""
+        subjects = [self.subject] + list(self.extra_subjects)
+        bundles, reprs, types, svs = [], [], [], []
+        for i, sub in enumerate(subjects):
+            b = sub.generate(resolver).with_prefix(f"subj{i}")
+            ty = sub.get_type(resolver)
+            bundles.append(b); types.append(ty); svs.append(b.result_var)
+            reprs.append(union_repr.classify(ty, resolver))
+
+        result_type = expected_type if expected_type is not None else self.get_type(resolver)
+        result_var = cg_p.StackVar(result_type.generate(resolver), "result") if result_type else None
+        em = _Emitter(self, resolver, result_type)
+        for b in bundles:
+            em.add(b)
+
+        else_arm = self.__else_arm()
+        for arm in self.arms:
+            pats = [arm.type_spec] + [pos.type_spec for pos in arm.extra]
+            if all(pt is None for pt in pats):
+                continue                                   # the else arm
+            stages = [reprs[i].position_guards(svs[i], pats[i], resolver)
+                      for i in range(len(subjects)) if pats[i] is not None]
+            # Position 0 binds through the arm itself; the rest bind through
+            # their own MatchPos, and all the binding bundles are concatenated
+            # so every name is live in the body.
+            binds = []
+            if pats[0] is not None:
+                b0 = reprs[0].position_bind(em, arm, svs[0], pats[0], types[0], resolver)
+                if b0 is not None:
+                    binds.append(b0)
+            for i, pos in enumerate(arm.extra, start=1):
+                if pos.type_spec is None:
+                    continue
+                pb = reprs[i].position_bind(em, pos, svs[i], pos.type_spec, types[i], resolver)
+                if pb is not None:
+                    binds.append(pb)
+            bind = None
+            if binds:
+                # The bundles MOVE each position's value into its own stack var;
+                # the resolver is the arm's own body scope, which already names
+                # every position.
+                bundle = reduce(lambda x, y: x + y, [b for b, _ in binds])
+                bind = (bundle, arm.body_resolver(resolver))
+            em.arm(arm, stages, bind=bind)
+        em.fallback(else_arm, None, "multi-subject match fell through all arms")
+        return em.finish(result_var)
+
     def generate(self, resolver: g.Resolver, expected_type: t.TypeSpec | None = None) -> g.OperationBundle:
+        if self.extra_subjects:
+            return self.__generate_multi(resolver, expected_type)
         subj_bundle = self.subject.generate(resolver).with_prefix("subj")
         subj_type = self.subject.get_type(resolver)
         # `result_type` is the shared slot type. A sink supplies it (the union

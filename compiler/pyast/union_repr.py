@@ -234,6 +234,36 @@ class UnionRepr(ABC):
     # matches the operation (CombinationSpec target -> box/widen; EnumSpec ->
     # read/construct), so these defaults guard against future miswiring.
 
+    def position_guards(self, sv, arm_type: t.TypeSpec, resolver: g.Resolver) -> list:
+        """OR-alternatives testing that `sv` matches `arm_type`, for ONE
+        position of a MULTI-SUBJECT match.
+
+        `generate_match` above drives the whole dispatch for a single subject;
+        with several subjects each position contributes one STAGE of checks to
+        each arm instead, and `_Emitter.arm` ANDs the stages and falls through
+        to the next arm when any fails — which is first-match-wins across
+        positions, with no decision tree.
+
+        Only the enum reprs implement this so far. The others raise, and
+        MatchExpression.check reports it as a diagnostic rather than letting it
+        reach codegen."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot yet serve a position of a "
+            f"multi-subject match")
+
+    def position_bind(self, em, holder, sv, arm_type: t.TypeSpec,
+                      subj_type: t.TypeSpec, resolver: g.Resolver):
+        """Bind ONE position's name, or None when it binds nothing.
+
+        Each repr binds differently and the difference is not cosmetic: the
+        enum reprs bind at the SUBJECT type on purpose (an EnumSpec arm type
+        may be a pruned generic spec with stale fields — only leaf identity
+        matters for the guard); a pointer union binds at the ARM's type, since
+        the value IS the narrowed pointer; and a tagged combination has to
+        REASSEMBLE the variant out of the union's slots. Defaulting to the
+        subject type serves both enum reprs."""
+        return em.bind_subject(holder, subj_type, sv)
+
     def box_value(self, value, source_type: t.TypeSpec,
                   resolver: g.Resolver) -> g.OperationBundle:
         """Box an already-generated variant `value` into this union's repr."""
@@ -307,6 +337,53 @@ class TaggedRepr(UnionRepr):
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
                     "enum match fell through all arms")
+
+    def __combination_variant(self, arm_type, resolver):
+        """(variant index, tag) for a single-member arm pattern, else None."""
+        subj_type = self.union_type
+        if isinstance(arm_type, t.CombinationSpec) and len(arm_type.repr_members()) != 1:
+            return None                      # several members: needs a Phi, not a stage
+        member = (arm_type.repr_members()[0]
+                  if isinstance(arm_type, t.CombinationSpec) else arm_type)
+        uid = member.as_unique_id_str()
+        if uid is None:
+            return None
+        # `.get(uid, 0)`, NOT a required lookup: a BUILTIN member such as the
+        # `int32` of `Int32|None` carries no registry discriminator and takes
+        # tag 0, exactly as _generate_combination_match reads it.
+        tag = resolver.get_discriminators().get(uid, 0)
+        vi = next((i for i, v in enumerate(subj_type.repr_members())
+                   if v.as_unique_id_str() == uid), None)
+        return None if vi is None else (vi, tag, member)
+
+    def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
+        if isinstance(self.union_type, t.EnumSpec):
+            return em.bind_subject(holder, subj_type, sv)
+        found = self.__combination_variant(arm_type, resolver)
+        if found is None:
+            return None
+        vi, _tag, member = found
+        return em.bind_from_slots(holder, member.generate(resolver),
+                                  self.variant_map[vi], self.container.fields, sv)
+
+    def position_guards(self, sv, arm_type, resolver):
+        subj_type = self.union_type
+        if not isinstance(subj_type, t.EnumSpec):
+            # Tagged COMBINATION: one tag comparison per position.
+            found = self.__combination_variant(arm_type, resolver)
+            if found is None:
+                return super().position_guards(sv, arm_type, resolver)
+            _vi, tag_value, _member = found
+            return [cg_p.IntEqConst(cg_p.StructField(sv, "$tag"), tag_value)]
+        if not isinstance(arm_type, t.EnumSpec):
+            return super().position_guards(sv, arm_type, resolver)
+        def _base(name: str) -> str:
+            return name.split("$generic$", 1)[0]
+        leaf_index = {_base(n): i for i, n in enumerate(subj_type.all_leaf_names)}
+        tag = cg_p.StructField(sv, "$tag")
+        return [cg_p.IntEqConst(tag, leaf_index[_base(leaf)])
+                for leaf in sorted(arm_type.valid_leaf_names,
+                                   key=lambda l: leaf_index[_base(l)])]
 
     def _generate_combination_match(self, em, subj_bundle, arms, else_arm, resolver):
         subj_type = self.union_type
@@ -677,6 +754,34 @@ class PointerRepr(UnionRepr):
     def ctype(self) -> cg_t.Type:
         return cg_t.DataPointer()
 
+    def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
+        return em.bind_subject(holder, arm_type if arm_type is not None else subj_type, sv)
+
+    def position_guards(self, sv, arm_type, resolver):
+        """NULL for the unit member, vtable identity for the rest.
+
+        A FOREIGN class is untestable from generated code — in a single-subject
+        match it can be the implicit fallback, but a POSITION has no fallback
+        to be, so it is refused and MatchExpression.check reports it."""
+        unit_type = cg_t.Struct(())
+        members = (arm_type.repr_members()
+                   if isinstance(arm_type, t.CombinationSpec) else [arm_type])
+        guards = []
+        for member in members:
+            if member.generate(resolver) == unit_type:
+                guards.append(cg_p.IntEqConst(sv, 0))
+                continue
+            kind = _pointer_word_kind(member, resolver)
+            if kind == ('INT',):
+                guards.append(cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE"))
+            elif kind == ('STR',):
+                guards.append(cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE"))
+            elif kind is not None and kind[0] in ('CLASS', 'ENUM'):
+                guards.append(cg_p.ObjVtableEq(sv, class_name=kind[1]))
+            else:
+                return super().position_guards(sv, arm_type, resolver)
+        return guards
+
     def generate_match(self, em, subj_bundle, arms, else_arm, resolver):
         """DataPointer union dispatch: sv==NULL → the None arm; typed arms test
         vtable identity / pointer tag bits via ObjVtableEq (member_guard);
@@ -820,6 +925,18 @@ class ComplexEnumRepr(UnionRepr):
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
                     "enum match fell through all arms")
+
+    def position_guards(self, sv, arm_type, resolver):
+        if not isinstance(arm_type, t.EnumSpec):
+            return super().position_guards(sv, arm_type, resolver)
+        subj_type = self.union_type
+        tag = cg_p.VtableDiscriminator(sv)
+        discriminators = resolver.get_discriminators()
+        def leaf_id(leaf: str) -> int:
+            key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
+            return discriminators[key]
+        return [cg_p.IntEqConst(tag, leaf_id(leaf))
+                for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
 
     def read_field(self, base_value, field_name, resolver):
         """Read a field off a complex-enum value. Field names are @hash-unique

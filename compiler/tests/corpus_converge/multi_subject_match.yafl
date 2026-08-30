@@ -1,0 +1,69 @@
+# `match(a, b)` — dispatch on several subjects — through the port's C path.
+#
+# An arm has one pattern per subject and ALL must match; a failing pattern
+# falls through to the NEXT arm. That is a sequence of staged checks per arm,
+# not a decision tree: the emitter already ANDs stages and falls through on any
+# failure, which is first-match-wins across positions for free.
+#
+# Both compilers must dissolve this into the SAME dispatch, so this file gates
+# the shapes that decide the design:
+#
+#   1. cross-position fall-through — an arm matching position 0 but FAILING
+#      position 1 must reach a later arm whose position-0 pattern DIFFERS.
+#      Nesting on position 0 would enter the first arm's group and find
+#      nothing; this is the case that rules nesting out.
+#   2. per-position bindings — each position binds its own name, and the
+#      inliner must rename ALL of them or each inlined copy redefines one
+#      stack var (SSA single-definition).
+#   3. a guard on a multi-subject arm, falling through when it fails.
+#   4. `()` as the catch-all at any arity.
+#
+# The subjects are ENUMS here. Option positions (both the DataPointer and the
+# tagged-struct representations) are covered by the Python-side unit tests;
+# a corpus file cannot use the stdlib, so `Int32|None` is not reachable here.
+namespace Corpus
+
+import System
+
+
+enum MsShape
+  enum MsBox(msv: Int)
+  enum MsDot()
+  enum MsTri(mst: Int)
+
+# 1 + 2: every arm binds both positions and reads both.
+fun msCmp(a: MsShape, b: MsShape): Int
+  ret match(a, b)
+    (x: MsBox, y: MsBox) => x.msv + y.msv
+    (x: MsBox, y: MsDot) => x.msv
+    (x: MsDot, y: MsBox) => y.msv
+    ()                   => 0
+
+# 1: row 1 matches position 0 for (MsBox, MsDot) but fails position 1, so it
+# must fall to row 2 — whose position-0 pattern is the whole enum.
+fun msPick(a: MsShape, b: MsShape): Int
+  ret match(a, b)
+    (x: MsBox,   y: MsBox)   => 1
+    (x: MsShape, y: MsDot)   => 2
+    (x: MsTri,   y: MsShape) => 3
+    ()                       => 4
+
+# 3: a guard that fails falls through to the next arm, not to the else.
+fun msGuard(a: MsShape, b: MsShape): Int
+  ret match(a, b)
+    (x: MsBox, y: MsBox) if x.msv > y.msv => 10
+    (x: MsBox, y: MsBox)                  => 20
+    ()                                    => 30
+
+# The exit code is 8-BIT: keep the total well under 256.
+fun main(): Int
+  # 3+4=7, then 5, then 6, then the else 0            -> 18
+  let a = msCmp(MsBox(3), MsBox(4)) + msCmp(MsBox(5), MsDot())
+          + msCmp(MsDot(), MsBox(6)) + msCmp(MsDot(), MsDot())
+  # 1, then the fall-through 2, then 3, then 4        -> 10
+  let b = msPick(MsBox(0), MsBox(0)) + msPick(MsBox(0), MsDot())
+          + msPick(MsTri(0), MsBox(0)) + msPick(MsDot(), MsBox(0))
+  # guard true 10, guard false -> 20, else 30         -> 60
+  let c = msGuard(MsBox(5), MsBox(1)) + msGuard(MsBox(1), MsBox(5))
+          + msGuard(MsDot(), MsDot())
+  ret a + b + c

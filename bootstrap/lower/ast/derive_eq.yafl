@@ -374,7 +374,7 @@ fun deEqMember(e2: PsEnum, dl: DeLeaves): PStmt
                      PeTernary(deOp("bool", "yafl_ref_eq",
                                     list2(deEnt(deRef("left", lr)), deEnt(deRef("right", lr))), lr),
                                PeBool(true, lr),
-                               PeMatch(deRef("left", lr), arms, lr), lr),
+                               PeMatch(deRef("left", lr), arms, lr, List<PExpr>()), lr),
                      "", lr)
   ret PsFun(hashName("`==`", lr), List<PAttr>(), List<PGen>(),
             funParamsStmt(list2(deParam("left", e2.eName, lr), deParam("right", e2.eName, lr)), lr),
@@ -402,14 +402,14 @@ fun deEqArm(leafName: String, fields: List<PStmt>, i: Int, many: Bool,
   let cmp = deFieldsCmp(chain(fields), xn, yn, None, lr)
   let innerArms = many
     ? list2(PArm(hashName(yn, lr), SNamed(leafName, List<Spec>(), lr),
-                        cmp, List<PLit>(), None, lr), PArm(hashName("o" + String(i), lr),
+                        cmp, List<PLit>(), None, lr, List<PPos>()), PArm(hashName("o" + String(i), lr),
                   SNamed(e2.eName, List<Spec>(), lr),
-                  PeBool(false, lr), List<PLit>(), None, lr))
+                  PeBool(false, lr), List<PLit>(), None, lr, List<PPos>()))
     : list1(PArm(hashName(yn, lr), SNamed(leafName, List<Spec>(), lr),
-                 cmp, List<PLit>(), None, lr))
+                 cmp, List<PLit>(), None, lr, List<PPos>()))
   ret PArm(hashName(xn, lr), SNamed(leafName, List<Spec>(), lr),
-           PeMatch(deRef("right", lr), innerArms, lr),
-           List<PLit>(), None, lr)
+           PeMatch(deRef("right", lr), innerArms, lr, List<PExpr>()),
+           List<PLit>(), None, lr, List<PPos>())
 
 fun [tail] deFieldsCmp(fs: Chain<PStmt>, xn: String, yn: String,
                        acc: PExpr|None, lr: PLine): PExpr
@@ -449,7 +449,7 @@ fun deHashMember(e2: PsEnum, dl: DeLeaves): PStmt
                                     list2(deEnt(deRef("$dhc", lr)), deEnt(PeInt(0, 32, lr))), lr),
                                deOp("int32", "yafl_hash_store",
                                     list2(deEnt(deRef("value", lr)), deEnt(PeMatch(deRef("value", lr),
-                                                         arms, lr))), lr),
+                                                         arms, lr, List<PExpr>()))), lr),
                                deRef("$dhc", lr), lr),
                      "", lr)
   ret PsFun(hashName("hashOf", lr), List<PAttr>(), List<PGen>(),
@@ -477,7 +477,7 @@ fun deHashArm(leafName: String, fields: List<PStmt>, i: Int,
   let acc0 = PeInt(i, 32, lr)
   ret PArm(hashName(xn, lr), SNamed(leafName, List<Spec>(), lr),
            deHashFold(chain(fields), xn, acc0, lr),
-           List<PLit>(), None, lr)
+           List<PLit>(), None, lr, List<PPos>())
 
 fun [tail] deHashFold(fs: Chain<PStmt>, xn: String, acc: PExpr,
                       lr: PLine): PExpr

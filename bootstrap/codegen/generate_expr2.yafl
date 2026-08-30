@@ -453,6 +453,184 @@ fun genMatchTo(mt: PeMatch, r: Resolver, expected: Spec|None): GBundle
   ret genMatch(mt, r, expected)
 
 fun genMatch(mt: PeMatch, r: Resolver, expected: Spec|None): GBundle
+  ret isEmpty(mt.matchExtra) ? genMatchOne(mt, r, expected)
+                             : genMatchMulti(mt, r, expected)
+
+# Dispatch over several subjects: each arm is a SEQUENCE of stages, one per
+# position, and emArm falls through to the next arm the moment a stage fails
+# — first-match-wins across positions, no decision tree, no duplicated body.
+fun genMatchMulti(mt: PeMatch, r: Resolver, expected: Spec|None): GBundle
+  let subs = prepend(mt.subject, mt.matchExtra)
+  let gens = genSubjects(chain(subs), r, 0, List<GBundle>())
+  let resultType = match(expected)
+    (e2: Spec) => expected
+    ()          => matchType(mt, r)
+  let resultVar = match(resultType)
+    (rt: Spec) => RpStackVar(specGenerate(rt, r), "result")
+    ()          => None
+  let em0 = addAll(emEmpty(), chain(gens))
+  let em1 = multiArms(em0, chain(mt.arms), subs, gens, resultType, r)
+  ret emFinish(multiFallback(em1, mt, resultType, r), resultVar)
+
+fun [tail] genSubjects(ss: Chain<PExpr>, r: Resolver, i: Int,
+                       acc: List<GBundle>): List<GBundle>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => genSubjects(l.next, r, i + 1,
+                         appendBundle(acc, withPrefix(genExpr(l.value, r),
+                                                      "subj" + String(i))))
+
+fun appendBundle(acc: List<GBundle>, b: GBundle): List<GBundle>
+  ret build<GBundle >(push<GBundle >(builderFrom<GBundle>(acc), b))
+
+fun [tail] addAll(em: GEmit, bs: Chain<GBundle>): GEmit
+  ret match(bs)
+    (nil: ChainEnd) => em
+    (l: ChainLink)  => addAll(emAdd(em, l.value), l.next)
+
+fun multiFallback(em: GEmit, mt: PeMatch, resultType: Spec|None,
+                  r: Resolver): GEmit
+  ret emFallback(em, r, resultType, elseArmOf(mt), None,
+                 "multi-subject match fell through all arms")
+
+fun [tail] multiArms(em: GEmit, as2: Chain<PArm>, subs: List<PExpr>,
+                     gens: List<GBundle>, resultType: Spec|None,
+                     r: Resolver): GEmit
+  ret match(as2)
+    (nil: ChainEnd) => em
+    (l: ChainLink)  => multiArms(
+        isElseArm(l.value) ? em
+                           : multiArm(em, l.value, subs, gens, resultType, r),
+        l.next, subs, gens, resultType, r)
+
+fun isElseArm(a: PArm): Bool
+  ret isNoneSpec(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
+
+# One multi-subject arm: a stage per position that carries a pattern, and the
+# per-position bindings concatenated. The RESOLVER for the body is the arm's
+# own scope — every position's name is registered there by compileArm — so the
+# binds contribute their bundles and the scope comes from position 0's.
+fun multiArm(em: GEmit, a: PArm, subs: List<PExpr>, gens: List<GBundle>,
+             resultType: Spec|None, r: Resolver): GEmit
+  let pats = prepend(a.armType, map(a.armExtra, (p: PPos) => p.posType))
+  let stages = positionStages(chain(pats), chain(subs), chain(gens), r,
+                              List<List<RParam>>())
+  let bind = positionBinds(a, chain(subs), chain(gens), r)
+  ret emArm(em, r, resultType, a, stages, bind, List<GBundle>())
+
+fun [tail] positionStages(pats: Chain<Spec|None>, subs: Chain<PExpr>,
+                          gens: Chain<GBundle>, r: Resolver,
+                          acc: List<List<RParam>>): List<List<RParam>>
+  ret match(pats)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => positionStages(l.next, restExprs(subs), restBundles(gens), r,
+        appendStage(acc, stageFor(l.value, headExpr(subs), headBundle(gens), r)))
+
+fun stageFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
+             r: Resolver): List<RParam>|None
+  ret match(sub)
+    (e2: PExpr) => match(g)
+      (b: GBundle) => match(exprType(e2, r))
+        (st: Spec) => reprPositionGuards(classifyRepr(st, r), mustResult(b), pat, r)
+        ()         => None
+      ()           => None
+    ()            => None
+
+# A position whose repr cannot supply guards must NOT be dropped: dropping it
+# leaves the arm with fewer stages than positions, so it matches on a partial
+# test — and if every stage is dropped the arm matches unconditionally and the
+# arms after it become unreachable, which surfaces far away as a Phi with a
+# missing source. An unsupported position is refused by the check phase; here
+# it becomes a guard that never passes, so the arm is simply never taken.
+fun appendStage(acc: List<List<RParam>>,
+                st: List<RParam>|None): List<List<RParam>>
+  ret build<List<RParam> >(push<List<RParam> >(
+        builderFrom<List<RParam> >(acc), stageOrNever(st)))
+
+fun stageOrNever(st: List<RParam>|None): List<RParam>
+  ret match(st)
+    (g: List<RParam>) => g
+    ()                => list1(RpIntEqConst(RpInteger(0, 32), 1))
+
+fun restExprs(es: Chain<PExpr>): Chain<PExpr>
+  ret match(es)
+    (l: ChainLink)  => l.next
+    (nil: ChainEnd) => es
+
+fun headExpr(es: Chain<PExpr>): PExpr|None
+  ret match(es)
+    (l: ChainLink)  => l.value
+    (nil: ChainEnd) => None
+
+fun restBundles(bs: Chain<GBundle>): Chain<GBundle>
+  ret match(bs)
+    (l: ChainLink)  => l.next
+    (nil: ChainEnd) => bs
+
+fun headBundle(bs: Chain<GBundle>): GBundle|None
+  ret match(bs)
+    (l: ChainLink)  => l.value
+    (nil: ChainEnd) => None
+
+# Position 0 binds through the arm; the rest through a PArm synthesised from
+# their PPos, which gives the SAME unique name (armUniqueName reads the name
+# and line, and posUniqueName built them the same way).
+fun positionBinds(a: PArm, subs: Chain<PExpr>, gens: Chain<GBundle>,
+                  r: Resolver): GBind|None
+  ret bindsLoop(chain(prepend(posOfArm(a), a.armExtra)), subs, gens, r,
+                None)
+
+fun posOfArm(a: PArm): PPos
+  ret PPos(a.armName, a.armType, a.parmLine)
+
+# THREADS the resolver: each position binds over the scope the previous ones
+# built, so the body sees EVERY position's name. Binding each independently
+# and keeping the first one's scope leaves later positions invisible — an arm
+# whose body reads only the second subject then fails to generate, and the
+# damage surfaces as a join Phi missing that arm's source.
+fun [tail] bindsLoop(ps: Chain<PPos>, subs: Chain<PExpr>, gens: Chain<GBundle>,
+                     r: Resolver, acc: GBind|None): GBind|None
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => bindsLoop(l.next, restExprs(subs), restBundles(gens),
+        scopeOf(acc, r),
+        mergeInto(acc, bindPosition(l.value, headExpr(subs), headBundle(gens),
+                                    scopeOf(acc, r))))
+
+fun scopeOf(acc: GBind|None, r: Resolver): Resolver
+  ret match(acc)
+    (b: GBind) => b.gbdResolver
+    ()         => r
+
+# Concatenate the binding BUNDLES and keep the LATEST scope, which is the one
+# holding every name bound so far.
+fun mergeInto(acc: GBind|None, b: GBind|None): GBind|None
+  ret match(b)
+    (nb: GBind) => match(acc)
+      (ab: GBind) => GBind(bundleJoin(ab.gbdBundle, nb.gbdBundle),
+                           nb.gbdResolver)
+      ()          => nb
+    ()          => acc
+
+fun bindPosition(p: PPos, sub: PExpr|None, g: GBundle|None,
+                 r: Resolver): GBind|None
+  ret match(sub)
+    (e2: PExpr) => match(g)
+      (b: GBundle) => match(posBindSpec(p, exprType(e2, r)))
+        (bt: Spec) => bindSubject(r, PArm(p.posName, p.posType, PeNothing(p.pposLine),
+                                          List<PLit>(), None, p.pposLine,
+                                          List<PPos>()),
+                                  bt, mustResult(b))
+        ()         => None
+      ()           => None
+    ()            => None
+
+fun posBindSpec(p: PPos, subjTy: Spec|None): Spec|None
+  ret match(p.posType)
+    (t2: Spec) => p.posType
+    ()         => subjTy
+
+fun genMatchOne(mt: PeMatch, r: Resolver, expected: Spec|None): GBundle
   let subjBundle = withPrefix(genExpr(mt.subject, r), "subj")
   let subjType = exprType(mt.subject, r)
   # `result_type`: the shared slot type. A sink supplies it (the union the

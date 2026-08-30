@@ -366,7 +366,7 @@ fun drMatch(mt: PeMatch, wheres: List<Spec>, r: Resolver,
   let arms = drArms(chain(mt.arms), wheres, r, ids, builder<PArm >(), false)
   let changed = os.deChanged || arms.daChanged
   ret DrE(changed
-            ? PeMatch(os.deExpr, arms.daArms, mt.pemLine)
+            ? with mt(subject = os.deExpr, arms = arms.daArms)
             : mt,
           changed)
 
@@ -380,9 +380,7 @@ fun [tail] drArms(as2: Chain<PArm>, wheres: List<Spec>, r: Resolver,
     (l: ChainLink)  => drExpr(l.value.armBody, wheres, r, ids)
       |> (o) => drArms(l.next, wheres, r, ids,
                        push<PArm >(acc,
-                           PArm(l.value.armName, l.value.armType, o.deExpr,
-                                l.value.armLiterals, l.value.armGuard,
-                                l.value.parmLine)),
+                           with l.value(armBody = o.deExpr)),
                        changed || o.deChanged)
 
 fun drBlock(bk: PeBlock, wheres: List<Spec>, r: Resolver,
@@ -902,11 +900,10 @@ fun drFixMatch(mt: PeMatch, let2: PsLet): DrBx
   let anyR = drArmRefsAny(chain(fixed.abArms), name)
   let allR = drArmRefsAll(chain(fixed.abArms), name)
   if allR || !anyR
-    ret DrBx(PeMatch(mt.subject, fixed.abArms, mt.pemLine), fixed.abDid,
+    ret DrBx(with mt(arms = fixed.abArms), fixed.abDid,
              true)
-  ret DrBx(PeMatch(mt.subject, drWrapArms(chain(fixed.abArms), name, let2,
-                                          List<PArm>()),
-                   mt.pemLine),
+  ret DrBx(with mt(arms = drWrapArms(chain(fixed.abArms), name, let2,
+                                     List<PArm>())),
            true, true)
 
 fun drFixMatchSubject(mt: PeMatch, let2: PsLet): DrBx
@@ -916,7 +913,7 @@ fun drFixMatchSubject(mt: PeMatch, let2: PsLet): DrBx
   let fs = drFixExpr(mt.subject, let2)
   if !fs.bxOk
     ret DrBx(mt, false, false)
-  ret DrBx(PeMatch(fs.bxExpr, mt.arms, mt.pemLine), fs.bxDid, true)
+  ret DrBx(with mt(subject = fs.bxExpr), fs.bxDid, true)
 
 fun [tail] drGuardRefs(as2: Chain<PArm>, name: String): Bool
   ret match(as2)
@@ -949,9 +946,7 @@ fun [tail] drFixArmLoop(as2: Chain<PArm>, let2: PsLet,
     (l: ChainLink)  => drFixExpr(l.value.armBody, let2)
       |> (o) => o.bxOk
         ? drFixArmLoop(l.next, let2,
-                       push<PArm >(acc, PArm(l.value.armName, l.value.armType,
-                                        o.bxExpr, l.value.armLiterals,
-                                        l.value.armGuard, l.value.parmLine)),
+                       push<PArm >(acc, with l.value(armBody = o.bxExpr)),
                        did || o.bxDid)
         : DrArmB(build<PArm >(acc), false, false)
 
@@ -966,11 +961,8 @@ fun [tail] drWrapArmsB(as2: Chain<PArm>, name: String, let2: PsLet,
     (l: ChainLink)  => drRefs(l.value.armBody, name)
       ? drWrapArmsB(l.next, name, let2, push<PArm >(acc, l.value))
       : drWrapArmsB(l.next, name, let2,
-                   push<PArm >(acc, PArm(l.value.armName, l.value.armType,
-                                    withDrops(l.value.armBody,
-                                              oneDrop(let2)),
-                                    l.value.armLiterals, l.value.armGuard,
-                                    l.value.parmLine)))
+                   push<PArm >(acc, with l.value(armBody = withDrops(l.value.armBody,
+                                              oneDrop(let2)))))
 
 fun drFixBlock(bk: PeBlock, let2: PsLet): DrBx
   let ss = drFixStmtLoop(chain(bk.blockStmts), let2, builder<PStmt >(), false)

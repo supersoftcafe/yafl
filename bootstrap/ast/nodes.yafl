@@ -72,7 +72,12 @@ enum PExpr
                 lamRet: Spec|None = None)
   enum PeBlock(blockStmts: List<PStmt>, blockValue: PExpr, blockTag: String,
                pebkLine: PLine)
-  enum PeMatch(subject: PExpr, arms: List<PArm>, pemLine: PLine)
+  # `subject` is position 0 and `matchExtra` the rest, mirroring PArm's split.
+  # Dispatch over several subjects is a SEQUENCE of checks per arm, not a
+  # decision tree: a failing check falls through to the next arm, which IS
+  # first-match-wins across positions.
+  enum PeMatch(subject: PExpr, arms: List<PArm>, pemLine: PLine,
+               matchExtra: List<PExpr>)
   enum PeBuiltinOp(opType: Spec, opName: PExpr, opParams: PExpr, peboLine: PLine)
   # `with subject(name = value, …)` — copy-with-replacements. TRANSIENT: the
   # frontend expands it during compile once its subject type resolves
@@ -124,9 +129,15 @@ enum PLit
   enum PlExpr(litExpr: PExpr)
   enum PlRange(rangeLo: PExpr, rangeHi: PExpr, plrLine: PLine)
 
+# One arm's pattern for a subject AFTER the first. Position 0 stays on PArm
+# itself, so a one-subject arm is byte-for-byte the node it always was and
+# every single-subject path is untouched by multi-subject support.
+class [final] PPos(posName: String, posType: Spec|None, pposLine: PLine)
+
 class [final] PArm(armName: String, armType: Spec|None,
                    armBody: PExpr, armLiterals: List<PLit>,
-                   armGuard: PExpr|None, parmLine: PLine)
+                   armGuard: PExpr|None, parmLine: PLine,
+                   armExtra: List<PPos>)
 
 # ── statements ───────────────────────────────────────────────────────────────
 

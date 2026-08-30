@@ -54,7 +54,7 @@ fun tokenize(src: System::String): List<Tok>|CompileError
       ()           => false
   fun isNameStart(c: System::Int32): System::Bool
     ret match(c)
-      ('a' .. 'z', 'A' .. 'Z', '_') => true
+      ('a' .. 'z' | 'A' .. 'Z' | '_') => true
       ()                            => false
   fun isNameChar(c: System::Int32): System::Bool
     ret isNameStart(c) || isDigit(c)
@@ -77,7 +77,7 @@ fun tokenize(src: System::String): List<Tok>|CompileError
   fun symEnd(pos: System::Int): System::Int
     let two = pos + 2 <= System::length(src) ? System::slice(src, pos, pos + 2) : ""
     ret match(two)
-      ("<=", ">=", "==", "!=", "=>") => pos + 2
+      ("<=" | ">=" | "==" | "!=" | "=>") => pos + 2
       ()                             => pos + 1
   fun intTok(lo: System::Int, hi: System::Int): Tok|CompileError
     ret match(System::parseInt(System::slice(src, lo, hi)))
@@ -215,9 +215,9 @@ fun parseTernaryElse(cond: Expr, thn: Expr, ts: Chain<Tok>): (v: Expr|CompileErr
 
 fun prec(op: System::String): System::Int
   ret match(op)
-    ("==", "!=", "<", "<=", ">", ">=") => 1
-    ("+", "-")                         => 2
-    ("*", "/", "%")                    => 3
+    ("==" | "!=" | "<" | "<=" | ">" | ">=") => 1
+    ("+" | "-")                         => 2
+    ("*" | "/" | "%")                    => 3
     ()                                 => 0
 
 fun parseBinary(ts: Chain<Tok>, minPrec: System::Int = 1): (v: Expr|CompileError, rest: Chain<Tok>)

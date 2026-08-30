@@ -387,6 +387,97 @@ fun reprCtype(rep: GRepr): CgType
 # PointerRepr, ComplexEnumRepr.
 # ══════════════════════════════════════════════════════════════════════════
 
+# ── per-position guards and binds (multi-subject match) ──────────────────
+# `reprGenerateMatch` above drives the whole dispatch for ONE subject. With
+# several subjects each position instead contributes one STAGE of checks to
+# each arm, and emArm ANDs the stages and falls through to the next arm when
+# any fails — first-match-wins across positions, with no decision tree.
+#
+# None means "this repr cannot serve a position with that pattern"; the check
+# phase reports it rather than letting codegen emit something wrong.
+
+fun reprPositionGuards(rep: GRepr, sv: RParam, armType: Spec|None,
+                       r: Resolver): List<RParam>|None
+  ret match(armType)
+    (at: Spec) => reprPositionGuardsOn(rep, sv, at, r)
+    ()         => None
+
+fun reprPositionGuardsOn(rep: GRepr, sv: RParam, armType: Spec,
+                         r: Resolver): List<RParam>|None
+  ret match(rep)
+    (gt: GTagged) => match(gt.grtType)
+      (e2: SEnum) => flatEnumPositionGuards(sv, armType, e2.seAllLeaves)
+      (o: Spec)   => combinationPositionGuards(gt, sv, armType, r)
+    (gp: GPointer)     => pointerPositionGuards(sv, armType, r)
+    (gc: GComplexEnum) => complexPositionGuards(gc, sv, armType, r)
+
+fun flatEnumPositionGuards(sv: RParam, armType: Spec,
+                           allLeafNames: List<String>): List<RParam>|None
+  ret match(asEnumVariant(armType))
+    (at: SEnum) => map(sortLeavesByGuardOrder(at.seValidLeaves, allLeafNames),
+                       (leaf: String) =>
+                         RpIntEqConst(RpStructField(sv, "$tag"),
+                                      leafId(allLeafNames, leaf)))
+    ()          => None
+
+fun complexPositionGuards(gc: GComplexEnum, sv: RParam, armType: Spec,
+                          r: Resolver): List<RParam>|None
+  ret match(asEnumVariant(gc.grcType))
+    (subj: SEnum) => match(asEnumVariant(armType))
+      (at: SEnum) => map(sortLeavesByComplexId(at.seValidLeaves, subj.seRoot,
+                                               getDiscriminators(r)),
+                         (leaf: String) =>
+                           RpIntEqConst(RpVtableDiscriminator(sv),
+                                        complexLeafId(subj.seRoot, leaf,
+                                                      getDiscriminators(r))))
+      ()          => None
+    ()            => None
+
+# NULL for the unit member, vtable identity for the rest. A FOREIGN class is
+# untestable from generated code — in a single-subject match it can be the
+# implicit fallback, but a POSITION has no fallback to be.
+fun pointerPositionGuards(sv: RParam, armType: Spec,
+                          r: Resolver): List<RParam>|None
+  ret pointerGuardLoop(chain(unionMembers(armType)), sv, r, List<RParam>())
+
+fun [tail] pointerGuardLoop(ms: Chain<Spec>, sv: RParam, r: Resolver,
+                            acc: List<RParam>): List<RParam>|None
+  ret match(ms)
+    (nil: ChainEnd) => isEmpty(acc) ? None : acc
+    (l: ChainLink)  => isNoneSpec2(l.value)
+      ? pointerGuardLoop(l.next, sv, r,
+                         appendGuard(acc, RpIntEqConst(sv, 0)))
+      : match(memberGuard(l.value, sv, r))
+        (g: RParam) => pointerGuardLoop(l.next, sv, r, appendGuard(acc, g))
+        ()          => None          # FOREIGN: untestable in a position
+
+fun appendGuard(acc: List<RParam>, g: RParam): List<RParam>
+  ret build<RParam >(push<RParam >(builderFrom<RParam>(acc), g))
+
+# One tag comparison per position. `.get(uid, 0)` is deliberate: a BUILTIN
+# member such as the `int32` of `Int32|None` carries no registry
+# discriminator and takes tag 0, exactly as the single-subject path reads it.
+fun combinationPositionGuards(gt: GTagged, sv: RParam, armType: Spec,
+                              r: Resolver): List<RParam>|None
+  ret match(soleMemberOf(armType))
+    # The member must actually BE a member of this subject union. Without the
+    # check a pattern naming something else emits a tag test against 0 and
+    # silently matches the wrong variant; Python refuses it (vi is None).
+    (m: Spec) => contains2(map(unionMembers(gt.grtType), (v: Spec) => uid(v)),
+                           uid(m))
+      ? list1(RpIntEqConst(RpStructField(sv, "$tag"),
+                           discOf(getDiscriminators(r), uid(m))))
+      : None
+    ()        => None                # several members need a Phi, not a stage
+
+fun soleMemberOf(sp: Spec): Spec|None
+  ret exactly(chain(unionMembers(sp)), 1) ? head(unionMembers(sp)) : sp
+
+fun discOf(discs: Dict<String, Int>, u: String): Int
+  ret match(get(discs, u))
+    (i: Int) => i
+    ()       => 0
+
 fun reprGenerateMatch(rep: GRepr, em: GEmit, resultType: Spec|None, subjBundle: GBundle,
                      arms: List<PArm>, elseArm: PArm|None, r: Resolver): GEmit
   ret match(rep)

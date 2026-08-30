@@ -357,7 +357,7 @@ fun attrNameText(t: Token): System::String
   if isIdentTok(t)
     ret t.text
   ret match(t.text)
-    ("where", "let", "fun", "class", "interface", "ret", "import", "namespace") if isSymTok(t, t.text) =>
+    ("where" | "let" | "fun" | "class" | "interface" | "ret" | "import" | "namespace") if isSymTok(t, t.text) =>
         t.text
     () => ""
 
@@ -641,11 +641,11 @@ fun parseIsTail(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun isDesugar(lhs: PExpr, neg: Bool, ty: Spec): PExpr
   let lr = exprLine(lhs)
   # Two arms: the typed one, then the catch-all — match order is semantics.
-  let arms = prepend(PArm("", ty, PeBool(!neg, lr), List<PLit>(), None, lr),
+  let arms = prepend(PArm("", ty, PeBool(!neg, lr), List<PLit>(), None, lr, List<PPos>()),
                      prepend(PArm("", None, PeBool(neg, lr), List<PLit>(),
-                                  None, lr),
+                                  None, lr, List<PPos>()),
                              List<PArm>()))
-  ret PeMatch(lhs, arms, lr)
+  ret PeMatch(lhs, arms, lr, List<PExpr>())
 
 # One left-associative binary level over an op set: builds the `` `op` ``
 # call (with the andNot fold) via builders.foldBinary.
@@ -957,21 +957,47 @@ fun parseMatch(kwLr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if !atSym(ps, "(")
     ret (hardFail("invalid match subject", ps), ps)
   let lr = lineAt(bump(ps))
-  ret hardened(parseExpr(bump(ps)), "invalid match subject")
-    ?> (a: PExpr, rest: Ps) => !atSym(rest, ")")
+  ret hardened(parseSubjects(bump(ps), builder<PExpr>()), "invalid match subject")
+    ?> (subs: List<PExpr>, rest: Ps) => !atSym(rest, ")")
          ? (hardFail("expected ')' after match subject", rest), rest)
-         : parseArms(a, lr, bump(rest), builder<PArm>())
+         : matchWithSubjects(subs, lr, bump(rest))
 
-fun [tail] parseArms(subj: PExpr, lr: PLine, ps: Ps,
+# One or more comma-separated subjects. A comma is POSITIONAL everywhere.
+#
+# Written as a match, NOT `?>`: `acc` is a LINEAR builder and the bind's
+# lambda would capture it, which linearity forbids — the builder must be
+# consumed exactly once, on every path. That is why the other builder loops
+# here are matches too.
+fun [tail] parseSubjects(ps: Ps,
+                         [terminal] acc: ListBuilder<PExpr>): (v: List<PExpr>|PFail, rest: Ps)
+  let e = parseExpr(ps)
+  ret match(e.v)
+    (f: PFail) => subjectsFail(acc, f, e.rest)
+    (x: PExpr) => atSym(e.rest, ",")
+      ? parseSubjects(bump(e.rest), push(acc, x))
+      : (build(push(acc, x)), e.rest)
+
+fun subjectsFail(b: ListBuilder<PExpr>, f: PFail,
+                 rest: Ps): (v: List<PExpr>|PFail, rest: Ps)
+  let _ = discard(b)
+  ret (f, rest)
+
+fun matchWithSubjects(subs: List<PExpr>, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
+  ret match(head(subs))
+    (s0: PExpr) => parseArms(s0, tail(subs), lr, ps, builder<PArm>())
+    ()          => (hardFail("invalid match subject", ps), ps)
+
+fun [tail] parseArms(subj: PExpr, extra: List<PExpr>, lr: PLine, ps: Ps,
               acc: ListBuilder<PArm>): (v: PExpr|PFail, rest: Ps)
   let t = peek(ps)
   if !isSymTok(t, "(")
-    ret (PeMatch(subj, build(acc), lr), ps)
+    ret (PeMatch(subj, build(acc), lr, extra), ps)
   let armPs = Ps(ps.ts, t.line, t.indent, ps.srcFile)
   let a = parseArm(armPs)
   ret match(a.v)
     (f: PFail) => armsFail(acc, f, a.rest)
-    (arm: PArm) => parseArms(subj, lr, blockExit(a.rest, ps), push(acc, arm))
+    (arm: PArm) => parseArms(subj, extra, lr, blockExit(a.rest, ps),
+                             push(acc, arm))
 
 fun parseArm(ps: Ps): (v: PArm|PFail, rest: Ps)
   let lr = lineAt(ps)
@@ -980,7 +1006,7 @@ fun parseArm(ps: Ps): (v: PArm|PFail, rest: Ps)
     (f: PFail)         => f.hard ? (f, lits.rest) : parseDestructureArm(lr, ps)
     (list: List<PLit>) => isEmpty(list)
       ? parseDestructureArm(lr, ps)
-      : parseArmTail("", None, list, lr, lits.rest)
+      : parseArmTail("", None, list, lr, lits.rest, List<PPos>())
 
 fun parseLiteralArmHead(ps: Ps): (v: List<PLit>|PFail, rest: Ps)
   if atSym(ps, ")")
@@ -991,7 +1017,10 @@ fun [tail] parseLiteralList(ps: Ps, acc: ListBuilder<PLit>): (v: List<PLit>|PFai
   let l = parseMatchLiteral(ps)
   ret match(l.v)
     (f: PFail) => litsFail(acc, PFail(false, f.msg, f.line, f.col), l.rest)
-    (a: PLit)  => atSym(l.rest, ",")
+    # Any-of literals are separated by `|`, NOT `,`: a comma is POSITIONAL in
+    # a match arm whatever the subject count, so `(0, 1)` means "position 0 is
+    # 0 and position 1 is 1" and `('a' | 'b')` means "either, one subject".
+    (a: PLit)  => atSym(l.rest, "|")
       ? parseLiteralList(bump(l.rest), push(acc, a))
       : litsClose(push(acc, a), l.rest)
 
@@ -1041,17 +1070,36 @@ fun parseDestructureArm(lr: PLine, ps: Ps): (v: PArm|PFail, rest: Ps)
 
 # One binder at most: its bare name (pre-@) and declared type feed the arm;
 # `_` means unnamed. Zero binders is the else arm.
+# Position 0 lands on the arm; the rest become PPos entries. Arity is checked
+# against the subject count in the check phase, where the count is known — the
+# grammar cannot know it here.
 fun armFromTargets(pl: List<PStmt>, lr: PLine, ps: Ps): (v: PArm|PFail, rest: Ps)
   ret match(head(pl))
-    (only: PStmt) => isEmpty(tail(pl))
-      ? armFromBinder(only, lr, ps)
-      : (hardFail("match arm must have exactly one parameter", ps), ps)
-    ()            => parseArmTail("", None, List<PLit>(), lr, ps)
+    (only: PStmt) => armFromBinder(only, posOf(chain(tail(pl)), lr, List<PPos>()),
+                                   lr, ps)
+    ()            => parseArmTail("", None, List<PLit>(), lr, ps, List<PPos>())
 
-fun armFromBinder(binder: PStmt, lr: PLine, ps: Ps): (v: PArm|PFail, rest: Ps)
+fun [tail] posOf(bs: Chain<PStmt>, lr: PLine, acc: List<PPos>): List<PPos>
+  ret match(bs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => posOf(l.next, lr, appendPos(acc, l.value, lr))
+
+# Every position carries the ARM's line ref, not the binder's own: the unique
+# name is `name@arm<hash of that line>`, and Python keys all positions of one
+# arm off the arm. Using the binder's line would mint a different hash and the
+# two compilers would emit different C identifiers for the same program.
+fun appendPos(acc: List<PPos>, binder: PStmt, lr: PLine): List<PPos>
+  ret match(binder)
+    (l: PsLet) => build<PPos >(push<PPos >(builderFrom<PPos>(acc),
+                    PPos(bareOf(l.lName) == "_" ? "" : bareOf(l.lName),
+                         l.lType, lr)))
+    (other)    => acc
+
+fun armFromBinder(binder: PStmt, extra: List<PPos>, lr: PLine,
+                  ps: Ps): (v: PArm|PFail, rest: Ps)
   ret match(binder)
     (l: PsLet) => parseArmTail(bareOf(l.lName) == "_" ? "" : bareOf(l.lName),
-                               l.lType, List<PLit>(), lr, ps)
+                               l.lType, List<PLit>(), lr, ps, extra)
     (other)    => (hardFail("invalid match arm", ps), ps)
 
 fun bareOf(name: String): String
@@ -1059,25 +1107,25 @@ fun bareOf(name: String): String
   ret at < 0 ? name : slice(name, 0, at)
 
 fun parseArmTail(name: String, ty: Spec|None, lits: List<PLit>, lr: PLine,
-                 ps: Ps): (v: PArm|PFail, rest: Ps)
+                 ps: Ps, extra: List<PPos>): (v: PArm|PFail, rest: Ps)
   if atSym(ps, "if")
     ret hardened(parseExpr(bump(ps)), "missing guard expression")
-      ?> (guard: PExpr, rest: Ps) => armBody(name, ty, lits, guard, lr, rest)
-  ret armBodyNoGuard(name, ty, lits, lr, ps)
+      ?> (guard: PExpr, rest: Ps) => armBody(name, ty, lits, guard, lr, rest, extra)
+  ret armBodyNoGuard(name, ty, lits, lr, ps, extra)
 
 fun armBody(name: String, ty: Spec|None, lits: List<PLit>, guard: PExpr,
-            lr: PLine, ps: Ps): (v: PArm|PFail, rest: Ps)
+            lr: PLine, ps: Ps, extra: List<PPos>): (v: PArm|PFail, rest: Ps)
   if !atSym(ps, "=>")
     ret (hardFail("expected '=>' in match arm", ps), ps)
   ret hardened(parseExpr(bump(ps)), "missing match arm body")
-    ?> (a: PExpr, rest: Ps) => (PArm(name, ty, a, lits, guard, lr), rest)
+    ?> (a: PExpr, rest: Ps) => (PArm(name, ty, a, lits, guard, lr, extra), rest)
 
 fun armBodyNoGuard(name: String, ty: Spec|None, lits: List<PLit>, lr: PLine,
-                   ps: Ps): (v: PArm|PFail, rest: Ps)
+                   ps: Ps, extra: List<PPos>): (v: PArm|PFail, rest: Ps)
   if !atSym(ps, "=>")
     ret (hardFail("expected '=>' in match arm", ps), ps)
   ret hardened(parseExpr(bump(ps)), "missing match arm body")
-    ?> (a: PExpr, rest: Ps) => (PArm(name, ty, a, lits, None, lr), rest)
+    ?> (a: PExpr, rest: Ps) => (PArm(name, ty, a, lits, None, lr, extra), rest)
 
 # ══ Statements ═══════════════════════════════════════════════════════════════
 # Each statement parses inside its own block fence (parselib.block). Named

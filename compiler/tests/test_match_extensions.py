@@ -1,4 +1,4 @@
-"""Match extensions: multi-literal arms and arm guards.
+"""Match extensions: multi-literal arms (any-of, separated by `|`) and arm guards.
 
 `(a, b, c) => body` — one arm matching any of several literals (all the same
 kind: chars are Int32, so char classification lands here). `<arm> if cond =>
@@ -29,14 +29,14 @@ import System
 
 fun classify(c: Int32): Int
   ret match(c)
-    (' ', 9i32, 10i32) => 0
+    (' ' | 9i32 | 10i32) => 0
     ('0')              => 1
     ()                 => 2
 
 fun bucket(n: Int): Int
   ret match(n)
     (0)       => 0
-    (1, 2, 3) => 1
+    (1 | 2 | 3) => 1
     ()        => 9
 
 fun kind(v: Int|String): Int
@@ -51,7 +51,7 @@ fun choose(b: Bool): Int|String
 
 fun strpick(s: String): Int
   ret match(s)
-    ("a", "b") => 0
+    ("a" | "b") => 0
     ()         => 1
 
 fun main(): Int
@@ -75,13 +75,13 @@ import System
 fun digit(c: Int32): Int
   ret match(c)
     ('0' .. '9')             => 0
-    ('a' .. 'z', 'A' .. 'Z') => 1
-    (' ', 9i32)              => 2
+    ('a' .. 'z' | 'A' .. 'Z') => 1
+    (' ' | 9i32)              => 2
     ()                       => 3
 
 fun bucket(n: Int): Int
   ret match(n)
-    (0, 5 .. 7) => 0
+    (0 | 5 .. 7) => 0
     (1 .. 4)    => 1
     ()          => 2
 
@@ -187,7 +187,7 @@ class TestMatchExtensionsErrors(TestCase):
         errs = _errors(_PRELUDE
             + "fun f(n: Int): Int\n"
             + "  ret match(n)\n"
-            + "    (1, \"a\") => 0\n"
+            + "    (1 | \"a\") => 0\n"
             + "    ()        => 1\n"
             + "fun main(): Int\n  ret f(1)\n")
         self.assertTrue(errs.strip(), "expected an error for mixed literal kinds")

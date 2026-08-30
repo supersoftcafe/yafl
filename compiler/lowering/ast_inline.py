@@ -133,8 +133,12 @@ def _rename_match_patterns(body: "e.Expression | list[s.Statement]", suffix: str
     def _collect(_r, thing):
         if isinstance(thing, m.MatchExpression):
             for arm in thing.arms:
-                if arm.name and arm.name != "_":
-                    bound.add(arm.name)
+                # Every POSITION binds: position 0 on the arm, the rest on its
+                # MatchPos entries. Miss the extras and each inlined copy
+                # redefines the same stack var — SSA single-definition.
+                for holder in (arm, *arm.extra):
+                    if holder.name and holder.name != "_":
+                        bound.add(holder.name)
         return rw.UNCHANGED
 
     resolver = g.ResolverRoot([])
@@ -153,11 +157,17 @@ def _rename_match_patterns(body: "e.Expression | list[s.Statement]", suffix: str
         if isinstance(thing, e.NamedExpression) and thing.name in renames:
             return dataclasses.replace(thing, name=renames[thing.name])
         if isinstance(thing, m.MatchExpression):
-            new_arms = [
-                dataclasses.replace(arm, name=renames[arm.name])
-                if arm.name and arm.name in renames else arm
-                for arm in thing.arms
-            ]
+            def _renamed(arm):
+                out = arm
+                if arm.name and arm.name in renames:
+                    out = dataclasses.replace(out, name=renames[arm.name])
+                if any(p.name and p.name in renames for p in arm.extra):
+                    out = dataclasses.replace(out, extra=tuple(
+                        dataclasses.replace(p, name=renames[p.name])
+                        if p.name and p.name in renames else p
+                        for p in arm.extra))
+                return out
+            new_arms = [_renamed(arm) for arm in thing.arms]
             if any(na is not oa for na, oa in zip(new_arms, thing.arms)):
                 return dataclasses.replace(thing, arms=new_arms)
         return rw.UNCHANGED

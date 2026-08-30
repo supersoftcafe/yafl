@@ -157,7 +157,7 @@ fun [tail] b64Groups(st: Md5State, i: Int, acc: String): String
 
 fun isAlnumByte(c: Int32): Bool
   ret match(c)
-    ('0' .. '9', 'a' .. 'z', 'A' .. 'Z') => true
+    ('0' .. '9' | 'a' .. 'z' | 'A' .. 'Z') => true
     ()                                   => false
 
 fun [tail] takeAlnum(s: String, at: Int, left: Int,

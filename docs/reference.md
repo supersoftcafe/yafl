@@ -295,16 +295,43 @@ An anonymous function. The body is a single expression. Lambdas capture their en
 ### `match`
 
 ```
-match(<expr>)
-    (<pattern>) => <result>
-    (<pattern>) => <result>
+match(<expr>(, <expr>)*)
+    (<pattern>(, <pattern>)*) [if <guard>] => <result>
     ...
+    ()                                     => <result>
 ```
 
-Dispatches on the runtime type of a union value. Arms are indented beneath `match`. The first matching arm is taken.
+Dispatches on the runtime type of one or more union values. Arms are indented
+beneath `match`. The first matching arm is taken.
 
-- A pattern of the form `(TypeName)` matches only that type; the matched value is `TypeName`.
-- A pattern of the form `(name)` matches any value and binds it to `name`.
+- A pattern of the form `(name: Type)` matches only that type and binds the
+  matched value to `name`; `_` matches the type and discards the binding.
+- `()` is the ELSE arm: it matches anything and binds nothing. It must come
+  last, and it is what makes a match total.
+- An arm may carry a guard, `if <expr>`, evaluated after the bindings. A false
+  guard falls through to the NEXT arm, and a guarded arm covers nothing for
+  exhaustiveness.
+
+A comma is always POSITIONAL. With several subjects, an arm has one pattern per
+subject and all of them must match for the arm to be taken; a failing pattern
+falls through to the next arm, so arms are tried in order as written.
+
+```yafl
+match(a, b)
+    (x: Spec, y: Spec) => eqSpec(x, y)
+    (x: Spec, y: None) => false
+    ()                 => true
+```
+
+Literal patterns match a primitive subject (Int, or String) by value. Several
+alternatives for ONE subject are separated by `|`, and an inclusive range is
+written `lo .. hi`:
+
+```yafl
+match(c)
+    ('0' .. '9' | 'a' .. 'f' | 'A' .. 'F') => true
+    ()                                     => false
+```
 
 ```yafl
 match(divide(10, 0))

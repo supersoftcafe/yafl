@@ -44,9 +44,10 @@ fun kindName(k: TokKind): System::String
 
 fun isKeyword(s: System::String): System::Bool
   ret match(s)
-    ("ret", "let", "fun", "typealias", "where", "class", "interface",
-     "instance", "import", "namespace", "__builtin_type__", "__builtin_op__",
-     "__parallel__", "match", "enum", "if", "else", "with") => true
+    ("ret" | "let" | "fun" | "typealias" | "where" | "class" | "interface"
+     | "instance" | "import" | "namespace" | "__builtin_type__"
+     | "__builtin_op__" | "__parallel__" | "match" | "enum" | "if" | "else"
+     | "with") => true
     ()                                              => false
 
 # ══ Character classes ════════════════════════════════════════════════════════
@@ -63,7 +64,7 @@ fun isDigit(c: System::Int32): System::Bool
 
 fun isAlpha(c: System::Int32): System::Bool
   ret match(c)
-    ('a' .. 'z', 'A' .. 'Z') => true
+    ('a' .. 'z' | 'A' .. 'Z') => true
     ()                       => false
 
 fun isIdentStart(c: System::Int32): System::Bool
@@ -74,17 +75,17 @@ fun isWordChar(c: System::Int32): System::Bool
 
 fun isHexDigit(c: System::Int32): System::Bool
   ret match(c)
-    ('0' .. '9', 'a' .. 'f', 'A' .. 'F', '_') => true
+    ('0' .. '9' | 'a' .. 'f' | 'A' .. 'F' | '_') => true
     ()                                        => false
 
 fun isBinDigit(c: System::Int32): System::Bool
   ret match(c)
-    ('0', '1', '_') => true
+    ('0' | '1' | '_') => true
     ()              => false
 
 fun isOctDigit(c: System::Int32): System::Bool
   ret match(c)
-    ('0' .. '7', '_') => true
+    ('0' .. '7' | '_') => true
     ()                => false
 
 # ══ Lexeme scanners ══════════════════════════════════════════════════════════
@@ -160,8 +161,8 @@ fun isDigitOrUnderscore(c: System::Int32): System::Bool
 fun symbolLen(ln: System::String, pos: System::Int): System::Int
   let two = pos + 2 <= System::length(ln) ? System::slice(ln, pos, pos + 2) : ""
   ret match(two)
-    ("&&", "||", "==", "|>", "?>", "??", "<<", ">>",
-     "!=", "<=", ">=", "=>", "::", "..") => 2
+    ("&&" | "||" | "==" | "|>" | "?>" | "??" | "<<" | ">>"
+     | "!=" | "<=" | ">=" | "=>" | "::" | "..") => 2
     () => System::containsByte("=%*+?-/&|^!~()[]<>.;:,", System::byteAt(ln, pos)) ? 1 : 0
 
 # Python's LineRef offsets are CHARACTER columns, and hash6 hashes them — so

@@ -231,7 +231,7 @@ fun tlRewriteTail(x: PExpr, fName: String, n: Int): TlRw
                                     te.pety),
                           f2.rwN)
     (mt: PeMatch)  => tlArmTails(chain(mt.arms), fName, n, builder<PArm >())
-      |> (ao) => TlRw(PeMatch(mt.subject, ao.aoArms, mt.pemLine), ao.aoN)
+      |> (ao) => TlRw(with mt(arms = ao.aoArms), ao.aoN)
     (o: PExpr)     => TlRw(x, n)   # non-tail-bearing: a base-case value
 
 fun tlToRecur(x: PExpr, n: Int): TlRw
@@ -285,6 +285,4 @@ fun [tail] tlArmTails(as2: Chain<PArm>, fName: String, n: Int,
     (l: ChainLink)  => tlRewriteTail(l.value.armBody, fName, n)
       |> (bo) => tlArmTails(l.next, fName, bo.rwN,
                             push<PArm >(acc,
-                                PArm(l.value.armName, l.value.armType,
-                                     bo.rwExpr, l.value.armLiterals,
-                                     l.value.armGuard, l.value.parmLine)))
+                                with l.value(armBody = bo.rwExpr)))

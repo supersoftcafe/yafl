@@ -570,10 +570,9 @@ fun gsubExpr(x: PExpr, sub: GSub, visited: List<String>): PExpr
                                         List<PStmt>()),
                               gsubExpr(bk.blockValue, sub, visited),
                               bk.blockTag, bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(gsubExpr(mt.subject, sub, visited),
-                              gsubArms(chain(mt.arms), sub, visited,
-                                       List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = gsubExpr(mt.subject, sub, visited),
+                      arms    = gsubArms(chain(mt.arms), sub, visited,
+                                       List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(gsubSpec(op.opType, sub, visited),
                                      op.opName,
                                      gsubExpr(op.opParams, sub, visited),
@@ -628,13 +627,8 @@ fun [tail] gsubArmsB(as2: Chain<PArm>, sub: GSub, visited: List<String>,
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => gsubArmsB(l.next, sub, visited,
-        push<PArm >(acc, PArm(l.value.armName,
-                         gsubOpt(l.value.armType, sub, visited),
-                         gsubExpr(l.value.armBody, sub, visited),
-                         gsubLits(chain(l.value.armLiterals), sub, visited,
-                                  List<PLit>()),
-                         gsubExprOpt(l.value.armGuard, sub, visited),
-                         l.value.parmLine)))
+        push<PArm >(acc, with l.value(armType = gsubOpt(l.value.armType, sub, visited), armBody = gsubExpr(l.value.armBody, sub, visited), armLiterals = gsubLits(chain(l.value.armLiterals), sub, visited,
+                                  List<PLit>()), armGuard = gsubExprOpt(l.value.armGuard, sub, visited))))
 
 fun gsubLits(ls: Chain<PLit>, sub: GSub, visited: List<String>,
                     acc: List<PLit>): List<PLit>
@@ -1157,9 +1151,8 @@ fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
                                        List<PStmt>()),
                               rcrExpr(bk.blockValue, refs), bk.blockTag,
                               bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(rcrExpr(mt.subject, refs),
-                              rcrArms(chain(mt.arms), refs, List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = rcrExpr(mt.subject, refs),
+                      arms    = rcrArms(chain(mt.arms), refs, List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(rcrSpec(op.opType, refs), op.opName,
                                      rcrExpr(op.opParams, refs), op.peboLine)
     (nw: PeNew)    => PeNew(rcrSpec(nw.newType, refs),
@@ -1202,12 +1195,7 @@ fun [tail] rcrArmsB(as2: Chain<PArm>, refs: GRefsIx,
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcrArmsB(l.next, refs,
-        push<PArm >(acc, PArm(l.value.armName,
-                         rcrSpecOpt(l.value.armType, refs),
-                         rcrExpr(l.value.armBody, refs),
-                         l.value.armLiterals,
-                         rcrExprOpt(l.value.armGuard, refs),
-                         l.value.parmLine)))
+        push<PArm >(acc, with l.value(armType = rcrSpecOpt(l.value.armType, refs), armBody = rcrExpr(l.value.armBody, refs), armGuard = rcrExprOpt(l.value.armGuard, refs))))
 
 # ── prune + finalize ────────────────────────────────────────────────────────
 
@@ -1920,10 +1908,9 @@ fun rtrExpr(x: PExpr, r: Resolver, traits: List<PStmt>): PExpr
                                        List<PStmt>()),
                               rtrExpr(bk.blockValue, r, traits), bk.blockTag,
                               bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(rtrExpr(mt.subject, r, traits),
-                              rtrArms(chain(mt.arms), r, traits,
-                                      List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = rtrExpr(mt.subject, r, traits),
+                      arms    = rtrArms(chain(mt.arms), r, traits,
+                                      List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rtrExpr(op.opParams, r, traits),
                                      op.peboLine)
@@ -1966,11 +1953,7 @@ fun [tail] rtrArmsB(as2: Chain<PArm>, r: Resolver, traits: List<PStmt>,
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rtrArmsB(l.next, r, traits,
-        push<PArm >(acc, PArm(l.value.armName, l.value.armType,
-                         rtrExpr(l.value.armBody, r, traits),
-                         l.value.armLiterals,
-                         rtrExprOpt(l.value.armGuard, r, traits),
-                         l.value.parmLine)))
+        push<PArm >(acc, with l.value(armBody = rtrExpr(l.value.armBody, r, traits), armGuard = rtrExprOpt(l.value.armGuard, r, traits))))
 
 # Redirect one name: use the trait_scope recorded during compilation if
 # available, otherwise derive it from a TRAIT-scoped find.
@@ -2290,9 +2273,8 @@ fun rfrExpr(x: PExpr, c: Canon): PExpr
                                        List<PStmt>()),
                               rfrExpr(bk.blockValue, c), bk.blockTag,
                               bk.pebkLine)
-    (mt: PeMatch)  => PeMatch(rfrExpr(mt.subject, c),
-                              rfrArms(chain(mt.arms), c, List<PArm>()),
-                              mt.pemLine)
+    (mt: PeMatch) => with mt(subject = rfrExpr(mt.subject, c),
+                      arms    = rfrArms(chain(mt.arms), c, List<PArm>()))
     (op: PeBuiltinOp) => PeBuiltinOp(rfrSpec(op.opType, c), op.opName,
                                      rfrExpr(op.opParams, c), op.peboLine)
     (nw: PeNew)    => PeNew(rfrSpec(nw.newType, c), rfrExpr(nw.newParam, c),
@@ -2333,9 +2315,7 @@ fun [tail] rfrArmsB(as2: Chain<PArm>, c: Canon, [terminal] acc: ListBuilder<PArm
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rfrArmsB(l.next, c,
-        push<PArm >(acc, PArm(l.value.armName, rfrSpecOpt(l.value.armType, c),
-                         rfrExpr(l.value.armBody, c), l.value.armLiterals,
-                         rfrExprOpt(l.value.armGuard, c), l.value.parmLine)))
+        push<PArm >(acc, with l.value(armType = rfrSpecOpt(l.value.armType, c), armBody = rfrExpr(l.value.armBody, c), armGuard = rfrExprOpt(l.value.armGuard, c))))
 
 fun rfrSpecOpt(sp: Spec|None, c: Canon): Spec|None
   ret match(sp)

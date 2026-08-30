@@ -615,14 +615,19 @@ def __to_match_arm(result: p.Result[tuple[list[s.LetStatement], list[e.Expressio
     if len(params) == 0:
         return p.Result(m.MatchArm(result.line_ref, None, None, body, guard=p.first_or_none(guard)),
                         result.tokens, result.line_ref, result.errors)
-    if len(params) == 1:
-        param = params[0]
-        raw_name = param.name.split('@')[0]
-        name = None if raw_name == '_' else raw_name
-        return p.Result(m.MatchArm(result.line_ref, name, param.declared_type, body, guard=p.first_or_none(guard)),
-                        result.tokens, result.line_ref, result.errors)
-    errors = result.errors + [p.Error(result.line_ref, "match arm must have exactly one parameter")]
-    return p.Result(None, result.tokens, result.line_ref, errors)
+    # Position 0 lands on the arm itself; the rest become MatchPos entries, so
+    # a one-subject arm is exactly the node it always was. Arity is checked
+    # against the subject count in MatchExpression.check, where the count is
+    # known — the grammar cannot know it here.
+    def _named(param):
+        raw = param.name.split('@')[0]
+        return None if raw == '_' else raw
+    first = params[0]
+    extra = tuple(m.MatchPos(result.line_ref, _named(q), q.declared_type)
+                  for q in params[1:])
+    return p.Result(m.MatchArm(result.line_ref, _named(first), first.declared_type, body,
+                               guard=p.first_or_none(guard), extra=extra),
+                    result.tokens, result.line_ref, result.errors)
 
 
 def __to_match_arm_literal(result: p.Result[tuple[list[e.Expression], list[e.Expression], e.Expression]], tokens: list[p.Token]) -> p.Result[m.MatchArm]:
@@ -636,9 +641,10 @@ def __to_match_arm_literal(result: p.Result[tuple[list[e.Expression], list[e.Exp
                     result.tokens, result.line_ref, result.errors)
 
 
-def __to_match_expression(value: tuple[e.Expression, list[m.MatchArm]], line_ref: p.LineRef) -> m.MatchExpression:
-    subject, arms = value
-    return m.MatchExpression(line_ref, subject, arms)
+def __to_match_expression(value: tuple[list[e.Expression], list[m.MatchArm]], line_ref: p.LineRef) -> m.MatchExpression:
+    subjects, arms = value
+    return m.MatchExpression(line_ref, subjects[0], arms,
+                             extra_subjects=tuple(subjects[1:]))
 
 
 def __to_import_statement(value: list[str], line_ref: p.LineRef) -> s.ImportStatement:
@@ -888,12 +894,15 @@ __parse_match_range = (__parse_match_bound & p.discard_sym("..") & __parse_match
 __parse_match_literal   = __parse_match_range | __parse_signed_float | __parse_signed_integer | __char() | __string()
 __parse_maybe_arm_guard = p.maybe(p.requires(
     p.discard_sym("if"), __parse_expression, "missing guard expression"))
+# Any-of literals are separated by `|`, NOT by commas: a comma is POSITIONAL
+# everywhere, so `(0, 1)` is "position 0 is 0 and position 1 is 1" whatever the
+# subject count, and `('a' | 'b')` is "either literal, one subject".
 __parse_match_arm_literal = p.block(
-    (p.discard_sym('(') & p.delimited_list(__parse_match_literal, ",") & p.discard_sym(')')
+    (p.discard_sym('(') & p.delimited_list(__parse_match_literal, "|") & p.discard_sym(')')
      & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal)
 __parse_match_arm_destructure = p.block((__parse_destructure_parts & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
 __parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
-__parse_match_subject = p.requires(p.sym("("), __parse_expression & p.discard_sym(")"), "invalid match subject")
+__parse_match_subject = p.requires(p.sym("("), p.delimited_list(__parse_expression, ",") & p.discard_sym(")"), "invalid match subject")
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
 
 __parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__").build(__to_parallel_expr)
