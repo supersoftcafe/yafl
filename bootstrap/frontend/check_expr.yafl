@@ -518,7 +518,53 @@ fun checkMatchTyped(mt: PeMatch, st: Spec, r: Resolver, expected: Spec|None,
   # NOT PORTED YET: __check_literal_arms / __check_exhaustiveness (coverage,
   # duplicate literals, unreachable arms) — the contract's next diff will
   # demand them.
-  ret matchArmChecks(chain(mt.arms), r, expected, subjectErr)
+  ret union(multiSubjectErrs(mt),
+            matchArmChecks(chain(mt.arms), r, expected, subjectErr))
+
+# ── multi-subject arity ─────────────────────────────────────────────────────
+# Arity is a pure AST property — one pattern per subject — so it is checked
+# here, where the subject count is known and the grammar's could not be.
+#
+# POSITION SUPPORT (can this repr test this pattern?) is deliberately NOT
+# here: it needs classifyRepr, and Bootstrap::Codegen imports this namespace,
+# so asking from here would be a cycle. It is a REPRESENTATION property and is
+# checked on the codegen side; see multiSubjectPositionErrs there.
+
+# Checked for EVERY match, not only multi-subject ones: the mismatch runs both
+# ways, and `match(a)` with a two-pattern arm is the commoner mistake. Gating
+# this on `matchExtra` being non-empty missed exactly that case.
+fun multiSubjectErrs(mt: PeMatch): Set<PErr>
+  ret arityErrs(chain(mt.arms), 1 + countOf(mt.matchExtra), noErrs())
+
+fun countOf(es: List<PExpr>): Int
+  ret fold(es, 0, (n: Int, e2: PExpr) => n + 1)
+
+# Accumulator-threaded so the self-call stays in TAIL position — wrapping it
+# in `union(...)` would not be one.
+fun [tail] arityErrs(as2: Chain<PArm>, want: Int, acc: Set<PErr>): Set<PErr>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => arityErrs(l.next, want,
+                                 union(acc, armArityErr(l.value, want)))
+
+fun armArityErr(a: PArm, want: Int): Set<PErr>
+  let got = 1 + countPos(a.armExtra)
+  ret isElseArmC(a) || got == want
+    ? noErrs()
+    : oneErr(a.parmLine, "match arm has " + String(got) + " pattern"
+             + (got == 1 ? "" : "s") + " but the match has " + String(want)
+             + " subject" + (want == 1 ? "" : "s"))
+
+fun countPos(ps: List<PPos>): Int
+  ret fold(ps, 0, (n: Int, p: PPos) => n + 1)
+
+fun isElseArmC(a: PArm): Bool
+  ret isNoneSpec3(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
+
+fun isNoneSpec3(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => false
+    ()         => true
 
 fun [tail] anyArmLiterals(as2: Chain<PArm>): Bool
   ret match(as2)

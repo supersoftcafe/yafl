@@ -248,8 +248,7 @@ class UnionRepr(ABC):
         MatchExpression.check reports it as a diagnostic rather than letting it
         reach codegen."""
         raise NotImplementedError(
-            f"{type(self).__name__} cannot yet serve a position of a "
-            f"multi-subject match")
+            "this pattern cannot serve a position of a multi-subject match")
 
     def position_bind(self, em, holder, sv, arm_type: t.TypeSpec,
                       subj_type: t.TypeSpec, resolver: g.Resolver):

@@ -114,6 +114,34 @@ Verify any corpus file is real before believing it:
 (Found 2026-08-29 when `bind_parse_state.yafl` shipped in f32c8c1 as a dud and
 was fixed the same session.)
 
+## 1d. Multi-subject match: position-support refusal is UNVERIFIED in the port
+
+Python's `MatchExpression.check` refuses a pattern whose repr cannot serve a
+position ("this pattern cannot serve a position of a multi-subject match") —
+e.g. a MULTI-MEMBER pattern at a position of a tagged-combination subject,
+which needs a Phi over entry edges rather than one tag test.
+
+The port checks the same thing, but NOT in its check phase: `classifyRepr`
+lives in Bootstrap::Codegen, which imports Bootstrap::Frontend, so asking from
+the check phase would be a cycle. It runs instead as a codegen validation
+(`multiSubjectPositionErrs`, create_c_code.yafl, at the ssaValidate seam).
+Consequence: both compilers refuse, but in different PHASES, so the message
+FORMAT differs — a check diagnostic carries `file[line:col]`, a codegen error
+does not.
+
+WHAT IS VERIFIED:
+  * ARITY parity is exact — both emit
+    `match arm has 2 patterns but the match has 1 subject`, byte-identical.
+  * `soleMemberOf` returned the whole union for a multi-member pattern where
+    Python returns None, so the port handed back ONE tag for a pattern
+    matching SEVERAL — a silent wrong-variant match. FIXED.
+
+WHAT IS NOT VERIFIED: that the port's codegen-side check actually FIRES.
+Two probe attempts failed to reach it — one was inlined away before codegen,
+the other was rejected earlier for an unrelated reason (`Int32(n)` is not a
+valid conversion). Do not assume it works; write a probe that survives
+inlining and type-checks, and confirm the port refuses.
+
 ## 2. Undischarged `where` crashes codegen
 
 Ledgered in `project_undischarged_where_crash.md`: a `where` constraint

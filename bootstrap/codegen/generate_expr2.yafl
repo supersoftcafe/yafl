@@ -540,8 +540,14 @@ fun stageFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
 # leaves the arm with fewer stages than positions, so it matches on a partial
 # test — and if every stage is dropped the arm matches unconditionally and the
 # arms after it become unreachable, which surfaces far away as a Phi with a
-# missing source. An unsupported position is refused by the check phase; here
-# it becomes a guard that never passes, so the arm is simply never taken.
+# missing source.
+#
+# checkMatch REFUSES such a program (multiSubjectErrs), so a checked program
+# never reaches here with an unsupported position; the never-passing guard
+# below is the defensive floor for an UNCHECKED path, chosen because it fails
+# closed. Codegen must not be the place that decides this — the port silently
+# emitting a never-matching arm where Python errors is exactly the kind of
+# divergence the contracts exist to catch.
 fun appendStage(acc: List<List<RParam>>,
                 st: List<RParam>|None): List<List<RParam>>
   ret build<List<RParam> >(push<List<RParam> >(

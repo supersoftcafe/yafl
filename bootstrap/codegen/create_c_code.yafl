@@ -151,6 +151,79 @@ fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
 
 # ── the driver ───────────────────────────────────────────────────────────────
 
+# ── multi-subject position support ──────────────────────────────────────────
+# For every arm of every multi-subject match, ask each position's repr whether
+# it can test that pattern. A `None` answer means the arm could only be
+# compiled into something that never matches, so the program is refused
+# instead — mirroring MatchExpression.check on the Python side.
+
+fun multiSubjectPositionErrs(statements: List<PStmt>, r: Resolver): List<String>
+  ret foldStmts<List<String>>(statements,
+        (acc: List<String>, st: PStmt) => acc,
+        (acc: List<String>, x: PExpr) => msPosExpr(acc, x, r),
+        List<String>())
+
+fun msPosExpr(acc: List<String>, x: PExpr, r: Resolver): List<String>
+  ret match(x)
+    (mt: PeMatch) => isEmpty(mt.matchExtra)
+      ? acc
+      : msPosArms(acc, chain(mt.arms), prepend(mt.subject, mt.matchExtra), r)
+    (o: PExpr)    => acc
+
+fun [tail] msPosArms(acc: List<String>, as2: Chain<PArm>, subs: List<PExpr>,
+                     r: Resolver): List<String>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => msPosArms(
+        msPosOne(acc,
+                 chain(prepend(l.value.armType,
+                               map(l.value.armExtra, (p: PPos) => p.posType))),
+                 chain(subs), r),
+        l.next, subs, r)
+
+fun [tail] msPosOne(acc: List<String>, pats: Chain<Spec|None>,
+                    subs: Chain<PExpr>, r: Resolver): List<String>
+  ret match(pats)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => msPosOne(msPosCheck(acc, l.value, msHeadExpr(subs), r),
+                                l.next, msRestExprs(subs), r)
+
+fun msPosCheck(acc: List<String>, pat: Spec|None, sub: PExpr|None,
+               r: Resolver): List<String>
+  ret match(pat)
+    (p2: Spec) => match(sub)
+      (e2: PExpr) => match(exprType(e2, r))
+        (st: Spec) => isEnumOrUnion2(st)
+          ? msSupported(acc, classifyRepr(st, r), p2, r)
+          : acc
+        ()         => acc
+      ()           => acc
+    ()           => acc
+
+fun msSupported(acc: List<String>, rep: GRepr, pat: Spec,
+                r: Resolver): List<String>
+  ret match(reprPositionGuards(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
+    (g: List<RParam>) => acc
+    ()                => build<String >(push<String >(builderFrom<String>(acc),
+                           "this pattern cannot serve a position of a "
+                           + "multi-subject match"))
+
+fun isEnumOrUnion2(sp: Spec): Bool
+  ret match(sp)
+    (e2: SEnum)        => true
+    (cm: SCombination) => true
+    (o: Spec)          => false
+
+fun msRestExprs(es: Chain<PExpr>): Chain<PExpr>
+  ret match(es)
+    (l: ChainLink)  => l.next
+    (nil: ChainEnd) => es
+
+fun msHeadExpr(es: Chain<PExpr>): PExpr|None
+  ret match(es)
+    (l: ChainLink)  => l.value
+    (nil: ChainEnd) => None
+
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
 fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
@@ -171,6 +244,17 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let a2 = ensureLazyMachinery(a1, collectLazyTypes(statements, r))
   # SSA + control-flow + Phi validation right after AST lowering.
   let _ir = spanEnd(spIr)
+  # Multi-subject POSITION support. This cannot live in the check phase: it
+  # needs classifyRepr, and Bootstrap::Codegen imports Bootstrap::Frontend, so
+  # asking from there would be a cycle. Python checks it in
+  # MatchExpression.check; the port checks it here. Both REFUSE the program —
+  # the difference is the phase, and therefore the message FORMAT (a check
+  # diagnostic carries file[line:col], a codegen error does not). Refusing in
+  # both is what matters; a port that silently emitted a never-matching arm
+  # where Python errors is the divergence the contracts exist to catch.
+  let posErrs = multiSubjectPositionErrs(statements, r)
+  if !isEmpty(posErrs)
+    ret CreateCOut(List<String>(), posErrs)
   let spV1 = spanBegin("codegen", "ssa_validate.1")
   let v1 = ssaValidate(appFunctions(a2), true)
   let _v1 = spanEnd(spV1)

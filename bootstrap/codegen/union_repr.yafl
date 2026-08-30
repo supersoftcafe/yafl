@@ -470,8 +470,13 @@ fun combinationPositionGuards(gt: GTagged, sv: RParam, armType: Spec,
       : None
     ()        => None                # several members need a Phi, not a stage
 
+# None when the pattern names SEVERAL members: a tagged combination tests ONE
+# tag per stage, so a multi-member pattern needs a Phi over entry edges, which
+# a position cannot be. Returning the union itself here — as this did — hands
+# back a single tag for a pattern that matches several, silently accepting a
+# program Python refuses.
 fun soleMemberOf(sp: Spec): Spec|None
-  ret exactly(chain(unionMembers(sp)), 1) ? head(unionMembers(sp)) : sp
+  ret exactly(chain(unionMembers(sp)), 1) ? head(unionMembers(sp)) : None
 
 fun discOf(discs: Dict<String, Int>, u: String): Int
   ret match(get(discs, u))

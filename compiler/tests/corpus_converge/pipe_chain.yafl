@@ -4,6 +4,16 @@
 # INFERRED from the default, exactly like an untyped let (the inherited half
 # of DestructureStatement.compile). The port originally compiled the targets
 # before propagation and never ran that inference; this pins both.
+namespace Corpus
+
+typealias Int : __builtin_type__<bigint>
+
+# `+` is declared here rather than imported: a Corpus-namespace corpus file
+# carries exactly the prelude it needs, and importing System would make `Int`
+# ambiguous against the typealias above.
+fun `+`(left: Int, right: Int): Int
+  ret __builtin_op__<bigint>("integer_add", left, right)
+
 class [final] PcA(av: Int)
 class [final] PcB(bv: Int)
 
