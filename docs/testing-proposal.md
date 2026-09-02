@@ -413,15 +413,30 @@ file and emit identical messages at identical positions:
     [11:11] unknown attribute [linr] on a typealias
     [4:5]   unknown attribute [cnst] on a let
 
-Two decisions inside it. Python reports in SOURCE order rather than sorted, so
-a declaration carrying two unknown attributes agrees with the port without
-either side needing a sort. And **trait instances are not checked, in either
-compiler**: the port's `PsTraitInstance` keeps only `tiAmbient: Bool` and its
-parser discards the attribute list, so it cannot see an unknown attribute
-there at all — checking it in Python alone would reject programs the port
-accepts, which is worse than the gap. Closing it needs a `tiAttrs` field, a
-positional AST-node change wanting a tree-wide enumeration of construction
-sites first.
+Python reports in SOURCE order rather than sorted, so a declaration carrying
+two unknown attributes agrees with the port without either side needing a sort.
+
+**All six statement kinds are checked, including trait instances.** The first
+cut of this did NOT check instances: the port's `PsTraitInstance` kept only
+`tiAmbient: Bool` and its parser discarded the attribute list, so I removed the
+check from the Python side too and called the resulting agreement "parity".
+That was wrong — levelling down leaves both compilers weaker than one of them
+was and converts a port-side bug into a permanent language limitation. Fixed
+in `ad56be7` by adding `tiAttrs` to the port node (second, no default, so the
+four rebuild sites must each pass it through rather than silently defaulting
+one to empty) and restoring the check on both sides. A second gap surfaced in
+passing: the port's `eqStmt` did not compare `tiAttrs`, while Python's
+dataclass equality compares `attributes` structurally.
+
+Left as an open item, deliberately and stated rather than hidden: **neither**
+compiler's `astdump` prints instance attributes, so the two dumps agree today.
+Making both print them would improve the comparison instrument but changes
+reference outputs, so it wants its own change.
+
+**Step 2 is DONE**: `System::Test` exists at `compiler/libs/system-test/` and
+runs real tests, validated with a hand-written registry — exactly what step 4
+will synthesise. Human output only; JSONL and JUnit remain step 5, and the
+library is dev-tree only until step 4 handles installation.
 
 Still to do: steps 3–5.
 
