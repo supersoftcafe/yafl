@@ -328,7 +328,8 @@ fun deSynthesise(e2: PsEnum, dl: DeLeaves): PStmt
   let iname = ns == "" ? "instance$eq" + deTag(lr) : ns + "::instance$eq" + deTag(lr)
   let pattern = SNamed("System::BasicEquality",
                        list1<Spec>(SNamed(e2.eName, List<Spec>(), lr)), lr)
-  ret PsTraitInstance(iname, true, List<PGen>(), pattern, List<Spec>(),
+  ret PsTraitInstance(iname, List<PAttr>(), true, List<PGen>(), pattern,
+                      List<Spec>(),
                       list2(deEqMember(e2, dl), deHashMember(e2, dl)),
                       lr, e2.eImports)
 

@@ -203,7 +203,14 @@ enum PStmt
   # and members. lower_instances.yafl lowers it to witness class + [trait]
   # record only after checking. tiName is synthesized (`instance$tag`) for
   # statement indexing only — diagnostics speak of the pattern.
-  enum PsTraitInstance(tiName: String, tiAmbient: Bool, tiGens: List<PGen>,
+  # tiAttrs is second, as on PsClass/PsEnum/PsTypealias, and carries NO default:
+  # the four sites that REBUILD an instance must each pass it through, and a
+  # default would let one silently swallow the attributes instead of failing to
+  # compile. tiAmbient stays — it is the decoded `[ambient]`, not a substitute
+  # for the list (keeping only the Bool is what left the port unable to see an
+  # unknown attribute on an instance at all).
+  enum PsTraitInstance(tiName: String, tiAttrs: List<PAttr>, tiAmbient: Bool,
+                       tiGens: List<PGen>,
                        tiPattern: Spec, tiWheres: List<Spec>,
                        tiMembers: List<PStmt>, pstiLine: PLine,
                        tiImports: List<PStmt>|None = None)

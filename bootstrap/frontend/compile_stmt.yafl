@@ -264,7 +264,8 @@ fun compileTraitInstance(inst: PsTraitInstance, r0: Resolver): StmtOut
   let members = compileStmts(chain(withOwnerWheres(inst.tiMembers,
                                                    inst.tiWheres)),
                              r, None, builder<PStmt >(), List<PStmt>())
-  ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAmbient, inst.tiGens,
+  ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAttrs, inst.tiAmbient,
+                              inst.tiGens,
                               specOr(pat, inst.tiPattern), wheres.psSpecs,
                               stripOwnerWheres(members.slStmts,
                                                inst.tiWheres),

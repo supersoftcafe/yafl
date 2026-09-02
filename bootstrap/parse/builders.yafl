@@ -453,7 +453,8 @@ fun withImports(st: PStmt, grp: List<PStmt>): PStmt
                             c.cAllSlots, grp)
     (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
                                      ta.taType, ta.taWheres, ta.pstLine, grp)
-    (ti: PsTraitInstance) => PsTraitInstance(ti.tiName, ti.tiAmbient,
+    (ti: PsTraitInstance) => PsTraitInstance(ti.tiName, ti.tiAttrs,
+                                             ti.tiAmbient,
                                              ti.tiGens, ti.tiPattern,
                                              ti.tiWheres, ti.tiMembers,
                                              ti.pstiLine, grp)
@@ -496,7 +497,8 @@ fun addNamespace(st: PStmt, ns: String): PStmt
                             c.cIsInterface, c.pscLine)
     (ta: PsTypealias) => PsTypealias(ns + ta.taName, ta.taAttrs, ta.taGens,
                                      ta.taType, ta.taWheres, ta.pstLine)
-    (ti: PsTraitInstance) => PsTraitInstance(ns + ti.tiName, ti.tiAmbient,
+    (ti: PsTraitInstance) => PsTraitInstance(ns + ti.tiName, ti.tiAttrs,
+                                             ti.tiAmbient,
                                              ti.tiGens, ti.tiPattern,
                                              ti.tiWheres, ti.tiMembers,
                                              ti.pstiLine, ti.tiImports)

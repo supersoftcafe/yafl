@@ -1398,7 +1398,8 @@ fun parseInstanceBody(attrs: List<PAttr>, gen: List<PGen>, pattern: Spec,
   ret parseStmts(ps, builder<PStmt>())
     ?> (body: List<PStmt>, rest: Ps) =>
          (PsTraitInstance("instance$" + hash6(lr.plFile, lr.plLine, lr.plCol),
-                          hasAttr(attrs, "ambient"), gen, pattern, wl, body, lr),
+                          attrs, hasAttr(attrs, "ambient"), gen, pattern, wl,
+                          body, lr),
           rest)
 
 fun parseClass(lr: PLine, ps: Ps, isInterface: Bool): (v: PStmt|PFail, rest: Ps)

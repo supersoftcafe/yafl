@@ -335,6 +335,7 @@ fun eqStmt(a: PStmt, b: PStmt): Bool
       (o: PStmt)       => false
     (x: PsTraitInstance) => match(b)
       (y: PsTraitInstance) => x.tiName == y.tiName
+                              && eqAttrs(x.tiAttrs, y.tiAttrs)
                               && eqBool(x.tiAmbient, y.tiAmbient)
                               && eqGens(x.tiGens, y.tiGens)
                               && eqSpec(x.tiPattern, y.tiPattern)

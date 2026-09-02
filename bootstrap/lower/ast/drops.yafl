@@ -54,7 +54,8 @@ fun drInstanceMembers(ti: PsTraitInstance, r: Resolver,
                       ids: List<String>): DrS
   let out = drMembers(chain(ti.tiMembers), r, ids, builder<PStmt >(), false)
   ret out.dmChanged
-    ? DrS(PsTraitInstance(ti.tiName, ti.tiAmbient, ti.tiGens, ti.tiPattern,
+    ? DrS(PsTraitInstance(ti.tiName, ti.tiAttrs, ti.tiAmbient, ti.tiGens,
+                          ti.tiPattern,
                           ti.tiWheres, out.dmStmts, ti.pstiLine,
                           ti.tiImports),
           true)
