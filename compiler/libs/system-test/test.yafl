@@ -1,0 +1,168 @@
+# System::Test — the unit-test runner (docs/testing-proposal.md).
+#
+# ORDINARY YAFL, in its own library: `import System::Test` is all it takes to
+# reach it, and a program that never mentions it never loads it. Deliberately
+# NOT in stdlib/, which is assembled as one library from every file in that
+# directory and so would be parsed into every compilation in the tree.
+#
+# A failing test is a VALUE, not an event: a test returns
+# `System::None|TestFailure`. That makes the existing `?>` bind the assertion
+# combinator — it threads the success member and passes the failure through, so
+# a chain short-circuits at the first failure with no new machinery — and it
+# keeps one failing test from taking the rest of the run with it.
+
+namespace System::Test
+
+import System
+
+
+# ── outcome ─────────────────────────────────────────────────────────────────
+
+class [final] TestFailure(message: System::String, detail: System::String)
+
+fun fail(why: System::String): TestFailure
+    ret TestFailure(why, "")
+
+
+# ── assertions ──────────────────────────────────────────────────────────────
+# Each returns the outcome union, so they compose with `?>`:
+#
+#     ret assertEqInt(a, 2, "first")
+#       ?> (ok: System::None) => assertEqInt(b, 4, "second")
+#
+# assertEqInt/assertEqStr are concrete because rendering the actual and
+# expected values is what makes a failure diagnosable. A generic assertEq<T>
+# wants a String(T)-shaped constraint alongside BasicEquality<T>; until that
+# exists, assertTrue covers the general case (without a rendered detail).
+
+fun assertTrue(cond: System::Bool, why: System::String): System::None|TestFailure
+    ret cond ? None : TestFailure(why, "expected true, got false")
+
+fun assertFalse(cond: System::Bool, why: System::String): System::None|TestFailure
+    ret cond ? TestFailure(why, "expected false, got true") : None
+
+fun assertEqInt(actual: System::Int, expected: System::Int,
+                why: System::String): System::None|TestFailure
+    ret actual == expected
+        ? None
+        : TestFailure(why, "expected " + String(expected) + ", got " + String(actual))
+
+fun assertEqStr(actual: System::String, expected: System::String,
+                why: System::String): System::None|TestFailure
+    ret actual == expected
+        ? None
+        : TestFailure(why, "expected \"" + expected + "\", got \"" + actual + "\"")
+
+
+# ── the registry ────────────────────────────────────────────────────────────
+# One entry per `[test]` function. `id` is the qualified name and is the stable
+# handle an IDE re-runs; `file`/`line` come from the line_ref the compiler
+# already carries, and are what turn a failure into a clickable location.
+
+class [final] TestCase(id: System::String,
+                       description: System::String,
+                       file: System::String,
+                       line: System::Int,
+                       body: (): System::None|TestFailure)
+
+
+# ── running ─────────────────────────────────────────────────────────────────
+
+fun [impure] run(cases: List<TestCase>, argv: List<System::String>): System::Int
+    ret isListMode(argv)
+        ? listCases(chain(cases), 0)
+        : runSelected(cases, argv)
+
+fun isListMode(argv: List<System::String>): System::Bool
+    ret hasFlag(chain(argv), "--list")
+
+fun [tail] hasFlag(a: Chain<System::String>, flag: System::String): System::Bool
+    ret match(a)
+        (nil: ChainEnd) => false
+        (l: ChainLink)  => l.value == flag ? true : hasFlag(l.next, flag)
+
+# `--list`: one line per test, with its description and location. Same registry
+# the run uses, so the two cannot disagree about what exists.
+# The accumulator carries the count so the self-call stays in TAIL position —
+# `listOne(..) + listCases(..)` would recurse once per test down the C stack.
+fun [impure, tail] listCases(cs: Chain<TestCase>, acc: System::Int): System::Int
+    ret match(cs)
+        (nil: ChainEnd) => acc
+        (l: ChainLink)  => listCases(l.next, acc + listOne(l.value))
+
+fun [impure] listOne(c: TestCase): System::Int
+    println(c.id + "\t" + c.description + "\t" + c.file + ":" + String(c.line))
+    ret 0
+
+# Selection: any non-flag argument names a test to run. With none, run all.
+fun [impure] runSelected(cases: List<TestCase>,
+                         argv: List<System::String>): System::Int
+    let wanted = build<System::String>(
+        nonFlags(builder<System::String>(), chain(argv)))
+    let chosen = isEmpty<System::String>(wanted)
+        ? cases
+        : build<TestCase>(selectLoop(builder<TestCase>(), chain(cases), wanted))
+    ret isEmpty<TestCase>(chosen) && !isEmpty<System::String>(wanted)
+        ? noMatchError()
+        : report(runAll(chain(chosen), 0, 0))
+
+fun [tail] nonFlags([terminal] b: ListBuilder<System::String>,
+                    a: Chain<System::String>): ListBuilder<System::String>
+    ret match(a)
+        (nil: ChainEnd) => b
+        (l: ChainLink)  => startsWith(l.value, "-")
+            ? nonFlags(b, l.next)
+            : nonFlags(push<System::String>(b, l.value), l.next)
+
+fun [tail] selectLoop([terminal] b: ListBuilder<TestCase>, cs: Chain<TestCase>,
+                      wanted: List<System::String>): ListBuilder<TestCase>
+    ret match(cs)
+        (nil: ChainEnd) => b
+        (l: ChainLink)  => contains<System::String>(wanted, l.value.id)
+            ? selectLoop(push<TestCase>(b, l.value), l.next, wanted)
+            : selectLoop(b, l.next, wanted)
+
+# A filter that selects NOTHING is an error, not a green run of nothing: a
+# mistyped name would otherwise look exactly like success.
+fun [impure] noMatchError(): System::Int
+    println("error: no test matched the given name(s)")
+    ret 2
+
+# The tally is carried, not accumulated in a mutable counter — `passed` and
+# `failed` thread through the walk.
+class [final] Tally(passed: System::Int, failed: System::Int)
+
+fun [impure, tail] runAll(cs: Chain<TestCase>, passed: System::Int,
+                          failed: System::Int): Tally
+    ret match(cs)
+        (nil: ChainEnd) => Tally(passed, failed)
+        (l: ChainLink)  => runOne(l.value)
+            ? runAll(l.next, passed + 1, failed)
+            : runAll(l.next, passed, failed + 1)
+
+fun [impure] runOne(c: TestCase): System::Bool
+    ret reportOutcome(c, c.body())
+
+fun [impure] reportOutcome(c: TestCase,
+                           outcome: System::None|TestFailure): System::Bool
+    ret match(outcome)
+        (f: TestFailure) => reportFailure(c, f)
+        (n: System::None) => reportPass(c)
+
+fun [impure] reportPass(c: TestCase): System::Bool
+    println("  ok    " + c.id)
+    ret true
+
+fun [impure] reportFailure(c: TestCase, f: TestFailure): System::Bool
+    println("  FAIL  " + c.id)
+    println("        " + f.message + (f.detail == "" ? "" : ": " + f.detail))
+    println("        at " + c.file + ":" + String(c.line))
+    ret false
+
+# Exit code is 0 or 1, NEVER a count: exit codes are 8 bits, so a run with 256
+# failures would exit 0 — a red run reporting green. The totals go in the
+# report, where they cannot wrap.
+fun [impure] report(t: Tally): System::Int
+    println("")
+    println(String(t.passed) + " passed, " + String(t.failed) + " failed")
+    ret t.failed == 0 ? 0 : 1

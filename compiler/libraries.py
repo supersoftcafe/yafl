@@ -249,12 +249,15 @@ def _default_install_path() -> Path | None:
 
 def search_paths(extra: list[str] | None = None) -> list[Path]:
     """Library search path, highest precedence first: `--lib-path` flags, then
-    `YAFL_PATH`, then the default install location."""
+    `YAFL_PATH`, then the default install location, then the build-tree `libs/`
+    (dev fallback, lowest precedence — an installed library of the same name
+    always wins, and the directory simply not existing is not an error)."""
     paths: list[Path] = [Path(p) for p in (extra or [])]
     paths += _env_paths()
     default = _default_install_path()
     if default is not None:
         paths.append(default)
+    paths.append(_DEV_LIBS_DIR)
     return paths
 
 
@@ -264,6 +267,12 @@ _THIS_DIR = Path(__file__).resolve().parent          # .../compiler
 _REPO_ROOT = _THIS_DIR.parent                         # repo root
 _STDLIB_DIR = _THIS_DIR / "stdlib"
 _YAFLLIB_DIR = _REPO_ROOT / "yafllib"
+# Libraries that ship with the compiler but are NOT part of System — each its
+# own directory with a `yafl.toml`, loaded on demand like any other library
+# when a program references its namespace. Deliberately not stdlib/: the dev
+# System library is assembled from EVERY file in stdlib/ as one library, so
+# anything put there is parsed into every compilation in the tree.
+_DEV_LIBS_DIR = _THIS_DIR / "libs"
 
 
 def _find_dev_static_lib() -> Path | None:
