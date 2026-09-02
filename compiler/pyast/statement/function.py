@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from functools import reduce
 from collections.abc import Sequence
-from typing import Callable, Iterable, Any
+from typing import Callable, ClassVar, Iterable, Any
 from dataclasses import dataclass, field
 import dataclasses
 import pyast.rewrite as rw
@@ -30,6 +30,11 @@ from pyast.statement.lets import LetStatement, DestructureStatement
 
 @dataclass
 class FunctionStatement(DataStatement):
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
+        "foreign", "impure", "sync", "tail", "terminal", "inline",
+        "hashed", "refeq", "linear", "lazy", "final", "future", "pinnable",
+    })
+
     parameters: DestructureStatement
     body: e.Expression | None
     return_type: t.TypeSpec|None = None
@@ -202,7 +207,8 @@ class FunctionStatement(DataStatement):
 
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
                 + tail_err + terminal_err + inner_where_err + default_err
-                + missing_ret_err + self.__unused_param_warnings())
+                + missing_ret_err + self.unknown_attribute_errors("a function")
+                + self.__unused_param_warnings())
 
     def __unused_param_warnings(self) -> list[Error]:
         # No value vanishes silently: a parameter the body never reads receives

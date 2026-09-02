@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from functools import reduce
 from collections.abc import Sequence
-from typing import Callable, Iterable, Any, TYPE_CHECKING
+from typing import Callable, ClassVar, Iterable, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
 import dataclasses
 import pyast.rewrite as rw
@@ -56,6 +56,22 @@ class NamedStatement(Statement):
     attributes: dict[str, e.Expression|None]
     type_params: tuple[TypeAliasStatement, ...]     # SomeClass<TValue1, TValue1>
     trait_params: tuple[t.TypeSpec, ...] = field(default=(), kw_only=True)   # SomeClass<TValue>() where Numeric<TValue>
+
+    # Attributes are parsed as an open `[name]` / `[name(expr)]` dictionary, so
+    # without this every kind silently ignored any attribute it did not happen
+    # to consult: `[tset]` compiled clean and did nothing. Each concrete kind
+    # declares the set it honours and calls this from check(); an attribute the
+    # kind does not implement is a CHECK error, not a no-op.
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset()
+
+    def unknown_attribute_errors(self, kind: str) -> list[Error]:
+        # SOURCE order, not sorted: the port walks its own `List<PAttr>` in the
+        # order written, and a declaration carrying two unknown attributes must
+        # report them identically in both compilers. Insertion order here IS
+        # source order (the parser builds the dict from the parsed list).
+        return [Error(self.line_ref, f"unknown attribute [{name}] on {kind}")
+                for name in self.attributes
+                if name not in self._KNOWN_ATTRIBUTES]
 
     def _find_trait_data(self, resolver: g.Resolver, query: str) -> "g.Findings[g.Resolved[DataStatement]]":
         # Deferred: base ← classdef would be an import cycle (ClassStatement IS

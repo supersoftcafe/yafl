@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from functools import reduce
 from collections.abc import Sequence
-from typing import Callable, Iterable, Any
+from typing import Callable, ClassVar, Iterable, Any
 from dataclasses import dataclass, field
 import dataclasses
 import pyast.rewrite as rw
@@ -29,6 +29,8 @@ from pyast.statement.lets import LetStatement, DestructureStatement
 
 @dataclass
 class TypeAliasStatement(TypeStatement):
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({"linear"})
+
     type: t.TypeSpec
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
@@ -52,11 +54,17 @@ class TypeAliasStatement(TypeStatement):
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         if self.type_params or self.trait_params:
             resolver = g.ResolverType(resolver, self._find_generic_types)
-        return self.type.check(resolver) + [e for x in self.trait_params for e in x.check(resolver)]
+        return (self.type.check(resolver)
+                + [e for x in self.trait_params for e in x.check(resolver)]
+                + self.unknown_attribute_errors("a typealias"))
 
 
 @dataclass
 class EnumStatement(TypeStatement):
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
+        "hashed", "refeq", "linear", "final",
+    })
+
     parameters: DestructureStatement
     variants: list[EnumStatement]
     # Whether the declaration carried a constructor parameter list `(...)` (even
@@ -159,6 +167,7 @@ class EnumStatement(TypeStatement):
             errors += v.check(resolver, None)
         errors += [Error(self.line_ref, "[linear] type parameters are only supported on functions")
                    for tp in self.type_params if "linear" in tp.attributes]
+        errors += self.unknown_attribute_errors("an enum")
         return errors
 
     def global_codegen(self, resolver: g.Resolver) -> list[cg_ir.Object]:

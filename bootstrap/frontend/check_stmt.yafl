@@ -73,7 +73,8 @@ fun checkFun2(f: PsFun, r0: Resolver): Set<PErr>
       union(funAttrErrs(f),
       union(paramDefaultErrs(chain(flattenParams(f.fParams)), r, noErrs()),
       union(missingRetErrs(f, bodyR),
-             unusedParamWarns(f))))))))
+      union(attrErrs(f.fAttrs, isKnownFunAttr, f.psfLine, "a function"),
+             unusedParamWarns(f)))))))))
 
 # A declared result must actually be produced: a body that type-checks to no
 # value (no `ret` reaches the function block and no trailing value) would
@@ -97,6 +98,56 @@ fun funAttrErrs(f: PsFun): Set<PErr>
       union(tailErrs(f),
       union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
              innerWhereErrs(f))))))
+
+# ── unknown attributes ──────────────────────────────────────────────────────
+# Attributes parse as an OPEN `[name]` / `[name(expr)]` list, so without this
+# every kind silently ignored any attribute it did not happen to consult:
+# `[tset]` compiled clean and did nothing. Each kind declares the set it
+# honours; anything else is a CHECK error, not a no-op. Walked in SOURCE order
+# so a declaration carrying two unknown attributes reports them in the same
+# order as the Python side (base.py `unknown_attribute_errors`).
+
+fun [tail] unknownAttrErrs(as2: Chain<PAttr>, known: (:String): Bool,
+                           lr: PLine, kind: String, acc: Set<PErr>): Set<PErr>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => known(l.value.attrName)
+      ? unknownAttrErrs(l.next, known, lr, kind, acc)
+      : unknownAttrErrs(l.next, known, lr, kind,
+          add(acc, PErr(lr, "unknown attribute [" + l.value.attrName
+                            + "] on " + kind)))
+
+fun attrErrs(attrs: List<PAttr>, known: (:String): Bool, lr: PLine,
+             kind: String): Set<PErr>
+  ret unknownAttrErrs(chain(attrs), known, lr, kind, noErrs())
+
+fun isKnownFunAttr(n: String): Bool
+  ret n == "foreign" || n == "impure" || n == "sync" || n == "tail"
+   || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
+   || n == "linear" || n == "lazy" || n == "final" || n == "future"
+   || n == "pinnable"
+
+fun isKnownClassAttr(n: String): Bool
+  ret n == "final" || n == "linear" || n == "foreign" || n == "pinnable"
+   || n == "hashed" || n == "refeq" || n == "mutable"
+
+fun isKnownLetAttr(n: String): Bool
+  ret n == "terminal" || n == "const" || n == "lazy" || n == "trait"
+   || n == "future" || n == "linear" || n == "final" || n == "mutable"
+   || n == "ambient" || n == "pinnable"
+
+fun isKnownEnumAttr(n: String): Bool
+  ret n == "hashed" || n == "refeq" || n == "linear" || n == "final"
+
+fun isKnownTypealiasAttr(n: String): Bool
+  ret n == "linear"
+
+# NOT CHECKED: trait instances. PsTraitInstance keeps only `tiAmbient: Bool` —
+# the parser discards the attribute list — so the port cannot see an unknown
+# attribute there at all. The Python side skips instances for the SAME reason:
+# checking one and not the other would have Python reject a program the port
+# accepts. Closing it needs a `tiAttrs` field, which is a positional AST-node
+# change wanting a tree-wide enumeration of construction sites first.
 
 fun attrValueOf(attrs: List<PAttr>, name: String): PExpr|None
   ret avLoop(chain(attrs), name)
@@ -223,7 +274,9 @@ fun letSubErrs(l: PsLet, r: Resolver): Set<PErr>
   ret union(err1, union(err2, union(letAttrErrs(l, r), whereErr)))
 
 fun letAttrErrs(l: PsLet, r: Resolver): Set<PErr>
-  ret union(constErrs(l), lazyFutureErrs(l))
+  ret union(constErrs(l),
+      union(lazyFutureErrs(l),
+             attrErrs(l.lAttrs, isKnownLetAttr, l.pslLine, "a let")))
 
 fun constErrs(l: PsLet): Set<PErr>
   if !hasAttr(l.lAttrs, "const")
@@ -366,7 +419,11 @@ fun classChecks(c: PsClass, r0: Resolver): Set<PErr>
       union(pureErr,
       union(finalErr,
       union(fragile,
-      union(prmErr, union(stmErr, arrayFieldErrs(c, r0)))))))
+      union(prmErr,
+      union(stmErr,
+      union(arrayFieldErrs(c, r0),
+             attrErrs(c.cAttrs, isKnownClassAttr, c.pscLine,
+                      c.cIsInterface ? "an interface" : "a class"))))))))
 
 # The trailing array field: at most one, the class [final], and its length
 # field an Int32 sibling.
@@ -549,7 +606,9 @@ fun checkEnum2(e2: PsEnum, r: Resolver): Set<PErr>
   ret match(e2.eSpec)
     (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
                   union(branchChecks(chain(e2.eVariants), r, None, noErrs()),
-                         linearGenErrs(e2, chain(e2.eGens), noErrs())))
+                  union(linearGenErrs(e2, chain(e2.eGens), noErrs()),
+                         attrErrs(e2.eAttrs, isKnownEnumAttr, e2.pseLine,
+                                  "an enum"))))
     ()         => oneErr(e2.pseLine, "Missed compile step")
 
 
@@ -568,4 +627,6 @@ fun checkTypealias2(ta: PsTypealias, r0: Resolver): Set<PErr>
     ? r0
     : genScope(ta.taGens, r0)
   ret union(checkSpec(ta.taType, r),
-             checkSpecs(chain(ta.taWheres), r, noErrs()))
+      union(checkSpecs(chain(ta.taWheres), r, noErrs()),
+             attrErrs(ta.taAttrs, isKnownTypealiasAttr, ta.pstLine,
+                      "a typealias")))

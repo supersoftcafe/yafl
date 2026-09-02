@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from functools import reduce
 from collections.abc import Sequence
-from typing import Callable, Iterable, Any
+from typing import Callable, ClassVar, Iterable, Any
 from dataclasses import dataclass, field
 import dataclasses
 import pyast.rewrite as rw
@@ -30,6 +30,11 @@ from pyast.statement.base import Statement, NamedStatement, DataStatement, Impor
 
 @dataclass
 class LetStatement(DataStatement):
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
+        "terminal", "const", "lazy", "trait", "future", "linear", "final",
+        "mutable", "ambient", "pinnable",
+    })
+
     default_value: e.Expression|None
     declared_type: t.TypeSpec|None
     # True once inference has FILLED an untyped let's type. A declared type is
@@ -147,7 +152,8 @@ class LetStatement(DataStatement):
                 lazy_err.append(Error(self.line_ref,
                     "[future] applies to a simple let, not a destructuring binding"))
         where_err = [e for x in self.trait_params for e in x.check(resolver)]
-        return err1 + err2 + const_err + lazy_err + where_err
+        return (err1 + err2 + const_err + lazy_err + where_err
+                + self.unknown_attribute_errors("a let"))
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         # `[lazy]` lets are handled out-of-band by `BlockExpression.generate`:

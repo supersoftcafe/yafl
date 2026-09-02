@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from functools import reduce
 from collections.abc import Sequence
-from typing import Callable, Iterable, Any
+from typing import Callable, ClassVar, Iterable, Any
 from dataclasses import dataclass, field
 import dataclasses
 import pyast.rewrite as rw
@@ -42,6 +42,10 @@ class ClassFunctionSlot:
 
 @dataclass
 class ClassStatement(TypeStatement):
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
+        "final", "linear", "foreign", "pinnable", "hashed", "refeq", "mutable",
+    })
+
     parameters: DestructureStatement
     statements: list[DataStatement]
     implements: list[t.TypeSpec]
@@ -325,7 +329,7 @@ class ClassStatement(TypeStatement):
                     array_err.append(Error(af.line_ref,
                         f"array length field '{len_name}' must be of type Int32"))
 
-        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err + array_err + fragile_warns
+        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err + array_err + fragile_warns + self.unknown_attribute_errors("a class" if not self.is_interface else "an interface")
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_ir.Object, list[cg_ir.Function]]:

@@ -22,7 +22,7 @@ class members do.
 """
 from __future__ import annotations
 
-from typing import Callable, Any
+from typing import Callable, ClassVar, Any
 from dataclasses import dataclass
 import dataclasses
 
@@ -38,6 +38,8 @@ from pyast.statement.function import FunctionStatement
 
 @dataclass
 class TraitInstanceStatement(NamedStatement):
+    _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({"ambient", "trait"})
+
     pattern: t.TypeSpec                      # the implemented interface, as written
     ambient: bool                            # [ambient] — availability opt-in
     statements: list[Statement]              # the member functions
@@ -86,6 +88,13 @@ class TraitInstanceStatement(NamedStatement):
                                   "an instance implements an interface, not a class"))
         for m in self.statements:
             errs += self.__member_with_wheres(m).check(scoped, None)
+        # NO unknown-attribute check here, deliberately: the port's
+        # PsTraitInstance keeps only `tiAmbient: Bool` (its parser discards the
+        # attribute list), so it cannot see an unknown attribute on an instance
+        # at all. Checking it here alone would have this compiler reject a
+        # program the port accepts. Closing the gap needs a `tiAttrs` field on
+        # the port node — a positional AST-node change wanting a tree-wide
+        # enumeration of construction sites first.
         return errs
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
