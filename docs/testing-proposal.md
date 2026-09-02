@@ -47,6 +47,21 @@ would lose the results of every test that had not yet run. A framework whose
 first failure destroys the rest of the report is a framework people stop
 trusting. Returning a value keeps every test independent.
 
+**Verified, not assumed.** The short-circuit claim was checked with a spike
+compiled and run through the real compiler, not reasoned about on paper. The
+subtlety is that reporting the correct message does *not* demonstrate
+short-circuiting — the first error propagates to the result either way — so
+the skipped assertions have to be observable. With a `noisy()` assertion that
+prints when evaluated, placed after a failing one:
+
+    allPass    : ok
+    firstFails : FAIL first (expected 3 got 2)
+    middleFails: FAIL middle (expected 6 got 5)
+
+No `[ran: ...]` line appears anywhere: every assertion after a failure was
+genuinely skipped, while `allPass` still ran its chain to the end. `?>` does
+what §1 needs it to, with no changes to the operator.
+
 ### Why not `Bool`
 
 `ret false` tells you a test failed and nothing else. The message is the
@@ -176,12 +191,29 @@ Sketch of what gets synthesised — the shape, not the final text:
         TestCase("Json::roundTripsAstral", "a surrogate pair …", "tests/json.yafl", 51, () => roundTripsAstral()))
       ret System::Test::run(cases, System::args())
 
-`System::Test::run` is **ordinary stdlib YAFL**, not compiler-generated: it
-parses the arguments, selects and sequences the cases, renders the output and
-returns the exit code. Only the registry literal is synthesised. That keeps
-the generated surface to a single list — the part that genuinely requires
-compiler knowledge — and puts the runner's behaviour somewhere it can be read,
-reviewed and tested like any other code.
+`System::Test::run` is **ordinary YAFL**, not compiler-generated: it parses the
+arguments, selects and sequences the cases, renders the output and returns the
+exit code. Only the registry literal is synthesised. That keeps the generated
+surface to a single list — the part that genuinely requires compiler knowledge
+— and puts the runner's behaviour somewhere it can be read, reviewed and
+tested like any other code.
+
+### Where it lives: its own library, brought in by `import`
+
+**Not in `stdlib/*.yafl`.** The dev System library is assembled from *every*
+file in that directory as one library (`libraries.dev_system_library`), and
+loading is per-library, not per-file — so anything dropped in there is parsed
+into every compilation in the tree. `trim` would drop the unused code from the
+output, but every program would still pay to parse it, and the reference
+outputs the suite compares would churn for a feature almost no program uses.
+
+So `System::Test` is its own library. **Nothing special is needed to reach it
+— an `import` is all it takes** (USER RULING). The loader is already a
+worklist over *referenced namespaces*: whatever names `System::Test` pulls the
+library in, and a program that never mentions it never sees it. A test file
+imports it like any other library; the synthesised main of §3 references
+`System::Test::run`, which is itself enough to load it. No `--test`-specific
+library wiring, no special-casing in the loader.
 
 Consequences to handle:
 
@@ -339,8 +371,9 @@ Each step is independently useful and independently reviewable:
 1. **Reject unknown attributes.** Independent of everything else, and a
    prerequisite for trusting `[test]` (§2).
 2. **`System::Test`**: `TestFailure`, `TestCase`, the assertions, `run`, the
-   renderers. Ordinary stdlib YAFL, testable by hand with a written-by-hand
-   registry before the compiler synthesises anything.
+   renderers — ordinary YAFL in its own library, reached by `import`. Testable
+   by hand with a written-by-hand registry before the compiler synthesises
+   anything, and it perturbs no existing program.
 3. **`[test]` recognition and its contract errors.** No codegen yet — the
    attribute is validated and otherwise inert.
 4. **`--test`**: collect the annotated functions, synthesise the registry and
@@ -352,3 +385,32 @@ Each step is independently useful and independently reviewable:
 Step 2 is where most of the behaviour lives and needs no compiler change at
 all, which is a good sign for the shape: the compiler's whole job is to write
 down a list of functions it already knows about.
+
+---
+
+## 9. Status
+
+§1 is settled and **verified by spike** (see the end of §1) — the assertion
+model and `?>` short-circuiting work as described, compiled and run.
+
+§3's placement question is settled by user ruling: a unique library, reached
+by `import`, with no special loading machinery.
+
+Not yet started: steps 1 and 3–5. Step 1 (rejecting unknown attributes) is the
+one with real blast radius — it must land in the port as well as the Python
+compiler under the port-parity rule, or the two compilers would disagree about
+which programs are legal and the corpus comparison would break. A probe across
+all 159 YAFL sources in the tree gives the ground truth it needs:
+
+| kind | attributes in use |
+|---|---|
+| function | `tail impure foreign sync inline terminal hashed refeq` |
+| class | `final linear foreign pinnable` |
+| let | `terminal const lazy trait future` |
+| trait instance | `ambient` |
+
+`always` is an *argument* to `[inline]`, not an attribute. The probe walks
+statements reachable from the top level; treat its absences (enum, typealias —
+the latter does read `[linear]` in the parser) as unconfirmed rather than
+empty, and derive the final allowlist by compiling the tree with the check on.
+
