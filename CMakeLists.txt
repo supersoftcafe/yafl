@@ -63,15 +63,23 @@ endif()
 set(YAFL_BOOTSTRAP_BIN ${CMAKE_BINARY_DIR}/ybootstrap)
 add_test(NAME bootstrap_binary
     COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
+            PYTHONHASHSEED=0
             ${Python3_EXECUTABLE} build_bootstrap.py -o ${YAFL_BOOTSTRAP_BIN}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
 set_tests_properties(bootstrap_binary PROPERTIES
     TIMEOUT 3600
     FIXTURES_SETUP bootstrap_bin)
 
+# PYTHONHASHSEED=0 is REQUIRED, not a nicety: the seven test_bootstrap_c_*
+# modules assert it in setUpClass and error out without it. Because that is a
+# setUpClass failure rather than a test failure, the suite still reported a
+# result — so the byte-parity C comparison across -O0..-O3, the compiler's core
+# contract, silently never ran under ctest at all. It only ever ran when the
+# suite was invoked by hand from a shell that already exported the variable.
 add_test(NAME compiler_suite
     COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
-            YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN} ${YAFL_SUITE_CMD}
+            YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN}
+            PYTHONHASHSEED=0 ${YAFL_SUITE_CMD}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
 # `unittest-parallel` exits 0 even when it discovers *zero* tests (printing
 # "(0 total tests)" / "Ran 0 test"), which would silently report success if the
