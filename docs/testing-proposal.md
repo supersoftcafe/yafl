@@ -396,21 +396,32 @@ model and `?>` short-circuiting work as described, compiled and run.
 §3's placement question is settled by user ruling: a unique library, reached
 by `import`, with no special loading machinery.
 
-Not yet started: steps 1 and 3–5. Step 1 (rejecting unknown attributes) is the
-one with real blast radius — it must land in the port as well as the Python
-compiler under the port-parity rule, or the two compilers would disagree about
-which programs are legal and the corpus comparison would break. A probe across
-all 159 YAFL sources in the tree gives the ground truth it needs:
+**Step 1 is DONE, in both compilers, with parity verified.** Unknown attributes
+are now a CHECK error rather than a silent no-op: a `_KNOWN_ATTRIBUTES`
+allowlist per statement kind plus `unknown_attribute_errors` on
+`NamedStatement` in the Python compiler, and `unknownAttrErrs` with an
+`isKnown*Attr` predicate per kind in the port's `check_stmt.yafl`.
 
-| kind | attributes in use |
-|---|---|
-| function | `tail impure foreign sync inline terminal hashed refeq` |
-| class | `final linear foreign pinnable` |
-| let | `terminal const lazy trait future` |
-| trait instance | `ambient` |
+The allowlist was derived by compiling the whole bootstrap port with the check
+live — 104MB of C, zero false rejections — not from the probe alone, whose job
+was only to say where to look. Both compilers were then run on the same typo
+file and emit identical messages at identical positions:
 
-`always` is an *argument* to `[inline]`, not an attribute. The probe walks
-statements reachable from the top level; treat its absences (enum, typealias —
-the latter does read `[linear]` in the parser) as unconfirmed rather than
-empty, and derive the final allowlist by compiling the tree with the check on.
+    [4:5]   unknown attribute [tset] on a function
+    [7:7]   unknown attribute [finl] on a class
+    [9:6]   unknown attribute [hashd] on an enum
+    [11:11] unknown attribute [linr] on a typealias
+    [4:5]   unknown attribute [cnst] on a let
+
+Two decisions inside it. Python reports in SOURCE order rather than sorted, so
+a declaration carrying two unknown attributes agrees with the port without
+either side needing a sort. And **trait instances are not checked, in either
+compiler**: the port's `PsTraitInstance` keeps only `tiAmbient: Bool` and its
+parser discards the attribute list, so it cannot see an unknown attribute
+there at all — checking it in Python alone would reject programs the port
+accepts, which is worse than the gap. Closing it needs a `tiAttrs` field, a
+positional AST-node change wanting a tree-wide enumeration of construction
+sites first.
+
+Still to do: steps 3–5.
 
