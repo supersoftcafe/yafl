@@ -812,7 +812,7 @@ static void object_get_page_and_slot(object_t* ptr, gc_page_t** page_out, ptrdif
 }
 
 
-static void default_roots_declaration_func() { }
+static void default_roots_declaration_func(void(*declare)(object_t**)) { (void)declare; }
 static roots_declaration_func_t declare_roots_yafl = default_roots_declaration_func;
 EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_func_t f) {
     roots_declaration_func_t previous = declare_roots_yafl;

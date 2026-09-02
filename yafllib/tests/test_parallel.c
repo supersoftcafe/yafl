@@ -20,7 +20,7 @@ static fun_t       _continuation;
 static atomic_int  _returned_null;  // count of non-NULL returns (should be 0)
 
 static object_t* _record_and_decrement(void* slot_ptr, object_t* unused_task) {
-    (void)slot_ptr;
+    (void)slot_ptr; (void)unused_task;
     if (atomic_fetch_sub(&_remaining, 1) == 1) {
         // All tasks completed.
         // Success if all thread_work_post_parallel calls returned NULL.

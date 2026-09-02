@@ -96,9 +96,9 @@ static uint32_t size_for_index(int idx) {
 // original, and from other waves. base ≠ 0 so verify_bytes won't accidentally
 // pass on a memset'd page.
 static uint64_t pattern_for(int slot, int wave) {
-    return ((uint64_t)slot * 0x9E3779B97F4A7C15ULL)
-         ^ ((uint64_t)wave * 0xBF58476D1CE4E5B9ULL)
-         | 1;
+    return (((uint64_t)slot * 0x9E3779B97F4A7C15ULL)
+          ^ ((uint64_t)wave * 0xBF58476D1CE4E5B9ULL))
+          | 1;
 }
 
 

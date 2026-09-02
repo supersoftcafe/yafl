@@ -32,8 +32,10 @@ set(SRC_FILES
 
 # Static library only — programs link the runtime statically, so there is no
 # shared libyafl.so. The shipped runtime is held to a clean -Wall -Wextra -Werror
-# bar under strict ISO C. (main.c and the C test harnesses below are dev-only and
-# not gated.)
+# bar under strict ISO C. main.c and the C test harnesses are held to the SAME
+# bar: leaving them ungated let warnings accumulate silently, and each one that
+# did turned out to mark a real defect (a discarded assertion, a main that never
+# published argv, a `^` mis-parsed inside a `|`).
 add_library(yafl_static STATIC ${SRC_FILES})
 set_target_properties(yafl_static PROPERTIES OUTPUT_NAME yafl)
 target_link_libraries(yafl_static PRIVATE m)
@@ -48,6 +50,7 @@ target_compile_options(yafl_static PRIVATE -ffunction-sections -fdata-sections)
 # Create executable with main.c
 add_executable(yafl_exec main.c ${SRC_FILES})
 target_link_libraries(yafl_exec PRIVATE m)
+target_compile_options(yafl_exec PRIVATE -Wall -Wextra -Werror)
 
 # The runtime is NOT installed to the C standard locations (lib/, include/).
 # It ships only inside the System library at ${prefix}/lib/yafl/system.yl, which the
@@ -87,6 +90,7 @@ function(add_yafl_test name)
     add_executable(${name} tests/${name}.c ${TEST_SRC_FILES})
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(${name} PRIVATE m)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Werror)
     add_test(NAME ${name} COMMAND ${name})
     # Run every C test with heap poisoning on: reclaimed objects are wiped with
     # 0x42 and the scanner aborts on any live->reclaimed edge, so a GC

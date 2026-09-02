@@ -610,6 +610,7 @@ TEST_END()
 
 
 static void run_tests(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     struct test_results r = {0, 0, NULL};
     struct test_results* _r = &r;
 

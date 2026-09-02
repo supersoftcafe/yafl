@@ -48,14 +48,17 @@
 
 static object_t* _do_alloc(int i) {
 #if ALLOC_TYPE == 1
-    (void)i;
     return integer_from_int32(i);
 #elif ALLOC_TYPE == 2
     (void)i;
     task_obj_t* t = (task_obj_t*)task_obj_create(NULL);
     return (object_t*)t;
 #else
-    static const char PAD[256] =
+    (void)i;
+    // Sized by the initialiser, not fixed at 256: PAD is handed to
+    // string_from_bytes with an explicit length, so it is a byte buffer and
+    // never needs the terminator — but declaring it [256] silently dropped it.
+    static const char PAD[] =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--"
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--"
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--"

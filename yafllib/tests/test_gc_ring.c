@@ -183,7 +183,8 @@ static void do_step(struct ctx* ctx) {
         char seen[BIGS_PER_CHAIN]; memset(seen, 0, sizeof seen);
         struct holder* h = (struct holder*)nextgap; int n = 0;
         for (int i = 0; i < HOLDERS; ++i, h = (struct holder*)h->next) {
-            if (!h->held) continue; check_big(h->held, "final");
+            if (!h->held) continue;
+            check_big(h->held, "final");
             int id = (int)((struct big*)h->held)->id;
             if (seen[id]) { fprintf(stderr, "test_gc_ring: final dup id=%d\n", id); abort(); }
             seen[id] = 1; n++;

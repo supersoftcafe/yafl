@@ -548,6 +548,7 @@ static roots_declaration_func_t prev_roots;
 static void declare_roots(void(*declare)(object_t**)) { prev_roots(declare); }
 
 static void run_tests(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     struct test_results r = {0, 0, NULL};
     struct test_results* _r = &r;
 

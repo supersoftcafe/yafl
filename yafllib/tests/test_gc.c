@@ -41,6 +41,17 @@ static void gc_test_declare_roots(void(*declare)(object_t**)) {
     declare(&_right);
 }
 
+// Checked unconditionally rather than through assert(): a Release build defines
+// NDEBUG, which deleted every check below and left this stress test allocating
+// hard while verifying nothing. Aborts rather than using ASSERT because workers
+// run off-thread, where the framework's `_r` result block is not in scope.
+static void _check_survived(string_t* s) {
+    if (s != NULL && strcmp((char*)s->array, _expected) != 0) {
+        fprintf(stderr, "test_gc: string damaged across GC: \"%s\"\n", (char*)s->array);
+        abort();
+    }
+}
+
 static void _worker_complete(struct gc_test_state* state, string_t* result) {
     int32_t idx = atomic_fetch_sub(&state->remaining, 1) - 1;
     state->results[idx % 3] = result;
@@ -75,9 +86,9 @@ static void _do_worker(struct gc_test_state* state) {
             GC_SAFE_POINT();
             struct gc_test_state* slot = slots[j];
             if (slot) {
-                assert(slot->results[0] == NULL || strcmp((char*)slot->results[0]->array, _expected) == 0);
-                assert(slot->results[1] == NULL || strcmp((char*)slot->results[1]->array, _expected) == 0);
-                assert(slot->results[2] == NULL || strcmp((char*)slot->results[2]->array, _expected) == 0);
+                _check_survived(slot->results[0]);
+                _check_survived(slot->results[1]);
+                _check_survived(slot->results[2]);
             }
         }
     }
@@ -86,6 +97,7 @@ static void _do_worker(struct gc_test_state* state) {
 }
 
 static void setup_gc_test(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     int32_t worker_count = 10;
 
     struct gc_test_state* state =
@@ -109,6 +121,7 @@ static void declare_roots(void(*declare)(object_t**)) {
 }
 
 static void run_tests(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     printf("=== gc stress test ===\n");
     printf("  %-50s ", "concurrent_string_allocation");
     fflush(stdout);

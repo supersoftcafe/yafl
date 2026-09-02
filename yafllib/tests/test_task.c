@@ -7,6 +7,7 @@ static _Atomic(int32_t) _callback_fired;
 static object_t*        _callback_task_arg;
 
 static object_t* _record_callback(object_t* self, object_t* task_arg) {
+    (void)self;   // ABI receiver, unused here
     _callback_task_arg = task_arg;
     atomic_store(&_callback_fired, 1);
     return NULL;
@@ -128,6 +129,7 @@ static object_t* _stage_post_complete_done(object_t* self, object_t* task_arg) {
 }
 
 static void run_tests(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     _async_r.passed = 0; _async_r.failed = 0; _async_r.current_test = NULL;
     _async_continuation = continuation;
     struct test_results* _r = &_async_r;

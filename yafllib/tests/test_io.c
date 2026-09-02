@@ -29,6 +29,7 @@ static void (*_next_step)(object_t*);
 static object_t* _in_flight_task;
 
 static object_t* _trampoline(object_t* self_unused, object_t* task) {
+    (void)self_unused;
     object_t* value = ((task_obj_t*)task)->result;
     void (*next)(object_t*) = _next_step;
     _next_step = NULL;
@@ -355,6 +356,7 @@ static void declare_roots(void(*declare)(object_t**)) {
 }
 
 static void run_tests(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     // GC-allocated so the path survives test function returns — tests chain
     // asynchronously and the IO threadpool may read the path long after the
     // function that passed it as a literal has popped its stack frame.

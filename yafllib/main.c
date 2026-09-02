@@ -73,7 +73,7 @@ TEST_END()
 
 
 TEST(conversions)
-    int32_t x = int32_from_integer(INTEGER_LITERAL_1(0, 0));
+    TEST_ASSERT(int32_from_integer(INTEGER_LITERAL_1(0, 0)) == 0)
 TEST_END()
 
 
@@ -139,6 +139,16 @@ static object_t* right_str = STR("together in the jeep.");
 static const char* test_str = "Fred and bill went on a ride together in the jeep.";
 
 
+// Checked unconditionally rather than through assert(): a Release build defines
+// NDEBUG, which deleted the only verification do_allocation_test performs and
+// left it churning the collector while checking nothing.
+static void check_allocation_result(string_t* s) {
+    if (s != NULL && strcmp((char*)s->array, test_str) != 0) {
+        fprintf(stderr, "main: allocation test: string damaged across GC: \"%s\"\n", (char*)s->array);
+        abort();
+    }
+}
+
 static void complete_allocation_test(struct test_gc_allocations_o* self, string_t* result) {
     int32_t count = atomic_fetch_sub(&self->result_counter, 1) - 1;
     self->results[count] = result;
@@ -178,9 +188,9 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
             obj = (struct test_gc_allocations_o*)array[index];
 
             if (obj != NULL) {
-                assert(obj->results[0] == NULL || strcmp((char*)obj->results[0]->array, test_str) == 0);
-                assert(obj->results[1] == NULL || strcmp((char*)obj->results[1]->array, test_str) == 0);
-                assert(obj->results[2] == NULL || strcmp((char*)obj->results[2]->array, test_str) == 0);
+                check_allocation_result(obj->results[0]);
+                check_allocation_result(obj->results[1]);
+                check_allocation_result(obj->results[2]);
             }
         }
     }
@@ -189,6 +199,7 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
 }
 
 void setup_allocation_test(object_t* _, fun_t continuation) {
+    (void)_;   // ABI receiver, unused here
     int32_t count = 1000;
 
     struct test_gc_allocations_o* o = (struct test_gc_allocations_o*)array_create(&test_gc_allocations_v, count);
@@ -205,6 +216,7 @@ void setup_allocation_test(object_t* _, fun_t continuation) {
 
 
 static void entrypoint(object_t* self, fun_t continuation) {
+    (void)self;   // ABI receiver, unused here
     struct test_results results = {0, 0};
 
     TEST_RUN(tag_literals)
@@ -229,6 +241,13 @@ static void entrypoint(object_t* self, fun_t continuation) {
 
 
 int main(int argc, char** argv) {
+    // Same prologue as the generated main (codegen/gen.py __declare_main): the
+    // runtime reads the program arguments only through these globals. Left
+    // unset, thread.c cannot name the log file after argv[0], sys_argc reports
+    // 0, and every sys_argv_at fails its bounds check into __abort_on_overflow.
+    _yafl_argc = argc;
+    _yafl_argv = argv;
     previous_declare_roots = add_roots_declaration_func(declare_roots);
     thread_start(entrypoint);
+    return 0;
 }
