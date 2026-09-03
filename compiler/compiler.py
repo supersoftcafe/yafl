@@ -765,10 +765,62 @@ def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
     return libraries.discover_libraries(libraries.search_paths(lib_paths))
 
 
+def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
+    """The `--test` main, as YAFL SOURCE — not hand-built IR.
+
+    Everything downstream then treats it as ordinary code: monomorphisation,
+    async lowering (so a test that suspends sequences correctly with no special
+    handling), SSA validation and trim. Hand-building it would mean another
+    pass-by-pass special case, and would have to reimplement task chaining.
+
+    Every name is FULLY QUALIFIED, so this resolves without importing anything
+    (qualified always resolves — namespaces are strict block-scoped), and
+    referencing `System::Test::run` is itself what pulls the System::Test
+    library in via the namespace worklist.
+    """
+    def esc(text: str) -> str:
+        # Backslash FIRST, or the escaping escapes itself. Newline too: a
+        # description carrying one would otherwise emit source with an
+        # unterminated string literal. Mirrored by the port's escapeForSource.
+        return (text.replace("\\", "\\\\").replace('"', '\\"')
+                    .replace("\n", "\\n"))
+
+    tc = "System::Test::TestCase"
+    lines = ["namespace Yafl::TestMain", "", "fun main(): System::Int",
+             f"  let b0 = System::builder<{tc}>()"]
+    for i, fn in enumerate(tests):
+        qualified = g.simple_name(fn.name)
+        arg = fn.attributes.get("test")
+        description = ""
+        if isinstance(arg, e.TupleExpression) and len(arg.expressions) == 1:
+            value = arg.expressions[0].value
+            if isinstance(value, e.StringExpression):
+                description = value.value
+        lines.append(
+            f"  let b{i + 1} = System::push<{tc}>(b{i}, {tc}("
+            f'"{esc(qualified)}", "{esc(description)}", '
+            f'"{esc(Path(fn.line_ref.filename).name)}", {fn.line_ref.line}, '
+            f"() => {qualified}()))")
+    lines.append(f"  ret System::Test::run(System::build<{tc}>(b{len(tests)}),"
+                 " System::args())")
+    return Input("\n".join(lines) + "\n", "$test_main.yafl")
+
+
+def __is_source_main(stmt: s.Statement) -> bool:
+    """A user `main` as WRITTEN, before types resolve — `__is_main_function`
+    inspects the compiled return type and so cannot be used this early. Under
+    `--test` the user's main is ignored, not an error: you want to test a
+    program that has one."""
+    return (isinstance(stmt, s.FunctionStatement)
+            and g.bare_name(stmt.name) == "main"
+            and not stmt.parameters.flatten())
+
+
 def compile_project(source: list[Input], use_stdlib = False, just_testing = False,
                     optimization_level: int = 0,
                     lib_paths: list[str] | None = None,
-                    profile: bool = False) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
+                    profile: bool = False,
+                    test_mode: bool = False) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
     """Compile `source` together with every library it (transitively) references,
     discovered on the search path. Returns the generated C, the `LinkSpec`
     describing the headers/static libraries the loaded libraries need at link
@@ -777,6 +829,20 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     user_statements, errors = __tokenize_and_parse(source)
     if errors:
         return __print_errors(errors), None, []
+
+    if test_mode:
+        tests = [st for st in user_statements
+                 if isinstance(st, s.FunctionStatement) and "test" in st.attributes]
+        if not tests:
+            # A test binary with nothing in it must NOT be built and exit 0 —
+            # that is a green run reporting coverage it does not have.
+            return __print_errors([Error(LineRef("", 0, 0),
+                "--test: no [test] functions found")]), None, []
+        kept = [st for st in user_statements if not __is_source_main(st)]
+        test_stmts, test_errors = __tokenize_and_parse([__test_registry_source(tests)])
+        if test_errors:
+            return __print_errors(test_errors), None, []
+        user_statements = kept + test_stmts
 
     index = libraries.namespace_index(_gather_libraries(use_stdlib, lib_paths))
 

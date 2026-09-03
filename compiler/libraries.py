@@ -249,15 +249,12 @@ def _default_install_path() -> Path | None:
 
 def search_paths(extra: list[str] | None = None) -> list[Path]:
     """Library search path, highest precedence first: `--lib-path` flags, then
-    `YAFL_PATH`, then the default install location, then the build-tree `libs/`
-    (dev fallback, lowest precedence — an installed library of the same name
-    always wins, and the directory simply not existing is not an error)."""
+    `YAFL_PATH`, then the default install location."""
     paths: list[Path] = [Path(p) for p in (extra or [])]
     paths += _env_paths()
     default = _default_install_path()
     if default is not None:
         paths.append(default)
-    paths.append(_DEV_LIBS_DIR)
     return paths
 
 
@@ -346,6 +343,16 @@ def available_libraries(extra_paths: list[str] | None = None) -> list[Library]:
         dev = dev_system_library()
         if dev is not None:
             libs.append(dev)
+    # Build-tree libraries that ship with the compiler but are not System.
+    # Gated HERE rather than added to search_paths, and so reached only by the
+    # same callers as the dev System fallback: the corpus harnesses compile the
+    # stdlib as flat SOURCE with use_stdlib=False, and a discoverable
+    # System::Test would be loaded ON TOP of an explicitly-supplied copy.
+    # Lowest precedence — anything already owning a namespace wins.
+    for lib in discover_libraries([_DEV_LIBS_DIR]):
+        if not any(ns in owned for ns in lib.namespaces):
+            libs.append(lib)
+            owned |= set(lib.namespaces)
     return libs
 
 

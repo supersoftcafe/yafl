@@ -49,6 +49,14 @@ def main():
         help="Instrument for profiling; the binary writes callgrind.out.<pid> at exit"
     )
 
+    # Build a TEST binary instead of the program: every [test] function is
+    # collected into a registry and a main is synthesised to drive it. The
+    # program's own main, if it has one, is ignored rather than an error.
+    parser.add_argument(
+        "--test", action="store_true",
+        help="Build a unit-test binary from the [test] functions"
+    )
+
     # Input: one or more .yafl files, or a project directory (compiled whole).
     parser.add_argument(
         "files", nargs="+",
@@ -62,7 +70,8 @@ def main():
         files, use_stdlib=True, just_testing=False,
         optimization_level=int(args.O),
         lib_paths=args.lib_path,
-        profile=args.profile)
+        profile=args.profile,
+        test_mode=args.test)
     for w in sorted(set(warnings)):
         print(w, file=sys.stderr)
 

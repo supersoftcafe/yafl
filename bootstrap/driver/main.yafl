@@ -646,6 +646,133 @@ fun parseMulti(text: String): List<PStmt>|None
     ret parseSingle(text)
   ret parseSorted(collectParts(text, 0, Dict<String, String>()))
 
+# ── --test: build a TEST binary from the [test] functions ────────────────────
+# Mirrors compiler.py `__test_registry_source` / `__is_source_main`. The main is
+# synthesised as YAFL SOURCE and re-parsed, NOT hand-built: everything
+# downstream then treats it as ordinary code (monomorphisation, async lowering
+# — so a test that suspends sequences with no special handling — and trim).
+#
+# Every name is FULLY QUALIFIED so it resolves without imports. Unlike the
+# Python side there is no library discovery here: the caller's stream must
+# already contain System::Test, exactly as it already contains the stdlib.
+
+fun cTestMode(text: String, optLevel: Int,
+              profile: Bool): (outs: List<String>, code: Int)
+  ret match(parseMulti(text))
+    (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile)
+    ()                   => (prepend("parse error\n", List<String>()), 1)
+
+fun cTestInject(stmts: List<PStmt>, optLevel: Int,
+                profile: Bool): (outs: List<String>, code: Int)
+  let tests = testFunsOf(chain(stmts), builder<PsFun>())
+  ret isEmpty(tests)
+    # A test binary with nothing in it must NOT be built and exit 0 — that is a
+    # green run reporting coverage it does not have.
+    ? (prepend("--test: no [test] functions found\n", List<String>()), 1)
+    : cTestParsed(stmts, tests, optLevel, profile)
+
+fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel: Int,
+                profile: Bool): (outs: List<String>, code: Int)
+  # Parsed under the SAME filename Python gives it ($test_main.yafl), not
+  # parseSingle's "x": the filename feeds hash6, which feeds the generated
+  # names, which feed the emitted C. A different name here would make the two
+  # compilers disagree byte-for-byte on identical input.
+  ret match(parseProgram(testRegistrySource(tests), "$test_main.yafl"))
+    (gen: List<PStmt>) => cModeConverge(concat(dropSourceMains(chain(stmts),
+                                                              builder<PStmt>()),
+                                               gen),
+                                        optLevel, profile)
+    (f: PFail)         => (prepend("--test: generated main failed to parse\n",
+                                   List<String>()), 1)
+
+fun [tail] testFunsOf(sts: Chain<PStmt>,
+                      [terminal] b: ListBuilder<PsFun>): List<PsFun>
+  ret match(sts)
+    (nil: ChainEnd) => build<PsFun>(b)
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => hasAttr(f.fAttrs, "test")
+        ? testFunsOf(l.next, push<PsFun>(b, f))
+        : testFunsOf(l.next, b)
+      (o: PStmt) => testFunsOf(l.next, b)
+
+# The user's own main is IGNORED under --test, not an error: you want to test a
+# program that has one. Matched as WRITTEN, before types resolve.
+fun [tail] dropSourceMains(sts: Chain<PStmt>,
+                           [terminal] b: ListBuilder<PStmt>): List<PStmt>
+  ret match(sts)
+    (nil: ChainEnd) => build<PStmt>(b)
+    (l: ChainLink)  => isSourceMain(l.value)
+      ? dropSourceMains(l.next, b)
+      : dropSourceMains(l.next, push<PStmt>(b, l.value))
+
+fun isSourceMain(st: PStmt): Bool
+  ret match(st)
+    (f: PsFun) => bareOfUnique(f.fName) == "main"
+                  && isEmpty(flattenParams(f.fParams))
+    (o: PStmt) => false
+
+fun testRegistrySource(tests: List<PsFun>): String
+  ret toString(testRegistryTail(
+        testRegistryRows(chain(tests), 0,
+          append(append(StringBuilder(),
+                        "namespace Yafl::TestMain\n\nfun main(): System::Int\n"),
+                 "  let b0 = System::builder<System::Test::TestCase>()\n")),
+        chainLength<PsFun>(chain(tests))))
+
+fun [tail] testRegistryRows(ts: Chain<PsFun>, i: Int,
+                            [terminal] sb: StringBuilder): StringBuilder
+  ret match(ts)
+    (nil: ChainEnd) => sb
+    (l: ChainLink)  => testRegistryRows(l.next, i + 1,
+                                        append(sb, testRegistryRow(l.value, i)))
+
+fun testRegistryRow(f: PsFun, i: Int): String
+  let q = simpleName(f.fName)
+  ret "  let b" + String(i + 1)
+    + " = System::push<System::Test::TestCase>(b" + String(i)
+    + ", System::Test::TestCase(\"" + escapeForSource(q) + "\", \""
+    + escapeForSource(testDescriptionOf(f)) + "\", \""
+    + escapeForSource(f.psfLine.plFile) + "\", " + String(f.psfLine.plLine)
+    + ", () => " + q + "()))\n"
+
+fun testRegistryTail([terminal] sb: StringBuilder, n: Int): StringBuilder
+  ret append(sb, "  ret System::Test::run(System::build<System::Test::TestCase>(b"
+                 + String(n) + "), System::args())\n")
+
+# Escape for embedding in a GENERATED YAFL string literal. Backslash first,
+# or the escaping escapes itself. Newline too: a description carrying one
+# would otherwise emit source with an unterminated literal.
+fun escapeForSource(s: String): String
+  ret escLoop(s, 0, "")
+
+fun [tail] escLoop(s: String, at: Int, acc: String): String
+  if at >= length(s)
+    ret acc
+  ret escLoop(s, at + 1, acc + escByte(byteAt(s, at)))
+
+fun escByte(c: Int32): String
+  if c == '\\'
+    ret "\\\\"
+  if c == '"'
+    ret "\\\""
+  if c == '\n'
+    ret "\\n"
+  ret asciiToString(c)
+
+fun testDescriptionOf(f: PsFun): String
+  ret match(attrValueOf(f.fAttrs, "test"))
+    (v: PExpr) => soleStringOf(v)
+    ()         => ""
+
+fun soleStringOf(x: PExpr): String
+  ret match(x)
+    (tp: PeTuple) => match(head(tp.exprs))
+      (en: PTupEnt) => match(en.tupValue)
+        (s2: PeStr) => s2.strValue
+        (o: PExpr)  => ""
+      ()            => ""
+    (o: PExpr)    => ""
+
 fun parseSingle(text: String): List<PStmt>|None
   ret match(parseProgram(text, "x"))
     (fp: PFail)          => None
@@ -788,6 +915,11 @@ fun run(text: System::String, i: IO): System::Int
   let mode = modeOf(args())
   if mode == "c" || mode == "c1" || mode == "c2" || mode == "c3"
     ret runC(text, mode == "c" ? 0 : mode == "c1" ? 1 : mode == "c2" ? 2 : 3, false, i)
+  # --test twins of the C modes: same pipeline, but the [test] functions
+  # are collected into a registry and a main is synthesised to drive them.
+  if mode == "ctest" || mode == "c1test" || mode == "c2test" || mode == "c3test"
+    ret runCTest(text, mode == "ctest" ? 0 : mode == "c1test" ? 1
+                     : mode == "c2test" ? 2 : 3, i)
   # --profile twins of the C modes (Python's `--profile` flag; the mode
   # string IS the port's option surface).
   if mode == "cp" || mode == "c1p" || mode == "c2p" || mode == "c3p"
@@ -821,6 +953,12 @@ fun run(text: System::String, i: IO): System::Int
 # The C modes emit a LIST of fragments streamed to stdout in order — the
 # joined text was the compiler's one giant contiguous allocation (~83MB on a
 # self-host) and the only consumer is this write loop.
+fun runCTest(text: System::String, optLevel: Int, i: IO): System::Int
+  let r = cTestMode(text, optLevel, false)
+  let w = writeParts(stdout(), chain(r.outs), false)
+  let code = w.failed2 ? 1 : r.code
+  ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
+
 fun runC(text: System::String, optLevel: Int, profile: Bool, i: IO): System::Int
   let r = cMode(text, optLevel, profile)
   let w = writeParts(stdout(), chain(r.outs), false)
