@@ -69,9 +69,49 @@ class [final] TestCase(id: System::String,
 # ── running ─────────────────────────────────────────────────────────────────
 
 fun [impure] run(cases: List<TestCase>, argv: List<System::String>): System::Int
-    ret isListMode(argv)
-        ? listCases(chain(cases), 0)
-        : runSelected(cases, argv)
+    let fmt = formatOf(chain(argv), "human")
+    ret isFormatError(fmt)
+        ? badFormat(fmt)
+        : isListMode(argv)
+            ? listCases(chain(cases), fmt, 0)
+            : runSelected(cases, argv, fmt)
+
+# ── output format ───────────────────────────────────────────────────────────
+# ONE event stream, TWO renderers. Every line of output goes through the emit*
+# functions below, and they are the only place the format is consulted — so the
+# human view and the machine view cannot drift into disagreeing about what
+# happened, which is the failure mode worth designing against.
+#
+# The machine format is JSON Lines, emitted AS IT HAPPENS rather than assembled
+# at the end: an IDE can mark a test green the moment it passes, and a run that
+# is killed still yields every event up to the kill. A final document gives you
+# neither.
+
+fun [tail] formatOf(a: Chain<System::String>,
+                    acc: System::String): System::String
+    ret match(a)
+        (nil: ChainEnd) => acc
+        (l: ChainLink)  => l.value == "--format"
+            ? formatOf(l.next, nextFormat(l.next))
+            : formatOf(l.next, acc)
+
+fun nextFormat(a: Chain<System::String>): System::String
+    ret match(a)
+        (nil: ChainEnd) => "?missing"
+        (l: ChainLink)  => l.value == "human" || l.value == "json"
+            ? l.value
+            : "?" + l.value
+
+fun isFormatError(fmt: System::String): System::Bool
+    ret startsWith(fmt, "?")
+
+# An unknown --format is an ERROR, not a silent fall back to human: a script
+# asking for a machine format and getting prose would parse nothing and report
+# no tests, which looks exactly like a passing run of zero.
+fun [impure] badFormat(fmt: System::String): System::Int
+    println("error: unknown --format " + slice(fmt, 1, length(fmt))
+            + " (expected: human, json)")
+    ret 2
 
 fun isListMode(argv: List<System::String>): System::Bool
     ret hasFlag(chain(argv), "--list")
@@ -81,22 +121,71 @@ fun [tail] hasFlag(a: Chain<System::String>, flag: System::String): System::Bool
         (nil: ChainEnd) => false
         (l: ChainLink)  => l.value == flag ? true : hasFlag(l.next, flag)
 
-# `--list`: one line per test, with its description and location. Same registry
-# the run uses, so the two cannot disagree about what exists.
+# ── JSON escaping ───────────────────────────────────────────────────────────
+# Backslash FIRST or the escaping escapes itself. Control bytes below 0x20 are
+# not legal raw in a JSON string, so they go out as \uXXXX rather than being
+# emitted and quietly producing a document no parser will accept.
+
+fun jsonEscape(s: System::String): System::String
+    ret jsonEscLoop(s, 0, "")
+
+fun [tail] jsonEscLoop(s: System::String, at: System::Int,
+                       acc: System::String): System::String
+    ret at >= length(s)
+        ? acc
+        : jsonEscLoop(s, at + 1, acc + jsonEscByte(byteAt(s, at)))
+
+fun jsonEscByte(c: System::Int32): System::String
+    ret c == '\\' ? "\\\\"
+      : c == '"'  ? "\\\""
+      : c == '\n' ? "\\n"
+      : c == '\r' ? "\\r"
+      : c == '\t' ? "\\t"
+      : c < truncateToInt32(32) ? jsonEscControl(c)
+      : asciiToString(c)
+
+fun jsonEscControl(c: System::Int32): System::String
+    ret "\\u00" + hexNibble(c / truncateToInt32(16))
+                 + hexNibble(c % truncateToInt32(16))
+
+fun hexNibble(n: System::Int32): System::String
+    ret n < truncateToInt32(10)
+        ? String(Int(n))
+        : asciiToString(truncateToInt32(87) + n)
+
+fun jsonStr(name: System::String, value: System::String): System::String
+    ret "\"" + name + "\":\"" + jsonEscape(value) + "\""
+
+fun jsonNum(name: System::String, value: System::Int): System::String
+    ret "\"" + name + "\":" + String(value)
+
+# ── --list ──────────────────────────────────────────────────────────────────
+# The same registry the run uses, so the two cannot disagree about what exists.
 # The accumulator carries the count so the self-call stays in TAIL position —
 # `listOne(..) + listCases(..)` would recurse once per test down the C stack.
-fun [impure, tail] listCases(cs: Chain<TestCase>, acc: System::Int): System::Int
+
+fun [impure, tail] listCases(cs: Chain<TestCase>, fmt: System::String,
+                             acc: System::Int): System::Int
     ret match(cs)
         (nil: ChainEnd) => acc
-        (l: ChainLink)  => listCases(l.next, acc + listOne(l.value))
+        (l: ChainLink)  => listCases(l.next, fmt, acc + listOne(l.value, fmt))
 
-fun [impure] listOne(c: TestCase): System::Int
-    println(c.id + "\t" + c.description + "\t" + c.file + ":" + String(c.line))
+fun [impure] listOne(c: TestCase, fmt: System::String): System::Int
+    println(fmt == "json" ? listOneJson(c) : listOneHuman(c))
     ret 0
 
-# Selection: any non-flag argument names a test to run. With none, run all.
-fun [impure] runSelected(cases: List<TestCase>,
-                         argv: List<System::String>): System::Int
+fun listOneHuman(c: TestCase): System::String
+    ret c.id + "\t" + c.description + "\t" + c.file + ":" + String(c.line)
+
+fun listOneJson(c: TestCase): System::String
+    ret "{" + jsonStr("event", "test") + "," + jsonStr("id", c.id) + ","
+      + jsonStr("description", c.description) + "," + jsonStr("file", c.file)
+      + "," + jsonNum("line", c.line) + "}"
+
+# ── selection ───────────────────────────────────────────────────────────────
+
+fun [impure] runSelected(cases: List<TestCase>, argv: List<System::String>,
+                         fmt: System::String): System::Int
     let wanted = build<System::String>(
         nonFlags(builder<System::String>(), chain(argv)))
     let chosen = isEmpty<System::String>(wanted)
@@ -104,15 +193,29 @@ fun [impure] runSelected(cases: List<TestCase>,
         : build<TestCase>(selectLoop(builder<TestCase>(), chain(cases), wanted))
     ret isEmpty<TestCase>(chosen) && !isEmpty<System::String>(wanted)
         ? noMatchError()
-        : report(runAll(chain(chosen), 0, 0))
+        : runChosen(chosen, fmt)
 
+fun [impure] runChosen(chosen: List<TestCase>, fmt: System::String): System::Int
+    let _ = emitRunStart(chainLength<TestCase>(chain(chosen)), fmt)
+    ret report(runAll(chain(chosen), fmt, 0, 0), fmt)
+
+# `--format` and its VALUE are both flags, not test names: without dropping the
+# value, `--format json` would be read as a request to run a test called "json"
+# and match nothing.
 fun [tail] nonFlags([terminal] b: ListBuilder<System::String>,
                     a: Chain<System::String>): ListBuilder<System::String>
     ret match(a)
         (nil: ChainEnd) => b
-        (l: ChainLink)  => startsWith(l.value, "-")
-            ? nonFlags(b, l.next)
-            : nonFlags(push<System::String>(b, l.value), l.next)
+        (l: ChainLink)  => l.value == "--format"
+            ? nonFlags(b, dropOne(l.next))
+            : startsWith(l.value, "-")
+                ? nonFlags(b, l.next)
+                : nonFlags(push<System::String>(b, l.value), l.next)
+
+fun dropOne(a: Chain<System::String>): Chain<System::String>
+    ret match(a)
+        (nil: ChainEnd) => a
+        (l: ChainLink)  => l.next
 
 fun [tail] selectLoop([terminal] b: ListBuilder<TestCase>, cs: Chain<TestCase>,
                       wanted: List<System::String>): ListBuilder<TestCase>
@@ -128,41 +231,76 @@ fun [impure] noMatchError(): System::Int
     println("error: no test matched the given name(s)")
     ret 2
 
-# The tally is carried, not accumulated in a mutable counter — `passed` and
-# `failed` thread through the walk.
+# ── running ─────────────────────────────────────────────────────────────────
+
 class [final] Tally(passed: System::Int, failed: System::Int)
 
-fun [impure, tail] runAll(cs: Chain<TestCase>, passed: System::Int,
-                          failed: System::Int): Tally
+fun [impure, tail] runAll(cs: Chain<TestCase>, fmt: System::String,
+                          passed: System::Int, failed: System::Int): Tally
     ret match(cs)
         (nil: ChainEnd) => Tally(passed, failed)
-        (l: ChainLink)  => runOne(l.value)
-            ? runAll(l.next, passed + 1, failed)
-            : runAll(l.next, passed, failed + 1)
+        (l: ChainLink)  => runOne(l.value, fmt)
+            ? runAll(l.next, fmt, passed + 1, failed)
+            : runAll(l.next, fmt, passed, failed + 1)
 
-fun [impure] runOne(c: TestCase): System::Bool
-    ret reportOutcome(c, c.body())
+fun [impure] runOne(c: TestCase, fmt: System::String): System::Bool
+    let _ = emitTestStart(c, fmt)
+    ret emitTestEnd(c, c.body(), fmt)
 
-fun [impure] reportOutcome(c: TestCase,
-                           outcome: System::None|TestFailure): System::Bool
+# ── the emitters — the only place the format is consulted ───────────────────
+
+fun [impure] emitRunStart(count: System::Int, fmt: System::String): System::Int
+    ret fmt == "json"
+        ? printLine("{" + jsonStr("event", "run_start") + ","
+                        + jsonNum("count", count) + "}")
+        : 0
+
+fun [impure] emitTestStart(c: TestCase, fmt: System::String): System::Int
+    ret fmt == "json"
+        ? printLine("{" + jsonStr("event", "test_start") + ","
+                        + jsonStr("id", c.id) + "}")
+        : 0
+
+fun [impure] emitTestEnd(c: TestCase, outcome: System::None|TestFailure,
+                         fmt: System::String): System::Bool
     ret match(outcome)
-        (f: TestFailure) => reportFailure(c, f)
-        (n: System::None) => reportPass(c)
+        (f: TestFailure) => emitFail(c, f, fmt)
+        (n: System::None) => emitPass(c, fmt)
 
-fun [impure] reportPass(c: TestCase): System::Bool
-    println("  ok    " + c.id)
+fun [impure] emitPass(c: TestCase, fmt: System::String): System::Bool
+    let _ = printLine(fmt == "json"
+        ? "{" + jsonStr("event", "test_end") + "," + jsonStr("id", c.id) + ","
+              + jsonStr("status", "pass") + "}"
+        : "  ok    " + c.id)
     ret true
 
-fun [impure] reportFailure(c: TestCase, f: TestFailure): System::Bool
-    println("  FAIL  " + c.id)
-    println("        " + f.message + (f.detail == "" ? "" : ": " + f.detail))
-    println("        at " + c.file + ":" + String(c.line))
+fun [impure] emitFail(c: TestCase, f: TestFailure,
+                      fmt: System::String): System::Bool
+    let _ = printLine(fmt == "json" ? failJson(c, f) : failHuman(c, f))
     ret false
+
+fun failJson(c: TestCase, f: TestFailure): System::String
+    ret "{" + jsonStr("event", "test_end") + "," + jsonStr("id", c.id) + ","
+      + jsonStr("status", "fail") + "," + jsonStr("message", f.message) + ","
+      + jsonStr("detail", f.detail) + "," + jsonStr("file", c.file) + ","
+      + jsonNum("line", c.line) + "}"
+
+fun failHuman(c: TestCase, f: TestFailure): System::String
+    ret "  FAIL  " + c.id + "\n        " + f.message
+      + (f.detail == "" ? "" : ": " + f.detail)
+      + "\n        at " + c.file + ":" + String(c.line)
 
 # Exit code is 0 or 1, NEVER a count: exit codes are 8 bits, so a run with 256
 # failures would exit 0 — a red run reporting green. The totals go in the
 # report, where they cannot wrap.
-fun [impure] report(t: Tally): System::Int
-    println("")
-    println(String(t.passed) + " passed, " + String(t.failed) + " failed")
+fun [impure] report(t: Tally, fmt: System::String): System::Int
+    let _ = printLine(fmt == "json"
+        ? "{" + jsonStr("event", "run_end") + ","
+              + jsonNum("passed", t.passed) + ","
+              + jsonNum("failed", t.failed) + "}"
+        : "\n" + String(t.passed) + " passed, " + String(t.failed) + " failed")
     ret t.failed == 0 ? 0 : 1
+
+fun [impure] printLine(s: System::String): System::Int
+    println(s)
+    ret 0
