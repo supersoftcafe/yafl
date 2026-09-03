@@ -1,0 +1,69 @@
+# Tests for System::Process (stdlib/process.yafl) and the runtime's spawn path.
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ProcessTests
+
+import System
+import System::IO
+import System::Process
+import System::Test
+
+
+fun _sh(script: System::String): ProcessResult|IOError
+    ret run("sh", prepend<System::String>("-c",
+        prepend<System::String>(script, List<System::String>())))
+
+fun _outOf(r: ProcessResult|IOError): System::String
+    ret match(r)
+        (p: ProcessResult) => p.out
+        (e: IOError)       => "<spawn failed>"
+
+fun _codeOf(r: ProcessResult|IOError): System::Int
+    ret match(r)
+        (p: ProcessResult) => p.exitCode
+        (e: IOError)       => -1
+
+
+fun [test("a spawned child's stdout is captured")] capturesStdout(): System::None|TestFailure
+    ret assertEqStr(_outOf(_sh("echo hello")), "hello\n", "stdout")
+
+fun [test("a child's non-zero exit status is reported, not swallowed")] reportsExitCode(): System::None|TestFailure
+    ret assertEqInt(_codeOf(_sh("exit 7")), 7, "exit 7")
+        ?> (ok: System::None) => assertEqInt(_codeOf(_sh("true")), 0, "exit 0")
+
+fun [test("stderr is captured separately from stdout")] separatesStreams(): System::None|TestFailure
+    ret assertEqStr(_outOf(_sh("echo out; echo err 1>&2")), "out\n",
+                    "stdout excludes stderr")
+
+# REGRESSION (close-on-exec). The runtime opened files with fopen and created
+# its spawn pipes with plain pipe(), neither close-on-exec — so every child
+# inherited the parent's open descriptors. That hands a child access to the
+# parent's files, and keeps them open for as long as the child lives: a reader
+# waiting on its own child's EOF can be held open by an unrelated child that
+# inherited the write end.
+#
+# DIFFERENTIAL, deliberately. An earlier version asserted "fd 3 is not open in
+# the child", which passed standalone and FAILED under ctest — ctest hands the
+# test binary inherited descriptors of its own, so the assertion conflated "the
+# runtime leaked our file" with "any fd 3 exists at all". Counting the child's
+# inherited fds BEFORE and AFTER opening a file cancels whatever the
+# environment contributed: only our own leak can change the difference.
+#
+# The probe opens no descriptors of its own — `<&$i` just fails on a closed fd —
+# so this is deterministic rather than timing- or environment-dependent.
+fun _countInheritedFds(): System::String
+    ret _outOf(_sh("n=0; for i in 3 4 5 6 7 8 9; do if { true; } <&$i 2>/dev/null; then n=$((n+1)); fi; done; echo $n"))
+
+fun [test("an open file handle is NOT inherited by a spawned child")] noFdLeak(): System::None|TestFailure
+    let before = _countInheritedFds()
+    ret match(open_read("/dev/null"))
+        (io: IO)     => _compareWhileOpen(before, io)
+        (e: IOError) => fail("could not open /dev/null to test with")
+
+# The count must be taken while the handle is still OPEN, and IO is linear —
+# close() is [terminal] — so the handle is consumed here, after measuring.
+fun _compareWhileOpen(before: System::String, io: IO): System::None|TestFailure
+    let after = _countInheritedFds()
+    let _ = io.close()
+    ret assertEqStr(after, before,
+                    "opening a file must not change what a child inherits")

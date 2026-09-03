@@ -101,14 +101,53 @@ static void _spawn_append(char** buf, int32_t* len, int32_t* cap,
 // Run the child to completion, capturing stdout/stderr in full and the exit
 // status.  stdin is /dev/null.  poll() drains both pipes concurrently so a
 // child that fills one pipe while we are reading the other cannot deadlock.
+// Create a pipe whose ends are CLOSE-ON-EXEC.
+//
+// Without this, a child spawned CONCURRENTLY by another IO thread inherits this
+// pipe's write end, and the reader below then never sees EOF when its own child
+// exits — it blocks until the unrelated child exits too. posix_spawn's file
+// actions close only the fds they NAME, and exec preserves every other
+// descriptor, so close-on-exec is the only thing that scopes an fd to its owner.
+// With IO_THREAD_COUNT spawns able to overlap, this is reachable today and
+// becomes routine under one-subprocess-per-test.
+//
+// The dup2 in the file actions is unaffected: dup2 clears close-on-exec on the
+// NEW descriptor, so the child's fds 0/1/2 still survive its exec.
+// pipe2(..., O_CLOEXEC) would set the flag atomically, but it is a GNU/BSD
+// extension and this runtime is strict ISO C with POSIX-only feature macros
+// (see yafl.h). pipe() + fcntl() is POSIX and behaves identically on every
+// platform, at the cost of a window between the two calls in which a
+// concurrent spawn could still inherit the fds. _spawn_launch_lock below
+// closes that window, so the pair is race-free without the extension.
+static int _pipe_cloexec(int fds[2]) {
+    if (pipe(fds) != 0) return -1;
+    if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 ||
+        fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0) {
+        int saved = errno;
+        close(fds[0]); close(fds[1]);
+        fds[0] = fds[1] = -1;
+        errno = saved;
+        return -1;
+    }
+    return 0;
+}
+
+// Held across pipe creation AND posix_spawn, so no child is ever created while
+// another thread's descriptors sit briefly un-flagged. It serialises the
+// LAUNCH only — microseconds — not the child's lifetime, which is what the
+// poll loop below waits out with the lock released.
+static pthread_mutex_t _spawn_launch_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void _io_run_spawn(io_job_t* job) {
     spawn_aux_t* sx = job->spawn;
     int out_pipe[2] = { -1, -1 };
     int err_pipe[2] = { -1, -1 };
-    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    pthread_mutex_lock(&_spawn_launch_lock);
+    if (_pipe_cloexec(out_pipe) != 0 || _pipe_cloexec(err_pipe) != 0) {
         job->raw_result = -errno;
         if (out_pipe[0] >= 0) { close(out_pipe[0]); close(out_pipe[1]); }
         if (err_pipe[0] >= 0) { close(err_pipe[0]); close(err_pipe[1]); }
+        pthread_mutex_unlock(&_spawn_launch_lock);
         return;
     }
 
@@ -127,6 +166,10 @@ static void _io_run_spawn(io_job_t* job) {
     posix_spawn_file_actions_destroy(&fa);
     close(out_pipe[1]);
     close(err_pipe[1]);
+    // Launch done: everything this thread created is now either close-on-exec
+    // or closed, so another thread may safely spawn. The child's LIFETIME is
+    // waited out below with the lock released.
+    pthread_mutex_unlock(&_spawn_launch_lock);
     if (rc != 0) {
         close(out_pipe[0]);
         close(err_pipe[0]);
@@ -213,7 +256,17 @@ static void* _io_thread_main(void* arg) {
             // Path is in io->buf, null-terminated by the worker.
             errno = 0;
             FILE* f = fopen((const char*)io->buf, job->open_mode);
-            if (f) setvbuf(f, NULL, _IONBF, 0);   // we buffer in io_t, not stdio
+            if (f) {
+                setvbuf(f, NULL, _IONBF, 0);   // we buffer in io_t, not stdio
+                // CLOSE-ON-EXEC for the same reason as the spawn pipes: without
+                // it every open handle is inherited by any child spawned while
+                // it is open, which both hands the child access to the parent's
+                // files and keeps them open for as long as the child lives.
+                // fopen's "e" mode would be atomic but is a glibc extension,
+                // absent on macOS; fcntl is portable at the cost of a small
+                // window.
+                (void)fcntl(fileno(f), F_SETFD, FD_CLOEXEC);
+            }
             io->file = f;                          // non-GC field; safe to write
             job->raw_result = f ? 0 : -errno;
         } break;
