@@ -1,0 +1,87 @@
+# Tests for System::Set (stdlib/set.yafl).
+# Ported from compiler/tests/test_set.py, which printed `label=value` lines and
+# compared the whole stdout block against a list of eleven strings. One
+# behaviour per test here.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::SetTests
+
+import System
+import System::Test
+
+
+fun _ints3(): Set<System::Int>
+    ret add<System::Int>(add<System::Int>(add<System::Int>(
+        Set<System::Int>(), 1), 2), 3)
+
+
+fun [test("a new set is empty and contains nothing")] emptySet(): System::None|TestFailure
+    ret assertEqInt(size<System::Int>(Set<System::Int>()), 0, "size")
+        ?> (ok: System::None) => assertFalse(
+               contains<System::Int>(Set<System::Int>(), 1), "contains nothing")
+        ?> (ok: System::None) => assertTrue(isEmpty<System::Int>(Set<System::Int>()),
+                                            "isEmpty")
+
+fun [test("a value is present after being added")] addThenContains(): System::None|TestFailure
+    ret assertTrue(contains<System::Int>(add<System::Int>(Set<System::Int>(), 7), 7),
+                   "added value present")
+
+fun [test("adding distinct values grows the set")] addDistinct(): System::None|TestFailure
+    ret assertEqInt(size<System::Int>(_ints3()), 3, "three distinct")
+
+# The defining property of a set, and the one a list would fail.
+fun [test("adding the SAME value twice leaves the size at one")] addDuplicate(): System::None|TestFailure
+    let s = add<System::Int>(add<System::Int>(Set<System::Int>(), 5), 5)
+    ret assertEqInt(size<System::Int>(s), 1, "duplicate collapses")
+        ?> (ok: System::None) => assertTrue(contains<System::Int>(s, 5),
+                                            "still present")
+
+fun [test("a removed value is no longer present")] removePresent(): System::None|TestFailure
+    let s = remove<System::Int>(add<System::Int>(Set<System::Int>(), 9), 9)
+    ret assertFalse(contains<System::Int>(s, 9), "gone")
+        ?> (ok: System::None) => assertEqInt(size<System::Int>(s), 0, "empty again")
+
+fun [test("removing an absent value is a no-op, not an error")] removeAbsent(): System::None|TestFailure
+    let s = remove<System::Int>(add<System::Int>(Set<System::Int>(), 1), 42)
+    ret assertEqInt(size<System::Int>(s), 1, "unchanged size")
+        ?> (ok: System::None) => assertTrue(contains<System::Int>(s, 1), "1 kept")
+
+fun [test("removing one of several leaves the rest")] removeOneOfSeveral(): System::None|TestFailure
+    ret assertEqInt(size<System::Int>(remove<System::Int>(_ints3(), 2)), 2, "size")
+        ?> (ok: System::None) => assertFalse(
+               contains<System::Int>(remove<System::Int>(_ints3(), 2), 2), "2 gone")
+        ?> (ok: System::None) => assertTrue(
+               contains<System::Int>(remove<System::Int>(_ints3(), 2), 1), "1 kept")
+
+# Sets are VALUES: remove returns a new set and the original is untouched. This
+# is the test that would catch an in-place implementation, and it is why the
+# check is worth making explicitly rather than assuming purity.
+fun [test("remove returns a NEW set; the original is unchanged")] removeIsPure(): System::None|TestFailure
+    let original = _ints3()
+    let reduced = remove<System::Int>(original, 2)
+    ret assertEqInt(size<System::Int>(reduced), 2, "copy shrank")
+        ?> (ok: System::None) => assertEqInt(size<System::Int>(original), 3,
+                                            "original unchanged")
+        ?> (ok: System::None) => assertTrue(contains<System::Int>(original, 2),
+                                            "original still has 2")
+
+fun [test("add likewise leaves the original set alone")] addIsPure(): System::None|TestFailure
+    let original = _ints3()
+    let grown = add<System::Int>(original, 4)
+    ret assertEqInt(size<System::Int>(grown), 4, "copy grew")
+        ?> (ok: System::None) => assertEqInt(size<System::Int>(original), 3,
+                                            "original unchanged")
+
+fun [test("sets of strings work the same way")] stringSet(): System::None|TestFailure
+    let s = add<System::String>(add<System::String>(Set<System::String>(), "a"), "b")
+    ret assertTrue(contains<System::String>(s, "a"), "a present")
+        ?> (ok: System::None) => assertEqInt(size<System::String>(s), 2, "two distinct")
+        ?> (ok: System::None) => assertEqInt(
+               size<System::String>(add<System::String>(s, "a")), 2,
+               "re-adding a string does not grow it")
+
+fun [test("a set built from a list drops the list's duplicates")] fromListDedupes(): System::None|TestFailure
+    let withDups = build<System::Int>(push<System::Int>(push<System::Int>(
+        push<System::Int>(builder<System::Int>(), 1), 2), 1))
+    ret assertEqInt(size<System::Int>(Set<System::Int>(withDups)), 2, "1,2,1 -> 2")
