@@ -9,29 +9,28 @@ import System::Process
 import System::Test
 
 
-fun _sh(script: System::String): ProcessResult|IOError
-    ret run("sh", prepend<System::String>("-c",
-        prepend<System::String>(script, List<System::String>())))
+fun _sh(script: String): ProcessResult|IOError
+    ret run("sh", prepend("-c", prepend(script, List<String>())))
 
-fun _outOf(r: ProcessResult|IOError): System::String
+fun _outOf(r: ProcessResult|IOError): String
     ret match(r)
         (p: ProcessResult) => p.out
         (e: IOError)       => "<spawn failed>"
 
-fun _codeOf(r: ProcessResult|IOError): System::Int
+fun _codeOf(r: ProcessResult|IOError): Int
     ret match(r)
         (p: ProcessResult) => p.exitCode
         (e: IOError)       => -1
 
 
-fun [test("a spawned child's stdout is captured")] capturesStdout(): System::None|TestFailure
+fun [test("a spawned child's stdout is captured")] capturesStdout(): None|TestFailure
     ret assertEqStr(_outOf(_sh("echo hello")), "hello\n", "stdout")
 
-fun [test("a child's non-zero exit status is reported, not swallowed")] reportsExitCode(): System::None|TestFailure
+fun [test("a child's non-zero exit status is reported, not swallowed")] reportsExitCode(): None|TestFailure
     ret assertEqInt(_codeOf(_sh("exit 7")), 7, "exit 7")
-        ?> (ok: System::None) => assertEqInt(_codeOf(_sh("true")), 0, "exit 0")
+     ?? assertEqInt(_codeOf(_sh("true")), 0, "exit 0")
 
-fun [test("stderr is captured separately from stdout")] separatesStreams(): System::None|TestFailure
+fun [test("stderr is captured separately from stdout")] separatesStreams(): None|TestFailure
     ret assertEqStr(_outOf(_sh("echo out; echo err 1>&2")), "out\n",
                     "stdout excludes stderr")
 
@@ -51,10 +50,10 @@ fun [test("stderr is captured separately from stdout")] separatesStreams(): Syst
 #
 # The probe opens no descriptors of its own — `<&$i` just fails on a closed fd —
 # so this is deterministic rather than timing- or environment-dependent.
-fun _countInheritedFds(): System::String
+fun _countInheritedFds(): String
     ret _outOf(_sh("n=0; for i in 3 4 5 6 7 8 9; do if { true; } <&$i 2>/dev/null; then n=$((n+1)); fi; done; echo $n"))
 
-fun [test("an open file handle is NOT inherited by a spawned child")] noFdLeak(): System::None|TestFailure
+fun [test("an open file handle is NOT inherited by a spawned child")] noFdLeak(): None|TestFailure
     let before = _countInheritedFds()
     ret match(open_read("/dev/null"))
         (io: IO)     => _compareWhileOpen(before, io)
@@ -62,8 +61,7 @@ fun [test("an open file handle is NOT inherited by a spawned child")] noFdLeak()
 
 # The count must be taken while the handle is still OPEN, and IO is linear —
 # close() is [terminal] — so the handle is consumed here, after measuring.
-fun _compareWhileOpen(before: System::String, io: IO): System::None|TestFailure
+fun _compareWhileOpen(before: String, io: IO): None|TestFailure
     let after = _countInheritedFds()
     let _ = io.close()
-    ret assertEqStr(after, before,
-                    "opening a file must not change what a child inherits")
+    ret assertEqStr(after, before, "opening a file must not change what a child inherits")

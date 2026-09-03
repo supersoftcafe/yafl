@@ -1,0 +1,100 @@
+# EMPTY-INPUT cases, gathered deliberately in one place.
+#
+# Empty is where implementations break: an off-by-one that never fires on a
+# populated input, a head-of-nothing deref, a split that divides by a count of
+# zero. A combinator tested only on a three-element list can be wrong on zero
+# and look completely healthy.
+#
+# What is NOT here is already covered elsewhere: isEmpty/head (list_tests),
+# last, concat-with-empty, sort/sortBy, fold's seed, the vacuous any/all,
+# splitHalf, Set construction, and the empty-string cases in string_tests.
+# This file is the remainder, not a duplicate of them.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::EmptyInputTests
+
+import System
+import System::Test
+
+
+fun _empty(): List<Int>
+    ret List<Int>()
+
+fun _count(l: List<Int>): Int
+    ret fold(l, 0, (acc: Int, x: Int) => acc + 1)
+
+
+# ── list combinators over an empty list ─────────────────────────────────────
+
+fun [test("map over an empty list yields an empty list, and never calls f")] mapEmpty(): None|TestFailure
+    ret assertTrue(isEmpty(map(_empty(), (x: Int) => x * 2)), "map of empty")
+
+fun [test("filter over an empty list yields an empty list")] filterEmpty(): None|TestFailure
+    ret assertTrue(isEmpty(filter(_empty(),
+            (x: Int) => true)), "filter of empty, predicate true")
+
+fun [test("contains on an empty list is always false")] containsEmpty(): None|TestFailure
+    ret assertFalse(contains(_empty(), 1), "nothing is in nothing")
+
+fun [test("take and drop on an empty list yield empty, not an error")] takeDropEmpty(): None|TestFailure
+    ret assertTrue(isEmpty(take(_empty(), 3)), "take 3")
+     ?? assertTrue(isEmpty(drop(_empty(), 3)), "drop 3")
+     ?? assertTrue(isEmpty(take(_empty(), 0)), "take 0")
+
+fun [test("take 0 of a NON-empty list is empty")] takeZero(): None|TestFailure
+    let l = prepend(1, prepend(2, _empty()))
+    ret assertTrue(isEmpty(take(l, 0)), "take 0")
+     ?? assertEqInt(_count(drop(l, 0)), 2, "drop 0 keeps everything")
+
+fun [test("flatMap over an empty list yields an empty list")] flatMapEmptyInput(): None|TestFailure
+    ret assertTrue(isEmpty(flatMap(_empty(),
+            (x: Int) => prepend(x, _empty()))), "flatMap of empty")
+
+fun [test("zipMap with either side empty yields an empty list")] zipMapEmpty(): None|TestFailure
+    let one = prepend(1, _empty())
+    ret assertTrue(isEmpty(zipMap(_empty(), one, (x: Int, y: Int) => x + y)), "left empty")
+     ?? assertTrue(isEmpty(zipMap(one, _empty(), (x: Int, y: Int) => x + y)), "right empty")
+     ?? assertTrue(isEmpty(zipMap(_empty(), _empty(),
+                   (x: Int, y: Int) => x + y)), "both empty")
+
+fun [test("prepend onto an empty list gives a one-element list")] prependOntoEmpty(): None|TestFailure
+    let l = prepend(9, _empty())
+    ret assertFalse(isEmpty(l), "no longer empty")
+     ?? assertEqInt(_count(l), 1, "exactly one")
+
+
+# ── Set ─────────────────────────────────────────────────────────────────────
+
+fun [test("removing from an empty set is a no-op, not an error")] removeFromEmptySet(): None|TestFailure
+    let s = remove(Set<Int>(), 1)
+    ret assertEqInt(size(s), 0, "still empty")
+     ?? assertTrue(isEmpty(s), "isEmpty")
+
+fun [test("a set built from an empty list is empty")] setFromEmptyList(): None|TestFailure
+    ret assertEqInt(size(Set<Int>(_empty())), 0, "empty in, empty out")
+
+
+# ── strings ─────────────────────────────────────────────────────────────────
+
+fun [test("joining an empty list gives the empty string, with no separator")] joinEmpty(): None|TestFailure
+    ret assertEqStr(join(List<String>(), ","), "", "no parts, no commas")
+
+fun [test("joining ONE part emits no separator either")] joinSingle(): None|TestFailure
+    ret assertEqStr(join(prepend("a", List<String>()), ","),
+                    "a", "separator is BETWEEN parts")
+
+fun [test("slicing the empty string is empty, not an error")] sliceEmptyString(): None|TestFailure
+    ret assertEqStr(slice("", 0, 0), "", "0..0 of empty")
+
+fun [test("trimming the empty string leaves it empty")] trimEmptyString(): None|TestFailure
+    ret assertEqStr(trimStart(""), "", "trimStart")
+     ?? assertEqStr(trimEnd(""), "", "trimEnd")
+
+fun [test("trimming an all-whitespace string leaves nothing")] trimAllWhitespace(): None|TestFailure
+    ret assertEqStr(trimStart("   "), "", "leading only, all consumed")
+     ?? assertEqStr(trimEnd("   "), "", "trailing only")
+
+fun [test("indexOf on the empty string finds nothing but the empty needle")] indexOfEmptyString(): None|TestFailure
+    ret assertEqInt(indexOf("", "x", 0), -1, "absent in empty")
+     ?? assertFalse(contains("", "x"), "contains nothing")

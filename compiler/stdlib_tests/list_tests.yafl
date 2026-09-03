@@ -13,106 +13,82 @@ import System
 import System::Test
 
 
-fun _ints(): List<System::Int>
-    ret build<System::Int>(push<System::Int>(push<System::Int>(
-        push<System::Int>(builder<System::Int>(), 1), 2), 3))
+fun _ints(): List<Int>
+    ret build(push(push(push(builder<Int>(), 1), 2), 3))
 
 
-fun [test("an empty list reports empty and has no head")] emptyList(): System::None|TestFailure
-    let empty = List<System::Int>()
-    ret assertTrue(isEmpty<System::Int>(empty), "empty is empty")
-        ?> (ok: System::None) => assertTrue(head<System::Int>(empty) is System::None,
-                                            "empty has no head")
-        ?> (ok: System::None) => assertEqInt(chainLength<System::Int>(chain(empty)), 0,
-                                            "empty length")
+fun [test("an empty list reports empty and has no head")] emptyList(): None|TestFailure
+    let empty = List<Int>()
+    ret assertTrue(isEmpty(empty), "empty is empty")
+     ?? assertTrue(head(empty) is None, "empty has no head")
+     ?? assertEqInt(chainLength(chain(empty)), 0, "empty length")
 
-fun [test("builder/push/build preserves insertion order")] builderKeepsOrder(): System::None|TestFailure
-    ret assertEqInt(chainLength<System::Int>(chain(_ints())), 3, "length")
-        ?> (ok: System::None) => assertEqInt(_headOr(_ints(), 0), 1, "first is 1")
-        ?> (ok: System::None) => assertEqInt(_headOr(tail<System::Int>(_ints()), 0), 2,
-                                            "second is 2")
+fun [test("builder/push/build preserves insertion order")] builderKeepsOrder(): None|TestFailure
+    ret assertEqInt(chainLength(chain(_ints())), 3, "length")
+     ?? assertEqInt(_headOr(_ints(), 0), 1, "first is 1")
+     ?? assertEqInt(_headOr(tail<Int>(_ints()), 0), 2, "second is 2")
 
-fun _headOr(l: List<System::Int>, fallback: System::Int): System::Int
-    ret match(head<System::Int>(l))
-        (v: System::Int)  => v
-        (n: System::None) => fallback
+fun _headOr(l: List<Int>, fallback: Int): Int
+    ret match(head(l))
+        (v: Int)  => v
+        (n: None) => fallback
 
-fun [test("prepend puts the new element at the front")] prependFront(): System::None|TestFailure
-    let l = prepend<System::Int>(0, _ints())
+fun [test("prepend puts the new element at the front")] prependFront(): None|TestFailure
+    let l = prepend(0, _ints())
     ret assertEqInt(_headOr(l, -1), 0, "head is the prepended value")
-        ?> (ok: System::None) => assertEqInt(chainLength<System::Int>(chain(l)), 4,
-                                            "length grew by one")
+     ?? assertEqInt(chainLength(chain(l)), 4, "length grew by one")
 
-fun [test("last returns the final element")] lastElement(): System::None|TestFailure
+fun [test("last returns the final element")] lastElement(): None|TestFailure
     ret assertEqInt(_lastOr(_ints(), 0), 3, "last of [1,2,3]")
-        ?> (ok: System::None) => assertTrue(
-               last<System::Int>(List<System::Int>()) is System::None,
-               "empty has no last")
+     ?? assertTrue(last(List<Int>()) is None, "empty has no last")
 
-fun _lastOr(l: List<System::Int>, fallback: System::Int): System::Int
-    ret match(last<System::Int>(l))
-        (v: System::Int)  => v
-        (n: System::None) => fallback
+fun _lastOr(l: List<Int>, fallback: Int): Int
+    ret match(last(l))
+        (v: Int)  => v
+        (n: None) => fallback
 
-fun [test("concat joins two lists end to end")] concatJoins(): System::None|TestFailure
-    let joined = concat<System::Int>(_ints(), _ints())
-    ret assertEqInt(chainLength<System::Int>(chain(joined)), 6, "6 elements")
-        ?> (ok: System::None) => assertEqInt(_headOr(joined, 0), 1, "starts with 1")
-        ?> (ok: System::None) => assertEqInt(_lastOr(joined, 0), 3, "ends with 3")
+fun [test("concat joins two lists end to end")] concatJoins(): None|TestFailure
+    let joined = concat(_ints(), _ints())
+    ret assertEqInt(chainLength(chain(joined)), 6, "6 elements")
+     ?? assertEqInt(_headOr(joined, 0), 1, "starts with 1")
+     ?? assertEqInt(_lastOr(joined, 0), 3, "ends with 3")
 
-fun [test("concat with an empty list is the identity")] concatEmptyIdentity(): System::None|TestFailure
-    let empty = List<System::Int>()
-    ret assertEqInt(chainLength<System::Int>(chain(concat<System::Int>(_ints(), empty))), 3,
-                    "append empty")
-        ?> (ok: System::None) => assertEqInt(
-               chainLength<System::Int>(chain(concat<System::Int>(empty, _ints()))), 3,
-               "prepend empty")
+fun [test("concat with an empty list is the identity")] concatEmptyIdentity(): None|TestFailure
+    let empty = List<Int>()
+    ret assertEqInt(chainLength(chain(concat(_ints(), empty))), 3, "append empty")
+     ?? assertEqInt(chainLength(chain(concat(empty, _ints()))), 3, "prepend empty")
 
-fun [test("contains finds a present value and rejects an absent one")] containsWorks(): System::None|TestFailure
-    ret assertTrue(contains<System::Int>(_ints(), 2), "2 is present")
-        ?> (ok: System::None) => assertFalse(contains<System::Int>(_ints(), 99),
-                                            "99 is absent")
+fun [test("contains finds a present value and rejects an absent one")] containsWorks(): None|TestFailure
+    ret assertTrue(contains(_ints(), 2), "2 is present")
+     ?? assertFalse(contains(_ints(), 99), "99 is absent")
 
-fun [test("map applies the function to every element in order")] mapInOrder(): System::None|TestFailure
-    let doubled = map<System::Int, System::Int>(_ints(), (x: System::Int) => x * 2)
+fun [test("map applies the function to every element in order")] mapInOrder(): None|TestFailure
+    let doubled = map(_ints(), (x: Int) => x * 2)
     ret assertEqInt(_headOr(doubled, 0), 2, "first doubled")
-        ?> (ok: System::None) => assertEqInt(_lastOr(doubled, 0), 6, "last doubled")
-        ?> (ok: System::None) => assertEqInt(chainLength<System::Int>(chain(doubled)), 3,
-                                            "length unchanged")
+     ?? assertEqInt(_lastOr(doubled, 0), 6, "last doubled")
+     ?? assertEqInt(chainLength(chain(doubled)), 3, "length unchanged")
 
-fun [test("filter keeps only matching elements")] filterKeeps(): System::None|TestFailure
-    let odd = filter<System::Int>(_ints(), (x: System::Int) => x % 2 == 1)
-    ret assertEqInt(chainLength<System::Int>(chain(odd)), 2, "two odd values")
-        ?> (ok: System::None) => assertEqInt(_headOr(odd, 0), 1, "first odd is 1")
-        ?> (ok: System::None) => assertEqInt(_lastOr(odd, 0), 3, "last odd is 3")
+fun [test("filter keeps only matching elements")] filterKeeps(): None|TestFailure
+    let odd = filter(_ints(), (x: Int) => x % 2 == 1)
+    ret assertEqInt(chainLength(chain(odd)), 2, "two odd values")
+     ?? assertEqInt(_headOr(odd, 0), 1, "first odd is 1")
+     ?? assertEqInt(_lastOr(odd, 0), 3, "last odd is 3")
 
-fun [test("filter that matches nothing yields the empty list")] filterNone(): System::None|TestFailure
-    let none = filter<System::Int>(_ints(), (x: System::Int) => x > 100)
-    ret assertTrue(isEmpty<System::Int>(none), "nothing survives")
+fun [test("filter that matches nothing yields the empty list")] filterNone(): None|TestFailure
+    let none = filter(_ints(), (x: Int) => x > 100)
+    ret assertTrue(isEmpty(none), "nothing survives")
 
-fun [test("any and all agree with the predicate")] anyAndAll(): System::None|TestFailure
-    ret assertTrue(any<System::Int>(_ints(), (x: System::Int) => x == 2), "any equals 2")
-        ?> (ok: System::None) => assertFalse(any<System::Int>(_ints(),
-                                                (x: System::Int) => x > 100),
-                                            "none over 100")
-        ?> (ok: System::None) => assertTrue(all<System::Int>(_ints(),
-                                                (x: System::Int) => x > 0),
-                                            "all positive")
-        ?> (ok: System::None) => assertFalse(all<System::Int>(_ints(),
-                                                (x: System::Int) => x > 1),
-                                            "not all over 1")
+fun [test("any and all agree with the predicate")] anyAndAll(): None|TestFailure
+    ret assertTrue(any(_ints(), (x: Int) => x == 2), "any equals 2")
+     ?? assertFalse(any(_ints(), (x: Int) => x > 100), "none over 100")
+     ?? assertTrue(all(_ints(), (x: Int) => x > 0), "all positive")
+     ?? assertFalse(all(_ints(), (x: Int) => x > 1), "not all over 1")
 
-fun [test("take and drop split a list at the given count")] takeAndDrop(): System::None|TestFailure
-    ret assertEqInt(chainLength<System::Int>(chain(take<System::Int>(_ints(), 2))), 2,
-                    "take 2")
-        ?> (ok: System::None) => assertEqInt(
-               chainLength<System::Int>(chain(drop<System::Int>(_ints(), 2))), 1, "drop 2")
-        ?> (ok: System::None) => assertEqInt(
-               _headOr(drop<System::Int>(_ints(), 2), 0), 3, "drop 2 leaves 3")
+fun [test("take and drop split a list at the given count")] takeAndDrop(): None|TestFailure
+    ret assertEqInt(chainLength(chain(take(_ints(), 2))), 2, "take 2")
+     ?? assertEqInt(chainLength(chain(drop(_ints(), 2))), 1, "drop 2")
+     ?? assertEqInt(_headOr(drop(_ints(), 2), 0), 3, "drop 2 leaves 3")
 
-fun [test("take and drop past the end are clamped, not errors")] takeDropOverrun(): System::None|TestFailure
-    ret assertEqInt(chainLength<System::Int>(chain(take<System::Int>(_ints(), 99))), 3,
-                    "take more than exists")
-        ?> (ok: System::None) => assertTrue(
-               isEmpty<System::Int>(drop<System::Int>(_ints(), 99)),
-               "drop more than exists")
+fun [test("take and drop past the end are clamped, not errors")] takeDropOverrun(): None|TestFailure
+    ret assertEqInt(chainLength(chain(take(_ints(), 99))), 3, "take more than exists")
+     ?? assertTrue(isEmpty(drop(_ints(), 99)), "drop more than exists")

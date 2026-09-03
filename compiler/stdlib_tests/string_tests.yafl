@@ -7,97 +7,96 @@ import System
 import System::Test
 
 
-fun [test("length counts BYTES, not codepoints")] lengthIsBytes(): System::None|TestFailure
+fun [test("length counts BYTES, not codepoints")] lengthIsBytes(): None|TestFailure
     ret assertEqInt(length(""), 0, "empty")
-        ?> (ok: System::None) => assertEqInt(length("abc"), 3, "ascii")
-        ?> (ok: System::None) => assertEqInt(length("é"), 2, "2-byte codepoint")
+     ?? assertEqInt(length("abc"), 3, "ascii")
+     ?? assertEqInt(length("é"), 2, "2-byte codepoint")
 
-fun [test("codepointCount counts CHARACTERS, unlike length")] codepointsCounted(): System::None|TestFailure
+fun [test("codepointCount counts CHARACTERS, unlike length")] codepointsCounted(): None|TestFailure
     ret assertEqInt(codepointCount("abc"), 3, "ascii")
-        ?> (ok: System::None) => assertEqInt(codepointCount("é"), 1, "one codepoint")
-        ?> (ok: System::None) => assertEqInt(codepointCount(""), 0, "empty")
+     ?? assertEqInt(codepointCount("é"), 1, "one codepoint")
+     ?? assertEqInt(codepointCount(""), 0, "empty")
 
-fun [test("slice takes a half-open byte range")] sliceRange(): System::None|TestFailure
+fun [test("slice takes a half-open byte range")] sliceRange(): None|TestFailure
     ret assertEqStr(slice("abcdef", 0, 3), "abc", "front")
-        ?> (ok: System::None) => assertEqStr(slice("abcdef", 3, 6), "def", "back")
-        ?> (ok: System::None) => assertEqStr(slice("abcdef", 2, 2), "", "empty range")
+     ?? assertEqStr(slice("abcdef", 3, 6), "def", "back")
+     ?? assertEqStr(slice("abcdef", 2, 2), "", "empty range")
 
-fun [test("concatenation joins in order")] concatOrder(): System::None|TestFailure
+fun [test("concatenation joins in order")] concatOrder(): None|TestFailure
     ret assertEqStr("ab" + "cd", "abcd", "two parts")
-        ?> (ok: System::None) => assertEqStr("" + "x", "x", "empty prefix")
-        ?> (ok: System::None) => assertEqStr("x" + "", "x", "empty suffix")
+     ?? assertEqStr("" + "x", "x", "empty prefix")
+     ?? assertEqStr("x" + "", "x", "empty suffix")
 
-fun [test("startsWith and endsWith match at the edges")] edges(): System::None|TestFailure
+fun [test("startsWith and endsWith match at the edges")] edges(): None|TestFailure
     ret assertTrue(startsWith("hello", "he"), "prefix")
-        ?> (ok: System::None) => assertFalse(startsWith("hello", "lo"), "not a prefix")
-        ?> (ok: System::None) => assertTrue(endsWith("hello", "lo"), "suffix")
-        ?> (ok: System::None) => assertFalse(endsWith("hello", "he"), "not a suffix")
+     ?? assertFalse(startsWith("hello", "lo"), "not a prefix")
+     ?? assertTrue(endsWith("hello", "lo"), "suffix")
+     ?? assertFalse(endsWith("hello", "he"), "not a suffix")
 
-fun [test("every string starts and ends with the empty string")] emptyAffix(): System::None|TestFailure
+fun [test("every string starts and ends with the empty string")] emptyAffix(): None|TestFailure
     ret assertTrue(startsWith("hello", ""), "empty prefix")
-        ?> (ok: System::None) => assertTrue(endsWith("hello", ""), "empty suffix")
-        ?> (ok: System::None) => assertTrue(startsWith("", ""), "empty in empty")
+     ?? assertTrue(endsWith("hello", ""), "empty suffix")
+     ?? assertTrue(startsWith("", ""), "empty in empty")
 
-fun [test("indexOf reports the offset or -1")] indexOfOffset(): System::None|TestFailure
+fun [test("indexOf reports the offset or -1")] indexOfOffset(): None|TestFailure
     ret assertEqInt(indexOf("hello", "ll", 0), 2, "found")
-        ?> (ok: System::None) => assertEqInt(indexOf("hello", "zz", 0), -1, "absent")
-        ?> (ok: System::None) => assertEqInt(indexOf("hello", "l", 3), 3, "from offset")
+     ?? assertEqInt(indexOf("hello", "zz", 0), -1, "absent")
+     ?? assertEqInt(indexOf("hello", "l", 3), 3, "from offset")
 
-fun [test("contains agrees with indexOf")] containsAgrees(): System::None|TestFailure
+fun [test("contains agrees with indexOf")] containsAgrees(): None|TestFailure
     ret assertTrue(contains("hello", "ell"), "present")
-        ?> (ok: System::None) => assertFalse(contains("hello", "xyz"), "absent")
+     ?? assertFalse(contains("hello", "xyz"), "absent")
 
-fun [test("split breaks on every separator occurrence")] splitOnSep(): System::None|TestFailure
+fun [test("split breaks on every separator occurrence")] splitOnSep(): None|TestFailure
     let parts = split("a,b,c", ",")
-    ret assertEqInt(chainLength<System::String>(chain(parts)), 3, "three parts")
-        ?> (ok: System::None) => assertEqStr(_headOrEmpty(parts), "a", "first part")
+    ret assertEqInt(chainLength(chain(parts)), 3, "three parts")
+     ?? assertEqStr(_headOrEmpty(parts), "a", "first part")
 
-fun _headOrEmpty(l: List<System::String>): System::String
-    ret match(head<System::String>(l))
-        (v: System::String) => v
-        (n: System::None)   => ""
+fun _headOrEmpty(l: List<String>): String
+    ret match(head(l))
+        (v: String) => v
+        (n: None)   => ""
 
-fun [test("split with no separator present yields the whole string")] splitNoSep(): System::None|TestFailure
+fun [test("split with no separator present yields the whole string")] splitNoSep(): None|TestFailure
     let parts = split("abc", ",")
-    ret assertEqInt(chainLength<System::String>(chain(parts)), 1, "one part")
-        ?> (ok: System::None) => assertEqStr(_headOrEmpty(parts), "abc", "unchanged")
+    ret assertEqInt(chainLength(chain(parts)), 1, "one part")
+     ?? assertEqStr(_headOrEmpty(parts), "abc", "unchanged")
 
-fun [test("join is the inverse of split for a simple case")] joinInverse(): System::None|TestFailure
+fun [test("join is the inverse of split for a simple case")] joinInverse(): None|TestFailure
     ret assertEqStr(join(split("a,b,c", ","), ","), "a,b,c", "round trip")
 
-fun [test("trimStart and trimEnd remove only their own side")] trimSides(): System::None|TestFailure
+fun [test("trimStart and trimEnd remove only their own side")] trimSides(): None|TestFailure
     ret assertEqStr(trimStart("  ab  "), "ab  ", "leading only")
-        ?> (ok: System::None) => assertEqStr(trimEnd("  ab  "), "  ab", "trailing only")
-        ?> (ok: System::None) => assertEqStr(trimStart("ab"), "ab", "nothing to trim")
+     ?? assertEqStr(trimEnd("  ab  "), "  ab", "trailing only")
+     ?? assertEqStr(trimStart("ab"), "ab", "nothing to trim")
 
-fun [test("parseInt accepts digits and rejects rubbish")] parseIntCases(): System::None|TestFailure
+fun [test("parseInt accepts digits and rejects rubbish")] parseIntCases(): None|TestFailure
     ret assertEqInt(_parsedOr("123", -1), 123, "positive")
-        ?> (ok: System::None) => assertEqInt(_parsedOr("-45", 0), -45, "negative")
-        ?> (ok: System::None) => assertTrue(parseInt("12x") is System::None, "trailing junk")
-        ?> (ok: System::None) => assertTrue(parseInt("") is System::None, "empty")
+     ?? assertEqInt(_parsedOr("-45", 0), -45, "negative")
+     ?? assertTrue(parseInt("12x") is None, "trailing junk")
+     ?? assertTrue(parseInt("") is None, "empty")
 
-fun _parsedOr(s: System::String, fallback: System::Int): System::Int
+fun _parsedOr(s: String, fallback: Int): Int
     ret match(parseInt(s))
-        (v: System::Int)  => v
-        (n: System::None) => fallback
+        (v: Int)  => v
+        (n: None) => fallback
 
-fun [test("String(Int) round-trips through parseInt")] intRoundTrip(): System::None|TestFailure
+fun [test("String(Int) round-trips through parseInt")] intRoundTrip(): None|TestFailure
     ret assertEqStr(String(0), "0", "zero")
-        ?> (ok: System::None) => assertEqInt(_parsedOr(String(98765), -1), 98765,
-                                            "round trip")
-        ?> (ok: System::None) => assertEqStr(String(-7), "-7", "negative")
+     ?? assertEqInt(_parsedOr(String(98765), -1), 98765, "round trip")
+     ?? assertEqStr(String(-7), "-7", "negative")
 
-fun [test("compare orders lexicographically")] compareOrders(): System::None|TestFailure
+fun [test("compare orders lexicographically")] compareOrders(): None|TestFailure
     ret assertTrue(compare("a", "b") < 0, "a before b")
-        ?> (ok: System::None) => assertTrue(compare("b", "a") > 0, "b after a")
-        ?> (ok: System::None) => assertEqInt(compare("a", "a"), 0, "equal")
+     ?? assertTrue(compare("b", "a") > 0, "b after a")
+     ?? assertEqInt(compare("a", "a"), 0, "equal")
 
-fun [test("splitLines splits on newlines")] linesSplit(): System::None|TestFailure
+fun [test("splitLines splits on newlines")] linesSplit(): None|TestFailure
     let lines = splitLines("a\nb\nc")
-    ret assertEqInt(chainLength<System::String>(chain(lines)), 3, "three lines")
-        ?> (ok: System::None) => assertEqStr(_headOrEmpty(lines), "a", "first line")
+    ret assertEqInt(chainLength(chain(lines)), 3, "three lines")
+     ?? assertEqStr(_headOrEmpty(lines), "a", "first line")
 
-fun [test("isValidUtf8 accepts good input and rejects a bad byte")] utf8Validity(): System::None|TestFailure
+fun [test("isValidUtf8 accepts good input and rejects a bad byte")] utf8Validity(): None|TestFailure
     ret assertTrue(isValidUtf8("hello"), "ascii is valid")
-        ?> (ok: System::None) => assertTrue(isValidUtf8("héllo"), "2-byte is valid")
-        ?> (ok: System::None) => assertTrue(isValidUtf8(""), "empty is valid")
+     ?? assertTrue(isValidUtf8("héllo"), "2-byte is valid")
+     ?? assertTrue(isValidUtf8(""), "empty is valid")

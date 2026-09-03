@@ -18,105 +18,93 @@ import System
 import System::Test
 
 
-fun _ints(a: System::Int, b: System::Int, c: System::Int,
-          d: System::Int, e: System::Int): List<System::Int>
-    ret build<System::Int>(push<System::Int>(push<System::Int>(push<System::Int>(
-        push<System::Int>(push<System::Int>(builder<System::Int>(), a), b), c),
-        d), e))
+fun _ints(a: Int, b: Int, c: Int, d: Int, e: Int): List<Int>
+    ret build(push(push(push(push(push(builder<Int>(), a), b), c), d), e))
 
-fun _sum(l: List<System::Int>): System::Int
-    ret fold<System::Int, System::Int>(l, 0,
-        (acc: System::Int, x: System::Int) => acc + x)
+fun _sum(l: List<Int>): Int
+    ret fold(l, 0, (acc: Int, x: Int) => acc + x)
 
-fun _count(l: List<System::Int>): System::Int
-    ret fold<System::Int, System::Int>(l, 0,
-        (acc: System::Int, x: System::Int) => acc + 1)
+fun _count(l: List<Int>): Int
+    ret fold(l, 0, (acc: Int, x: Int) => acc + 1)
 
-fun _headOr(l: List<System::Int>, fallback: System::Int): System::Int
-    ret match(head<System::Int>(l))
-        (v: System::Int)  => v
-        (n: System::None) => fallback
+fun _headOr(l: List<Int>, fallback: Int): Int
+    ret match(head(l))
+        (v: Int)  => v
+        (n: None) => fallback
 
-fun _lastOr(l: List<System::Int>, fallback: System::Int): System::Int
-    ret match(last<System::Int>(l))
-        (v: System::Int)  => v
-        (n: System::None) => fallback
+fun _lastOr(l: List<Int>, fallback: Int): Int
+    ret match(last(l))
+        (v: Int)  => v
+        (n: None) => fallback
 
 
 # ── fold ────────────────────────────────────────────────────────────────────
 
-fun [test("fold accumulates left to right over every element")] foldSums(): System::None|TestFailure
+fun [test("fold accumulates left to right over every element")] foldSums(): None|TestFailure
     ret assertEqInt(_sum(_ints(1, 2, 3, 4, 5)), 15, "sum 1..5")
-        ?> (ok: System::None) => assertEqInt(_count(_ints(1, 2, 3, 4, 5)), 5, "count")
+     ?? assertEqInt(_count(_ints(1, 2, 3, 4, 5)), 5, "count")
 
-fun [test("fold over an empty list returns the seed untouched")] foldEmptySeed(): System::None|TestFailure
-    ret assertEqInt(_sum(List<System::Int>()), 0, "sum of empty")
-        ?> (ok: System::None) => assertEqInt(
-               fold<System::Int, System::Int>(List<System::Int>(), 99,
-                   (acc: System::Int, x: System::Int) => acc + x), 99, "seed kept")
+fun [test("fold over an empty list returns the seed untouched")] foldEmptySeed(): None|TestFailure
+    ret assertEqInt(_sum(List<Int>()), 0, "sum of empty")
+     ?? assertEqInt(fold(List<Int>(), 99, (acc: Int, x: Int) => acc + x), 99, "seed kept")
 
 # Order matters and a commutative operator cannot show it: subtraction can.
 # Left-to-right gives ((((0-1)-2)-3)-4)-5 = -15; right-to-left would give 3.
-fun [test("fold is LEFT to right, shown with a non-commutative operator")] foldIsLeftToRight(): System::None|TestFailure
-    ret assertEqInt(fold<System::Int, System::Int>(_ints(1, 2, 3, 4, 5), 0,
-            (acc: System::Int, x: System::Int) => acc - x), 0 - 15, "left fold")
+fun [test("fold is LEFT to right, shown with a non-commutative operator")] foldIsLeftToRight(): None|TestFailure
+    ret assertEqInt(fold(_ints(1, 2, 3, 4, 5), 0,
+            (acc: Int, x: Int) => acc - x), 0 - 15, "left fold")
 
 
 # ── splitHalf ───────────────────────────────────────────────────────────────
 
-fun [test("splitHalf divides a list, the extra element going right")] splitHalfDivides(): System::None|TestFailure
-    let parts = splitHalf<System::Int>(_ints(1, 2, 3, 4, 5))
+fun [test("splitHalf divides a list, the extra element going right")] splitHalfDivides(): None|TestFailure
+    let parts = splitHalf(_ints(1, 2, 3, 4, 5))
     ret assertEqInt(_count(parts.left), 2, "left count")
-        ?> (ok: System::None) => assertEqInt(_count(parts.right), 3, "right count")
-        ?> (ok: System::None) => assertEqInt(_headOr(parts.left, 0), 1, "left head")
-        ?> (ok: System::None) => assertEqInt(_lastOr(parts.left, 0), 2, "left last")
-        ?> (ok: System::None) => assertEqInt(_headOr(parts.right, 0), 3, "right head")
-        ?> (ok: System::None) => assertEqInt(_lastOr(parts.right, 0), 5, "right last")
+     ?? assertEqInt(_count(parts.right), 3, "right count")
+     ?? assertEqInt(_headOr(parts.left, 0), 1, "left head")
+     ?? assertEqInt(_lastOr(parts.left, 0), 2, "left last")
+     ?? assertEqInt(_headOr(parts.right, 0), 3, "right head")
+     ?? assertEqInt(_lastOr(parts.right, 0), 5, "right last")
 
-fun [test("splitHalf of one element leaves the left side empty")] splitHalfSingle(): System::None|TestFailure
-    let parts = splitHalf<System::Int>(prepend<System::Int>(7, List<System::Int>()))
-    ret assertTrue(isEmpty<System::Int>(parts.left), "left empty")
-        ?> (ok: System::None) => assertEqInt(_headOr(parts.right, 0), 7, "right head")
+fun [test("splitHalf of one element leaves the left side empty")] splitHalfSingle(): None|TestFailure
+    let parts = splitHalf(prepend(7, List<Int>()))
+    ret assertTrue(isEmpty(parts.left), "left empty")
+     ?? assertEqInt(_headOr(parts.right, 0), 7, "right head")
 
-fun [test("splitHalf of an empty list gives two empty lists")] splitHalfEmpty(): System::None|TestFailure
-    let parts = splitHalf<System::Int>(List<System::Int>())
-    ret assertTrue(isEmpty<System::Int>(parts.left), "left empty")
-        ?> (ok: System::None) => assertTrue(isEmpty<System::Int>(parts.right),
-                                            "right empty")
+fun [test("splitHalf of an empty list gives two empty lists")] splitHalfEmpty(): None|TestFailure
+    let parts = splitHalf(List<Int>())
+    ret assertTrue(isEmpty(parts.left), "left empty")
+     ?? assertTrue(isEmpty(parts.right), "right empty")
 
 
 # ── flatMap ─────────────────────────────────────────────────────────────────
 
-fun _twice(x: System::Int): List<System::Int>
-    ret prepend<System::Int>(x, prepend<System::Int>(x, List<System::Int>()))
+fun _twice(x: Int): List<Int>
+    ret prepend(x, prepend(x, List<Int>()))
 
-fun [test("flatMap concatenates the lists its function returns")] flatMapConcatenates(): System::None|TestFailure
-    let l = prepend<System::Int>(1, prepend<System::Int>(4, List<System::Int>()))
-    ret assertEqInt(_count(flatMap<System::Int, System::Int>(l, _twice)), 4, "count")
-        ?> (ok: System::None) => assertEqInt(
-               _sum(flatMap<System::Int, System::Int>(l, _twice)), 10, "sum")
+fun [test("flatMap concatenates the lists its function returns")] flatMapConcatenates(): None|TestFailure
+    let l = prepend(1, prepend(4, List<Int>()))
+    ret assertEqInt(_count(flatMap(l, _twice)), 4, "count")
+     ?? assertEqInt(_sum(flatMap(l, _twice)), 10, "sum")
 
-fun [test("flatMap returning empty lists yields an empty list")] flatMapEmpties(): System::None|TestFailure
-    let l = prepend<System::Int>(1, prepend<System::Int>(2, List<System::Int>()))
-    ret assertTrue(isEmpty<System::Int>(flatMap<System::Int, System::Int>(l,
-            (x: System::Int) => List<System::Int>())), "all empty")
+fun [test("flatMap returning empty lists yields an empty list")] flatMapEmpties(): None|TestFailure
+    let l = prepend(1, prepend(2, List<Int>()))
+    ret assertTrue(isEmpty(flatMap(l, (x: Int) => List<Int>())), "all empty")
 
 
 # ── zipMap ──────────────────────────────────────────────────────────────────
 
-fun [test("zipMap combines two lists element by element")] zipMapCombines(): System::None|TestFailure
-    let a = prepend<System::Int>(1, prepend<System::Int>(2, List<System::Int>()))
-    let b = prepend<System::Int>(10, prepend<System::Int>(20, List<System::Int>()))
-    ret assertEqInt(_sum(zipMap<System::Int, System::Int, System::Int>(a, b,
-            (x: System::Int, y: System::Int) => x * y)), 50, "1*10 + 2*20")
+fun [test("zipMap combines two lists element by element")] zipMapCombines(): None|TestFailure
+    let a = prepend(1, prepend(2, List<Int>()))
+    let b = prepend(10, prepend(20, List<Int>()))
+    ret assertEqInt(_sum(zipMap(a, b, (x: Int, y: Int) => x * y)), 50, "1*10 + 2*20")
 
 # The shorter input decides the length — the surplus tail is dropped, not an
 # error and not padded.
-fun [test("zipMap stops at the shorter of the two lists")] zipMapStopsShort(): System::None|TestFailure
-    let a = prepend<System::Int>(1, prepend<System::Int>(2, List<System::Int>()))
-    let b = prepend<System::Int>(10, List<System::Int>())
-    ret assertEqInt(_count(zipMap<System::Int, System::Int, System::Int>(a, b,
-            (x: System::Int, y: System::Int) => x + y)), 1, "one pair")
+fun [test("zipMap stops at the shorter of the two lists")] zipMapStopsShort(): None|TestFailure
+    let a = prepend(1, prepend(2, List<Int>()))
+    let b = prepend(10, List<Int>())
+    ret assertEqInt(_count(zipMap(a, b, (x: Int, y: Int) => x + y)), 1, "one pair")
 
 
 # ── any / all on the EMPTY list ─────────────────────────────────────────────
@@ -125,8 +113,6 @@ fun [test("zipMap stops at the shorter of the two lists")] zipMapStopsShort(): S
 # exists). A test over non-empty lists cannot distinguish a correct
 # implementation from one that simply returns its seed.
 
-fun [test("any over an empty list is false, all over an empty list is true")] vacuousQuantifiers(): System::None|TestFailure
-    ret assertFalse(any<System::Int>(List<System::Int>(),
-            (x: System::Int) => true), "any of empty is false")
-        ?> (ok: System::None) => assertTrue(all<System::Int>(List<System::Int>(),
-                (x: System::Int) => false), "all of empty is true")
+fun [test("any over an empty list is false, all over an empty list is true")] vacuousQuantifiers(): None|TestFailure
+    ret assertFalse(any(List<Int>(), (x: Int) => true), "any of empty is false")
+     ?? assertTrue(all(List<Int>(), (x: Int) => false), "all of empty is true")
