@@ -433,10 +433,35 @@ compiler's `astdump` prints instance attributes, so the two dumps agree today.
 Making both print them would improve the comparison instrument but changes
 reference outputs, so it wants its own change.
 
-**Step 2 is DONE**: `System::Test` exists at `compiler/libs/system-test/` and
-runs real tests, validated with a hand-written registry — exactly what step 4
-will synthesise. Human output only; JSONL and JUnit remain step 5, and the
-library is dev-tree only until step 4 handles installation.
+**Steps 2, 3, 4 and 5 are DONE.**
 
-Still to do: steps 3–5.
+- **2** — `System::Test` at `compiler/libs/system-test/`, validated first with a
+  hand-written registry, which is exactly what step 4 went on to synthesise.
+- **3** — `[test]` recognised and contract-checked in both compilers
+  (`74fdac7`), verified by DIFFING their output on the same bad file rather
+  than reading both. The control matters as much as the failures: a valid
+  `[test("fine")]` produces no error, so this is not a check that rejects
+  everything and happens to agree.
+- **4** — `--test` in Python, `ctest`/`c1test`/`c2test`/`c3test` in the port
+  (`a1beb4c`). **Byte-identical output: 402,855 bytes of C from both.**
+- **5** — streaming JSONL, `--list --format json`, and the human renderer, both
+  fed by one event stream.
+
+Two traps worth keeping. The port's `parseSingle` hardcodes the filename `"x"`
+while Python names the generated source `$test_main.yafl`; the filename feeds
+`hash6`, which feeds the generated names, which feed the emitted C, so the two
+would have disagreed byte-for-byte on identical input. And comparing the two
+compilers requires feeding them the SAME FLAT SORTED file set, the way
+`bootstrap_c_base.py` does — Python's library-discovery order is
+libraries-then-user while the port sorts every part by filename, and an earlier
+comparison differed in inline counters and union discriminators purely because
+of that. The honest read of that diff was "my harness is invalid", not "the
+port is broken".
+
+Remaining: JUnit XML (§5 calls it worth having, not worth designing around);
+per-test `cpu_ns`, which needs a foreign clock since the runtime exposes none
+to YAFL; and installing the library for released builds, since it is dev-tree
+only today. The open items in §7 stand — `assertEq` value rendering is still
+the weakest part, and there is no `assertEq<T>` because that wants a
+`String(T)`-shaped constraint alongside `BasicEquality<T>`.
 
