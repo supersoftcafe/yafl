@@ -711,20 +711,56 @@ fun isSourceMain(st: PStmt): Bool
                   && isEmpty(flattenParams(f.fParams))
     (o: PStmt) => false
 
-fun testRegistrySource(tests: List<PsFun>): String
-  ret toString(testRegistryTail(
-        testRegistryRows(chain(tests), 0,
-          append(append(StringBuilder(),
-                        "namespace Yafl::TestMain\n\nfun main(): System::Int\n"),
-                 "  let b0 = System::builder<System::Test::TestCase>()\n")),
-        chainLength<PsFun>(chain(tests))))
+# CHUNKED, mirroring compiler.py __test_registry_source. A single
+# `let b0 … let bN` chain threading one builder makes each binding's type
+# depend on the previous, and inference resolves ONE link per convergence
+# pass — the pass count then grew with the test count and blew the compile
+# loop's iteration limit at roughly ninety tests. Chunk size and the BALANCED
+# concat must match the Python side exactly or the two compilers emit
+# different C for the same input.
+fun testRegistryChunk(): Int
+  ret 16
 
-fun [tail] testRegistryRows(ts: Chain<PsFun>, i: Int,
-                            [terminal] sb: StringBuilder): StringBuilder
+fun testRegistrySource(tests: List<PsFun>): String
+  let n = chainLength<PsFun>(chain(tests))
+  let nChunks = n == 0 ? 1 : (n + testRegistryChunk() - 1) / testRegistryChunk()
+  ret toString(append(
+        emitChunks(tests, 0, append(StringBuilder(), "namespace Yafl::TestMain\n\n")),
+        "fun main(): System::Int\n  ret System::Test::run("
+        + joinChunks(0, nChunks) + ", System::args())\n"))
+
+# take/drop the list a chunk at a time — the same shape as the Python side's
+# slice loop, rather than a hand-rolled index/wrap state machine (whose first
+# version never closed a chunk that filled exactly).
+fun [tail] emitChunks(ts: List<PsFun>, k: Int,
+                      [terminal] sb: StringBuilder): StringBuilder
+  ret isEmpty(ts) && k > 0
+    ? sb
+    : emitChunks(drop(ts, testRegistryChunk()), k + 1,
+                 append(sb, emitOneChunk(take(ts, testRegistryChunk()), k)))
+
+fun emitOneChunk(chunk: List<PsFun>, k: Int): String
+  ret "fun _cases" + String(k) + "(): System::List<System::Test::TestCase>\n"
+    + "  let b0 = System::builder<System::Test::TestCase>()\n"
+    + toString(chunkRows(chain(chunk), 0, StringBuilder()))
+    + "  ret System::build<System::Test::TestCase>(b"
+    + String(chainLength<PsFun>(chain(chunk))) + ")\n\n"
+
+fun [tail] chunkRows(ts: Chain<PsFun>, i: Int,
+                     [terminal] sb: StringBuilder): StringBuilder
   ret match(ts)
     (nil: ChainEnd) => sb
-    (l: ChainLink)  => testRegistryRows(l.next, i + 1,
-                                        append(sb, testRegistryRow(l.value, i)))
+    (l: ChainLink)  => chunkRows(l.next, i + 1,
+                                 append(sb, testRegistryRow(l.value, i)))
+
+# BALANCED, not right-nested: a linear nest would reintroduce the same
+# one-link-per-pass dependency at chunk granularity.
+fun joinChunks(lo: Int, hi: Int): String
+  ret hi - lo == 1
+    ? "_cases" + String(lo) + "()"
+    : "System::concat<System::Test::TestCase>("
+      + joinChunks(lo, lo + (hi - lo) / 2) + ", "
+      + joinChunks(lo + (hi - lo) / 2, hi) + ")"
 
 fun testRegistryRow(f: PsFun, i: Int): String
   let q = simpleName(f.fName)
@@ -734,10 +770,6 @@ fun testRegistryRow(f: PsFun, i: Int): String
     + escapeForSource(testDescriptionOf(f)) + "\", \""
     + escapeForSource(f.psfLine.plFile) + "\", " + String(f.psfLine.plLine)
     + ", () => " + q + "()))\n"
-
-fun testRegistryTail([terminal] sb: StringBuilder, n: Int): StringBuilder
-  ret append(sb, "  ret System::Test::run(System::build<System::Test::TestCase>(b"
-                 + String(n) + "), System::args())\n")
 
 # Escape for embedding in a GENERATED YAFL string literal. Backslash first,
 # or the escaping escapes itself. Newline too: a description carrying one

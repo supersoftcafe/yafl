@@ -1,0 +1,100 @@
+# Tests for System::Json (stdlib/json.yafl).
+# Ported from compiler/tests/test_json.py — a pure String->JsonValue /
+# JsonValue->String converter, no IO and no async.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::JsonTests
+
+import System
+import System::Test
+import System::Json
+
+
+# Classify a parse result to a short tag, so a test asserts on ONE string
+# rather than pattern-matching the whole enum at every call site.
+fun _tag(v: JsonValue|JsonParseError): String
+    ret match(v)
+        (e: JsonParseError) => "err"
+        (j: JsonValue)      => _tagOf(j)
+
+fun _tagOf(j: JsonValue): String
+    ret match(j)
+        (n: JsonNull)  => "null"
+        (t: JsonTrue)  => "true"
+        (f: JsonFalse) => "false"
+        (s: JsonStr)   => "str:" + s.strValue
+        (i: JsonInt)   => "int:" + String(i.intValue)
+        (n: JsonNum)   => "num"
+        (a: JsonArr)   => "arr:" + String(chainLength(chain(a.elements)))
+        (o: JsonObj)   => "obj:" + String(chainLength(chain(o.pairs)))
+
+
+fun [test("the three literals parse to their own variants")] literals(): None|TestFailure
+    ret assertEqStr(_tag(parse("null")), "null", "null")
+     ?? assertEqStr(_tag(parse("true")), "true", "true")
+     ?? assertEqStr(_tag(parse("false")), "false", "false")
+
+fun [test("integers parse as JsonInt, keeping their value")] integers(): None|TestFailure
+    ret assertEqStr(_tag(parse("0")), "int:0", "zero")
+     ?? assertEqStr(_tag(parse("42")), "int:42", "positive")
+     ?? assertEqStr(_tag(parse("-7")), "int:-7", "negative")
+
+fun [test("strings parse, including escapes")] strings(): None|TestFailure
+    ret assertEqStr(_tag(parse("\"hi\"")), "str:hi", "plain")
+     ?? assertEqStr(_tag(parse("\"\"")), "str:", "empty string")
+     ?? assertEqStr(_tag(parse("\"a\\\"b\"")), "str:a\"b", "escaped quote")
+
+fun [test("arrays parse and report their length")] arrays(): None|TestFailure
+    ret assertEqStr(_tag(parse("[]")), "arr:0", "empty array")
+     ?? assertEqStr(_tag(parse("[1,2,3]")), "arr:3", "three elements")
+     ?? assertEqStr(_tag(parse("[[1],[2]]")), "arr:2", "nested")
+
+fun [test("objects parse and report their pair count")] objects(): None|TestFailure
+    ret assertEqStr(_tag(parse("{}")), "obj:0", "empty object")
+     ?? assertEqStr(_tag(parse("{\"a\":1}")), "obj:1", "one pair")
+     ?? assertEqStr(_tag(parse("{\"a\":1,\"b\":2}")), "obj:2", "two pairs")
+
+fun [test("insignificant whitespace is ignored")] whitespace(): None|TestFailure
+    ret assertEqStr(_tag(parse("  [ 1 , 2 ]  ")), "arr:2", "spaces everywhere")
+     ?? assertEqStr(_tag(parse("\n{\n\"a\"\n:\n1\n}\n")), "obj:1", "newlines")
+
+# Malformed input must be REJECTED, not silently coerced — the half of a parser
+# that a happy-path test never reaches.
+fun [test("malformed input is rejected")] rejectsMalformed(): None|TestFailure
+    ret assertEqStr(_tag(parse("")), "err", "empty input")
+     ?? assertEqStr(_tag(parse("[1,")), "err", "unterminated array")
+     ?? assertEqStr(_tag(parse("{\"a\":}")), "err", "missing value")
+     ?? assertEqStr(_tag(parse("tru")), "err", "truncated keyword")
+     ?? assertEqStr(_tag(parse("\"unterminated")), "err", "unterminated string")
+
+# Trailing content after a complete value is an error, not ignored.
+fun [test("trailing content after a value is an error")] rejectsTrailing(): None|TestFailure
+    ret assertEqStr(_tag(parse("1 2")), "err", "two values")
+     ?? assertEqStr(_tag(parse("[] x")), "err", "junk after array")
+
+fun [test("stringify renders the literals")] stringifyLiterals(): None|TestFailure
+    ret assertEqStr(stringify(JsonNull(), false), "null", "null")
+     ?? assertEqStr(stringify(JsonTrue(), false), "true", "true")
+     ?? assertEqStr(stringify(JsonInt(42), false), "42", "int")
+
+fun [test("stringify round-trips a parsed value")] roundTrips(): None|TestFailure
+    ret assertEqStr(_reparse("[1,2,3]"), "arr:3", "array")
+     ?? assertEqStr(_reparse("{\"a\":1}"), "obj:1", "object")
+     ?? assertEqStr(_reparse("\"hi\""), "str:hi", "string")
+
+fun _reparse(text: String): String
+    ret match(parse(text))
+        (e: JsonParseError) => "err"
+        (j: JsonValue)      => _tag(parse(stringify(j, false)))
+
+fun [test("pretty and compact differ in layout but not in meaning")] prettyLayout(): None|TestFailure
+    ret match(parse("[1,2]"))
+        (e: JsonParseError) => fail("could not parse the fixture")
+        (j: JsonValue)      => _comparePretty(j)
+
+fun _comparePretty(j: JsonValue): None|TestFailure
+    ret assertFalse(stringify(j, true) == stringify(j, false),
+                    "pretty differs from compact")
+     ?? assertEqStr(_tag(parse(stringify(j, true))), "arr:2",
+                    "pretty still reparses to the same value")

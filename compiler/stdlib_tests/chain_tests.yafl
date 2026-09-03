@@ -1,0 +1,39 @@
+# Tests for chain / chainNext / chainLength (stdlib/list.yafl).
+# Ported from compiler/tests/test_chain.py.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ChainTests
+
+import System
+import System::Test
+
+
+fun _l3(): List<Int>
+    ret build(push(push(push(builder<Int>(), 1), 2), 3))
+
+
+fun [test("chain over an empty list has no head and zero length")] emptyChain(): None|TestFailure
+    ret assertEqInt(chainLength(chain(List<Int>())), 0, "length")
+     ?? assertTrue(chainNext(chain(List<Int>())).head is None, "no head")
+
+fun [test("chainNext yields the head and the rest, in order")] walksInOrder(): None|TestFailure
+    let step1 = chainNext(chain(_l3()))
+    let step2 = chainNext(step1.rest)
+    ret assertEqInt(_or(step1.head, 0), 1, "first")
+     ?? assertEqInt(_or(step2.head, 0), 2, "second")
+     ?? assertEqInt(chainLength(step2.rest), 1, "one left")
+
+fun _or(v: Int|None, fallback: Int): Int
+    ret match(v)
+        (x: Int)  => x
+        (n: None) => fallback
+
+fun [test("chainLength counts every element")] counts(): None|TestFailure
+    ret assertEqInt(chainLength(chain(_l3())), 3, "three")
+     ?? assertEqInt(chainLength(chain(prepend(0, _l3()))), 4, "four after prepend")
+
+fun [test("walking a chain to the end reaches None")] walksToEnd(): None|TestFailure
+    let s3 = chainNext(chainNext(chainNext(chain(_l3())).rest).rest)
+    ret assertEqInt(_or(s3.head, 0), 3, "third step still yields the third element")
+     ?? assertTrue(chainNext(s3.rest).head is None, "the FOURTH step is empty")

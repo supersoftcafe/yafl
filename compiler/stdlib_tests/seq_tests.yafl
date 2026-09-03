@@ -1,0 +1,88 @@
+# Tests for System Seq (stdlib/seq.yafl).
+# Ported from compiler/tests/test_seq.py.
+#
+# A sequence IS `Segment<T>|None` — None is empty, with no wrapper enum — built
+# forwards with SeqBuilder. Segment capacities ramp 1,1,2,3,5,8,13 so a builder
+# crosses several segments before it stops growing; several tests below push
+# past those boundaries deliberately.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::SeqTests
+
+import System
+import System::Test
+
+
+fun _upTo(n: Int): Segment<Int>|None
+    ret build(_fill(seqBuilder<Int>(), 1, n))
+
+fun [tail] _fill([terminal] b: SeqBuilder<Int>, i: Int, n: Int): SeqBuilder<Int>
+    ret i > n ? b : _fill(push(b, i), i + 1, n)
+
+fun _sum(s: Segment<Int>|None): Int
+    ret fold(s, 0, (acc: Int, x: Int) => acc + x)
+
+fun _count(s: Segment<Int>|None): Int
+    ret fold(s, 0, (acc: Int, x: Int) => acc + 1)
+
+fun _render(s: Segment<Int>|None): String
+    ret fold(s, "", (acc: String, x: Int) => acc + String(x) + ".")
+
+
+fun [test("an empty sequence is None, and reports empty")] emptyIsNone(): None|TestFailure
+    ret assertTrue(isEmpty(build(seqBuilder<Int>())), "built empty is empty")
+     ?? assertTrue(head(build(seqBuilder<Int>())) is None, "no head")
+     ?? assertEqInt(_count(build(seqBuilder<Int>())), 0, "no elements")
+
+fun [test("a single push yields one element")] singlePush(): None|TestFailure
+    let s = _upTo(1)
+    ret assertFalse(isEmpty(s), "not empty")
+     ?? assertEqInt(_count(s), 1, "one element")
+     ?? assertEqStr(_render(s), "1.", "content")
+
+fun [test("pushes come back in ORDER, not reversed")] pushesKeepOrder(): None|TestFailure
+    ret assertEqStr(_render(_upTo(5)), "1.2.3.4.5.", "forward order")
+
+# The capacity ramp is 1,1,2,3,5,8,13 — 20 elements crosses every boundary and
+# then settles into fixed-size segments, so this covers both growth paths.
+fun [test("a sequence spanning MANY segments still reads in order")] spansSegments(): None|TestFailure
+    ret assertEqInt(_count(_upTo(20)), 20, "all 20 present")
+     ?? assertEqInt(_sum(_upTo(20)), 210, "sum 1..20")
+     ?? assertTrue(head(_upTo(20)) is Int, "has a head")
+
+fun [test("fold accumulates over every segment")] foldAcrossSegments(): None|TestFailure
+    ret assertEqInt(_sum(_upTo(10)), 55, "sum 1..10")
+     ?? assertEqInt(_sum(build(seqBuilder<Int>())), 0, "sum of empty")
+
+fun [test("map applies to every element across segments")] mapAcrossSegments(): None|TestFailure
+    ret assertEqInt(_sum(map(_upTo(10), (x: Int) => x * 2)), 110, "doubled sum")
+     ?? assertEqInt(_count(map(_upTo(10), (x: Int) => x * 2)), 10, "length kept")
+
+fun [test("filter keeps only matching elements")] filterKeeps(): None|TestFailure
+    ret assertEqInt(_count(filter(_upTo(10), (x: Int) => x % 2 == 0)), 5, "evens")
+     ?? assertEqInt(_sum(filter(_upTo(10), (x: Int) => x % 2 == 0)), 30, "even sum")
+
+fun [test("filter matching nothing gives the empty sequence")] filterNone(): None|TestFailure
+    ret assertTrue(isEmpty(filter(_upTo(10), (x: Int) => x > 100)), "nothing left")
+
+fun [test("any finds a match and rejects when there is none")] anyFinds(): None|TestFailure
+    ret assertTrue(any(_upTo(10), (x: Int) => x == 7), "7 is there")
+     ?? assertFalse(any(_upTo(10), (x: Int) => x > 100), "nothing over 100")
+     ?? assertFalse(any(build(seqBuilder<Int>()), (x: Int) => true), "any of empty")
+
+fun [test("map and filter over an empty sequence stay empty")] emptyCombinators(): None|TestFailure
+    ret assertTrue(isEmpty(map(build(seqBuilder<Int>()), (x: Int) => x)), "map")
+     ?? assertTrue(isEmpty(filter(build(seqBuilder<Int>()), (x: Int) => true)), "filter")
+
+fun [test("pushAll appends an entire List in order")] pushAllList(): None|TestFailure
+    let l = build(push(push(builder<Int>(), 1), 2))
+    ret assertEqStr(_render(build(pushAll(seqBuilder<Int>(), l))), "1.2.", "appended")
+
+fun [test("head returns the FIRST element pushed")] headIsFirst(): None|TestFailure
+    ret assertEqInt(_headOr(_upTo(5), 0), 1, "first pushed")
+
+fun _headOr(s: Segment<Int>|None, fallback: Int): Int
+    ret match(head(s))
+        (v: Int)  => v
+        (n: None) => fallback

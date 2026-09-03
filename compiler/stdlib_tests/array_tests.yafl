@@ -1,0 +1,86 @@
+# Tests for System Array<T> (stdlib/array.yafl).
+# Ported from compiler/tests/test_array_class.py.
+#
+# `Array<T>(n, initFn)` tabulates initFn over 0..n-1; `a[i]` reads element i.
+# Note the WIDTHS: the length and the init function's index are Int32, while
+# `[]` takes an Int at the API surface. Nothing converts between them — a
+# width mismatch is the language working, not an inconvenience — so the
+# literals below are spelled `5i32` and results are widened with Int(...)
+# before being compared.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ArrayTests
+
+import System
+import System::Test
+
+
+fun _squares(n: Int32): Array<Int32>
+    ret Array<Int32>(n, (i: Int32) => i * i)
+
+fun _sum(a: Array<Int32>): Int
+    ret fold(a, 0, (acc: Int, x: Int32) => acc + Int(x))
+
+fun _count(a: Array<Int32>): Int
+    ret fold(a, 0, (acc: Int, x: Int32) => acc + 1)
+
+
+fun [test("Array tabulates its initialiser over 0..n-1")] tabulates(): None|TestFailure
+    let a = _squares(4i32)
+    ret assertEqInt(Int(a[0]), 0, "0*0")
+     ?? assertEqInt(Int(a[1]), 1, "1*1")
+     ?? assertEqInt(Int(a[2]), 4, "2*2")
+     ?? assertEqInt(Int(a[3]), 9, "3*3")
+
+fun [test("an array of length 0 is empty")] emptyArray(): None|TestFailure
+    ret assertTrue(isEmpty(Array<Int32>(0i32, (i: Int32) => i)), "empty")
+     ?? assertFalse(isEmpty(_squares(1i32)), "one element is not empty")
+
+fun [test("fold accumulates over every element in index order")] foldsInOrder(): None|TestFailure
+    ret assertEqInt(_sum(_squares(4i32)), 14, "0+1+4+9")
+     ?? assertEqStr(fold(_squares(3i32), "",
+            (acc: String, x: Int32) => acc + String(Int(x)) + "."), "0.1.4.",
+            "index order")
+
+fun [test("fold over an empty array returns the seed")] foldEmpty(): None|TestFailure
+    ret assertEqInt(fold(Array<Int32>(0i32, (i: Int32) => i), 99,
+            (acc: Int, x: Int32) => acc + Int(x)), 99, "seed kept")
+
+fun [test("map produces a new array of the same length")] mapsSameLength(): None|TestFailure
+    let m = map(_squares(4i32), (x: Int32) => x + 1i32)
+    ret assertEqInt(Int(m[0]), 1, "0+1")
+     ?? assertEqInt(Int(m[3]), 10, "9+1")
+     ?? assertEqInt(_count(m), 4, "length kept")
+
+fun [test("filter keeps only matching elements")] filters(): None|TestFailure
+    let f = filter(_squares(5i32), (x: Int32) => x % 2i32 == 0i32)
+    ret assertEqInt(_count(f), 3, "0,4,16")
+     ?? assertEqInt(_sum(f), 20, "their sum")
+
+fun [test("filter matching nothing yields an empty array")] filterNone(): None|TestFailure
+    ret assertTrue(isEmpty(filter(_squares(4i32), (x: Int32) => x > 100i32)), "nothing")
+
+fun [test("any finds a match and rejects when there is none")] anyFinds(): None|TestFailure
+    ret assertTrue(any(_squares(4i32), (x: Int32) => x == 4i32), "4 is present")
+     ?? assertFalse(any(_squares(4i32), (x: Int32) => x > 100i32), "none over 100")
+     ?? assertFalse(any(Array<Int32>(0i32, (i: Int32) => i), (x: Int32) => true),
+                    "any of empty")
+
+fun [test("arrayBuilder builds in push order")] builderKeepsOrder(): None|TestFailure
+    let a = build(push(push(push(arrayBuilder<Int32>(3), 7i32), 8i32), 9i32))
+    ret assertEqInt(Int(a[0]), 7, "first")
+     ?? assertEqInt(Int(a[2]), 9, "last")
+     ?? assertEqInt(_count(a), 3, "three")
+
+# The estimate is a hint, not a limit: pushing past it must grow rather than
+# truncate or abort.
+fun [test("arrayBuilder grows past its size estimate")] builderGrows(): None|TestFailure
+    let a = build(push(push(push(push(arrayBuilder<Int32>(1), 1i32), 2i32), 3i32), 4i32))
+    ret assertEqInt(_count(a), 4, "all four kept")
+     ?? assertEqInt(Int(a[3]), 4, "last survived the grow")
+
+fun [test("an array of strings works the same way")] stringArray(): None|TestFailure
+    let a = Array<String>(3i32, (i: Int32) => String(Int(i)))
+    ret assertEqStr(a[0], "0", "first")
+     ?? assertEqStr(a[2], "2", "last")

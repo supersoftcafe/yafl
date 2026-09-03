@@ -1,0 +1,84 @@
+# Tests for System Dict (stdlib/dict.yafl) plus keys/values.
+# Ported from compiler/tests/test_dict_ops.py and test_stdlib_additions.py.
+# A Dict is an AVL tree of hash buckets; keys() returns a Set and values() a
+# Bag, since an unordered container exposes no iteration order.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::DictTests
+
+import System
+import System::Test
+
+
+fun _d3(): Dict<Int,Int>
+    ret put(put(put(Dict<Int,Int>(), 1, 10), 2, 20), 3, 30)
+
+fun _getOr(d: Dict<Int,Int>, k: Int, fallback: Int): Int
+    ret match(get(d, k))
+        (v: Int)  => v
+        (n: None) => fallback
+
+
+fun [test("a new dict is empty and finds nothing")] emptyDict(): None|TestFailure
+    ret assertEqInt(size(Dict<Int,Int>()), 0, "size")
+     ?? assertTrue(isEmpty(Dict<Int,Int>()), "isEmpty")
+     ?? assertTrue(get(Dict<Int,Int>(), 1) is None, "get finds nothing")
+     ?? assertFalse(contains(Dict<Int,Int>(), 1), "contains nothing")
+
+fun [test("a value put can be got back")] putThenGet(): None|TestFailure
+    ret assertEqInt(_getOr(_d3(), 2, -1), 20, "key 2")
+     ?? assertTrue(contains(_d3(), 3), "contains 3")
+     ?? assertEqInt(size(_d3()), 3, "three entries")
+
+fun [test("putting the same key again OVERWRITES, it does not grow")] overwrite(): None|TestFailure
+    let d = put(_d3(), 2, 99)
+    ret assertEqInt(_getOr(d, 2, -1), 99, "new value")
+     ?? assertEqInt(size(d), 3, "size unchanged")
+
+fun [test("remove drops the key and shrinks the dict")] removeKey(): None|TestFailure
+    let d = remove(_d3(), 2)
+    ret assertFalse(contains(d, 2), "gone")
+     ?? assertEqInt(size(d), 2, "shrank")
+     ?? assertEqInt(_getOr(d, 1, -1), 10, "others kept")
+
+fun [test("removing an absent key is a no-op")] removeAbsent(): None|TestFailure
+    ret assertEqInt(size(remove(_d3(), 42)), 3, "unchanged")
+
+# Dicts are VALUES: put and remove return new dicts. This is the test that
+# would catch an in-place implementation.
+fun [test("put and remove leave the ORIGINAL dict unchanged")] isPure(): None|TestFailure
+    let original = _d3()
+    let grown = put(original, 4, 40)
+    let shrunk = remove(original, 1)
+    ret assertEqInt(size(original), 3, "original size")
+     ?? assertEqInt(size(grown), 4, "grown")
+     ?? assertEqInt(size(shrunk), 2, "shrunk")
+     ?? assertTrue(contains(original, 1), "original still has 1")
+
+# Enough insertions to force AVL rebalancing — an unbalanced tree still
+# answers correctly, so this checks every key survives the rotations.
+fun [test("many ascending inserts keep every key findable (AVL rebalance)")] rebalances(): None|TestFailure
+    let d = _fill(Dict<Int,Int>(), 1, 40)
+    ret assertEqInt(size(d), 40, "all 40 present")
+     ?? assertEqInt(_getOr(d, 1, -1), 100, "first")
+     ?? assertEqInt(_getOr(d, 40, -1), 4000, "last")
+     ?? assertEqInt(_getOr(d, 20, -1), 2000, "middle")
+
+fun [tail] _fill(d: Dict<Int,Int>, i: Int, n: Int): Dict<Int,Int>
+    ret i > n ? d : _fill(put(d, i, i * 100), i + 1, n)
+
+fun [test("string keys work the same way")] stringKeys(): None|TestFailure
+    let d = put(put(Dict<String,Int>(), "a", 1), "b", 2)
+    ret assertEqInt(size(d), 2, "two")
+     ?? assertTrue(contains(d, "a"), "contains a")
+     ?? assertFalse(contains(d, "z"), "no z")
+
+fun [test("keys() returns each key once")] keysSet(): None|TestFailure
+    ret assertEqInt(size(keys(_d3())), 3, "three keys")
+     ?? assertTrue(contains(keys(_d3()), 2), "key 2 present")
+
+fun [test("values() returns one entry per key, duplicates included")] valuesBag(): None|TestFailure
+    let dup = put(put(Dict<Int,Int>(), 1, 7), 2, 7)
+    ret assertEqInt(size(values(_d3())), 3, "three values")
+     ?? assertEqInt(size(values(dup)), 2, "duplicate values BOTH kept")

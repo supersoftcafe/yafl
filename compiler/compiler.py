@@ -389,6 +389,10 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
 
 _MAX_COMPILE_ITERATIONS = 100
 
+# Registry chunk size — see __test_registry_source. Bounds the dependent-let
+# chain so convergence passes stay flat in the number of tests.
+_TEST_REGISTRY_CHUNK = 16
+
 
 def __meet_hint(a, b):
     """Accumulate one parameter's call-site hints. `_CONFLICT` is sticky — once two
@@ -785,10 +789,7 @@ def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
         return (text.replace("\\", "\\\\").replace('"', '\\"')
                     .replace("\n", "\\n"))
 
-    tc = "System::Test::TestCase"
-    lines = ["namespace Yafl::TestMain", "", "fun main(): System::Int",
-             f"  let b0 = System::builder<{tc}>()"]
-    for i, fn in enumerate(tests):
+    def case_expr(fn) -> str:
         qualified = g.simple_name(fn.name)
         arg = fn.attributes.get("test")
         description = ""
@@ -796,13 +797,40 @@ def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
             value = arg.expressions[0].value
             if isinstance(value, e.StringExpression):
                 description = value.value
-        lines.append(
-            f"  let b{i + 1} = System::push<{tc}>(b{i}, {tc}("
-            f'"{esc(qualified)}", "{esc(description)}", '
-            f'"{esc(Path(fn.line_ref.filename).name)}", {fn.line_ref.line}, '
-            f"() => {qualified}()))")
-    lines.append(f"  ret System::Test::run(System::build<{tc}>(b{len(tests)}),"
-                 " System::args())")
+        return (f'{tc}("{esc(qualified)}", "{esc(description)}", '
+                f'"{esc(Path(fn.line_ref.filename).name)}", {fn.line_ref.line}, '
+                f"() => {qualified}())")
+
+    tc = "System::Test::TestCase"
+
+    # CHUNKED, and that is not cosmetic. A single `let b0 … let bN` chain
+    # threading one builder makes each binding's type depend on the previous,
+    # and inference resolves exactly ONE link per convergence pass — so the
+    # pass count grew with the test count and blew _MAX_COMPILE_ITERATIONS at
+    # roughly ninety tests, with the loop reporting a non-idempotent compile
+    # pass. Bounding each chain to _TEST_REGISTRY_CHUNK keeps the passes flat
+    # however many tests there are.
+    lines = ["namespace Yafl::TestMain", ""]
+    chunks = [tests[i:i + _TEST_REGISTRY_CHUNK]
+              for i in range(0, len(tests), _TEST_REGISTRY_CHUNK)] or [[]]
+    for n, chunk in enumerate(chunks):
+        lines.append(f"fun _cases{n}(): System::List<{tc}>")
+        lines.append(f"  let b0 = System::builder<{tc}>()")
+        for i, fn in enumerate(chunk):
+            lines.append(f"  let b{i + 1} = System::push<{tc}>(b{i}, {case_expr(fn)})")
+        lines.append(f"  ret System::build<{tc}>(b{len(chunk)})")
+        lines.append("")
+    # BALANCED concat, not right-nested: nesting the chunks linearly would
+    # reintroduce the same one-link-per-pass dependency the chunking removes,
+    # just at chunk granularity. A balanced tree makes that term logarithmic.
+    def join(parts: list[str]) -> str:
+        if len(parts) == 1:
+            return parts[0]
+        mid = len(parts) // 2
+        return f"System::concat<{tc}>({join(parts[:mid])}, {join(parts[mid:])})"
+    joined = join([f"_cases{n}()" for n in range(len(chunks))])
+    lines.append("fun main(): System::Int")
+    lines.append(f"  ret System::Test::run({joined}, System::args())")
     return Input("\n".join(lines) + "\n", "$test_main.yafl")
 
 

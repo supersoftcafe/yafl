@@ -1,0 +1,41 @@
+# Tests for System::format and the Show<T> instances (stdlib/format.yafl).
+# Ported from compiler/tests/test_format_show.py.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::FormatTests
+
+import System
+import System::Test
+
+
+fun [test("format substitutes a single slot")] arity1(): None|TestFailure
+    ret assertEqStr(format("x={1}", 42), "x=42", "int")
+     ?? assertEqStr(format("{1}", "hi"), "hi", "string, whole template")
+
+fun [test("format substitutes two, three and four slots")] arities234(): None|TestFailure
+    ret assertEqStr(format("{1}-{2}", 1, 2), "1-2", "two")
+     ?? assertEqStr(format("{1}{2}{3}", 1, 2, 3), "123", "three")
+     ?? assertEqStr(format("{1} {2} {3} {4}", 1, 2, 3, 4), "1 2 3 4", "four")
+
+fun [test("slots may repeat and appear out of order")] slotOrder(): None|TestFailure
+    ret assertEqStr(format("{2}{1}", "a", "b"), "ba", "reversed")
+     ?? assertEqStr(format("{1}{1}", "x"), "xx", "repeated")
+
+fun [test("text with no slots is returned unchanged")] noSlots(): None|TestFailure
+    ret assertEqStr(format("plain", 1), "plain", "literal text")
+     ?? assertEqStr(format("", 1), "", "empty template")
+
+fun [test("Show renders Int, String and Bool")] showInstances(): None|TestFailure
+    ret assertEqStr(format("{1}", 0), "0", "zero")
+     ?? assertEqStr(format("{1}", -5), "-5", "negative")
+     ?? assertEqStr(format("{1}", true), "true", "bool true")
+     ?? assertEqStr(format("{1}", false), "false", "bool false")
+
+# Slots are ONE-based, and an out-of-range slot renders "?" rather than
+# erroring — worth pinning, since `{0}` looks like the first argument and
+# silently is not.
+fun [test("slot numbering is 1-based; out-of-range renders ?")] slotNumbering(): None|TestFailure
+    ret assertEqStr(format("{0}", 7), "?", "{0} is out of range, not the first arg")
+     ?? assertEqStr(format("{2}", 7), "?", "beyond the supplied count")
+     ?? assertEqStr(format("{1}", 7), "7", "{1} IS the first arg")
