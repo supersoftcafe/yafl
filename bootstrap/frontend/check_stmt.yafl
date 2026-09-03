@@ -100,7 +100,8 @@ fun funAttrErrs(f: PsFun): Set<PErr>
       union(noArgAttr(f, "sync", "[sync] takes no arguments"),
       union(tailErrs(f),
       union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
-             innerWhereErrs(f))))))
+      union(testErrs(f),
+             innerWhereErrs(f)))))))
 
 # ── unknown attributes ──────────────────────────────────────────────────────
 # Attributes parse as an OPEN `[name]` / `[name(expr)]` list, so without this
@@ -128,7 +129,7 @@ fun isKnownFunAttr(n: String): Bool
   ret n == "foreign" || n == "impure" || n == "sync" || n == "tail"
    || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
    || n == "linear" || n == "lazy" || n == "final" || n == "future"
-   || n == "pinnable"
+   || n == "pinnable" || n == "test"
 
 fun isKnownClassAttr(n: String): Bool
   ret n == "final" || n == "linear" || n == "foreign" || n == "pinnable"
@@ -173,6 +174,33 @@ fun foreignErrs(f: PsFun): Set<PErr>
                "[foreign] requires exactly one string argument: [foreign(\"symbol\")]")
   ret match(f.fBody)
     (b: PExpr) => oneErr(f.psfLine, "[foreign] functions must have no body")
+    ()         => noErrs()
+
+# [test] — the unit-test annotation (docs/testing-proposal.md). The optional
+# argument is the description. The RETURN TYPE is deliberately not checked
+# here: `--test` puts the function in a TestCase whose `body` field is typed
+# `(): System::None|TestFailure`, so a wrong return type is caught there by
+# ordinary type checking rather than by a rule restated in two compilers.
+fun testErrs(f: PsFun): Set<PErr>
+  if !hasAttr(f.fAttrs, "test")
+    ret noErrs()
+  let argErr = testArgErr(f)
+  let bodyErr = match(f.fBody)
+    (b: PExpr) => noErrs()
+    ()         => oneErr(f.psfLine,
+                         "[test] cannot be applied to a foreign function")
+  let paramErr = isEmpty(flattenParams(f.fParams))
+    ? noErrs()
+    : oneErr(f.psfLine, "[test] functions take no parameters")
+  ret union(argErr, union(bodyErr, paramErr))
+
+# Absent is fine (the description is optional); present must be one string.
+fun testArgErr(f: PsFun): Set<PErr>
+  ret match(attrValueOf(f.fAttrs, "test"))
+    (v: PExpr) => isOneStringArg(v)
+      ? noErrs()
+      : oneErr(f.psfLine,
+               "[test] takes one optional string argument: [test(\"description\")]")
     ()         => noErrs()
 
 fun isOneStringArg(v: PExpr|None): Bool

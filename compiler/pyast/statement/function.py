@@ -33,6 +33,7 @@ class FunctionStatement(DataStatement):
     _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
         "foreign", "impure", "sync", "tail", "terminal", "inline",
         "hashed", "refeq", "linear", "lazy", "final", "future", "pinnable",
+        "test",
     })
 
     parameters: DestructureStatement
@@ -184,6 +185,26 @@ class FunctionStatement(DataStatement):
         if "terminal" in self.attributes and self.attributes.get("terminal") is not None:
             terminal_err.append(Error(self.line_ref, "[terminal] takes no arguments"))
 
+        # [test] — the unit-test annotation (docs/testing-proposal.md). The
+        # optional argument is the description. The RETURN TYPE is deliberately
+        # not checked here: `--test` puts the function in a TestCase whose
+        # `body` field is typed `(): System::None|TestFailure`, so a wrong
+        # return type is caught there by ordinary type checking rather than by
+        # a rule restated (and kept in parity) in two compilers.
+        test_err: list[Error] = []
+        if "test" in self.attributes:
+            test_attr = self.attributes.get("test")
+            if test_attr is not None and (
+                    not isinstance(test_attr, e.TupleExpression)
+                    or len(test_attr.expressions) != 1
+                    or not isinstance(test_attr.expressions[0].value, e.StringExpression)):
+                test_err.append(Error(self.line_ref,
+                    '[test] takes one optional string argument: [test("description")]'))
+            if self.body is None:
+                test_err.append(Error(self.line_ref, "[test] cannot be applied to a foreign function"))
+            if len(list(self.parameters.flatten())) != 0:
+                test_err.append(Error(self.line_ref, "[test] functions take no parameters"))
+
         # An inner function carries no `where`: it has no trait scope of its own
         # (it inherits its owner's), so a `where` on it would silently do
         # nothing. Reject it — move the function to top level if it needs one.
@@ -207,7 +228,8 @@ class FunctionStatement(DataStatement):
 
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
                 + tail_err + terminal_err + inner_where_err + default_err
-                + missing_ret_err + self.unknown_attribute_errors("a function")
+                + missing_ret_err + test_err
+                + self.unknown_attribute_errors("a function")
                 + self.__unused_param_warnings())
 
     def __unused_param_warnings(self) -> list[Error]:
