@@ -360,22 +360,41 @@ not a stable number.
   is `TIMEOUT 600` on the CTest entry, which kills the binary and reports
   nothing about WHICH test hung.
 
-  Two things already true that bear on the design. The streaming JSONL
-  **already identifies the hung test** — a `test_start` with no matching
-  `test_end`; the human renderer does not, because it prints only on
-  completion, so making it announce each test before running would make a stall
-  self-identifying at almost no cost and independently of the rest. And (a)
-  needs a foreign clock regardless, measured in CPU time rather than wall clock
-  given the shared box.
+  **USER RULING on output: one whole line, written AFTER the test completes.**
+  The runner must NOT announce a test before running it. The runtime is
+  parallel by design, so concurrent writers would interleave partial lines and
+  corrupt each other — the whole line is the atomic unit. The current renderer
+  already satisfies this: `println(s)` is `print(s + "\n")`, one `fwrite` of the
+  complete line, and even a multi-line failure block is built as one string and
+  written in a single call. This is a property to preserve, not an accident.
 
-  (c) is hard for reasons specific to this language, not just fiddly: async by
-  default with a task model, single-threaded-per-handle IO, and a concurrent
-  collector with its own thread registration. `fork()` duplicates only the
-  calling thread, so a child inherits a heap whose other mutators are gone —
-  any design must say what happens to the GC, the IO threadpool and in-flight
-  tasks across the boundary. Spawning a fresh process per test avoids that and
-  pays a launch per test; the binary can already run exactly one test by id,
-  which is the piece that would need.
+  **USER RULING on isolation: a subprocess per test is not an option, it is the
+  only way to run tests.** There is therefore no in-process path to keep
+  working alongside it, and stall identification falls out for free: the
+  supervisor knows which test it dispatched, so it names the hung one itself
+  without the child announcing anything — which is exactly what the output rule
+  above forbids the child from doing.
+
+  **The shape, ruled by the user: keep it simple.** Self-relaunch via
+  `posix_spawn` on every platform — no zygote, no `fork` model. `exec` replaces
+  the image, so the "fork with a live collector" problem never arises at all.
+
+  The framework is `filter` then `map` over the case list, where map's function
+  spawns the binary for ONE test id. Spawn is an async call that READS as
+  blocking and returns when the process exits. **All parallelism is the
+  language's, not the framework's.** The whole of a child's stdout is that one
+  test's result, so there is no interleaving, no correlation, and no worker
+  pool: the parent passes its `--format` down, relays the child's stdout
+  verbatim, and takes pass/fail from the exit code. No parsing. The caller
+  already knows which test it launched — which is also how a child that dies
+  emitting nothing still gets a line written for it.
+
+  Timeout belongs in the SPAWN API, not the framework.
+
+  (a) needs a foreign clock regardless — the runtime calls `clock_gettime` at
+  17 sites but exposes none — measured in CPU time rather than wall clock given
+  the shared box. Though note a deadlocked test burns no CPU and would never
+  trip a CPU deadline, so both metrics may be needed.
 - **Replacing the Python suite.** Not a goal of this proposal, and it should
   not become one implicitly. The compiler's suite is Python `unittest`
   comparing two compilers byte-for-byte; that is a different problem, and the
