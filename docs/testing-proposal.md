@@ -352,9 +352,30 @@ not a stable number.
 - **Parameterised / table-driven tests.** A `[test]` returning many outcomes
   changes the registry from one id to many, and the id scheme has to stay
   stable for IDE re-run. Worth doing, not worth guessing at now.
-- **`--timeout`.** Wants a watchdog and a way to kill a suspended task
-  without corrupting the heap; a design question for the async model, not for
-  the test framework.
+- **A STALLED TEST HANGS THE WHOLE RUNNER.** Raised by the user 2026-09-03 and
+  queued for its own discussion: (a) time keeping, (b) aborting tests that run
+  too long, (c) fork or subprocess per test for isolation — "that's the hard
+  part", and it is. Tests run in-process and sequentially, so one that loops,
+  blocks or deadlocks takes every later result with it. The only backstop today
+  is `TIMEOUT 600` on the CTest entry, which kills the binary and reports
+  nothing about WHICH test hung.
+
+  Two things already true that bear on the design. The streaming JSONL
+  **already identifies the hung test** — a `test_start` with no matching
+  `test_end`; the human renderer does not, because it prints only on
+  completion, so making it announce each test before running would make a stall
+  self-identifying at almost no cost and independently of the rest. And (a)
+  needs a foreign clock regardless, measured in CPU time rather than wall clock
+  given the shared box.
+
+  (c) is hard for reasons specific to this language, not just fiddly: async by
+  default with a task model, single-threaded-per-handle IO, and a concurrent
+  collector with its own thread registration. `fork()` duplicates only the
+  calling thread, so a child inherits a heap whose other mutators are gone —
+  any design must say what happens to the GC, the IO threadpool and in-flight
+  tasks across the boundary. Spawning a fresh process per test avoids that and
+  pays a launch per test; the binary can already run exactly one test by id,
+  which is the piece that would need.
 - **Replacing the Python suite.** Not a goal of this proposal, and it should
   not become one implicitly. The compiler's suite is Python `unittest`
   comparing two compilers byte-for-byte; that is a different problem, and the

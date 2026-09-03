@@ -110,6 +110,38 @@ set_tests_properties(self_compile PROPERTIES
     FIXTURES_REQUIRED bootstrap_bin
     DEPENDS compiler_suite)
 
+# ── stdlib unit tests, written in YAFL ───────────────────────────────────────
+# compiler/stdlib_tests/ holds `[test]` functions exercising the stdlib. They
+# live OUTSIDE compiler/stdlib/ deliberately: the System library is assembled
+# from every file in that directory as ONE library, so a test file there would
+# be parsed into every compilation in the tree — every application paying to
+# carry tests it never runs. APPLICATION code should keep its tests beside the
+# source they test, even in the same file; a library cannot, for this reason.
+#
+# Two steps, because building the binary and running it fail for different
+# reasons and should be told apart: a compile error in the tests is not the
+# same event as a stdlib regression.
+set(YAFL_STDLIB_TESTS_BIN ${CMAKE_BINARY_DIR}/stdlib_tests)
+add_test(NAME stdlib_tests_build
+    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
+            PYTHONHASHSEED=0
+            ${Python3_EXECUTABLE} main.py -O0 --test
+            -o ${YAFL_STDLIB_TESTS_BIN} stdlib_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+set_tests_properties(stdlib_tests_build PROPERTIES
+    TIMEOUT 3600
+    FIXTURES_SETUP stdlib_tests_bin)
+
+add_test(NAME stdlib_tests COMMAND ${YAFL_STDLIB_TESTS_BIN})
+set_tests_properties(stdlib_tests PROPERTIES
+    TIMEOUT 600
+    FIXTURES_REQUIRED stdlib_tests_bin
+    # The runner exits 0 only when every test passed, but a binary that ran
+    # NOTHING would also exit 0 — the same hole the compiler_suite guard
+    # closes. Require at least ONE pass: `[0-9]+` would match "0 passed, 0
+    # failed", which is precisely the case this is here to catch.
+    PASS_REGULAR_EXPRESSION "[1-9][0-9]* passed, 0 failed")
+
 # Convenience: `cmake --build build --target check` builds everything (so the
 # runtime archive and the C test executables exist) then runs the whole CTest set.
 add_custom_target(check
