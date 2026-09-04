@@ -1,0 +1,232 @@
+# bootstrap/driver/references.yafl — every namespace-qualified name a parsed
+# tree mentions.
+#
+# WHY THIS EXISTS: `import` is not mandatory, so a file may write `A::B::c`
+# with no import at all. compiler.py's `_candidate_namespaces` therefore feeds
+# the library loader BOTH halves — the declared imports and every qualified
+# reference in the AST — and composes them. Collecting only the imports makes
+# the port load a strictly narrower set than the reference compiler, and since
+# the loaded statements ARE the program, a difference there is a difference in
+# the emitted C. This file is the second half.
+#
+# Python gets it from one reflective `search_and_replace` over the tree,
+# keeping names with `::` that sit on a NamedExpression or a NamedSpec. The
+# port has no reflective walk, so this is that walk written out: PeName's
+# refName and SNamed's snName, and nothing else — matching what the predicate
+# there admits, not merely "every string that looks qualified".
+#
+# The catch-all trap (nodes.yafl, PExpr): the arms below name the LEAF GROUPS
+# `PeLiteral` and `PeLowered` rather than trailing an open `(o: PExpr)`, so a
+# new node with children is a non-exhaustive-match error here instead of a
+# silent failure to descend.
+
+namespace Bootstrap::Driver
+
+import System
+
+import Bootstrap::Ast
+
+
+fun qualifiedRefs(stmts: List<PStmt>): List<String>
+  ret sort(refsStmts(chain(stmts), Set<String>()))
+
+# A name is a candidate only when it is qualified; `prefixesOf` splits it and
+# strips the `@unique` tags later.
+fun noteName(name: String, acc: Set<String>): Set<String>
+  ret contains(name, "::") ? add<String>(acc, name) : acc
+
+
+# ── statements ──────────────────────────────────────────────────────────────
+
+fun [tail] refsStmts(ss: Chain<PStmt>, acc: Set<String>): Set<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsStmts(l.next, refsStmt(l.value, acc))
+
+# fImports/cImports/... are deliberately NOT descended: the import group is
+# read directly by declaredImports, and descending it here would count each
+# block's imports once per statement of that block.
+fun refsStmt(st: PStmt, acc: Set<String>): Set<String>
+  ret match(st)
+    (f: PsFun) => acc
+      |> (a) => refsAttrs(chain(f.fAttrs), a)
+      |> (a) => refsGens(chain(f.fGens), a)
+      |> (a) => refsStmt(f.fParams, a)
+      |> (a) => refsOptExpr(f.fBody, a)
+      |> (a) => refsOptSpec(f.fRet, a)
+      |> (a) => refsSpecs(chain(f.fWheres), a)
+    (d: PsDestructure) => acc
+      |> (a) => refsAttrs(chain(d.dAttrs), a)
+      |> (a) => refsOptSpec(d.dType, a)
+      |> (a) => refsStmts(chain(d.dTargets), a)
+      |> (a) => refsOptExpr(d.dDefault, a)
+    (l2: PsLet) => acc
+      |> (a) => refsAttrs(chain(l2.lAttrs), a)
+      |> (a) => refsGens(chain(l2.lGens), a)
+      |> (a) => refsOptSpec(l2.lType, a)
+      |> (a) => refsOptExpr(l2.lDefault, a)
+      |> (a) => refsSpecs(chain(l2.lWheres), a)
+    (c: PsClass) => acc
+      |> (a) => refsAttrs(chain(c.cAttrs), a)
+      |> (a) => refsGens(chain(c.cGens), a)
+      |> (a) => refsStmt(c.cParams, a)
+      |> (a) => refsSpecs(chain(c.cImplements), a)
+      |> (a) => refsSpecs(chain(c.cWheres), a)
+      |> (a) => refsStmts(chain(c.cMembers), a)
+    (e: PsEnum) => acc
+      |> (a) => refsAttrs(chain(e.eAttrs), a)
+      |> (a) => refsGens(chain(e.eGens), a)
+      |> (a) => refsStmt(e.eParams, a)
+      |> (a) => refsStmts(chain(e.eVariants), a)
+      |> (a) => refsOptSpec(e.eSpec, a)
+    (ta: PsTypealias) => acc
+      |> (a) => refsAttrs(chain(ta.taAttrs), a)
+      |> (a) => refsGens(chain(ta.taGens), a)
+      |> (a) => refsSpec(ta.taType, a)
+      |> (a) => refsSpecs(chain(ta.taWheres), a)
+    (ti: PsTraitInstance) => acc
+      |> (a) => refsAttrs(chain(ti.tiAttrs), a)
+      |> (a) => refsGens(chain(ti.tiGens), a)
+      |> (a) => refsSpec(ti.tiPattern, a)
+      |> (a) => refsSpecs(chain(ti.tiWheres), a)
+      |> (a) => refsStmts(chain(ti.tiMembers), a)
+    (r: PsRet)    => refsExpr(r.retValue, acc)
+    (i2: PsIf)    => refsExpr(i2.ifCond, acc)
+      |> (a) => refsStmts(chain(i2.ifTrue), a)
+      |> (a) => refsStmts(chain(i2.ifFalse), a)
+    (ei: PsElseIf) => refsExpr(ei.eiCond, acc)
+      |> (a) => refsStmts(chain(ei.eiStmts), a)
+    (el: PsElse)  => refsStmts(chain(el.elStmts), acc)
+    (ac: PsAction) => refsExpr(ac.action, acc)
+    (im: PsImport)    => acc
+    (n2: PsNamespace) => acc
+
+fun [tail] refsAttrs(as2: Chain<PAttr>, acc: Set<String>): Set<String>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsAttrs(l.next, refsOptExpr(l.value.attrValue, acc))
+
+fun [tail] refsGens(gs: Chain<PGen>, acc: Set<String>): Set<String>
+  ret match(gs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsGens(l.next, refsAttrs(chain(l.value.genAttrs), acc))
+
+
+# ── expressions ─────────────────────────────────────────────────────────────
+
+fun [tail] refsExprs(es: Chain<PExpr>, acc: Set<String>): Set<String>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsExprs(l.next, refsExpr(l.value, acc))
+
+fun refsOptExpr(ex: PExpr|None, acc: Set<String>): Set<String>
+  ret match(ex)
+    (e: PExpr) => refsExpr(e, acc)
+    ()         => acc
+
+fun refsExpr(ex: PExpr, acc: Set<String>): Set<String>
+  ret match(ex)
+    (n2: PeName) => noteName(n2.refName, acc)
+      |> (a) => refsSpecs(chain(n2.refTypeParams), a)
+      |> (a) => refsOptSpec(n2.penTrait, a)
+    (d: PeDot)     => refsExpr(d.base, acc)
+    (c: PeCall)    => refsExpr(c.parameter, refsExpr(c.function, acc))
+    (t2: PeTuple)  => refsTupEnts(chain(t2.exprs), acc)
+    (t3: PeTernary) => refsExpr(t3.condition, acc)
+      |> (a) => refsExpr(t3.trueResult, a)
+      |> (a) => refsExpr(t3.falseResult, a)
+    (lm: PeLambda) => refsStmt(lm.lamParams, acc)
+      |> (a) => refsExpr(lm.lamBody, a)
+      |> (a) => refsOptSpec(lm.lamRet, a)
+    (bk: PeBlock)  => refsStmts(chain(bk.blockStmts), acc)
+      |> (a) => refsExpr(bk.blockValue, a)
+    (m: PeMatch)   => refsExpr(m.subject, acc)
+      |> (a) => refsExprs(chain(m.matchExtra), a)
+      |> (a) => refsArms(chain(m.arms), a)
+    (bo: PeBuiltinOp) => refsSpec(bo.opType, acc)
+      |> (a) => refsExpr(bo.opName, a)
+      |> (a) => refsExpr(bo.opParams, a)
+    (w: PeWith)    => refsExpr(w.withRepls, refsExpr(w.withSubject, acc))
+    (p: PeParallel) => refsExpr(p.parParams, acc)
+    (ne: PeNewEnum) => refsFieldArgs(chain(ne.fieldArgs), acc)
+      |> (a) => refsSpecs(chain(ne.neTypeParams), a)
+    (nw: PeNew)    => refsSpec(nw.newType, refsExpr(nw.newParam, acc))
+    (ar: PeArrayRead) => refsExpr(ar.arrIndex, refsExpr(ar.arrObj, acc))
+    (cv: PeConvert) => refsSpec(cv.convTarget, refsExpr(cv.convInner, acc))
+    (qq: PeCoalesce) => refsExpr(qq.qqFallback, refsExpr(qq.qqSubject, acc))
+    (li: PeLiteral) => acc
+    (lo: PeLowered) => acc
+
+fun [tail] refsTupEnts(ts: Chain<PTupEnt>, acc: Set<String>): Set<String>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsTupEnts(l.next, refsExpr(l.value.tupValue, acc))
+
+fun [tail] refsFieldArgs(fs: Chain<PFieldArg>, acc: Set<String>): Set<String>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsFieldArgs(l.next, refsExpr(l.value.faValue, acc))
+
+fun [tail] refsArms(as3: Chain<PArm>, acc: Set<String>): Set<String>
+  ret match(as3)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsArms(l.next, refsArm(l.value, acc))
+
+fun refsArm(arm: PArm, acc: Set<String>): Set<String>
+  ret refsOptSpec(arm.armType, acc)
+    |> (a) => refsExpr(arm.armBody, a)
+    |> (a) => refsLits(chain(arm.armLiterals), a)
+    |> (a) => refsOptExpr(arm.armGuard, a)
+    |> (a) => refsPositions(chain(arm.armExtra), a)
+
+fun [tail] refsLits(ls: Chain<PLit>, acc: Set<String>): Set<String>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsLits(l.next, refsLit(l.value, acc))
+
+fun refsLit(lit: PLit, acc: Set<String>): Set<String>
+  ret match(lit)
+    (x: PlExpr)  => refsExpr(x.litExpr, acc)
+    (r: PlRange) => refsExpr(r.rangeHi, refsExpr(r.rangeLo, acc))
+
+fun [tail] refsPositions(ps: Chain<PPos>, acc: Set<String>): Set<String>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsPositions(l.next, refsOptSpec(l.value.posType, acc))
+
+
+# ── type specs ──────────────────────────────────────────────────────────────
+# Only SNamed carries a name here, mirroring the NamedSpec half of the Python
+# predicate. SClass and SEnum have names too, but the parser never builds one —
+# they are what compile() RESOLVES a SNamed into, and by then the libraries are
+# long loaded.
+
+fun [tail] refsSpecs(ss: Chain<Spec>, acc: Set<String>): Set<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsSpecs(l.next, refsSpec(l.value, acc))
+
+fun refsOptSpec(sp: Spec|None, acc: Set<String>): Set<String>
+  ret match(sp)
+    (s2: Spec) => refsSpec(s2, acc)
+    ()         => acc
+
+fun refsSpec(sp: Spec, acc: Set<String>): Set<String>
+  ret match(sp)
+    (n2: SNamed) => refsSpecs(chain(n2.snParams), noteName(n2.snName, acc))
+    (c: SClass)  => refsSpecs(chain(c.scParams), acc)
+    (e: SEnum)   => refsSpecs(chain(e.seParams), acc)
+    (cl: SCallable) => refsOptSpec(cl.scResult, refsSpec(cl.scParams2, acc))
+    (cm: SCombination) => refsSpecs(chain(cm.scTypes), acc)
+    (t2: STuple) => refsEntries(chain(t2.stEntries), acc)
+    (af: SArrayField) => refsSpec(af.safElem, acc)
+    (ls: SLazyStub)   => refsOptSpec(ls.slsTarget, acc)
+    (b: SBuiltin) => acc
+    (g: SGeneric) => acc
+
+fun [tail] refsEntries(es: Chain<SEntry>, acc: Set<String>): Set<String>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => refsEntries(l.next,
+                                   refsOptExpr(l.value.seDefault,
+                                               refsOptSpec(l.value.seType, acc)))

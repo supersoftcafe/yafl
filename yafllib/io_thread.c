@@ -320,6 +320,18 @@ static void* _io_thread_main(void* arg) {
             job->raw_result = (remove((const char*)io->buf) == 0) ? 0 : -errno;
         } break;
 
+        case IO_OP_FS_MKDIR: {
+            // ONE level, and an ALREADY-EXISTING directory is success — the
+            // caller walks the path components, so `mkdir -p` semantics live
+            // in YAFL and this stays a single syscall.  EEXIST on a plain file
+            // is still success here; the caller finds out when it opens it.
+            // 0777 is deliberate: the process umask decides the real mode,
+            // exactly as Path.mkdir() leaves it.
+            errno = 0;
+            int rc = mkdir((const char*)io->buf, 0777);
+            job->raw_result = (rc == 0 || errno == EEXIST) ? 0 : -errno;
+        } break;
+
         case IO_OP_DIR_OPEN: {
             dir_t* dir = job->dir;
             errno = 0;

@@ -76,6 +76,107 @@ fun [tail] sha1Lines(lines: Chain<System::String>, sb: StringBuilder): StringBui
                                    ? sb
                                    : append(sb, sha1Hex(l.value) + "\n"))
 
+# toml mode: parse a manifest on stdin and print one normalised line per
+# entry — `key=v1,v2` — for diffing against Python's tomllib
+# (tests/test_bootstrap_toml.py). Errors print `error:<line>:<message>`.
+fun tomlMode(text: String): (out: String, code: Int)
+  ret match(parseToml(text))
+    (ok: TomlOk)   => (toString(tomlDump(chain(ok.entries), StringBuilder())), 0)
+    (e: TomlErr)   => ("error:" + String(e.tomlLine) + ":" + e.tomlMessage + "\n", 1)
+
+fun [tail] tomlDump(es: Chain<TomlEntry>, [terminal] sb: StringBuilder): StringBuilder
+  ret match(es)
+    (nil: ChainEnd) => sb
+    (l: ChainLink)  => tomlDump(l.next,
+        append(sb, l.value.key + "=" + join(l.value.values, ",") + "\n"))
+
+# libs mode: print every library discoverable on YAFL_PATH, one per line as
+# `name|ns,ns|headers|statics`, sorted — diffed against
+# libraries.discover_libraries by tests/test_bootstrap_libs.py. This is the
+# surface that proves the port can FIND libraries at all, which it could not
+# do before.
+# No `text` parameter: this mode reads the FILESYSTEM, not stdin, and an
+# ignored parameter accepted for uniformity with the other modes is exactly the
+# shape a deleted use leaves behind.
+fun libsMode(): (out: String, code: Int)
+  ret match(discoverLibraries(searchPaths(List<String>())))
+    (e: LibsErr) => ("error:" + e.libsWhy + "\n", 1)
+    (ok: LibsOk) => (toString(libsDump(chain(sortLibs(ok.libsFound)),
+                                       StringBuilder())), 0)
+
+fun sortLibs(ls: List<Library>): List<Library>
+  ret sortBy(ls, (a: Library, b: Library) =>
+        a.libManifest.libName < b.libManifest.libName)
+
+fun [tail] libsDump(ls: Chain<Library>, [terminal] sb: StringBuilder): StringBuilder
+  ret match(ls)
+    (nil: ChainEnd) => sb
+    (l: ChainLink)  => libsDump(l.next, append(sb,
+        l.value.libManifest.libName + "|"
+        + join(l.value.libManifest.libNamespaces, ",") + "|"
+        + join(l.value.libManifest.libHeaders, ",") + "|"
+        + join(l.value.libManifest.libStaticLibs, ",") + "\n"))
+
+# libsfor mode: parse the source on stdin and print which libraries its
+# imports would pull in, one name per line. This is the end-to-end check that
+# `import System::Test` RESOLVES — the capability the port lacked entirely.
+fun libsForMode(text: String): (out: String, code: Int)
+  ret match(parseProgram(text, "x"))
+    (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
+                             + ": " + f.msg + "\n", 1)
+    (stmts: List<PStmt>) => libsForStmts(stmts)
+
+fun libsForStmts(stmts: List<PStmt>): (out: String, code: Int)
+  ret match(discoverLibraries(searchPaths(List<String>())))
+    (e: LibsErr) => ("error:" + e.libsWhy + "\n", 1)
+    (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
+      (why: String)        => ("error:" + why + "\n", 1)
+      (idx: List<NsEntry>) => libsForIndex(stmts, idx)
+
+fun libsForIndex(stmts: List<PStmt>, idx: List<NsEntry>): (out: String, code: Int)
+  ret match(libsFrontier(stmts, idx, List<String>(), List<Library>()))
+    (why: String)         => ("error:" + why + "\n", 1)
+    (found: List<Library>) => (toString(libsDump(chain(sortLibs(found)),
+                                                 StringBuilder())), 0)
+
+# The worklist is a FIXPOINT, not one round: a library the program imports may
+# itself import a third, so what was just loaded becomes the next frontier.
+# compile_project loops `while frontier`; this is the same loop, carrying the
+# loaded libRoots — the SAME key loadReferenced tests against. Carrying
+# manifest names while it compared roots meant nothing ever counted as loaded,
+# so the frontier reloaded the same library for ever.
+#
+# NOT [tail]: the recursion sits under a ternary and then a match, and the
+# depth is a library DEPENDENCY CHAIN — a handful of frames, not a data walk.
+fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
+                        already: List<String>,
+                        found: List<Library>): List<Library>|String
+  let step = loadReferenced(idx,
+                            candidateNamespaces(declaredImports(frontier),
+                                                qualifiedRefs(frontier)),
+                            already)
+  ret isEmpty(step.stepLibs)
+    ? found
+    : match(parseLibraries(chain(step.stepLibs), List<PStmt>()))
+      (why: String)          => why
+      (next: List<PStmt>)    => libsFrontier(next, idx,
+          concat(already, map(step.stepLibs, (l: Library) => l.libRoot)),
+          concat(found, step.stepLibs))
+
+# The imports of a parsed program are NOT PsImport statements: fixupProgram
+# consumes them and ATTACHES each block's group to the named statements of that
+# block, so a scan of the top-level list finds none. `stmtImports` is the
+# accessor, and reading it here is what compiler.py's `_candidate_namespaces`
+# does with `st.imports.imports`.
+fun declaredImports(stmts: List<PStmt>): List<String>
+  ret importsOfStmts(chain(stmts), List<String>())
+
+fun [tail] importsOfStmts(ss: Chain<PStmt>, acc: List<String>): List<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => importsOfStmts(l.next,
+                                      importPaths(chain(stmtImports(l.value)), acc))
+
 fun unescMode(text: String): (out: String, code: Int)
   ret (unescDump(chain(splitLines(text)), StringBuilder()) |> (sb) => toString(sb), 0)
 
@@ -619,16 +720,21 @@ fun cMode(text: String, optLevel: Int, profile: Bool): (outs: List<String>, code
   let parsed = parseMulti(text)
   let _ = spanEnd(spParse)
   ret match(parsed)
-    (stmts: List<PStmt>) => cModeConverge(stmts, optLevel, profile)
+    (stmts: List<PStmt>) => cModeConverge(stmts, optLevel, profile, baseHeaders())
     ()                   => (prepend("parse error\n", List<String>()), 1)
 
-fun cModeConverge(stmts: List<PStmt>, optLevel: Int,
-                  profile: Bool): (outs: List<String>, code: Int)
+# yafl.h is the runtime ABI baseline — the entrypoint references it — so it is
+# always included and loaded libraries append their own.
+fun baseHeaders(): List<System::String>
+  ret prepend("yafl.h", List<System::String>())
+
+fun cModeConverge(stmts: List<PStmt>, optLevel: Int, profile: Bool,
+                  headers: List<System::String>): (outs: List<String>, code: Int)
   let sp = spanBegin("compile", "converge+mono")
   let pm = convergeToPostmono(stmts)
   let _ = spanEnd(sp)
   ret match(pm)
-    (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile)
+    (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers)
     (tx: PmText) => (prepend(tx.pmOut, List<String>()), tx.pmCode)
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
@@ -646,42 +752,176 @@ fun parseMulti(text: String): List<PStmt>|None
     ret parseSingle(text)
   ret parseSorted(collectParts(text, 0, Dict<String, String>()))
 
+# ── project mode: COMPILE WITH LIBRARIES ─────────────────────────────────────
+# The mirror of compiler.py `compile_project`, and the point of all the
+# discovery machinery: `c` mode compiles a statement set the caller assembled,
+# so every library had to be concatenated into the stream by hand. `project`
+# takes the USER's program and resolves `import Some::Library` itself.
+#
+# The two modes are the same layering Python has — `c` is the pipeline over a
+# given statement set, `project` is that plus the loader — which is why `c` is
+# left exactly as it was: ~25 test modules pin it as the byte contract, and
+# giving it a second, environment-dependent input would make that contract
+# depend on YAFL_PATH.
+
+fun projectMode(text: String, optLevel: Int,
+                profile: Bool): (outs: List<String>, code: Int)
+  ret match(parseMulti(text))
+    (stmts: List<PStmt>) => projectCompile(stmts, optLevel, profile)
+    ()                   => (prepend("parse error\n", List<String>()), 1)
+
+fun projectTestMode(text: String, optLevel: Int,
+                    profile: Bool): (outs: List<String>, code: Int)
+  ret match(parseMulti(text))
+    (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, true)
+    ()                   => (prepend("parse error\n", List<String>()), 1)
+
+fun projectCompile(user: List<PStmt>, optLevel: Int,
+                   profile: Bool): (outs: List<String>, code: Int)
+  let sp = spanBegin("compile", "libraries")
+  let loaded = loadProject(user)
+  let _ = spanEnd(sp)
+  ret match(loaded)
+    (why: String)      => (prepend("error:" + why + "\n", List<String>()), 1)
+    (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
+      (why2: String)   => (prepend("error:" + why2 + "\n", List<String>()), 1)
+      (spec: LinkSpec) =>
+        # `lib_statements + user_statements`, in that order: statement order is
+        # emission order, so the libraries come first exactly as they do in
+        # compile_project.
+        cModeConverge(concat(pr.plStmts, user), optLevel, profile,
+                      projectHeaders(spec))
+
+# ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h") — yafl.h is
+# the ABI baseline and must lead, and must not appear twice if a manifest also
+# declares it (the shipped System library does).
+fun projectHeaders(spec: LinkSpec): List<System::String>
+  ret concat(baseHeaders(),
+             filter(spec.specHeaders, (h: String) => h != "yafl.h"))
+
+# compile_project RETURNS the LinkSpec alongside the C — the caller needs the
+# `-I` directories and the archives to link, and for a `.yl` those only exist
+# once its native artefacts have been extracted. `project` writes C to stdout,
+# so the spec gets its own mode over the same input rather than being computed
+# and thrown away.
+fun linkSpecMode(text: String): (out: String, code: Int)
+  ret match(parseMulti(text))
+    (stmts: List<PStmt>) => linkSpecFor2(stmts)
+    ()                   => ("parse error\n", 1)
+
+fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int)
+  ret match(loadProject(user))
+    (why: String)     => ("error:" + why + "\n", 1)
+    (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
+      (why2: String)   => ("error:" + why2 + "\n", 1)
+      (spec: LinkSpec) => (
+          "headers=" + join(projectHeaders(spec), ",") + "\n"
+          + "includes=" + join(spec.specIncludeDirs, ",") + "\n"
+          + "statics=" + join(spec.specStaticLibs, ",") + "\n", 0)
+
+class [final] ProjectLoad(plStmts: List<PStmt>, plLibs: List<Library>)
+
+fun loadProject(user: List<PStmt>): ProjectLoad|String
+  ret match(discoverLibraries(searchPaths(List<String>())))
+    (e: LibsErr) => e.libsWhy
+    (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
+      (why: String)        => why
+      (idx: List<NsEntry>) => projectRounds(user, idx, List<String>(),
+                                            List<PStmt>(), List<Library>())
+
+# `while frontier:` — each round loads the libraries the CURRENT statements
+# reference, and what was just loaded becomes the next frontier, so a library
+# pulled in by another is found too. `already` holds libRoots, the same key
+# loadReferenced tests, so each library is taken exactly once.
+fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
+                  already: List<String>, acc: List<PStmt>,
+                  libs: List<Library>): ProjectLoad|String
+  let step = loadReferenced(idx,
+                            candidateNamespaces(declaredImports(frontier),
+                                                qualifiedRefs(frontier)),
+                            already)
+  ret isEmpty(step.stepLibs)
+    ? ProjectLoad(acc, libs)
+    : match(parseLibraries(chain(step.stepLibs), List<PStmt>()))
+      (why: String)       => why
+      (next: List<PStmt>) => projectRounds(next, idx,
+          concat(already, map(step.stepLibs, (l: Library) => l.libRoot)),
+          concat(acc, next), concat(libs, step.stepLibs))
+
+# ONE __tokenize_and_parse call PER LIBRARY, and that call SORTS ITS INPUTS BY
+# FILENAME. Sorting the round's sources as one flat list instead would
+# interleave two libraries' files, and statement order is emission order.
+fun [tail] parseLibraries(ls: Chain<Library>,
+                          acc: List<PStmt>): List<PStmt>|String
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(parseLibrary(l.value))
+      (why: String)        => why
+      (stmts: List<PStmt>) => parseLibraries(l.next, concat(acc, stmts))
+
+fun parseLibrary(lib: Library): List<PStmt>|String
+  ret parseSources(chain(sortSources(lib.libSources)), builder<PStmt>())
+
+# By BASENAME, which is what `Input.filename` holds — the sort key
+# __tokenize_and_parse uses. A stable sort, so two sub-directories holding the
+# same basename keep the order `yafl_sources` gave them.
+fun sortSources(srcs: List<LibSource>): List<LibSource>
+  ret sortBy(srcs, (a: LibSource, b: LibSource) => a.libFileName < b.libFileName)
+
+fun [tail] parseSources(ss: Chain<LibSource>,
+                        [terminal] b: ListBuilder<PStmt>): List<PStmt>|String
+  ret match(ss)
+    (nil: ChainEnd) => build(b)
+    (l: ChainLink)  => match(parseProgram(l.value.libText, l.value.libFileName))
+      (f: PFail)           => parseDiscard(b, l.value.libFileName + "["
+          + String(f.line) + ":" + String(f.col) + "] - " + f.msg)
+      (stmts: List<PStmt>) => parseSources(l.next, pushAll(b, stmts))
+
+fun parseDiscard([terminal] b: ListBuilder<PStmt>, why: String): List<PStmt>|String
+  ret build(b) |> (l: List<PStmt>) => why
+
+
 # ── --test: build a TEST binary from the [test] functions ────────────────────
 # Mirrors compiler.py `__test_registry_source` / `__is_source_main`. The main is
 # synthesised as YAFL SOURCE and re-parsed, NOT hand-built: everything
 # downstream then treats it as ordinary code (monomorphisation, async lowering
 # — so a test that suspends sequences with no special handling — and trim).
 #
-# Every name is FULLY QUALIFIED so it resolves without imports. Unlike the
-# Python side there is no library discovery here: the caller's stream must
-# already contain System::Test, exactly as it already contains the stdlib.
+# Every name is FULLY QUALIFIED so it resolves without imports — and in
+# `projecttest` mode, referencing `System::Test::run` is itself what pulls the
+# System::Test library in through the namespace worklist, exactly as it does in
+# Python. In plain `ctest` mode there is no discovery and the caller's stream
+# must already contain System::Test, as it already contains the stdlib.
 
 fun cTestMode(text: String, optLevel: Int,
               profile: Bool): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
-    (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile)
+    (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, false)
     ()                   => (prepend("parse error\n", List<String>()), 1)
 
-fun cTestInject(stmts: List<PStmt>, optLevel: Int,
-                profile: Bool): (outs: List<String>, code: Int)
+fun cTestInject(stmts: List<PStmt>, optLevel: Int, profile: Bool,
+                withLibs: Bool): (outs: List<String>, code: Int)
   let tests = testFunsOf(chain(stmts), builder<PsFun>())
   ret isEmpty(tests)
     # A test binary with nothing in it must NOT be built and exit 0 — that is a
     # green run reporting coverage it does not have.
     ? (prepend("--test: no [test] functions found\n", List<String>()), 1)
-    : cTestParsed(stmts, tests, optLevel, profile)
+    : cTestParsed(stmts, tests, optLevel, profile, withLibs)
 
 fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel: Int,
-                profile: Bool): (outs: List<String>, code: Int)
+                profile: Bool, withLibs: Bool): (outs: List<String>, code: Int)
   # Parsed under the SAME filename Python gives it ($test_main.yafl), not
   # parseSingle's "x": the filename feeds hash6, which feeds the generated
   # names, which feed the emitted C. A different name here would make the two
   # compilers disagree byte-for-byte on identical input.
   ret match(parseProgram(testRegistrySource(tests), "$test_main.yafl"))
-    (gen: List<PStmt>) => cModeConverge(concat(dropSourceMains(chain(stmts),
-                                                              builder<PStmt>()),
-                                               gen),
-                                        optLevel, profile)
+    (gen: List<PStmt>) => concat(dropSourceMains(chain(stmts),
+                                                 builder<PStmt>()), gen)
+      # The registry is part of the USER statements before the worklist runs,
+      # which is what makes its `System::Test::run` reference load the library.
+      |> (user: List<PStmt>) => withLibs
+        ? projectCompile(user, optLevel, profile)
+        : cModeConverge(user, optLevel, profile, baseHeaders())
     (f: PFail)         => (prepend("--test: generated main failed to parse\n",
                                    List<String>()), 1)
 
@@ -840,8 +1080,8 @@ fun partText(parts: Dict<String, String>, name: String): String
     (t2: String) => t2
     ()           => ""   # unreachable: the name came from keys(parts)
 
-fun cStage(stmts: List<PStmt>, optLevel: Int,
-           profile: Bool): (outs: List<String>, code: Int)
+fun cStage(stmts: List<PStmt>, optLevel: Int, profile: Bool,
+           headers: List<System::String>): (outs: List<String>, code: Int)
   let spTail = spanBegin("lower", "lift+hoist+tail")
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
   let _1 = spanEnd(spTail)
@@ -866,7 +1106,7 @@ fun cStage(stmts: List<PStmt>, optLevel: Int,
   let final2 = assignBlockExits(low3)
   let _6 = spanEnd(spExits)
   ret match(cFindMain(chain(final2)))
-    (nm: System::String) => cEmit(final2, nm, optLevel, profile)
+    (nm: System::String) => cEmit(final2, nm, optLevel, profile, headers)
     ()                    => (prepend("No main function found\n", List<String>()), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
@@ -895,11 +1135,11 @@ fun cIsBigintRet(ret2: Spec|None): Bool
       (o: Spec)     => false
     ()          => false
 
-fun cEmit(stmts: List<PStmt>, mainName: System::String,
-          optLevel: Int, profile: Bool): (outs: List<String>, code: Int)
+fun cEmit(stmts: List<PStmt>, mainName: System::String, optLevel: Int,
+          profile: Bool,
+          headers: List<System::String>): (outs: List<String>, code: Int)
   let sp = spanBegin("codegen", "create_c_code")
-  let out = createCCode(stmts, mainName, optLevel, profile,
-                        prepend("yafl.h", List<System::String>()))
+  let out = createCCode(stmts, mainName, optLevel, profile, headers)
   let _ = spanEnd(sp)
   ret isEmpty(out.ccErrors)
     ? (out.ccParts, 0)
@@ -938,6 +1178,16 @@ fun [tail] eqRow(row: PStmt, cols: Chain<PStmt>,
     (l: ChainLink)  => eqRow(row, l.next,
                              append(sb, eqStmt(row, l.value) ? "1" : "0"))
 
+# -1 for "not this family", so one lookup answers both "is it?" and "which
+# level?" without a second mode-string table to keep in step.
+fun projectLevel(mode: System::String): Int
+  ret mode == "project" ? 0 : mode == "project1" ? 1 : mode == "project2" ? 2
+    : mode == "project3" ? 3 : -1
+
+fun projectTestLevel(mode: System::String): Int
+  ret mode == "projecttest" ? 0 : mode == "project1test" ? 1
+    : mode == "project2test" ? 2 : mode == "project3test" ? 3 : -1
+
 fun modeOf(argv: List<System::String>): System::String
   ret match(head(argv))
     (m: System::String) => m
@@ -956,7 +1206,18 @@ fun run(text: System::String, i: IO): System::Int
   # string IS the port's option surface).
   if mode == "cp" || mode == "c1p" || mode == "c2p" || mode == "c3p"
     ret runC(text, mode == "cp" ? 0 : mode == "c1p" ? 1 : mode == "c2p" ? 2 : 3, true, i)
-  let r = mode == "tokens" ? tokensMode(text)
+  # `project` twins: the same pipeline, but libraries are DISCOVERED from the
+  # search path and prepended, instead of the caller concatenating them into
+  # the stream. This is compile_project; `c` above is __create_c_code.
+  if projectLevel(mode) >= 0
+    ret runProject(text, projectLevel(mode), false, i)
+  if projectTestLevel(mode) >= 0
+    ret runProjectTest(text, projectTestLevel(mode), i)
+  let r = mode == "libs" ? libsMode()
+        : mode == "libsfor" ? libsForMode(text)
+        : mode == "linkspec" ? linkSpecMode(text)
+        : mode == "toml" ? tomlMode(text)
+        : mode == "tokens" ? tokensMode(text)
         : mode == "hash6" ? hash6Mode(text)
         : mode == "sha1" ? sha1Mode(text)
         : mode == "unesc" ? unescMode(text)
@@ -993,6 +1254,19 @@ fun runCTest(text: System::String, optLevel: Int, i: IO): System::Int
 
 fun runC(text: System::String, optLevel: Int, profile: Bool, i: IO): System::Int
   let r = cMode(text, optLevel, profile)
+  let w = writeParts(stdout(), chain(r.outs), false)
+  let code = w.failed2 ? 1 : r.code
+  ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
+
+fun runProject(text: System::String, optLevel: Int, profile: Bool,
+               i: IO): System::Int
+  let r = projectMode(text, optLevel, profile)
+  let w = writeParts(stdout(), chain(r.outs), false)
+  let code = w.failed2 ? 1 : r.code
+  ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
+
+fun runProjectTest(text: System::String, optLevel: Int, i: IO): System::Int
+  let r = projectTestMode(text, optLevel, false)
   let w = writeParts(stdout(), chain(r.outs), false)
   let code = w.failed2 ? 1 : r.code
   ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result

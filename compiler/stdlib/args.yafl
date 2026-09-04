@@ -18,3 +18,19 @@ fun args(): List<System::String>
   fun [tail] loop(i: System::Int, acc: List<System::String>): List<System::String>
     ret i < 1 ? acc : loop(i - 1, prepend<System::String>(_argvAt(i), acc))
   ret loop(_argc() - 1, List<System::String>())
+
+
+# argv[0] — how this process was invoked, which `args()` deliberately omits
+# because it is not an argument. Exactly as the OS passed it: a program run
+# from PATH sees a bare name and not a path, so a caller deriving a location
+# from it must handle that case rather than assume a directory.
+fun argv0(): System::String
+  ret _argc() > 0 ? _argvAt(0) : ""
+
+
+# Process environment. None when the variable is UNSET, which is distinct from
+# set-to-empty: `YAFL_PATH=` and an absent YAFL_PATH mean different things to a
+# search path. Added for the library search path, which the self-hosted
+# compiler could not read at all — the runtime called getenv for its own knobs
+# but exposed nothing to YAFL.
+fun [foreign("sys_getenv"), impure, sync] env(name: System::String): System::String|System::None

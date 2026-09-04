@@ -271,3 +271,115 @@ fun [tail] sha1HexLoop(st: Sha1State, i: Int, acc: String): String
 
 fun sha1Hex(msg: String): String
   ret sha1HexLoop(sha1(msg), 0, "")
+
+
+# ── SHA256 (FIPS 180-4) — libraries.py keys a `.yl`'s extracted-native cache
+# directory on `sha256(archive bytes).hexdigest()[:16]`, so the port must reach
+# the SAME directory or the two compilers extract the same archive twice, to
+# two places, and a build driver handed the port's LinkSpec sees paths Python
+# never wrote.
+#
+# Shares SHA1's padding wholesale — both are Merkle-Damgard with a BIG-ENDIAN
+# 64-bit bit length, so `paddedLen`, `sha1MessageByte` and `sha1WordOf` are the
+# same functions here, not copies. What differs: 8 state words, 64 rounds, a
+# 64-entry K table, and a schedule built from rotate-RIGHT mixes. ────────────
+
+# K[i] = first 32 bits of the fractional part of the cube root of the i'th
+# prime, packed as 64 x 8 hex chars (the md5K layout, read by the same hex8).
+let sha256K: String =
+  "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5"
+  + "d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174"
+  + "e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da"
+  + "983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca635114292967"
+  + "27b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85"
+  + "a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa070"
+  + "19a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3"
+  + "748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2"
+
+fun sha256K0f(i: Int): Int
+  ret hex8(sha256K, i * 8)
+
+fun rotr32(x: Int, c: Int): Int
+  ret ((x >> c) | (x << (32 - c))) & mask32
+
+class [final] Sha256State(t0: Int, t1: Int, t2: Int, t3: Int,
+                          t4: Int, t5: Int, t6: Int, t7: Int)
+
+# W[0..63]: the first 16 straight off the message, the rest a mix of four
+# earlier entries. Every tap (t-2, t-7, t-15, t-16) is within the last 16, so
+# the newest-first `recent` chain answers each in a bounded <=15-step walk —
+# the same shape sha1Schedule uses, and for the same reason (indexing into a
+# growing list re-materialises it per read).
+fun [tail] sha256Schedule(msg: String, len: Int, base: Int, t: Int,
+                          recent: Chain<Int>, acc: ListBuilder<Int>): List<Int>
+  if t == 64
+    ret build(acc)
+  let w15 = tapAt(recent, 14)
+  let w2 = tapAt(recent, 1)
+  let s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3)
+  let s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10)
+  let w = t < 16
+    ? sha1WordOf(msg, len, base, t)
+    : add32(add32(tapAt(recent, 15), s0), add32(tapAt(recent, 6), s1))
+  ret sha256Schedule(msg, len, base, t + 1, ChainLink<Int>(w, recent),
+                     push(acc, w))
+
+# The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
+fun [tail] sha256Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int,
+                        e: Int, f: Int, g: Int, h: Int): Sha256State
+  if i == 64
+    ret Sha256State(a, b, c, d, e, f, g, h)
+  let wv = match(ws)
+    (l: ChainLink)  => l.value
+    (nil: ChainEnd) => 0
+  let rest = match(ws)
+    (l: ChainLink)  => l.next
+    (nil: ChainEnd) => ws
+  let bigS1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
+  let ch = (e & f) ^ (not32(e) & g)
+  let temp1 = add32(add32(add32(h, bigS1), add32(ch, sha256K0f(i))), wv)
+  let bigS0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
+  let maj = (a & b) ^ (a & c) ^ (b & c)
+  let temp2 = add32(bigS0, maj)
+  ret sha256Rounds(rest, i + 1, add32(temp1, temp2), a, b, c,
+                   add32(d, temp1), e, f, g)
+
+fun [tail] sha256Chunks(msg: String, len: Int, base: Int, total: Int,
+                        st: Sha256State): Sha256State
+  if base >= total
+    ret st
+  let r = sha256Rounds(chain(sha256Schedule(msg, len, base, 0, ChainEnd<Int>(),
+                                            builder<Int>())),
+                       0, st.t0, st.t1, st.t2, st.t3, st.t4, st.t5, st.t6, st.t7)
+  ret sha256Chunks(msg, len, base + 64, total,
+                   Sha256State(add32(st.t0, r.t0), add32(st.t1, r.t1),
+                               add32(st.t2, r.t2), add32(st.t3, r.t3),
+                               add32(st.t4, r.t4), add32(st.t5, r.t5),
+                               add32(st.t6, r.t6), add32(st.t7, r.t7)))
+
+fun sha256(msg: String): Sha256State
+  let len = length(msg)
+  ret sha256Chunks(msg, len, 0, paddedLen(len),
+                   Sha256State(1779033703, 3144134277, 1013904242, 2773480762,
+                               1359893119, 2600822924, 528734635, 1541459225))
+
+fun sha256StateWord(st: Sha256State, i: Int): Int
+  ret i == 0 ? st.t0 : i == 1 ? st.t1 : i == 2 ? st.t2 : i == 3 ? st.t3
+    : i == 4 ? st.t4 : i == 5 ? st.t5 : i == 6 ? st.t6 : st.t7
+
+# hexdigest, but only as far as `upto` BYTES: the one caller wants
+# `[:16]` hex chars, and hashing 2 MB then formatting the 24 bytes nobody
+# reads is pure waste.
+fun [tail] sha256HexLoop(st: Sha256State, i: Int, upto: Int, acc: String): String
+  if i == upto
+    ret acc
+  let w = sha256StateWord(st, i / 4)
+  ret sha256HexLoop(st, i + 1, upto,
+                    acc + sha1HexByte((w >> ((3 - i % 4) * 8)) & 255))
+
+fun sha256Hex(msg: String): String
+  ret sha256HexLoop(sha256(msg), 0, 32, "")
+
+# The 16-char prefix libraries.py uses as a cache key.
+fun sha256Hex16(msg: String): String
+  ret sha256HexLoop(sha256(msg), 0, 8, "")

@@ -1,0 +1,125 @@
+# bootstrap/driver/zip.yafl — a reader for `.yl` library archives.
+#
+# STORED ENTRIES ONLY, and that is a deliberate constraint agreed with the
+# packaging side: compiler/libraries.py writes `.yl` with ZIP_STORED precisely
+# so this file can exist. Supporting DEFLATE would mean a Huffman decoder and
+# an LZ77 window here — several hundred lines of exactly the code that stays
+# subtly wrong for years — to save space on an archive that is mostly
+# libyafl.a, which the linker reads once.
+#
+# A compressed entry is therefore an ERROR naming the entry, never a silent
+# empty read. If someone flips the packaging back to ZIP_DEFLATED, they get a
+# clear failure rather than a library that appears to contain nothing.
+#
+# Bytes live in a String: this runtime's strings are byte arrays with an
+# explicit length, so embedded NULs are fine — `byteAt` is the accessor and
+# `length` is a byte count, not a codepoint count.
+
+namespace Bootstrap::Driver
+
+import System
+
+
+class [final] ZipEntry(zipName: String, zipBody: String)
+
+enum ZipResult
+  enum ZipOk(zipEntries: List<ZipEntry>)
+  enum ZipErr(zipWhy: String)
+
+
+# ── little-endian scalars ───────────────────────────────────────────────────
+# Every multi-byte field in a zip is little-endian and unsigned. Reading past
+# the end yields -1 rather than aborting, so a truncated archive is reported
+# as a malformed one.
+
+fun u16At(s: String, at: Int): Int
+  ret at < 0 || at + 2 > length(s)
+    ? -1
+    : Int(byteAt(s, at)) + Int(byteAt(s, at + 1)) * 256
+
+fun u32At(s: String, at: Int): Int
+  ret at < 0 || at + 4 > length(s)
+    ? -1
+    : Int(byteAt(s, at))
+      + Int(byteAt(s, at + 1)) * 256
+      + Int(byteAt(s, at + 2)) * 65536
+      + Int(byteAt(s, at + 3)) * 16777216
+
+
+# ── end of central directory ────────────────────────────────────────────────
+# The EOCD sits at the end but is preceded by a variable-length comment, so it
+# has to be found by scanning BACKWARDS for its signature. Scanning forwards
+# would match a signature that happened to occur inside stored file data.
+
+fun findEocd(s: String): Int
+  ret eocdScan(s, length(s) - 22)
+
+fun [tail] eocdScan(s: String, at: Int): Int
+  ret at < 0 ? -1
+    : u32At(s, at) == 101010256 ? at
+    : eocdScan(s, at - 1)
+
+
+fun readZip(s: String): ZipResult
+  let eocd = findEocd(s)
+  if eocd < 0
+    ret ZipErr("not a zip archive: no end-of-central-directory record")
+  let count = u16At(s, eocd + 10)
+  let start = u32At(s, eocd + 16)
+  if count < 0 || start < 0 || start > length(s)
+    ret ZipErr("malformed end-of-central-directory record")
+  ret centralWalk(s, start, count, builder<ZipEntry>())
+
+fun [tail] centralWalk(s: String, at: Int, left: Int,
+                       [terminal] b: ListBuilder<ZipEntry>): ZipResult
+  if left <= 0
+    ret ZipOk(build(b))
+  if u32At(s, at) != 33639248
+    ret zipDiscard(b, ZipErr("malformed central directory header"))
+  let method = u16At(s, at + 10)
+  let nameLen = u16At(s, at + 28)
+  let extraLen = u16At(s, at + 30)
+  let commentLen = u16At(s, at + 32)
+  let localAt = u32At(s, at + 42)
+  let size = u32At(s, at + 24)
+  if nameLen < 0 || extraLen < 0 || commentLen < 0 || localAt < 0 || size < 0
+    ret zipDiscard(b, ZipErr("truncated central directory header"))
+  # `slice` CLAMPS, so a name running past the end of the buffer would come
+  # back silently short — every other field here is bounds-checked, and this
+  # one has to be too or a truncated archive yields a plausible wrong name.
+  if at + 46 + nameLen > length(s)
+    ret zipDiscard(b, ZipErr("truncated central directory header"))
+  let name = slice(s, at + 46, at + 46 + nameLen)
+  if method != 0
+    ret zipDiscard(b, ZipErr("entry \"" + name
+        + "\" is compressed; .yl archives must be written with ZIP_STORED"))
+  ret match(storedBody(s, localAt, size))
+    (body: String) => centralWalk(s, at + 46 + nameLen + extraLen + commentLen,
+                                  left - 1, push(b, ZipEntry(name, body)))
+    ()             => zipDiscard(b, ZipErr("entry \"" + name
+                                           + "\" has a malformed local header"))
+
+fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e: ZipResult): ZipResult
+  ret build(b) |> (l: List<ZipEntry>) => e
+
+# The local header repeats the name and carries its OWN extra-field length,
+# which routinely differs from the central directory's — the data offset must
+# be computed from the local header, not from the central one.
+fun storedBody(s: String, localAt: Int, size: Int): String|None
+  if u32At(s, localAt) != 67324752
+    ret None
+  let nameLen = u16At(s, localAt + 26)
+  let extraLen = u16At(s, localAt + 28)
+  if nameLen < 0 || extraLen < 0
+    ret None
+  let from = localAt + 30 + nameLen + extraLen
+  ret from < 0 || from + size > length(s) ? None : slice(s, from, from + size)
+
+
+fun zipFind(entries: List<ZipEntry>, name: String): ZipEntry|None
+  ret zipSeek(chain(entries), name)
+
+fun [tail] zipSeek(es: Chain<ZipEntry>, name: String): ZipEntry|None
+  ret match(es)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => l.value.zipName == name ? l.value : zipSeek(l.next, name)

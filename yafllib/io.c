@@ -654,6 +654,17 @@ EXPORT object_t* fs_remove(object_t* self, object_t* path) {
 }
 
 
+// Create ONE directory; an existing one is success.  Shares the remove
+// finisher because the result shape is the same: 0 or -errno.  Recursive
+// creation is the caller's loop over the path components, which keeps this a
+// single syscall and keeps the "which parent failed" question answerable in
+// YAFL rather than inside the runtime.
+EXPORT object_t* fs_mkdir(object_t* self, object_t* path) {
+    (void)self;
+    return _fs_dispatch_meta(path, IO_OP_FS_MKDIR, _fs_finish_remove, NULL);
+}
+
+
 EXPORT object_t* fs_stat(object_t* self, object_t* path) {
     (void)self;
     // Pre-allocate the FileInfo so the IO thread can write its scalar

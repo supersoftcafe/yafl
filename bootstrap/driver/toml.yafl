@@ -1,0 +1,261 @@
+# bootstrap/driver/toml.yafl — the manifest subset of TOML.
+#
+# Ported from the tomllib call in compiler/libraries.py `parse_manifest`. A
+# `yafl.toml` manifest only ever contains top-level `key = value` where value is
+# a quoted string or an array of quoted strings:
+#
+#     name = "system"
+#     namespaces = ["System", "System::Test"]
+#     headers = ["yafl.h"]
+#     static_libs = ["libyafl.a"]
+#
+# So this parses exactly that, and REJECTS anything else rather than guessing —
+# tables, nested arrays, numbers, booleans and multi-line strings all produce an
+# error naming the line. A manifest using them would otherwise be silently
+# mis-read by the port while Python's tomllib accepted it, which is the kind of
+# divergence that hides for months.
+#
+# ACCEPTED because tomllib accepts them and manifests really are written this
+# way: arrays SPANNING LINES, trailing commas, quoted keys, and `#` or `\"`
+# inside a string. REJECTED because tomllib rejects them: a missing comma
+# between array values, and a duplicate key. Divergence runs both ways —
+# accepting what the reference compiler refuses is as wrong as refusing what it
+# accepts, and quieter.
+
+namespace Bootstrap::Driver
+
+import System
+
+import Bootstrap::StdlibCandidates
+
+
+# A scalar is one value; an array is many. Keeping both in `values` avoids a
+# union at every use site — `namespaces` and `name` are read the same way.
+class [final] TomlEntry(key: String, values: List<String>, isArray: Bool)
+
+enum TomlResult
+  enum TomlOk(entries: List<TomlEntry>)
+  enum TomlErr(tomlMessage: String, tomlLine: Int)
+
+
+fun parseToml(text: String): TomlResult
+  ret tomlLines(chain(splitLines(text)), 1, List<String>(), builder<TomlEntry>())
+
+# One line's outcome, so the loop below can stay DIRECTLY self-recursive. The
+# per-line work needs a statement body (lets and early returns) and match arms
+# are expressions, so the two used to be mutually recursive functions — and
+# [tail] does not survive that. The comment then claimed the depth was "single
+# digits", which is true of a manifest and false of this parser: `ybootstrap
+# toml` reads arbitrary stdin, and 30 000 lines aborted the process with a
+# stack overflow. Returning a decision instead of recursing keeps the marker.
+enum LineOut
+  # `LineSkip()`, with the parentheses: a bare `enum LineSkip` declares a
+  # GROUP of leaves (the PeLiteral/PeLowered shape), not a leaf, so matching it
+  # covers nothing and constructing it does not resolve.
+  enum LineSkip()                    # blank, or nothing but a comment
+  enum LineEntry(loEntry: TomlEntry, loRest: Chain<String>, loCount: Int)
+  enum LineErr(loWhy: String)
+
+fun [tail] tomlLines(ls: Chain<String>, n: Int, seen: List<String>,
+                     [terminal] acc: ListBuilder<TomlEntry>): TomlResult
+  ret match(ls)
+    (nil: ChainEnd) => TomlOk(build(acc))
+    (l: ChainLink)  => match(tomlLine(l.value, l.next, seen))
+      (s: LineSkip)   => tomlLines(l.next, n + 1, seen, acc)
+      (e: LineErr)    => discardOn(acc, TomlErr(e.loWhy, n))
+      (en: LineEntry) => tomlLines(en.loRest, n + en.loCount,
+                                   concat(seen, list1<String>(en.loEntry.key)),
+                                   push(acc, en.loEntry))
+
+fun tomlLine(line: String, rest: Chain<String>, seen: List<String>): LineOut
+  let bare = trimEnd(trimStart(stripComment(line)))
+  if length(bare) == 0
+    ret LineSkip()
+  let eq = findByte(bare, '=', 0)
+  if eq < 0
+    ret LineErr("expected `key = value`")
+  let raw = trimEnd(trimStart(slice(bare, 0, eq)))
+  if length(raw) == 0
+    ret LineErr("empty key")
+  let key = tomlKey(raw)
+  if contains(seen, key)
+    ret LineErr("duplicate key `" + key + "`")
+  # An array may span lines, so the VALUE is a logical line: physical lines
+  # joined until the brackets balance.
+  let joined = joinArray(trimStart(slice(bare, eq + 1, length(bare))), rest, 1)
+  ret match(tomlValue(joined.llText))
+    (e: TomlBad)  => LineErr(e.badWhy)
+    (g: TomlGood) => LineEntry(TomlEntry(key, g.goodValues, g.goodIsArray),
+                               joined.llRest, joined.llCount)
+
+# tomllib accepts a quoted key (`"name" = "x"`); keeping the quotes made the
+# key literally `"name"`, so the lookup missed and the field silently took its
+# default — for `name` that is the worklist's identity.
+fun tomlKey(raw: String): String
+  ret length(raw) >= 2 && byteAt(raw, 0) == '"' && byteAt(raw, length(raw) - 1) == '"'
+    ? slice(raw, 1, length(raw) - 1)
+    : raw
+
+class [final] LogicalLine(llText: String, llRest: Chain<String>, llCount: Int)
+
+# `namespaces = [\n  "A",\n]` is the commonest way to write a long array, and
+# rejecting it as "unterminated array" would have been a divergence from
+# tomllib on ordinary input. Lines are joined with a space: comments are
+# already stripped, and a basic string cannot span lines, so nothing else can
+# be split across the join.
+fun [tail] joinArray(text: String, rest: Chain<String>, count: Int): LogicalLine
+  ret bracketDepth(text, 0, 0, false) <= 0
+    ? LogicalLine(text, rest, count)
+    : match(rest)
+      (nil: ChainEnd) => LogicalLine(text, rest, count)   # let the value parser report it
+      (l: ChainLink)  => joinArray(text + " " + stripComment(l.value),
+                                   l.next, count + 1)
+
+fun [tail] bracketDepth(s: String, at: Int, depth: Int, inStr: Bool): Int
+  if at >= length(s)
+    ret depth
+  let c = byteAt(s, at)
+  ret inStr && c == '\\' ? bracketDepth(s, at + 2, depth, true)
+    : c == '"'  ? bracketDepth(s, at + 1, depth, !inStr)
+    : inStr     ? bracketDepth(s, at + 1, depth, true)
+    : c == '['  ? bracketDepth(s, at + 1, depth + 1, false)
+    : c == ']'  ? bracketDepth(s, at + 1, depth - 1, false)
+    : bracketDepth(s, at + 1, depth, false)
+
+# The builder is [linear] and must be consumed on the error path too.
+fun discardOn([terminal] acc: ListBuilder<TomlEntry>, e: TomlResult): TomlResult
+  ret build(acc) |> (l: List<TomlEntry>) => e
+
+
+# A `#` inside a quoted string is DATA, not a comment. Scanning with a quote
+# flag rather than `indexOf("#")` — the naive version truncates
+# `name = "a#b"` to `name = "a`.
+#
+# The `\\` skip is what makes this agree with quoteBody, which does honour
+# escapes: without it `"a\"#b"` looked like a CLOSED string followed by a
+# comment, so the line was truncated and then failed as an unterminated string.
+fun stripComment(line: String): String
+  ret slice(line, 0, commentAt(line, 0, false))
+
+fun [tail] commentAt(s: String, at: Int, inStr: Bool): Int
+  if at >= length(s)
+    ret length(s)
+  let c = byteAt(s, at)
+  ret inStr && c == '\\' ? commentAt(s, at + 2, true)
+    : c == '"' ? commentAt(s, at + 1, !inStr)
+    : (!inStr && c == '#') ? at
+    : commentAt(s, at + 1, inStr)
+
+
+enum TomlValue
+  enum TomlGood(goodValues: List<String>, goodIsArray: Bool)
+  enum TomlBad(badWhy: String)
+
+fun tomlValue(rhs: String): TomlValue
+  if length(rhs) == 0
+    ret TomlBad("missing value")
+  ret byteAt(rhs, 0) == '[' ? tomlArray(rhs) : tomlScalar(rhs)
+
+fun tomlScalar(rhs: String): TomlValue
+  ret match(quotedAt(rhs, 0))
+    (q: QuoteOk) => trimStart(slice(rhs, q.qEnd, length(rhs))) == ""
+      ? TomlGood(prepend(q.qText, List<String>()), false)
+      : TomlBad("trailing text after value")
+    (b: QuoteBad) => TomlBad(b.qWhy)
+
+fun tomlArray(rhs: String): TomlValue
+  ret arrayItems(rhs, 1, false, builder<String>())
+
+# `needSep` is what makes `["a" "b"]` an error. Without it a missing comma was
+# simply not noticed and the array parsed as two values, so the port ACCEPTED
+# what tomllib rejects — accepting invalid input is the same class of
+# divergence as rejecting valid input, just quieter. A TRAILING comma is legal
+# TOML and stays legal: `,` merely clears the flag.
+fun [tail] arrayItems(s: String, at: Int, needSep: Bool,
+                      [terminal] b: ListBuilder<String>): TomlValue
+  let i = skipBlanks(s, at)
+  if i >= length(s)
+    ret discardStrs(b, TomlBad("unterminated array"))
+  if byteAt(s, i) == ']'
+    ret trimStart(slice(s, i + 1, length(s))) == ""
+      ? TomlGood(build(b), true)
+      : discardStrs(b, TomlBad("trailing text after array"))
+  if byteAt(s, i) == ','
+    ret needSep
+      ? arrayItems(s, i + 1, false, b)
+      : discardStrs(b, TomlBad("unexpected `,` in array"))
+  if needSep
+    ret discardStrs(b, TomlBad("expected `,` between array values"))
+  ret match(quotedAt(s, i))
+    (q: QuoteOk)  => arrayItems(s, q.qEnd, true, push(b, q.qText))
+    (e: QuoteBad) => discardStrs(b, TomlBad(e.qWhy))
+
+fun discardStrs([terminal] b: ListBuilder<String>, v: TomlValue): TomlValue
+  ret build(b) |> (l: List<String>) => v
+
+fun [tail] skipBlanks(s: String, at: Int): Int
+  ret at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t')
+    ? skipBlanks(s, at + 1)
+    : at
+
+
+# ── quoted strings ──────────────────────────────────────────────────────────
+# Basic strings only, with the escapes a manifest can plausibly contain. A
+# path like "c:\\lib" needs `\\`; everything else is rejected rather than
+# passed through, so an unsupported escape is an error and not a silent
+# mangling.
+
+enum QuoteRes
+  enum QuoteOk(qText: String, qEnd: Int)
+  enum QuoteBad(qWhy: String)
+
+fun quotedAt(s: String, at: Int): QuoteRes
+  let i = skipBlanks(s, at)
+  if i >= length(s) || byteAt(s, i) != '"'
+    ret QuoteBad("expected a quoted string")
+  ret quoteBody(s, i + 1, "")
+
+# The escape handling is INLINE rather than a helper: routing it through
+# quoteEscape made this mutually recursive, and [tail] requires direct
+# self-recursion. A string body can be long, so the marker is worth keeping.
+fun [tail] quoteBody(s: String, at: Int, acc: String): QuoteRes
+  if at >= length(s)
+    ret QuoteBad("unterminated string")
+  let c = byteAt(s, at)
+  if c == '"'
+    ret QuoteOk(acc, at + 1)
+  if c != '\\'
+    ret quoteBody(s, at + 1, acc + asciiToString(c))
+  if at + 1 >= length(s)
+    ret QuoteBad("unterminated escape")
+  let e = byteAt(s, at + 1)
+  ret e == '"'  ? quoteBody(s, at + 2, acc + "\"")
+    : e == '\\' ? quoteBody(s, at + 2, acc + "\\")
+    : e == 'n'  ? quoteBody(s, at + 2, acc + "\n")
+    : e == 't'  ? quoteBody(s, at + 2, acc + "\t")
+    : QuoteBad("unsupported escape in a manifest string")
+
+
+# ── lookup ──────────────────────────────────────────────────────────────────
+
+fun tomlGet(entries: List<TomlEntry>, key: String): TomlEntry|None
+  ret tomlFind(chain(entries), key)
+
+fun [tail] tomlFind(es: Chain<TomlEntry>, key: String): TomlEntry|None
+  ret match(es)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => l.value.key == key ? l.value : tomlFind(l.next, key)
+
+# Mirrors `as_str_tuple`: absent is empty, a scalar is a one-element list, an
+# array is itself.
+fun tomlStrings(entries: List<TomlEntry>, key: String): List<String>
+  ret match(tomlGet(entries, key))
+    (e: TomlEntry) => e.values
+    ()             => List<String>()
+
+fun tomlString(entries: List<TomlEntry>, key: String, fallback: String): String
+  ret match(tomlGet(entries, key))
+    (e: TomlEntry) => match(head(e.values))
+      (v: String) => v
+      ()          => fallback
+    ()             => fallback

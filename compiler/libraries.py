@@ -326,7 +326,14 @@ def package_system_library(dest_yl: Path, stdlib_dir: Path, header: Path, static
     ns_list = ", ".join(f'"{n}"' for n in namespaces)
     manifest = (f'name = "system"\nnamespaces = [{ns_list}]\n'
                 f'headers = ["yafl.h"]\nstatic_libs = ["libyafl.a"]\n')
-    with zipfile.ZipFile(dest_yl, "w", zipfile.ZIP_DEFLATED) as z:
+    # STORED, not DEFLATED. The self-hosted compiler has to read `.yl` archives
+    # too, and a deflate decoder in YAFL — Huffman plus LZ77 back-references —
+    # is several hundred lines of exactly the kind of code that is subtly wrong
+    # for years. Storing uncompressed costs archive size (the archive is mostly
+    # libyafl.a, which the linker reads once) and buys a zip reader that is a
+    # header walk and a byte copy. Changing this back would silently break the
+    # port's reader, which supports STORED only and rejects anything else.
+    with zipfile.ZipFile(dest_yl, "w", zipfile.ZIP_STORED) as z:
         z.writestr(MANIFEST_NAME, manifest)
         for src in sources:
             z.write(src, src.name)

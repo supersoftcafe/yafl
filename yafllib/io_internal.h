@@ -56,6 +56,7 @@ typedef enum {
     IO_OP_FS_EXISTS,    // access(io->buf, F_OK); result is rc in raw_result
     IO_OP_FS_STAT,      // stat(io->buf, &st); writes fields into fs_aux (fs_file_info_t)
     IO_OP_FS_REMOVE,    // remove(io->buf); raw_result is 0 or -errno
+    IO_OP_FS_MKDIR,     // mkdir(io->buf, 0777); EEXIST is success, as mkdir -p
     IO_OP_DIR_OPEN,     // opendir(dir->path_buf); writes dir->dirp
     IO_OP_DIR_NEXT,     // readdir(dir->dirp); writes dir->entry_buf or dir->entry_eof
     IO_OP_DIR_CLOSE,    // closedir(dir->dirp); clears dir->dirp

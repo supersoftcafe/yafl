@@ -805,6 +805,7 @@ extern int    _yafl_argc;
 extern char** _yafl_argv;
 EXTERN object_t* sys_argc(object_t* self);
 EXTERN object_t* sys_argv_at(object_t* self, object_t* o_index);
+EXTERN object_t* sys_getenv(object_t* self, object_t* o_name);
 
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
@@ -1679,6 +1680,10 @@ EXPORT object_t* io_close(object_t* self);
 // successfully-resolved _FileInfo; all are sync (no task dispatch).
 EXPORT object_t* fs_exists   (object_t* self, object_t* path);
 EXPORT object_t* fs_stat     (object_t* self, object_t* path);
+// fs_mkdir creates ONE directory and resolves to a packed Int: 0 on success
+// (an already-existing directory counts as success, as `mkdir -p` does) or
+// -errno. Creating parents is the caller's loop over the path components.
+EXPORT object_t* fs_mkdir    (object_t* self, object_t* path);
 EXPORT object_t* fs_fi_size  (object_t* self);
 EXPORT object_t* fs_fi_mtime (object_t* self);
 EXPORT object_t* fs_fi_isdir (object_t* self);

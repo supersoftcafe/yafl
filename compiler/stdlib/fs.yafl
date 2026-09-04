@@ -13,6 +13,7 @@ fun [foreign("fs_exists"),impure]   _fs_exists  (path: String): Int
 fun [foreign("fs_stat"),impure]     _fs_stat    (path: String): _FileInfo|Int
 fun [foreign("fs_open_dir"),impure] _fs_open_dir(path: String): _Dir|Int
 fun [foreign("fs_remove"),impure]   _fs_remove  (path: String): Int
+fun [foreign("fs_mkdir"),impure]    _fs_mkdir   (path: String): Int
 
 class [foreign,final] _Dir
   fun [foreign("fs_dir_next"),impure]  _next():  String|Int|None
@@ -51,6 +52,39 @@ fun stat(path: String): FileInfo|IOError
 fun remove(path: String): IOError|None
   let c = _fs_remove(path)
   ret c == 0 ? None : _error_from_code(c)
+
+
+# Create the directory at `path`.  An EXISTING directory is success, not an
+# error: callers make a directory to put something in it, and racing with
+# another process that got there first is not a failure of that intent.
+fun makeDir(path: String): IOError|None
+  let c = _fs_mkdir(path)
+  ret c == 0 ? None : _error_from_code(c)
+
+
+# `mkdir -p`: create `path` and every missing parent.  Each component is one
+# makeDir, walking left to right, so the FIRST component that genuinely cannot
+# be created is the error reported — not the leaf, which would name a
+# directory whose parent was the real problem.
+#
+# A leading "/" is preserved: splitting "/a/b" gives an empty first component,
+# and creating "" would fail, so the walk carries the prefix rather than
+# rebuilding it from the parts.
+fun makeDirs(path: String): IOError|None
+  ret path == "" ? None : _mkDirsLoop(chain(split(path, "/")), "", true)
+
+fun [tail] _mkDirsLoop(parts: Chain<String>, prefix: String,
+                       first: Bool): IOError|None
+  ret match(parts)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => (first ? l.value : prefix + "/" + l.value)
+      |> (here: String) => here == ""
+        # An empty component is either the root's leading "/" or a doubled
+        # slash; neither names a directory to create.
+        ? _mkDirsLoop(l.next, here, false)
+        : match(makeDir(here))
+          (e: IOError) => e
+          ()           => _mkDirsLoop(l.next, here, false)
 
 
 # Public Dir handle.  [linear,final] — every Dir must be threaded through
