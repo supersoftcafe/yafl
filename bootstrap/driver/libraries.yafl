@@ -107,9 +107,18 @@ fun readDirLibrary(path: String): Library|String|None
 fun dirLibraryWith(m: LibManifest, path: String): Library|String
   ret match(yaflPaths(path, List<String>()))
     (why: String)            => why
-    (paths: List<String>)    => match(readSources(paths))
+    (paths: List<String>)    => match(readSources(sortByBaseName(paths)))
       (why2: String)          => why2
       (srcs: List<LibSource>) => Library(m, path, false, srcs)
+
+# A unit is identified by its BASENAME, and units load in BASENAME order —
+# `Library.yafl_sources` sorts on `p.name`. Sub-directories are organisation
+# only (the stdlib mirrors its namespaces: `System/`, `System/IO/`, ...) and a
+# `.yl` stores every unit flat, so ordering by directory path would have one
+# library emit statements in one order from a directory and another from its
+# package. Statement order is emission order, so that is a real divergence.
+fun sortByBaseName(paths: List<String>): List<String>
+  ret sortBy(paths, (a: String, b: String) => baseName(a) < baseName(b))
 
 # RECURSIVE: `Library.yafl_sources` is `root.rglob("*.yafl")`, so a library
 # whose sources sit in sub-directories is perfectly legal. Listing only the
@@ -117,10 +126,8 @@ fun dirLibraryWith(m: LibManifest, path: String): Library|String
 # library with no sources is not an error — and the loaded statements ARE the
 # program, so the port simply emitted a smaller one.
 #
-# Sorted PER DIRECTORY, depth first, which is exactly the order
-# `sorted(root.rglob(...))` produces: Path comparison is on path PARTS, so
-# `a/b.yafl` sorts before `a-b/c.yafl` — a flat sort of the joined strings gets
-# that pair backwards ('-' < '/'), and statement order is emission order.
+# The walk order does not matter: `dirLibraryWith` sorts the collected paths by
+# BASENAME before reading them.
 fun yaflPaths(dir: String, acc: List<String>): List<String>|String
   ret match(listDir(dir))
     (e: IOError)         => dir + ": cannot be listed"

@@ -95,7 +95,15 @@ class Library:
         return self.manifest.namespaces
 
     def yafl_sources(self) -> list[SourceFile]:
-        """The library's `.yafl` units, read into memory."""
+        """The library's `.yafl` units, read into memory.
+
+        A unit is identified by its BASENAME, and the units load in basename
+        order — the same order however the library is shipped. Sub-directories
+        are an organisational convenience (the stdlib mirrors its namespaces in
+        `System/`, `System/IO/`, ...), and a `.yl` stores every unit flat, so
+        ordering by directory path would have the same library emit statements
+        in one order from a directory and another from its package.
+        """
         if self._explicit_sources is not None:
             return list(self._explicit_sources)
         if self.is_zip:
@@ -106,7 +114,7 @@ class Library:
                         out.append(SourceFile(Path(name).name, zf.read(name).decode("utf-8")))
             return out
         return [SourceFile(p.name, p.read_text(encoding="utf-8"))
-                for p in sorted(self.root.rglob("*.yafl"))]
+                for p in sorted(self.root.rglob("*.yafl"), key=lambda q: q.name)]
 
     def include_dirs(self) -> list[Path]:
         """Directories to put on the C compiler's `-I` path for this library."""
@@ -293,7 +301,7 @@ def dev_system_library() -> Library | None:
     if static is None:
         return None
     sources = [SourceFile(p.name, p.read_text(encoding="utf-8"))
-               for p in sorted(_STDLIB_DIR.glob("*.yafl"))]
+               for p in sorted(_STDLIB_DIR.rglob("*.yafl"), key=lambda q: q.name)]
     namespaces = sorted({m.group(1).strip()
                          for src in sources
                          for m in re.finditer(r"(?m)^namespace\s+(.+?)\s*$", src.content)})
@@ -321,7 +329,7 @@ def package_system_library(dest_yl: Path, stdlib_dir: Path, header: Path, static
     (`lib/yafl/system.yl`) and discovered like any other `.yl` library."""
     dest_yl = Path(dest_yl)
     dest_yl.parent.mkdir(parents=True, exist_ok=True)
-    sources = sorted(Path(stdlib_dir).glob("*.yafl"))
+    sources = sorted(Path(stdlib_dir).rglob("*.yafl"), key=lambda p: p.name)
     namespaces = _scan_namespaces(sources) or ("System",)
     ns_list = ", ".join(f'"{n}"' for n in namespaces)
     manifest = (f'name = "system"\nnamespaces = [{ns_list}]\n'

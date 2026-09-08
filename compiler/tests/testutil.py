@@ -9,6 +9,20 @@ from pathlib import Path
 
 import compiler as c
 
+_STDLIB_ROOT = Path(__file__).parent.parent / "stdlib"
+
+
+def stdlib_files() -> list[Path]:
+    """The stdlib's `.yafl` units, in the order a library loads them.
+
+    RECURSIVE, and ordered by BASENAME — the stdlib mirrors its namespaces in
+    sub-directories (`System/`, `System/IO/`, ...), and `Library.yafl_sources`
+    identifies a unit by its basename and loads in basename order. A flat
+    `glob("*.yafl")` here reads NOTHING, silently: an empty stdlib is not an
+    error, so the port simply fails to resolve `String`.
+    """
+    return sorted(_STDLIB_ROOT.rglob("*.yafl"), key=lambda p: p.name)
+
 
 class TimedTestCase(unittest.TestCase):
     """TestCase that fails any individual test exceeding _TIMEOUT seconds of

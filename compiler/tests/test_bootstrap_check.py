@@ -88,8 +88,8 @@ class TestBootstrapCheck(TestCase):
     def test_clean_sources_stay_clean(self):
         # The converge corpus is all VALID code: both sides must agree it is
         # diagnostic-free (bar the no-main note every library file shares).
-        for path in [_REPO / "compiler" / "stdlib" / "traits.yafl",
-                     _REPO / "compiler" / "stdlib" / "integer.yafl"]:
+        for path in [_REPO / "compiler" / "stdlib" / "System" / "traits.yafl",
+                     _REPO / "compiler" / "stdlib" / "System" / "integer.yafl"]:
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_diagnostics(text)

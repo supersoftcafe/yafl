@@ -14,13 +14,13 @@ from pathlib import Path
 
 from parsing.tokenizer import tokenize
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import compile_to_binary, _RUN_ENV
 
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 
-_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+_CORPUS = stdlib_files() \
         + sorted((_REPO / "examples").glob("*.yafl")) \
         + sorted((_REPO / "bootstrap").rglob("*.yafl"))
 

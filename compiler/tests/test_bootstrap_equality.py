@@ -28,12 +28,12 @@ import pyast.statement as s
 from parsing.tokenizer import tokenize, LineRef
 from parsing.parser import parse
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
-_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) + [
+_CORPUS = stdlib_files() + [
     _REPO / "examples" / "ylisp.yafl",
     _REPO / "examples" / "raytracer.yafl",
     _BOOTSTRAP / "ast" / "nodes.yafl",

@@ -28,11 +28,11 @@ from pathlib import Path
 
 import compiler as c
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
 
 _REPO = Path(__file__).parent.parent.parent
-_STDLIB = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+_STDLIB = stdlib_files()
 
 
 def _cases() -> dict[str, str]:

@@ -23,15 +23,12 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
 
 import compiler as c
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
 
-_REPO = Path(__file__).parent.parent.parent
-_STDLIB = _REPO / "compiler" / "stdlib"
 
 _PRELUDE = "namespace Test\nimport System\n\n"
 
@@ -61,7 +58,7 @@ def _stream(text: str) -> str:
     def terminated(t: str) -> str:
         return t if t.endswith("\n") else t + "\n"
     parts = [f"#FILE# {p.name}\n{terminated(p.read_text())}"
-             for p in sorted(_STDLIB.glob("*.yafl"))]
+             for p in stdlib_files()]
     parts.append(f"#FILE# case.yafl\n{terminated(text)}")
     return "".join(parts)
 

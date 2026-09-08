@@ -34,7 +34,7 @@ from parsing.tokenizer import tokenize
 from parsing.parser import parse
 from tests.astdump import dump
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
@@ -44,7 +44,7 @@ _BOOTSTRAP = _REPO / "bootstrap"
 # the bootstrap's own sources, and the small feature-pinning files. A file with
 # no generics passes through monomorphisation unchanged — those files pin that
 # the pass is a no-op where it must be one.
-_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+_CORPUS = stdlib_files() \
     + sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((_REPO / "bootstrap").rglob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))

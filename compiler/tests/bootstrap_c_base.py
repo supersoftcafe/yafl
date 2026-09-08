@@ -56,7 +56,7 @@ import pyast.statement as s
 from parsing.tokenizer import tokenize
 from parsing.parser import parse
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
 
 _REPO = Path(__file__).parent.parent.parent
@@ -65,7 +65,7 @@ _REPO = Path(__file__).parent.parent.parent
 # as a multi-file stream, parsed part-wise by the mirror), so the contract
 # diffs real emitted C rather than error text. Main-less stdlib members are
 # exercised as the stdlib of every other run.
-_STDLIB = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+_STDLIB = stdlib_files()
 _CORPUS = sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
 

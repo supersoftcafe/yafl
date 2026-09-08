@@ -29,13 +29,13 @@ from parsing.tokenizer import tokenize
 from parsing.parser import parse
 from tests.astdump import dump
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 
-_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+_CORPUS = stdlib_files() \
     + sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((_REPO / "bootstrap").rglob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
@@ -115,7 +115,7 @@ class TestBootstrapPostmono(TestCase):
         # redirect (__resolve_trait_references) never fired under contract.
         # Found via the C contract: rcrExpr passed penTrait through unmangled,
         # stranding every trait-scope cache on its pre-mono spelling.
-        stdlib = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+        stdlib = stdlib_files()
         text = "".join(p.read_text() for p in stdlib) \
             + (_REPO / "examples" / "helloWorld.yafl").read_text()
         expected = self._python_postmono(text).splitlines()

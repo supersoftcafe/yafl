@@ -41,13 +41,13 @@ from parsing.tokenizer import tokenize
 from parsing.parser import parse
 from tests.astdump import dump
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 
-_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+_CORPUS = stdlib_files() \
     + sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((_REPO / "bootstrap").rglob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
@@ -147,7 +147,7 @@ class TestBootstrapExits(TestCase):
         # on every single-file corpus name set), lambda/lift interactions,
         # lazy machinery. One concatenated text, compiled identically as "x"
         # by both sides.
-        stdlib = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+        stdlib = stdlib_files()
         text = "".join(p.read_text() for p in stdlib) \
             + (_REPO / "examples" / "linenumbers.yafl").read_text()
         expected = self._python_exits(text).splitlines()

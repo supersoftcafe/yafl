@@ -38,7 +38,8 @@ def _stream() -> str:
     def part(p: Path) -> str:
         t = p.read_text()
         return f"#FILE# {p.name}\n{t if t.endswith(chr(10)) else t + chr(10)}"
-    parts = [part(p) for p in sorted((_HERE / "stdlib").glob("*.yafl"))]
+    parts = [part(p) for p in sorted((_HERE / "stdlib").rglob("*.yafl"),
+                                     key=lambda q: q.name)]
     parts += [part(p) for p in sorted((_REPO / "bootstrap").rglob("*.yafl"))]
     return "".join(parts)
 

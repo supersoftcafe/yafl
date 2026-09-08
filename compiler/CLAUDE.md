@@ -81,4 +81,7 @@ ordering constraint lives in `docs/compiler-internals.md` §6. Highlights:
 
 ### stdlib
 
-`stdlib/*.yafl` files are auto-loaded when `use_stdlib=True`. They define `System` namespace primitives (strings, console I/O, etc.).
+`stdlib/` is auto-loaded when `use_stdlib=True`. Its folders mirror the
+namespaces they hold — `System/`, `System/IO/`, `System/Json/`, `System/Log/` —
+but a unit is identified by its BASENAME, and units load in basename order
+(a `.yl` package stores them flat).

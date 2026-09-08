@@ -30,10 +30,9 @@ from pathlib import Path
 import compiler as c
 import libraries
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 
 _REPO = Path(__file__).parent.parent.parent
-_STDLIB_DIR = _REPO / "compiler" / "stdlib"
 
 
 def _stage_stdlib_library(root: Path) -> Path:
@@ -46,7 +45,7 @@ def _stage_stdlib_library(root: Path) -> Path:
     """
     d = root / "system"
     d.mkdir(parents=True)
-    sources = sorted(_STDLIB_DIR.glob("*.yafl"))
+    sources = stdlib_files()
     ns = libraries._scan_namespaces(sources)
     (d / "yafl.toml").write_text(
         'name = "system"\nnamespaces = [%s]\n' % ", ".join(f'"{n}"' for n in ns))

@@ -31,7 +31,7 @@ from parsing.tokenizer import tokenize
 from parsing.parser import parse
 from tests.astdump import dump
 
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import stdlib_files, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
@@ -43,7 +43,7 @@ _BOOTSTRAP = _REPO / "bootstrap"
 # not the file stands alone. The whole stdlib, every example, and the
 # bootstrap's OWN sources (the self-host ring: the port must converge itself
 # exactly as Python does).
-_CORPUS = sorted((_REPO / "compiler" / "stdlib").glob("*.yafl")) \
+_CORPUS = stdlib_files() \
     + sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((_REPO / "bootstrap").rglob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
@@ -61,12 +61,12 @@ _CONVERGE = c.__dict__["__converge"]
 # both sides.
 _WHOLE_PROGRAMS = [
     ("stdlib+helloWorld",
-     "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+     "".join(p.read_text() for p in stdlib_files()
              ) + (_REPO / "examples" / "helloWorld.yafl").read_text()),
     # __parallel__ coverage: its type is the tuple of the callables' results,
     # which only grounds when the callees resolve — i.e. whole-program.
     ("stdlib+findstr",
-     "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+     "".join(p.read_text() for p in stdlib_files()
              ) + (_REPO / "examples" / "findstr.yafl").read_text()),
     # Result-side generic inference through a union: collect<S,E>'s `String|E`
     # unifies against the caller's declared `String|JsonParseError|Never`, and
@@ -74,7 +74,7 @@ _WHOLE_PROGRAMS = [
     # port once matched by uid and deferred forever on the raw
     # `NamedSpec System::String` member, leaving E's placeholder in the C).
     ("stdlib+json_pretty",
-     "".join(p.read_text() for p in sorted((_REPO / "compiler" / "stdlib").glob("*.yafl"))
+     "".join(p.read_text() for p in stdlib_files()
              ) + (_REPO / "examples" / "json_pretty.yafl").read_text()),
 ]
 

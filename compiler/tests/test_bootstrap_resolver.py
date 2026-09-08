@@ -27,9 +27,9 @@ from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 _CORPUS = [
-    _REPO / "compiler" / "stdlib" / "args.yafl",
-    _REPO / "compiler" / "stdlib" / "list.yafl",
-    _REPO / "compiler" / "stdlib" / "string.yafl",
+    _REPO / "compiler" / "stdlib" / "System" / "args.yafl",
+    _REPO / "compiler" / "stdlib" / "System" / "list.yafl",
+    _REPO / "compiler" / "stdlib" / "System" / "string.yafl",
     _REPO / "examples" / "ylisp.yafl",
     _BOOTSTRAP / "ast" / "nodes.yafl",
 ]
