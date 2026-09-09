@@ -1,0 +1,191 @@
+{
+    "name": "YAFL",
+    "scopeName": "source.yafl",
+    "fileTypes": ["yafl"],
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#regex_literal" },
+        { "include": "#string" },
+        { "include": "#char" },
+        { "include": "#builtin_escape" },
+        { "include": "#attribute" },
+        { "include": "#declaration" },
+        { "include": "#keyword_control" },
+        { "include": "#keyword_declaration" },
+        { "include": "#keyword_other" },
+        { "include": "#word_operator" },
+        { "include": "#attribute" },
+        { "include": "#number" },
+        { "include": "#backtick_identifier" },
+        { "include": "#type_parameter" },
+        { "include": "#namespace_qualified" },
+        { "include": "#type_name" },
+        { "include": "#operator" }
+    ],
+    "repository": {
+        "comment": {
+            "name": "comment.line.number-sign.yafl",
+            "begin": "#",
+            "end": "$",
+            "beginCaptures": {
+                "0": { "name": "punctuation.definition.comment.yafl" }
+            }
+        },
+        "string": {
+            "name": "string.quoted.double.yafl",
+            "begin": "\"",
+            "end": "\"",
+            "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.yafl" } },
+            "endCaptures": { "0": { "name": "punctuation.definition.string.end.yafl" } },
+            "patterns": [
+                { "name": "constant.character.escape.yafl", "match": "\\\\." }
+            ]
+        },
+        "char": {
+            "name": "string.quoted.single.yafl",
+            "begin": "'",
+            "end": "'",
+            "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.yafl" } },
+            "endCaptures": { "0": { "name": "punctuation.definition.string.end.yafl" } },
+            "patterns": [
+                { "name": "constant.character.escape.yafl", "match": "\\\\." }
+            ]
+        },
+        "regex_literal": {
+            "name": "string.regexp.yafl",
+            "begin": "\\b(re)\"",
+            "end": "\"",
+            "beginCaptures": {
+                "1": { "name": "storage.type.string.yafl" },
+                "0": { "name": "punctuation.definition.string.begin.yafl" }
+            },
+            "endCaptures": { "0": { "name": "punctuation.definition.string.end.yafl" } },
+            "contentName": "meta.embedded.regexp.yafl",
+            "patterns": [
+                { "name": "constant.character.escape.yafl", "match": "\\\\." }
+            ]
+        },
+        "builtin_escape": {
+            "match": "(__builtin_op__|__builtin_type__)(<([a-z0-9]+)>)?",
+            "captures": {
+                "1": { "name": "support.function.builtin.yafl" },
+                "3": { "name": "storage.type.builtin.yafl" }
+            }
+        },
+        "declaration": {
+            "patterns": [
+                {
+                    "match": "\\b(fun)\\s+((?:\\[[^\\]]*\\]\\s+)*)(`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.function.yafl" },
+                        "2": { "patterns": [{ "include": "#attribute" }] },
+                        "3": { "name": "entity.name.function.yafl" }
+                    }
+                },
+                {
+                    "match": "\\b(class|interface|enum|typealias)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.yafl" },
+                        "2": { "name": "entity.name.type.yafl" }
+                    }
+                },
+                {
+                    "match": "\\b(namespace)\\s+([A-Za-z_][A-Za-z0-9_:]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.yafl" },
+                        "2": { "name": "entity.name.namespace.yafl" }
+                    }
+                }
+            ]
+        },
+        "keyword_control": {
+            "name": "keyword.control.yafl",
+            "match": "\\b(match|if|else|ret|with)\\b"
+        },
+        "keyword_declaration": {
+            "name": "keyword.declaration.yafl",
+            "match": "\\b(fun|let|class|interface|instance|enum|typealias|namespace|import|where)\\b"
+        },
+        "keyword_other": {
+            "name": "keyword.other.yafl",
+            "match": "\\b(__builtin_type__|__builtin_op__|__parallel__)\\b"
+        },
+        "word_operator": {
+            "name": "keyword.operator.word.yafl",
+            "match": "\\bis\\b"
+        },
+        "attribute": {
+            "name": "meta.attribute.yafl",
+            "begin": "(?<=^|[\\s(,])\\[(?=[A-Za-z_][A-Za-z0-9_]*(\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*\\s*\\])",
+            "end": "\\]",
+            "beginCaptures": { "0": { "name": "punctuation.definition.attribute.begin.yafl" } },
+            "endCaptures": { "0": { "name": "punctuation.definition.attribute.end.yafl" } },
+            "patterns": [
+                { "name": "storage.modifier.attribute.yafl", "match": "[A-Za-z_][A-Za-z0-9_]*" }
+            ]
+        },
+        "number": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.integer.yafl",
+                    "match": "\\b0[xX][0-9a-fA-F_]+([a-zA-Z]\\w*)?"
+                },
+                {
+                    "name": "constant.numeric.integer.yafl",
+                    "match": "\\b0[bB][01_]+([a-zA-Z]\\w*)?"
+                },
+                {
+                    "name": "constant.numeric.integer.yafl",
+                    "match": "\\b0[oO][0-7_]+([a-zA-Z]\\w*)?"
+                },
+                {
+                    "name": "constant.numeric.yafl",
+                    "match": "\\b\\d[\\d_]*(\\.(?!\\.)[\\d_]*)?([eE][+-]?\\d[\\d_]*)?([a-zA-Z]\\w*)?"
+                }
+            ]
+        },
+        "backtick_identifier": {
+            "name": "entity.name.function.operator.yafl",
+            "match": "`[^`]+`"
+        },
+        "type_parameter": {
+            "begin": "(?<=[A-Za-z0-9_`])<(?=[A-Za-z_ ]*[,>])",
+            "end": ">",
+            "beginCaptures": { "0": { "name": "punctuation.definition.typeparameter.begin.yafl" } },
+            "endCaptures": { "0": { "name": "punctuation.definition.typeparameter.end.yafl" } },
+            "patterns": [
+                { "include": "#type_parameter" },
+                { "name": "entity.name.type.yafl", "match": "[A-Za-z_][A-Za-z0-9_]*" }
+            ]
+        },
+        "namespace_qualified": {
+            "match": "([A-Za-z_][A-Za-z0-9_]*)((::[A-Za-z_][A-Za-z0-9_]*)+)",
+            "captures": {
+                "1": { "name": "entity.name.namespace.yafl" },
+                "2": { "name": "entity.name.namespace.yafl" }
+            }
+        },
+        "type_name": {
+            "name": "entity.name.type.yafl",
+            "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        },
+        "operator": {
+            "patterns": [
+                { "name": "keyword.operator.pipeline.yafl", "match": "\\|>" },
+                { "name": "keyword.operator.bind.yafl", "match": "\\?>" },
+                { "name": "keyword.operator.coalesce.yafl", "match": "\\?\\?" },
+                { "name": "keyword.operator.arrow.yafl", "match": "=>" },
+                { "name": "keyword.operator.namespace.yafl", "match": "::" },
+                { "name": "keyword.operator.range.yafl", "match": "\\.\\." },
+                { "name": "keyword.operator.logical.yafl", "match": "&&|\\|\\|" },
+                { "name": "keyword.operator.comparison.yafl", "match": "==|!=|<=|>=" },
+                { "name": "keyword.operator.bitshift.yafl", "match": "<<|>>" },
+                { "name": "keyword.operator.ternary.yafl", "match": "\\?" },
+                { "name": "keyword.operator.assignment.yafl", "match": "(?<![=!<>])=(?!=)" },
+                { "name": "keyword.operator.comparison.yafl", "match": "[<>]" },
+                { "name": "keyword.operator.arithmetic.yafl", "match": "[+\\-*/%]" },
+                { "name": "keyword.operator.logical.yafl", "match": "[&|^!~]" }
+            ]
+        }
+    }
+}

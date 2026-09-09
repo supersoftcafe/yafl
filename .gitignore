@@ -69,3 +69,5 @@ hs_err_pid*
 
 build/**
 examples/build/**
+
+vscode-yafl/build/

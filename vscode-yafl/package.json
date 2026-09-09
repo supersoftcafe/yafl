@@ -1,0 +1,43 @@
+{
+    "name": "yafl",
+    "displayName": "YAFL",
+    "description": "Syntax highlighting and editor support for YAFL (Yet Another Functional Language)",
+    "version": "0.1.0",
+    "publisher": "yafl",
+    "license": "SEE LICENSE IN LICENSE",
+    "engines": { "vscode": "^1.75.0" },
+    "categories": ["Programming Languages"],
+    "contributes": {
+        "languages": [
+            {
+                "id": "yafl",
+                "aliases": ["YAFL", "yafl"],
+                "extensions": [".yafl"],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "yafl",
+                "scopeName": "source.yafl",
+                "path": "./syntaxes/yafl.tmLanguage.json",
+                "embeddedLanguages": {
+                    "meta.embedded.regexp.yafl": "regexp"
+                }
+            }
+        ],
+        "snippets": [
+            {
+                "language": "yafl",
+                "path": "./snippets/yafl.json"
+            }
+        ],
+        "configurationDefaults": {
+            "[yafl]": {
+                "editor.insertSpaces": true,
+                "editor.tabSize": 2,
+                "editor.detectIndentation": false
+            }
+        }
+    }
+}

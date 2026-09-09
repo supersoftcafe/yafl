@@ -1,0 +1,32 @@
+{
+    "Namespace header": {
+        "prefix": "namespace",
+        "body": ["namespace ${1:Name}", "", "import System", "$0"],
+        "description": "Namespace declaration with a System import"
+    },
+    "Function": {
+        "prefix": "fun",
+        "body": ["fun ${1:name}(${2:arg}: ${3:Type}): ${4:Result}", "  ret $0"],
+        "description": "Function declaration"
+    },
+    "Class": {
+        "prefix": "class",
+        "body": ["class ${1:Name}(${2:field}: ${3:Type})$0"],
+        "description": "Class declaration"
+    },
+    "Interface": {
+        "prefix": "interface",
+        "body": ["interface ${1:Name}<${2:T}>", "  fun ${3:method}(self: ${1:Name}<${2:T}>): ${4:Result}$0"],
+        "description": "Interface declaration"
+    },
+    "Enum": {
+        "prefix": "enum",
+        "body": ["enum ${1:Name}", "  ${2:VariantA}", "  ${3:VariantB}$0"],
+        "description": "Enum declaration"
+    },
+    "Match expression": {
+        "prefix": "match",
+        "body": ["match(${1:subject})", "  (${2:x}: ${3:Type}) => $4", "  (${5:e}: ${6:Type}) => $0"],
+        "description": "Match expression with two arms"
+    }
+}

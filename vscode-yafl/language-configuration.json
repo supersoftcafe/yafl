@@ -4,22 +4,30 @@
     },
     "brackets": [
         ["(", ")"],
-        ["[", "]"],
-        ["<", ">"]
+        ["[", "]"]
     ],
     "autoClosingPairs": [
         { "open": "(", "close": ")" },
         { "open": "[", "close": "]" },
         { "open": "\"", "close": "\"" },
+        { "open": "'", "close": "'" },
         { "open": "`", "close": "`" }
     ],
     "surroundingPairs": [
         ["(", ")"],
         ["[", "]"],
         ["\"", "\""],
+        ["'", "'"],
         ["`", "`"]
     ],
+    "wordPattern": "(`[^`]+`)|([A-Za-z_][A-Za-z0-9_]*)",
+    "onEnterRules": [
+        {
+            "beforeText": "^\\s*#.*$",
+            "action": { "indent": "none", "appendText": "# " }
+        }
+    ],
     "indentationRules": {
-        "increaseIndentPattern": "^\\s*(fun|class|interface|let|match)\\b.*[^#]*$"
+        "increaseIndentPattern": "^\\s*(fun|class|interface|instance|enum|typealias|namespace|match|if|else|where|let)\\b.*$"
     }
 }
