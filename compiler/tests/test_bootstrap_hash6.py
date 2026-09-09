@@ -40,6 +40,10 @@ class TestBootstrapHash6(TestCase):
         # Padding boundaries: "f:l:c" total lengths straddling 55/56/57/63/64/119/128.
         for n in (1, 40, 45, 46, 47, 50, 53, 100, 110, 118, 120, 200):
             cases.append(("f" * n, 12, 3))
+        # Unit names carry their directory — `System/IO/fs.yafl` — and the
+        # separator is hashed, so two units sharing a basename hash apart.
+        cases += [("System/IO/fs.yafl", 10, 3), ("System/fs.yafl", 10, 3),
+                  ("fs.yafl", 10, 3), ("driver/main.yafl", 1055, 7)]
         # Randomised spread, including long filenames (multi-block MD5).
         for _ in range(300):
             fn = "".join(rng.choice("abcdefghijklmnopqrstuvwxyz_./") for _ in range(rng.randint(1, 90)))

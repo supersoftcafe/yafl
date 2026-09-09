@@ -107,18 +107,20 @@ fun readDirLibrary(path: String): Library|String|None
 fun dirLibraryWith(m: LibManifest, path: String): Library|String
   ret match(yaflPaths(path, List<String>()))
     (why: String)            => why
-    (paths: List<String>)    => match(readSources(sortByBaseName(paths)))
+    (paths: List<String>)    => match(readSources(path, sortByUnitName(path, paths)))
       (why2: String)          => why2
       (srcs: List<LibSource>) => Library(m, path, false, srcs)
 
-# A unit is identified by its BASENAME, and units load in BASENAME order —
-# `Library.yafl_sources` sorts on `p.name`. Sub-directories are organisation
-# only (the stdlib mirrors its namespaces: `System/`, `System/IO/`, ...) and a
-# `.yl` stores every unit flat, so ordering by directory path would have one
-# library emit statements in one order from a directory and another from its
-# package. Statement order is emission order, so that is a real divergence.
-fun sortByBaseName(paths: List<String>): List<String>
-  ret sortBy(paths, (a: String, b: String) => baseName(a) < baseName(b))
+# A unit is identified by its PATH RELATIVE TO THE LIBRARY ROOT —
+# `System/IO/fs.yafl` — and units load in that order, matching
+# `Library.yafl_sources`. A `.yl` stores that same relative path as its entry
+# name, so a library shipped as a directory and the same library shipped as a
+# package present identical names in an identical order. Statement order is
+# emission order, so that agreement is what keeps the two forms emitting the
+# same C.
+fun sortByUnitName(root: String, paths: List<String>): List<String>
+  ret sortBy(paths,
+             (a: String, b: String) => relativeTo(root, a) < relativeTo(root, b))
 
 # RECURSIVE: `Library.yafl_sources` is `root.rglob("*.yafl")`, so a library
 # whose sources sit in sub-directories is perfectly legal. Listing only the
@@ -127,7 +129,7 @@ fun sortByBaseName(paths: List<String>): List<String>
 # program, so the port simply emitted a smaller one.
 #
 # The walk order does not matter: `dirLibraryWith` sorts the collected paths by
-# BASENAME before reading them.
+# their unit name — the path relative to the library root — before reading them.
 fun yaflPaths(dir: String, acc: List<String>): List<String>|String
   ret match(listDir(dir))
     (e: IOError)         => dir + ": cannot be listed"
@@ -165,19 +167,21 @@ fun isRegularFile(path: String): Bool
     (fi: FileInfo) => fi.isRegular
     (e: IOError)   => false
 
-# The source's NAME is its basename, matching `SourceFile(p.name, ...)`: two
-# files of the same name in different sub-directories are distinct sources
-# that report the same filename, exactly as they do in the reference compiler.
-fun readSources(paths: List<String>): List<LibSource>|String
-  ret srcLoop(chain(paths), builder<LibSource>())
+# The source's NAME is its path relative to the library root, matching
+# `SourceFile(unit_name(p, root), ...)`. The name is hashed into every
+# generated symbol, so two files of the same name in different sub-directories
+# are distinct sources that must report DISTINCT filenames.
+fun readSources(root: String, paths: List<String>): List<LibSource>|String
+  ret srcLoop(root, chain(paths), builder<LibSource>())
 
-fun [tail] srcLoop(ps: Chain<String>,
+fun [tail] srcLoop(root: String, ps: Chain<String>,
                    [terminal] b: ListBuilder<LibSource>): List<LibSource>|String
   ret match(ps)
     (nil: ChainEnd) => build(b)
     (l: ChainLink)  => match(readWholeFile(l.value))
       (e: IOError)   => srcDiscard(b, l.value + ": cannot be read")
-      (t: String)    => srcLoop(l.next, push(b, LibSource(baseName(l.value), t)))
+      (t: String)    => srcLoop(root, l.next,
+                                push(b, LibSource(relativeTo(root, l.value), t)))
 
 fun srcDiscard([terminal] b: ListBuilder<LibSource>, why: String): List<LibSource>|String
   ret build(b) |> (l: List<LibSource>) => why
@@ -205,11 +209,20 @@ fun [tail] zipSrcLoop(es: Chain<ZipEntry>,
   ret match(es)
     (nil: ChainEnd) => b
     (l: ChainLink)  => endsWith(l.value.zipName, ".yafl")
-      ? zipSrcLoop(l.next, push(b, LibSource(baseName(l.value.zipName), l.value.zipBody)))
+      ? zipSrcLoop(l.next, push(b, LibSource(l.value.zipName, l.value.zipBody)))
       : zipSrcLoop(l.next, b)
 
 fun sortEntries(entries: List<ZipEntry>): List<ZipEntry>
   ret sortBy(entries, (a: ZipEntry, b: ZipEntry) => a.zipName < b.zipName)
+
+# `path` with the `root/` prefix removed — the unit's name. Every collected
+# path is built as `root + "/" + ...` by `yaflPaths`, so the prefix is exactly
+# `root` and a length is all this needs; a path that is not under `root` is
+# handed back whole rather than mangled.
+fun relativeTo(root: String, path: String): String
+  ret length(path) > length(root) + 1 && startsWith(path, root + "/")
+    ? slice(path, length(root) + 1, length(path))
+    : path
 
 fun baseName(p: String): String
   ret lastSlash(p, length(p) - 1) |> (i: Int) => slice(p, i + 1, length(p))

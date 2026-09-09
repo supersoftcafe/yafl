@@ -83,5 +83,8 @@ ordering constraint lives in `docs/compiler-internals.md` §6. Highlights:
 
 `stdlib/` is auto-loaded when `use_stdlib=True`. Its folders mirror the
 namespaces they hold — `System/`, `System/IO/`, `System/Json/`, `System/Log/` —
-but a unit is identified by its BASENAME, and units load in basename order
-(a `.yl` package stores them flat).
+and a unit is identified by its PATH RELATIVE TO THE LIBRARY ROOT
+(`System/IO/fs.yafl`), loading in that order. A `.yl` package stores the same
+relative path as its zip entry name, so a library presents identical names in
+an identical order however it is shipped. The name feeds `LineRef.hash6`, and
+so feeds every generated symbol.

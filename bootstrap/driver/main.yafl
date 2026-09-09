@@ -862,9 +862,10 @@ fun [tail] parseLibraries(ls: Chain<Library>,
 fun parseLibrary(lib: Library): List<PStmt>|String
   ret parseSources(chain(sortSources(lib.libSources)), builder<PStmt>())
 
-# By BASENAME, which is what `Input.filename` holds — the sort key
-# __tokenize_and_parse uses. A stable sort, so two sub-directories holding the
-# same basename keep the order `yafl_sources` gave them.
+# By UNIT NAME — the path relative to the library root, which is what
+# `Input.filename` holds and the sort key __tokenize_and_parse uses. Two
+# sub-directories holding the same basename now sort as the distinct units
+# they are.
 fun sortSources(srcs: List<LibSource>): List<LibSource>
   ret sortBy(srcs, (a: LibSource, b: LibSource) => a.libFileName < b.libFileName)
 

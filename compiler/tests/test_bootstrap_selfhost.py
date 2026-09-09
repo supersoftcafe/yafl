@@ -28,7 +28,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.testutil import stdlib_files, TimedTestCase as TestCase
+from tests.testutil import (stdlib_files, stdlib_unit_name, bootstrap_files,
+                            bootstrap_unit_name, TimedTestCase as TestCase)
 from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, static_link_for
 
 _REPO = Path(__file__).parent.parent.parent
@@ -49,10 +50,10 @@ def _stream() -> str:
     def terminated(p: Path) -> str:
         text = p.read_text()
         return text if text.endswith("\n") else text + "\n"
-    parts = [f"#FILE# {p.name}\n{terminated(p)}"
+    parts = [f"#FILE# {stdlib_unit_name(p)}\n{terminated(p)}"
              for p in stdlib_files()]
-    parts += [f"#FILE# {p.name}\n{terminated(p)}"
-              for p in sorted((_REPO / "bootstrap").rglob("*.yafl"))]
+    parts += [f"#FILE# {bootstrap_unit_name(p)}\n{terminated(p)}"
+              for p in bootstrap_files()]
     return "".join(parts)
 
 

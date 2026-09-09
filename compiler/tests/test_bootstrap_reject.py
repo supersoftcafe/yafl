@@ -26,7 +26,7 @@ import subprocess
 
 import compiler as c
 
-from tests.testutil import stdlib_files, TimedTestCase as TestCase
+from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
 
 
@@ -54,10 +54,12 @@ def _stream(text: str) -> str:
     """stdlib + the case, as the `#FILE#`-marked stream mode c1 expects.
 
     Python loads the stdlib itself via use_stdlib; the port is handed a whole
-    program, so the two see the same sources either way."""
+    program, so the two see the same sources either way — under the same unit
+    NAMES, which is what makes a diagnostic naming a stdlib file compare
+    equal on both sides."""
     def terminated(t: str) -> str:
         return t if t.endswith("\n") else t + "\n"
-    parts = [f"#FILE# {p.name}\n{terminated(p.read_text())}"
+    parts = [f"#FILE# {stdlib_unit_name(p)}\n{terminated(p.read_text())}"
              for p in stdlib_files()]
     parts.append(f"#FILE# case.yafl\n{terminated(text)}")
     return "".join(parts)

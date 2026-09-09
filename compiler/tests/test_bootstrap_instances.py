@@ -28,7 +28,7 @@ from pathlib import Path
 
 import compiler as c
 
-from tests.testutil import stdlib_files, TimedTestCase as TestCase
+from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
 
 _REPO = Path(__file__).parent.parent.parent
@@ -47,7 +47,7 @@ def _cases() -> dict[str, str]:
 def _stream(src: str) -> str:
     def terminated(t: str) -> str:
         return t if t.endswith("\n") else t + "\n"
-    parts = [f"#FILE# {p.name}\n{terminated(p.read_text())}" for p in _STDLIB]
+    parts = [f"#FILE# {stdlib_unit_name(p)}\n{terminated(p.read_text())}" for p in _STDLIB]
     parts.append(f"#FILE# case.yafl\n{terminated(src)}")
     return "".join(parts)
 

@@ -56,7 +56,7 @@ import pyast.statement as s
 from parsing.tokenizer import tokenize
 from parsing.parser import parse
 
-from tests.testutil import stdlib_files, TimedTestCase as TestCase
+from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
 
 _REPO = Path(__file__).parent.parent.parent
@@ -66,6 +66,7 @@ _REPO = Path(__file__).parent.parent.parent
 # diffs real emitted C rather than error text. Main-less stdlib members are
 # exercised as the stdlib of every other run.
 _STDLIB = stdlib_files()
+_STDLIB_SET = set(_STDLIB)
 _CORPUS = sorted((_REPO / "examples").glob("*.yafl")) \
     + sorted((Path(__file__).parent / "corpus_converge").glob("*.yafl"))
 
@@ -133,9 +134,16 @@ def _port_stream(target: Path) -> str:
     # Each part must END WITH A NEWLINE or the next "#FILE#" marker glues onto
     # the previous file's last line and the port misattributes that file's
     # statements (79 silently re-hashed names, found via the self-host diff).
-    parts = [f"#FILE# {p.name}\n{_terminated(p)}" for p in _STDLIB]
+    parts = [f"#FILE# {stdlib_unit_name(p)}\n{_terminated(p)}" for p in _STDLIB]
     parts.append(f"#FILE# {target.name}\n{_terminated(target)}")
     return "".join(parts)
+
+
+def _unit_name(p: Path) -> str:
+    """Stdlib units keep their library-relative name; the corpus target is a
+    lone file and keeps its basename, exactly as `#FILE# {target.name}` below
+    spells it."""
+    return stdlib_unit_name(p) if p in _STDLIB_SET else p.name
 
 
 def _terminated(p: Path) -> str:
@@ -165,8 +173,8 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0,
     # Same canonical order as compiler.__tokenize_and_parse and the port's
     # parseMulti — this helper drives the pipeline directly, so it has to
     # impose the order itself.
-    for p in sorted(_STDLIB + [target], key=lambda q: q.name):
-        result = parse(tokenize(p.read_text(), p.name))
+    for p in sorted(_STDLIB + [target], key=_unit_name):
+        result = parse(tokenize(p.read_text(), _unit_name(p)))
         assert not result.errors, f"python parse errors in {p.name}"
         statements = statements + list(result.value)
     statements, _resolver, _passes = _CONVERGE(statements)

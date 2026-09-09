@@ -144,6 +144,32 @@ class TestBootstrapLibraries(TestCase):
             self.assertEqual(0, rc, out)
             self.assertEqual("packed|Packed||\n", out)
 
+    def test_a_NESTED_yl_archive_keeps_its_paths(self):
+        """A `.yl` is a zip of the library's tree, NOT a flat bag.
+
+        The packager used to store each unit under its basename, so a library
+        was renamed on the way into its package: `System/IO/fs.yafl` came back
+        as `fs.yafl`. Two units sharing a basename then collapsed onto one
+        name, and the name is what `hash6` turns into generated symbols. The
+        port must load a nested archive and see the paths.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _mklib(root, "third", ["Third"])
+            yl = root / "nested.yl"
+            with zipfile.ZipFile(yl, "w", zipfile.ZIP_STORED) as z:
+                z.writestr("yafl.toml", 'name = "nested"\nnamespaces = ["Nest", "Nest::Deep"]\n')
+                z.writestr("Nest/a.yafl", "namespace Nest\nfun a(): Int\n  ret 0\n")
+                # Same BASENAME as the unit above, a directory apart, and the
+                # only one that imports Third — so `third` reaching the
+                # worklist proves this entry was read as its own unit.
+                z.writestr("Nest/Deep/a.yafl",
+                           "namespace Nest::Deep\nimport Third\nfun b(): Int\n  ret 0\n")
+            rc, out = self._run("libsfor", "namespace P\nimport Nest::Deep\n" + self._PRELUDE,
+                                env_extra={"YAFL_PATH": str(root)})
+            self.assertEqual(0, rc, out)
+            self.assertEqual("nested|Nest,Nest::Deep||\nthird|Third||\n", out)
+
     def test_a_COMPRESSED_entry_is_a_clear_error_not_an_empty_read(self):
         # The whole reason packaging uses ZIP_STORED. If someone switches it
         # back, this must fail loudly rather than yield a library with no

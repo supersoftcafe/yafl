@@ -34,9 +34,19 @@ class LibraryError(Exception):
 
 @dataclass(frozen=True)
 class SourceFile:
-    """One YAFL source unit: its display name (for diagnostics) and its text."""
+    """One YAFL source unit: its name (for diagnostics) and its text."""
     filename: str
     content: str
+
+
+def unit_name(path: Path, root: Path) -> str:
+    """A source unit's name: its path relative to `root`, always POSIX.
+
+    The separator is part of the name, and the name is hashed into every
+    generated symbol (`LineRef.hash6`), so a backslash on another platform
+    would silently emit different C for the same sources.
+    """
+    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 @dataclass(frozen=True)
@@ -97,12 +107,16 @@ class Library:
     def yafl_sources(self) -> list[SourceFile]:
         """The library's `.yafl` units, read into memory.
 
-        A unit is identified by its BASENAME, and the units load in basename
-        order — the same order however the library is shipped. Sub-directories
-        are an organisational convenience (the stdlib mirrors its namespaces in
-        `System/`, `System/IO/`, ...), and a `.yl` stores every unit flat, so
-        ordering by directory path would have the same library emit statements
-        in one order from a directory and another from its package.
+        A unit is identified by its PATH RELATIVE TO THE LIBRARY ROOT —
+        `System/IO/fs.yafl` — and the units load in that order. A `.yl` stores
+        the same relative path as its entry name, so a library shipped as a
+        directory and the same library shipped as a package present identical
+        names in an identical order.
+
+        The name is not decoration: it is what `LineRef.hash6` hashes, so it
+        is what distinguishes two units that share a basename in different
+        sub-directories. Naming units by basename made those two units
+        indistinguishable to the hash.
         """
         if self._explicit_sources is not None:
             return list(self._explicit_sources)
@@ -111,10 +125,11 @@ class Library:
             with zipfile.ZipFile(self.root) as zf:
                 for name in sorted(zf.namelist()):
                     if name.endswith(".yafl"):
-                        out.append(SourceFile(Path(name).name, zf.read(name).decode("utf-8")))
+                        out.append(SourceFile(name, zf.read(name).decode("utf-8")))
             return out
-        return [SourceFile(p.name, p.read_text(encoding="utf-8"))
-                for p in sorted(self.root.rglob("*.yafl"), key=lambda q: q.name)]
+        return sorted((SourceFile(unit_name(p, self.root), p.read_text(encoding="utf-8"))
+                       for p in self.root.rglob("*.yafl")),
+                      key=lambda s: s.filename)
 
     def include_dirs(self) -> list[Path]:
         """Directories to put on the C compiler's `-I` path for this library."""
@@ -300,8 +315,9 @@ def dev_system_library() -> Library | None:
     static = _find_dev_static_lib()
     if static is None:
         return None
-    sources = [SourceFile(p.name, p.read_text(encoding="utf-8"))
-               for p in sorted(_STDLIB_DIR.rglob("*.yafl"), key=lambda q: q.name)]
+    sources = sorted((SourceFile(unit_name(p, _STDLIB_DIR), p.read_text(encoding="utf-8"))
+                      for p in _STDLIB_DIR.rglob("*.yafl")),
+                     key=lambda s: s.filename)
     namespaces = sorted({m.group(1).strip()
                          for src in sources
                          for m in re.finditer(r"(?m)^namespace\s+(.+?)\s*$", src.content)})
@@ -329,7 +345,9 @@ def package_system_library(dest_yl: Path, stdlib_dir: Path, header: Path, static
     (`lib/yafl/system.yl`) and discovered like any other `.yl` library."""
     dest_yl = Path(dest_yl)
     dest_yl.parent.mkdir(parents=True, exist_ok=True)
-    sources = sorted(Path(stdlib_dir).rglob("*.yafl"), key=lambda p: p.name)
+    stdlib_dir = Path(stdlib_dir)
+    sources = sorted(stdlib_dir.rglob("*.yafl"),
+                     key=lambda p: unit_name(p, stdlib_dir))
     namespaces = _scan_namespaces(sources) or ("System",)
     ns_list = ", ".join(f'"{n}"' for n in namespaces)
     manifest = (f'name = "system"\nnamespaces = [{ns_list}]\n'
@@ -343,8 +361,11 @@ def package_system_library(dest_yl: Path, stdlib_dir: Path, header: Path, static
     # port's reader, which supports STORED only and rejects anything else.
     with zipfile.ZipFile(dest_yl, "w", zipfile.ZIP_STORED) as z:
         z.writestr(MANIFEST_NAME, manifest)
+        # Stored under the unit's RELATIVE PATH, not its basename: the path is
+        # part of the unit's name, and a flat archive would rename every unit
+        # on the way into the package.
         for src in sources:
-            z.write(src, src.name)
+            z.write(src, unit_name(src, stdlib_dir))
         z.write(header, "yafl.h")
         z.write(static_lib, "libyafl.a")
 

@@ -113,3 +113,77 @@ class TestDirectoryAndZipLibraries(TestCase):
             self.assertEqual(1, len(statics))
             self.assertTrue(statics[0].exists())
             self.assertTrue((lib.include_dirs()[0] / "math.h").exists())
+
+
+class TestUnitNamesAreRelativePaths(TestCase):
+    """A unit is named by its path relative to the library root, and a `.yl`
+    stores that same path. The property that matters is the EQUALITY of the two
+    forms: shipping a library as a package must not rename its units.
+
+    The name is not cosmetic — `LineRef.hash6` hashes it into every generated
+    symbol — so naming units by basename made two same-named units in different
+    sub-directories indistinguishable to the hash.
+    """
+
+    _NESTED = {
+        "Math/area.yafl": "namespace Math\nfun area(): Int\n  ret 0\n",
+        "Math/Solid/volume.yafl": "namespace Math::Solid\nfun volume(): Int\n  ret 0\n",
+        "top.yafl": "namespace Math\nfun top(): Int\n  ret 0\n",
+    }
+
+    def _write_nested(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "yafl.toml").write_text(
+            'name = "mathlib"\nnamespaces = ["Math", "Math::Solid"]\n', encoding="utf-8")
+        for rel, text in self._NESTED.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+
+    def test_directory_units_are_named_by_relative_path(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "mathlib"
+            self._write_nested(root)
+            lib = L.discover_libraries([Path(d)])[0]
+            # Sorted by the relative path, so sub-directories come first.
+            self.assertEqual(["Math/Solid/volume.yafl", "Math/area.yafl", "top.yafl"],
+                             [s.filename for s in lib.yafl_sources()])
+
+    def test_packaging_preserves_paths_and_the_two_forms_agree(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            root = base / "mathlib"
+            self._write_nested(root)
+            header = base / "math.h"
+            header.write_text("/* math */\n", encoding="utf-8")
+            static = base / "libmath.a"
+            static.write_bytes(b"!<arch>\n")
+            yl = base / "pkg" / "system.yl"
+            L.package_system_library(yl, root, header, static)
+
+            with zipfile.ZipFile(yl) as zf:
+                stored = sorted(n for n in zf.namelist() if n.endswith(".yafl"))
+            self.assertEqual(["Math/Solid/volume.yafl", "Math/area.yafl", "top.yafl"],
+                             stored, "the archive must keep each unit's relative path")
+
+            packaged = L.discover_libraries([yl.parent])[0]
+            self.assertTrue(packaged.is_zip)
+            from_dir = L.discover_libraries([base])[0].yafl_sources()
+            from_zip = packaged.yafl_sources()
+            self.assertEqual([s.filename for s in from_dir],
+                             [s.filename for s in from_zip],
+                             "a library must present the same unit names however it ships")
+            self.assertEqual([s.content for s in from_dir],
+                             [s.content for s in from_zip])
+
+    def test_same_basename_in_two_directories_hashes_apart(self):
+        from parsing.tokenizer import LineRef
+        a = LineRef("Math/util.yafl", 12, 15)
+        b = LineRef("Text/util.yafl", 12, 15)
+        self.assertNotEqual(a.hash6(), b.hash6(),
+                            "the directory must reach hash6, or the two units "
+                            "generate colliding symbol names")
+        self.assertEqual("Math/util.yafl[12:15]", repr(a),
+                         "a diagnostic names the unit, path included")

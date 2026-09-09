@@ -12,16 +12,39 @@ import compiler as c
 _STDLIB_ROOT = Path(__file__).parent.parent / "stdlib"
 
 
+_BOOTSTRAP_ROOT = Path(__file__).parent.parent.parent / "bootstrap"
+
+
+def stdlib_unit_name(p: Path) -> str:
+    """A stdlib file's unit NAME — `System/IO/fs.yafl`. The same name
+    `Library.yafl_sources` gives it, so a harness that builds its own stream
+    names units exactly as production does; the name feeds hash6 and so feeds
+    the emitted C."""
+    from libraries import unit_name
+    return unit_name(p, _STDLIB_ROOT)
+
+
+def bootstrap_unit_name(p: Path) -> str:
+    """A port source's unit name — `driver/main.yafl`, matching
+    build_bootstrap.py and selfcompile.py."""
+    from libraries import unit_name
+    return unit_name(p, _BOOTSTRAP_ROOT)
+
+
+def bootstrap_files() -> list[Path]:
+    """The port's `.yafl` sources, in unit-name order."""
+    return sorted(_BOOTSTRAP_ROOT.rglob("*.yafl"), key=bootstrap_unit_name)
+
+
 def stdlib_files() -> list[Path]:
     """The stdlib's `.yafl` units, in the order a library loads them.
 
-    RECURSIVE, and ordered by BASENAME — the stdlib mirrors its namespaces in
-    sub-directories (`System/`, `System/IO/`, ...), and `Library.yafl_sources`
-    identifies a unit by its basename and loads in basename order. A flat
-    `glob("*.yafl")` here reads NOTHING, silently: an empty stdlib is not an
-    error, so the port simply fails to resolve `String`.
+    RECURSIVE, and ordered by UNIT NAME — the path relative to the stdlib root
+    (`System/IO/fs.yafl`), which is how `Library.yafl_sources` identifies and
+    orders a unit. A flat `glob("*.yafl")` here reads NOTHING, silently: an
+    empty stdlib is not an error, so the port simply fails to resolve `String`.
     """
-    return sorted(_STDLIB_ROOT.rglob("*.yafl"), key=lambda p: p.name)
+    return sorted(_STDLIB_ROOT.rglob("*.yafl"), key=stdlib_unit_name)
 
 
 class TimedTestCase(unittest.TestCase):

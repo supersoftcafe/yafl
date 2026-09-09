@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from functools import cached_property
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Any, Tuple, Union, Generator
@@ -33,7 +32,10 @@ class LineRef:
     offset: int
 
     def __repr__(self):
-        return f"{Path(self.filename).name}[{self.line}:{self.offset}]"
+        # The whole name, path included: a unit is identified by its path
+        # relative to its root, and a diagnostic that says only `fs.yafl`
+        # cannot tell two same-named units apart.
+        return f"{self.filename}[{self.line}:{self.offset}]"
 
     def hash6(self) -> str:
         # Create string to hash from all fields

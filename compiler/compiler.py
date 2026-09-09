@@ -88,10 +88,16 @@ class Input:
     filename: str
 
 
-def _read_source(path: Path) -> Input:
+def _read_source(path: Path, root: Path | None = None) -> Input:
+    """Read one source unit. Its NAME is its path relative to `root` — the
+    project root, or the directory a lone file was named from — because the
+    name is hashed into every generated symbol (`LineRef.hash6`) and so is
+    what tells apart two units sharing a basename in different directories."""
     with open(path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    return Input(''.join(lines), path.name)
+    from libraries import unit_name
+    name = unit_name(path, root) if root is not None else path.name
+    return Input(''.join(lines), name)
 
 
 def __create_entry_point(main: s.FunctionStatement) -> Function:
@@ -700,8 +706,9 @@ def __tokenize_and_parse(source: list[Input]) -> tuple[list[s.Statement], list[E
     # files fed in a different order emit different (equally valid) C — which
     # would make the port/Python byte contract depend on each caller matching
     # by hand. The port sorts identically (main.yafl parseMulti); the file name
-    # is the only key both sides have, since the port sees `#FILE# <name>` and
-    # never a path.
+    # is the only key both sides have, and it is the unit's path relative to
+    # its root — `System/IO/fs.yafl` — which is exactly what the port sees
+    # after each `#FILE#` marker.
     for input in sorted(source, key=lambda i: i.filename):
         tokens = tokenize(input.content, input.filename)
         result = parse(tokens)

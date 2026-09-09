@@ -108,8 +108,10 @@ def _gather_inputs(paths: list[str]) -> list:
     `.yafl` file under it (recursively) is compiled together."""
     if len(paths) == 1 and Path(paths[0]).is_dir():
         root = Path(paths[0])
-        return [c._read_source(p) for p in sorted(root.rglob("*.yafl"))]
-    return [c._read_source(Path(p)) for p in paths]
+        return sorted((c._read_source(p, root) for p in root.rglob("*.yafl")),
+                      key=lambda i: i.filename)
+    # Named files are their own roots: a unit's name is the path as given.
+    return [c._read_source(Path(p), Path(p).parent) for p in paths]
 
 
 def _link_args(link_spec) -> list[str]:

@@ -36,13 +36,19 @@ def build(out: Path, optimization_level: int = 1) -> Path:
     sys.setrecursionlimit(5000)      # see compiler.py — the parser needs ~1.5k
     sys.path.insert(0, str(_HERE))
     import compiler as c
+    from libraries import unit_name
     from tests.testutil import _CLANG_BUILD_FLAGS, static_link_for
 
-    sources = sorted(_BOOT_DIR.rglob("*.yafl"))
+    # Named by path relative to bootstrap/ — `driver/main.yafl` — matching
+    # what selfcompile.py puts after each `#FILE#` marker. The two must agree
+    # or the self-compile stops comparing like with like.
+    sources = sorted(_BOOT_DIR.rglob("*.yafl"),
+                     key=lambda p: unit_name(p, _BOOT_DIR))
     if not sources:
         raise SystemExit(f"no bootstrap sources under {_BOOT_DIR}")
     print(f"compiling {len(sources)} port sources at -O{optimization_level} ...")
-    c_code = c.compile([c.Input(p.read_text(), p.name) for p in sources],
+    c_code = c.compile([c.Input(p.read_text(), unit_name(p, _BOOT_DIR))
+                        for p in sources],
                        use_stdlib=True, just_testing=False,
                        optimization_level=optimization_level)
     if not c_code:

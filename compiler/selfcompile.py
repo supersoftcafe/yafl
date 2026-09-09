@@ -25,6 +25,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from libraries import unit_name          # noqa: E402  (after sys.path)
+
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
 
@@ -35,12 +38,20 @@ def _stream() -> str:
     Each part must END WITH A NEWLINE or the next `#FILE#` marker glues onto
     the previous file's last line and the port misattributes it.
     """
-    def part(p: Path) -> str:
+    def part(p: Path, root: Path) -> str:
         t = p.read_text()
-        return f"#FILE# {p.name}\n{t if t.endswith(chr(10)) else t + chr(10)}"
-    parts = [part(p) for p in sorted((_HERE / "stdlib").rglob("*.yafl"),
-                                     key=lambda q: q.name)]
-    parts += [part(p) for p in sorted((_REPO / "bootstrap").rglob("*.yafl"))]
+        name = unit_name(p, root)
+        return f"#FILE# {name}\n{t if t.endswith(chr(10)) else t + chr(10)}"
+
+    def units(root: Path) -> list[Path]:
+        return sorted(root.rglob("*.yafl"), key=lambda q: unit_name(q, root))
+
+    # Each unit is named by its path relative to its own root — `System/seq.yafl`,
+    # `driver/main.yafl` — the same name the Python compiler gives it, because
+    # the name feeds hash6 and hash6 feeds the emitted C.
+    stdlib, boot = _HERE / "stdlib", _REPO / "bootstrap"
+    parts = [part(p, stdlib) for p in units(stdlib)]
+    parts += [part(p, boot) for p in units(boot)]
     return "".join(parts)
 
 
