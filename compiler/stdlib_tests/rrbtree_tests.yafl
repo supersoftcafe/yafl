@@ -1,0 +1,295 @@
+# Tests for System::Containers::RRBTree (stdlib/System/Containers/rrbtree.yafl).
+#
+# The tree is built and read back at every size across both level growths, and
+# every edit is checked by RENDERING the whole sequence, not by trusting a
+# count: an RRB bug is nearly always a wrong element at a boundary, and a count
+# that still adds up is exactly what a mis-sized size table gives you.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::RRBTreeTests
+
+import System
+import System::Containers
+import System::Test
+
+
+# 1..n, appended one at a time — the path `insertAt(t, count(t), x)` takes.
+fun _upTo(n: Int): RRBTree<Int>
+    ret _fill(RRBTree<Int>(), 1, n)
+
+fun [tail] _fill(t: RRBTree<Int>, i: Int, n: Int): RRBTree<Int>
+    ret i > n ? t : _fill(insertAt<Int>(t, count<Int>(t), i), i + 1, n)
+
+# The whole sequence as "1.2.3." — read through `[]`.
+fun _render(t: RRBTree<Int>): String
+    ret _renderFrom(t, 0, "")
+
+fun [tail] _renderFrom(t: RRBTree<Int>, i: Int, acc: String): String
+    ret i >= count<Int>(t)
+      ? acc
+      : _renderFrom(t, i + 1, acc + String(`[]`<Int>(t, i)) + ".")
+
+# The same, read through the Stream instance — so a disagreement between the
+# two is a stream bug and not an indexing one.
+fun _renderStream(t: RRBTree<Int>): String
+    ret _streamFrom(rrbTreeStream<Int>(t), "")
+
+fun _streamFrom(s: RRBTreeStream<Int>, acc: String): String
+    ret _streamStep(streamNext<RRBTreeStream<Int>, Int, Never>(s), acc)
+
+fun _streamStep(r: (stream: RRBTreeStream<Int>,
+                    value: Result<Int|None, Never>), acc: String): String
+    ret match(r.value)
+      (er: Error<Int|None, Never>) => acc
+      (ok: Ok<Int|None, Never>)    => match(ok.value)
+        (nil: None) => acc
+        (v: Int)    => _streamFrom(r.stream, acc + String(v) + ".")
+
+# The rendering of `lo..hi` inclusive, as the expected value for a slice.
+fun _range(lo: Int, hi: Int): String
+    ret _rangeFrom(lo, hi, "")
+
+fun [tail] _rangeFrom(i: Int, hi: Int, acc: String): String
+    ret i > hi ? acc : _rangeFrom(i + 1, hi, acc + String(i) + ".")
+
+fun _sum(t: RRBTree<Int>): Int
+    ret _sumFrom(t, 0, 0)
+
+fun [tail] _sumFrom(t: RRBTree<Int>, i: Int, acc: Int): Int
+    ret i >= count<Int>(t) ? acc : _sumFrom(t, i + 1, acc + `[]`<Int>(t, i))
+
+
+# ── empty ────────────────────────────────────────────────────────────────────
+
+fun [test("the empty tree is empty, and its stream ends at once")] emptyTree(): None|TestFailure
+    let t = RRBTree<Int>()
+    ret assertTrue(isEmpty<Int>(t), "reports empty")
+     ?? assertEqInt(count<Int>(t), 0, "no elements")
+     ?? assertEqStr(_renderStream(t), "", "stream yields nothing")
+
+fun [test("a singleton holds exactly its one element")] singletonTree(): None|TestFailure
+    let t = singleton<Int>(7)
+    ret assertFalse(isEmpty<Int>(t), "not empty")
+     ?? assertEqInt(count<Int>(t), 1, "one element")
+     ?? assertEqInt(`[]`<Int>(t, 0), 7, "the element")
+
+
+# ── build and read back, at every size ───────────────────────────────────────
+
+# 0..70 crosses the leaf-only tree, the first branch, and the first branch
+# split — the three shapes a small tree can be in.
+fun [test("every size 0..70 builds and reads back in order")] everySmallSize(): None|TestFailure
+    ret _checkSizes(0, 70)
+
+fun _checkSizes(n: Int, hi: Int): None|TestFailure
+    ret n > hi
+      ? None
+      : _checkThen(_checkSize(n), n, hi)
+
+fun _checkThen(r: None|TestFailure, n: Int, hi: Int): None|TestFailure
+    ret r ?> (ok: None) => _checkSizes(n + 1, hi)
+
+fun _checkSize(n: Int): None|TestFailure
+    let t = _upTo(n)
+    ret assertEqInt(count<Int>(t), n, "count at " + String(n))
+     ?? assertEqStr(_render(t), _range(1, n), "contents at " + String(n))
+     ?? assertEqStr(_renderStream(t), _render(t), "stream agrees at " + String(n))
+
+# The level boundaries. A 32-way tree grows a level at 32 and again at 1024;
+# a tree either side of each is the case a mis-computed shift gets wrong.
+fun [test("the tree survives both level growths")] levelBoundaries(): None|TestFailure
+    ret _checkBoundary(31)
+     ?? _checkBoundary(32)
+     ?? _checkBoundary(33)
+     ?? _checkBoundary(1023)
+     ?? _checkBoundary(1024)
+     ?? _checkBoundary(1025)
+     ?? _checkBoundary(2048)
+
+fun _checkBoundary(n: Int): None|TestFailure
+    let t = _upTo(n)
+    ret assertEqInt(count<Int>(t), n, "count at " + String(n))
+     ?? assertEqInt(_sum(t), n * (n + 1) / 2, "every element present at " + String(n))
+     ?? assertEqInt(`[]`<Int>(t, 0), 1, "first at " + String(n))
+     ?? assertEqInt(`[]`<Int>(t, n - 1), n, "last at " + String(n))
+     ?? assertEqStr(_renderStream(t), _render(t), "stream agrees at " + String(n))
+
+# One deep tree, checked element by element rather than by sum: a sum survives
+# two elements swapping, a walk does not.
+fun [test("a three-level tree reads correctly at every index")] deepTreeIndexing(): None|TestFailure
+    let t = _upTo(2000)
+    ret _checkIndex(t, 0)
+
+fun _checkIndex(t: RRBTree<Int>, i: Int): None|TestFailure
+    ret i >= count<Int>(t)
+      ? None
+      : _checkIndexThen(assertEqInt(`[]`<Int>(t, i), i + 1,
+                                    "element " + String(i)), t, i)
+
+fun _checkIndexThen(r: None|TestFailure, t: RRBTree<Int>, i: Int): None|TestFailure
+    ret r ?> (ok: None) => _checkIndex(t, i + 1)
+
+
+# ── replace ──────────────────────────────────────────────────────────────────
+
+fun [test("replace changes one element and nothing else")] replaceOne(): None|TestFailure
+    let t = _upTo(5)
+    ret assertEqStr(_render(replace<Int>(t, 0, 99)), "99.2.3.4.5.", "first")
+     ?? assertEqStr(_render(replace<Int>(t, 2, 99)), "1.2.99.4.5.", "middle")
+     ?? assertEqStr(_render(replace<Int>(t, 4, 99)), "1.2.3.4.99.", "last")
+     ?? assertEqStr(_render(t), "1.2.3.4.5.", "the original is untouched")
+
+fun [test("replace reaches into a deep tree")] replaceDeep(): None|TestFailure
+    let t = replace<Int>(_upTo(1500), 1234, 0)
+    ret assertEqInt(count<Int>(t), 1500, "count unchanged")
+     ?? assertEqInt(`[]`<Int>(t, 1234), 0, "the replaced element")
+     ?? assertEqInt(`[]`<Int>(t, 1233), 1234, "its neighbour below")
+     ?? assertEqInt(`[]`<Int>(t, 1235), 1236, "its neighbour above")
+
+fun [test("replace outside the range leaves the tree alone")] replaceOutOfRange(): None|TestFailure
+    let t = _upTo(5)
+    ret assertEqStr(_render(replace<Int>(t, 5, 99)), "1.2.3.4.5.", "past the end")
+     ?? assertEqStr(_render(replace<Int>(t, 0 - 1, 99)), "1.2.3.4.5.", "before the start")
+
+
+# ── concat ───────────────────────────────────────────────────────────────────
+
+fun [test("concat with an empty tree is the other tree")] concatEmpty(): None|TestFailure
+    let t = _upTo(5)
+    ret assertEqStr(_render(concat<Int>(RRBTree<Int>(), t)), "1.2.3.4.5.", "empty on the left")
+     ?? assertEqStr(_render(concat<Int>(t, RRBTree<Int>())), "1.2.3.4.5.", "empty on the right")
+     ?? assertTrue(isEmpty<Int>(concat<Int>(RRBTree<Int>(), RRBTree<Int>())), "both empty")
+
+fun [test("concat joins two small trees in order")] concatSmall(): None|TestFailure
+    let t = concat<Int>(_upTo(3), _upTo(4))
+    ret assertEqInt(count<Int>(t), 7, "count")
+     ?? assertEqStr(_render(t), "1.2.3.1.2.3.4.", "contents")
+
+# Unequal heights on each side, and the same height on both — the three
+# branches of the descent, each exercised in one direction and the other.
+fun [test("concat joins trees of different heights, both ways round")] concatHeights(): None|TestFailure
+    ret _checkConcat(5, 900)
+     ?? _checkConcat(900, 5)
+     ?? _checkConcat(40, 40)
+     ?? _checkConcat(1100, 1100)
+     ?? _checkConcat(1, 1024)
+     ?? _checkConcat(1024, 1)
+
+fun _checkConcat(m: Int, n: Int): None|TestFailure
+    let t = concat<Int>(_upTo(m), _upTo(n))
+    let why = String(m) + "+" + String(n)
+    ret assertEqInt(count<Int>(t), m + n, "count " + why)
+     ?? assertEqInt(_sum(t), m * (m + 1) / 2 + n * (n + 1) / 2, "sum " + why)
+     ?? assertEqInt(`[]`<Int>(t, m - 1), m, "join, left side " + why)
+     ?? assertEqInt(`[]`<Int>(t, m), 1, "join, right side " + why)
+     ?? assertEqInt(`[]`<Int>(t, m + n - 1), n, "last " + why)
+     ?? assertEqStr(_renderStream(t), _render(t), "stream agrees " + why)
+
+# The case an unbalanced concat fails: 200 singletons folded together. A
+# concat that only stacks a relaxed node on top grows a level per join, and
+# the resulting tree is both wrong-shaped and slow; here it must still be a
+# flat, correct 200 elements.
+fun [test("200 singleton concats stay balanced and correct")] concatRepeatedly(): None|TestFailure
+    let t = _foldSingles(RRBTree<Int>(), 1, 200)
+    ret assertEqInt(count<Int>(t), 200, "count")
+     ?? assertEqStr(_render(t), _range(1, 200), "contents")
+
+fun [tail] _foldSingles(t: RRBTree<Int>, i: Int, n: Int): RRBTree<Int>
+    ret i > n ? t : _foldSingles(concat<Int>(t, singleton<Int>(i)), i + 1, n)
+
+
+# ── slice ────────────────────────────────────────────────────────────────────
+
+fun [test("slice takes prefixes, suffixes and interiors")] sliceRanges(): None|TestFailure
+    let t = _upTo(10)
+    ret assertEqStr(_render(slice<Int>(t, 0, 10)), _range(1, 10), "the whole tree")
+     ?? assertEqStr(_render(slice<Int>(t, 0, 4)), _range(1, 4), "a prefix")
+     ?? assertEqStr(_render(slice<Int>(t, 6, 10)), _range(7, 10), "a suffix")
+     ?? assertEqStr(_render(slice<Int>(t, 3, 7)), _range(4, 7), "an interior")
+     ?? assertEqStr(_render(slice<Int>(t, 4, 5)), "5.", "one element")
+
+fun [test("slice clamps, and an inverted range is empty")] sliceClamps(): None|TestFailure
+    let t = _upTo(10)
+    ret assertTrue(isEmpty<Int>(slice<Int>(t, 4, 4)), "empty range")
+     ?? assertTrue(isEmpty<Int>(slice<Int>(t, 7, 3)), "inverted range")
+     ?? assertEqStr(_render(slice<Int>(t, 0 - 5, 100)), _range(1, 10), "over-wide range")
+     ?? assertTrue(isEmpty<Int>(slice<Int>(RRBTree<Int>(), 0, 5)), "slicing nothing")
+
+# A deep slice drops whole levels, so the height has to come back down with
+# it — a tree left three levels tall over 40 elements still reads correctly,
+# but the shrink loop is what keeps it honest.
+fun [test("slicing a deep tree collapses the redundant levels")] sliceDeep(): None|TestFailure
+    let t = slice<Int>(_upTo(2000), 1000, 1040)
+    ret assertEqInt(count<Int>(t), 40, "count")
+     ?? assertEqStr(_render(t), _range(1001, 1040), "contents")
+     ?? assertEqStr(_renderStream(t), _render(t), "stream agrees")
+
+fun [test("a slice of a concat is still correct")] sliceOfConcat(): None|TestFailure
+    let t = slice<Int>(concat<Int>(_upTo(100), _upTo(100)), 95, 105)
+    ret assertEqStr(_render(t), "96.97.98.99.100.1.2.3.4.5.", "across the join")
+
+
+# ── insert, remove ───────────────────────────────────────────────────────────
+
+fun [test("insertAt puts an element before the index")] insertPositions(): None|TestFailure
+    let t = _upTo(5)
+    ret assertEqStr(_render(insertAt<Int>(t, 0, 9)), "9.1.2.3.4.5.", "at the front")
+     ?? assertEqStr(_render(insertAt<Int>(t, 2, 9)), "1.2.9.3.4.5.", "in the middle")
+     ?? assertEqStr(_render(insertAt<Int>(t, 5, 9)), "1.2.3.4.5.9.", "at the end")
+     ?? assertEqStr(_render(t), "1.2.3.4.5.", "the original is untouched")
+
+fun [test("insertAt reaches into a deep tree")] insertDeep(): None|TestFailure
+    let t = insertAt<Int>(_upTo(1500), 700, 0)
+    ret assertEqInt(count<Int>(t), 1501, "count")
+     ?? assertEqInt(`[]`<Int>(t, 699), 700, "before")
+     ?? assertEqInt(`[]`<Int>(t, 700), 0, "the insertion")
+     ?? assertEqInt(`[]`<Int>(t, 701), 701, "after")
+     ?? assertEqInt(`[]`<Int>(t, 1500), 1500, "last")
+
+fun [test("removeAt takes one element out")] removePositions(): None|TestFailure
+    let t = _upTo(5)
+    ret assertEqStr(_render(removeAt<Int>(t, 0)), "2.3.4.5.", "the first")
+     ?? assertEqStr(_render(removeAt<Int>(t, 2)), "1.2.4.5.", "the middle")
+     ?? assertEqStr(_render(removeAt<Int>(t, 4)), "1.2.3.4.", "the last")
+     ?? assertEqStr(_render(removeAt<Int>(t, 5)), "1.2.3.4.5.", "out of range: unchanged")
+     ?? assertEqStr(_render(t), "1.2.3.4.5.", "the original is untouched")
+
+fun [test("removeAt reaches into a deep tree")] removeDeep(): None|TestFailure
+    let t = removeAt<Int>(_upTo(1500), 700)
+    ret assertEqInt(count<Int>(t), 1499, "count")
+     ?? assertEqInt(`[]`<Int>(t, 699), 700, "before the hole")
+     ?? assertEqInt(`[]`<Int>(t, 700), 702, "after the hole")
+     ?? assertEqInt(`[]`<Int>(t, 1498), 1500, "last")
+
+fun [test("removing every element one at a time empties the tree")] removeToEmpty(): None|TestFailure
+    ret assertTrue(isEmpty<Int>(_removeAll(_upTo(40))), "nothing left")
+
+fun [tail] _removeAll(t: RRBTree<Int>): RRBTree<Int>
+    ret isEmpty<Int>(t) ? t : _removeAll(removeAt<Int>(t, 0))
+
+
+# ── splice ───────────────────────────────────────────────────────────────────
+
+fun [test("splice swaps a run for a longer or a shorter one")] spliceRuns(): None|TestFailure
+    let t = _upTo(6)
+    ret assertEqStr(_render(splice<Int>(t, 2, 4, _upTo(3))), "1.2.1.2.3.5.6.", "longer")
+     ?? assertEqStr(_render(splice<Int>(t, 1, 5, singleton<Int>(9))), "1.9.6.", "shorter")
+     ?? assertEqStr(_render(splice<Int>(t, 0, 6, _upTo(2))), "1.2.", "the whole tree")
+
+fun [test("splice at either end is an insert or a truncation")] spliceEnds(): None|TestFailure
+    let t = _upTo(4)
+    ret assertEqStr(_render(splice<Int>(t, 0, 0, singleton<Int>(9))), "9.1.2.3.4.", "prepend")
+     ?? assertEqStr(_render(splice<Int>(t, 4, 4, singleton<Int>(9))), "1.2.3.4.9.", "append")
+     ?? assertEqStr(_render(splice<Int>(t, 0, 2, RRBTree<Int>())), "3.4.", "drop a prefix")
+     ?? assertEqStr(_render(splice<Int>(t, 2, 4, RRBTree<Int>())), "1.2.", "drop a suffix")
+
+fun [test("splice into a deep tree keeps both sides intact")] spliceDeep(): None|TestFailure
+    let t = splice<Int>(_upTo(1200), 500, 700, _upTo(3))
+    ret assertEqInt(count<Int>(t), 1003, "count")
+     ?? assertEqInt(`[]`<Int>(t, 499), 500, "before the splice")
+     ?? assertEqInt(`[]`<Int>(t, 500), 1, "the replacement")
+     ?? assertEqInt(`[]`<Int>(t, 502), 3, "end of the replacement")
+     ?? assertEqInt(`[]`<Int>(t, 503), 701, "after the splice")
+     ?? assertEqInt(`[]`<Int>(t, 1002), 1200, "last")
+     ?? assertEqStr(_renderStream(t), _render(t), "stream agrees")

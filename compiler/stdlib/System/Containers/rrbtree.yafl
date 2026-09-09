@@ -1,0 +1,672 @@
+namespace System::Containers
+
+import System
+
+
+# ── RRBTree<T> — a persistent indexed sequence ───────────────────────────────
+#
+# A relaxed radix balanced tree, branching 32. Every operation is persistent:
+# nothing is ever written twice, and an update shares all of the old tree
+# except the path it touched.
+#
+# This is a SUBSTRATE. It is the container to build other persistent
+# structures on — an ordered map's leaf array, a text rope, a builder's
+# published form — not one applications reach for directly, and it makes no
+# attempt to join the other containers' overload set (`fold`, `map`, `head`
+# and friends all belong to List/Seq/Array and are deliberately absent here).
+# What it does offer is the four primitives no other container has together:
+# indexed read, indexed replace, concatenation, and slicing — each O(log n)
+# or better, each persistent.
+#
+# Everything else is derived from those four:
+#
+#   insertAt(t, i, x) = slice(0,i) ++ singleton(x) ++ slice(i,n)
+#   removeAt(t, i)    = slice(0,i) ++ slice(i+1,n)
+#   splice(t,f,to,r)  = slice(0,f) ++ r ++ slice(to,n)
+#
+# which is the reason `concat` below pays for real rebalancing rather than
+# stacking one relaxed node on top of another: a structure layered on this
+# one will concatenate, and an unbalanced concat grows depth without bound.
+#
+# There is no tail buffer. The usual RRB append optimisation buys O(1)
+# amortised push-back at the price of every other operation having to reason
+# about a half-in, half-out chunk; with concat and slice both in the API from
+# the start that trade is not worth taking. `insertAt(t, count(t), x)`
+# short-circuits to `concat(t, singleton(x))` — an O(log n) path copy.
+#
+#
+# ── representation ───────────────────────────────────────────────────────────
+#
+# A node is one of two [final] classes, NOT an enum: an enum variant cannot
+# carry a `T[length]` field. The union is spelt out at every use rather than
+# hidden behind a typealias — a generic alias over a union defeats match
+# exhaustiveness, reporting the same arm both missing and unreachable.
+#
+# `lfElems` and `brKids` are INLINE arrays: one heap object per node, holding
+# its 32 slots directly, so a full tree is one object per 32 elements and one
+# per 32 subtrees — no second indirection anywhere on a descent.
+
+# A leaf: up to 32 elements, stored inline.
+class [final] _RrbLeaf<T>(lfCount: Int32, lfElems: T[lfCount])
+
+# A branch: up to 32 child nodes, stored inline, all of the same height.
+#
+# `brSizes` is the RELAXATION. When it is None every child except possibly
+# the last holds a FULL 32^h elements, and each child is itself strict — so
+# the child index is the radix digit `(i >> 5h) & 31` and no table is read.
+# When it is present, `brSizes[k]` is the cumulative element count of
+# children 0..k and the descent scans it. Only concat and slice create
+# relaxed nodes; a node that is legitimately strict says so, and stays fast.
+class [final] _RrbBranch<T>(brCount: Int32, brSizes: System::Array<Int32>|None,
+                            brKids: (_RrbLeaf<T>|_RrbBranch<T>)[brCount])
+
+# The tree: element count, root height, root.
+#
+# `rtHeight` 0 means the root IS a leaf; h means branches of height h over
+# leaves. `rtRoot` is None for the empty tree and ONLY for the empty tree.
+# That None is not decoration: there is no way to fabricate a `T`, so a
+# zero-count `_RrbLeaf<T>` cannot be tabulated at all, and an empty tree has
+# to be spelt some other way. `Segment<T>|None` sets the precedent.
+class [final] RRBTree<T>(rtCount: Int, rtHeight: Int32,
+                         rtRoot: (_RrbLeaf<T>|_RrbBranch<T>)|None)
+
+
+# The branching factor, spelt three ways: the slot count, the radix digit
+# width that indexes it, and the number of under-full nodes a merge tolerates
+# before it re-chunks (the balance-against-copying trade from the RRB paper).
+fun _rrbWidth(): Int32
+    ret 32i32
+
+fun _rrbBits(): Int32
+    ret 5i32
+
+fun _rrbExtra(): Int32
+    ret 2i32
+
+# Elements under one strict subtree of height h: 32^h. Computed in Int
+# because 32^7 does not fit an Int32, even though no reachable tree is that
+# tall.
+fun [tail] _rrbFullSize(h: Int32, acc: Int): Int
+    ret h <= 0i32 ? acc : _rrbFullSize(h - 1i32, acc * 32)
+
+
+# ── construction ─────────────────────────────────────────────────────────────
+
+# The empty tree.
+fun RRBTree<T>(): RRBTree<T>
+    ret RRBTree<T>(0, 0i32, None)
+
+# A tree of exactly one element.
+fun singleton<T>(x: T): RRBTree<T>
+    ret RRBTree<T>(1, 0i32, _RrbLeaf<T>(1i32, (i: Int32) => x))
+
+fun count<T>(t: RRBTree<T>): Int
+    ret t.rtCount
+
+fun isEmpty<T>(t: RRBTree<T>): Bool
+    ret t.rtCount == 0
+
+
+# ── indexed read ─────────────────────────────────────────────────────────────
+
+# `t[i]`. ABORTS when the index is out of range, exactly as `Array<T>`'s
+# `[]` does.
+#
+# The range guard is not belt-and-braces. Without it an out-of-range index
+# descends into some VALID slot of the wrong node and returns a wrong
+# element instead of dying — a silent corruption, which is the one outcome
+# an indexed container must never have.
+fun `[]`<T>(t: RRBTree<T>, i: Int): T
+    ret i < 0 || i >= t.rtCount
+      ? _rrbOutOfRange<T>()
+      : match(t.rtRoot)
+          (nil: None) => _rrbOutOfRange<T>()
+          (n: _RrbLeaf<T>|_RrbBranch<T>) =>
+            _rrbAt<T>(n, t.rtHeight, truncateToInt32(i))
+
+fun `[]`<T>(t: RRBTree<T>, i: Int32): T
+    ret `[]`<T>(t, Int(i))
+
+# The deliberate abort. There is no abort builtin in YAFL, and a generic
+# function cannot fabricate a `T` to return instead — but an EMPTY
+# `Array<T>` is constructible without one, and reading slot 0 of it trips
+# the runtime bounds check. So this types as `T` and never returns.
+fun _rrbOutOfRange<T>(): T
+    ret System::build(System::arrayBuilder<T>(0))[0]
+
+# Descend to element `i`, which is an offset WITHIN `node`. Both node kinds
+# subtract the skipped prefix on the way down, so `i` is always local to the
+# node in hand — including at the leaf, where it is the slot directly.
+fun _rrbAt<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, i: Int32): T
+    ret match(node)
+      (l: _RrbLeaf<T>)   => l.lfElems(i)
+      (b: _RrbBranch<T>) => match(b.brSizes)
+        (nil: None) =>
+          _rrbAt<T>(b.brKids((i >> (_rrbBits() * h)) & (_rrbWidth() - 1i32)),
+                    h - 1i32,
+                    i & (truncateToInt32(_rrbFullSize(h, 1)) - 1i32))
+        (s: System::Array<Int32>) =>
+          _rrbAtRelaxed<T>(b, s, h, i, _rrbChildFor(s, b.brCount, i))
+
+fun _rrbAtRelaxed<T>(b: _RrbBranch<T>, s: System::Array<Int32>, h: Int32,
+                     i: Int32, k: Int32): T
+    ret _rrbAt<T>(b.brKids(k), h - 1i32, k == 0i32 ? i : i - s[k - 1i32])
+
+# First child whose cumulative size passes `i` — a linear scan of at most 32
+# Int32s, which beats a branch-predictor-hostile binary search at this width.
+fun _rrbChildFor(s: System::Array<Int32>, n: Int32, i: Int32): Int32
+    ret _rrbScan(s, 0i32, n, i)
+
+fun [tail] _rrbScan(s: System::Array<Int32>, k: Int32, n: Int32, i: Int32): Int32
+    ret k >= n - 1i32 ? k : (s[k] > i ? k : _rrbScan(s, k + 1i32, n, i))
+
+
+# ── indexed replace ──────────────────────────────────────────────────────────
+
+# `t` with element `i` replaced by `x`. Path copy: every node on the descent
+# is rebuilt, everything else is shared. The element count does not move, so
+# each rebuilt branch REUSES its old size table rather than recomputing one.
+# An out-of-range index returns the tree unchanged — nothing has been asked
+# for that could be got wrong, unlike a read.
+fun replace<T>(t: RRBTree<T>, i: Int, x: T): RRBTree<T>
+    ret i < 0 || i >= t.rtCount
+      ? t
+      : match(t.rtRoot)
+          (nil: None) => t
+          (n: _RrbLeaf<T>|_RrbBranch<T>) =>
+            RRBTree<T>(t.rtCount, t.rtHeight,
+                       _rrbReplace<T>(n, t.rtHeight, truncateToInt32(i), x))
+
+fun _rrbReplace<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, i: Int32,
+                   x: T): _RrbLeaf<T>|_RrbBranch<T>
+    ret match(node)
+      (l: _RrbLeaf<T>)   =>
+        _RrbLeaf<T>(l.lfCount, (k: Int32) => k == i ? x : l.lfElems(k))
+      (b: _RrbBranch<T>) => match(b.brSizes)
+        (nil: None) =>
+          _rrbReplaceKid<T>(b, h, x,
+                            (i >> (_rrbBits() * h)) & (_rrbWidth() - 1i32),
+                            i & (truncateToInt32(_rrbFullSize(h, 1)) - 1i32))
+        (s: System::Array<Int32>) =>
+          _rrbReplaceRelaxed<T>(b, s, h, i, x, _rrbChildFor(s, b.brCount, i))
+
+fun _rrbReplaceRelaxed<T>(b: _RrbBranch<T>, s: System::Array<Int32>, h: Int32,
+                          i: Int32, x: T, k: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _rrbReplaceKid<T>(b, h, x, k, k == 0i32 ? i : i - s[k - 1i32])
+
+fun _rrbReplaceKid<T>(b: _RrbBranch<T>, h: Int32, x: T, k: Int32,
+                      j: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _rrbBranchOf<T>(b, _rrbReplace<T>(b.brKids(k), h - 1i32, j, x), k)
+
+fun _rrbBranchOf<T>(b: _RrbBranch<T>, kid: _RrbLeaf<T>|_RrbBranch<T>,
+                    k: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _RrbBranch<T>(b.brCount, b.brSizes,
+                      (m: Int32) => m == k ? kid : b.brKids(m))
+
+
+# ── node arithmetic ──────────────────────────────────────────────────────────
+
+# Element read over a node run. The union has to be spelt out for `[]` — the
+# index sugar takes its type argument from the EXPECTED type, which inside a
+# generic is not the element type — so it is spelt once, here.
+fun _rrbKidAt<T>(a: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                 k: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret System::`[]`<_RrbLeaf<T>|_RrbBranch<T>>(a, k)
+
+# Slots occupied: elements for a leaf, children for a branch.
+fun _rrbSlots<T>(node: _RrbLeaf<T>|_RrbBranch<T>): Int32
+    ret match(node)
+      (l: _RrbLeaf<T>)   => l.lfCount
+      (b: _RrbBranch<T>) => b.brCount
+
+# Elements underneath, at height `h`.
+fun _rrbSize<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32): Int32
+    ret match(node)
+      (l: _RrbLeaf<T>)   => l.lfCount
+      (b: _RrbBranch<T>) => match(b.brSizes)
+        (s: System::Array<Int32>) => s[b.brCount - 1i32]
+        (nil: None) =>
+          truncateToInt32(_rrbFullSize(h, 1)) * (b.brCount - 1i32)
+            + _rrbSize<T>(b.brKids(b.brCount - 1i32), h - 1i32)
+
+# A node is strict when it needs no size table: a leaf always is, a branch
+# is when it says so.
+fun _rrbStrict<T>(node: _RrbLeaf<T>|_RrbBranch<T>): Bool
+    ret match(node)
+      (l: _RrbLeaf<T>)   => true
+      (b: _RrbBranch<T>) => b.brSizes is None
+
+# Build the branch over `kids` (all at height `kh`), computing whether it can
+# stay strict. It can when every child but the last is a full 32^kh subtree
+# and every child is itself strict — exactly the condition radix descent
+# assumes at every level below.
+fun _rrbBranch<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                  kh: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _RrbBranch<T>(kids.length, _rrbSizesFor<T>(kids, kh),
+                      (k: Int32) => _rrbKidAt<T>(kids, k))
+
+fun _rrbSizesFor<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                    kh: Int32): System::Array<Int32>|None
+    ret _rrbAllFull<T>(kids, kh, 0i32,
+                       truncateToInt32(_rrbFullSize(kh + 1i32, 1)))
+      ? None
+      : _rrbCumulative<T>(kids, kh)
+
+fun _rrbAllFull<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                   kh: Int32, k: Int32, full: Int32): Bool
+    ret k >= kids.length
+      ? true
+      : _rrbKidFull<T>(_rrbKidAt<T>(kids, k),
+                       kh, k == kids.length - 1i32, full)
+          && _rrbAllFull<T>(kids, kh, k + 1i32, full)
+
+# A child keeps its parent strict when it is itself strict, and — unless it is
+# the last — exactly full.
+fun _rrbKidFull<T>(kid: _RrbLeaf<T>|_RrbBranch<T>, kh: Int32, last: Bool,
+                   full: Int32): Bool
+    ret _rrbStrict<T>(kid) && (last || _rrbSize<T>(kid, kh) == full)
+
+# Cumulative element counts. The fold walks left to right carrying the
+# running total, so each subtree size is asked for once.
+fun _rrbCumulative<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                      kh: Int32): System::Array<Int32>
+    ret System::build(_rrbCumFrom<T>(kids, kh, 0i32, 0i32,
+                                     System::arrayBuilder<Int32>(
+                                       Int(kids.length))))
+
+fun [tail] _rrbCumFrom<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                          kh: Int32, k: Int32, acc: Int32,
+                          [terminal] b: System::ArrayBuilder<Int32>
+                          ): System::ArrayBuilder<Int32>
+    let total = k >= kids.length
+      ? acc
+      : acc + _rrbSize<T>(_rrbKidAt<T>(kids, k), kh)
+    ret k >= kids.length
+      ? b
+      : _rrbCumFrom<T>(kids, kh, k + 1i32, total,
+                       System::push<Int32>(b, total))
+
+
+# ── array helpers ────────────────────────────────────────────────────────────
+# Private, because they exist only to carry node and element runs between the
+# concat and slice steps. The tabulating `Array<X>(n, f)` ctor makes each a
+# single expression.
+
+fun _rrbTake<X>(a: System::Array<X>, n: Int32): System::Array<X>
+    ret System::Array<X>(n, (i: Int32) => System::`[]`<X>(a, i))
+
+fun _rrbDrop<X>(a: System::Array<X>, n: Int32): System::Array<X>
+    ret System::Array<X>(a.length - n,
+                         (i: Int32) => System::`[]`<X>(a, i + n))
+
+fun _rrbCat2<X>(a: System::Array<X>, b: System::Array<X>): System::Array<X>
+    ret System::Array<X>(a.length + b.length,
+                         (i: Int32) => i < a.length
+                           ? System::`[]`<X>(a, i)
+                           : System::`[]`<X>(b, i - a.length))
+
+fun _rrbCat3<X>(a: System::Array<X>, b: System::Array<X>,
+                c: System::Array<X>): System::Array<X>
+    ret _rrbCat2<X>(a, _rrbCat2<X>(b, c))
+
+fun _rrbKidsOf<T>(node: _RrbLeaf<T>|_RrbBranch<T>
+                  ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret match(node)
+      (l: _RrbLeaf<T>)   => System::Array<_RrbLeaf<T>|_RrbBranch<T>>(0i32,
+                              (k: Int32) => l)
+      (b: _RrbBranch<T>) => System::Array<_RrbLeaf<T>|_RrbBranch<T>>(b.brCount,
+                              (k: Int32) => b.brKids(k))
+
+
+# ── concatenation ────────────────────────────────────────────────────────────
+#
+# `a ++ b`, rebalanced. The shape of the algorithm is the standard one: walk
+# down the rightmost spine of `a` and the leftmost spine of `b` together,
+# merge the two child lists at each level on the way back up, and rebalance
+# the merged list before handing it to the level above.
+#
+# The rebalance step departs from the paper deliberately. The paper shuffles
+# elements leftwards one node at a time to keep copying minimal; this
+# RE-CHUNKS the whole merged run into full nodes whenever it is more than
+# `_rrbExtra` nodes longer than optimal. A merged run is at most three full
+# nodes wide, so a re-chunk moves a bounded number of pointers and only does
+# so when the run is genuinely under-full: a small constant either way — and
+# the result is both better packed and a great deal harder to get wrong.
+#
+# The base of the descent — two leaves — always REPACKS, rather than
+# tolerating two half-full leaves the way the levels above do. That is what
+# makes a sequence of appends produce full leaves and therefore STRICT nodes
+# all the way up: without it every `insertAt(t, count(t), x)` would leave a
+# one-element leaf behind, the tree would be permanently relaxed, and the
+# radix descent would never run. At most 64 elements move.
+
+fun concat<T>(a: RRBTree<T>, b: RRBTree<T>): RRBTree<T>
+    ret a.rtCount == 0
+      ? b
+      : (b.rtCount == 0
+          ? a
+          : _rrbConcat<T>(a, b))
+
+fun _rrbConcat<T>(a: RRBTree<T>, b: RRBTree<T>): RRBTree<T>
+    ret match(a.rtRoot)
+      (nil: None) => b
+      (an: _RrbLeaf<T>|_RrbBranch<T>) => match(b.rtRoot)
+        (nil2: None) => a
+        (bn: _RrbLeaf<T>|_RrbBranch<T>) =>
+          _rrbRoot<T>(a.rtCount + b.rtCount,
+                      _rrbConcatSub<T>(an, a.rtHeight, bn, b.rtHeight),
+                      a.rtHeight > b.rtHeight ? a.rtHeight : b.rtHeight)
+
+# `_rrbConcatSub` hands back a list of nodes all at height `h`. One node is
+# the new root as it stands; more than one needs a level on top.
+fun _rrbRoot<T>(n: Int, kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                h: Int32): RRBTree<T>
+    ret kids.length == 1i32
+      ? RRBTree<T>(n, h, _rrbKidAt<T>(kids, 0i32))
+      : RRBTree<T>(n, h + 1i32, _rrbBranch<T>(kids, h))
+
+# Concatenate two subtrees, returning nodes at height max(hl, hr).
+#
+# Three cases, and each reduces the taller side by one level, so the
+# recursion is bounded by the deeper tree's height.
+fun _rrbConcatSub<T>(l: _RrbLeaf<T>|_RrbBranch<T>, hl: Int32,
+                     r: _RrbLeaf<T>|_RrbBranch<T>, hr: Int32
+                     ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret hl > hr
+      ? _rrbMerge<T>(_rrbCat2<_RrbLeaf<T>|_RrbBranch<T>>(
+                       _rrbAllButLast<T>(l),
+                       _rrbConcatSub<T>(_rrbLast<T>(l), hl - 1i32, r, hr)),
+                     hl - 1i32)
+      : (hl < hr
+          ? _rrbMerge<T>(_rrbCat2<_RrbLeaf<T>|_RrbBranch<T>>(
+                           _rrbConcatSub<T>(l, hl, _rrbFirst<T>(r), hr - 1i32),
+                           _rrbAllButFirst<T>(r)),
+                         hr - 1i32)
+          : (hl == 0i32
+              ? _rrbChunkLeaves<T>(_rrbFlattenElems<T>(_rrbPair<T>(l, r)))
+              : _rrbMerge<T>(_rrbCat3<_RrbLeaf<T>|_RrbBranch<T>>(
+                               _rrbAllButLast<T>(l),
+                               _rrbConcatSub<T>(_rrbLast<T>(l), hl - 1i32,
+                                                _rrbFirst<T>(r), hr - 1i32),
+                               _rrbAllButFirst<T>(r)),
+                             hl - 1i32)))
+
+fun _rrbPair<T>(l: _RrbLeaf<T>|_RrbBranch<T>, r: _RrbLeaf<T>|_RrbBranch<T>
+                ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret System::Array<_RrbLeaf<T>|_RrbBranch<T>>(2i32,
+          (k: Int32) => k == 0i32 ? l : r)
+
+# The spine ends. Only ever asked of a branch — the descent stops at height
+# 0 — so the leaf arm hands the node back rather than inventing a child.
+fun _rrbLast<T>(node: _RrbLeaf<T>|_RrbBranch<T>): _RrbLeaf<T>|_RrbBranch<T>
+    ret match(node)
+      (l: _RrbLeaf<T>)   => node
+      (b: _RrbBranch<T>) => b.brKids(b.brCount - 1i32)
+
+fun _rrbFirst<T>(node: _RrbLeaf<T>|_RrbBranch<T>): _RrbLeaf<T>|_RrbBranch<T>
+    ret match(node)
+      (l: _RrbLeaf<T>)   => node
+      (b: _RrbBranch<T>) => b.brKids(0i32)
+
+fun _rrbAllButLast<T>(node: _RrbLeaf<T>|_RrbBranch<T>
+                      ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret _rrbTake<_RrbLeaf<T>|_RrbBranch<T>>(_rrbKidsOf<T>(node),
+                                            _rrbSlots<T>(node) - 1i32)
+
+fun _rrbAllButFirst<T>(node: _RrbLeaf<T>|_RrbBranch<T>
+                       ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret _rrbDrop<_RrbLeaf<T>|_RrbBranch<T>>(_rrbKidsOf<T>(node), 1i32)
+
+# Rebalance a run of nodes at height `kh`, then group it into parents at
+# height `kh + 1`. A merged run is at most three full nodes wide, so this
+# returns one, two or three nodes.
+fun _rrbMerge<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>, kh: Int32
+                 ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret _rrbGroup<T>(_rrbRebalance<T>(kids, kh), kh)
+
+# Leave the run alone while it is close enough to optimally packed;
+# otherwise re-chunk it into full nodes.
+fun _rrbRebalance<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>, kh: Int32
+                     ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret kids.length <= _rrbOptimal<T>(kids) + _rrbExtra()
+      ? kids
+      : (kh == 0i32
+          ? _rrbChunkLeaves<T>(_rrbFlattenElems<T>(kids))
+          : _rrbGroup<T>(_rrbFlattenKids<T>(kids), kh - 1i32))
+
+# Fewest nodes the run's slots could occupy.
+fun _rrbOptimal<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>): Int32
+    ret (_rrbSlotTotal<T>(kids, 0i32, 0i32) + _rrbWidth() - 1i32) / _rrbWidth()
+
+fun [tail] _rrbSlotTotal<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                            k: Int32, acc: Int32): Int32
+    ret k >= kids.length
+      ? acc
+      : _rrbSlotTotal<T>(kids, k + 1i32,
+                         acc + _rrbSlots<T>(_rrbKidAt<T>(kids, k)))
+
+# Every element under a run of LEAVES, in order.
+fun _rrbFlattenElems<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+                        ): System::Array<T>
+    ret System::build(_rrbFlatElemsFrom<T>(kids, 0i32,
+          System::arrayBuilder<T>(Int(_rrbSlotTotal<T>(kids, 0i32, 0i32)))))
+
+fun [tail] _rrbFlatElemsFrom<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                                k: Int32,
+                                [terminal] b: System::ArrayBuilder<T>
+                                ): System::ArrayBuilder<T>
+    ret k >= kids.length
+      ? b
+      : _rrbFlatElemsFrom<T>(kids, k + 1i32,
+          _rrbPushLeaf<T>(b, _rrbKidAt<T>(kids, k), 0i32))
+
+fun [tail] _rrbPushLeaf<T>([terminal] b: System::ArrayBuilder<T>,
+                           node: _RrbLeaf<T>|_RrbBranch<T>, i: Int32
+                           ): System::ArrayBuilder<T>
+    ret match(node)
+      (l: _RrbLeaf<T>) => i >= l.lfCount
+        ? b
+        : _rrbPushLeaf<T>(System::push<T>(b, l.lfElems(i)), node, i + 1i32)
+      (br: _RrbBranch<T>) => b   # unreachable: the run is all leaves
+
+# Every child under a run of BRANCHES, in order.
+fun _rrbFlattenKids<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+                       ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret System::build(_rrbFlatKidsFrom<T>(kids, 0i32,
+          System::arrayBuilder<_RrbLeaf<T>|_RrbBranch<T>>(
+            Int(_rrbSlotTotal<T>(kids, 0i32, 0i32)))))
+
+fun [tail] _rrbFlatKidsFrom<T>(kids: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                               k: Int32,
+                               [terminal] b: System::ArrayBuilder<
+                                 _RrbLeaf<T>|_RrbBranch<T>>
+                               ): System::ArrayBuilder<_RrbLeaf<T>|_RrbBranch<T>>
+    ret k >= kids.length
+      ? b
+      : _rrbFlatKidsFrom<T>(kids, k + 1i32,
+          _rrbPushKids<T>(b, _rrbKidsOf<T>(_rrbKidAt<T>(kids, k)), 0i32))
+
+fun [tail] _rrbPushKids<T>([terminal] b: System::ArrayBuilder<
+                             _RrbLeaf<T>|_RrbBranch<T>>,
+                           ks: System::Array<_RrbLeaf<T>|_RrbBranch<T>>,
+                           i: Int32
+                           ): System::ArrayBuilder<_RrbLeaf<T>|_RrbBranch<T>>
+    ret i >= ks.length
+      ? b
+      : _rrbPushKids<T>(
+          System::push<_RrbLeaf<T>|_RrbBranch<T>>(b, _rrbKidAt<T>(ks, i)),
+          ks, i + 1i32)
+
+# Cut a flat element run into full leaves.
+fun _rrbChunkLeaves<T>(xs: System::Array<T>
+                       ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret System::Array<_RrbLeaf<T>|_RrbBranch<T>>(
+          _rrbChunkCount(xs.length),
+          (c: Int32) => _rrbLeafSlice<T>(xs, c * _rrbWidth()))
+
+fun _rrbLeafSlice<T>(xs: System::Array<T>, at: Int32
+                     ): _RrbLeaf<T>|_RrbBranch<T>
+    ret _RrbLeaf<T>(_rrbChunkLen(xs.length, at),
+                    (i: Int32) => System::`[]`<T>(xs, at + i))
+
+# Cut a flat node run into full branches at height `kh + 1`.
+fun _rrbGroup<T>(ks: System::Array<_RrbLeaf<T>|_RrbBranch<T>>, kh: Int32
+                 ): System::Array<_RrbLeaf<T>|_RrbBranch<T>>
+    ret System::Array<_RrbLeaf<T>|_RrbBranch<T>>(
+          _rrbChunkCount(ks.length),
+          (c: Int32) => _rrbBranch<T>(
+            _rrbSlab<_RrbLeaf<T>|_RrbBranch<T>>(ks, c * _rrbWidth()), kh))
+
+fun _rrbSlab<X>(a: System::Array<X>, at: Int32): System::Array<X>
+    ret System::Array<X>(_rrbChunkLen(a.length, at),
+                         (i: Int32) => System::`[]`<X>(a, at + i))
+
+fun _rrbChunkCount(n: Int32): Int32
+    ret (n + _rrbWidth() - 1i32) / _rrbWidth()
+
+fun _rrbChunkLen(n: Int32, at: Int32): Int32
+    ret n - at < _rrbWidth() ? n - at : _rrbWidth()
+
+
+# ── slicing ──────────────────────────────────────────────────────────────────
+
+# `t[from .. to)`. Indices are clamped, so an over-wide range is the whole
+# tree and an inverted one is empty.
+#
+# The descent keeps the tree's HEIGHT while it trims — a node that loses all
+# but one child stays a one-child branch — and the redundant levels come off
+# afterwards in one loop. Doing it that way means the recursion has a single
+# return type and one case per node kind, instead of a height that changes
+# under it.
+fun slice<T>(t: RRBTree<T>, from: Int, to: Int): RRBTree<T>
+    ret _rrbSliceClamped<T>(t,
+          from < 0 ? 0 : (from > t.rtCount ? t.rtCount : from),
+          to < 0 ? 0 : (to > t.rtCount ? t.rtCount : to))
+
+fun _rrbSliceClamped<T>(t: RRBTree<T>, from: Int, to: Int): RRBTree<T>
+    ret to <= from || t.rtCount == 0
+      ? RRBTree<T>()
+      : from == 0 && to == t.rtCount ? t : _rrbSliceRoot<T>(t, from, to)
+
+fun _rrbSliceRoot<T>(t: RRBTree<T>, from: Int, to: Int): RRBTree<T>
+    ret match(t.rtRoot)
+      (nil: None) => RRBTree<T>()
+      (n: _RrbLeaf<T>|_RrbBranch<T>) =>
+        _rrbShrink<T>(to - from,
+                      _rrbSliceNode<T>(n, t.rtHeight, truncateToInt32(from),
+                                       truncateToInt32(to)),
+                      t.rtHeight)
+
+# Drop the levels a trim made redundant. A deep slice can leave several, so
+# this loops rather than checking once.
+fun [tail] _rrbShrink<T>(n: Int, node: _RrbLeaf<T>|_RrbBranch<T>,
+                         h: Int32): RRBTree<T>
+    ret match(node)
+      (l: _RrbLeaf<T>)   => RRBTree<T>(n, 0i32, node)
+      (b: _RrbBranch<T>) => b.brCount == 1i32
+        ? _rrbShrink<T>(n, b.brKids(0i32), h - 1i32)
+        : RRBTree<T>(n, h, node)
+
+# Trim `node` to the element range [from, to), which is local to it.
+fun _rrbSliceNode<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, from: Int32,
+                     to: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret match(node)
+      (l: _RrbLeaf<T>) =>
+        _RrbLeaf<T>(to - from, (i: Int32) => l.lfElems(from + i))
+      (b: _RrbBranch<T>) =>
+        _rrbSliceBranch<T>(b, h, from, to,
+                           _rrbChildAt<T>(b, h, from),
+                           _rrbChildAt<T>(b, h, to - 1i32))
+
+# The child holding element `i`, whichever indexing this node uses.
+fun _rrbChildAt<T>(b: _RrbBranch<T>, h: Int32, i: Int32): Int32
+    ret match(b.brSizes)
+      (nil: None) => (i >> (_rrbBits() * h)) & (_rrbWidth() - 1i32)
+      (s: System::Array<Int32>) => _rrbChildFor(s, b.brCount, i)
+
+# Where child `k`'s elements start, within this node.
+fun _rrbChildStart<T>(b: _RrbBranch<T>, h: Int32, k: Int32): Int32
+    ret match(b.brSizes)
+      (nil: None) => k * truncateToInt32(_rrbFullSize(h, 1))
+      (s: System::Array<Int32>) => k == 0i32 ? 0i32 : s[k - 1i32]
+
+# Children k0..k1 survive; the two boundary children are trimmed
+# recursively, the ones between are shared whole. The rebuilt node is
+# relaxed unless the cut happened to land on full boundaries — which
+# `_rrbBranch` works out rather than assuming.
+fun _rrbSliceBranch<T>(b: _RrbBranch<T>, h: Int32, from: Int32, to: Int32,
+                       k0: Int32, k1: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _rrbBranch<T>(
+          System::Array<_RrbLeaf<T>|_RrbBranch<T>>(k1 - k0 + 1i32,
+            (j: Int32) => _rrbSliceKid<T>(b, h, from, to, k0 + j)),
+          h - 1i32)
+
+fun _rrbSliceKid<T>(b: _RrbBranch<T>, h: Int32, from: Int32, to: Int32,
+                    k: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _rrbSliceKidAt<T>(b, h, from, to, k, _rrbChildStart<T>(b, h, k))
+
+fun _rrbSliceKidAt<T>(b: _RrbBranch<T>, h: Int32, from: Int32, to: Int32,
+                      k: Int32, start: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret _rrbSliceKidRange<T>(b.brKids(k), h - 1i32,
+          from - start < 0i32 ? 0i32 : from - start,
+          to - start,
+          _rrbSize<T>(b.brKids(k), h - 1i32))
+
+fun _rrbSliceKidRange<T>(kid: _RrbLeaf<T>|_RrbBranch<T>, kh: Int32,
+                         lo: Int32, hi: Int32,
+                         size: Int32): _RrbLeaf<T>|_RrbBranch<T>
+    ret lo == 0i32 && hi >= size
+      ? kid
+      : _rrbSliceNode<T>(kid, kh, lo, hi > size ? size : hi)
+
+
+# ── the derived edits ────────────────────────────────────────────────────────
+# Each is slice and concat, and nothing else. Both of those short-circuit on
+# an empty or whole-tree argument, so an append — `insertAt(t, count(t), x)` —
+# reduces to `concat(t, singleton(x))`, one path copy.
+
+# `t` with `x` inserted BEFORE index `i`. `i == count(t)` appends. An index
+# outside the range is clamped to the nearest end.
+fun insertAt<T>(t: RRBTree<T>, i: Int, x: T): RRBTree<T>
+    ret splice<T>(t, i, i, singleton<T>(x))
+
+# `t` without element `i`. An out-of-range index leaves the tree unchanged.
+fun removeAt<T>(t: RRBTree<T>, i: Int): RRBTree<T>
+    ret i < 0 || i >= t.rtCount ? t : splice<T>(t, i, i + 1, RRBTree<T>())
+
+# `t` with elements [from, to) replaced by the whole of `r`. Indices are
+# clamped as `slice` clamps them.
+fun splice<T>(t: RRBTree<T>, from: Int, to: Int, r: RRBTree<T>): RRBTree<T>
+    ret _rrbSplice<T>(t, r,
+          from < 0 ? 0 : (from > t.rtCount ? t.rtCount : from),
+          to < 0 ? 0 : (to > t.rtCount ? t.rtCount : to))
+
+fun _rrbSplice<T>(t: RRBTree<T>, r: RRBTree<T>, from: Int,
+                  to: Int): RRBTree<T>
+    ret concat<T>(concat<T>(slice<T>(t, 0, from), r),
+                  slice<T>(t, to < from ? from : to, t.rtCount))
+
+
+# ── stream ───────────────────────────────────────────────────────────────────
+#
+# The Stream instance, so a tree can be driven by the ordinary combinators.
+# The state is the tree and an index — a descent per element, O(log n) each
+# with a small constant at branching 32, rather than a path stack. A stack
+# state is the obvious later refinement and does not change this API.
+#
+# `E = Never`: an in-memory source cannot fail, and the type says so.
+class [final] RRBTreeStream<T>(rsTree: RRBTree<T>, rsAt: Int)
+
+fun rrbTreeStream<T>(t: RRBTree<T>): RRBTreeStream<T>
+    ret RRBTreeStream<T>(t, 0)
+
+instance<T> System::Stream<RRBTreeStream<T>, T, System::Never>
+    fun [inline(always)] next(self: RRBTreeStream<T>
+                              ): (stream: RRBTreeStream<T>,
+                                  value: System::Result<T|System::None,
+                                                        System::Never>)
+        ret self.rsAt < self.rsTree.rtCount
+          ? (RRBTreeStream<T>(self.rsTree, self.rsAt + 1),
+             System::Ok<T|System::None, System::Never>(
+               `[]`<T>(self.rsTree, self.rsAt)))
+          : (self, System::Ok<T|System::None, System::Never>(None))
